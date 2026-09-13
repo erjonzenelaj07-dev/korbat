@@ -1,39 +1,39 @@
 # korbat Foundation — Task 6 of 16: `@korbat/db` trust and safety tables
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform whose credibility rests on transparent moderation. Content is actioned only for one of six public rules (R1 sexual content, R2 CSAM, R3 targeted hatred on protected traits, R4 doxxing, R5 direct threats, R6 spam/impersonation). Every action is a `case` with a rule ID and a `public_reason` the author reads verbatim; the author can file exactly one `appeal` per case, reviewed by a different moderator; every closed case is copied, without any user identifier, into a public `transparency_log`; and every moderator or admin action is written to an append-only `audit_log`. Reports carry a `weight` derived from reporter reputation; a spike of reports from accounts that follow each other marks a case with `brigading_flag` and routes it to the senior queue to protect the target rather than punish them.
+korbat's credibility rests on transparent moderation. Content is actioned only for one of six public rules. Every action is a `case` with a rule ID and a `public_reason` the author reads verbatim; the author can file exactly one `appeal` per case, reviewed by a different moderator; every closed case is copied, without any user identifier, into a public `transparency_log`; every moderator or admin action is written to an append-only `audit_log`. Reports carry a `weight` from reporter reputation; a report spike from accounts that follow each other sets `brigading_flag` and routes the case to the senior queue to protect the target.
 
-The backend is a self-owned TypeScript API (Hono + Drizzle ORM) on our own Postgres 16 with three roles; the public API role is `korbat_api`. RLS is on for every table. This task adds the six trust-and-safety tables to `@korbat/db`. The `audit_log` gets INSERT and SELECT policies only, and Task 7's grants migration additionally revokes UPDATE/DELETE/TRUNCATE from `korbat_api`.
+The backend is a self-owned TypeScript API (Hono + Drizzle ORM) on our own Postgres 16; the public API role is `korbat_api`. This task adds the six trust-and-safety tables. `audit_log` gets INSERT and SELECT policies only; Task 7's grants migration additionally revokes UPDATE/DELETE/TRUNCATE.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
 - Windows 11. Node v24.12.0, pnpm 10.30.0. Docker not needed.
 - Pinned: drizzle-orm 0.45.2, vitest 4.1.11, typescript 5.9.3.
-- Drizzle notes: `pgPolicy(name, { for: "insert" | "select" | "all", to: role, using?, withCheck? })`; policy objects returned by `getTableConfig(t).policies` expose `.for`; `getTableConfig(t).indexes[i].config` has `.name` and `.unique`; `bigserial("id", { mode: "number" })` and `jsonb("metadata")` come from `drizzle-orm/pg-core`.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (Task 6).
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(db): identity and content tables`. `packages/db/src/schema/{helpers,auth,identity,content}.ts` must exist and `pnpm --filter @korbat/db test` must pass with 5 tests. If `safety.ts` already exists, verify it matches, fix drift, run tests, skip to the report.
+`git log --oneline -1` must show `feat(db): identity and content tables`. `pnpm --filter @korbat/db test` passes 5 tests. If `packages/db/src/schema/safety.ts` exists, compare with this prompt, fix drift, run steps 4 and 5, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first: append the tests, run, see the table-count test fail (14 instead of 20), implement, run, see all pass.
-2. Exact file contents below; keep snake_case column names exactly.
-3. Do not add tables beyond `cases`, `reports`, `appeals`, `strikes`, `transparency_log`, `audit_log`.
-4. Do not modify the other schema files.
-5. LF line endings, 2-space indentation.
-6. Verify before claiming; paste real output.
-7. Commit exactly once with the given message and trailer.
+1. Copy every file below byte for byte.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. Cosmetic differences are fine. A different test count, any unexpected `error TS` or `FAIL` line, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it.
+6. Do not modify the other schema files or existing tests.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files
 
-### Append to `packages/db/test/schema.test.ts` (FIRST)
+### Append to the END of `packages/db/test/schema.test.ts`
 ```ts
+
 describe("trust and safety schema", () => {
   test("there are 20 tables in total", () => {
     expect(tables.length).toBe(20);
@@ -172,7 +172,7 @@ export const auditLog = pgTable(
 ).enableRLS();
 ```
 
-### Append to `packages/db/src/schema/index.ts`
+### Append to the END of `packages/db/src/schema/index.ts`
 ```ts
 export * from "./safety";
 ```
@@ -180,20 +180,39 @@ export * from "./safety";
 ## Steps
 
 1. Append the tests.
-2. Run `pnpm --filter @korbat/db test`. Expected: the "20 tables" test fails with 14; the other three new tests fail on undefined.
-3. Create `safety.ts`; append the export to `index.ts`.
-4. Run `pnpm --filter @korbat/db test`. Expected: `Tests  9 passed`.
-5. Run `pnpm --filter @korbat/db typecheck`. Expected: exits 0.
+2. Run:
+   ```bash
+   pnpm --filter @korbat/db test
+   ```
+   Expected: `Tests  4 failed | 5 passed (9)`, including `AssertionError: expected 14 to be 20`. If all 9 pass, STOP.
+3. Create `safety.ts`; append the export line to `index.ts`.
+4. Run:
+   ```bash
+   pnpm --filter @korbat/db test
+   ```
+   Expected: `Tests  9 passed (9)`.
+5. Run:
+   ```bash
+   pnpm --filter @korbat/db typecheck
+   ```
+   Expected: no `error TS` lines.
 6. Commit:
-```bash
-git add -A && git commit -m "feat(db): trust and safety tables, append-only audit log
+   ```bash
+   git add -A && git commit -m "feat(db): trust and safety tables, append-only audit log
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+7. Run `git log --oneline -1`. Expected subject: `feat(db): trust and safety tables, append-only audit log`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created/modified
-- Output of the failing run (step 2), passing run (step 4), typecheck (step 5)
-- Deviations and why (e.g. if `policies[i].for` is named differently in this drizzle version, say what you used)
-- Anything blocked or uncertain
+TASK 6 REPORT
+Files created/modified: <list>
+Step 2 output (Tests line + the 'expected 14 to be 20' line): <paste>
+Step 4 output (Tests line): <paste>
+Step 5 output: <paste or "clean">
+Step 7 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

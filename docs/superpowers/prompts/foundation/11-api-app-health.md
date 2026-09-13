@@ -1,40 +1,38 @@
 # korbat Foundation — Task 11 of 16: `@korbat/api` app factory, health endpoint, entrypoints, build
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named, against real Postgres and Redis containers. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform with a self-owned backend: a Hono (TypeScript) API is the only client of our Postgres (two pools: `korbat_api` for the public schema, `korbat_auth` for the PII `auth` schema) and Redis, deployed with Docker Compose behind Caddy and a Cloudflare Tunnel. Tasks 9 and 10 built the config, the PII-scrubbing logger, and the middleware chain (observability, security headers, rate limit, session stub, validation).
+korbat is a pseudonymous social platform with a self-owned backend: a Hono (TypeScript) API is the only client of our Postgres (two pools: `korbat_api` for the public schema, `korbat_auth` for the PII `auth` schema) and Redis, deployed with Docker Compose behind Caddy and a Cloudflare Tunnel. Tasks 9 and 10 built the config, the PII-scrubbing logger, and the middleware chain.
 
-This task assembles them into the application: a `createApp(deps)` factory that takes its dependencies (config, logger, rate-limit store, health checks) so tests can run it without any infrastructure; a `GET /api/health` endpoint that runs dependency checks and answers 200 `ok` or 503 `degraded` in the `HealthResponse` shape from `@korbat/contracts`; `GET /api/me` guarded by `requireSession` (401 until sub-project 1); 404 and 500 handlers that emit the shared error envelope without leaking internals; the production entrypoint that wires real Postgres/Redis and handles SIGTERM; a `migrate` entrypoint for the Docker `migrate` job; a tsup config that bundles each entrypoint into a single file; and an integration test that runs against the Compose data services.
-
-The API is mounted under `/api` because Caddy serves the web app at `/` and proxies `/api/*` to this process on the same origin (so the session cookie is first-party).
+This task assembles them: a `createApp(deps)` factory that takes its dependencies so tests run without infrastructure; `GET /api/health` that runs dependency checks and answers 200 `ok` or 503 `degraded` in the `HealthResponse` shape; `GET /api/me` guarded by `requireSession` (401 until sub-project 1); 404 and 500 handlers that emit the error envelope without leaking internals; the production entrypoint wiring real Postgres/Redis with SIGTERM handling; a `migrate` entrypoint for the Docker `migrate` job; a tsup config bundling each entrypoint into one file; and an integration test against the Compose data services. The API is mounted under `/api` because Caddy serves the web app at `/` and proxies `/api/*` on the same origin.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
-- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop must be running** with the Task 8 data services up (`docker compose -f infra/compose.yml ps` shows postgres and redis healthy). If not: `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis`.
-- Pinned: hono 4.13.5, @hono/node-server 2.1.1, tsup 8.5.1, tsx 4.23.13, vitest 4.1.11, ioredis 5.11.1.
-- Notes: `serve({ fetch, port, hostname }, cb)` from `@hono/node-server` returns a Node server with `.close()`. tsup with `noExternal: [/.*/]` bundles every dependency (pino, postgres, ioredis are pure JS and bundle cleanly); the `banner` adds a `require` shim because some bundled CJS code calls `require` at runtime. vitest's `describe.skipIf(cond)` skips a block; the integration test is skipped unless `INTEGRATION=1`.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (Task 11).
+- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop must be running** with the Task 8 data services up. Check with `docker compose -f infra/compose.yml ps` (postgres and redis `healthy`). If they are down: `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis`.
+- Port 3000 on localhost must be free.
+- Pinned: hono 4.13.5, @hono/node-server 2.1.1, tsup 8.5.1, tsx 4.23.13, vitest 4.1.11, ioredis 5.11.1 (all installed by Task 9).
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(api): observability, security headers, rate limit, session stub, validation`. `pnpm --filter @korbat/api test` passes 15 tests. If `apps/api/src/app.ts` exists, verify against this prompt, fix drift, run tests, skip to the report.
+`git log --oneline -1` must show `feat(api): observability, security headers, rate limit, session stub, validation`. `pnpm --filter @korbat/api test` passes 14 tests. If `apps/api/src/app.ts` exists, compare with this prompt, fix drift, run steps 4 to 9, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first: write `test/app.test.ts`, run, see it fail on the missing `../src/app`, implement `routes/health.ts` and `app.ts`, run, see it pass. Then add the entrypoints, build config, and integration test.
-2. Exact file contents below.
-3. `apps/api/.env` is gitignored; only `.env.example` is committed. Check with `git status` before committing.
-4. Do not change the middleware from Task 10.
-5. LF line endings, 2-space indentation.
-6. Verify before claiming; paste real output.
-7. Commit exactly once with the given message and trailer.
+1. Copy every file below byte for byte.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. A different test count, an HTTP status other than the one shown, any unexpected `error`, `ERR_`, `error TS`, or `FAIL` line, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it. (Step 8 already does a clean install before the build, because the hoisted `node_modules` was seen to lose transitive files after several incremental installs.)
+6. `apps/api/.env` is gitignored; only `.env.example` is committed. Check `git status` before committing.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files to create
 
-### `apps/api/test/app.test.ts` (FIRST)
+### `apps/api/test/app.test.ts`
 ```ts
 import { describe, expect, test } from "vitest";
 import pino from "pino";
@@ -286,46 +284,93 @@ describe.skipIf(!process.env.INTEGRATION)("integration: health against real serv
 
 ## Steps
 
-1. Create `test/app.test.ts`.
-2. Run `pnpm --filter @korbat/api test`. Expected: `app.test.ts` FAILS on unresolved `../src/app`; 15 others pass.
+1. Create `apps/api/test/app.test.ts` only.
+2. Run:
+   ```bash
+   pnpm --filter @korbat/api test
+   ```
+   Expected: `app.test.ts` FAILS with `Failed to resolve import "../src/app"`; 14 other tests pass. If all pass, STOP.
 3. Create `src/routes/health.ts` and `src/app.ts`.
-4. Run `pnpm --filter @korbat/api test`. Expected: `Tests  20 passed` (the integration file is skipped and reports 1 skipped).
-5. Create `src/index.ts`, `src/migrate.ts`, `tsup.config.ts`, `.env.example`, `test/integration/health.test.ts`.
-6. Run `pnpm --filter @korbat/api typecheck`. Expected: exits 0.
-7. Run the dev server against the Compose services and probe it:
+4. Run:
+   ```bash
+   pnpm --filter @korbat/api test
+   ```
+   Expected: `Test Files  4 passed (4)` and `Tests  19 passed (19)`.
+5. Create `src/index.ts`, `src/migrate.ts`, `tsup.config.ts`, `.env.example`, `test/integration/health.test.ts`. Then run:
+   ```bash
+   pnpm --filter @korbat/api typecheck
+   ```
+   Expected: no `error TS` lines.
+6. Start the dev server against the Compose services and probe it:
    ```bash
    cp apps/api/.env.example apps/api/.env
-   (cd apps/api && set -a && . ./.env && set +a && pnpm dev) &
-   sleep 5
-   curl -si http://localhost:3000/api/health
+   (cd apps/api && set -a && . ./.env && set +a && npx tsx src/index.ts > ../../.dev.log 2>&1 &)
+   sleep 7
+   curl -si http://localhost:3000/api/health | grep -iE "^HTTP|x-request-id|content-security|cache-control|ratelimit-remaining|^\{"
    curl -si http://localhost:3000/api/me | head -1
    curl -si http://localhost:3000/api/nothing | head -1
-   kill %1
    ```
-   Expected: first response `HTTP/1.1 200` with body `{"status":"ok","version":"0.0.0-dev","checks":{"postgres_api":"ok","postgres_auth":"ok","redis":"ok"}}` and headers `x-request-id`, `content-security-policy`, `cache-control: no-store`, `ratelimit-remaining`; second `HTTP/1.1 401`; third `HTTP/1.1 404`.
-8. Run the integration test:
+   Expected, in order:
+   ```
+   HTTP/1.1 200 OK
+   cache-control: no-store
+   content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'
+   ratelimit-remaining: 299
+   x-request-id: <uuid>
+   {"status":"ok","version":"0.0.0-dev","checks":{"postgres_api":"ok","postgres_auth":"ok","redis":"ok"}}
+   HTTP/1.1 401 Unauthorized
+   HTTP/1.1 404 Not Found
+   ```
+   Then stop the dev server:
+   ```bash
+   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done
+   rm -f .dev.log
+   ```
+7. Run the integration test:
    ```bash
    (cd apps/api && set -a && . ./.env && set +a && pnpm test:integration)
    ```
-   Expected: `Tests  1 passed`.
-9. Build and run the bundle:
+   Expected: `Tests  1 passed (1)`.
+8. Clean install, then build:
    ```bash
-   pnpm --filter @korbat/api build && ls apps/api/dist
-   (cd apps/api && set -a && . ./.env && set +a && MIGRATIONS_DIR=../../packages/db/migrations node dist/migrate.js)
-   (cd apps/api && set -a && . ./.env && set +a && node dist/index.js) &
-   sleep 3; curl -s http://localhost:3000/api/health; kill %1
+   rm -rf node_modules && pnpm install --frozen-lockfile
+   pnpm --filter @korbat/api build
+   ls apps/api/dist
    ```
-   Expected: `dist/` contains `index.js`, `migrate.js` (+ `.map` files); the migrate run prints `migrations applied from ...` (nothing new to apply); the bundled server answers the same health JSON as step 7.
-10. Confirm `git status --short` does not list `apps/api/.env` or `apps/api/dist/`. Commit:
-```bash
-git add -A && git commit -m "feat(api): app factory, health endpoint, entrypoints and tsup build
+   Expected: `Build success`; `dist/` lists `index.js`, `index.js.map`, `migrate.js`, `migrate.js.map`, and one or more `chunk-*.js` files with maps.
+9. Run the bundle in both modes:
+   ```bash
+   (cd apps/api && set -a && . ./.env && set +a && MIGRATIONS_DIR=../../packages/db/migrations node dist/migrate.js)
+   (cd apps/api && set -a && . ./.env && set +a && node dist/index.js > ../../.bundle.log 2>&1 &)
+   sleep 4; curl -s http://localhost:3000/api/health; echo; head -c 200 .bundle.log; echo
+   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done
+   (cd apps/api && set -a && . ./.env && set +a && NODE_ENV=production node dist/index.js > ../../.bundle2.log 2>&1 &)
+   sleep 4; curl -s http://localhost:3000/api/health; echo; head -c 200 .bundle2.log; echo
+   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done
+   rm -f .bundle.log .bundle2.log
+   ```
+   Expected: `migrations applied from <path>` (nothing new to apply); then the health JSON with all checks `ok` followed by a pretty (coloured) `api listening` log line; then the same health JSON followed by a one-line JSON log `{"level":30,...,"msg":"api listening"}`.
+10. Run `git status --short` and confirm neither `apps/api/.env` nor `apps/api/dist/` is listed. Commit:
+    ```bash
+    git add -A && git commit -m "feat(api): app factory, health endpoint, entrypoints and tsup build
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+    Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+    ```
+11. Run `git log --oneline -1`. Expected subject: `feat(api): app factory, health endpoint, entrypoints and tsup build`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created
-- Output of steps 2, 4, 6, the three curl results from 7, step 8, and step 9
-- Deviations and why
-- Anything blocked or uncertain
+TASK 11 REPORT
+Files created: <list>
+Step 2 output (failure line): <paste>
+Step 4 output (Test Files + Tests lines): <paste>
+Step 5 output: <paste or "clean">
+Step 6 output (all eight lines): <paste>
+Step 7 output (Tests line): <paste>
+Step 8 output (Build success line + dist listing): <paste>
+Step 9 output (both health JSON lines): <paste>
+Step 11 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

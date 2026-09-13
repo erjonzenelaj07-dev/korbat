@@ -1,46 +1,44 @@
 # korbat Foundation — Task 10 of 16: `@korbat/api` middleware
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform where security is half the product. The backend is a self-owned Hono API (TypeScript) that is the only client of our Postgres and Redis, deployed behind Caddy and a Cloudflare Tunnel. The API returns JSON only; the HTML app is served by Caddy. Every request passes through a fixed middleware chain whose contract is:
+korbat is a pseudonymous social platform where security is half the product. The backend is a self-owned Hono API (TypeScript), the only client of our Postgres and Redis, deployed behind Caddy and a Cloudflare Tunnel. The API returns JSON only. Every request passes through a fixed middleware chain:
 
-- **Observability**: a server-generated request id (never trusted from the client) on every response as `x-request-id` and in every error envelope, a child logger per request, and one access-log line per request. The logger already scrubs PII (Task 9).
+- **Observability**: a server-generated request id (never trusted from the client) on every response as `x-request-id` and in every error envelope, a child logger per request, and one access-log line per request.
 - **Security headers**: a JSON-only CSP (`default-src 'none'; frame-ancestors 'none'; base-uri 'none'`), HSTS, no-referrer, nosniff, DENY framing, `Cache-Control: no-store`.
-- **Rate limiting**: every route is limited; per-user limits come in later sub-projects. The store is pluggable: an in-memory store for tests and a Redis store (atomic Lua INCR + PEXPIRE) for production. Responses carry `RateLimit-*` headers and 429s carry `Retry-After` plus the shared error envelope.
-- **Session**: in the Foundation nobody is signed in. The stub sets `session = null`; `requireSession` answers 401 with the envelope. Sub-project 1 replaces the stub with real cookie/bearer resolution but keeps the same `Session` shape and `requireSession` contract.
-- **Validation**: request bodies/queries are validated with Zod schemas from `@korbat/contracts` and failures return a 400 envelope with field-level details.
+- **Rate limiting**: every route is limited. The store is pluggable: in-memory for tests, Redis (atomic Lua) for production. Responses carry `RateLimit-*` headers; 429s carry `Retry-After` and the error envelope.
+- **Session**: in the Foundation nobody is signed in. The stub sets `session = null`; `requireSession` answers 401. Sub-project 1 replaces the stub and keeps the `Session` shape and `requireSession` contract.
+- **Validation**: bodies and queries are validated with Zod schemas; failures return a 400 envelope with field-level details.
 
-Every error the API emits uses the `ErrorEnvelope` shape from `@korbat/contracts`: `{ error: { code, message, requestId?, details? } }`.
+Every error uses `ErrorEnvelope` from `@korbat/contracts`: `{ error: { code, message, requestId?, details? } }`.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
 - Windows 11. Node v24.12.0, pnpm 10.30.0. Docker not needed (tests use the in-memory store).
-- Pinned: hono 4.13.5, @hono/zod-validator 0.9.1, zod 4.5.4, ioredis 5.11.1, pino 10.3.1, vitest 4.1.11.
-- Hono notes: `createMiddleware<Env>()` from `hono/factory` builds typed middleware; `secureHeaders()` from `hono/secure-headers` returns middleware; `app.use(a, b)` accepts several middlewares; `app.request(path, init)` runs a request in tests without a server; `c.header()` before `next()` and `c.res.headers.set()` after `next()` both add response headers; `c.req.valid("json")` returns the validated body after `zValidator`.
-- Zod 4: `z.treeifyError(error)` returns `{ errors: [], properties: { field: { errors: [...] } } }`.
-- ioredis: `redis.defineCommand(name, { numberOfKeys, lua })` adds a method `redis[name](...)`.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (Task 10).
+- Pinned: hono 4.13.5, @hono/zod-validator 0.9.1, zod 4.5.4, ioredis 5.11.1, pino 10.3.1, vitest 4.1.11. All already installed by Task 9.
+- `validate.ts` passes five explicit type arguments to `zValidator`. That exact form was verified to typecheck against @hono/zod-validator 0.9.1; other forms were tried and failed. Do not simplify it.
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(api): env config and PII-scrubbing logger`. `apps/api/src/config.ts` and `apps/api/src/lib/logger.ts` exist and `pnpm --filter @korbat/api test` passes 7 tests. If `apps/api/src/middleware/` exists, verify against this prompt, fix drift, run tests, skip to the report.
+`git log --oneline -1` must show `feat(api): env config and PII-scrubbing logger`. `pnpm --filter @korbat/api test` passes 7 tests. If `apps/api/src/middleware/` exists, compare with this prompt, fix drift, run steps 4 and 5, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first: write `test/middleware.test.ts`, run, see it fail on missing modules, implement all files, run, see it pass.
-2. Exact file contents below. The one place version drift is plausible is the generic signature of `zValidator` in `validate.ts`; if TypeScript rejects the explicit generics, remove them and let inference work. The test is the contract. Report it.
-3. Do not create `app.ts`, `index.ts`, or routes; Task 11 does.
-4. Do not weaken any header, limit, or envelope to make a test pass; fix the implementation.
-5. LF line endings, 2-space indentation.
-6. Verify before claiming; paste real output.
-7. Commit exactly once with the given message and trailer.
+1. Copy every file below byte for byte.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. A different test count, any unexpected `error TS` or `FAIL` line, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it.
+6. Do not create `app.ts`, `index.ts`, or routes; Task 11 does.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files to create
 
-### `apps/api/test/middleware.test.ts` (FIRST)
+### `apps/api/test/middleware.test.ts`
 ```ts
 import { describe, expect, test } from "vitest";
 import { Hono } from "hono";
@@ -326,40 +324,64 @@ export const requireSession = createMiddleware<AppEnv>(async (c, next) => {
 
 ### `apps/api/src/lib/validate.ts`
 ```ts
-import { zValidator } from "@hono/zod-validator";
+import { zValidator, type Hook } from "@hono/zod-validator";
 import type { ValidationTargets } from "hono";
 import { z, type ZodType } from "zod";
 import type { AppEnv } from "../env";
 import { errorBody } from "./errors";
 
-/** zod validation that answers with the shared error envelope instead of Hono's default. */
+/**
+ * zod validation for a request target that answers failures with the shared
+ * error envelope instead of Hono's default body. The handler reads the parsed
+ * value with c.req.valid(target).
+ */
 export function validate<T extends ZodType, Target extends keyof ValidationTargets>(target: Target, schema: T) {
-  return zValidator<T, Target, AppEnv>(target, schema, (result, c) => {
+  const onInvalid: Hook<z.infer<T>, AppEnv, string, Target, {}, T> = (result, c) => {
     if (!result.success) {
       return c.json(errorBody("invalid_request", "Request validation failed", c.get("requestId"), z.treeifyError(result.error)), 400);
     }
     return undefined;
-  });
+  };
+  return zValidator<T, Target, AppEnv, string, typeof onInvalid>(target, schema, onInvalid);
 }
 ```
 
 ## Steps
 
-1. Create the test file.
-2. Run `pnpm --filter @korbat/api test`. Expected: `middleware.test.ts` FAILS on unresolved imports; config and logger tests still pass (7).
-3. Create `src/env.ts`, `src/lib/errors.ts`, `src/lib/validate.ts`, and the four middleware files.
-4. Run `pnpm --filter @korbat/api test`. Expected: `Tests  15 passed` (7 previous + 8 new).
-5. Run `pnpm --filter @korbat/api typecheck`. Expected: exits 0. If the only error is in `validate.ts` about `zValidator` generics, apply the fix from Rule 2, re-run tests and typecheck.
+1. Create `apps/api/test/middleware.test.ts`.
+2. Run:
+   ```bash
+   pnpm --filter @korbat/api test
+   ```
+   Expected: `middleware.test.ts` FAILS with `Failed to resolve import "../src/env"`; the other two files still pass (7 tests). If all pass, STOP.
+3. Create `src/env.ts`, `src/lib/errors.ts`, `src/lib/validate.ts`, `src/middleware/observability.ts`, `src/middleware/security-headers.ts`, `src/middleware/rate-limit.ts`, `src/middleware/session.ts`.
+4. Run:
+   ```bash
+   pnpm --filter @korbat/api test
+   ```
+   Expected: `Test Files  3 passed (3)` and `Tests  14 passed (14)`.
+5. Run:
+   ```bash
+   pnpm --filter @korbat/api typecheck
+   ```
+   Expected: no `error TS` lines.
 6. Commit:
-```bash
-git add -A && git commit -m "feat(api): observability, security headers, rate limit, session stub, validation
+   ```bash
+   git add -A && git commit -m "feat(api): observability, security headers, rate limit, session stub, validation
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+7. Run `git log --oneline -1`. Expected subject: `feat(api): observability, security headers, rate limit, session stub, validation`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created
-- Output of steps 2, 4, 5
-- Deviations (especially any change to `validate.ts` typing) and why
-- Anything blocked or uncertain
+TASK 10 REPORT
+Files created: <list>
+Step 2 output (failure line + Tests line): <paste>
+Step 4 output (Test Files + Tests lines): <paste>
+Step 5 output: <paste or "clean">
+Step 7 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

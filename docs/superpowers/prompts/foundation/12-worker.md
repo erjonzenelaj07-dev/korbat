@@ -1,33 +1,33 @@
 # korbat Foundation — Task 12 of 16: `@korbat/worker` skeleton
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform with a self-owned backend (Hono API, our own Postgres, Redis, MinIO, Docker Compose). Anything slow or risky runs outside the API process in a separate **worker** container with its own memory and time limits, so a malicious upload or a long job cannot take the API down. In sub-project 2 the worker will run the image pipeline (re-encode, strip EXIF, blurhash, NSFW score) and scheduled jobs (30-day IP-hash purge, explore-view refresh).
+korbat is a pseudonymous social platform with a self-owned backend (Hono API, own Postgres, Redis, MinIO, Docker Compose). Anything slow or risky runs outside the API in a separate **worker** container with its own limits, so a malicious upload or a long job cannot take the API down. In sub-project 2 the worker runs the image pipeline and scheduled jobs.
 
-This task creates only the skeleton: a job registry with typed handlers, a job parser, and a process that consumes a Redis list (`korbat:jobs`, `BLPOP`) and dispatches each job. It deliberately uses a plain list rather than a queue library; sub-project 2 chooses a queue with retries and delays once the real jobs exist. The registry interface (`register(type, handler)`, `dispatch(job, ctx)`) is what survives that change.
+This task creates the skeleton: a job registry with typed handlers, a job parser, and a process that consumes a Redis list (`korbat:jobs`, `BLPOP`) and dispatches each job. It uses a plain list on purpose; sub-project 2 chooses a queue library once real jobs exist. The registry interface (`register(type, handler)`, `dispatch(job, ctx)`) is what survives.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
-- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop must be running** with the Task 8 `redis` service up for the smoke test (`docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d redis` if not).
+- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop running** with the Task 8 `redis` service up for the smoke test (`docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d redis` if not).
 - Pinned: ioredis 5.11.1, pino 10.3.1, zod 4.5.4, tsup 8.5.1, tsx 4.23.13, vitest 4.1.11, typescript 5.9.3, @types/node 24.13.3.
-- Notes: `redis.blpop(key, timeoutSeconds)` resolves to `[key, value]` or `null` on timeout; `maxRetriesPerRequest: null` is required by ioredis for blocking commands; top-level `await` works because the package is ESM and tsup emits ESM.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (Task 12).
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(api): app factory, health endpoint, entrypoints and tsup build`. If `apps/worker/` exists, verify against this prompt, fix drift, run tests, skip to the report.
+`git log --oneline -1` must show `feat(api): app factory, health endpoint, entrypoints and tsup build`. If `apps/worker/` exists, compare with this prompt, fix drift, run steps 5 to 7, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first: write `test/jobs.test.ts`, run, see it fail on the missing module, implement, run, see it pass.
-2. Exact file contents below.
-3. Do not add a queue library or any job handler other than `noop`.
-4. LF line endings, 2-space indentation.
-5. Verify before claiming; paste real output.
-6. Commit exactly once with the given message and trailer.
+1. Copy every file below byte for byte.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. A different test count, any unexpected `error`, `error TS`, or `FAIL` line, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it.
+6. Do not add a queue library or any handler other than `noop`.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files to create
 
@@ -83,7 +83,7 @@ export default defineConfig({
 });
 ```
 
-### `apps/worker/test/jobs.test.ts` (FIRST)
+### `apps/worker/test/jobs.test.ts`
 ```ts
 import { describe, expect, test, vi } from "vitest";
 import pino from "pino";
@@ -185,31 +185,58 @@ await redis.quit();
 
 ## Steps
 
-1. Create `package.json`, `tsconfig.json`, `tsup.config.ts`, and the test file.
-2. Run `pnpm install`.
-3. Run `pnpm --filter @korbat/worker test`. Expected: FAIL, `../src/jobs` unresolved.
+1. Create `package.json`, `tsconfig.json`, `tsup.config.ts`, and `test/jobs.test.ts`. Do not create the `src/` files yet.
+2. Run:
+   ```bash
+   pnpm install
+   ```
+   Expected: ends with `Done in <time> using pnpm v10.30.0`.
+3. Run:
+   ```bash
+   pnpm --filter @korbat/worker test
+   ```
+   Expected: FAILS with `Failed to resolve import "../src/jobs"`. If it passes, STOP.
 4. Create `src/jobs.ts` and `src/index.ts`.
-5. Run `pnpm --filter @korbat/worker test`. Expected: `Tests  4 passed`.
-6. Run `pnpm --filter @korbat/worker typecheck && pnpm --filter @korbat/worker build && ls apps/worker/dist`. Expected: exit 0; `index.js` present.
+5. Run:
+   ```bash
+   pnpm --filter @korbat/worker test
+   ```
+   Expected: `Tests  4 passed (4)`.
+6. Run:
+   ```bash
+   pnpm --filter @korbat/worker typecheck && pnpm --filter @korbat/worker build && ls apps/worker/dist
+   ```
+   Expected: no `error TS` lines; `Build success`; `index.js` and `index.js.map` listed.
 7. Live smoke against Redis:
    ```bash
-   REDIS_URL=redis://localhost:6379 node apps/worker/dist/index.js &
-   sleep 1
-   docker compose -f infra/compose.yml exec redis redis-cli RPUSH korbat:jobs '{"type":"noop","payload":null}'
-   docker compose -f infra/compose.yml exec redis redis-cli RPUSH korbat:jobs 'not json'
-   sleep 1; kill -INT %1; sleep 6
+   (REDIS_URL=redis://localhost:6379 node apps/worker/dist/index.js > .worker.log 2>&1 &)
+   sleep 2
+   docker compose -f infra/compose.yml exec -T redis redis-cli RPUSH korbat:jobs '{"type":"noop","payload":null}'
+   docker compose -f infra/compose.yml exec -T redis redis-cli RPUSH korbat:jobs 'not json'
+   sleep 2
+   cut -c1-120 .worker.log
+   for pid in $(wmic process where "commandline like '%apps/worker/dist/index.js%' and name='node.exe'" get processid | grep -E "^[0-9]+"); do taskkill //PID $pid //F; done
+   rm -f .worker.log
    ```
-   Expected worker output: `worker started`, then `noop job handled`, then a `job failed` error line for the bad payload, then `stopping after current job`, and the process exits within about 5 seconds of the signal (the BLPOP timeout).
+   Expected `.worker.log` lines, in order: a line with `"msg":"worker started"`, a line with `"jobType":"noop","msg":"noop job handled"`, and a `"level":50` line containing `"msg":"job failed"` with `is not valid JSON`.
 8. Commit:
-```bash
-git add -A && git commit -m "feat(worker): redis list consumer with job registry
+   ```bash
+   git add -A && git commit -m "feat(worker): redis list consumer with job registry
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+9. Run `git log --oneline -1`. Expected subject: `feat(worker): redis list consumer with job registry`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created
-- Output of steps 3, 5, 6, and the worker log lines from step 7
-- Deviations and why
-- Anything blocked or uncertain
+TASK 12 REPORT
+Files created: <list>
+Step 3 output (failure line): <paste>
+Step 5 output (Tests line): <paste>
+Step 6 output: <paste>
+Step 7 output (the three log lines): <paste>
+Step 9 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

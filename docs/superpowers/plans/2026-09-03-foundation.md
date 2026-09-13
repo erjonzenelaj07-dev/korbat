@@ -2823,3 +2823,19 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ## Handoff to sub-project 1
 
 Sub-project 1 (Identity & auth) starts with a short brainstorm, then its own plan. It replaces `apps/api/src/middleware/session.ts` (keeping the `requireSession` contract and `Session` shape from `apps/api/src/env.ts`), adds `apps/api/src/auth/**`, and uses the `authDb` pool from `apps/api/src/index.ts`. The tables it needs already exist in `packages/db/src/schema/auth.ts`.
+
+---
+
+## Addendum (2026-09-13): dry-run corrections
+
+The whole plan was executed in a scratch clone against real containers. The execution prompts in `docs/superpowers/prompts/foundation/` carry the corrected files and the observed outputs and are the verified source; where this plan and a prompt differ, the prompt wins. Corrections found:
+
+1. **Task 4 test**: `filter((v): v is PgTable => is(v, PgTable))` does not compile because `.enableRLS()` returns an `Omit<...>` type. Use `filter((v) => is(v, PgTable)) as PgTable[]`.
+2. **Task 10 `validate.ts`**: `zValidator` needs five explicit type arguments in @hono/zod-validator 0.9.1; the hook is typed `Hook<z.infer<T>, AppEnv, string, Target, {}, T>` so `result.error` is a zod v4 error. Test count is 14 after Task 10, 19 after Task 11.
+3. **Task 9 logger**: pino-pretty must be used as an in-process stream (`pino(options, pinoPretty(...))`), not a transport, because a transport spawns a worker via `__dirname`, which does not exist inside the tsup ESM bundle. `pino-pretty` moves to `dependencies`.
+4. **Task 8 images**: `minio/minio` and `minio/mc` are no longer on Docker Hub. Use `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` and `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z`.
+5. **Task 8 isolation check**: an unqualified `profiles` from `korbat_auth` yields `relation "profiles" does not exist`; the check uses `public.profiles` to get `permission denied for schema public`.
+6. **Task 13**: the current Expo 57 template puts routes in `src/app`, has no tabs group, pins TypeScript 6, and `create-expo-app` prompts interactively. The app is now hand-written with exact pins resolved from the template (expo 57.0.22, react-native 0.86.3, react 19.2.3, expo-router 57.0.21, reanimated 4.5.1, worklets 0.10.1, screens 4.26.2, safe-area 5.7.0, gesture-handler 2.32.0, web 0.21.2, nativewind 4.2.6, tailwindcss 3.4.19).
+7. **Task 11**: a clean `rm -rf node_modules && pnpm install --frozen-lockfile` precedes the build; the hoisted `node_modules` lost transitive files after several incremental installs on Windows.
+8. **Task 15**: semgrep on Git Bash needs `MSYS_NO_PATHCONV=1 -v "$(pwd -W):/src"`. Its rulesets require SHA-pinned actions (checkout v7.0.1, pnpm/action-setup v6.1.0, setup-node v7.0.0), a 7-day minimum release age in pnpm (`minimumReleaseAge: 10080`, `trustPolicy: no-downgrade`, `blockExoticSubdeps: true`), `.npmrc` `min-release-age=7`, and `minimumReleaseAge` on every Renovate `packageRules` entry. The release-age floor is applied in Task 15, after the lockfile is complete, because a fresh resolve under the floor fails whenever any transitive package is under a week old.
+9. **Task 1**: root `package.json` gains `pnpm.onlyBuiltDependencies: ["esbuild"]` to silence pnpm 10's ignored-build-scripts warning.

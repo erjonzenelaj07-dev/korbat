@@ -1,38 +1,37 @@
 # korbat Foundation — Task 4 of 16: `@korbat/db` auth schema
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform with a self-owned backend: a TypeScript API (Hono + Drizzle ORM) is the only thing that talks to our own Postgres 16. Authentication is hand-rolled in the API (argon2id passwords, email codes, TOTP, later passkeys); there is no auth vendor. Security is half the product, so the database is designed for least privilege from day one:
+korbat is a pseudonymous social platform with a self-owned backend: a TypeScript API (Hono + Drizzle ORM) is the only thing that talks to our own Postgres 16. Authentication is hand-rolled in the API; there is no auth vendor. The database is designed for least privilege from day one:
 
 - All PII (email, hashed phone, credentials, sessions) lives in a separate Postgres schema called `auth`. The public API role (`korbat_api`) has no access to it; only the auth module's role (`korbat_auth`) does. Migrations run as a third role, `korbat_migrate`, which owns every object.
-- Row Level Security is enabled on every table, with a policy per role. In the Foundation the policies grant the owning role full access (the mechanism is proven and tested); later sub-projects tighten them per table as routes land.
+- Row Level Security is enabled on every table, with a policy per role. In the Foundation the policies grant the owning role full access; later sub-projects tighten them per table.
 - Session rows never store the session token, only its SHA-256. IP addresses are never stored raw, only salted hashes with a 30-day purge.
 
-`@korbat/db` holds the Drizzle schema and migrations and is shared by the API and the worker. This task creates the package and the `auth` schema tables. Tasks 5 and 6 add the public tables, Task 7 the client and migrations.
+`@korbat/db` holds the Drizzle schema and migrations, shared by the API and the worker. This task creates the package and the `auth` schema tables. Tasks 5 and 6 add the public tables, Task 7 the client and migrations.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
-- Windows 11. Node v24.12.0, pnpm 10.30.0. Docker not needed for this task (no database is contacted; tests inspect the schema objects in memory).
-- Pinned versions: drizzle-orm 0.45.2, drizzle-kit 0.31.10, postgres 3.4.9, vitest 4.1.11, typescript 5.9.3, @types/node 24.13.3.
-- Drizzle API notes used here: `pgSchema("auth").table(...)` and `.enum(...)` create objects in a named schema; a table builder's third argument returns an array of indexes, checks, and `pgPolicy(...)` entries; `.enableRLS()` is chained on the table; `pgRole("name").existing()` declares a role that migrations must not create; `getTableConfig(table)` from `drizzle-orm/pg-core` returns `{ name, schema, columns, indexes, checks, primaryKeys, policies, enableRLS, ... }`.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (this is its Task 4).
+- Windows 11. Node v24.12.0, pnpm 10.30.0. Docker not needed (tests inspect schema objects in memory).
+- Pinned: drizzle-orm 0.45.2, drizzle-kit 0.31.10, postgres 3.4.9, vitest 4.1.11, typescript 5.9.3, @types/node 24.13.3.
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(rules): public rulebook R1-R6 as data`. If `packages/db/` already exists, verify it matches this prompt, fix drift, run tests, and skip to the report.
+`git log --oneline -1` must show `feat(rules): public rulebook R1-R6 as data`. If `packages/db/` already exists, compare with this prompt, fix drift, run steps 5 and 6, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first: write the test, run it, see it fail because the module is missing, implement, run again, see it pass.
-2. Use the exact file contents below. If the Drizzle API differs from the code (for example `getTableConfig` lacks `policies` or `enableRLS`), keep the test's intent, find the equivalent accessor in `node_modules/drizzle-orm/pg-core/utils.d.ts` or `table.d.ts`, make the smallest change, and report the deviation.
-3. Do not add tables beyond the five listed. Do not create migrations in this task.
-4. Column names are given explicitly in snake_case; keep them exactly (later SQL and grants depend on them).
-5. LF line endings, 2-space indentation.
-6. Verify before claiming: paste real command output in the report.
-7. Commit exactly once at the end with the given message, including the trailer.
+1. Copy every file below byte for byte. Column names are snake_case on purpose; later SQL depends on them.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. Cosmetic differences are fine: timings, colours, the pnpm progress line, the `npm warn Unknown project config "node-linker"` line, git's CRLF warnings. A different test count, any unexpected `error`, `ERR_`, `error TS`, or `FAIL` line, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it.
+6. Never commit `.env` files or `node_modules`.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files to create
 
@@ -65,21 +64,21 @@ korbat is a pseudonymous social platform with a self-owned backend: a TypeScript
   }
 }
 ```
-(`./src/index.ts`, `./src/migrate.ts`, and `drizzle.config.ts` are created in Task 7; the `exports` and `scripts` entries are declared now so the manifest does not change later. `tsc -p .` will not fail on the missing files because they are not referenced yet.)
+(`src/index.ts`, `src/migrate.ts`, and `drizzle.config.ts` are created in Task 7. Declaring them now keeps this manifest stable.)
 
 ### `packages/db/tsconfig.json`
 ```json
 { "extends": "../../tsconfig.base.json", "compilerOptions": { "types": ["node"] }, "include": ["src", "test", "drizzle.config.ts"] }
 ```
 
-### `packages/db/test/schema.test.ts` (write FIRST; Tasks 5 and 6 append to it)
+### `packages/db/test/schema.test.ts`
 ```ts
 import { describe, expect, test } from "vitest";
 import { is } from "drizzle-orm";
 import { PgTable, getTableConfig } from "drizzle-orm/pg-core";
 import * as schema from "../src/schema/index";
 
-const tables = Object.values(schema).filter((v): v is PgTable => is(v, PgTable));
+const tables = Object.values(schema).filter((v) => is(v, PgTable)) as PgTable[];
 const byName = new Map(tables.map((t) => [getTableConfig(t).name, getTableConfig(t)]));
 
 describe("auth schema", () => {
@@ -105,6 +104,7 @@ describe("row level security", () => {
   });
 });
 ```
+(The `as PgTable[]` cast on line 6 is deliberate: `.enableRLS()` returns an `Omit<...>` type that a type predicate cannot narrow to. This exact line was verified to typecheck.)
 
 ### `packages/db/src/schema/helpers.ts`
 ```ts
@@ -242,22 +242,45 @@ export * from "./auth";
 
 ## Steps
 
-1. Create `package.json`, `tsconfig.json`, and the test file.
-2. Run `pnpm install`.
-3. Run `pnpm --filter @korbat/db test`. Expected: FAIL, `../src/schema/index` cannot be resolved.
-4. Create `src/schema/helpers.ts`, `src/schema/auth.ts`, `src/schema/index.ts`.
-5. Run `pnpm --filter @korbat/db test`. Expected: `Tests  3 passed`.
-6. Run `pnpm --filter @korbat/db typecheck`. Expected: exits 0.
+1. Create `packages/db/package.json`, `packages/db/tsconfig.json`, `packages/db/test/schema.test.ts`. Do not create the `src/` files yet.
+2. Run:
+   ```bash
+   pnpm install
+   ```
+   Expected: ends with `Done in <time> using pnpm v10.30.0`.
+3. Run:
+   ```bash
+   pnpm --filter @korbat/db test
+   ```
+   Expected: FAILS with `Failed to resolve import "../src/schema/index"`. If it passes, STOP.
+4. Create `packages/db/src/schema/helpers.ts`, `packages/db/src/schema/auth.ts`, `packages/db/src/schema/index.ts`.
+5. Run:
+   ```bash
+   pnpm --filter @korbat/db test
+   ```
+   Expected: `Tests  3 passed (3)`.
+6. Run:
+   ```bash
+   pnpm --filter @korbat/db typecheck
+   ```
+   Expected: no `error TS` lines.
 7. Commit:
-```bash
-git add -A && git commit -m "feat(db): auth schema tables with RLS
+   ```bash
+   git add -A && git commit -m "feat(db): auth schema tables with RLS
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+8. Run `git log --oneline -1`. Expected subject: `feat(db): auth schema tables with RLS`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created (paths)
-- Output of the failing run (step 3), passing run (step 5), typecheck (step 6)
-- Deviations (especially any Drizzle API differences) and why
-- Anything blocked or uncertain
+TASK 4 REPORT
+Files created: <list>
+Step 3 output (the failure line): <paste>
+Step 5 output (Tests line): <paste>
+Step 6 output: <paste or "clean">
+Step 8 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

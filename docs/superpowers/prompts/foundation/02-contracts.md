@@ -1,32 +1,31 @@
 # korbat Foundation — Task 2 of 16: `@korbat/contracts`
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform: people post opinions under a handle, and content is only ever removed for one of six public rules, always by a human who writes a reason the author can read and appeal. The backend is a self-owned TypeScript API (Hono + Drizzle) in front of our own Postgres, Redis, and MinIO, packaged with Docker Compose behind a Cloudflare Tunnel. The client is an Expo app, web first.
-
-`@korbat/contracts` is the single source of truth for every request and response shape. The API validates input with these Zod schemas and types its responses with them; the Expo app and the admin console parse responses with the same schemas. A field that is not in a contract cannot leak out of the API, which is how PII minimisation becomes a compile-time property. This task creates the package with the three schemas the Foundation needs: the error envelope, the health response, and pagination.
+korbat is a pseudonymous social platform with a self-owned backend (Hono + Drizzle TypeScript API, own Postgres, Redis, MinIO, Docker Compose behind a Cloudflare Tunnel) and an Expo client. `@korbat/contracts` is the single source of truth for every request and response shape: the API validates input with these Zod schemas and types its responses with them, and the Expo app parses responses with the same schemas. A field that is not in a contract cannot leak out of the API. This task creates the package with the three schemas the Foundation needs.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
 - Windows 11. Node v24.12.0, pnpm 10.30.0. Docker not needed.
-- Pinned versions for this task: zod 4.5.4, vitest 4.1.11, typescript 5.9.3. Zod 4 API notes: `z.record(keySchema, valueSchema)` takes two arguments; `z.coerce.number()` is available; `safeParse` returns `{ success, data | error }`.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (this is its Task 2).
+- Pinned: zod 4.5.4, vitest 4.1.11, typescript 5.9.3.
 
 ## Preconditions
 
-`git log --oneline -1` must show `chore: scaffold pnpm workspace`. The root must contain `package.json`, `pnpm-workspace.yaml`, `.npmrc` (with `node-linker=hoisted`), and `tsconfig.base.json`. If `packages/contracts/` already exists, verify it matches this prompt, fix drift, run the tests, and skip to the report.
+`git log --oneline -1` must show `chore: scaffold pnpm workspace`. `package.json`, `pnpm-workspace.yaml`, `.npmrc`, `tsconfig.base.json` exist at the root. If `packages/contracts/` already exists, compare with this prompt, fix drift, run steps 5 to 7, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first: write the test file, run it and confirm it fails because the module is missing, then implement, then run again and confirm it passes.
-2. Use the exact file contents below. If a pinned library's API differs from the code, keep the test as the contract, make the smallest change that satisfies it, and list the deviation in your report.
-3. Do not add schemas beyond the three listed. Later sub-projects add their own.
-4. LF line endings, 2-space indentation.
-5. Verify before claiming: paste real command output in the report.
-6. Commit exactly once at the end with the given message, including the trailer.
+1. Copy every file below byte for byte. Do not reformat, reorder, rename, add comments, or "improve".
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. Cosmetic differences are fine: timings, colours, the pnpm progress line, the line `npm warn Unknown project config "node-linker"`, git's CRLF warnings. A different test count, any line containing `error`, `ERR_`, or `FAIL` where none is expected, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it in the report.
+6. Never commit `.env` files or `node_modules`.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files to create
 
@@ -49,7 +48,7 @@ korbat is a pseudonymous social platform: people post opinions under a handle, a
 { "extends": "../../tsconfig.base.json", "include": ["src", "test"] }
 ```
 
-### `packages/contracts/test/contracts.test.ts` (write this FIRST)
+### `packages/contracts/test/contracts.test.ts`
 ```ts
 import { describe, expect, test } from "vitest";
 import { ErrorEnvelope, HealthResponse, Pagination } from "../src/index";
@@ -85,7 +84,7 @@ describe("Pagination", () => {
 });
 ```
 
-### `packages/contracts/src/index.ts` (write this AFTER seeing the test fail)
+### `packages/contracts/src/index.ts`
 ```ts
 import { z } from "zod";
 
@@ -119,23 +118,50 @@ export type Pagination = z.infer<typeof Pagination>;
 
 ## Steps
 
-1. Create `package.json`, `tsconfig.json`, and the test file.
-2. Run `pnpm install`. Expected: zod, vitest, typescript installed; lockfile updated.
-3. Run `pnpm --filter @korbat/contracts test`. Expected: FAIL with an error that `../src/index` cannot be resolved. If it passes at this point, something is wrong; stop and investigate.
-4. Create `src/index.ts`.
-5. Run `pnpm --filter @korbat/contracts test`. Expected: `Tests  6 passed`.
-6. Run `pnpm --filter @korbat/contracts typecheck`. Expected: exits 0 with no output.
-7. Run `pnpm typecheck && pnpm test` from the root. Expected: both succeed (only this package participates so far).
+1. Create `packages/contracts/package.json`, `packages/contracts/tsconfig.json`, and `packages/contracts/test/contracts.test.ts`. Do not create `src/index.ts` yet.
+2. Run:
+   ```bash
+   pnpm install
+   ```
+   Expected: ends with `Done in <time> using pnpm v10.30.0`.
+3. Run:
+   ```bash
+   pnpm --filter @korbat/contracts test
+   ```
+   Expected: the run FAILS with `Error: Failed to resolve import "../src/index"` (or `Cannot find module`). This proves the test is real. If it passes here, that is a STOP condition.
+4. Create `packages/contracts/src/index.ts`.
+5. Run:
+   ```bash
+   pnpm --filter @korbat/contracts test
+   ```
+   Expected: `Test Files  1 passed (1)` and `Tests  6 passed (6)`.
+6. Run:
+   ```bash
+   pnpm --filter @korbat/contracts typecheck
+   ```
+   Expected: no `error TS` lines; the command ends with `Done` or silently with exit code 0.
+7. Run:
+   ```bash
+   pnpm typecheck && pnpm test
+   ```
+   Expected: both succeed; the test summary shows `Tests  6 passed (6)` for contracts.
 8. Commit:
-```bash
-git add -A && git commit -m "feat(contracts): error envelope, health and pagination schemas
+   ```bash
+   git add -A && git commit -m "feat(contracts): error envelope, health and pagination schemas
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+9. Run `git log --oneline -1`. Expected subject: `feat(contracts): error envelope, health and pagination schemas`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created (paths)
-- Output of the failing test run (step 3), the passing test run (step 5), and typecheck (step 6)
-- Deviations from this prompt and why
-- Anything blocked or uncertain
+TASK 2 REPORT
+Files created: <list>
+Step 3 output (the failure line): <paste>
+Step 5 output (Tests line): <paste>
+Step 6 output: <paste or "clean">
+Step 9 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

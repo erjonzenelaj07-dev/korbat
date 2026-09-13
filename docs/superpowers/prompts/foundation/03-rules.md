@@ -1,32 +1,31 @@
 # korbat Foundation — Task 3 of 16: `@korbat/rules`
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform where content is removed only for one of six public rules, always by a human who cites the rule and writes a reason the author can read and appeal. Opinions are never a removal reason. The backend is a self-owned TypeScript API in front of our own Postgres, packaged with Docker Compose behind a Cloudflare Tunnel; the client is an Expo app.
-
-`@korbat/rules` is the rulebook as data. The Expo app renders it at `/rules`, every moderation case in the database stores a `rule_id` from it, and the public transparency page groups counts by it. Keeping it as a typed package means the rule text shown to users and the rule IDs used by moderation can never drift apart. This task creates the package with the six rules, their examples, and their automation policy (which is the contract for what software may do without a human).
+korbat is a pseudonymous social platform where content is removed only for one of six public rules, always by a human who cites the rule and writes a reason the author can read and appeal. `@korbat/rules` is the rulebook as data: the app renders it, every moderation case stores a `rule_id` from it, and the public transparency page groups counts by it. This task creates the package with the six rules, their examples, and their automation policy (the contract for what software may do without a human).
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
 - Windows 11. Node v24.12.0, pnpm 10.30.0. Docker not needed.
-- Pinned versions: vitest 4.1.11, typescript 5.9.3. No runtime dependencies.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (this is its Task 3).
+- Pinned: vitest 4.1.11, typescript 5.9.3. No runtime dependencies.
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(contracts): error envelope, health and pagination schemas`. `packages/contracts/` must exist. If `packages/rules/` already exists, verify it matches this prompt, fix drift, run the tests, and skip to the report.
+`git log --oneline -1` must show `feat(contracts): error envelope, health and pagination schemas`. If `packages/rules/` already exists, compare with this prompt, fix drift, run steps 5 to 7, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first: write the test, run it, confirm it fails because the module is missing, implement, run again, confirm it passes.
-2. Use the exact rule text below. Do not reword the rules; the wording was reviewed as product policy. Typos may be fixed and must be listed in the report.
-3. Do not add rules, fields, or helpers beyond what is listed.
-4. LF line endings, 2-space indentation.
-5. Verify before claiming: paste real command output in the report.
-6. Commit exactly once at the end with the given message, including the trailer.
+1. Copy every file below byte for byte. The rule text is product policy; do not reword it.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. Cosmetic differences are fine: timings, colours, the pnpm progress line, the `npm warn Unknown project config "node-linker"` line, git's CRLF warnings. A different test count, any unexpected `error`, `ERR_`, or `FAIL` line, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it.
+6. Never commit `.env` files or `node_modules`.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files to create
 
@@ -48,7 +47,7 @@ korbat is a pseudonymous social platform where content is removed only for one o
 { "extends": "../../tsconfig.base.json", "include": ["src", "test"] }
 ```
 
-### `packages/rules/test/rules.test.ts` (write FIRST)
+### `packages/rules/test/rules.test.ts`
 ```ts
 import { describe, expect, test } from "vitest";
 import { RULES, getRule, isRuleId } from "../src/index";
@@ -78,7 +77,7 @@ describe("rulebook", () => {
 });
 ```
 
-### `packages/rules/src/index.ts` (write AFTER seeing the test fail)
+### `packages/rules/src/index.ts`
 ```ts
 /**
  * The public rulebook. This is the complete list of reasons content can be
@@ -169,28 +168,54 @@ export function isRuleId(id: string): id is RuleId {
   return byId.has(id);
 }
 ```
-
-Note on `as const satisfies readonly Rule[]`: the `as const` makes `RuleId` the literal union `"R1" | ... | "R6"`, and `satisfies` checks every entry against `Rule` without widening. If TypeScript complains that a readonly string array is not assignable to `string[]` for `allowed`/`notAllowed`, change the interface fields to `readonly string[]` and keep everything else. Report it if you had to.
+(This file typechecks as written under TypeScript 5.9.3; it was verified. Do not change `string[]` to `readonly string[]`.)
 
 ## Steps
 
-1. Create `package.json`, `tsconfig.json`, and the test file.
-2. Run `pnpm install`.
-3. Run `pnpm --filter @korbat/rules test`. Expected: FAIL, `../src/index` cannot be resolved.
-4. Create `src/index.ts`.
-5. Run `pnpm --filter @korbat/rules test`. Expected: `Tests  4 passed`.
-6. Run `pnpm --filter @korbat/rules typecheck`. Expected: exits 0.
-7. Run `pnpm test` from the root. Expected: contracts (6) and rules (4) both pass.
+1. Create `packages/rules/package.json`, `packages/rules/tsconfig.json`, `packages/rules/test/rules.test.ts`. Do not create `src/index.ts` yet.
+2. Run:
+   ```bash
+   pnpm install
+   ```
+   Expected: ends with `Done in <time> using pnpm v10.30.0`.
+3. Run:
+   ```bash
+   pnpm --filter @korbat/rules test
+   ```
+   Expected: FAILS with `Failed to resolve import "../src/index"` (or `Cannot find module`). If it passes, STOP.
+4. Create `packages/rules/src/index.ts`.
+5. Run:
+   ```bash
+   pnpm --filter @korbat/rules test
+   ```
+   Expected: `Tests  4 passed (4)`.
+6. Run:
+   ```bash
+   pnpm --filter @korbat/rules typecheck
+   ```
+   Expected: no `error TS` lines.
+7. Run:
+   ```bash
+   pnpm test
+   ```
+   Expected: contracts `Tests  6 passed (6)` and rules `Tests  4 passed (4)`.
 8. Commit:
-```bash
-git add -A && git commit -m "feat(rules): public rulebook R1-R6 as data
+   ```bash
+   git add -A && git commit -m "feat(rules): public rulebook R1-R6 as data
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+9. Run `git log --oneline -1`. Expected subject: `feat(rules): public rulebook R1-R6 as data`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created (paths)
-- Output of the failing run (step 3), passing run (step 5), typecheck (step 6)
-- Deviations (including the `readonly string[]` change if applied) and why
-- Anything blocked or uncertain
+TASK 3 REPORT
+Files created: <list>
+Step 3 output (the failure line): <paste>
+Step 5 output (Tests line): <paste>
+Step 6 output: <paste or "clean">
+Step 9 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

@@ -1,47 +1,46 @@
-# korbat Foundation — Task 15 of 16: CI, semgrep, Renovate, admin placeholder
+# korbat Foundation — Task 15 of 16: CI, semgrep, supply-chain hardening, Renovate, admin placeholder
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13; the local semgrep scan of the finished repository reports zero findings with these exact files. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform whose backend is fully self-owned (Hono API, own Postgres with least-privilege roles, Redis, MinIO, Docker Compose behind a Cloudflare Tunnel). Security is half the product, so the security checks that a bigger team would run by hand are automated from the first commit: typecheck and tests on every push, a dependency audit that fails on high-severity findings, static analysis with semgrep's OWASP and TypeScript rulesets plus secret detection, production bundle builds, and Compose file validation. Renovate keeps dependencies current with grouped weekly PRs and immediate security PRs.
-
-This task adds the GitHub Actions workflow, the Renovate config, and a placeholder `@korbat/admin` package so the workspace shape matches the design (the moderation console is built in sub-project 3 and deploys on its own hostname behind Cloudflare Access).
+korbat is a pseudonymous social platform whose backend is fully self-owned. Security is half the product, so the checks a bigger team would run by hand are automated from the first push: typecheck and tests, a dependency audit failing on high severity, semgrep with the OWASP and TypeScript rulesets plus secret detection, production bundle builds, and Compose validation. This task also applies the supply-chain settings semgrep's rules demand: GitHub Actions pinned to commit SHAs, a seven-day minimum release age for new package versions in pnpm and Renovate, pnpm's `trustPolicy: no-downgrade` and `blockExoticSubdeps`. The release-age floor is added now, after every dependency has been resolved into the lockfile, because fresh resolutions (as in Tasks 2 to 13) would be blocked whenever any transitive package is younger than a week; from here on installs are `--frozen-lockfile`, and adding a new dependency later either waits a week or uses `minimumReleaseAgeExclude` deliberately.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
-- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop running** (semgrep runs locally in its container; Compose validation needs Docker).
-- Notes: `pnpm audit --audit-level high` exits non-zero only for high/critical advisories. `docker compose --env-file infra/.env.example -f infra/compose.yml config -q` validates the file using the example env, which is what CI has. The `semgrep/semgrep` image provides the `semgrep` CLI; `--error` makes findings fail the job.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (Task 15).
+- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop running** (semgrep runs in its container; Compose validation needs Docker).
+- On Git Bash, Docker volume paths must be given as `$(pwd -W)` with `MSYS_NO_PATHCONV=1`; a plain `$PWD` gets mangled and semgrep reports "Detected Docker environment without a code volume". The commands below already do this.
+- Action pins (commit SHAs looked up on 2026-09-13): `actions/checkout` v7.0.1 = `3d3c42e5aac5ba805825da76410c181273ba90b1`; `pnpm/action-setup` v6.1.0 = `ea17c68df8912ef543352723c149a84f56e3d413`; `actions/setup-node` v7.0.0 = `820762786026740c76f36085b0efc47a31fe5020`.
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(infra): api, worker and caddy images; full compose stack`. If `.github/workflows/ci.yml` exists, verify against this prompt, fix drift, run the local checks, skip to the report.
+`git log --oneline -1` must show `feat(infra): api, worker and caddy images; full compose stack`. If `.github/workflows/ci.yml` exists, compare every file with this prompt, fix drift, run steps 2 to 5, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Exact file contents below.
-2. If `pnpm audit` reports a high finding with no fix available, add its CVE to `pnpm.auditConfig.ignoreCves` in the root `package.json` and explain it in the commit body. Never lower `--audit-level`.
-3. If semgrep reports a finding, fix the code unless it is a clear false positive; a false positive is silenced with a `// nosemgrep: <rule-id>` comment on that line with a reason. List every finding and what you did in the report.
-4. LF line endings, 2-space indentation.
-5. Verify before claiming; paste real output.
-6. Commit exactly once with the given message and trailer.
+1. Copy every file below byte for byte. Append the given lines to `pnpm-workspace.yaml` and `.npmrc` without changing the existing lines.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. Any non-zero exit, any `error TS`/`FAIL` line, an audit result containing `high` or `critical`, or a semgrep result other than `Findings: 0` is a **STOP condition**. Do not add suppressions, do not lower `--audit-level`, do not edit `.semgrepignore`.
+4. On a STOP condition: stop, write the report with the exact output, and end the session.
+5. Never commit `.env` files.
+6. Commit exactly once, at the end, with the exact message given.
+7. The report format at the bottom is mandatory.
 
-## Files to create
+## Files
 
-### `apps/admin/package.json`
+### Create `apps/admin/package.json`
 ```json
 { "name": "@korbat/admin", "version": "0.0.0", "private": true, "type": "module" }
 ```
 
-### `apps/admin/README.md`
+### Create `apps/admin/README.md`
 ```markdown
 # @korbat/admin
 Moderation console. Built in sub-project 3 (Trust & safety). Deploys as its own container on its own hostname behind Cloudflare Access.
 ```
 
-### `.github/workflows/ci.yml`
+### Create `.github/workflows/ci.yml`
 ```yaml
 name: ci
 on:
@@ -53,10 +52,10 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with: { version: 10.30.0 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
@@ -69,55 +68,76 @@ jobs:
     runs-on: ubuntu-latest
     container: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
-      - run: semgrep scan --config p/owasp-top-ten --config p/typescript --config p/secrets --error --exclude apps/app/dist
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: semgrep scan --config p/owasp-top-ten --config p/typescript --config p/secrets --error --exclude apps/app/dist --exclude node_modules
 ```
 
-### `renovate.json`
+### Create `renovate.json`
 ```json
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", ":semanticCommits"],
   "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "7 days",
   "packageRules": [
-    { "matchUpdateTypes": ["minor", "patch"], "groupName": "non-major dependencies" },
-    { "matchPackageNames": ["expo", "react-native"], "enabled": false, "description": "Expo SDK upgrades are done by hand with expo upgrade" }
+    { "matchUpdateTypes": ["minor", "patch"], "groupName": "non-major dependencies", "minimumReleaseAge": "7 days" },
+    { "matchPackageNames": ["expo", "react-native"], "enabled": false, "minimumReleaseAge": "7 days", "description": "Expo SDK upgrades are done by hand with expo upgrade" }
   ],
   "vulnerabilityAlerts": { "enabled": true, "labels": ["security"] }
 }
 ```
+(semgrep's Renovate rule requires `minimumReleaseAge` on every `packageRules` entry, not only at the top level.)
+
+### Append to the END of `pnpm-workspace.yaml`
+```yaml
+
+# Supply-chain hardening (pnpm >= 10.16). Installs are frozen from here on.
+minimumReleaseAge: 10080
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+```
+
+### Append to the END of `.npmrc`
+```
+min-release-age=7
+```
 
 ## Steps
 
-1. Create the four files.
-2. Run the CI steps locally, one at a time, and record each exit status:
+1. Create the four files and make the two appends.
+2. Confirm the lockfile still installs under the new settings, then run the CI steps locally:
    ```bash
    pnpm install --frozen-lockfile
    pnpm typecheck
    pnpm test
-   pnpm audit --audit-level high
+   pnpm audit --audit-level high; echo "audit exit: $?"
    pnpm --filter @korbat/api build && pnpm --filter @korbat/worker build
    docker compose --env-file infra/.env.example -f infra/compose.yml config -q && echo "compose ok"
    ```
-   Expected: all exit 0. `pnpm test` should report tests from contracts (6), rules (4), db (9), api (20 + 1 skipped), worker (4).
-3. Run semgrep locally:
+   Expected: install ends with `Done`; typecheck prints `Done` for six packages with no `error TS`; test summary lines are contracts `6 passed`, rules `4 passed`, db `9 passed`, worker `4 passed`, api `19 passed | 1 skipped`; audit prints a summary such as `4 vulnerabilities found` with only `low` and/or `moderate` severities and `audit exit: 0`; both builds print `Build success`; `compose ok`.
+3. Run semgrep locally (first run pulls the image and can take several minutes):
    ```bash
-   docker run --rm -v "$PWD:/src" semgrep/semgrep semgrep scan --config p/owasp-top-ten --config p/typescript --config p/secrets --error --exclude apps/app/dist
+   git add -A
+   MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/src" semgrep/semgrep semgrep scan --config p/owasp-top-ten --config p/typescript --config p/secrets --error --exclude apps/app/dist --exclude node_modules
    ```
-   Expected: `0 findings` (or `Ran N rules ... 0 findings`). Handle any finding per Rule 3.
+   Expected: the summary contains `Findings: 0 (0 blocking)` and `Ran <n> rules on <m> files: 0 findings.` (`git add -A` first because semgrep only scans git-tracked files.)
 4. Commit:
-```bash
-git add -A && git commit -m "ci: typecheck, tests, audit, semgrep, compose validation; renovate
+   ```bash
+   git commit -m "ci: typecheck, tests, audit, semgrep, compose validation; supply-chain hardening; renovate
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+5. Run `git log --oneline -1`. Expected subject: `ci: typecheck, tests, audit, semgrep, compose validation; supply-chain hardening; renovate`.
+6. If a GitHub remote exists (`git remote -v` prints one), push and report the Actions result; if not, say so. Do not create a remote in this task.
+
+## Report format (mandatory)
+
 ```
-5. If a GitHub remote exists (`git remote -v`), push and report the Actions result; if not, say so. Do not create a remote in this task.
-
-## Report format
-
-- Files created
-- Exit status and trimmed output of each command in step 2, and the semgrep summary line from step 3
-- Any audit ignore or semgrep suppression added, with justification
-- Whether a remote exists and, if so, the CI outcome
-- Deviations and why
-- Anything blocked or uncertain
+TASK 15 REPORT
+Files created/modified: <list>
+Step 2 output (install last line, typecheck summary, five Tests lines, audit summary + exit, build lines, compose ok): <paste>
+Step 3 output (semgrep summary lines): <paste>
+Step 5 output: <paste>
+Remote present / CI result: <paste or "no remote">
+STOP condition hit: none | <exact output>
+```

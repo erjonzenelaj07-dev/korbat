@@ -1,35 +1,34 @@
 # korbat Foundation — Task 9 of 16: `@korbat/api` config and PII-scrubbing logger
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 with the exact versions named. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform where users who post unpopular opinions are targets, so deanonymisation is a first-class threat. The backend is a self-owned TypeScript API built on Hono, the only process that talks to our Postgres (two pools: `korbat_api` for the public schema, `korbat_auth` for the PII-bearing `auth` schema) and Redis. One design rule from the spec: **logs scrub tokens, emails, and IPs at the logger level**, so no route can accidentally write PII into a log line that ends up in a file, a shipping pipeline, or a screenshot.
+korbat is a pseudonymous social platform where users who post unpopular opinions are targets, so deanonymisation is a first-class threat. The backend is a self-owned TypeScript API built on Hono, the only process that talks to our Postgres (two pools: `korbat_api` for the public schema, `korbat_auth` for the PII-bearing `auth` schema) and Redis. One design rule: **logs scrub tokens, emails, and IPs at the logger level**, so no route can accidentally write PII into a log line.
 
-This task creates the `@korbat/api` package with two foundations everything else depends on: a fail-fast, typed environment config, and a pino logger whose every line (both the merged object and the message string) passes through a `scrub()` function that masks emails, IPv4/IPv6 addresses, and any value under a secret-bearing key. Later tasks add middleware (10) and the app itself (11).
+This task creates the `@korbat/api` package with a fail-fast typed environment config and a pino logger whose every line (merged object and message string) passes through `scrub()`. Later tasks add middleware (10) and the app (11).
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
 - Windows 11. Node v24.12.0, pnpm 10.30.0. Docker not needed for this task.
-- Pinned: hono 4.13.5, @hono/node-server 2.1.1, @hono/zod-validator 0.9.1, zod 4.5.4, ioredis 5.11.1, pino 10.3.1, pino-pretty 13.1.3, tsup 8.5.1, tsx 4.23.13, vitest 4.1.11, typescript 5.9.3, @types/node 24.13.3. All of them are declared now so the manifest does not change in Tasks 10 and 11.
-- Zod 4 notes: `z.url({ protocol: /regex/ })` validates the scheme; `z.prettifyError(error)` returns a readable multi-line string; `z.coerce.number()` coerces env strings.
-- pino notes: `formatters.log` receives the merged object of each call; `hooks.logMethod(args, method)` receives the raw arguments (message string included) and must call `method.apply(this, args)`; `base: undefined` removes pid/hostname.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (Task 9).
+- Pinned: hono 4.13.5, @hono/node-server 2.1.1, @hono/zod-validator 0.9.1, zod 4.5.4, ioredis 5.11.1, pino 10.3.1, pino-pretty 13.1.3, tsup 8.5.1, tsx 4.23.13, vitest 4.1.11, typescript 5.9.3, @types/node 24.13.3. All are declared now so the manifest does not change in Tasks 10 and 11.
+- `pino-pretty` is a runtime dependency on purpose: it is used as an in-process stream in development. A pino *transport* would spawn a worker thread that needs `__dirname`, which does not exist inside the tsup bundle built in Task 11; the stream form works in both.
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(infra): compose data services, postgres roles bootstrap`. `packages/contracts`, `packages/rules`, `packages/db` exist and `pnpm test` passes (19 tests). If `apps/api/` exists, verify against this prompt, fix drift, run tests, skip to the report.
+`git log --oneline -1` must show `feat(infra): compose data services, postgres roles bootstrap`. `pnpm test` passes 19 tests across contracts, rules, db. If `apps/api/` exists, compare with this prompt, fix drift, run steps 5 to 7, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Test first for both modules: write both test files, run, see them fail on missing modules, implement, run, see them pass.
-2. Exact file contents below. If pino's hook typing rejects `method.apply(this, ...)`, cast the args (`as Parameters<typeof method>`) rather than changing behaviour, and report it.
-3. Do not create `src/index.ts`, `src/app.ts`, routes, or middleware in this task.
-4. The scrub regexes are part of the security design; do not loosen them. If a test case fails, fix the implementation, not the test.
-5. LF line endings, 2-space indentation.
-6. Verify before claiming; paste real output.
-7. Commit exactly once with the given message and trailer.
+1. Copy every file below byte for byte. The scrub regexes are part of the security design.
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. Cosmetic differences are fine. A different test count, any unexpected `error TS`, `ERR_`, or `FAIL` line, or a missing file is a **STOP condition**.
+4. On a STOP condition: do not change the given code, do not try alternatives. If rule 5 applies, do that once; otherwise stop, write the report with the exact output, and end the session.
+5. Permitted recovery, only for an error containing `Cannot find module`: run `rm -rf node_modules && pnpm install` once from the repo root and repeat the failed command. Record it.
+6. Do not create `src/index.ts`, `src/app.ts`, routes, or middleware in this task.
+7. Commit exactly once, at the end, with the exact message given.
+8. The report format at the bottom is mandatory.
 
 ## Files to create
 
@@ -57,11 +56,11 @@ This task creates the `@korbat/api` package with two foundations everything else
     "hono": "4.13.5",
     "ioredis": "5.11.1",
     "pino": "10.3.1",
+    "pino-pretty": "13.1.3",
     "zod": "4.5.4"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
-    "pino-pretty": "13.1.3",
     "tsup": "8.5.1",
     "tsx": "4.23.13",
     "typescript": "5.9.3",
@@ -75,7 +74,7 @@ This task creates the `@korbat/api` package with two foundations everything else
 { "extends": "../../tsconfig.base.json", "compilerOptions": { "types": ["node"] }, "include": ["src", "test", "tsup.config.ts"] }
 ```
 
-### `apps/api/test/config.test.ts` (FIRST)
+### `apps/api/test/config.test.ts`
 ```ts
 import { describe, expect, test } from "vitest";
 import { loadConfig } from "../src/config";
@@ -102,7 +101,7 @@ describe("loadConfig", () => {
 });
 ```
 
-### `apps/api/test/logger.test.ts` (FIRST)
+### `apps/api/test/logger.test.ts`
 ```ts
 import { describe, expect, test } from "vitest";
 import { scrub } from "../src/lib/logger";
@@ -160,7 +159,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
 ### `apps/api/src/lib/logger.ts`
 ```ts
-import pino, { type Logger } from "pino";
+import pino, { type Logger, type LoggerOptions } from "pino";
+import pinoPretty from "pino-pretty";
 
 export type { Logger };
 
@@ -185,7 +185,7 @@ export function scrub(value: unknown, key?: string): unknown {
 }
 
 export function createLogger(level: string, pretty = false): Logger {
-  return pino({
+  const options: LoggerOptions = {
     level,
     base: undefined,
     formatters: { log: (obj) => scrub(obj) as Record<string, unknown> },
@@ -195,34 +195,61 @@ export function createLogger(level: string, pretty = false): Logger {
         return method.apply(this, scrubbed as Parameters<typeof method>);
       },
     },
-    ...(pretty ? { transport: { target: "pino-pretty", options: { colorize: true } } } : {}),
-  });
+  };
+  // pino-pretty is used as an in-process stream, not a transport: transports spawn a
+  // worker thread that needs __dirname, which does not exist inside the tsup bundle.
+  return pretty ? pino(options, pinoPretty({ colorize: true })) : pino(options);
 }
 ```
 
 ## Steps
 
-1. Create `package.json`, `tsconfig.json`, and both test files.
-2. Run `pnpm install`. Expected: dependencies installed, lockfile updated.
-3. Run `pnpm --filter @korbat/api test`. Expected: both files FAIL with unresolved `../src/config` and `../src/lib/logger`.
-4. Create `src/config.ts` and `src/lib/logger.ts`.
-5. Run `pnpm --filter @korbat/api test`. Expected: `Tests  7 passed`.
-6. Run `pnpm --filter @korbat/api typecheck`. Expected: exits 0.
-7. Live sanity check of the logger (no DB needed):
+1. Create `apps/api/package.json`, `apps/api/tsconfig.json`, `apps/api/test/config.test.ts`, `apps/api/test/logger.test.ts`. Do not create the `src/` files yet.
+2. Run:
+   ```bash
+   pnpm install
+   ```
+   Expected: ends with `Done in <time> using pnpm v10.30.0`.
+3. Run:
+   ```bash
+   pnpm --filter @korbat/api test
+   ```
+   Expected: both test files FAIL with `Failed to resolve import` for `../src/config` and `../src/lib/logger`. If they pass, STOP.
+4. Create `apps/api/src/config.ts` and `apps/api/src/lib/logger.ts`.
+5. Run:
+   ```bash
+   pnpm --filter @korbat/api test
+   ```
+   Expected: `Test Files  2 passed (2)` and `Tests  7 passed (7)`.
+6. Run:
+   ```bash
+   pnpm --filter @korbat/api typecheck
+   ```
+   Expected: no `error TS` lines.
+7. Live check of the scrubbing (no database needed):
    ```bash
    cd apps/api && npx tsx -e "import('./src/lib/logger.ts').then(({createLogger}) => { const l = createLogger('info'); l.info({ email: 'me@x.io', ip: '203.0.113.5', authorization: 'Bearer zzz' }, 'hello from 10.0.0.1'); })" && cd ../..
    ```
-   Expected: one JSON line where `email` is `[email]`, `ip` is `[ip]`, `authorization` is `[redacted]`, and `msg` is `hello from [ip]`.
+   Expected: one JSON line equal to (apart from the `time` value):
+   `{"level":30,"time":<number>,"email":"[email]","ip":"[ip]","authorization":"[redacted]","msg":"hello from [ip]"}`
 8. Commit:
-```bash
-git add -A && git commit -m "feat(api): env config and PII-scrubbing logger
+   ```bash
+   git add -A && git commit -m "feat(api): env config and PII-scrubbing logger
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+9. Run `git log --oneline -1`. Expected subject: `feat(api): env config and PII-scrubbing logger`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created
-- Output of steps 3, 5, 6, and the JSON line from step 7
-- Deviations and why
-- Anything blocked or uncertain
+TASK 9 REPORT
+Files created: <list>
+Step 3 output (the two failure lines): <paste>
+Step 5 output (Test Files + Tests lines): <paste>
+Step 6 output: <paste or "clean">
+Step 7 output (the JSON line): <paste>
+Step 9 output: <paste>
+Recovery used (rule 5): yes/no
+STOP condition hit: none | <exact output>
+```

@@ -1,37 +1,35 @@
 # korbat Foundation — Task 14 of 16: Dockerfiles, Caddy, and the full Compose stack
 
-You are executing one task of an approved implementation plan. Do this task completely, verify it, commit it, and report. Do nothing beyond it.
+You are executing one task of an approved implementation plan. Every file and command below was executed and verified on 2026-09-13 against real containers. Your job is transcription and verification, not design. Do this task completely, verify it, commit it, and report.
 
 ## Project context
 
-korbat is a pseudonymous social platform with a fully self-owned backend packaged as one Docker Compose stack, so the same files run on a laptop, a cheap VPS at launch, and later the owner's home server. Task 8 added the data services (Postgres with three least-privilege roles, Redis, MinIO) and a `migrate` job. This task adds the application containers:
+korbat is a pseudonymous social platform with a fully self-owned backend packaged as one Docker Compose stack. Task 8 added the data services and the `migrate` job. This task adds the application containers:
 
-- **api** (Task 11): Hono API bundled by tsup into `dist/index.js`; the same image runs `dist/migrate.js` for the `migrate` job. Non-root, read-only root filesystem, health-checked on `/api/health`.
+- **api** (Task 11): bundled by tsup into `dist/index.js`; the same image runs `dist/migrate.js` for the `migrate` job. Non-root, read-only root filesystem, health-checked.
 - **worker** (Task 12): the Redis list consumer, same hardening.
-- **caddy**: a Caddy image that has the Expo web export (Task 13) baked in. It serves the SPA at `/`, proxies `/api/*` to the API on the same origin, and sets the browser-facing security headers (CSP, HSTS, framing, referrer). Inside the box it speaks plain HTTP; TLS is terminated by Cloudflare at the edge and the tunnel (Task 16) is encrypted.
-- **cloudflared** (behind a Compose profile so dev does not need it): the only ingress. No container publishes a port in the production configuration; `compose.dev.yml` publishes localhost ports for development.
-
-Done means: `docker compose up --build` from a clean state ends with every long-running service healthy and http://localhost:8080 shows the korbat shell reporting `api ok`.
+- **caddy**: a Caddy image with the Expo web export (Task 13) baked in. It serves the SPA at `/`, proxies `/api/*` to the API on the same origin, and sets the browser-facing security headers. Inside the box it speaks plain HTTP; Cloudflare terminates TLS at the edge and the tunnel is encrypted.
+- **cloudflared** (behind a Compose profile so dev does not need it): the only ingress. No container publishes a port in the production configuration.
 
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
-- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop running** (Docker 29.x, Compose v5). Builds pull `node:24-alpine`, `caddy:2-alpine`, `cloudflare/cloudflared`.
-- Notes: build contexts are the repo root (`context: ..` relative to `infra/`) so Dockerfiles can copy `packages/` and `pnpm-lock.yaml`. `pnpm install --filter @korbat/api...` installs only that package and its workspace dependencies. `node:24-alpine` includes busybox `wget` (used by the health check) and a `node` user. Caddy's `header` directive with `-Server` removes the Server header.
-- Full plan: `docs/superpowers/plans/2026-09-03-foundation.md` (Task 14).
+- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop running**. Ports 3000, 5432, 6379, 8080, 9000, 9001 free on localhost (stop any host-side dev API first).
+- Images: `node:24-alpine`, `caddy:2-alpine`, `cloudflare/cloudflared:latest`, plus the Task 8 images.
 
 ## Preconditions
 
-`git log --oneline -1` must show `feat(app): expo web shell with nativewind calling /api/health`. `apps/api/tsup.config.ts`, `apps/worker/tsup.config.ts`, `apps/app/app.json` exist; `infra/compose.yml` from Task 8 exists; `infra/.env` exists. If `apps/api/Dockerfile` exists, verify against this prompt, fix drift, run the verification, skip to the report.
+`git log --oneline -1` must show `feat(app): expo web shell with nativewind calling /api/health`. `infra/compose.yml` from Task 8 and `infra/.env` exist. If `apps/api/Dockerfile` exists, compare every file with this prompt, fix drift, run steps 3 to 7, and report.
 
-## Rules
+## Rules (read twice)
 
-1. Exact file contents below. Append the new services to the existing `infra/compose.yml`; do not rewrite the Task 8 services.
-2. Do not publish ports in `infra/compose.yml`; only `infra/compose.dev.yml` may.
-3. Do not relax the CSP to make the page load unless the browser console shows a specific violation; then add only the specific hash or source the console names, and report it.
-4. LF line endings, 2-space indentation (Dockerfiles and Caddyfile: 2 spaces as shown).
-5. Verify before claiming; paste real output.
-6. Commit exactly once with the given message and trailer.
+1. Copy every file below byte for byte. `infra/compose.yml` and `infra/compose.dev.yml` are given in full and **replace** the Task 8 versions (the Task 8 services are unchanged inside them).
+2. Run every command exactly as written, in order, from the repo root.
+3. Compare each command's output with the **Expected** text. A container that is not healthy/running (or `Exited (0)` for the one-shot jobs), a missing header, a wrong HTTP status, or a browser console CSP violation is a **STOP condition**. Do not relax the CSP.
+4. On a STOP condition: stop, write the report with the exact output (include `docker compose -f infra/compose.yml logs <service> | tail -30` for any failing service), and end the session.
+5. No ports may be published in `infra/compose.yml`; only `infra/compose.dev.yml` publishes ports.
+6. Commit exactly once, at the end, with the exact message given.
+7. The report format at the bottom is mandatory.
 
 ## Files
 
@@ -137,8 +135,91 @@ COPY --from=web /repo/apps/app/dist /srv
 }
 ```
 
-### Append to `infra/compose.yml` under `services:` (keep existing services unchanged)
+### Replace `infra/compose.yml` with this complete file
 ```yaml
+name: korbat
+
+x-node-common: &node-common
+  restart: unless-stopped
+  read_only: true
+  tmpfs: ["/tmp"]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      KORBAT_MIGRATE_DB_PASSWORD: ${KORBAT_MIGRATE_DB_PASSWORD}
+      KORBAT_API_DB_PASSWORD: ${KORBAT_API_DB_PASSWORD}
+      KORBAT_AUTH_DB_PASSWORD: ${KORBAT_AUTH_DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$MINIO_BUCKET" &&
+        mc anonymous set none "local/$MINIO_BUCKET"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+
+  migrate:
+    <<: *node-common
+    restart: "no"
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL_MIGRATE: postgres://korbat_migrate:${KORBAT_MIGRATE_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      MIGRATIONS_DIR: /app/migrations
+    depends_on:
+      postgres: { condition: service_healthy }
+
   api:
     <<: *node-common
     build:
@@ -195,15 +276,24 @@ COPY --from=web /repo/apps/app/dist /srv
       TUNNEL_TOKEN: ${TUNNEL_TOKEN}
     depends_on:
       - caddy
-```
-And add under the top-level `volumes:` block:
-```yaml
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
   caddydata:
   caddyconfig:
 ```
 
-### Append to `infra/compose.dev.yml` under `services:`
+### Replace `infra/compose.dev.yml` with this complete file
 ```yaml
+services:
+  postgres:
+    ports: ["5432:5432"]
+  redis:
+    ports: ["6379:6379"]
+  minio:
+    ports: ["9000:9000", "9001:9001"]
   api:
     ports: ["3000:3000"]
   caddy:
@@ -212,36 +302,68 @@ And add under the top-level `volumes:` block:
 
 ## Steps
 
-1. Create the five files and make the two compose edits.
-2. Validate: `docker compose -f infra/compose.yml config -q && echo "compose ok"`. Expected: `compose ok`.
-3. Stop any host-side dev API still running on port 3000 (`kill %1` or close its terminal) so the published port is free.
-4. Bring everything up from clean:
+1. Create the five new files and replace the two compose files.
+2. Run:
+   ```bash
+   docker compose -f infra/compose.yml config -q && echo "compose ok"
+   ```
+   Expected: `compose ok`.
+3. Make sure nothing else listens on port 3000:
+   ```bash
+   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done; echo "port 3000 free"
+   ```
+4. Bring everything up from clean (the first build takes several minutes):
    ```bash
    docker compose -f infra/compose.yml -f infra/compose.dev.yml down -v
    docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --build
-   docker compose -f infra/compose.yml ps
+   sleep 20
+   docker compose -f infra/compose.yml ps -a --format "table {{.Name}}\t{{.Status}}"
    ```
-   Expected: `postgres`, `redis`, `minio`, `api`, `caddy` show `healthy` (or `running` for `worker`); `migrate` and `minio-init` show `exited (0)`. Builds take a few minutes the first time. If `api` restarts in a loop, read `docker compose -f infra/compose.yml logs api`; the usual cause is a wrong password in `infra/.env` (a `down -v` regenerated the roles with whatever is in `.env`, so they must match).
+   Expected:
+   ```
+   korbat-api-1          Up ... (healthy)
+   korbat-caddy-1        Up ...
+   korbat-migrate-1      Exited (0) ...
+   korbat-minio-1        Up ... (healthy)
+   korbat-minio-init-1   Exited (0) ...
+   korbat-postgres-1     Up ... (healthy)
+   korbat-redis-1        Up ... (healthy)
+   korbat-worker-1       Up ...
+   ```
 5. Probe through Caddy:
    ```bash
-   curl -s http://localhost:8080/api/health
-   curl -sI http://localhost:8080/ | grep -i -E "content-security-policy|x-frame-options|server"
-   curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/some/deep/route
+   curl -s http://localhost:8080/api/health; echo
+   curl -sI http://localhost:8080/ | grep -iE "content-security-policy|x-frame-options|^server"
+   curl -s -o /dev/null -w "deep route: %{http_code}\n" http://localhost:8080/some/deep/route
+   docker compose -f infra/compose.yml logs worker | tail -1 | cut -c1-100
    ```
-   Expected: health JSON with `"version":"0.0.0"` and all checks `ok`; CSP and `X-Frame-Options: DENY` present and no `Server` header; the deep route returns `200` (SPA fallback).
-6. Open http://localhost:8080 in a browser. Expected: the dark korbat shell showing `api ok · v0.0.0`. Open the browser console: there must be no `Content-Security-Policy` violation. If there is one for an inline script, copy the `sha256-...` hash from the message, add it to `script-src` in the Caddyfile as `'sha256-...'`, rebuild caddy (`docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --build caddy`), and re-check.
-7. Confirm the worker is alive: `docker compose -f infra/compose.yml logs worker | tail -2`. Expected: `worker started`.
-8. Confirm `git status --short` shows no `.env` files. Commit:
-```bash
-git add -A && git commit -m "feat(infra): api, worker and caddy images; full compose stack
+   Expected:
+   ```
+   {"status":"ok","version":"0.0.0","checks":{"postgres_api":"ok","postgres_auth":"ok","redis":"ok"}}
+   Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+   X-Frame-Options: DENY
+   deep route: 200
+   worker-1  | {"level":30,"time":<n>,"msg":"worker started"}
+   ```
+   (No `Server:` line must appear.)
+6. Browser check: open http://localhost:8080 with this session's browser tool if it has one, otherwise ask the operator. Expected: near-black page with `korbat` and `api ok · v0.0.0`; the browser console shows no `Content-Security-Policy` error. Verified on 2026-09-13 with this exact Caddyfile and the Task 13 export: zero console errors.
+7. Confirm `git status --short` lists no `.env` files. Commit:
+   ```bash
+   git add -A && git commit -m "feat(infra): api, worker and caddy images; full compose stack
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+   ```
+8. Run `git log --oneline -1`. Expected subject: `feat(infra): api, worker and caddy images; full compose stack`.
+
+## Report format (mandatory)
+
 ```
-
-## Report format
-
-- Files created/modified
-- Output of steps 2, 4 (`ps`), 5, and 7
-- What the browser showed and whether the console was clean (and any CSP hash added)
-- Deviations and why
-- Anything blocked or uncertain
+TASK 14 REPORT
+Files created/replaced: <list>
+Step 2 output: <paste>
+Step 4 table: <paste>
+Step 5 output (all lines): <paste>
+Step 6 result (what the page showed, console clean yes/no): <paste>
+Step 8 output: <paste>
+STOP condition hit: none | <exact output + logs>
+```
