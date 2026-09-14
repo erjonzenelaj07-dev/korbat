@@ -1,0 +1,311 @@
+import { and, desc, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
+import { authEventType, authEvents, devices, emailCodePurpose, emailCodes, sessions, userRole, users, type Db } from "@korbat/db";
+
+/**
+ * Every SQL statement the auth module runs. It receives only the korbat_auth pool and touches only
+ * tables in the `auth` schema. Single-use and replay rules are enforced with conditional updates so
+ * two concurrent requests cannot both succeed.
+ */
+
+export type UserRow = typeof users.$inferSelect;
+export type DeviceRow = typeof devices.$inferSelect;
+export type EmailCodeRow = typeof emailCodes.$inferSelect;
+export type AuthEventType = (typeof authEventType.enumValues)[number];
+export type EmailCodePurpose = (typeof emailCodePurpose.enumValues)[number];
+export type UserRole = (typeof userRole.enumValues)[number];
+
+export interface ActiveSessionRow {
+  id: string;
+  userId: string;
+  deviceId: string;
+  role: UserRole;
+  onboardedAt: Date | null;
+  totpEnabledAt: Date | null;
+  reauthAt: Date;
+  lastUsedAt: Date;
+  expiresAt: Date;
+  absoluteExpiresAt: Date;
+}
+
+export interface SessionListRow {
+  id: string;
+  deviceLabel: string | null;
+  platform: string;
+  createdAt: Date;
+  lastUsedAt: Date;
+}
+
+export function createAuthRepo(db: Db) {
+  return {
+    // ------------------------------------------------------------ users
+
+    async findUserByEmail(email: string): Promise<UserRow | undefined> {
+      const [row] = await db
+        .select()
+        .from(users)
+        .where(and(sql`lower(${users.email}) = lower(${email})`, isNull(users.deletedAt)))
+        .limit(1);
+      return row;
+    },
+
+    async findUserById(id: string): Promise<UserRow | undefined> {
+      const [row] = await db
+        .select()
+        .from(users)
+        .where(and(eq(users.id, id), isNull(users.deletedAt)))
+        .limit(1);
+      return row;
+    },
+
+    /** The email is already verified (the user proved it with a code) and the age check has passed. */
+    async createUser(input: { email: string; termsVersion: string; now: Date }): Promise<UserRow> {
+      const [row] = await db
+        .insert(users)
+        .values({
+          email: input.email,
+          emailVerifiedAt: input.now,
+          ageConfirmedAt: input.now,
+          termsVersion: input.termsVersion,
+          termsAcceptedAt: input.now,
+        })
+        .returning();
+      return row!;
+    },
+
+    async markOnboarded(userId: string, now: Date): Promise<void> {
+      await db.update(users).set({ onboardedAt: now }).where(eq(users.id, userId));
+    },
+
+    /** Setting or clearing a password also clears any password lockout. */
+    async setPasswordHash(userId: string, passwordHash: string | null, now: Date): Promise<void> {
+      await db
+        .update(users)
+        .set({ passwordHash, passwordChangedAt: now, failedLogins: 0, lockedUntil: null })
+        .where(eq(users.id, userId));
+    },
+
+    async setPasswordFailures(userId: string, failedLogins: number, lockedUntil: Date | null): Promise<void> {
+      await db.update(users).set({ failedLogins, lockedUntil }).where(eq(users.id, userId));
+    },
+
+    async enableTotp(userId: string, input: { secretEnc: string; recoveryCodesHash: string[]; now: Date }): Promise<void> {
+      await db
+        .update(users)
+        .set({ totpSecretEnc: input.secretEnc, totpEnabledAt: input.now, totpLastStep: null, recoveryCodesHash: input.recoveryCodesHash })
+        .where(eq(users.id, userId));
+    },
+
+    async disableTotp(userId: string): Promise<void> {
+      await db
+        .update(users)
+        .set({ totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] })
+        .where(eq(users.id, userId));
+    },
+
+    async setRecoveryCodes(userId: string, recoveryCodesHash: string[]): Promise<void> {
+      await db.update(users).set({ recoveryCodesHash }).where(eq(users.id, userId));
+    },
+
+    /** Claims a TOTP time step. False when this step or a later one was already used. */
+    async claimTotpStep(userId: string, step: number): Promise<boolean> {
+      const rows = await db
+        .update(users)
+        .set({ totpLastStep: step })
+        .where(and(eq(users.id, userId), or(isNull(users.totpLastStep), lt(users.totpLastStep, step))))
+        .returning({ id: users.id });
+      return rows.length === 1;
+    },
+
+    /** Removes one recovery-code hash. False when it is not (or no longer) present. */
+    async consumeRecoveryCodeHash(userId: string, codeHash: string): Promise<boolean> {
+      const rows = await db
+        .update(users)
+        .set({ recoveryCodesHash: sql`array_remove(${users.recoveryCodesHash}, ${codeHash})` })
+        .where(and(eq(users.id, userId), sql`${codeHash} = ANY(${users.recoveryCodesHash})`))
+        .returning({ id: users.id });
+      return rows.length === 1;
+    },
+
+    async setRole(userId: string, role: UserRole): Promise<void> {
+      await db.update(users).set({ role }).where(eq(users.id, userId));
+    },
+
+    // ------------------------------------------------------------ email codes
+
+    async createEmailCode(input: {
+      flowId: string;
+      email: string;
+      userId: string | null;
+      purpose: EmailCodePurpose;
+      codeHash: string;
+      expiresAt: Date;
+      ipHash: string | null;
+    }): Promise<void> {
+      await db.insert(emailCodes).values(input);
+    },
+
+    async findEmailCode(flowId: string): Promise<EmailCodeRow | undefined> {
+      const [row] = await db.select().from(emailCodes).where(eq(emailCodes.flowId, flowId)).limit(1);
+      return row;
+    },
+
+    /** Increments the attempt counter atomically and returns the new value. */
+    async addCodeAttempt(id: string): Promise<number> {
+      const [row] = await db
+        .update(emailCodes)
+        .set({ attempts: sql`${emailCodes.attempts} + 1` })
+        .where(eq(emailCodes.id, id))
+        .returning({ attempts: emailCodes.attempts });
+      return row?.attempts ?? Number.MAX_SAFE_INTEGER;
+    },
+
+    /** Marks a code used. False when it was already used, so a code works exactly once. */
+    async consumeEmailCode(id: string, now: Date): Promise<boolean> {
+      const rows = await db
+        .update(emailCodes)
+        .set({ consumedAt: now })
+        .where(and(eq(emailCodes.id, id), isNull(emailCodes.consumedAt)))
+        .returning({ id: emailCodes.id });
+      return rows.length === 1;
+    },
+
+    // ------------------------------------------------------------ devices
+
+    async findDevice(userId: string, deviceHash: string): Promise<DeviceRow | undefined> {
+      const [row] = await db
+        .select()
+        .from(devices)
+        .where(and(eq(devices.userId, userId), eq(devices.deviceHash, deviceHash), isNull(devices.revokedAt)))
+        .limit(1);
+      return row;
+    },
+
+    async createDevice(input: { userId: string; deviceHash: string; label: string; platform: string; ipHash: string | null }): Promise<DeviceRow> {
+      const [row] = await db.insert(devices).values(input).returning();
+      return row!;
+    },
+
+    async touchDevice(id: string, ipHash: string | null, now: Date): Promise<void> {
+      await db.update(devices).set({ lastSeenAt: now, ipHash }).where(eq(devices.id, id));
+    },
+
+    // ------------------------------------------------------------ sessions
+
+    async createSession(input: { id: string; userId: string; deviceId: string; now: Date; expiresAt: Date; absoluteExpiresAt: Date }): Promise<void> {
+      await db.insert(sessions).values({
+        id: input.id,
+        userId: input.userId,
+        deviceId: input.deviceId,
+        createdAt: input.now,
+        lastUsedAt: input.now,
+        reauthAt: input.now,
+        expiresAt: input.expiresAt,
+        absoluteExpiresAt: input.absoluteExpiresAt,
+      });
+    },
+
+    /** A session counts only when neither it, its device nor its user is revoked, deleted or expired. */
+    async findActiveSession(id: string, now: Date): Promise<ActiveSessionRow | undefined> {
+      const [row] = await db
+        .select({
+          id: sessions.id,
+          userId: sessions.userId,
+          deviceId: sessions.deviceId,
+          role: users.role,
+          onboardedAt: users.onboardedAt,
+          totpEnabledAt: users.totpEnabledAt,
+          reauthAt: sessions.reauthAt,
+          lastUsedAt: sessions.lastUsedAt,
+          expiresAt: sessions.expiresAt,
+          absoluteExpiresAt: sessions.absoluteExpiresAt,
+        })
+        .from(sessions)
+        .innerJoin(users, eq(users.id, sessions.userId))
+        .innerJoin(devices, eq(devices.id, sessions.deviceId))
+        .where(
+          and(
+            eq(sessions.id, id),
+            isNull(sessions.revokedAt),
+            gt(sessions.expiresAt, now),
+            gt(sessions.absoluteExpiresAt, now),
+            isNull(users.deletedAt),
+            isNull(devices.revokedAt),
+          ),
+        )
+        .limit(1);
+      return row;
+    },
+
+    async slideSession(id: string, expiresAt: Date, now: Date): Promise<void> {
+      await db.update(sessions).set({ expiresAt, lastUsedAt: now }).where(eq(sessions.id, id));
+    },
+
+    async setReauth(id: string, now: Date): Promise<void> {
+      await db.update(sessions).set({ reauthAt: now }).where(eq(sessions.id, id));
+    },
+
+    /** Revokes one session of this user. False when it does not belong to the user or is already revoked. */
+    async revokeSession(id: string, userId: string, now: Date): Promise<boolean> {
+      const rows = await db
+        .update(sessions)
+        .set({ revokedAt: now })
+        .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+        .returning({ id: sessions.id });
+      return rows.length === 1;
+    },
+
+    /** Revokes every live session of the user and returns their ids (for cache invalidation). */
+    async revokeAllSessions(userId: string, now: Date): Promise<string[]> {
+      const rows = await db
+        .update(sessions)
+        .set({ revokedAt: now })
+        .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+        .returning({ id: sessions.id });
+      return rows.map((r) => r.id);
+    },
+
+    async listActiveSessions(userId: string, now: Date): Promise<SessionListRow[]> {
+      return db
+        .select({
+          id: sessions.id,
+          deviceLabel: devices.label,
+          platform: devices.platform,
+          createdAt: sessions.createdAt,
+          lastUsedAt: sessions.lastUsedAt,
+        })
+        .from(sessions)
+        .innerJoin(devices, eq(devices.id, sessions.deviceId))
+        .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt), gt(sessions.expiresAt, now), gt(sessions.absoluteExpiresAt, now)))
+        .orderBy(desc(sessions.lastUsedAt));
+    },
+
+    // ------------------------------------------------------------ events
+
+    async appendEvent(input: {
+      userId: string | null;
+      type: AuthEventType;
+      deviceId?: string | null;
+      ipHash?: string | null;
+      metadata?: Record<string, unknown>;
+    }): Promise<void> {
+      await db.insert(authEvents).values({
+        userId: input.userId,
+        type: input.type,
+        deviceId: input.deviceId ?? null,
+        ipHash: input.ipHash ?? null,
+        metadata: input.metadata ?? {},
+      });
+    },
+
+    async recentEvents(userId: string, limit = 20) {
+      return db
+        .select({ type: authEvents.type, deviceId: authEvents.deviceId, createdAt: authEvents.createdAt })
+        .from(authEvents)
+        .where(eq(authEvents.userId, userId))
+        .orderBy(desc(authEvents.createdAt), desc(authEvents.id))
+        .limit(limit);
+    },
+  };
+}
+
+export type AuthRepo = ReturnType<typeof createAuthRepo>;
