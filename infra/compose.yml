@@ -81,7 +81,66 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
 
+  api:
+    <<: *node-common
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      args:
+        KORBAT_VERSION: ${KORBAT_VERSION:-0.0.0}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      LOG_LEVEL: ${API_LOG_LEVEL:-info}
+      DATABASE_URL_API: postgres://korbat_api:${KORBAT_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL_AUTH: postgres://korbat_auth:${KORBAT_AUTH_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      TRUSTED_ORIGINS: ${API_TRUSTED_ORIGINS:-}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    <<: *node-common
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${API_LOG_LEVEL:-info}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+
+  caddy:
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: infra/caddy/Dockerfile
+    depends_on:
+      api: { condition: service_healthy }
+    volumes:
+      - caddydata:/data
+      - caddyconfig:/config
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - caddy
+
 volumes:
   pgdata:
   redisdata:
   miniodata:
+  caddydata:
+  caddyconfig:
