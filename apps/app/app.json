@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "korbat",
+    "slug": "korbat",
+    "version": "0.0.0",
+    "scheme": "korbat",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}
