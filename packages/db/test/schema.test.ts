@@ -28,3 +28,18 @@ describe("row level security", () => {
     }
   });
 });
+
+describe("content schema", () => {
+  test("posts carry a state enum and a body length check", () => {
+    const cfg = byName.get("posts")!;
+    expect(cfg.schema).toBeUndefined(); // public
+    expect(cfg.columns.find((c) => c.name === "state")?.notNull).toBe(true);
+    expect(cfg.checks.map((c) => c.name)).toContain("posts_body_len");
+  });
+  test("join tables have composite primary keys", () => {
+    for (const name of ["follows", "likes", "reposts", "bookmarks", "blocks", "mutes"]) {
+      expect(byName.get(name)!.primaryKeys.length, name).toBe(1);
+      expect(byName.get(name)!.primaryKeys[0]!.columns.length, name).toBe(2);
+    }
+  });
+});
