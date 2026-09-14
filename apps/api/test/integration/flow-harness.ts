@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import type { Profile } from "@korbat/contracts";
 import pino from "pino";
 import type { AuthConfig, AuthDeps, ProfileStore, RequestContext } from "../../src/auth/context";
-import { parseVersionedKey, randomToken } from "../../src/auth/crypto";
+import { decrypt, parseVersionedKey, randomToken } from "../../src/auth/crypto";
+import { signIn } from "../../src/auth/flows/signin";
 import { MemoryKv } from "../../src/auth/kv";
 import { createLockout } from "../../src/auth/lockout";
+import { hashPassword } from "../../src/auth/passwords";
 import type { AuthRepo } from "../../src/auth/repo";
 import { createSessions } from "../../src/auth/sessions";
+import { currentStep, hotp } from "../../src/auth/totp";
 import { MemoryMailer } from "../../src/mail/memory";
 import { fakeClock } from "./auth-fixtures";
 
@@ -65,3 +69,28 @@ export function flowHarness(repo: AuthRepo) {
 }
 
 export type FlowHarness = ReturnType<typeof flowHarness>;
+
+export const newTestEmail = (prefix = "flow") => `${prefix}-${randomUUID()}@korbat.local`;
+export const newTestDevice = () => ({ deviceId: randomToken(), platform: "web" as const });
+export const wrongCode = (code: string) => String((Number(code) + 1) % 1_000_000).padStart(6, "0");
+
+/** An onboarded account, optionally with a password, signed in on one web device. */
+export async function onboardedUser(h: FlowHarness, repo: AuthRepo, options: { password?: string } = {}) {
+  const email = newTestEmail("account");
+  const created = await repo.createUser({ email, termsVersion: TEST_TERMS, now: new Date() });
+  await repo.markOnboarded(created.id, new Date());
+  if (options.password) await repo.setPasswordHash(created.id, await hashPassword(options.password), new Date());
+  const user = (await repo.findUserById(created.id))!;
+  const device = newTestDevice();
+  const signed = await signIn(h.deps, user, device, h.ctx, { alertNewDevice: false });
+  return { email, user, device, session: signed.issued.session, token: signed.issued.token };
+}
+
+export type OnboardedUser = Awaited<ReturnType<typeof onboardedUser>>;
+
+/** The TOTP code for a user's stored secret at the harness clock. */
+export async function currentTotpCode(h: FlowHarness, repo: AuthRepo, userId: string): Promise<string> {
+  const user = (await repo.findUserById(userId))!;
+  const secret = new Uint8Array(decrypt(user.totpSecretEnc!, [h.deps.config.totpKey]));
+  return hotp(secret, currentStep(h.clock.ms()));
+}
