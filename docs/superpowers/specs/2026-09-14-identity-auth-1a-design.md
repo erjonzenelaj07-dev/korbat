@@ -26,7 +26,7 @@ Sub-project 1 is split in three so each plan stays reliable:
 | Outbound email | Transactional relay behind a `Mailer` interface; EU-based provider (Brevo or Mailjet) in production; Mailpit in development |
 | Auth code isolation | Module inside the API, boundary enforced by an architecture test |
 | Password hashing | argon2id via `@node-rs/argon2` (native) |
-| TOTP | `@oslojs/otp` |
+| TOTP | RFC 4226/6238 implemented on `node:crypto` HMAC-SHA1 and proven against the published RFC test vectors. `@oslojs/otp` was chosen first, but on 2026-09-14 npm marked almost the whole `@oslojs` scope "no longer supported", so no third-party OTP or encoding library is used |
 
 ## 1. Scope
 
@@ -74,7 +74,8 @@ Internal files, one responsibility each:
 | `crypto.ts` | Random tokens, SHA-256, HMAC-SHA256, constant-time compare, AES-256-GCM encrypt/decrypt with versioned keys |
 | `passwords.ts` | argon2id hash/verify, dummy-hash verify for unknown accounts, breached-password check |
 | `codes.ts` | Generate, store (keyed hash), verify email codes bound to a flow |
-| `totp.ts` | Secret generation, `otpauth` URI, verification with ±1 step and replay protection |
+| `base32.ts` | RFC 4648 base32 for TOTP secrets and recovery codes |
+| `totp.ts` | HOTP/TOTP on `node:crypto`, secret generation, `otpauth` URI, QR code, verification with ±1 step and replay protection |
 | `recovery-codes.ts` | Generate 10 codes, hash, consume |
 | `sessions.ts` | Issue, resolve (with Redis cache), slide, rotate, revoke, list |
 | `devices.ts` | Device hash, label from User-Agent, new-device detection |
@@ -340,10 +341,10 @@ Pinned to the newest version that is at least 7 days old at planning time (the w
 | Package | Version found 2026-09-14 | Used in |
 |---|---|---|
 | `@node-rs/argon2` | 2.2.0 | API, kept outside the tsup bundle (native module) |
-| `@oslojs/otp` | 1.1.0 | API |
-| `@oslojs/encoding` | 1.1.0 | API |
 | `nodemailer` | 10.0.0 | API |
 | `uqr` | 0.1.3 | API (QR code as SVG; MIT, no dependencies) |
+| `@types/nodemailer` | 6.4.24 | API, development only (nodemailer 10 ships no types) |
+| `@marsidev/react-turnstile` | 1.6.1 | Web app (MIT, no dependencies) |
 
 The API Docker image changes to ship `@node-rs/argon2` and its musl binary as a real dependency next to the bundle.
 
