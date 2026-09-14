@@ -1,8 +1,12 @@
 import { describe, expect, test } from "vitest";
 import pino from "pino";
 import { HealthResponse } from "@korbat/contracts";
+import { createDb } from "@korbat/db";
 import { createApp } from "../src/app";
+import { createAuth } from "../src/auth";
+import { MemoryKv } from "../src/auth/kv";
 import { loadConfig } from "../src/config";
+import { MemoryMailer } from "../src/mail/memory";
 import { MemoryStore } from "../src/middleware/rate-limit";
 
 const key = Buffer.alloc(32, 7).toString("base64");
@@ -22,8 +26,18 @@ const config = loadConfig({
   TERMS_VERSION: "draft-2026-09",
 });
 
+/** The real app and auth module; the database pool is created but never connects in these tests. */
 function app(checks: Record<string, () => Promise<void>>) {
-  return createApp({ config, logger: pino({ level: "silent" }), rateLimitStore: new MemoryStore(), healthChecks: checks });
+  const logger = pino({ level: "silent" });
+  const auth = createAuth({
+    config,
+    logger,
+    authDb: createDb(config.DATABASE_URL_AUTH, { max: 1 }),
+    kv: new MemoryKv(),
+    mailer: new MemoryMailer(),
+    profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null },
+  });
+  return createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: checks, auth });
 }
 
 describe("GET /api/health", () => {
@@ -46,8 +60,19 @@ describe("routing", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
   });
-  test("/api/me is 401 while the session stub is in place", async () => {
-    expect((await app({}).request("/api/me")).status).toBe(401);
+  test("/api/me is 401 without a session", async () => {
+    const res = await app({}).request("/api/me");
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: { code: "unauthenticated" } });
+  });
+  test("state-changing requests from another origin are refused before any handler runs", async () => {
+    const res = await app({}).request("/api/auth/email/start", {
+      method: "POST",
+      headers: { origin: "https://evil.example", "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: { code: "csrf_failed" } });
   });
   test("thrown errors become a 500 envelope without leaking the message", async () => {
     const a = app({});

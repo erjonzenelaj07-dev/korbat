@@ -85,6 +85,10 @@ const MESSAGES: Record<AuthErrorCode, string> = {
   rate_limited: "Too many requests. Wait a moment and try again.",
 };
 
+export function authErrorMessage(code: AuthErrorCode): string {
+  return MESSAGES[code];
+}
+
 /** An expected, user-facing failure. The HTTP layer turns it into an ErrorEnvelope with this code and status. */
 export class AuthError extends Error {
   constructor(

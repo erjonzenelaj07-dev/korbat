@@ -58,6 +58,12 @@ export const TurnstileToken = z.string().min(1).max(2048);
 /** Length rules (12-128) are enforced by the flow so it can return password_too_short or password_too_long. */
 export const PasswordInput = z.string().min(1).max(1024);
 
+/**
+ * A new bearer token after the server rotated the session. Present only for native clients; web
+ * clients receive fresh cookies instead.
+ */
+export const RotatedToken = z.string().optional();
+
 // ---------------------------------------------------------------- email entry and sign-up
 
 export const EmailStartRequest = z.object({
@@ -102,7 +108,7 @@ export type Profile = z.infer<typeof Profile>;
 export const OnboardingHandleRequest = z.object({ handle: HandleInput, displayName: DisplayName });
 export type OnboardingHandleRequest = z.infer<typeof OnboardingHandleRequest>;
 
-export const OnboardingHandleResponse = z.object({ profile: Profile });
+export const OnboardingHandleResponse = z.object({ profile: Profile, token: RotatedToken });
 export type OnboardingHandleResponse = z.infer<typeof OnboardingHandleResponse>;
 
 // ---------------------------------------------------------------- password
@@ -119,6 +125,9 @@ export type PasswordSigninRequest = z.infer<typeof PasswordSigninRequest>;
 export const PasswordSetRequest = z.object({ password: PasswordInput });
 export type PasswordSetRequest = z.infer<typeof PasswordSetRequest>;
 
+export const PasswordSetResponse = z.object({ token: RotatedToken });
+export type PasswordSetResponse = z.infer<typeof PasswordSetResponse>;
+
 // ---------------------------------------------------------------- MFA
 
 export const TotpSetupResponse = z.object({
@@ -132,6 +141,9 @@ export type TotpCodeRequest = z.infer<typeof TotpCodeRequest>;
 
 export const RecoveryCodesResponse = z.object({ recoveryCodes: z.array(RecoveryCode).length(10) });
 export type RecoveryCodesResponse = z.infer<typeof RecoveryCodesResponse>;
+
+export const TotpConfirmResponse = z.object({ recoveryCodes: z.array(RecoveryCode).length(10), token: RotatedToken });
+export type TotpConfirmResponse = z.infer<typeof TotpConfirmResponse>;
 
 /** Exactly one of `code` or `recoveryCode`. */
 export const MfaVerifyRequest = z.union([

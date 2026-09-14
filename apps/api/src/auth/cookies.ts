@@ -15,6 +15,16 @@ export function setSessionCookies(c: Context, token: string, maxAgeSeconds: numb
   setCookie(c, CSRF_COOKIE, randomToken(32), { ...hostCookie, httpOnly: false, maxAge: maxAgeSeconds });
 }
 
+/**
+ * Extends both cookies after the session's idle expiry slid. The CSRF token keeps its value so
+ * requests the page already has in flight stay valid.
+ */
+export function refreshSessionCookies(c: Context, token: string, maxAgeSeconds: number): void {
+  setCookie(c, SESSION_COOKIE, token, { ...hostCookie, httpOnly: true, maxAge: maxAgeSeconds });
+  const csrf = getCookie(c, CSRF_COOKIE, "host");
+  if (csrf) setCookie(c, CSRF_COOKIE, csrf, { ...hostCookie, httpOnly: false, maxAge: maxAgeSeconds });
+}
+
 export function clearSessionCookies(c: Context): void {
   deleteCookie(c, SESSION_COOKIE, hostCookie);
   deleteCookie(c, CSRF_COOKIE, hostCookie);

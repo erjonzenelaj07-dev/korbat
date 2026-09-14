@@ -6,7 +6,6 @@ import type { AppEnv } from "../src/env";
 import { observability } from "../src/middleware/observability";
 import { noStore, securityHeaders } from "../src/middleware/security-headers";
 import { MemoryStore, rateLimit } from "../src/middleware/rate-limit";
-import { requireSession, sessionStub } from "../src/middleware/session";
 import { validate } from "../src/lib/validate";
 
 const silent = pino({ level: "silent" });
@@ -15,7 +14,6 @@ function base() {
   const app = new Hono<AppEnv>();
   app.use(observability(silent));
   app.use(securityHeaders, noStore);
-  app.use(sessionStub);
   return app;
 }
 
@@ -64,17 +62,6 @@ describe("rateLimit", () => {
     const h = (await app.request("/x")).headers;
     expect(h.get("ratelimit-limit")).toBe("5");
     expect(h.get("ratelimit-remaining")).toBe("4");
-  });
-});
-
-describe("session stub", () => {
-  test("requireSession returns 401 envelope with requestId", async () => {
-    const app = base().get("/me", requireSession, (c) => c.text("never"));
-    const res = await app.request("/me");
-    expect(res.status).toBe(401);
-    const body = (await res.json()) as { error: { code: string; requestId: string } };
-    expect(body.error.code).toBe("unauthenticated");
-    expect(body.error.requestId).toBe(res.headers.get("x-request-id"));
   });
 });
 
