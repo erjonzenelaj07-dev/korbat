@@ -42,9 +42,9 @@ import { loadConfig } from "../src/config";
 import { MemoryStore } from "../src/middleware/rate-limit";
 
 const config = loadConfig({
-  DATABASE_URL_API: "postgres://a:b@localhost:5432/k",
-  DATABASE_URL_AUTH: "postgres://a:b@localhost:5432/k",
-  REDIS_URL: "redis://localhost:6379",
+  DATABASE_URL_API: "postgres://a:b@localhost:55432/k",
+  DATABASE_URL_AUTH: "postgres://a:b@localhost:55432/k",
+  REDIS_URL: "redis://localhost:56379",
   KORBAT_VERSION: "9.9.9",
 });
 
@@ -239,10 +239,10 @@ export default defineConfig({
 NODE_ENV=development
 PORT=3000
 LOG_LEVEL=debug
-DATABASE_URL_API=postgres://korbat_api:change-me-api@localhost:5432/korbat
-DATABASE_URL_AUTH=postgres://korbat_auth:change-me-auth@localhost:5432/korbat
-DATABASE_URL_MIGRATE=postgres://korbat_migrate:change-me-migrate@localhost:5432/korbat
-REDIS_URL=redis://localhost:6379
+DATABASE_URL_API=postgres://korbat_api:change-me-api@localhost:55432/korbat
+DATABASE_URL_AUTH=postgres://korbat_auth:change-me-auth@localhost:55432/korbat
+DATABASE_URL_MIGRATE=postgres://korbat_migrate:change-me-migrate@localhost:55432/korbat
+REDIS_URL=redis://localhost:56379
 TRUSTED_ORIGINS=http://localhost:8081
 ```
 

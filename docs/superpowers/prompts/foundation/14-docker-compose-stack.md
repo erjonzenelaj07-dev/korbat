@@ -14,7 +14,7 @@ korbat is a pseudonymous social platform with a fully self-owned backend package
 ## Environment
 
 - Repository: `C:\Users\Lenovo\Desktop\cool\korbat`, branch `main`. Run every command from this directory in Git Bash.
-- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop running**. Ports 3000, 5432, 6379, 8080, 9000, 9001 free on localhost (stop any host-side dev API first).
+- Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop running**. Ports 3000, 8080, 55432, 56379, 59000, 59001 free on localhost (stop any host-side dev API first).
 - Images: `node:24-alpine`, `caddy:2-alpine`, `cloudflare/cloudflared:latest`, plus the Task 8 images.
 
 ## Preconditions
@@ -289,11 +289,11 @@ volumes:
 ```yaml
 services:
   postgres:
-    ports: ["5432:5432"]
+    ports: ["55432:5432"]
   redis:
-    ports: ["6379:6379"]
+    ports: ["56379:6379"]
   minio:
-    ports: ["9000:9000", "9001:9001"]
+    ports: ["59000:9000", "59001:9001"]
   api:
     ports: ["3000:3000"]
   caddy:

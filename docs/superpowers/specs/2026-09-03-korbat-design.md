@@ -217,10 +217,40 @@ Each sub-project gets its own spec → plan → implementation cycle. Order chos
 | 1 | **Identity & auth** | The auth module: sign-up with email code, password + HIBP check, argon2id, sign-in, lockout, TOTP MFA + recovery codes, hashed opaque sessions with cookie + CSRF on web and bearer on native, device list + revoke + "wasn't me" link, re-auth for sensitive changes, recovery flow, profile + handle, phone-verified badge, data export, account deletion. Phase 2: passkeys. | 0 |
 | 2 | **Posting & feed** | Compose (text + up to 4 images), image worker (re-encode, EXIF strip, blurhash, NSFW score), replies, quotes, likes, reposts, bookmarks, follows, blocks/mutes, chronological feed, explore view, profile pages, rate limits on every write | 1 |
 | 3 | **Trust & safety** | Report flow, case queue, decisions with public reasons, strikes, appeals, transparency log + page, brigading detection, author-facing case screens, admin console with MFA + audit log, CSAM scanning hookup | 2 |
-| 4 | **Hardening & launch** | Cloudflare WAF/rate rules tuned, ZAP scan clean, dependency audit clean, log scrubbing verified, IP-hash purge job, alerting, backup/restore drill, privacy policy + terms, external pen-test checklist walked | 3 |
+| 3b | **Import from other platforms** | Archive upload for X, Mastodon, Bluesky; quarantine bucket; sandboxed streaming parser; preview and select; imported posts on profile only; same image pipeline and CSAM scan as native posts; one-click undo. See section 6a. | 2, 3 |
+| 4 | **Hardening & launch** | Cloudflare WAF/rate rules tuned, ZAP scan clean, dependency audit clean, log scrubbing verified, IP-hash purge job, alerting, backup/restore drill, privacy policy + terms, external pen-test checklist walked | 3, 3b |
 | 5 | **Native builds** | EAS builds for iOS/Android, SecureStore sessions, push notifications, store listings | 4 |
 
 Sub-project 0 is small and will be planned immediately after this design is approved. Each later one starts with a short brainstorm to confirm details that this document leaves at the level of intent.
+
+---
+
+## 6a. Importing posts from other platforms (added 2026-09-14)
+
+Users can bring their post history with them. The feature is opt-in, owner-driven, and treated as untrusted bulk input.
+
+**How a user imports**
+1. The user downloads their own official data export from the other platform: X "Download an archive of your data", a Mastodon account archive, or a Bluesky repository export (`.car`). Meta (Threads/Instagram/Facebook) and Reddit exports come later as extra adapters.
+2. They upload that file on korbat's import screen. korbat never asks for another platform's password, never scrapes, and does not fetch posts by handle. Fetching by handle would let anyone import someone else's posts, which is impersonation.
+3. korbat parses the archive in the worker and shows a preview: post count, date range, image count, and what will be skipped. The user picks everything, a date range, and whether to include replies.
+4. Nothing is published until the user confirms. The import can be undone later in one action, which deletes every post from that import.
+
+**Security controls**
+- **Quarantine**: archives upload through a short-lived signed URL into a separate private `korbat-imports` bucket, never the media bucket. Size cap 2 GB. The archive is deleted as soon as parsing finishes, or after 24 hours if the user abandons the preview.
+- **Sandboxed parsing** in the worker with its own memory and time limits: streaming unzip, reject path traversal, absolute paths and symlinks, cap entry count and total uncompressed size (zip-bomb guard), and read only an allowlist of known file paths per source. X's `tweets.js` is stripped of its `window.YTD...=` prefix and parsed as JSON, never evaluated.
+- **Data minimisation**: archives contain DMs, IP logs, phone numbers, contacts and ad data. Only the allowlisted post and media files are opened. Nothing else is read, stored or logged.
+- **Same rules as native posts**: every imported image goes through the normal pipeline (re-encode, EXIF strip, NSFW score, CSAM hash). An R1 score withholds that post for human review. A CSAM match aborts the whole import and follows the R2 process. Text is never auto-removed; it can be reported like any post.
+- **Anti-abuse**: email-verified accounts only, one active import per user, at most 50,000 posts per import, worker concurrency capped so imports cannot starve normal traffic.
+- **Provenance label**: every imported post shows "Imported from X · original date". An optional ownership check (put a one-time korbat code in the source profile's bio) adds a "verified import" mark, which helps against people importing archives that are not theirs.
+
+**Product behaviour**
+- Imported posts appear on the author's profile in original date order. They do not enter followers' chronological feeds or explore, so a 10,000-post import cannot flood anyone's timeline.
+- @mentions and links stay as plain text. korbat does not map other platforms' users to korbat accounts, so it never implies someone is on korbat.
+- Reposts of other people's content are skipped. Threads of the user's own posts are kept as threads.
+
+**Designed for expansion**
+- Each source is an adapter with two functions: `detect(entries)` recognises the archive, and `readPosts(stream)` yields a normalised `ImportedPost` defined in `packages/contracts`. Adding Threads or Reddit is a new adapter; the pipeline, preview and moderation path do not change.
+- Schema is added by migration in this sub-project: an `import_jobs` table (owner, source, status, stats, timestamps) and nullable columns on `posts` (`import_job_id`, `source`, `original_created_at`, `original_url`). These are additive, so the Foundation schema does not need to anticipate them.
 
 ---
 

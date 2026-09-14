@@ -209,7 +209,7 @@ await redis.quit();
    Expected: no `error TS` lines; `Build success`; `index.js` and `index.js.map` listed.
 7. Live smoke against Redis:
    ```bash
-   (REDIS_URL=redis://localhost:6379 node apps/worker/dist/index.js > .worker.log 2>&1 &)
+   (REDIS_URL=redis://localhost:56379 node apps/worker/dist/index.js > .worker.log 2>&1 &)
    sleep 2
    docker compose -f infra/compose.yml exec -T redis redis-cli RPUSH korbat:jobs '{"type":"noop","payload":null}'
    docker compose -f infra/compose.yml exec -T redis redis-cli RPUSH korbat:jobs 'not json'

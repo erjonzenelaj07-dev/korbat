@@ -14,7 +14,7 @@ This task writes the Compose files for the data services and the `migrate` job, 
 - Windows 11. Node v24.12.0, pnpm 10.30.0. **Docker Desktop must be running** (Docker 29.x, Compose v5). Verify first with `docker info >/dev/null && echo docker-ok`.
 - Images (pinned; MinIO publishes to quay.io, not Docker Hub): `postgres:16-alpine`, `redis:7-alpine`, `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`, `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z`.
 - Compose loads `infra/.env` automatically when invoked with `-f infra/compose.yml`. Postgres runs `/docker-entrypoint-initdb.d/*.sh` only on first initialisation of the data volume; `down -v` resets it. Inside `docker compose exec postgres psql`, local socket connections are trusted, so no password is needed for any role.
-- Ports 5432, 6379, 9000, 9001 on localhost must be free.
+- Dev host ports 55432 (Postgres), 56379 (Redis), 59000 and 59001 (MinIO) on localhost must be free. They are deliberately non-standard so korbat never collides with another local Postgres or MinIO.
 
 ## Preconditions
 
@@ -173,11 +173,11 @@ volumes:
 ```yaml
 services:
   postgres:
-    ports: ["5432:5432"]
+    ports: ["55432:5432"]
   redis:
-    ports: ["6379:6379"]
+    ports: ["56379:6379"]
   minio:
-    ports: ["9000:9000", "9001:9001"]
+    ports: ["59000:9000", "59001:9001"]
 ```
 
 ## Steps
@@ -217,7 +217,7 @@ services:
    Expected: three lines, `korbat_api`, `korbat_auth`, `korbat_migrate`. If none appear, the init script did not run: run `docker compose -f infra/compose.yml logs postgres | grep -i -E "01-roles|error"`, paste it in the report, and STOP.
 6. Apply migrations from the host as `korbat_migrate`:
    ```bash
-   cd packages/db && DATABASE_URL_MIGRATE=postgres://korbat_migrate:change-me-migrate@localhost:5432/korbat npx tsx -e "import('./src/migrate.ts').then(m => m.runMigrations(process.env.DATABASE_URL_MIGRATE, './migrations')).then(() => console.log('migrated'))" && cd ../..
+   cd packages/db && DATABASE_URL_MIGRATE=postgres://korbat_migrate:change-me-migrate@localhost:55432/korbat npx tsx -e "import('./src/migrate.ts').then(m => m.runMigrations(process.env.DATABASE_URL_MIGRATE, './migrations')).then(() => console.log('migrated'))" && cd ../..
    docker compose -f infra/compose.yml exec -T postgres psql -U postgres -d korbat -tAc "select count(*) from drizzle.__drizzle_migrations"
    ```
    Expected: `migrated` then `2`.
