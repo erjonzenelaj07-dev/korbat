@@ -131,6 +131,8 @@ services:
     build:
       context: ..
       dockerfile: infra/caddy/Dockerfile
+      args:
+        EXPO_PUBLIC_TURNSTILE_SITE_KEY: ${WEB_TURNSTILE_SITE_KEY:?set WEB_TURNSTILE_SITE_KEY in infra/.env}
     depends_on:
       api: { condition: service_healthy }
     volumes:

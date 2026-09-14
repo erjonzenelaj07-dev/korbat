@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Creates or completes the local .env files from their committed examples.
+ * Creates or completes the local .env files from their committed examples: infra/.env,
+ * apps/api/.env and apps/app/.env.
  *
  * - `change-me-<word>`          -> 48 random hex characters (passwords)
  * - `change-me-key-<name>`      -> 32 random bytes, base64 (HMAC keys)
@@ -84,3 +85,5 @@ complete("infra/.env.example", "infra/.env", new Map(), new Map([...hostApi].map
 const infra = read("infra/.env");
 const dockerApi = new Map([...infra].filter(([name]) => name.startsWith("API_")).map(([name, value]) => [name.slice("API_".length), value]));
 complete("apps/api/.env.example", "apps/api/.env", infra, dockerApi);
+
+complete("apps/app/.env.example", "apps/app/.env", new Map(), new Map());
