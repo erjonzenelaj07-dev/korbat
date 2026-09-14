@@ -1,0 +1,10 @@
+{
+  "name": "@korbat/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsc -p .", "test": "vitest run" },
+  "dependencies": { "zod": "4.5.4" },
+  "devDependencies": { "vitest": "4.1.11", "typescript": "5.9.3" }
+}
