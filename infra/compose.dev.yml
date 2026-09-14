@@ -9,3 +9,8 @@ services:
     ports: ["127.0.0.1:3000:3000"]
   caddy:
     ports: ["127.0.0.1:8080:80"]
+  # Development mail catcher: SMTP on 51025, web UI and HTTP API on 58025. Never used in production.
+  mailpit:
+    image: axllent/mailpit:v1.31.1
+    restart: unless-stopped
+    ports: ["127.0.0.1:51025:1025", "127.0.0.1:58025:8025"]
