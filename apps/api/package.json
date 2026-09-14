@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p .",
     "test": "vitest run",
-    "test:integration": "INTEGRATION=1 vitest run test/integration"
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.1",
