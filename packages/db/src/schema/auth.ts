@@ -1,10 +1,29 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, index, integer, pgSchema, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, index, integer, jsonb, pgPolicy, pgSchema, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authRole, emptyTextArray, fullAccess, ts } from "./helpers";
 
 export const auth = pgSchema("auth");
 
-export const emailCodePurpose = auth.enum("email_code_purpose", ["signup", "login", "change_email", "recovery"]);
+export const emailCodePurpose = auth.enum("email_code_purpose", ["signup", "login", "change_email", "recovery", "reauth"]);
+
+export const userRole = auth.enum("user_role", ["user", "moderator", "admin"]);
+
+export const authEventType = auth.enum("auth_event_type", [
+  "signup",
+  "signin_success",
+  "signin_failure",
+  "mfa_enabled",
+  "mfa_disabled",
+  "recovery_code_used",
+  "recovery_codes_regenerated",
+  "password_set",
+  "password_changed",
+  "session_revoked",
+  "sessions_revoked_all",
+  "account_locked",
+  "new_device",
+  "not_me",
+]);
 
 export const users = auth.table(
   "users",
@@ -24,6 +43,16 @@ export const users = auth.table(
     lockedUntil: ts("locked_until"),
     createdAt: ts("created_at").notNull().defaultNow(),
     deletedAt: ts("deleted_at"),
+    role: userRole("role").notNull().default("user"),
+    /** When the 16+ check passed. Date of birth itself is never stored. */
+    ageConfirmedAt: ts("age_confirmed_at"),
+    termsVersion: text("terms_version"),
+    termsAcceptedAt: ts("terms_accepted_at"),
+    /** Set once the public profile (handle) exists. */
+    onboardedAt: ts("onboarded_at"),
+    passwordChangedAt: ts("password_changed_at"),
+    /** Last accepted TOTP time step; a code for this step or earlier is rejected (replay protection). */
+    totpLastStep: bigint("totp_last_step", { mode: "number" }),
   },
   (t) => [uniqueIndex("users_email_lower_idx").on(sql`lower(${t.email})`), fullAccess("users_auth_all", authRole)],
 ).enableRLS();
@@ -78,8 +107,15 @@ export const emailCodes = auth.table(
     attempts: integer("attempts").notNull().default(0),
     consumedAt: ts("consumed_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
+    /** Random id returned to the client; a code can only complete the flow that requested it. */
+    flowId: text("flow_id").notNull(),
+    ipHash: text("ip_hash"),
   },
-  (t) => [index("email_codes_email_idx").on(t.email), fullAccess("email_codes_auth_all", authRole)],
+  (t) => [
+    index("email_codes_email_idx").on(t.email),
+    uniqueIndex("email_codes_flow_idx").on(t.flowId),
+    fullAccess("email_codes_auth_all", authRole),
+  ],
 ).enableRLS();
 
 export const passkeys = auth.table(
@@ -98,4 +134,23 @@ export const passkeys = auth.table(
     lastUsedAt: ts("last_used_at"),
   },
   (t) => [uniqueIndex("passkeys_credential_idx").on(t.credentialId), index("passkeys_user_idx").on(t.userId), fullAccess("passkeys_auth_all", authRole)],
+).enableRLS();
+
+/** Append-only security log. UPDATE, DELETE and TRUNCATE are also revoked at the grant level (migration 0003). */
+export const authEvents = auth.table(
+  "auth_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    type: authEventType("type").notNull(),
+    deviceId: uuid("device_id"),
+    ipHash: text("ip_hash"),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("auth_events_user_created_idx").on(t.userId, t.createdAt),
+    pgPolicy("auth_events_auth_insert", { for: "insert", to: authRole, withCheck: sql`true` }),
+    pgPolicy("auth_events_auth_select", { for: "select", to: authRole, using: sql`true` }),
+  ],
 ).enableRLS();

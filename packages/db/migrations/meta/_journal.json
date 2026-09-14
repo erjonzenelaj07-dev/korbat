@@ -15,6 +15,20 @@
       "when": 1789374374757,
       "tag": "0001_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789388768464,
+      "tag": "0002_aspiring_prism",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789388790249,
+      "tag": "0003_auth_events_grants",
+      "breakpoints": true
     }
   ]
 }

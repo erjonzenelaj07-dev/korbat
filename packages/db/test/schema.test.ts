@@ -8,7 +8,7 @@ const byName = new Map(tables.map((t) => [getTableConfig(t).name, getTableConfig
 
 describe("auth schema", () => {
   test("auth tables live in the auth schema", () => {
-    for (const name of ["users", "devices", "sessions", "email_codes", "passkeys"]) {
+    for (const name of ["users", "devices", "sessions", "email_codes", "passkeys", "auth_events"]) {
       expect(byName.get(name)?.schema, name).toBe("auth");
     }
   });
@@ -45,8 +45,8 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 20 tables in total", () => {
-    expect(tables.length).toBe(20);
+  test("there are 21 tables in total", () => {
+    expect(tables.length).toBe(21);
   });
   test("transparency_log carries no user identifiers", () => {
     const cols = byName.get("transparency_log")!.columns.map((c) => c.name);
@@ -59,5 +59,26 @@ describe("trust and safety schema", () => {
   test("one appeal per case", () => {
     const idx = byName.get("appeals")!.indexes.find((i) => i.config.name === "appeals_case_idx");
     expect(idx?.config.unique).toBe(true);
+  });
+});
+
+describe("identity and auth 1a", () => {
+  test("users carry role, age, terms, onboarding and TOTP replay columns", () => {
+    const cols = byName.get("users")!.columns;
+    expect(cols.map((c) => c.name)).toEqual(
+      expect.arrayContaining(["role", "age_confirmed_at", "terms_version", "terms_accepted_at", "onboarded_at", "password_changed_at", "totp_last_step"]),
+    );
+    expect(cols.find((c) => c.name === "role")?.notNull).toBe(true);
+  });
+  test("email codes are bound to a unique flow id", () => {
+    const cfg = byName.get("email_codes")!;
+    expect(cfg.columns.find((c) => c.name === "flow_id")?.notNull).toBe(true);
+    expect(cfg.indexes.find((i) => i.config.name === "email_codes_flow_idx")?.config.unique).toBe(true);
+  });
+  test("auth_events policies allow only insert and select", () => {
+    expect(byName.get("auth_events")?.policies.map((p) => p.for).sort()).toEqual(["insert", "select"]);
+  });
+  test("email code purposes include reauth", () => {
+    expect(schema.emailCodePurpose.enumValues).toContain("reauth");
   });
 });
