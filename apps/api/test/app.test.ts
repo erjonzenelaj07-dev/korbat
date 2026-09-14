@@ -5,11 +5,21 @@ import { createApp } from "../src/app";
 import { loadConfig } from "../src/config";
 import { MemoryStore } from "../src/middleware/rate-limit";
 
+const key = Buffer.alloc(32, 7).toString("base64");
+
 const config = loadConfig({
   DATABASE_URL_API: "postgres://a:b@localhost:55432/k",
   DATABASE_URL_AUTH: "postgres://a:b@localhost:55432/k",
   REDIS_URL: "redis://localhost:56379",
   KORBAT_VERSION: "9.9.9",
+  APP_ORIGIN: "http://localhost:8081",
+  AUTH_HMAC_KEY: key,
+  IP_HASH_KEY: key,
+  TOTP_ENC_KEY: `v1:${key}`,
+  TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
+  SMTP_URL: "smtp://localhost:1025",
+  MAIL_FROM: "korbat <no-reply@korbat.local>",
+  TERMS_VERSION: "draft-2026-09",
 });
 
 function app(checks: Record<string, () => Promise<void>>) {
