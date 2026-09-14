@@ -22,7 +22,7 @@ export type { UserRole } from "./repo";
 export type { Session } from "./sessions";
 export { AuthError, isUniqueViolation } from "./context";
 export { grantRole } from "./admin";
-export { redisKv } from "./kv";
+export { redisKv, type KeyValueStore } from "./kv";
 export { createAuthRepo } from "./repo";
 export { createSessions } from "./sessions";
 
