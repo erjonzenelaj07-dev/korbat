@@ -14,6 +14,9 @@ ENV KORBAT_VERSION=$KORBAT_VERSION
 WORKDIR /app
 COPY --from=build /repo/apps/api/dist ./dist
 COPY --from=build /repo/packages/db/migrations ./migrations
+# argon2 is not bundled (native module). The install above ran on Alpine, so @node-rs holds the
+# package and exactly the musl binary for this image's CPU architecture.
+COPY --from=build /repo/node_modules/@node-rs ./node_modules/@node-rs
 USER node
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

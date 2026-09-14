@@ -6,6 +6,9 @@
  * - `change-me-key-<name>`      -> 32 random bytes, base64 (HMAC keys)
  * - `v1:change-me-key-<name>`   -> `v1:` + 32 random bytes, base64 (versioned encryption keys)
  * - `change-me-api|auth|migrate` inside apps/api/.env -> the matching password from infra/.env
+ * - Keys used by both the API in Docker (`API_<NAME>` in infra/.env) and the API on the host
+ *   (`<NAME>` in apps/api/.env) are generated once and copied to the other file, so both processes
+ *   hash, sign and encrypt with the same keys.
  *
  * A value that already exists in a .env file is never changed. Keys that are new in an example
  * are appended. Values are never printed.
@@ -29,7 +32,14 @@ function parse(text) {
   return map;
 }
 
-function generate(value, infra) {
+function read(rel) {
+  const path = resolve(root, rel);
+  return existsSync(path) ? parse(readFileSync(path, "utf8")) : new Map();
+}
+
+/** `shared` holds key values that already exist in the other .env file, by this file's variable name. */
+function generate(name, value, infra, shared) {
+  if (value.includes("change-me-key-") && shared.has(name)) return shared.get(name);
   if (value.startsWith("v1:change-me-key-")) return `v1:${randomBytes(32).toString("base64")}`;
   if (value.startsWith("change-me-key-")) return randomBytes(32).toString("base64");
   return value
@@ -37,14 +47,14 @@ function generate(value, infra) {
     .replace(/change-me-[a-z]+/g, () => randomBytes(24).toString("hex"));
 }
 
-function complete(relExample, relTarget, infra) {
+function complete(relExample, relTarget, infra, shared) {
   const example = readFileSync(resolve(root, relExample), "utf8");
   const targetPath = resolve(root, relTarget);
 
   if (!existsSync(targetPath)) {
     const lines = example.split(/\r?\n/).map((line) => {
       const m = LINE.exec(line);
-      return m ? `${m[1]}=${generate(m[2], infra)}` : line;
+      return m ? `${m[1]}=${generate(m[1], m[2], infra, shared)}` : line;
     });
     writeFileSync(targetPath, lines.join("\n"), "utf8");
     console.log(`${relTarget}: created with ${parse(example).size} keys`);
@@ -57,7 +67,7 @@ function complete(relExample, relTarget, infra) {
   let out = current.replace(/\s*$/, "\n");
   for (const [name, value] of parse(example)) {
     if (existing.has(name)) continue;
-    out += `${name}=${generate(value, infra)}\n`;
+    out += `${name}=${generate(name, value, infra, shared)}\n`;
     added.push(name);
   }
   if (added.length === 0) {
@@ -68,5 +78,9 @@ function complete(relExample, relTarget, infra) {
   console.log(`${relTarget}: completed, added ${added.join(", ")}`);
 }
 
-complete("infra/.env.example", "infra/.env", new Map());
-complete("apps/api/.env.example", "apps/api/.env", parse(readFileSync(resolve(root, "infra/.env"), "utf8")));
+const hostApi = read("apps/api/.env");
+complete("infra/.env.example", "infra/.env", new Map(), new Map([...hostApi].map(([name, value]) => [`API_${name}`, value])));
+
+const infra = read("infra/.env");
+const dockerApi = new Map([...infra].filter(([name]) => name.startsWith("API_")).map(([name, value]) => [name.slice("API_".length), value]));
+complete("apps/api/.env.example", "apps/api/.env", infra, dockerApi);
