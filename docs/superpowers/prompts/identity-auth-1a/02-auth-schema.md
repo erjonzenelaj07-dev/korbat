@@ -458,13 +458,15 @@ git status --porcelain --untracked-files=all
 
 Expected: exactly these paths, and nothing else (no `.env` file, no `dist/`):
 
-- `packages/db/migrations/0002_next_tenebrous.sql`
+- `packages/db/migrations/0002_<two random words>.sql`
 - `packages/db/migrations/0003_auth_events_grants.sql`
 - `packages/db/migrations/meta/0002_snapshot.json`
 - `packages/db/migrations/meta/0003_snapshot.json`
 - `packages/db/migrations/meta/_journal.json`
 - `packages/db/src/schema/auth.ts`
 - `packages/db/test/schema.test.ts`
+
+Allowed difference: drizzle-kit names each generated migration with its number and two random words, so that file's name differs from the dry run (for example `0002_aspiring_prism.sql`). Any name of that shape is correct; do not rename it.
 
 ## Step 12: commit
 

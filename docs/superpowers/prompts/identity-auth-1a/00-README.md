@@ -32,6 +32,13 @@ Each prompt replaces judgment with rules. Files are complete and copied byte for
 - **Build durations.** Docker image builds in Tasks 19 and 21 can take many minutes on the first run.
 - **Run noise.** Timings, ids, hashes and commit hashes differ on every run.
 
+## Execution findings (2026-09-14)
+
+All 21 prompts were then executed in this repository, one fresh session per prompt, with each report checked before the next prompt started. Two things came up that the dry run could not show:
+
+- **Random migration name.** Prompt 02's change-set step listed the dry run's drizzle migration file by name, but drizzle-kit picks two random words on every run, so the task stopped there. The prompt now shows that file as a name pattern and allows any name of that shape.
+- **Edits from outside the session.** During prompt 01 a process outside the session changed `.gitignore` and `package.json`, and the change-set check stopped the task as designed. If a report lists files the task never touched, find the cause before re-running the prompt.
+
 ## Order
 
 | # | File | What it delivers | Needs Docker? |
