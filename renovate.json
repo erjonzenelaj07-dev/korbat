@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":semanticCommits"],
+  "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "7 days",
+  "packageRules": [
+    { "matchUpdateTypes": ["minor", "patch"], "groupName": "non-major dependencies", "minimumReleaseAge": "7 days" },
+    { "matchPackageNames": ["expo", "react-native"], "enabled": false, "minimumReleaseAge": "7 days", "description": "Expo SDK upgrades are done by hand with expo upgrade" }
+  ],
+  "vulnerabilityAlerts": { "enabled": true, "labels": ["security"] }
+}
