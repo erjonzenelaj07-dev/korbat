@@ -289,16 +289,17 @@ volumes:
 ```yaml
 services:
   postgres:
-    ports: ["55432:5432"]
+    ports: ["127.0.0.1:55432:5432"]
   redis:
-    ports: ["56379:6379"]
+    ports: ["127.0.0.1:56379:6379"]
   minio:
-    ports: ["59000:9000", "59001:9001"]
+    ports: ["127.0.0.1:59000:9000", "127.0.0.1:59001:9001"]
   api:
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]
   caddy:
-    ports: ["8080:80"]
+    ports: ["127.0.0.1:8080:80"]
 ```
+(All dev ports bind to 127.0.0.1 only.)
 
 ## Steps
 
@@ -308,10 +309,14 @@ services:
    docker compose -f infra/compose.yml config -q && echo "compose ok"
    ```
    Expected: `compose ok`.
-3. Make sure nothing else listens on port 3000:
-   ```bash
-   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done; echo "port 3000 free"
+3. Make sure no host-side korbat dev server holds port 3000 or 8081:
+   Stop every korbat dev process and confirm the ports are free. Run this in PowerShell (not Git Bash): killing the listening PID from Git Bash leaves the `npx`/`tsx` parents running, and `wmic` does not work on current Windows.
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'korbat|apps/worker/dist/index\.js|apps/api/dist/index\.js|npx-cli\.js" (tsx src/index\.ts|expo start)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue }
+   Start-Sleep -Seconds 2
+   foreach ($p in 3000, 8081) { "port ${p}: " + $(if (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue) { 'BUSY' } else { 'free' }) }
    ```
+   Expected: `port 3000: free` and `port 8081: free`. This matches only processes started from the korbat repo; never stop other node processes on the machine.
 4. Bring everything up from clean (the first build takes several minutes):
    ```bash
    docker compose -f infra/compose.yml -f infra/compose.dev.yml down -v

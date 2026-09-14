@@ -282,6 +282,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: health against real serv
 });
 ```
 
+### `apps/api/vitest.integration.config.ts`
+```ts
+import { defineConfig } from "vitest/config";
+
+/**
+ * Integration tests run against the Compose data services. The INTEGRATION flag
+ * is set here rather than in the npm script, because `VAR=1 cmd` does not work
+ * in cmd.exe, which pnpm uses to run scripts on Windows.
+ */
+export default defineConfig({
+  test: {
+    include: ["test/integration/**/*.test.ts"],
+    env: { INTEGRATION: "1" },
+  },
+});
+```
+
 ## Steps
 
 1. Create `apps/api/test/app.test.ts` only.
@@ -296,14 +313,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: health against real serv
    pnpm --filter @korbat/api test
    ```
    Expected: `Test Files  4 passed (4)` and `Tests  19 passed (19)`.
-5. Create `src/index.ts`, `src/migrate.ts`, `tsup.config.ts`, `.env.example`, `test/integration/health.test.ts`. Then run:
+5. Create `src/index.ts`, `src/migrate.ts`, `tsup.config.ts`, `.env.example`, `test/integration/health.test.ts`, `vitest.integration.config.ts`. Then run:
    ```bash
    pnpm --filter @korbat/api typecheck
    ```
    Expected: no `error TS` lines.
 6. Start the dev server against the Compose services and probe it:
    ```bash
-   cp apps/api/.env.example apps/api/.env
+   python -c "env=dict(l.split('=',1) for l in open('infra/.env',encoding='utf-8').read().splitlines() if '=' in l and not l.startswith('#')); s=open('apps/api/.env.example',encoding='utf-8').read(); [s:=s.replace('change-me-'+k.lower(), env['KORBAT_'+k+'_DB_PASSWORD']) for k in ('API','AUTH','MIGRATE')]; open('apps/api/.env','w',encoding='utf-8',newline='\n').write(s)"
+   grep -c change-me apps/api/.env; git check-ignore apps/api/.env
    (cd apps/api && set -a && . ./.env && set +a && npx tsx src/index.ts > ../../.dev.log 2>&1 &)
    sleep 7
    curl -si http://localhost:3000/api/health | grep -iE "^HTTP|x-request-id|content-security|cache-control|ratelimit-remaining|^\{"
@@ -321,11 +339,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: health against real serv
    HTTP/1.1 401 Unauthorized
    HTTP/1.1 404 Not Found
    ```
-   Then stop the dev server:
-   ```bash
-   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done
-   rm -f .dev.log
+   (`grep -c change-me` must print `0` and `git check-ignore` must print `apps/api/.env`. `ratelimit-remaining` may read 298 if anything else already called the API in the same minute.)
+   Stop every korbat dev process and confirm the ports are free. Run this in PowerShell (not Git Bash): killing the listening PID from Git Bash leaves the `npx`/`tsx` parents running, and `wmic` does not work on current Windows.
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'korbat|apps/worker/dist/index\.js|apps/api/dist/index\.js|npx-cli\.js" (tsx src/index\.ts|expo start)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue }
+   Start-Sleep -Seconds 2
+   foreach ($p in 3000, 8081) { "port ${p}: " + $(if (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue) { 'BUSY' } else { 'free' }) }
    ```
+   Expected: `port 3000: free` and `port 8081: free`. This matches only processes started from the korbat repo; never stop other node processes on the machine.
+   Then run `rm -f .dev.log`.
 7. Run the integration test:
    ```bash
    (cd apps/api && set -a && . ./.env && set +a && pnpm test:integration)
@@ -343,12 +365,27 @@ describe.skipIf(!process.env.INTEGRATION)("integration: health against real serv
    (cd apps/api && set -a && . ./.env && set +a && MIGRATIONS_DIR=../../packages/db/migrations node dist/migrate.js)
    (cd apps/api && set -a && . ./.env && set +a && node dist/index.js > ../../.bundle.log 2>&1 &)
    sleep 4; curl -s http://localhost:3000/api/health; echo; head -c 200 .bundle.log; echo
-   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done
+   ```
+   Stop it before starting the production-mode run:
+   Stop every korbat dev process and confirm the ports are free. Run this in PowerShell (not Git Bash): killing the listening PID from Git Bash leaves the `npx`/`tsx` parents running, and `wmic` does not work on current Windows.
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'korbat|apps/worker/dist/index\.js|apps/api/dist/index\.js|npx-cli\.js" (tsx src/index\.ts|expo start)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue }
+   Start-Sleep -Seconds 2
+   foreach ($p in 3000, 8081) { "port ${p}: " + $(if (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue) { 'BUSY' } else { 'free' }) }
+   ```
+   Expected: `port 3000: free` and `port 8081: free`. This matches only processes started from the korbat repo; never stop other node processes on the machine.
+   ```bash
    (cd apps/api && set -a && . ./.env && set +a && NODE_ENV=production node dist/index.js > ../../.bundle2.log 2>&1 &)
    sleep 4; curl -s http://localhost:3000/api/health; echo; head -c 200 .bundle2.log; echo
-   for pid in $(netstat -ano | grep ":3000" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done
-   rm -f .bundle.log .bundle2.log
    ```
+   Stop every korbat dev process and confirm the ports are free. Run this in PowerShell (not Git Bash): killing the listening PID from Git Bash leaves the `npx`/`tsx` parents running, and `wmic` does not work on current Windows.
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'korbat|apps/worker/dist/index\.js|apps/api/dist/index\.js|npx-cli\.js" (tsx src/index\.ts|expo start)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue }
+   Start-Sleep -Seconds 2
+   foreach ($p in 3000, 8081) { "port ${p}: " + $(if (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue) { 'BUSY' } else { 'free' }) }
+   ```
+   Expected: `port 3000: free` and `port 8081: free`. This matches only processes started from the korbat repo; never stop other node processes on the machine.
+   Then run `rm -f .bundle.log .bundle2.log`.
    Expected: `migrations applied from <path>` (nothing new to apply); then the health JSON with all checks `ok` followed by a pretty (coloured) `api listening` log line; then the same health JSON followed by a one-line JSON log `{"level":30,...,"msg":"api listening"}`.
 10. Run `git status --short` and confirm neither `apps/api/.env` nor `apps/api/dist/` is listed. Commit:
     ```bash

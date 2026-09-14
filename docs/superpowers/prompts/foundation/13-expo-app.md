@@ -131,6 +131,9 @@ expo-env.d.ts
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: ["./src/**/*.{ts,tsx}"],
+  // "class" (not the default "media"): the theme is switched by the app, and NativeWind's web
+  // runtime throws in dev mode under "media" when Metro injects the stylesheet.
+  darkMode: "class",
   presets: [require("nativewind/preset")],
   theme: { extend: {} },
   plugins: [],
@@ -242,11 +245,15 @@ export default function Home() {
    curl -s -o /dev/null -w "expo dev server: %{http_code}\n" http://localhost:8081/
    curl -s http://localhost:8081/ | grep -c '<div id="root">'
    ```
-   Expected: `expo dev server: 200` and `1`. Then, if this session has a browser tool, open http://localhost:8081 and confirm the page shows `korbat` above `api ok · v0.0.0-dev` on a near-black background; otherwise ask the operator to open it and confirm. Then stop both servers:
-   ```bash
-   for pid in $(netstat -ano | grep -E ":(3000|8081)" | grep LISTENING | awk '{print $5}' | sort -u); do taskkill //PID $pid //F; done
-   rm -f .dev.log .expo.log
+   Expected: `expo dev server: 200` and `1`. Then, if this session has a browser tool, open http://localhost:8081 and confirm the page shows `korbat` above `api ok · v0.0.0-dev` on a near-black background; otherwise ask the operator to open it and confirm. Read the console in a **newly opened tab** (an existing tab can still show errors from an earlier load): it must contain no error, only React's DevTools info line and the `Running application "main"` log. An error `Cannot manually set color scheme, as dark mode is type 'media'` means `darkMode: "class"` is missing from `tailwind.config.js`: STOP.
+   Stop every korbat dev process and confirm the ports are free. Run this in PowerShell (not Git Bash): killing the listening PID from Git Bash leaves the `npx`/`tsx` parents running, and `wmic` does not work on current Windows.
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'korbat|apps/worker/dist/index\.js|apps/api/dist/index\.js|npx-cli\.js" (tsx src/index\.ts|expo start)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue }
+   Start-Sleep -Seconds 2
+   foreach ($p in 3000, 8081) { "port ${p}: " + $(if (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue) { 'BUSY' } else { 'free' }) }
    ```
+   Expected: `port 3000: free` and `port 8081: free`. This matches only processes started from the korbat repo; never stop other node processes on the machine.
+   Then run `rm -f .dev.log .expo.log`.
 6. Run `git status --short` and confirm `apps/app/dist/` and `apps/app/.expo/` are absent. Commit:
    ```bash
    git add -A && git commit -m "feat(app): expo web shell with nativewind calling /api/health

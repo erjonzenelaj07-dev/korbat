@@ -45,7 +45,7 @@ This task creates the `@korbat/api` package with a fail-fast typed environment c
     "start": "node dist/index.js",
     "typecheck": "tsc -p .",
     "test": "vitest run",
-    "test:integration": "INTEGRATION=1 vitest run test/integration"
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.1",
@@ -71,7 +71,7 @@ This task creates the `@korbat/api` package with a fail-fast typed environment c
 
 ### `apps/api/tsconfig.json`
 ```json
-{ "extends": "../../tsconfig.base.json", "compilerOptions": { "types": ["node"] }, "include": ["src", "test", "tsup.config.ts"] }
+{ "extends": "../../tsconfig.base.json", "compilerOptions": { "types": ["node"] }, "include": ["src", "test", "tsup.config.ts", "vitest.integration.config.ts"] }
 ```
 
 ### `apps/api/test/config.test.ts`

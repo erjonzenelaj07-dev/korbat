@@ -45,3 +45,19 @@ Every session ends with a `TASK N REPORT` block. Check three lines before starti
 If a report shows a STOP that is not an environment problem, paste the report back to the planning session; do not let the executing session improvise.
 
 Source of truth for the design is `docs/superpowers/specs/2026-09-03-korbat-design.md`; the task breakdown is `docs/superpowers/plans/2026-09-03-foundation.md`. Where the plan and a prompt differ, the prompt is the verified version.
+
+## Execution findings (2026-09-14)
+
+Tasks 1 to 15 were then executed for real in the korbat repository, one commit per task, with every step gated on the expected output. Execution found issues the dry run could not, because the dry run bypassed some scripts or used a different machine state. The prompts above now include every fix:
+
+- **Localhost-only ports.** Dev ports in `compose.dev.yml` bind to `127.0.0.1`. Without the prefix Docker publishes on every network interface.
+- **Real secrets locally.** `infra/.env` is generated with random secrets and `apps/api/.env` is derived from it. The `change-me` values exist only in the committed examples.
+- **Windows-safe integration script.** `test:integration` points at `vitest.integration.config.ts`. An inline `INTEGRATION=1` fails in cmd.exe, which pnpm uses to run scripts on Windows.
+- **NativeWind dark mode.** `tailwind.config.js` sets `darkMode: "class"`. Under the default `"media"`, NativeWind's web runtime throws in dev mode; the production export never showed it.
+- **Process cleanup on Windows.** `wmic` no longer works and killing a listening PID from Git Bash leaves `npx`/`tsx` parents alive. Prompts now stop korbat processes from PowerShell by command line and confirm ports are free. The worker smoke test counts Redis consumers before, during and after, because a stray worker from an earlier run silently steals jobs.
+
+To confirm the prompts still reproduce the repository exactly, run this from the repo root. It extracts every file each prompt creates and compares it with the file on disk:
+
+```bash
+python docs/superpowers/prompts/foundation/verify_prompts.py
+```

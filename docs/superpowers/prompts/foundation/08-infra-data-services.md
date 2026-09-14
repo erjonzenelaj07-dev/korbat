@@ -173,12 +173,13 @@ volumes:
 ```yaml
 services:
   postgres:
-    ports: ["55432:5432"]
+    ports: ["127.0.0.1:55432:5432"]
   redis:
-    ports: ["56379:6379"]
+    ports: ["127.0.0.1:56379:6379"]
   minio:
-    ports: ["59000:9000", "59001:9001"]
+    ports: ["127.0.0.1:59000:9000", "127.0.0.1:59001:9001"]
 ```
+(Every dev port binds to 127.0.0.1. Without the address prefix Docker publishes on all interfaces, which exposes the databases to the local network.)
 
 ## Steps
 
@@ -187,10 +188,12 @@ services:
    chmod +x infra/postgres/init/01-roles.sh && file infra/postgres/init/01-roles.sh
    ```
    Expected: the `file` output does not contain `CRLF`.
-2. Run:
+2. Create `infra/.env` with random secrets (never the `change-me` placeholders, even locally):
    ```bash
-   cp infra/.env.example infra/.env
+   python -c "import re,secrets; s=open('infra/.env.example',encoding='utf-8').read(); open('infra/.env','w',encoding='utf-8',newline='\n').write(re.sub(r'change-me-[a-z]+', lambda m: secrets.token_hex(24), s))"
+   grep -c change-me infra/.env; git check-ignore infra/.env
    ```
+   Expected: `0` then `infra/.env`.
 3. Run:
    ```bash
    docker compose -f infra/compose.yml config -q && echo "compose ok"
@@ -217,7 +220,8 @@ services:
    Expected: three lines, `korbat_api`, `korbat_auth`, `korbat_migrate`. If none appear, the init script did not run: run `docker compose -f infra/compose.yml logs postgres | grep -i -E "01-roles|error"`, paste it in the report, and STOP.
 6. Apply migrations from the host as `korbat_migrate`:
    ```bash
-   cd packages/db && DATABASE_URL_MIGRATE=postgres://korbat_migrate:change-me-migrate@localhost:55432/korbat npx tsx -e "import('./src/migrate.ts').then(m => m.runMigrations(process.env.DATABASE_URL_MIGRATE, './migrations')).then(() => console.log('migrated'))" && cd ../..
+   set -a; . infra/.env; set +a
+   cd packages/db && DATABASE_URL_MIGRATE="postgres://korbat_migrate:${KORBAT_MIGRATE_DB_PASSWORD}@localhost:55432/korbat" npx tsx -e "import('./src/migrate.ts').then(m => m.runMigrations(process.env.DATABASE_URL_MIGRATE, './migrations')).then(() => console.log('migrated'))" && cd ../..
    docker compose -f infra/compose.yml exec -T postgres psql -U postgres -d korbat -tAc "select count(*) from drizzle.__drizzle_migrations"
    ```
    Expected: `migrated` then `2`.

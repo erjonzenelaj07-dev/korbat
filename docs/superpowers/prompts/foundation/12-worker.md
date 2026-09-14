@@ -209,16 +209,21 @@ await redis.quit();
    Expected: no `error TS` lines; `Build success`; `index.js` and `index.js.map` listed.
 7. Live smoke against Redis:
    ```bash
-   (REDIS_URL=redis://localhost:56379 node apps/worker/dist/index.js > .worker.log 2>&1 &)
-   sleep 2
-   docker compose -f infra/compose.yml exec -T redis redis-cli RPUSH korbat:jobs '{"type":"noop","payload":null}'
-   docker compose -f infra/compose.yml exec -T redis redis-cli RPUSH korbat:jobs 'not json'
-   sleep 2
-   cut -c1-120 .worker.log
-   for pid in $(wmic process where "commandline like '%apps/worker/dist/index.js%' and name='node.exe'" get processid | grep -E "^[0-9]+"); do taskkill //PID $pid //F; done
+   R="docker compose -f infra/compose.yml exec -T redis redis-cli"
+   $R CLIENT LIST | grep -c cmd=blpop
+   REDIS_URL=redis://localhost:56379 node apps/worker/dist/index.js > .worker.log 2>&1 & WPID=$!
+   for i in $(seq 1 20); do grep -q "worker started" .worker.log 2>/dev/null && break; sleep 1; done
+   $R CLIENT LIST | grep -c cmd=blpop
+   $R RPUSH korbat:jobs '{"type":"noop","payload":null}'
+   $R RPUSH korbat:jobs 'not json'
+   for i in $(seq 1 20); do grep -q '"msg":"job failed"' .worker.log 2>/dev/null && break; sleep 1; done
+   cat .worker.log
+   kill $WPID; sleep 2
+   $R CLIENT LIST | grep -c cmd=blpop
+   $R LLEN korbat:jobs
    rm -f .worker.log
    ```
-   Expected `.worker.log` lines, in order: a line with `"msg":"worker started"`, a line with `"jobType":"noop","msg":"noop job handled"`, and a `"level":50` line containing `"msg":"job failed"` with `is not valid JSON`.
+   Expected: the three `grep -c cmd=blpop` counts are `0`, `1`, `0` (no other consumer before, exactly this worker while running, none after), and `LLEN` is `0`. If the first count is not `0`, a stray worker from an earlier run is consuming jobs: STOP and report it rather than killing processes you did not start. `.worker.log` contains, in order: a line with `"msg":"worker started"`, a line with `"jobType":"noop","msg":"noop job handled"`, and a `"level":50` line that contains `is not valid JSON` and ends with `"msg":"job failed"` (check the whole line, it is long).
 8. Commit:
    ```bash
    git add -A && git commit -m "feat(worker): redis list consumer with job registry
