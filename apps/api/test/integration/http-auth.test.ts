@@ -11,41 +11,9 @@ import { loadConfig, type Config } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
+import { Browser } from "./http-client";
 
 type App = ReturnType<typeof createApp>;
-
-/** A minimal browser: keeps cookies, sends Origin on state changes and echoes the CSRF cookie in X-CSRF-Token. */
-class Browser {
-  private readonly cookies = new Map<string, string>();
-
-  constructor(
-    private readonly app: App,
-    private readonly origin: string,
-  ) {}
-
-  async fetch(path: string, init: { method?: string; json?: unknown; csrf?: boolean } = {}) {
-    const method = init.method ?? (init.json === undefined ? "GET" : "POST");
-    const headers: Record<string, string> = {};
-    if (this.cookies.size > 0) headers.cookie = [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
-    if (method !== "GET") headers.origin = this.origin;
-    const csrf = this.cookies.get("__Host-korbat_csrf");
-    if (init.csrf !== false && csrf) headers["x-csrf-token"] = csrf;
-    if (init.json !== undefined) headers["content-type"] = "application/json";
-    const res = await this.app.request(path, { method, headers, body: init.json === undefined ? undefined : JSON.stringify(init.json) });
-    for (const line of res.headers.getSetCookie()) {
-      const [pair, ...attributes] = line.split("; ");
-      const separator = pair!.indexOf("=");
-      const name = pair!.slice(0, separator);
-      if (attributes.includes("Max-Age=0")) this.cookies.delete(name);
-      else this.cookies.set(name, pair!.slice(separator + 1));
-    }
-    return res;
-  }
-
-  cookie(name: string) {
-    return this.cookies.get(name);
-  }
-}
 
 const newHandle = () => `h_${randomBytes(6).toString("hex")}`;
 
@@ -157,7 +125,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     expect(await sessions.json()).toMatchObject({ error: { code: "onboarding_required" } });
   });
 
-  test("sensitive routes need fresh re-authentication, which an emailed code provides", { timeout: 30_000 }, async () => {
+  test("sensitive routes need fresh re-authentication, which an emailed code provides", async () => {
     const b = new Browser(app, config.APP_ORIGIN);
     const { email } = await signUp(b);
     await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Fresh" } });
