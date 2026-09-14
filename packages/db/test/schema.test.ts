@@ -43,3 +43,21 @@ describe("content schema", () => {
     }
   });
 });
+
+describe("trust and safety schema", () => {
+  test("there are 20 tables in total", () => {
+    expect(tables.length).toBe(20);
+  });
+  test("transparency_log carries no user identifiers", () => {
+    const cols = byName.get("transparency_log")!.columns.map((c) => c.name);
+    for (const c of cols) expect(c, c).not.toMatch(/user|author|moderator|reporter/);
+  });
+  test("audit_log policies allow only insert and select", () => {
+    const kinds = byName.get("audit_log")!.policies.map((p) => p.for).sort();
+    expect(kinds).toEqual(["insert", "select"]);
+  });
+  test("one appeal per case", () => {
+    const idx = byName.get("appeals")!.indexes.find((i) => i.config.name === "appeals_case_idx");
+    expect(idx?.config.unique).toBe(true);
+  });
+});
