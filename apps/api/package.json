@@ -1,0 +1,33 @@
+{
+  "name": "@korbat/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "test:integration": "INTEGRATION=1 vitest run test/integration"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "@hono/zod-validator": "0.9.1",
+    "@korbat/contracts": "workspace:*",
+    "@korbat/db": "workspace:*",
+    "@korbat/rules": "workspace:*",
+    "hono": "4.13.5",
+    "ioredis": "5.11.1",
+    "pino": "10.3.1",
+    "pino-pretty": "13.1.3",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "tsup": "8.5.1",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}
