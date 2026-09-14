@@ -39,7 +39,6 @@ Sub-project 1 is split in three so each plan stays reliable:
 - Devices and new-device alert email with a "This wasn't me" link.
 - Re-authentication for sensitive actions.
 - Lockout and rate limits on every auth endpoint.
-- Not in 1a but already planned: the 30-day IP-hash purge job (sub-project 4).
 - Staff role granted by a server-side CLI; staff endpoints require MFA.
 - Mailer interface, SMTP adapter, Mailpit in development.
 - Web screens for all of the above, functional and in the current dark style.
@@ -49,6 +48,7 @@ Sub-project 1 is split in three so each plan stays reliable:
 - Passkeys (1c).
 - SMS for anything, ever.
 - OAuth / social login.
+- The 30-day IP-hash purge job (sub-project 4, with the column grant it needs).
 - Final legal terms text (sub-project 4). 1a ships a draft terms page, clearly labelled as a draft, that summarises the public rulebook. Terms carry a version (`TERMS_VERSION`), recorded at sign-up; the re-acceptance flow for a new version is built with the final terms in sub-project 4.
 
 ## 2. Architecture
