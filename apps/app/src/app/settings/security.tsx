@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
+import { AppShell } from "@/components/AppShell";
 import { MfaSection } from "@/components/security/MfaSection";
 import { PasswordSection } from "@/components/security/PasswordSection";
 import { ReauthPanel, useReauth } from "@/components/security/ReauthPanel";
 import { SessionsSection } from "@/components/security/SessionsSection";
-import { Button, Loading } from "@/components/ui";
+import { Button, Loading, TextLink } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
@@ -35,14 +36,15 @@ export default function SecuritySettings() {
   }
 
   return (
-    <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="items-center px-6 py-10">
-      <View className="w-full max-w-xl">
+    <AppShell>
+      <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 py-6">
         <Text accessibilityRole="header" className="text-3xl font-bold tracking-tight text-zinc-50">
           Security
         </Text>
         <Text className="mt-2 text-base text-zinc-400">
           @{me.profile?.handle} · {me.user.email}
         </Text>
+        <TextLink label="Privacy: blocked and muted accounts" onPress={() => router.push("/settings/privacy")} />
 
         {reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}
 
@@ -57,7 +59,7 @@ export default function SecuritySettings() {
         </Section>
 
         <Button label="Sign out" onPress={() => void signOut()} tone="secondary" />
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </AppShell>
   );
 }
