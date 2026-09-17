@@ -22,6 +22,13 @@ Each prompt replaces judgment with rules. Files are complete and copied byte for
 - **Export and build durations.** Web exports in Tasks 9 to 12 and the image builds in Task 13 can take many minutes.
 - **Run noise.** Timings, ids, hashes and commit hashes differ on every run.
 
+## Execution findings (2026-09-17)
+
+The prompts were executed in this repository on 2026-09-17, one fresh session per prompt. Two things came up:
+
+- **Deleted file missing from a change-set list.** Prompt 09 removes `apps/app/src/app/(auth)/index.tsx` with `git rm`, but its change-set step listed only the 16 written paths, because the generator took the list from a rename-detecting listing. The executing session stopped as instructed. Every gate had passed and all 16 files matched the dry-run commit byte for byte, so the planning session ran the commit step as written. The generator now adds deleted paths to the list, and prompt 09 shows the corrected step.
+- **Invisible bytes in file blocks.** The contracts test in prompt 01 contains a decomposed accent (e followed by U+0301) and a U+0085 next-line character on purpose. A session that retypes the block can normalize them silently. Every session of this run extracted each block's bytes from the prompt file with `sed -n` and compared them with the written file using `diff`; do the same when re-running a prompt.
+
 ## Order
 
 | # | File | What it delivers | Needs Docker? |

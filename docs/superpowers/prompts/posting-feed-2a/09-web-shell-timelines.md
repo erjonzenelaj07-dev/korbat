@@ -1202,6 +1202,7 @@ Expected: exactly these paths, and nothing else (no `.env` file, no `dist/`):
 - `apps/app/src/app/(auth)/age.tsx`
 - `apps/app/src/app/(auth)/code.tsx`
 - `apps/app/src/app/(auth)/handle.tsx`
+- `apps/app/src/app/(auth)/index.tsx`
 - `apps/app/src/app/(auth)/mfa.tsx`
 - `apps/app/src/app/(auth)/password.tsx`
 - `apps/app/src/app/(auth)/signin.tsx`
@@ -1214,6 +1215,8 @@ Expected: exactly these paths, and nothing else (no `.env` file, no `dist/`):
 - `apps/app/src/components/social/PostCard.tsx`
 - `apps/app/src/components/social/RichText.tsx`
 - `apps/app/src/lib/social.ts`
+
+`git rm` stages the deletion, so `apps/app/src/app/(auth)/index.tsx` shows with a `D` in the first column. That line is expected.
 
 ## Step 8: commit
 
