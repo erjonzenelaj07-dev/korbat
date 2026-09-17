@@ -1,7 +1,9 @@
 import { useCallback, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Redirect, router } from "expo-router";
 import { AppShell } from "@/components/AppShell";
+import { ComposeButton, ComposeSheet } from "@/components/social/ComposeSheet";
+import { Composer } from "@/components/social/Composer";
 import { TimelineList } from "@/components/social/PagedList";
 import { Button, Loading } from "@/components/ui";
 import { useSession } from "@/lib/session";
@@ -12,7 +14,10 @@ type Tab = "following" | "latest";
 /** Home: Following and Latest for a signed-in account, Latest with a sign-in prompt for everyone else. */
 export default function Home() {
   const { state } = useSession();
+  const { width } = useWindowDimensions();
   const [tab, setTab] = useState<Tab>("following");
+  const [version, setVersion] = useState(0);
+  const [composing, setComposing] = useState(false);
   const fetchFollowing = useCallback((cursor?: string) => social.following(cursor), []);
   const fetchLatest = useCallback((cursor?: string) => social.latest(cursor), []);
 
@@ -27,9 +32,11 @@ export default function Home() {
 
   const signedIn = state.status === "signed-in";
   const current: Tab = signedIn ? tab : "latest";
+  const inlineComposer = signedIn && width >= 768;
+  const posted = () => setVersion((v) => v + 1);
 
   return (
-    <AppShell>
+    <AppShell floating={signedIn && !inlineComposer ? <ComposeButton onPress={() => setComposing(true)} /> : undefined}>
       <View className="border-b border-zinc-800 px-4 pt-4">
         <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
           Home
@@ -49,11 +56,17 @@ export default function Home() {
           </View>
         )}
       </View>
+      {inlineComposer ? (
+        <View className="border-b border-zinc-800">
+          <Composer onPosted={posted} />
+        </View>
+      ) : null}
       <TimelineList
-        key={current}
+        key={`${current}:${version}`}
         fetchPage={current === "following" ? fetchFollowing : fetchLatest}
         empty={current === "following" ? "Nothing here yet. Follow someone, or switch to Latest." : "No posts yet."}
       />
+      <ComposeSheet open={composing} onClose={() => setComposing(false)} onPosted={posted} />
     </AppShell>
   );
 }

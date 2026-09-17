@@ -113,6 +113,7 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
       <View className="mt-2 flex-row flex-wrap items-center">
         <Action label="Reply" count={post.counts.replies} onPress={() => router.push(`/post/${post.id}`)} />
         <Action label="Repost" count={post.counts.reposts} active={post.viewer?.reposted} activeClass="text-emerald-400" onPress={() => void toggle("repost")} />
+        <Action label="Quote" count={post.counts.quotes} onPress={() => (me ? router.push(`/post/${post.id}?quote=1`) : router.push("/signin"))} />
         <Action label="Like" count={post.counts.likes} active={post.viewer?.liked} activeClass="text-rose-400" onPress={() => void toggle("like")} />
         <Action label={post.viewer?.bookmarked ? "Saved" : "Save"} active={post.viewer?.bookmarked} activeClass="text-sky-400" onPress={() => void toggle("bookmark")} />
         {post.author.id === me ? <Action label="Delete" onPress={() => void remove()} /> : null}
