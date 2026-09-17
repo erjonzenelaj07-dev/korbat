@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * Smoke test of the auth module in a running Compose stack, through Caddy.
+ * Smoke test of the auth and social modules in a running Compose stack, through Caddy.
  *
  * 1. The web page's CSP allows the Turnstile widget.
  * 2. Password sign-in for an unknown email returns invalid_credentials (argon2 runs inside the image).
  * 3. A throwaway native-app account signs up with an emailed code read from Mailpit and onboards.
  * 4. /api/me answers for it.
- * 5. The grant-role CLI makes it a moderator, and its session stops working.
+ * 5. It posts, the post appears in the public Latest timeline, and its profile counts one post.
+ * 6. The grant-role CLI makes it a moderator, and its session stops working.
  *
  * Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit. Prints no codes or tokens.
@@ -38,6 +39,7 @@ if (!base || !mailpit || !terms || compose.length === 0) {
 const TURNSTILE_TOKEN = "XXXX.DUMMY.TOKEN.XXXX";
 const deviceId = randomBytes(32).toString("base64url");
 const email = `smoke-${randomUUID()}@korbat.local`;
+const handle = `smoke_${randomBytes(4).toString("hex")}`;
 let failures = 0;
 
 function check(label, ok, detail) {
@@ -94,14 +96,18 @@ async function main() {
   const complete = await api("/api/auth/signup/complete", { json: { flowId, dateOfBirth: "1990-01-01", termsVersion: terms } });
   if (!check("sign-up returns a bearer token", typeof complete.body?.token === "string", complete.summary)) return;
 
-  const onboarding = await api("/api/auth/onboarding/handle", {
-    json: { handle: `smoke_${randomBytes(4).toString("hex")}`, displayName: "Smoke Test" },
-    token: complete.body.token,
-  });
+  const onboarding = await api("/api/auth/onboarding/handle", { json: { handle, displayName: "Smoke Test" }, token: complete.body.token });
   if (!check("onboarding rotates the token", typeof onboarding.body?.token === "string", onboarding.summary)) return;
   const token = onboarding.body.token;
   const me = await api("/api/me", { token });
   check("/api/me for the new account", me.status === 200 && me.body?.user?.email === email && me.body?.user?.role === "user", me.summary);
+
+  const created = await api("/api/posts", { json: { body: "smoke test post" }, token });
+  check("create a post", created.status === 201 && typeof created.body?.id === "string", created.summary);
+  const latest = await api("/api/timeline/latest");
+  check("the post appears in the public Latest timeline", Array.isArray(latest.body?.items) && latest.body.items.some((item) => item.post?.id === created.body?.id), latest.summary);
+  const profile = await api(`/api/profiles/${handle}`);
+  check("the profile counts one post", profile.body?.counts?.posts === 1, profile.summary);
 
   const output = execFileSync(compose[0], [...compose.slice(1), "run", "--rm", "--no-deps", "-T", "api", "node", "dist/grant-role.js", email, "moderator"], {
     encoding: "utf8",

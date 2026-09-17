@@ -4,6 +4,7 @@ Pseudonymous social platform with a narrow public rulebook and transparent moder
 
 - Design spec: `docs/superpowers/specs/2026-09-03-korbat-design.md`
 - Accounts and sessions (sub-project 1a): `docs/superpowers/specs/2026-09-14-identity-auth-1a-design.md`
+- Posting and feed (sub-project 2a): `docs/superpowers/specs/2026-09-17-posting-feed-2a-design.md`
 - Plans: `docs/superpowers/plans/`
 
 ## Dev quick start
@@ -23,7 +24,17 @@ docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --build   # h
 node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --mailpit http://localhost:58025 --terms draft-2026-09 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
 ```
 
-The smoke test signs up a throwaway account through Caddy, reads its code from Mailpit, grants it a staff role with the CLI and checks that its session was revoked.
+The smoke test signs up a throwaway account through Caddy, reads its code from Mailpit, posts and reads the post back from the public Latest timeline, grants the account a staff role with the CLI and checks that its session was revoked.
+
+## Posting and feed
+Text posts up to 1000 characters, replies, quotes, likes, reposts and bookmarks; follows, blocks and mutes; a chronological Following timeline and a public Latest timeline; threads and profile pages. The web app's home is the timeline; sign-in lives at `/signin`.
+
+- **Reading signed out:** Latest, threads and profiles are public. Following, bookmarks, likes, follower lists and privacy settings need a session.
+- **Blocks** are enforced in every query, not just the interface: neither account sees the other while signed in, follows are removed both ways, and the blocked side gets `not_found` so nothing is revealed. Posts are public, so a block does not hide them from someone who signs out; the interface says so.
+- **Mutes** are one-way and silent, and hide an account from your timelines only.
+- **Liker lists are never exposed.** Counts are public; likes and bookmarks are private to their owner.
+- **Write limits** per account, tiered by account age: in the first 24 hours 5 posts and 20 replies an hour and no reposts or quotes for 48 hours; afterwards 30 posts and 60 replies an hour. Everyone: 100 likes an hour, 50 follows an hour and 400 a day, 30 blocks or mutes an hour. Undo actions are never limited.
+- **Deleting** blanks the text in the database and leaves a tombstone only where a thread or a quote needs it. There is no editing.
 
 ## Staff roles
 No API endpoint changes roles. Run this on the server:
