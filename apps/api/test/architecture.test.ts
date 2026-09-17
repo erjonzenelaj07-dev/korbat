@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 /**
- * The auth module boundary (1a spec, section 2.2). Paths are relative to apps/api/src with forward slashes.
- * The rules are plain functions so the tests below can prove each one catches a deliberate violation.
+ * Module boundaries (1a spec section 2.2, 2a spec section 2.2). Paths are relative to apps/api/src
+ * with forward slashes. The rules are plain functions so the tests below can prove each one catches
+ * a deliberate violation.
  */
 interface SourceFile {
   path: string;
@@ -17,8 +18,12 @@ const SCHEMA_ROOT = fileURLToPath(new URL("../../../packages/db/src/schema", imp
 
 /** Schema files that define auth-schema objects or shared helpers; every other schema file is public. */
 const NON_PUBLIC_SCHEMA_FILES = new Set(["auth.ts", "helpers.ts", "index.ts"]);
+const AUTH_SCHEMA_FILE = "auth.ts";
 const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts"]);
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
+
+/** Modules that may only be entered through their index file. */
+const MODULES = ["auth", "social"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -32,15 +37,24 @@ function loadSources(): SourceFile[] {
   return walk(SRC_ROOT).map((full) => ({ path: relative(SRC_ROOT, full).split(sep).join("/"), source: readFileSync(full, "utf8") }));
 }
 
+function exportedNames(file: string): string[] {
+  const source = readFileSync(join(SCHEMA_ROOT, file), "utf8");
+  return [...source.matchAll(/^export (?:const|function|type|interface|enum) ([A-Za-z0-9_]+)/gm)].map((m) => m[1]!);
+}
+
 /** Names exported by the public-schema files of @korbat/db (tables and enums the auth module must not touch). */
 function publicSchemaNames(): Set<string> {
   const names = new Set<string>();
   for (const file of readdirSync(SCHEMA_ROOT)) {
     if (!file.endsWith(".ts") || NON_PUBLIC_SCHEMA_FILES.has(file)) continue;
-    const source = readFileSync(join(SCHEMA_ROOT, file), "utf8");
-    for (const match of source.matchAll(/^export (?:const|function|type|interface|enum) ([A-Za-z0-9_]+)/gm)) names.add(match[1]!);
+    for (const name of exportedNames(file)) names.add(name);
   }
   return names;
+}
+
+/** Names exported by the auth-schema file of @korbat/db (tables and enums the social module must not touch). */
+function authSchemaNames(): Set<string> {
+  return new Set(exportedNames(AUTH_SCHEMA_FILE));
 }
 
 /** Every module specifier in static imports, re-exports, side-effect imports and dynamic imports. */
@@ -48,15 +62,37 @@ function specifiers(source: string): string[] {
   return [...source.matchAll(/(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)["']([^"']+)["']/g)].map((m) => m[1]!);
 }
 
-const insideAuth = (path: string) => path.startsWith("auth/");
+/** Named bindings of every `import { ... } from "@korbat/db"`; a namespace import yields the marker "*". */
+function dbImports(source: string): string[] {
+  const names: string[] = [];
+  for (const match of source.matchAll(/\bimport\s+(type\s+)?(\*\s+as\s+\w+|\{[^}]*\})\s+from\s+["'](@korbat\/db(?:\/[^"']*)?)["']/g)) {
+    const bindings = match[2]!;
+    if (bindings.startsWith("*")) {
+      names.push("*");
+      continue;
+    }
+    for (const part of bindings.slice(1, -1).split(",")) {
+      const name = part.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]!.trim();
+      if (name) names.push(name);
+    }
+  }
+  return names;
+}
 
-function findViolations(files: SourceFile[], publicNames: Set<string>): string[] {
+const insideAuth = (path: string) => path.startsWith("auth/");
+const insideSocial = (path: string) => path.startsWith("social/");
+
+function findViolations(files: SourceFile[], publicNames: Set<string>, authNames: Set<string>): string[] {
   const violations: string[] = [];
   for (const { path, source } of files) {
     for (const spec of specifiers(source)) {
-      if (!insideAuth(path) && spec.startsWith(".")) {
-        const target = posix.normalize(posix.join(posix.dirname(path), spec)).replace(/\.ts$/, "");
-        if (target.startsWith("auth/") && target !== "auth/index") violations.push(`${path}: imports ${spec}, which is inside the auth module (use ./auth)`);
+      if (!spec.startsWith(".")) continue;
+      const target = posix.normalize(posix.join(posix.dirname(path), spec)).replace(/\.ts$/, "");
+      for (const module of MODULES) {
+        if (path.startsWith(`${module}/`)) continue;
+        if (target.startsWith(`${module}/`) && target !== `${module}/index`) {
+          violations.push(`${path}: imports ${spec}, which is inside the ${module} module (use ./${module})`);
+        }
       }
     }
     if (!insideAuth(path) && !AUTH_POOL_ALLOWED.has(path) && /\b(DATABASE_URL_AUTH|authDb)\b/.test(source)) {
@@ -66,47 +102,49 @@ function findViolations(files: SourceFile[], publicNames: Set<string>): string[]
       violations.push(`${path}: references an auth key`);
     }
     if (insideAuth(path)) {
-      for (const match of source.matchAll(/\bimport\s+(type\s+)?(\*\s+as\s+\w+|\{[^}]*\})\s+from\s+["'](@korbat\/db(?:\/[^"']*)?)["']/g)) {
-        const bindings = match[2]!;
-        if (bindings.startsWith("*")) {
-          violations.push(`${path}: namespace import of ${match[3]} (import auth-schema names explicitly)`);
-          continue;
-        }
-        const names = bindings
-          .slice(1, -1)
-          .split(",")
-          .map((part) => part.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]!.trim())
-          .filter(Boolean);
-        for (const name of names) if (publicNames.has(name)) violations.push(`${path}: imports public-schema ${name} from @korbat/db`);
+      for (const name of dbImports(source)) {
+        if (name === "*") violations.push(`${path}: namespace import of @korbat/db (import auth-schema names explicitly)`);
+        else if (publicNames.has(name)) violations.push(`${path}: imports public-schema ${name} from @korbat/db`);
+      }
+    }
+    if (insideSocial(path)) {
+      for (const name of dbImports(source)) {
+        if (name === "*") violations.push(`${path}: namespace import of @korbat/db (import public-schema names explicitly)`);
+        else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db`);
       }
     }
   }
   return violations;
 }
 
-describe("auth module boundary", () => {
+describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);
     expect(paths).toContain("auth/index.ts");
+    expect(paths).toContain("social/index.ts");
     expect(paths).toContain("app.ts");
     expect(publicSchemaNames()).toContain("profiles");
     expect(publicSchemaNames()).not.toContain("users");
+    expect(authSchemaNames()).toContain("users");
+    expect(authSchemaNames()).not.toContain("posts");
   });
 
   test("apps/api/src has no boundary violations", () => {
-    expect(findViolations(loadSources(), publicSchemaNames())).toEqual([]);
+    expect(findViolations(loadSources(), publicSchemaNames(), authSchemaNames())).toEqual([]);
   });
 
-  test("allows the auth index, the permitted pool owners and auth-schema imports", () => {
+  test("allows the module indexes, the permitted pool owners and each module's own schema", () => {
     const files: SourceFile[] = [
-      { path: "app.ts", source: `import { createAuth } from "./auth";\nimport type { Auth } from "./auth/index";` },
+      { path: "app.ts", source: `import { createAuth } from "./auth";\nimport type { Auth } from "./auth/index";\nimport { createSocial } from "./social";` },
       { path: "profiles/store.ts", source: `import { isUniqueViolation } from "../auth";` },
       { path: "cli/grant-role.ts", source: `const authDb = createDb(config.DATABASE_URL_AUTH);` },
       { path: "index.ts", source: `const authDb = createDb(config.DATABASE_URL_AUTH);` },
       { path: "config.ts", source: `AUTH_HMAC_KEY: base64Key, IP_HASH_KEY: base64Key, TOTP_ENC_KEY: versionedKey, DATABASE_URL_AUTH: url` },
       { path: "auth/repo.ts", source: `import { users, sessions, type Db } from "@korbat/db";\nconst k = config.TOTP_ENC_KEY;` },
+      { path: "social/repo.ts", source: `import { posts, profiles, type Db } from "@korbat/db";\nimport { SocialError } from "./context";` },
+      { path: "social/routes.ts", source: `import type { Auth } from "../auth";` },
     ];
-    expect(findViolations(files, new Set(["profiles", "posts"]))).toEqual([]);
+    expect(findViolations(files, new Set(["profiles", "posts"]), new Set(["users", "sessions"]))).toEqual([]);
   });
 
   test("catches a deep import into the auth module", () => {
@@ -114,10 +152,22 @@ describe("auth module boundary", () => {
       { path: "routes/posts.ts", source: `import { hashPassword } from "../auth/passwords";` },
       { path: "app.ts", source: `export { createSessions } from "./auth/sessions.ts";\nconst m = await import("./auth/repo");` },
     ];
-    expect(findViolations(files, new Set())).toEqual([
+    expect(findViolations(files, new Set(), new Set())).toEqual([
       "routes/posts.ts: imports ../auth/passwords, which is inside the auth module (use ./auth)",
       "app.ts: imports ./auth/sessions.ts, which is inside the auth module (use ./auth)",
       "app.ts: imports ./auth/repo, which is inside the auth module (use ./auth)",
+    ]);
+  });
+
+  test("catches a deep import into the social module, from outside it and from the auth module", () => {
+    const files: SourceFile[] = [
+      { path: "app.ts", source: `import { createSocialRepo } from "./social/repo";` },
+      { path: "auth/flows/signup.ts", source: `import { createPost } from "../../social/flows/posts";` },
+      { path: "social/flows/graph.ts", source: `import { ownProfile } from "./posts";` },
+    ];
+    expect(findViolations(files, new Set(), new Set())).toEqual([
+      "app.ts: imports ./social/repo, which is inside the social module (use ./social)",
+      "auth/flows/signup.ts: imports ../../social/flows/posts, which is inside the social module (use ./social)",
     ]);
   });
 
@@ -128,7 +178,7 @@ describe("auth module boundary", () => {
       { path: "lib/hash.ts", source: `const key = config.IP_HASH_KEY;` },
       { path: "index.ts", source: `const k = config.AUTH_HMAC_KEY;` },
     ];
-    expect(findViolations(files, new Set())).toEqual([
+    expect(findViolations(files, new Set(), new Set())).toEqual([
       "routes/posts.ts: references the auth database pool",
       "profiles/store.ts: references the auth database pool",
       "lib/hash.ts: references an auth key",
@@ -142,10 +192,23 @@ describe("auth module boundary", () => {
       { path: "auth/flows/x.ts", source: `import type { posts } from "@korbat/db";` },
       { path: "auth/flows/y.ts", source: `import * as db from "@korbat/db";` },
     ];
-    expect(findViolations(files, new Set(["profiles", "posts"]))).toEqual([
+    expect(findViolations(files, new Set(["profiles", "posts"]), new Set())).toEqual([
       "auth/repo.ts: imports public-schema profiles from @korbat/db",
       "auth/flows/x.ts: imports public-schema posts from @korbat/db",
       "auth/flows/y.ts: namespace import of @korbat/db (import auth-schema names explicitly)",
+    ]);
+  });
+
+  test("catches auth-schema imports inside the social module", () => {
+    const files: SourceFile[] = [
+      { path: "social/repo.ts", source: `import { posts, users as u, type Db } from "@korbat/db";` },
+      { path: "social/flows/x.ts", source: `import type { sessions } from "@korbat/db";` },
+      { path: "social/flows/y.ts", source: `import * as db from "@korbat/db";` },
+    ];
+    expect(findViolations(files, new Set(["posts"]), new Set(["users", "sessions"]))).toEqual([
+      "social/repo.ts: imports auth-schema users from @korbat/db",
+      "social/flows/x.ts: imports auth-schema sessions from @korbat/db",
+      "social/flows/y.ts: namespace import of @korbat/db (import public-schema names explicitly)",
     ]);
   });
 });

@@ -8,6 +8,7 @@ import { MemoryKv } from "../src/auth/kv";
 import { loadConfig } from "../src/config";
 import { MemoryMailer } from "../src/mail/memory";
 import { MemoryStore } from "../src/middleware/rate-limit";
+import { createSocial } from "../src/social";
 
 const key = Buffer.alloc(32, 7).toString("base64");
 
@@ -26,9 +27,10 @@ const config = loadConfig({
   TERMS_VERSION: "draft-2026-09",
 });
 
-/** The real app and auth module; the database pool is created but never connects in these tests. */
+/** The real app with both modules; the database pools are created but never connect in these tests. */
 function app(checks: Record<string, () => Promise<void>>) {
   const logger = pino({ level: "silent" });
+  const rateLimitStore = new MemoryStore();
   const auth = createAuth({
     config,
     logger,
@@ -37,7 +39,8 @@ function app(checks: Record<string, () => Promise<void>>) {
     mailer: new MemoryMailer(),
     profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null },
   });
-  return createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: checks, auth });
+  const social = createSocial({ apiDb: createDb(config.DATABASE_URL_API, { max: 1 }), rateLimitStore, logger, requireSession: auth.requireSession });
+  return createApp({ config, logger, rateLimitStore, healthChecks: checks, auth, social });
 }
 
 describe("GET /api/health", () => {
@@ -82,5 +85,24 @@ describe("routing", () => {
     const text = await res.text();
     expect(text).not.toContain("secret detail");
     expect(JSON.parse(text)).toMatchObject({ error: { code: "internal" } });
+  });
+});
+
+describe("social routes", () => {
+  test("writes and the Following timeline need a session", async () => {
+    const a = app({});
+    const post = await a.request("/api/posts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ body: "hi" }) });
+    expect(post.status).toBe(401);
+    expect(await post.json()).toMatchObject({ error: { code: "unauthenticated" } });
+    expect((await a.request("/api/timeline/following")).status).toBe(401);
+    expect((await a.request("/api/me/bookmarks")).status).toBe(401);
+  });
+  test("malformed ids and handles are refused before any query runs", async () => {
+    const a = app({});
+    const post = await a.request("/api/posts/not-a-uuid");
+    expect(post.status).toBe(400);
+    expect(await post.json()).toMatchObject({ error: { code: "invalid_request" } });
+    expect((await a.request("/api/profiles/has%20space")).status).toBe(400);
+    expect((await a.request("/api/timeline/latest?limit=500")).status).toBe(400);
   });
 });

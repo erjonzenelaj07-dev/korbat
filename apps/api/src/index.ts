@@ -8,6 +8,7 @@ import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
 import { RedisStore } from "./middleware/rate-limit";
 import { createProfileStore } from "./profiles/store";
+import { createSocial } from "./social";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL, config.NODE_ENV === "development");
@@ -16,6 +17,7 @@ const apiDb = createDb(config.DATABASE_URL_API);
 const authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
 redis.on("error", (err) => logger.error({ err }, "redis error"));
+const rateLimitStore = new RedisStore(redis);
 
 const auth = createAuth({
   config,
@@ -26,16 +28,19 @@ const auth = createAuth({
   profiles: createProfileStore(apiDb),
 });
 
+const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession });
+
 const app = createApp({
   config,
   logger,
-  rateLimitStore: new RedisStore(redis),
+  rateLimitStore,
   healthChecks: {
     postgres_api: () => ping(apiDb),
     postgres_auth: () => ping(authDb),
     redis: async () => { await redis.ping(); },
   },
   auth,
+  social,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {
