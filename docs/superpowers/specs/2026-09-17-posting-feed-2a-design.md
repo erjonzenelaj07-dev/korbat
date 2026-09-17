@@ -278,3 +278,51 @@ None. Everything in this slice runs on packages already locked: Hono, Drizzle, z
 4. A blocked account gets `not_found` for the blocker's posts and profile and `blocked` for every interaction, proven by tests.
 5. Semgrep and the dependency audit stay clean.
 6. The Docker smoke test and the browser check pass on the built stack.
+
+## 13. Amendments from the dry run (2026-09-17)
+
+The plan was dry-run task by task in a scratch clone before the execution prompts were written. Where the built system differs from sections 1 to 12, this section is the verified version.
+
+Each item is a place where the verified build differs from `docs/superpowers/specs/2026-09-17-posting-feed-2a-design.md`. The spec gets these edits when the plan and prompts are written into the real repo.
+
+### Module layout (section 2.1)
+
+| Spec | Built |
+|---|---|
+| `text.ts` (body normalization) | `normalizePostBody`, `postLength` and the `PostBody` schema live in `packages/contracts/src/social.ts`, so the composer's counter applies exactly the server's rule; the module has no `text.ts` |
+| `context.ts` | Also holds `SocialDeps` (repository, the rate-limit store for per-account limits, logger, clock) and `ViewerId` |
+| not listed | `views.ts`: builds `PostView`s for one viewer (one-level quotes, tombstones, viewer state) and timeline items; `index.ts`: the module entry point |
+| `flows/timelines.ts` | Also serves the profile Posts and Replies tabs and the private likes and bookmarks pages |
+
+`createSocial(options)` takes the API pool, the rate-limit store, the logger, the auth module's `requireSession` middleware and an optional clock, and returns `deps` and `routes`.
+
+### App wiring (section 2.1)
+
+- **Optional in the app factory.** `AppDeps.social` is optional so the 1a HTTP tests keep building the app without a social module; the server always wires it. `app.ts` maps `SocialError` to the error envelope and sets `Retry-After` on `rate_limited`.
+
+### Repository (section 2.1, section 3)
+
+- **Raw SQL reads.** Reads use raw SQL through `db.execute`. That driver path returns timestamps as text and expands JavaScript arrays into parameter lists, so the repository formats timestamps as ISO text in SQL, parses them once in row mappers, passes cursor times as ISO strings, and sends id lists as one comma-joined parameter split with `string_to_array(...)::uuid[]`.
+- **Millisecond timestamps.** Every row the repository writes gets its time from the clock rather than the database default, so keyset cursors (epoch milliseconds) round-trip exactly.
+- **Repost cursor.** Timeline cursors carry the reposter id; a post reposted by two followed accounts is two items with distinct cursors.
+- **Ancestor cap.** `MAX_ANCESTORS` is 50; the recursive query stops there and the client links to the oldest ancestor returned.
+
+### Visibility and errors (sections 4, 5, 7)
+
+- **Order of the rule.** A block in either direction wins over everything, even over a deleted post's tombstone reason, so a blocked viewer sees `unavailable`, never `deleted`.
+- **Handles.** Flows tolerate a leading `@` in a handle; the route layer strips it anyway.
+- **Profile viewer state.** Because a block in either direction makes a profile `not_found`, `viewer.blocked` on a visible profile is always false; the field stays for later slices.
+- **Deleting someone else's post.** `not_author` only when the viewer could see the post; otherwise `not_found`.
+
+### Web (section 9)
+
+- **Post card actions.** Reply, Repost, Quote, Like, Save (bookmark) and, for the author, Delete. Quote opens the thread page with the compose sheet prefilled.
+- **Composer placement.** Inline at the top of the home timeline from 768 px up; a floating button and a sheet below that. After posting, the timeline reloads.
+- **Lists.** One `PagedList` (load more, pull to refresh) with `TimelineList`, `PostList` and `ProfileList` on top.
+- **Blocking from a profile.** After confirming a block the app goes to the privacy settings page, because the blocked profile is no longer visible to the blocker.
+- **Security page.** Now rendered inside the app shell, with a link to the privacy page.
+
+### Tests (section 10)
+
+- **Fixtures.** Social integration tests create `profiles` rows directly (no auth user behind them) and drive a clock that advances on every read, so list order never depends on the id tie-breaker.
+- **HTTP tests.** Use the in-memory mailer for sign-up codes and a strictly increasing clock with an offset that ages accounts past the new-account tier.
