@@ -15,7 +15,7 @@ export default function ChooseHandle() {
   const [error, setError] = useState<string | null>(null);
 
   if (state.status === "loading") return <Loading />;
-  if (state.status === "signed-out") return <Redirect href="/" />;
+  if (state.status === "signed-out") return <Redirect href="/signin" />;
 
   const normalized = handle.trim().replace(/^@/, "").toLowerCase();
   const valid = HANDLE.test(normalized) && displayName.trim().length > 0;
@@ -27,7 +27,7 @@ export default function ChooseHandle() {
     try {
       await api("/api/auth/onboarding/handle", { json: { handle: normalized, displayName: displayName.trim() }, schema: OnboardingHandleResponse });
       await refresh();
-      router.replace("/settings/security");
+      router.replace("/");
     } catch (err) {
       setError(errorMessage(err));
     } finally {

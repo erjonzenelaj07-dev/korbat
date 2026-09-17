@@ -34,7 +34,7 @@ export default function NotMe() {
       <Screen>
         <Title>Your account is locked down</Title>
         <Body>Every session is signed out and your password is removed. Sign in again with a code sent to your email, then set a new password and turn on two-factor authentication.</Body>
-        <Button label="Sign in" onPress={() => router.replace("/")} />
+        <Button label="Sign in" onPress={() => router.replace("/signin")} />
       </Screen>
     );
   }

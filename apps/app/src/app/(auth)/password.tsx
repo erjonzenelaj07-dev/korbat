@@ -36,7 +36,7 @@ export default function PasswordSignIn() {
       }
       flow.clear();
       const session = await refresh();
-      router.replace(session.status === "signed-in" && session.me.user.onboarded ? "/settings/security" : "/handle");
+      router.replace(session.status === "signed-in" && session.me.user.onboarded ? "/" : "/handle");
     } catch (err) {
       setError(errorMessage(err));
       turnstile.current?.reset();
@@ -67,7 +67,7 @@ export default function PasswordSignIn() {
       </View>
       <ErrorText message={error} />
       <Button label="Sign in" onPress={submit} busy={busy} disabled={!email.includes("@") || password.length === 0 || token === null} />
-      <TextLink label="Email me a code instead" onPress={() => router.replace("/")} />
+      <TextLink label="Email me a code instead" onPress={() => router.replace("/signin")} />
     </Screen>
   );
 }

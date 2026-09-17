@@ -22,7 +22,7 @@ export default function AgeAndTerms() {
   const [error, setError] = useState<string | null>(null);
   const [refused, setRefused] = useState(false);
 
-  if (!flowId && !refused) return <Redirect href="/" />;
+  if (!flowId && !refused) return <Redirect href="/signin" />;
 
   const dateOfBirth = `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}`;
   const complete = /^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) && year.trim().length === 4 && accepted;

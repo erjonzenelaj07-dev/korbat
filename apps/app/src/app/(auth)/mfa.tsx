@@ -15,7 +15,7 @@ export default function MfaChallenge() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!mfaTicket) return <Redirect href="/" />;
+  if (!mfaTicket) return <Redirect href="/signin" />;
 
   const valid = useRecovery ? /^[a-z2-7]{4}-[a-z2-7]{4}-[a-z2-7]{4}$/i.test(value.trim()) : /^\d{6}$/.test(value.trim());
 
@@ -29,12 +29,12 @@ export default function MfaChallenge() {
       flow.clear();
       const session = await refresh();
       if (session.status === "signed-in" && !session.me.user.onboarded) router.replace("/handle");
-      else router.replace(result.mustReenrollMfa ? "/settings/security?reenroll=1" : "/settings/security");
+      else router.replace(result.mustReenrollMfa ? "/settings/security?reenroll=1" : "/");
     } catch (err) {
       setError(errorMessage(err));
       if (err instanceof ApiError && err.code === "too_many_attempts") {
         flow.set({ mfaTicket: undefined });
-        router.replace("/");
+        router.replace("/signin");
       }
     } finally {
       setBusy(false);

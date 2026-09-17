@@ -21,7 +21,7 @@ export default function CodeEntry() {
     return () => clearInterval(timer);
   }, []);
 
-  if (!flowId || !email) return <Redirect href="/" />;
+  if (!flowId || !email) return <Redirect href="/signin" />;
 
   async function submit() {
     if (busy || !flowId) return;
@@ -37,7 +37,7 @@ export default function CodeEntry() {
       } else {
         flow.clear();
         const session = await refresh();
-        router.replace(session.status === "signed-in" && session.me.user.onboarded ? "/settings/security" : "/handle");
+        router.replace(session.status === "signed-in" && session.me.user.onboarded ? "/" : "/handle");
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -56,9 +56,9 @@ export default function CodeEntry() {
       {wait > 0 ? (
         <Body>You can ask for a new code in {wait} s.</Body>
       ) : (
-        <TextLink label="Send a new code" onPress={() => router.replace("/")} />
+        <TextLink label="Send a new code" onPress={() => router.replace("/signin")} />
       )}
-      <TextLink label="Use a different email" onPress={() => { flow.clear(); router.replace("/"); }} />
+      <TextLink label="Use a different email" onPress={() => { flow.clear(); router.replace("/signin"); }} />
     </Screen>
   );
 }

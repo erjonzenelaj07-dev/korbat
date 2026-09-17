@@ -6,7 +6,7 @@ import { useSession } from "@/lib/session";
 export default function SettingsLayout() {
   const { state } = useSession();
   if (state.status === "loading") return <Loading />;
-  if (state.status === "signed-out") return <Redirect href="/" />;
+  if (state.status === "signed-out") return <Redirect href="/signin" />;
   if (!state.me.user.onboarded) return <Redirect href="/handle" />;
   return <Stack screenOptions={{ headerShown: false }} />;
 }
