@@ -1,4 +1,7 @@
 import type { SocialErrorCode } from "@korbat/contracts";
+import type { Logger } from "pino";
+import type { RateLimitStore } from "../middleware/rate-limit";
+import type { SocialRepo } from "./repo";
 
 /** The social codes plus the shared ones the module also raises. */
 export type SocialErrorKind = SocialErrorCode | "not_found" | "invalid_request" | "rate_limited";
@@ -35,3 +38,11 @@ export function socialErrorMessage(code: SocialErrorKind): string {
 
 /** The account making a request, or null when signed out. Reads accept null; writes never do. */
 export type ViewerId = string | null;
+
+export interface SocialDeps {
+  repo: SocialRepo;
+  /** Per-account write limits; the same store the per-IP middleware uses. */
+  limits: RateLimitStore;
+  log: Logger;
+  now: () => Date;
+}
