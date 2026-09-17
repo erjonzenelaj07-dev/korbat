@@ -82,3 +82,25 @@ describe("identity and auth 1a", () => {
     expect(schema.emailCodePurpose.enumValues).toContain("reauth");
   });
 });
+
+describe("posting and feed 2a", () => {
+  test("posts and profiles carry non-negative counters, and posts a deletion time", () => {
+    const posts = byName.get("posts")!;
+    const postCols = posts.columns.map((c) => c.name);
+    expect(postCols).toEqual(expect.arrayContaining(["like_count", "repost_count", "reply_count", "quote_count", "deleted_at"]));
+    for (const name of ["like_count", "repost_count", "reply_count", "quote_count"]) {
+      expect(posts.columns.find((c) => c.name === name)?.notNull, name).toBe(true);
+    }
+    expect(posts.checks.map((c) => c.name)).toContain("posts_counts_nonnegative");
+    const profiles = byName.get("profiles")!;
+    expect(profiles.columns.map((c) => c.name)).toEqual(expect.arrayContaining(["follower_count", "following_count", "post_count"]));
+    expect(profiles.checks.map((c) => c.name)).toContain("profiles_counts_nonnegative");
+  });
+  test("per-account engagement lists and quote lookups have indexes", () => {
+    for (const name of ["likes", "reposts", "bookmarks"]) {
+      const idx = byName.get(name)!.indexes.find((i) => i.config.name === `${name}_user_created_idx`);
+      expect(idx?.config.columns.length, name).toBe(2);
+    }
+    expect(byName.get("posts")!.indexes.map((i) => i.config.name)).toContain("posts_quote_of_idx");
+  });
+});
