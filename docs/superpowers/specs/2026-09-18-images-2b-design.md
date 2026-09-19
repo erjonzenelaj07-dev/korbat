@@ -446,3 +446,49 @@ Removed from the worker: `ioredis`, `@korbat/db`. All additions follow 1a's meth
 6. Integration tests run only against `korbat_test`, and the development database gets no new fixtures.
 7. The architecture test passes and fails on each deliberate violation.
 8. Semgrep and the dependency audit stay clean, and the smoke test and the browser check pass on the built stack.
+
+## 16. Amendments from the dry run (2026-09-19)
+
+The plan was dry-run task by task in a scratch clone before the execution prompts were written, with every gate run by a script that required its expected output. Where the built system differs from sections 1 to 15, this section is the verified version.
+
+### Schema and packages (sections 3 and 4)
+
+| Spec | Built |
+|---|---|
+| One migration reshapes `post_media` | Two: `0005` drops `path` and makes post, position, width, height and blurhash optional; `0006` adds owner, status, failure reason, creation time, checks and indexes. drizzle-kit asks interactively when one migration both drops and adds columns, which a scripted run cannot answer |
+| `@korbat/media-protocol` has no dependencies | It depends on `@korbat/contracts` for the size names and the failure reasons, so the worker's results and the API's responses share one list |
+| The social repository owns its transactions | `createPost` and `deletePost` take a `within(tx)` callback, and `@korbat/db` exports the `DbTx` type; the media module attaches and detaches through the `MediaForPosts` interface, and the social module runs without images (`WITHOUT_MEDIA`) when none is wired |
+
+### Worker (section 5)
+
+- The small size and the blurhash come from one resize to raw pixels: the small WebP and the 32-pixel blurhash input are both made from that buffer, so the image is decoded twice (large, then small) rather than three times.
+- In production the worker refuses to start without `VIPS_BLOCK_UNTRUSTED`; the image sets it, and a missing value means the image was changed.
+- Ultra HDR has no fixture test. sharp 0.35.4 reports a gain map in its metadata but cannot write one, and the suites make every fixture at run time instead of committing binaries. The primary image of such a JPEG decodes like any JPEG, and every output is a fresh encode, so a gain map cannot survive.
+
+### API (sections 6 to 8)
+
+- Media ids are made lowercase by the contract (`MediaId`), and the file route checks the canonical form before it touches the disk. An id in capitals passed the UUID check and then made the volume layout throw, which answered 500.
+- The social routes have their own error handler; it now maps `MediaError` like the app's. Without it, posting an image that was not ready answered 500.
+- A deletion request stays for ten minutes after it is written (`DELETION_GRACE_MS`), so a slow worker cannot write files for an image whose request was already withdrawn.
+- `noStore` sets `Cache-Control` only when the handler set none, so the file route's `public, max-age=300` survives.
+- Caddy's upload limit applies to `/api/media` only, through an `@upload` path matcher inside `handle /api/*`.
+
+### Development and stack (sections 9 and 11)
+
+- The API and worker dev scripts run `tsx watch --env-file=.env`, so no shell has to source a file.
+- The worst case on the built stack: the four files at the caps all became ready, and the worker's memory peaked at 383 and 385 MiB of its 768 MiB in two runs, without a restart or an OOM kill. The limit keeps about half in reserve.
+- On Docker Desktop on this Windows machine, containers' outbound HTTPS is intermittently degraded: Turnstile verifications timed out at 5000 ms right after a heavy image build and, less often, at other times, and an image build's `pnpm install` failed with `ECONNRESET` while single requests got through. The API failed closed, as designed, and nothing in korbat changes for it. The smoke test tries a Turnstile refusal again every five seconds for up to a minute, where a wrong secret still fails, and the stack steps of the prompts say how to surface a build error their redirect hides.
+- The smoke test makes its images with the sharp the worker depends on, resolved through `apps/worker/package.json`, and runs every container command with its standard input closed.
+
+### Web (section 10)
+
+- A HEIC photo is recognized by its name too, because browsers on Windows often give such a file no type; it gets the HEIC advice instead of the generic refusal.
+- A quoted post's thumbnails are pictures, not buttons: the quote is one link to the quoted post, and a control inside a control is one that assistive technology cannot reach.
+- The blurhash fades into the image in 150 ms, or at once when the system asks for reduced motion.
+- The ALT control reports its state with `aria-expanded` and the Post button with `aria-busy`: react-native-web 0.21 ignores the `accessibilityState` prop, which the browser check caught on the ALT control. The older uses of `accessibilityState` in the app are a separate follow-up.
+- The browser check covered sign-up, three uploads with their states, descriptions, the button naming what is missing, posting, the three-image grid, ALT, the viewer with arrow keys, Escape and focus return, an image-only post, and deletion down to the files on disk.
+- A task step checks, in the installed source, the four library behaviours the grid and viewer rely on: expo-image puts `accessibilityLabel` into `<img alt>` and loads lazily by default; react-native-web's Modal closes on Escape and gives focus back when it closes.
+
+### Test isolation (section 11)
+
+- `scripts/clean-dev-fixtures.mjs` matches only emails of the tests' shape, `<word>-<uuid>@korbat.local`, and profiles without an account. Deleting profiles cascades to their rows, so the counters of kept profiles and posts those rows touched are recomputed from the rows in the same transaction. It prints the counts and up to 25 of each kind. The prompts run it without `--yes`; deletion was verified on seeded data in the scratch clone, where it also removed 117 accounts and 53 profiles that earlier test runs had left.
