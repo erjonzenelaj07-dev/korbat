@@ -2,6 +2,7 @@ import {
   BlockResponse,
   EngagementResponse,
   FollowResponse,
+  MediaStatusResponse,
   MuteResponse,
   PostPage,
   PostView,
@@ -9,6 +10,7 @@ import {
   ProfileView,
   ThreadResponse,
   TimelinePage,
+  UploadResponse,
 } from "@korbat/contracts";
 import { api } from "./api";
 
@@ -20,11 +22,16 @@ const handlePath = (handle: string) => `/api/profiles/${encodeURIComponent(handl
 
 /** Every social endpoint, typed by the shared contracts. Cookies and CSRF are handled by `api`. */
 export const social = {
-  createPost: (input: { body: string; replyToId?: string; quoteOfId?: string }) => api("/api/posts", { json: input, schema: PostView }),
+  createPost: (input: { body: string; replyToId?: string; quoteOfId?: string; media?: { id: string; alt: string }[] }) => api("/api/posts", { json: input, schema: PostView }),
   getPost: (id: string) => api(`/api/posts/${id}`, { schema: PostView }),
   deletePost: (id: string) => api(`/api/posts/${id}`, { method: "DELETE" }),
   thread: (id: string, cursor?: string) => api(`/api/posts/${id}/thread${query(cursor)}`, { schema: ThreadResponse }),
   engage: (id: string, kind: EngagementKind, on: boolean) => api(`/api/posts/${id}/${kind}`, { method: on ? "POST" : "DELETE", schema: EngagementResponse }),
+
+  /** Sends one image file as the request body. The answer is an id to ask about, not a finished image. */
+  uploadMedia: (file: Blob) => api("/api/media", { raw: { type: file.type, body: file }, schema: UploadResponse }),
+  mediaStatus: (id: string) => api(`/api/media/${id}`, { schema: MediaStatusResponse }),
+  removeMedia: (id: string) => api(`/api/media/${id}`, { method: "DELETE" }),
 
   following: (cursor?: string) => api(`/api/timeline/following${query(cursor)}`, { schema: TimelinePage }),
   latest: (cursor?: string) => api(`/api/timeline/latest${query(cursor)}`, { schema: TimelinePage }),

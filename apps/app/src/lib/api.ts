@@ -108,6 +108,8 @@ export const platform: "web" | "ios" | "android" = Platform.OS === "ios" || Plat
 interface RequestOptions<T> {
   method?: "GET" | "POST" | "DELETE";
   json?: unknown;
+  /** A raw body sent as it is, with its declared type: how an image is uploaded. */
+  raw?: { type: string; body: Blob };
   /** Schema for a JSON response body. Omit for 204 responses. */
   schema?: z.ZodType<T>;
 }
@@ -117,9 +119,10 @@ interface RequestOptions<T> {
  * X-CSRF-Token; the session cookie itself is HttpOnly and never readable here.
  */
 export async function api<T = void>(path: string, options: RequestOptions<T> = {}): Promise<T> {
-  const method = options.method ?? (options.json === undefined ? "GET" : "POST");
+  const method = options.method ?? (options.json === undefined && options.raw === undefined ? "GET" : "POST");
   const headers: Record<string, string> = {};
   if (options.json !== undefined) headers["content-type"] = "application/json";
+  if (options.raw) headers["content-type"] = options.raw.type;
   if (method !== "GET") {
     const csrf = readCookie(CSRF_COOKIE);
     if (csrf) headers["x-csrf-token"] = csrf;
@@ -131,7 +134,7 @@ export async function api<T = void>(path: string, options: RequestOptions<T> = {
       method,
       headers,
       credentials: "include",
-      body: options.json === undefined ? undefined : JSON.stringify(options.json),
+      body: options.raw ? options.raw.body : options.json === undefined ? undefined : JSON.stringify(options.json),
     });
   } catch {
     throw new ApiError(0, "network", messageFor("network"));
