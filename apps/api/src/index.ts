@@ -6,9 +6,10 @@ import { createAuth } from "./auth";
 import { loadConfig } from "./config";
 import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
+import { createMedia } from "./media";
 import { RedisStore } from "./middleware/rate-limit";
 import { createProfileStore } from "./profiles/store";
-import { createSocial } from "./social";
+import { createSocial, enforceWriteLimit } from "./social";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL, config.NODE_ENV === "development");
@@ -28,6 +29,18 @@ const auth = createAuth({
   profiles: createProfileStore(apiDb),
 });
 
+const media = createMedia({
+  apiDb,
+  uploadsDir: config.MEDIA_UPLOADS_DIR,
+  storeDir: config.MEDIA_STORE_DIR,
+  formats: config.MEDIA_FORMATS,
+  minFreeBytes: config.MEDIA_MIN_FREE_BYTES,
+  logger,
+  requireSession: auth.requireSession,
+  enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(rateLimitStore, userId, "upload", accountCreatedAt, now),
+});
+await media.prepare();
+
 const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession });
 
 const app = createApp({
@@ -41,6 +54,7 @@ const app = createApp({
   },
   auth,
   social,
+  media,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {

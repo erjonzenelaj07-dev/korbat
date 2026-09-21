@@ -1,0 +1,87 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import pino from "pino";
+import type { Db } from "@korbat/db";
+import type { MediaFailure } from "@korbat/contracts";
+import { MEDIA_FORMATS, type MediaFormat } from "@korbat/media-protocol";
+import type { MediaDeps } from "../../src/media/context";
+import { createMediaFiles } from "../../src/media/files";
+import { createMediaRepo } from "../../src/media/repo";
+import { MemoryStore } from "../../src/middleware/rate-limit";
+import { enforceWriteLimit } from "../../src/social/limits";
+import { DAY_MS, HOUR_MS } from "../../src/social/tiers";
+import { newProfile, ticker } from "./social-fixtures";
+
+/** The first bytes of each kind of file. The API judges an upload by these and never decodes it. */
+export const BYTES = {
+  jpeg: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("JFIF-test-image")]),
+  png: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("png-test-image")]),
+  pdf: Buffer.from("%PDF-1.7 not an image"),
+  heic: Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypheic"), Buffer.from([0, 0, 0, 0]), Buffer.from("mif1heic")]),
+  animatedWebp: Buffer.concat([Buffer.from("RIFF"), Buffer.from([40, 0, 0, 0]), Buffer.from("WEBPVP8X"), Buffer.from([10, 0, 0, 0, 0x02, 0, 0, 0])]),
+};
+
+/** A request body that arrives in chunks and declares no length. */
+export function bodyOf(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+}
+
+/**
+ * The media module on real Postgres, with both volumes in a temporary directory and a stand-in for
+ * the worker that writes files and results exactly as the protocol says. Nothing here decodes an image.
+ */
+export async function mediaHarness(db: Db, options: { formats?: readonly MediaFormat[]; minFreeBytes?: number } = {}) {
+  const clock = ticker();
+  const root = mkdtempSync(path.join(tmpdir(), "korbat-media-"));
+  const files = createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log: pino({ level: "silent" }) });
+  await files.prepare();
+  for (const dir of [files.store.files, files.store.results, files.store.attempts, files.store.tmp]) mkdirSync(dir, { recursive: true });
+
+  const limits = new MemoryStore(() => clock.now().getTime());
+  const deps: MediaDeps = {
+    repo: createMediaRepo(db),
+    files,
+    formats: options.formats ?? MEDIA_FORMATS,
+    minFreeBytes: options.minFreeBytes ?? 0,
+    enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(limits, userId, "upload", accountCreatedAt, now),
+    log: pino({ level: "silent" }),
+    now: clock.next,
+  };
+
+  const worker = {
+    /** What the worker leaves behind for an image it accepted. */
+    ready(id: string, size: { width: number; height: number } = { width: 2048, height: 1536 }) {
+      mkdirSync(files.store.imageDir(id), { recursive: true });
+      writeFileSync(files.store.image(id, "large"), `large-webp-of-${id}`);
+      writeFileSync(files.store.image(id, "small"), `small-webp-of-${id}`);
+      writeFileSync(files.store.result(id), JSON.stringify({ v: 1, id, status: "ready", ...size, blurhash: "L2Eo_P_3jb_3~qoL" }));
+    },
+    /** What it leaves behind for one it refused. */
+    failed(id: string, reason: MediaFailure) {
+      writeFileSync(files.store.result(id), JSON.stringify({ v: 1, id, status: "failed", reason }));
+    },
+  };
+
+  return {
+    deps,
+    files,
+    clock,
+    worker,
+    jpeg: () => ({ contentType: "image/jpeg", contentLength: undefined, body: bodyOf(BYTES.jpeg) }),
+    /** An account old enough for the established tier. */
+    established: () => newProfile(db, { createdAt: new Date(clock.now().getTime() - 3 * DAY_MS) }),
+    /** An account in its first day. */
+    fresh: () => newProfile(db, { createdAt: new Date(clock.now().getTime() - HOUR_MS) }),
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    newId: randomUUID,
+  };
+}
+
+export type MediaHarness = Awaited<ReturnType<typeof mediaHarness>>;

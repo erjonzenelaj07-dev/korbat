@@ -12,6 +12,7 @@ import { createSocialRepo } from "./repo";
 import { socialRoutes } from "./routes";
 
 export { SocialError } from "./context";
+export { enforceWriteLimit } from "./limits";
 export type { SocialDeps, ViewerId } from "./context";
 
 export interface CreateSocialOptions {

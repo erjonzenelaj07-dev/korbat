@@ -16,6 +16,10 @@ describe("account tiers", () => {
     expect(limitsFor("quote", 3 * DAY_MS)).toEqual(limitsFor("post", 3 * DAY_MS));
     expect(limitsFor("repost", 3 * DAY_MS)).toEqual([{ bucket: "repost", max: 30, windowMs: HOUR_MS }]);
   });
+  test("image uploads: 20 an hour in the first day, 120 afterwards", () => {
+    expect(limitsFor("upload", 0)).toEqual([{ bucket: "upload", max: 20, windowMs: HOUR_MS }]);
+    expect(limitsFor("upload", NEW_ACCOUNT_MS)).toEqual([{ bucket: "upload", max: 120, windowMs: HOUR_MS }]);
+  });
   test("engagement and graph limits do not depend on age, and follows have two windows", () => {
     for (const age of [0, 10 * DAY_MS]) {
       expect(limitsFor("like", age)[0]!.max).toBe(100);

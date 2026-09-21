@@ -10,7 +10,7 @@ export const NEW_ACCOUNT_MS = 24 * HOUR_MS;
 /** Reposting and quoting need an account at least this old. */
 export const REPOST_MIN_AGE_MS = 48 * HOUR_MS;
 
-export type WriteAction = "post" | "reply" | "quote" | "repost" | "like" | "bookmark" | "follow" | "block" | "mute";
+export type WriteAction = "post" | "reply" | "quote" | "repost" | "like" | "bookmark" | "follow" | "block" | "mute" | "upload";
 
 export interface WriteLimit {
   /** Counter name; several actions may share one (quotes count as posts). */
@@ -46,5 +46,8 @@ export function limitsFor(action: WriteAction, accountAgeMs: number): WriteLimit
       return [{ bucket: "block", max: 30, windowMs: HOUR_MS }];
     case "mute":
       return [{ bucket: "mute", max: 30, windowMs: HOUR_MS }];
+    // Image uploads (2b). The media module counts them through this table, so every per-account limit lives here.
+    case "upload":
+      return [{ bucket: "upload", max: fresh ? 20 : 120, windowMs: HOUR_MS }];
   }
 }

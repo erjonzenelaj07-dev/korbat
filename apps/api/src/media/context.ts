@@ -1,4 +1,8 @@
 import type { MediaErrorCode } from "@korbat/contracts";
+import type { MediaFormat } from "@korbat/media-protocol";
+import type { Logger } from "pino";
+import type { MediaFiles } from "./files";
+import type { MediaRepo } from "./repo";
 
 /** The media codes plus the shared ones the module also raises. */
 export type MediaErrorKind = MediaErrorCode | "not_found" | "invalid_request";
@@ -31,4 +35,20 @@ export class MediaError extends Error {
 
 export function mediaErrorMessage(code: MediaErrorKind): string {
   return MESSAGES[code];
+}
+
+/** How many uploads one account may hold that are not on a post yet. */
+export const MAX_PENDING_UPLOADS = 20;
+
+export interface MediaDeps {
+  repo: MediaRepo;
+  files: MediaFiles;
+  /** The formats MEDIA_FORMATS enables. The worker reads the same setting. */
+  formats: readonly MediaFormat[];
+  /** Uploads are refused while either volume has less free space than this. */
+  minFreeBytes: number;
+  /** Counts one upload against the account's hourly limit and throws when it is used up. */
+  enforceUploadLimit: (userId: string, accountCreatedAt: Date, now: Date) => Promise<void>;
+  log: Logger;
+  now: () => Date;
 }
