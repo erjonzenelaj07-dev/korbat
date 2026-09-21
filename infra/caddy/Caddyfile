@@ -17,6 +17,11 @@
   }
 
   handle /api/* {
+    # Image uploads. The API counts bytes itself and stops at 20 MiB; this is the second line behind it.
+    @upload path /api/media
+    request_body @upload {
+      max_size 25MB
+    }
     reverse_proxy api:3000
   }
 

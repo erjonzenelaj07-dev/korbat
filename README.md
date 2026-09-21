@@ -10,13 +10,16 @@ Pseudonymous social platform with a narrow public rulebook and transparent moder
 ## Dev quick start
 ```bash
 pnpm install
-node scripts/gen-dev-env.mjs                # creates or completes infra/.env, apps/api/.env and apps/app/.env, and derives apps/api/.env.test; values are random and never printed
-docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis minio minio-init mailpit   # dev host ports 55432, 56379, 59000, 59001, 51025, 58025
-pnpm --filter @korbat/api dev               # http://localhost:3000/api/health
+node scripts/gen-dev-env.mjs                # creates or completes infra/.env, apps/api/.env, apps/app/.env and apps/worker/.env, and derives apps/api/.env.test; values are random and never printed
+docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis mailpit   # dev host ports 55432, 56379, 51025, 58025
+pnpm --filter @korbat/api dev               # http://localhost:3000/api/health; reads apps/api/.env
+pnpm --filter @korbat/worker dev            # the image worker; reads apps/worker/.env and works on .data/media
 pnpm --filter @korbat/app web               # http://localhost:8081
 ```
 
 Emails sent in development (sign-in codes, new-device alerts, lockout notices) land in Mailpit at http://localhost:58025. Locally the web app uses Cloudflare's always-pass Turnstile test key, so the human check never blocks you.
+
+korbat once ran MinIO and never used it. Images live on two Docker volumes instead, `media-uploads` and `media-store`. If an old stack left a `korbat_miniodata` volume behind, `docker volume rm korbat_miniodata` removes it.
 
 ## Tests
 ```bash

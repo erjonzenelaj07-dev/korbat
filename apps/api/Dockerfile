@@ -17,6 +17,9 @@ COPY --from=build /repo/packages/db/migrations ./migrations
 # argon2 is not bundled (native module). The install above ran on Alpine, so @node-rs holds the
 # package and exactly the musl binary for this image's CPU architecture.
 COPY --from=build /repo/node_modules/@node-rs ./node_modules/@node-rs
+# The media volumes mount here. A new volume takes the owner of the path in the image, so both paths
+# exist and belong to the user the process runs as, in this image and in the worker's.
+RUN mkdir -p /media/uploads /media/store && chown node:node /media/uploads /media/store
 USER node
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Creates or completes the local .env files from their committed examples: infra/.env,
- * apps/api/.env and apps/app/.env.
+ * apps/api/.env, apps/app/.env and apps/worker/.env.
  *
  * - `change-me-<word>`          -> 48 random hex characters (passwords)
  * - `change-me-key-<name>`      -> 32 random bytes, base64 (HMAC keys)
@@ -92,6 +92,7 @@ const dockerApi = new Map([...infra].filter(([name]) => name.startsWith("API_"))
 complete("apps/api/.env.example", "apps/api/.env", infra, dockerApi);
 
 complete("apps/app/.env.example", "apps/app/.env", new Map(), new Map());
+complete("apps/worker/.env.example", "apps/worker/.env", new Map(), new Map());
 
 /** Rewrites apps/api/.env.test from apps/api/.env. Only where the data lives changes; every key stays the same. */
 function deriveTestEnv() {

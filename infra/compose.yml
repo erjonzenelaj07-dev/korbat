@@ -38,36 +38,6 @@ services:
       timeout: 3s
       retries: 20
 
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-    restart: unless-stopped
-    command: ["server", "/data", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    volumes:
-      - miniodata:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
-    depends_on:
-      minio: { condition: service_healthy }
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >
-        mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" &&
-        mc mb --ignore-existing "local/$MINIO_BUCKET" &&
-        mc anonymous set none "local/$MINIO_BUCKET"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
-
   migrate:
     <<: *node-common
     restart: "no"
@@ -105,6 +75,14 @@ services:
       SMTP_URL: ${API_SMTP_URL:?set API_SMTP_URL in infra/.env}
       MAIL_FROM: ${API_MAIL_FROM:?set API_MAIL_FROM in infra/.env}
       TERMS_VERSION: ${API_TERMS_VERSION:?set API_TERMS_VERSION in infra/.env}
+      # Images. The API writes uploads and only reads what the worker stored.
+      MEDIA_UPLOADS_DIR: /media/uploads
+      MEDIA_STORE_DIR: /media/store
+      MEDIA_FORMATS: ${MEDIA_FORMATS:-jpeg,png,webp,gif,avif}
+      MEDIA_MIN_FREE_BYTES: ${MEDIA_MIN_FREE_BYTES:-2147483648}
+    volumes:
+      - media-uploads:/media/uploads
+      - media-store:/media/store:ro
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
@@ -114,17 +92,35 @@ services:
       timeout: 3s
       retries: 10
 
+  # The image worker runs the decoder, the most exploitable code in the stack. It has no network at
+  # all, no credentials and no capabilities: it reads uploads and writes the store, and that is
+  # everything it can reach. The memory limit was sized on worst-case images (2b design, Research).
   worker:
     <<: *node-common
     build:
       context: ..
       dockerfile: apps/worker/Dockerfile
+    network_mode: none
+    cap_drop: [ALL]
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1.0
+    pids_limit: 64
+    tmpfs: ["/tmp:size=64m"]
     environment:
       NODE_ENV: production
       LOG_LEVEL: ${API_LOG_LEVEL:-info}
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      redis: { condition: service_healthy }
+      MEDIA_UPLOADS_DIR: /media/uploads
+      MEDIA_STORE_DIR: /media/store
+      MEDIA_FORMATS: ${MEDIA_FORMATS:-jpeg,png,webp,gif,avif}
+    volumes:
+      - media-uploads:/media/uploads:ro
+      - media-store:/media/store
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(Date.now() - JSON.parse(require('fs').readFileSync('/media/store/heartbeat', 'utf8')).at < 60000 ? 0 : 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
 
   caddy:
     restart: unless-stopped
@@ -152,6 +148,9 @@ services:
 volumes:
   pgdata:
   redisdata:
-  miniodata:
+  # Uploads wait here for the worker and are deleted once processed. Nothing in it needs a backup.
+  media-uploads:
+  # The images korbat serves. Back it up together with the database.
+  media-store:
   caddydata:
   caddyconfig:
