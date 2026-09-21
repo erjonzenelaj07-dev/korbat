@@ -1,7 +1,8 @@
 import pino from "pino";
 import type { Db } from "@korbat/db";
 import { MemoryStore } from "../../src/middleware/rate-limit";
-import type { SocialDeps } from "../../src/social/context";
+import type { MediaForPosts } from "../../src/media";
+import { WITHOUT_MEDIA, type SocialDeps } from "../../src/social/context";
 import { createSocialRepo } from "../../src/social/repo";
 import { DAY_MS, HOUR_MS } from "../../src/social/tiers";
 import { newProfile, ticker } from "./social-fixtures";
@@ -11,10 +12,10 @@ import { newProfile, ticker } from "./social-fixtures";
  * clock by a flow advances it one millisecond, so consecutive actions never share a timestamp and
  * list order in the tests is never left to the tie-breaker.
  */
-export function socialHarness(db: Db) {
+export function socialHarness(db: Db, options: { media?: MediaForPosts } = {}) {
   const clock = ticker();
   const repo = createSocialRepo(db);
-  const deps: SocialDeps = { repo, limits: new MemoryStore(() => clock.now().getTime()), log: pino({ level: "silent" }), now: clock.next };
+  const deps: SocialDeps = { repo, media: options.media ?? WITHOUT_MEDIA, limits: new MemoryStore(() => clock.now().getTime()), log: pino({ level: "silent" }), now: clock.next };
   return {
     deps,
     repo,

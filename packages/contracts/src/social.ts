@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MediaView } from "./media";
+import { MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
 
 /** Every code the social endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
 export const SocialErrorCode = z.enum(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new"]);
@@ -38,9 +38,25 @@ export const PostBody = z
   .refine((body) => postLength(body) >= 1, { message: "a post needs some text" })
   .refine((body) => postLength(body) <= POST_MAX_LENGTH, { message: `posts have at most ${POST_MAX_LENGTH} characters` });
 
+/** The text of a post that may also carry images: the same rule as PostBody, except that it may be empty. */
+export const PostText = z
+  .string()
+  .max(4000)
+  .transform(normalizePostBody)
+  .refine((body) => !FORBIDDEN_CONTROL.test(body), { message: "control characters are not allowed" })
+  .refine((body) => postLength(body) <= POST_MAX_LENGTH, { message: `posts have at most ${POST_MAX_LENGTH} characters` });
+
+/** A new post, reply or quote: text, up to four images that are ready, or both. */
 export const CreatePostRequest = z
-  .object({ body: PostBody, replyToId: PostId.optional(), quoteOfId: PostId.optional() })
-  .refine((post) => !(post.replyToId && post.quoteOfId), { message: "a post is a reply or a quote, not both", path: ["quoteOfId"] });
+  .object({
+    body: PostText.default(""),
+    replyToId: PostId.optional(),
+    quoteOfId: PostId.optional(),
+    media: z.array(MediaAttachment).max(MEDIA_MAX_PER_POST).default([]),
+  })
+  .refine((post) => !(post.replyToId && post.quoteOfId), { message: "a post is a reply or a quote, not both", path: ["quoteOfId"] })
+  .refine((post) => postLength(post.body) >= 1 || post.media.length >= 1, { message: "a post needs text or an image", path: ["body"] })
+  .refine((post) => new Set(post.media.map((item) => item.id)).size === post.media.length, { message: "an image can be attached once", path: ["media"] });
 export type CreatePostRequest = z.infer<typeof CreatePostRequest>;
 
 // ---------------------------------------------------------------- posts

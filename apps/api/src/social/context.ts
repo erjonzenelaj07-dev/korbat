@@ -1,5 +1,6 @@
 import type { SocialErrorCode } from "@korbat/contracts";
 import type { Logger } from "pino";
+import { MediaError, type MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialRepo } from "./repo";
 
@@ -39,8 +40,20 @@ export function socialErrorMessage(code: SocialErrorKind): string {
 /** The account making a request, or null when signed out. Reads accept null; writes never do. */
 export type ViewerId = string | null;
 
+/** Posts without images: what the module runs with when no media module is wired, as in the 2a tests. */
+export const WITHOUT_MEDIA: MediaForPosts = {
+  attach: async (_tx, input) => {
+    if (input.items.length > 0) throw new MediaError("media_unavailable", 400);
+  },
+  detachAll: async () => [],
+  requestDeletion: async () => undefined,
+  forPosts: async () => new Map(),
+};
+
 export interface SocialDeps {
   repo: SocialRepo;
+  /** Images on posts. The media module owns them; this module only passes its transaction along. */
+  media: MediaForPosts;
   /** Per-account write limits; the same store the per-IP middleware uses. */
   limits: RateLimitStore;
   log: Logger;

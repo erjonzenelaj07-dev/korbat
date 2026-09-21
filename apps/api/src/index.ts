@@ -43,7 +43,7 @@ const media = createMedia({
 });
 await media.prepare();
 
-const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession });
+const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, media: media.forPosts });
 
 const app = createApp({
   config,

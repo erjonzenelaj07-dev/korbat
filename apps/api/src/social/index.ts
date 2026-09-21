@@ -6,8 +6,9 @@ import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import type { Db } from "@korbat/db";
 import type { AppEnv } from "../env";
+import type { MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
-import type { SocialDeps } from "./context";
+import { WITHOUT_MEDIA, type SocialDeps } from "./context";
 import { createSocialRepo } from "./repo";
 import { socialRoutes } from "./routes";
 
@@ -23,12 +24,15 @@ export interface CreateSocialOptions {
   logger: Logger;
   /** The auth module's requireSession: an onboarded account with CSRF and Origin checked. */
   requireSession: MiddlewareHandler<AppEnv>;
+  /** The media module's interface for posts. Without it posts carry no images. */
+  media?: MediaForPosts;
   now?: () => Date;
 }
 
 export function createSocial(options: CreateSocialOptions) {
   const deps: SocialDeps = {
     repo: createSocialRepo(options.apiDb),
+    media: options.media ?? WITHOUT_MEDIA,
     limits: options.rateLimitStore,
     log: options.logger,
     now: options.now ?? (() => new Date()),

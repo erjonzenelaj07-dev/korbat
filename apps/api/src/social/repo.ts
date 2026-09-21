@@ -1,5 +1,5 @@
 import { and, eq, ne, sql, type SQL, type SQLWrapper } from "drizzle-orm";
-import { blocks, bookmarks, follows, likes, mutes, posts, profiles, reposts, type Db } from "@korbat/db";
+import { blocks, bookmarks, follows, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import type { Cursor } from "./cursor";
 import type { StoredPostState } from "./visibility";
 
@@ -223,7 +223,8 @@ export function createSocialRepo(db: Db) {
   return {
     // ------------------------------------------------------------ posts
 
-    async createPost(input: { authorId: string; body: string; replyToId: string | null; quoteOfId: string | null; now: Date }): Promise<string> {
+    /** `within` runs in the same transaction once the post exists, which is how its images are attached. */
+    async createPost(input: { authorId: string; body: string; replyToId: string | null; quoteOfId: string | null; now: Date; within?: (tx: DbTx, postId: string) => Promise<void> }): Promise<string> {
       return db.transaction(async (tx) => {
         const [row] = await tx
           .insert(posts)
@@ -235,12 +236,13 @@ export function createSocialRepo(db: Db) {
           await tx.update(profiles).set({ postCount: bump(profiles.postCount, 1) }).where(eq(profiles.id, input.authorId));
         }
         if (input.quoteOfId) await tx.update(posts).set({ quoteCount: bump(posts.quoteCount, 1) }).where(eq(posts.id, input.quoteOfId));
+        await input.within?.(tx, row!.id);
         return row!.id;
       });
     },
 
-    /** Blanks the body and marks the post deleted; adjusts the counters it contributed to. False when there was nothing to delete. */
-    async deletePost(id: string, authorId: string, now: Date): Promise<boolean> {
+    /** Blanks the body and marks the post deleted; adjusts the counters it contributed to. False when there was nothing to delete. `within` runs in the same transaction. */
+    async deletePost(id: string, authorId: string, now: Date, within?: (tx: DbTx) => Promise<void>): Promise<boolean> {
       return db.transaction(async (tx) => {
         const [old] = await tx
           .update(posts)
@@ -254,6 +256,7 @@ export function createSocialRepo(db: Db) {
           await tx.update(profiles).set({ postCount: bump(profiles.postCount, -1) }).where(eq(profiles.id, authorId));
         }
         if (old.quoteOfId) await tx.update(posts).set({ quoteCount: bump(posts.quoteCount, -1) }).where(eq(posts.id, old.quoteOfId));
+        await within?.(tx);
         return true;
       });
     },

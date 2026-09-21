@@ -94,3 +94,33 @@ describe("profiles", () => {
     expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new"]);
   });
 });
+
+describe("posts with images", () => {
+  const img = (n: number, alt = "an image") => ({ id: id(n), alt });
+
+  test("a post needs text or an image; the body defaults to empty and media to none", () => {
+    expect(CreatePostRequest.parse({ body: "hello" })).toEqual({ body: "hello", media: [] });
+    expect(CreatePostRequest.parse({ media: [img(1)] })).toEqual({ body: "", media: [img(1)] });
+    expect(CreatePostRequest.parse({ body: "  ", media: [img(1)] }).body).toBe("");
+    expect(CreatePostRequest.safeParse({}).success).toBe(false);
+    expect(CreatePostRequest.safeParse({ body: "   ", media: [] }).success).toBe(false);
+  });
+
+  test("at most four images, each only once, each with a description", () => {
+    expect(CreatePostRequest.safeParse({ body: "x", media: [img(1), img(2), img(3), img(4)] }).success).toBe(true);
+    expect(CreatePostRequest.safeParse({ body: "x", media: [img(1), img(2), img(3), img(4), img(5)] }).success).toBe(false);
+    expect(CreatePostRequest.safeParse({ body: "x", media: [img(1), img(1)] }).success).toBe(false);
+    expect(CreatePostRequest.safeParse({ body: "x", media: [img(1, "  ")] }).success).toBe(false);
+    expect(CreatePostRequest.safeParse({ body: "x", media: [{ id: id(1) }] }).success).toBe(false);
+    expect(CreatePostRequest.parse({ body: "x", media: [img(1, "  a   cat ")] }).media[0]!.alt).toBe("a cat");
+  });
+
+  test("the text rules still hold for a post with images, and replies and quotes may carry images", () => {
+    expect(CreatePostRequest.safeParse({ body: "a".repeat(1001), media: [img(1)] }).success).toBe(false);
+    expect(CreatePostRequest.safeParse({ body: "a\u0000b", media: [img(1)] }).success).toBe(false);
+    expect(CreatePostRequest.safeParse({ replyToId: id(7), media: [img(1)] }).success).toBe(true);
+    expect(CreatePostRequest.safeParse({ quoteOfId: id(7), media: [img(1)] }).success).toBe(true);
+    expect(CreatePostRequest.safeParse({ replyToId: id(7), quoteOfId: id(8), media: [img(1)] }).success).toBe(false);
+  });
+});
+

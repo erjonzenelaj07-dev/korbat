@@ -23,7 +23,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: graph, profile and timel
 
   const post = (viewer: string, body: string, extra: { replyToId?: string; quoteOfId?: string } = {}) => {
     h.clock.next();
-    return createPost(h.deps, viewer, { body, ...extra });
+    return createPost(h.deps, viewer, { body, media: [], ...extra });
   };
   const page = { limit: 20 };
 

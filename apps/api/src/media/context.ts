@@ -1,4 +1,5 @@
-import type { MediaErrorCode } from "@korbat/contracts";
+import type { MediaAttachment, MediaErrorCode, MediaView } from "@korbat/contracts";
+import type { DbTx } from "@korbat/db";
 import type { MediaFormat } from "@korbat/media-protocol";
 import type { Logger } from "pino";
 import type { MediaFiles } from "./files";
@@ -35,6 +36,18 @@ export class MediaError extends Error {
 
 export function mediaErrorMessage(code: MediaErrorKind): string {
   return MESSAGES[code];
+}
+
+/**
+ * What the social module needs from this one. `attach` and `detachAll` run inside the social
+ * module's own transaction; `requestDeletion` runs after it committed, because files cannot be
+ * rolled back.
+ */
+export interface MediaForPosts {
+  attach(tx: DbTx, input: { postId: string; ownerId: string; items: readonly MediaAttachment[] }): Promise<void>;
+  detachAll(tx: DbTx, postId: string): Promise<string[]>;
+  requestDeletion(ids: readonly string[]): Promise<void>;
+  forPosts(postIds: readonly string[]): Promise<Map<string, MediaView[]>>;
 }
 
 /** How many uploads one account may hold that are not on a post yet. */

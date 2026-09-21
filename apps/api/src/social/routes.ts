@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
+import { MediaError } from "../media";
 import { SocialError, type SocialDeps, type ViewerId } from "./context";
 import { setEngagement, type EngagementKind } from "./flows/engagement";
 import { blockedList, mutedList, setBlock, setFollow, setMute } from "./flows/graph";
@@ -29,6 +30,8 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>)
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
       return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
     }
+    // Creating a post attaches its images through the media module, which refuses with its own error type.
+    if (err instanceof MediaError) return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
     c.get("log").error({ err }, "unhandled error in social route");
     return c.json(errorBody("internal", "Internal error", c.get("requestId")), 500);
   });

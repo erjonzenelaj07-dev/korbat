@@ -43,12 +43,13 @@ export async function createPost(deps: SocialDeps, viewer: string, input: Create
     replyToId: input.replyToId ?? null,
     quoteOfId: input.quoteOfId ?? null,
     now: deps.now(),
+    within: (tx, postId) => deps.media.attach(tx, { postId, ownerId: viewer, items: input.media }),
   });
-  return (await postView(deps.repo, viewer, id))!;
+  return (await postView(deps, viewer, id))!;
 }
 
 export async function getPost(deps: SocialDeps, viewer: ViewerId, id: string): Promise<PostView> {
-  const view = await postView(deps.repo, viewer, id);
+  const view = await postView(deps, viewer, id);
   if (!view) throw new SocialError("not_found", 404);
   return view;
 }
@@ -58,7 +59,12 @@ export async function deletePost(deps: SocialDeps, viewer: string, id: string): 
   const row = (await deps.repo.findPosts([id])).get(id);
   if (!row) throw new SocialError("not_found", 404);
   if (row.authorId === viewer) {
-    await deps.repo.deletePost(id, viewer, deps.now());
+    // The image rows go with the post, in its transaction. Their files are deleted after the commit: files cannot be rolled back.
+    let images: string[] = [];
+    await deps.repo.deletePost(id, viewer, deps.now(), async (tx) => {
+      images = await deps.media.detachAll(tx, id);
+    });
+    await deps.media.requestDeletion(images);
     return;
   }
   const blocked = (await deps.repo.blockedEitherWay(viewer, [row.authorId])).has(row.authorId);
@@ -70,10 +76,10 @@ export async function deletePost(deps: SocialDeps, viewer: string, id: string): 
 export async function thread(deps: SocialDeps, viewer: ViewerId, id: string, query: Pagination): Promise<ThreadResponse> {
   const post = await getPost(deps, viewer, id);
   const ancestorIds = await deps.repo.ancestorIds(id);
-  const loaded = await loadPostViews(deps.repo, viewer, ancestorIds);
+  const loaded = await loadPostViews(deps, viewer, ancestorIds);
   const ancestors = ancestorIds.map((ancestorId) => loaded.get(ancestorId)!);
   const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
   const rows = await deps.repo.replies(id, viewer, cursor, query.limit);
-  const items = await postViews(deps.repo, viewer, rows);
+  const items = await postViews(deps, viewer, rows);
   return { ancestors: ancestors.map((a) => (isTombstone(a) ? a : a)), post, replies: { items, nextCursor: pageCursor(rows, query.limit) } };
 }

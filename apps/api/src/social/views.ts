@@ -1,8 +1,11 @@
 import type { Author, PostView, TimelineItem, Tombstone } from "@korbat/contracts";
-import type { ViewerId } from "./context";
+import type { SocialDeps, ViewerId } from "./context";
 import { encodeCursor } from "./cursor";
-import type { ListRow, PostRow, ProfileRow, SocialRepo } from "./repo";
+import type { ListRow, PostRow, ProfileRow } from "./repo";
 import { postAccess, tombstone } from "./visibility";
+
+/** Where views come from: the posts, and their images through the media module. */
+export type ViewSource = Pick<SocialDeps, "repo" | "media">;
 
 /** What a post id resolves to for a viewer: the view, or a tombstone when the viewer may not see it. */
 export type LoadedPost = PostView | Tombstone;
@@ -18,9 +21,10 @@ export function authorOf(profile: ProfileRow): Author {
 /**
  * Turns post ids into views for one viewer: loads the rows and, one level deep, the posts they
  * quote; decides access for every row with the visibility rule and the viewer's blocks; attaches
- * the viewer's like, repost and bookmark state. Ids that resolve to nothing become tombstones.
+ * the viewer's like, repost and bookmark state, and every post's images. Ids that resolve to nothing
+ * become tombstones, and tombstones carry no images.
  */
-export async function loadPostViews(repo: SocialRepo, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
+export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
   const unique = [...new Set(ids)];
   const primary = await repo.findPosts(unique);
   const quoteIds = [...new Set([...primary.values()].map((row) => row.quoteOfId).filter((id): id is string => id !== null && !primary.has(id)))];
@@ -29,6 +33,7 @@ export async function loadPostViews(repo: SocialRepo, viewer: ViewerId, ids: str
   const authorIds = [...new Set([...all.values()].map((row) => row.authorId))];
   const blocked = viewer ? await repo.blockedEitherWay(viewer, authorIds) : new Set<string>();
   const states = viewer ? await repo.viewerPostStates(viewer, [...all.keys()]) : null;
+  const images = await media.forPosts([...all.keys()]);
 
   const access = (row: PostRow) => postAccess(viewer, row, blocked.has(row.authorId));
   const base = (row: PostRow) => ({
@@ -39,8 +44,7 @@ export async function loadPostViews(repo: SocialRepo, viewer: ViewerId, ids: str
     state: row.state as PostView["state"],
     replyTo: row.replyToId ? { id: row.replyToId, authorHandle: row.replyToHandle ?? "" } : null,
     counts: { likes: row.likeCount, reposts: row.repostCount, replies: row.replyCount, quotes: row.quoteCount },
-    // Filled by the media module once posts can carry images.
-    media: [],
+    media: images.get(row.id) ?? [],
     ...(states ? { viewer: states.get(row.id)! } : {}),
   });
   const quoteOf = (id: string | null): PostView["quoteOf"] => {
@@ -65,21 +69,21 @@ export async function loadPostViews(repo: SocialRepo, viewer: ViewerId, ids: str
 }
 
 /** One post as the viewer sees it, or null when they may not. */
-export async function postView(repo: SocialRepo, viewer: ViewerId, id: string): Promise<PostView | null> {
-  const loaded = (await loadPostViews(repo, viewer, [id])).get(id)!;
+export async function postView(source: ViewSource, viewer: ViewerId, id: string): Promise<PostView | null> {
+  const loaded = (await loadPostViews(source, viewer, [id])).get(id)!;
   return isTombstone(loaded) ? null : loaded;
 }
 
 /** Views for list rows, in list order, dropping anything the viewer may not see. */
-export async function postViews(repo: SocialRepo, viewer: ViewerId, rows: ListRow[]): Promise<PostView[]> {
-  const loaded = await loadPostViews(repo, viewer, rows.map((row) => row.postId));
+export async function postViews(source: ViewSource, viewer: ViewerId, rows: ListRow[]): Promise<PostView[]> {
+  const loaded = await loadPostViews(source, viewer, rows.map((row) => row.postId));
   return rows.map((row) => loaded.get(row.postId)!).filter((view): view is PostView => !isTombstone(view));
 }
 
 /** Timeline items for list rows, with the reposter attached to repost rows. */
-export async function timelineItems(repo: SocialRepo, viewer: ViewerId, rows: ListRow[]): Promise<TimelineItem[]> {
-  const loaded = await loadPostViews(repo, viewer, rows.map((row) => row.postId));
-  const reposters = await repo.findProfiles([...new Set(rows.map((row) => row.reposterId).filter((id): id is string => id !== null))]);
+export async function timelineItems(source: ViewSource, viewer: ViewerId, rows: ListRow[]): Promise<TimelineItem[]> {
+  const loaded = await loadPostViews(source, viewer, rows.map((row) => row.postId));
+  const reposters = await source.repo.findProfiles([...new Set(rows.map((row) => row.reposterId).filter((id): id is string => id !== null))]);
   const items: TimelineItem[] = [];
   for (const row of rows) {
     const view = loaded.get(row.postId)!;

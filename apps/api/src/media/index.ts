@@ -8,13 +8,13 @@ import type { Db } from "@korbat/db";
 import { HEARTBEAT_STALE_MS, type MediaFormat } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
 import type { RateLimitStore } from "../middleware/rate-limit";
-import type { MediaDeps } from "./context";
+import type { MediaDeps, MediaForPosts } from "./context";
 import { createMediaFiles } from "./files";
 import { createMediaRepo } from "./repo";
 import { mediaFileRoutes, mediaRoutes } from "./routes";
 
 export { MediaError } from "./context";
-export type { MediaDeps } from "./context";
+export type { MediaDeps, MediaForPosts } from "./context";
 
 export interface CreateMediaOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
@@ -46,8 +46,16 @@ export function createMedia(options: CreateMediaOptions) {
     log: options.logger,
     now: options.now ?? (() => new Date()),
   };
+  const forPosts: MediaForPosts = {
+    attach: (tx, input) => deps.repo.attach(tx, input),
+    detachAll: (tx, postId) => deps.repo.detachAll(tx, postId),
+    requestDeletion: (ids) => deps.files.requestDeletion(ids),
+    forPosts: (postIds) => deps.repo.forPosts(postIds),
+  };
   return {
     deps,
+    /** The interface the social module uses to put images on posts and read them back. */
+    forPosts,
     /** Creates the uploads volume's directories. Call once before serving. */
     prepare: () => deps.files.prepare(),
     routes: mediaRoutes(deps, options.requireSession),

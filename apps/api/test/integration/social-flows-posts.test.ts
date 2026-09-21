@@ -21,7 +21,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
 
   const post = (viewer: string, body: string, extra: { replyToId?: string; quoteOfId?: string } = {}) => {
     h.clock.next();
-    return createPost(h.deps, viewer, { body, ...extra });
+    return createPost(h.deps, viewer, { body, media: [], ...extra });
   };
 
   test("posts, replies and quotes come back as views that pass the contract", async () => {
