@@ -48,4 +48,16 @@ describe("loadConfig", () => {
       expect(() => loadConfig(env), name).toThrow(new RegExp(name));
     }
   });
+  test("media settings default to the development directories, every format and a 2 GiB free-space floor", () => {
+    const c = loadConfig(good);
+    expect(c.MEDIA_UPLOADS_DIR).toBe("../../.data/media/uploads");
+    expect(c.MEDIA_STORE_DIR).toBe("../../.data/media/store");
+    expect(c.MEDIA_FORMATS).toEqual(["jpeg", "png", "webp", "gif", "avif"]);
+    expect(c.MEDIA_MIN_FREE_BYTES).toBe(2_147_483_648);
+  });
+  test("MEDIA_FORMATS enables a subset, and a typo stops the process instead of changing what is accepted", () => {
+    expect(loadConfig({ ...good, MEDIA_FORMATS: "png, jpeg" }).MEDIA_FORMATS).toEqual(["jpeg", "png"]);
+    expect(() => loadConfig({ ...good, MEDIA_FORMATS: "jpeg,tiff" })).toThrow(/unknown formats: tiff/);
+    expect(loadConfig({ ...good, MEDIA_MIN_FREE_BYTES: "0", MEDIA_STORE_DIR: "/media/store" })).toMatchObject({ MEDIA_MIN_FREE_BYTES: 0, MEDIA_STORE_DIR: "/media/store" });
+  });
 });

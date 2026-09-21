@@ -28,6 +28,9 @@ importers:
       '@korbat/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@korbat/media-protocol':
+        specifier: workspace:*
+        version: link:../../packages/media-protocol
       '@korbat/rules':
         specifier: workspace:*
         version: link:../../packages/rules

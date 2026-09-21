@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseFormats } from "@korbat/media-protocol";
 
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
@@ -38,6 +39,24 @@ const schema = z.object({
   SMTP_URL: z.url({ protocol: /^smtps?$/ }),
   MAIL_FROM: z.string().min(3),
   TERMS_VERSION: z.string().min(1).max(64),
+  /** The uploads volume, which the API writes and the image worker only reads. The default suits `pnpm dev` from apps/api. */
+  MEDIA_UPLOADS_DIR: z.string().min(1).default("../../.data/media/uploads"),
+  /** The store volume, which the image worker writes and the API only reads. */
+  MEDIA_STORE_DIR: z.string().min(1).default("../../.data/media/store"),
+  /** A comma-separated subset of jpeg, png, webp, gif, avif; unset enables all. The worker reads the same variable. */
+  MEDIA_FORMATS: z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      try {
+        return parseFormats(value);
+      } catch (err) {
+        ctx.addIssue({ code: "custom", message: (err as Error).message });
+        return z.NEVER;
+      }
+    }),
+  /** Uploads are refused while either media volume has less free space than this. The volumes share a disk with Postgres. */
+  MEDIA_MIN_FREE_BYTES: z.coerce.number().int().nonnegative().default(2 * 1024 ** 3),
 });
 
 export type Config = z.infer<typeof schema>;
