@@ -375,7 +375,7 @@ Must not contain:
 
 - `renamed`
 
-Allowed difference: drizzle-kit names the migration file with two random words, so the file name differs from the dry run. Any name of that shape is correct; do not rename it.
+Allowed difference: drizzle-kit names the migration file with a random adjective and a hero name, and a hero name can contain an underscore (the run in this repository got `0006_nifty_blue_shield.sql`), so the file name differs from the dry run. Any name of that shape is correct; do not rename it.
 
 Observed on the dry run:
 
@@ -497,13 +497,13 @@ git status --porcelain --untracked-files=all
 
 Expected: exactly these paths, and nothing else (no `.env` file, no `dist/`):
 
-- `packages/db/migrations/0006_<two random words>.sql`
+- `packages/db/migrations/0006_<adjective>_<hero>.sql`
 - `packages/db/migrations/meta/0006_snapshot.json`
 - `packages/db/migrations/meta/_journal.json`
 - `packages/db/src/schema/content.ts`
 - `packages/db/test/schema.test.ts`
 
-Allowed difference: drizzle-kit names each generated migration with its number and two random words, so that file's name differs from the dry run. Any name of that shape is correct; do not rename it.
+Allowed difference: drizzle-kit names each generated migration with its number, a random adjective and a hero name, so that file's name differs from the dry run. Any name of that shape is correct; do not rename it.
 
 ## Step 13: commit
 

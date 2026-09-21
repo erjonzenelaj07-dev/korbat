@@ -17,7 +17,7 @@ The API and the worker share a small package with no I/O of its own: the pixel c
 
 1. `git status --porcelain` prints nothing.
 2. `git log --oneline -1` shows `feat(contracts): media limits, alt text rule, upload and status responses, media views; every post view carries a media list`.
-3. The previous task's last API unit run ended with `Tests  96 passed (96)`.
+3. The previous task's integration run ended with `Tests  96 passed (96)`.
 
 ## Rules (read twice)
 

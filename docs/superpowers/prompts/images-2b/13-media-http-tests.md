@@ -18,7 +18,7 @@ End-to-end tests over HTTP with two accounts made by the 1a sign-up flow: upload
 
 1. `git status --porcelain` prints nothing.
 2. `git log --oneline -1` shows `feat(media): sweeper finalizes unpolled results, fails stuck uploads after five minutes, expires unattached ones after a day, withdraws finished deletion requests and reconciles orphans under a Redis lock`.
-3. The previous task's last API unit run ended with `Tests  131 passed (131)`.
+3. The previous task's integration run ended with `Tests  131 passed (131)`.
 
 ## Rules (read twice)
 

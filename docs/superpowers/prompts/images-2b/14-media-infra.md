@@ -19,7 +19,7 @@ The stack loses MinIO and gains two volumes and a hardened worker: no network, n
 
 1. `git status --porcelain` prints nothing.
 2. `git log --oneline -1` shows `test(media): HTTP tests for upload, status, posting with images, public and author-only files, CSRF, refusals, the new-account tier and worker health`.
-3. The previous task's last API unit run ended with `Tests  138 passed (138)`.
+3. The previous task's integration run ended with `Tests  138 passed (138)`.
 
 ## Rules (read twice)
 

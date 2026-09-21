@@ -18,7 +18,7 @@ Posts, replies and quotes take up to four described images. The social flows att
 
 1. `git status --porcelain` prints nothing.
 2. `git log --oneline -1` shows `feat(media): image files served after a visibility check, mounted before the global limit and session resolution; canonical media ids; advisory health checks; boundary test covers the media module`.
-3. The previous task's last API unit run ended with `Tests  118 passed (118)`.
+3. The previous task's integration run ended with `Tests  118 passed (118)`.
 
 ## Rules (read twice)
 

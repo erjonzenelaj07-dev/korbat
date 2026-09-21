@@ -16,7 +16,7 @@ The worker turns an untrusted upload into two metadata-free WebP files and a blu
 ## Preconditions
 
 1. `git status --porcelain` prints nothing.
-2. `git log --oneline -1` shows `feat(db): post_media gains owner, status, failure reason and creation time; checks for ready and attached rows; indexes for pending counts and the sweeper`.
+2. `git log --oneline -2` shows `chore(deps): exclude three maintainer-published legacy releases from pnpm's trust policy` first and `feat(db): post_media gains owner, status, failure reason and creation time; checks for ready and attached rows; indexes for pending counts and the sweeper` second. The first commit is the trust-policy fix described under "Execution findings" in `00-README.md`.
 
 ## Rules (read twice)
 

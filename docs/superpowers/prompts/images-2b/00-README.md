@@ -21,10 +21,19 @@ Each prompt replaces judgment with rules. Files are complete and copied byte for
 
 ## What can differ between runs
 
-- **Migration filenames.** Drizzle's migration filenames in Tasks 4 and 5 end in two random words. The prompts show them as a pattern.
+- **Migration filenames.** Drizzle's migration filenames in Tasks 4 and 5 end in a random adjective and a hero name, and a hero name can contain an underscore (`0005_huge_scarlet_spider.sql`). The prompts show them as a pattern.
+- **Lockfile peer variants.** pnpm may give `apps/api` and `apps/worker` the two locked vitest variants the other way round (vite with esbuild 0.27.7 or 0.28.2). Nothing new is locked, and every gate passes either way.
 - **Lockfile counts.** The number of new package versions in Tasks 6 and 15 can differ if a transitive dependency published a release since the dry run; every new version must still be at least 7 days old.
 - **Durations.** Web exports in Tasks 15 and 16, image builds in Tasks 7, 14 and 17, and the semgrep scan can take many minutes.
-- **Run noise.** Timings, ids, hashes, commit hashes and the worker's memory peak differ on every run.
+- **Run noise.** Timings, ids, hashes, commit hashes and the worker's memory peak differ on every run. Every install prints `Packages: -N`, the optional packages pnpm skips on Windows, and every integration run prints a Vite warning about the extensionless import in `vitest.integration.config.ts` (`configLoader: 'native'`); neither is a failure.
+
+## Execution findings (2026-09-21)
+
+The prompts were executed in this repository on 2026-09-21, one fresh session per prompt. Every commit was compared with the dry run's by blob hash and matched it, apart from drizzle's random migration names, snapshot ids and timestamps; the migrations' SQL is byte for byte the dry run's. Three things came up:
+
+- **pnpm's trust policy failed installs at random.** Task 6's first attempt stopped at its failing-test step because the hidden install had failed with `ERR_PNPM_TRUST_DOWNGRADE` for `semver@6.3.1`, deep in the web app's Babel tree. pnpm checks a version against the provenance of earlier releases whenever it resolves that version from the registry, and a non-frozen install re-resolves some locked versions on some runs and not on others: the same install failed 3 times in 4, and a lockfile-only update 3 times in 6, while the dry run never hit it. A scan of all 919 versions in the final lockfile with pnpm's rule found three that fail it, each a maintenance release of an older line published by the package's own maintainer without provenance: `semver@6.3.1`, `chokidar@4.0.3` and `ua-parser-js@1.0.41`. With the owner's approval, commit `8d9dd38` lists exactly these under `trustPolicyExclude` in `pnpm-workspace.yaml`. Afterwards 30 installs in a row passed, and every other version, and every new one, is still checked. The tree was reset and Task 6 ran again from the start; prompt 06's second precondition names that commit.
+- **Precondition wording.** In prompts 03 and 10 to 14 the third precondition quotes the previous task's integration run, not an API unit run. Those prompts now say so.
+- **Migration names.** drizzle-kit names a migration with a random adjective and a hero name, and a hero name can contain an underscore: this run got `0005_huge_scarlet_spider.sql` and `0006_nifty_blue_shield.sql`. The Task 4 session checked drizzle-kit's word lists before accepting the name. Prompts 04 and 05 now describe the shape.
 
 ## Verified in the dry run only
 

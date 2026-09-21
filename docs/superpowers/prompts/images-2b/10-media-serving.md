@@ -18,7 +18,7 @@ Image files are served at `/api/media/<id>/<small|large>.webp` after the post's 
 
 1. `git status --porcelain` prints nothing.
 2. `git log --oneline -1` shows `feat(media): upload, status and removal flows with their repository and routes; uploads are tiered by account age; the API mounts /api/media`.
-3. The previous task's last API unit run ended with `Tests  109 passed (109)`.
+3. The previous task's integration run ended with `Tests  109 passed (109)`.
 
 ## Rules (read twice)
 

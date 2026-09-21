@@ -18,7 +18,7 @@ A sweeper in the API, run under a Redis leader lock, finishes what clients leave
 
 1. `git status --porcelain` prints nothing.
 2. `git log --oneline -1` shows `feat(social): posts, replies and quotes carry up to four described images, attached and detached inside the post's transaction; every view has its media`.
-3. The previous task's last API unit run ended with `Tests  124 passed (124)`.
+3. The previous task's integration run ended with `Tests  124 passed (124)`.
 
 ## Rules (read twice)
 
