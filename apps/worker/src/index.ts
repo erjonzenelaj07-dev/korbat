@@ -1,33 +1,52 @@
-import Redis from "ioredis";
+import { setTimeout as sleep } from "node:timers/promises";
 import pino from "pino";
-import { JobRegistry, QUEUE_KEY, parseJob } from "./jobs";
+import { HEARTBEAT_INTERVAL_MS, storeLayout, uploadsLayout } from "@korbat/media-protocol";
+import { loadConfig } from "./config";
+import { WATCHDOG_MS, prepareStore, tick, writeHeartbeat, type LoopDeps } from "./loop";
+import { configureDecoder, processImage } from "./pipeline";
 
 /**
- * Foundation worker: a plain Redis list consumer. Sub-project 2 decides on a
- * real queue (retries, delays) when the image pipeline lands; the registry
- * interface stays.
+ * The image worker. It reads uploads from one volume and writes WebP files, results and a
+ * heartbeat to another, one image at a time. It has no network, no database and no queue: the two
+ * volumes are everything it can reach. See docs/superpowers/specs/2026-09-18-images-2b-design.md.
  */
-const redisUrl = process.env.REDIS_URL;
-if (!redisUrl) throw new Error("REDIS_URL is required");
-const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: undefined });
-const redis = new Redis(redisUrl, { maxRetriesPerRequest: null });
-const registry = new JobRegistry().register("noop", async (_payload, ctx) => { ctx.log.info("noop job handled"); });
+const config = loadConfig();
+const log = pino({ level: config.logLevel, base: undefined });
+configureDecoder(config.formats);
+
+const deps: LoopDeps = {
+  uploads: uploadsLayout(config.uploadsDir),
+  store: storeLayout(config.storeDir),
+  formats: config.formats,
+  log,
+  now: Date.now,
+  process: processImage,
+  abort: (reason) => {
+    log.fatal({ reason }, "watchdog: exiting so the container restarts");
+    process.exit(1);
+  },
+  watchdogMs: WATCHDOG_MS,
+};
+
+await prepareStore(deps.store);
+await writeHeartbeat(deps);
+// The heartbeat has its own timer: decoding runs off the main thread, so it keeps beating during a long image.
+const heartbeat = setInterval(() => void writeHeartbeat(deps).catch((err: unknown) => log.error({ err }, "heartbeat failed")), HEARTBEAT_INTERVAL_MS);
 
 let running = true;
-const stop = (signal: string) => { log.info({ signal }, "stopping after current job"); running = false; };
+const stop = (signal: string) => {
+  log.info({ signal }, "stopping after the current image");
+  running = false;
+};
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
-log.info("worker started");
+log.info({ formats: config.formats }, "worker started");
 while (running) {
-  const item = await redis.blpop(QUEUE_KEY, 5);
-  if (!item) continue;
-  const raw = item[1];
-  try {
-    const job = parseJob(raw);
-    await registry.dispatch(job, { log: log.child({ jobType: job.type }) });
-  } catch (err) {
-    log.error({ err }, "job failed");
-  }
+  const worked = await tick(deps).catch((err: unknown) => {
+    log.error({ err }, "tick failed");
+    return false;
+  });
+  if (!worked) await sleep(500);
 }
-await redis.quit();
+clearInterval(heartbeat);

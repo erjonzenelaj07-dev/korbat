@@ -150,18 +150,12 @@ importers:
       '@korbat/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@korbat/db':
-        specifier: workspace:*
-        version: link:../../packages/db
       '@korbat/media-protocol':
         specifier: workspace:*
         version: link:../../packages/media-protocol
       blurhash:
         specifier: 2.0.5
         version: 2.0.5
-      ioredis:
-        specifier: 5.11.1
-        version: 5.11.1
       pino:
         specifier: 10.3.1
         version: 10.3.1
