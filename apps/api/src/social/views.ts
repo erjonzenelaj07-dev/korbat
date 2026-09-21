@@ -39,6 +39,8 @@ export async function loadPostViews(repo: SocialRepo, viewer: ViewerId, ids: str
     state: row.state as PostView["state"],
     replyTo: row.replyToId ? { id: row.replyToId, authorHandle: row.replyToHandle ?? "" } : null,
     counts: { likes: row.likeCount, reposts: row.repostCount, replies: row.replyCount, quotes: row.quoteCount },
+    // Filled by the media module once posts can carry images.
+    media: [],
     ...(states ? { viewer: states.get(row.id)! } : {}),
   });
   const quoteOf = (id: string | null): PostView["quoteOf"] => {

@@ -28,4 +28,5 @@ export const Pagination = z.object({
 export type Pagination = z.infer<typeof Pagination>;
 
 export * from "./auth";
+export * from "./media";
 export * from "./social";

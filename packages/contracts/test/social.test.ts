@@ -25,19 +25,20 @@ const post = (n: number, extra: Record<string, unknown> = {}) => ({
   state: "visible",
   replyTo: null,
   counts,
+  media: [],
   quoteOf: null,
   ...extra,
 });
 
 describe("post bodies", () => {
   test("normalization: NFC, CR LF to LF, at most two line breaks, trimmed", () => {
-    expect(normalizePostBody("  é\r\nb\n\n\n\nc  ")).toBe("é\nb\n\nc");
+    expect(normalizePostBody("  e\u0301\r\nb\n\n\n\nc  ")).toBe("\u00e9\nb\n\nc");
     expect(PostBody.parse("\n a\r\n\r\nb \n")).toBe("a\n\nb");
   });
   test("tab and line feed are allowed, other control characters are not", () => {
     expect(PostBody.safeParse("a\tb\nc").success).toBe(true);
     expect(PostBody.safeParse(`a${String.fromCharCode(7)}b`).success).toBe(false);
-    expect(PostBody.safeParse("ab").success).toBe(false);
+    expect(PostBody.safeParse("a\u0085b").success).toBe(false);
   });
   test("length is counted in code points after normalization", () => {
     expect(postLength("\u{1F600}".repeat(3))).toBe(3);

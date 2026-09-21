@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MediaView } from "./media";
 
 /** Every code the social endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
 export const SocialErrorCode = z.enum(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new"]);
@@ -76,6 +77,8 @@ const postFields = {
   state: PostState,
   replyTo: z.object({ id: z.uuid(), authorHandle: z.string() }).nullable(),
   counts: PostCounts,
+  /** The post's images in order. Always present, often empty. */
+  media: z.array(MediaView),
   /** Present only for a signed-in viewer. */
   viewer: ViewerPostState.optional(),
 };
