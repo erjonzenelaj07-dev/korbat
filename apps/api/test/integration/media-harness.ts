@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import pino from "pino";
 import { postMedia, posts, type Db } from "@korbat/db";
 import type { MediaFailure } from "@korbat/contracts";
-import { MEDIA_FORMATS, type MediaFormat } from "@korbat/media-protocol";
+import { MEDIA_FORMATS, storeLayout, type MediaFormat, type StoreLayout } from "@korbat/media-protocol";
 import type { MediaDeps } from "../../src/media/context";
 import { createMediaFiles } from "../../src/media/files";
 import { status } from "../../src/media/flows/status";
@@ -37,6 +37,29 @@ export function bodyOf(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
+/** Stands in for the worker: writes files and results into a store directory exactly as the protocol says, without decoding anything. */
+export function fakeWorker(store: StoreLayout | string) {
+  const layout = typeof store === "string" ? storeLayout(store) : store;
+  for (const dir of [layout.files, layout.results, layout.attempts, layout.tmp]) mkdirSync(dir, { recursive: true });
+  return {
+    /** What the worker leaves behind for an image it accepted. */
+    ready(id: string, size: { width: number; height: number } = { width: 2048, height: 1536 }) {
+      mkdirSync(layout.imageDir(id), { recursive: true });
+      writeFileSync(layout.image(id, "large"), `large-webp-of-${id}`);
+      writeFileSync(layout.image(id, "small"), `small-webp-of-${id}`);
+      writeFileSync(layout.result(id), JSON.stringify({ v: 1, id, status: "ready", ...size, blurhash: "L2Eo_P_3jb_3~qoL" }));
+    },
+    /** What it leaves behind for one it refused. */
+    failed(id: string, reason: MediaFailure) {
+      writeFileSync(layout.result(id), JSON.stringify({ v: 1, id, status: "failed", reason }));
+    },
+    /** A heartbeat written at the given time. */
+    beat(at: number) {
+      writeFileSync(layout.heartbeat, JSON.stringify({ v: 1, at }));
+    },
+  };
+}
+
 /**
  * The media module on real Postgres, with both volumes in a temporary directory and a stand-in for
  * the worker that writes files and results exactly as the protocol says. Nothing here decodes an image.
@@ -46,7 +69,6 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
   const root = mkdtempSync(path.join(tmpdir(), "korbat-media-"));
   const files = createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log: pino({ level: "silent" }), storeDevice: options.storeDevice });
   await files.prepare();
-  for (const dir of [files.store.files, files.store.results, files.store.attempts, files.store.tmp]) mkdirSync(dir, { recursive: true });
 
   const limits = new MemoryStore(() => clock.now().getTime());
   const deps: MediaDeps = {
@@ -59,19 +81,7 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
     now: clock.next,
   };
 
-  const worker = {
-    /** What the worker leaves behind for an image it accepted. */
-    ready(id: string, size: { width: number; height: number } = { width: 2048, height: 1536 }) {
-      mkdirSync(files.store.imageDir(id), { recursive: true });
-      writeFileSync(files.store.image(id, "large"), `large-webp-of-${id}`);
-      writeFileSync(files.store.image(id, "small"), `small-webp-of-${id}`);
-      writeFileSync(files.store.result(id), JSON.stringify({ v: 1, id, status: "ready", ...size, blurhash: "L2Eo_P_3jb_3~qoL" }));
-    },
-    /** What it leaves behind for one it refused. */
-    failed(id: string, reason: MediaFailure) {
-      writeFileSync(files.store.result(id), JSON.stringify({ v: 1, id, status: "failed", reason }));
-    },
-  };
+  const worker = fakeWorker(files.store);
 
   /** An image of this account that the worker accepted and the API recorded: ready, on no post yet. */
   async function readyImage(ownerId: string, size?: { width: number; height: number }): Promise<string> {

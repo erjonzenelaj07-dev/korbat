@@ -8,6 +8,10 @@ export interface RequestApp {
 interface FetchInit {
   method?: string;
   json?: unknown;
+  /** A raw body with its declared type, which is how an image is uploaded. */
+  raw?: { type: string; body: Uint8Array };
+  /** Extra request headers. */
+  headers?: Record<string, string>;
   /** Web only: send the X-CSRF-Token header (default true). */
   csrf?: boolean;
 }
@@ -29,14 +33,16 @@ export class Browser {
   ) {}
 
   async fetch(path: string, init: FetchInit = {}): Promise<Response> {
-    const method = init.method ?? (init.json === undefined ? "GET" : "POST");
-    const headers: Record<string, string> = { "cf-connecting-ip": this.ip };
+    const method = init.method ?? (init.json === undefined && init.raw === undefined ? "GET" : "POST");
+    const headers: Record<string, string> = { "cf-connecting-ip": this.ip, ...init.headers };
     if (this.cookies.size > 0) headers.cookie = [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
     if (method !== "GET") headers.origin = this.origin;
     const csrf = this.cookies.get("__Host-korbat_csrf");
     if (init.csrf !== false && csrf) headers["x-csrf-token"] = csrf;
     if (init.json !== undefined) headers["content-type"] = "application/json";
-    const res = await this.app.request(path, { method, headers, body: init.json === undefined ? undefined : JSON.stringify(init.json) });
+    if (init.raw) headers["content-type"] = init.raw.type;
+    const body = init.raw ? init.raw.body : init.json === undefined ? undefined : JSON.stringify(init.json);
+    const res = await this.app.request(path, { method, headers, body });
     for (const line of res.headers.getSetCookie()) {
       const [pair, ...attributes] = line.split("; ");
       const separator = pair!.indexOf("=");
