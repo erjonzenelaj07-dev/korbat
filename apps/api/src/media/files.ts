@@ -172,6 +172,16 @@ export function createMediaFiles(options: MediaFilesOptions) {
       return (await namesIn(uploads.deletions)).filter(isMediaId);
     },
 
+    /** Deletion requests with their age, for the sweeper, which only withdraws one after a grace period. */
+    async deletionRequestAges(now: number): Promise<{ id: string; ageMs: number }[]> {
+      const found: { id: string; ageMs: number }[] = [];
+      for (const id of (await namesIn(uploads.deletions)).filter(isMediaId)) {
+        const stats = await stat(uploads.deletion(id)).catch(() => null);
+        if (stats) found.push({ id, ageMs: now - stats.mtimeMs });
+      }
+      return found;
+    },
+
     withdrawDeletion: (id: string): Promise<void> => rm(uploads.deletion(id), { force: true }),
 
     /** Whether the worker still holds anything for this id. */

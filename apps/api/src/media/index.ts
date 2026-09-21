@@ -12,9 +12,11 @@ import type { MediaDeps, MediaForPosts } from "./context";
 import { createMediaFiles } from "./files";
 import { createMediaRepo } from "./repo";
 import { mediaFileRoutes, mediaRoutes } from "./routes";
+import { createSweeper, sweep, type SweepLock } from "./sweeper";
 
 export { MediaError } from "./context";
 export type { MediaDeps, MediaForPosts } from "./context";
+export type { SweepLock, SweepReport } from "./sweeper";
 
 export interface CreateMediaOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
@@ -61,6 +63,10 @@ export function createMedia(options: CreateMediaOptions) {
     routes: mediaRoutes(deps, options.requireSession),
     /** Mounted before the global rate limit and session resolution. */
     fileRoutes: mediaFileRoutes(deps, { resolveSession: options.resolveSession, rateLimitStore: options.rateLimitStore }),
+    /** One pass of housekeeping at the given time. The server runs it on a timer; tests call it directly. */
+    sweep: (now: Date, options: { reconcile: boolean }) => sweep(deps, now, options),
+    /** Starts sweeping every thirty seconds under the lock, and returns the function that stops it. */
+    startSweeper: (lock: SweepLock) => createSweeper(deps, lock).start(),
     /** An advisory health check: the worker's heartbeat is fresh and the volumes have room. */
     async healthCheck(): Promise<void> {
       const age = await deps.files.heartbeatAge(deps.now().getTime());

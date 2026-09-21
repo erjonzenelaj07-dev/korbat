@@ -41,8 +41,8 @@ export function bodyOf(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
  * The media module on real Postgres, with both volumes in a temporary directory and a stand-in for
  * the worker that writes files and results exactly as the protocol says. Nothing here decodes an image.
  */
-export async function mediaHarness(db: Db, options: { formats?: readonly MediaFormat[]; minFreeBytes?: number; storeDevice?: number } = {}) {
-  const clock = ticker();
+export async function mediaHarness(db: Db, options: { formats?: readonly MediaFormat[]; minFreeBytes?: number; storeDevice?: number; clockStart?: number } = {}) {
+  const clock = ticker(options.clockStart);
   const root = mkdtempSync(path.join(tmpdir(), "korbat-media-"));
   const files = createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log: pino({ level: "silent" }), storeDevice: options.storeDevice });
   await files.prepare();

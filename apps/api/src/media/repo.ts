@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { mediaPath, type MediaView } from "@korbat/contracts";
 import { postMedia, posts, profiles, type Db, type DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
@@ -116,6 +116,35 @@ export function createMediaRepo(db: Db) {
         byPost.set(row.postId, [...(byPost.get(row.postId) ?? []), view]);
       }
       return byPost;
+    },
+
+    /** Uploads that still wait for the worker's verdict. */
+    async processingIds(): Promise<string[]> {
+      const rows = await db.select({ id: postMedia.id }).from(postMedia).where(eq(postMedia.status, "processing")).orderBy(postMedia.createdAt);
+      return rows.map((row) => row.id);
+    },
+
+    /** Fails uploads the worker has not answered since `before`, and says which. */
+    async failStale(before: Date): Promise<string[]> {
+      const rows = await db
+        .update(postMedia)
+        .set({ status: "failed", error: "processing_failed" })
+        .where(and(eq(postMedia.status, "processing"), lt(postMedia.createdAt, before)))
+        .returning({ id: postMedia.id });
+      return rows.map((row) => row.id);
+    },
+
+    /** Removes uploads made before `before` that were never put on a post, whatever their state, and says which. */
+    async deleteUnattachedBefore(before: Date): Promise<string[]> {
+      const rows = await db.delete(postMedia).where(and(isNull(postMedia.postId), lt(postMedia.createdAt, before))).returning({ id: postMedia.id });
+      return rows.map((row) => row.id);
+    },
+
+    /** Which of these ids have a row. */
+    async existing(ids: readonly string[]): Promise<Set<string>> {
+      if (ids.length === 0) return new Set();
+      const rows = await db.select({ id: postMedia.id }).from(postMedia).where(inArray(postMedia.id, [...ids]));
+      return new Set(rows.map((row) => row.id));
     },
 
     /** Removes a row whatever its state. Used when an upload could not be handed to the worker. */
