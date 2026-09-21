@@ -44,7 +44,7 @@ The web app gets its first test runner: `vitest` 4.1.11, already in the lockfile
 1. **No `accessibilityState`.** It reads every `.ts` and `.tsx` file under `apps/app/src` and fails with the file and line of each `accessibilityState=` it finds. Before the fix it lists the eleven uses; after it, none.
 2. **The states reach the HTML.** It server-renders react-native-web's `Pressable`, `Text` and `View` with the props from section 2 and expects `aria-selected="true"`, `role="tablist"`, `aria-pressed="true"` and `"false"`, `aria-current="page"`, `aria-checked="false"`, `aria-busy="true"` with `aria-disabled="true"`, and a native `<button>` with `aria-pressed` for a pressable `Text`. If a react-native-web upgrade changes any of these, the test says which.
 
-`apps/app/vitest.config.ts` aliases `react-native` to `react-native-web`, so the test imports from `react-native` and is checked against React Native's own types, and it compiles JSX with the automatic runtime. `react-dom/server` has no types in the workspace (`@types/react-dom` is not installed); a four-line declaration in `apps/app/test/` types the one function the test uses, `renderToStaticMarkup`, instead of adding a package.
+`apps/app/vitest.config.mts` aliases `react-native` to `react-native-web`, so the test imports from `react-native` and is checked against React Native's own types. `react-dom/server` has no types in the workspace (`@types/react-dom` is not installed); a four-line declaration in `apps/app/test/` types the one function the test uses, `renderToStaticMarkup`, instead of adding a package.
 
 ## 4. Verification
 
@@ -61,3 +61,14 @@ The web app gets its first test runner: `vitest` 4.1.11, already in the lockfile
 ## 6. Documentation
 
 The 1a and 2a execution prompts show the files as they were first written. Their `00-README.md` files get a note naming the commit that replaced `accessibilityState`. Their `verify_prompts.py` scripts already report files that later sub-projects changed, so they are point-in-time checks and are not updated.
+
+## 7. Amendments from the dry run (2026-09-21)
+
+The fix was dry-run in the scratch clone with the gated runner before its execution prompt was written. Where the build differs from sections 1 to 6, this section is the verified version.
+
+- The config is `vitest.config.mts`, not `.ts`. The web app's package has no `"type": "module"`, because Expo's own config files are CommonJS, and Vite warns that its coming native config loader will not load an ES-module `.ts` config in such a package. The test step forbids the warning.
+- The config needs no JSX option: Vite compiles the test's TSX with React's automatic runtime as it stands (the test imports no `React` and passes).
+- The test sorts the uses it finds, so its failure lists them in the same order on every filesystem.
+- Red and green: before the component changes the test failed with `1 failed | 6 passed (7)` and named all eleven uses; after them, `7 passed (7)`. The lockfile gained three lines and no new package version.
+- The browser check on the rebuilt scratch stack confirmed every state in section 2 except the terms checkbox, which sits behind sign-up and is covered by the test: tab lists with `aria-selected` that follows clicks, `aria-current="page"` in the sidebar and the phone layout's bottom bar, Like's `aria-pressed` turning true and back, Save and Follow carrying their state in the label, the re-authentication method as a native button with `aria-pressed="true"`, and `aria-busy` and `aria-disabled` on buttons.
+- On `/settings/privacy` no navigation link is current: the Settings link points to `/settings/security`, and sighted users see no highlight there either. The fix mirrors what is shown; highlighting Settings for every settings page is a separate decision.
