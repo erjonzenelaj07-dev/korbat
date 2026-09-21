@@ -86,3 +86,9 @@ python docs/superpowers/prompts/identity-auth-1a/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Later changes
+
+These prompts show the files as this sub-project wrote them. Later work changed some of them, so `verify_prompts.py` now lists those files as mismatches; that is expected, not a defect of the prompts.
+
+One later change corrects code these prompts contain. react-native-web 0.21 ignores React Native's `accessibilityState` prop, so the terms checkbox in `apps/app/src/app/(auth)/age.tsx`, the shared `Button` in `apps/app/src/components/ui.tsx` and the method choice in `apps/app/src/components/security/ReauthPanel.tsx` never told a screen reader their state. Commit `1f5580a` gave them `aria-checked`, `aria-busy` and `aria-pressed`. The web app's test now fails on any `accessibilityState=` in `apps/app/src`, so do not copy that prop from these prompts into new code. The fix, its dry run and its prompt are in `docs/superpowers/prompts/screen-reader-states/`.

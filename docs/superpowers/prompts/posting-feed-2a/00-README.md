@@ -68,3 +68,9 @@ python docs/superpowers/prompts/posting-feed-2a/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Later changes
+
+These prompts show the files as this sub-project wrote them. Later work changed some of them, so `verify_prompts.py` now lists those files as mismatches; that is expected, not a defect of the prompts.
+
+One later change corrects code these prompts contain. react-native-web 0.21 ignores React Native's `accessibilityState` prop, so the tab rows on Home (`apps/app/src/app/index.tsx`), a profile (`apps/app/src/app/u/[handle]/index.tsx`) and Privacy (`apps/app/src/app/settings/privacy.tsx`), the navigation links in `apps/app/src/components/AppShell.tsx`, Like and Repost in `apps/app/src/components/social/PostCard.tsx`, the busy Follow button in `apps/app/src/components/social/ProfileList.tsx`, the busy Unblock and Unmute buttons, and the terms checkbox in `apps/app/src/app/(auth)/age.tsx` never told a screen reader their state. Commit `1f5580a` made the tab rows tab lists with `aria-selected`, marked the current link with `aria-current="page"`, and gave Like and Repost `aria-pressed`, the busy buttons `aria-busy` and the checkbox `aria-checked`. The web app's test now fails on any `accessibilityState=` in `apps/app/src`, so do not copy that prop from these prompts into new code. The fix, its dry run and its prompt are in `docs/superpowers/prompts/screen-reader-states/`.

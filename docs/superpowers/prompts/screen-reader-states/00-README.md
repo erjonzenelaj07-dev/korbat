@@ -17,8 +17,12 @@ Each prompt replaces judgment with rules. Files are complete and copied byte for
 ## What can differ between runs
 
 - **Durations.** The web export runs a full Metro bundle and can take a few minutes.
-- **Lockfile shape.** Adding vitest to the web app adds three lines to `pnpm-lock.yaml` and no new package version; pnpm can record either of the locked vitest variants, and no gate depends on which.
+- **Lockfile shape.** Adding vitest to the web app adds three lines to `pnpm-lock.yaml` and no new package version. pnpm may also give `apps/api` and `apps/worker` the two locked vitest variants the other way round (vite with esbuild 0.27.7 or 0.28.2); nothing new is locked, and every gate passes either way.
 - **Run noise.** Timings and commit hashes differ on every run, and every install prints `Packages: -N`, the optional packages pnpm skips on Windows.
+
+## Execution findings (2026-09-21)
+
+The prompt was executed in this repository on 2026-09-21 in one fresh session and committed as `1f5580a` without a STOP. All 13 written files are byte for byte the dry run's. The lockfile differs from the dry run's only by the swapped vitest variants of `apps/api` and `apps/worker` described above: the API's unit tests (142 passed) ran in the prompt, and the worker's (45 passed) were run afterwards with the committed lockfile.
 
 ## Verified in the dry run only
 

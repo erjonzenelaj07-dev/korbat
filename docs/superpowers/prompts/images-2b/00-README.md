@@ -15,7 +15,7 @@ The dry run found and fixed these defects before the prompts were written:
 - **Two schema tasks.** drizzle-kit asks interactively when one migration drops and adds columns, which a scripted run cannot answer, so the `post_media` change is split into a drop-and-relax step and an add step.
 - **Nested controls in quotes.** Quoted posts first showed their images as buttons inside the quote's link, a control inside a control. They are plain pictures now; the quote opens the post, where the grid and viewer are.
 - **HEIC without a type.** Browsers on Windows often report no type for a `.heic` file, which would have shown the generic refusal. The composer also checks the file name.
-- **States that never reached the DOM.** The browser check found the ALT button without `aria-expanded`: react-native-web 0.21 ignores the `accessibilityState` prop. The controls 2b writes use `aria-expanded` and `aria-busy` instead. Older uses elsewhere in the app are a separate follow-up.
+- **States that never reached the DOM.** The browser check found the ALT button without `aria-expanded`: react-native-web 0.21 ignores the `accessibilityState` prop. The controls 2b writes use `aria-expanded` and `aria-busy` instead. The older uses elsewhere in the app were fixed afterwards, in commit `1f5580a`.
 
 Each prompt replaces judgment with rules. Files are complete and copied byte for byte, commands run verbatim, and every expected line must appear. Any mismatch is a **STOP condition** that ends the session with a report instead of an improvised fix. The single permitted self-recovery is a clean `node_modules` reinstall after a `Cannot find module` error in a verification step.
 
@@ -89,3 +89,7 @@ python docs/superpowers/prompts/images-2b/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Later changes
+
+Commit `1f5580a` (`docs/superpowers/prompts/screen-reader-states/`) changed two files these prompts write: `apps/app/package.json` gained vitest and a `test` script, and the post card's `Action` in `apps/app/src/components/social/PostCard.tsx` passes `aria-pressed` instead of `accessibilityState`, which react-native-web 0.21 ignores. `verify_prompts.py` therefore lists those two files as mismatches; the screen-reader prompt holds their current version.

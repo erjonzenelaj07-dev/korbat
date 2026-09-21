@@ -485,7 +485,7 @@ The plan was dry-run task by task in a scratch clone before the execution prompt
 - A HEIC photo is recognized by its name too, because browsers on Windows often give such a file no type; it gets the HEIC advice instead of the generic refusal.
 - A quoted post's thumbnails are pictures, not buttons: the quote is one link to the quoted post, and a control inside a control is one that assistive technology cannot reach.
 - The blurhash fades into the image in 150 ms, or at once when the system asks for reduced motion.
-- The ALT control reports its state with `aria-expanded` and the Post button with `aria-busy`: react-native-web 0.21 ignores the `accessibilityState` prop, which the browser check caught on the ALT control. The older uses of `accessibilityState` in the app are a separate follow-up.
+- The ALT control reports its state with `aria-expanded` and the Post button with `aria-busy`: react-native-web 0.21 ignores the `accessibilityState` prop, which the browser check caught on the ALT control. The older uses of `accessibilityState` in the app were fixed afterwards, in commit `1f5580a` (spec `2026-09-21-screen-reader-states-design.md`).
 - The browser check covered sign-up, three uploads with their states, descriptions, the button naming what is missing, posting, the three-image grid, ALT, the viewer with arrow keys, Escape and focus return, an image-only post, and deletion down to the files on disk.
 - A task step checks, in the installed source, the four library behaviours the grid and viewer rely on: expo-image puts `accessibilityLabel` into `<img alt>` and loads lazily by default; react-native-web's Modal closes on Escape and gives focus back when it closes.
 
