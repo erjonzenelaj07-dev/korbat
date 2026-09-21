@@ -38,10 +38,22 @@ export const posts = pgTable(
   ],
 ).enableRLS();
 
+/** An upload is processing until the worker's result is in, then ready or failed for good. */
+export const mediaStatus = pgEnum("media_status", ["processing", "ready", "failed"]);
+
+/**
+ * One uploaded image. The files live on the media-store volume under the row's id; no path is
+ * stored. Only the API's media module reads or writes this table.
+ */
 export const postMedia = pgTable(
   "post_media",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** Who uploaded it. Only this account may attach it to a post. */
+    ownerId: uuid("owner_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+    status: mediaStatus("status").notNull().default("processing"),
+    /** Why processing failed: one of the contracts' MediaFailure values. */
+    error: text("error"),
     /** Set, together with the position, when the image is attached to a post. */
     postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
     position: integer("position"),
@@ -50,9 +62,19 @@ export const postMedia = pgTable(
     height: integer("height"),
     blurhash: text("blurhash"),
     altText: text("alt_text"),
+    /** Filled by sub-project 3. Empty until then. */
     nsfwScore: real("nsfw_score"),
+    createdAt: ts("created_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("post_media_post_position_idx").on(t.postId, t.position), fullAccess("post_media_api_all", apiRole)],
+  (t) => [
+    uniqueIndex("post_media_post_position_idx").on(t.postId, t.position),
+    index("post_media_owner_created_idx").on(t.ownerId, t.createdAt),
+    index("post_media_status_created_idx").on(t.status, t.createdAt),
+    check("post_media_ready_has_dims", sql`${t.status} <> 'ready' or (${t.width} is not null and ${t.height} is not null and ${t.blurhash} is not null)`),
+    check("post_media_attached_is_complete", sql`${t.postId} is null or (${t.status} = 'ready' and ${t.position} between 0 and 3 and ${t.altText} is not null)`),
+    check("post_media_alt_len", sql`char_length(${t.altText}) <= 1000`),
+    fullAccess("post_media_api_all", apiRole),
+  ],
 ).enableRLS();
 
 /** user -> user relation table (follows, blocks, mutes). */

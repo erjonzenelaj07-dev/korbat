@@ -43,6 +43,13 @@
       "when": 1789976535081,
       "tag": "0005_huge_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789976685374,
+      "tag": "0006_nifty_blue_shield",
+      "breakpoints": true
     }
   ]
 }

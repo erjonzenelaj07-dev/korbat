@@ -113,4 +113,17 @@ describe("images 2b", () => {
       expect(cols.find((c) => c.name === name)?.notNull, name).toBe(false);
     }
   });
+  test("every upload has an owner, a status and a creation time; a failure has a reason", () => {
+    const cols = byName.get("post_media")!.columns;
+    for (const name of ["owner_id", "status", "created_at"]) expect(cols.find((c) => c.name === name)?.notNull, name).toBe(true);
+    expect(cols.find((c) => c.name === "error")?.notNull).toBe(false);
+    expect(cols.find((c) => c.name === "status")?.default).toBe("processing");
+    expect(schema.mediaStatus.enumValues).toEqual(["processing", "ready", "failed"]);
+  });
+  test("the database itself refuses a ready image without dimensions and an attached image that is incomplete", () => {
+    const cfg = byName.get("post_media")!;
+    expect(cfg.checks.map((c) => c.name).sort()).toEqual(["post_media_alt_len", "post_media_attached_is_complete", "post_media_ready_has_dims"]);
+    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(["post_media_owner_created_idx", "post_media_post_position_idx", "post_media_status_created_idx"]);
+    expect(cfg.indexes.find((i) => i.config.name === "post_media_post_position_idx")?.config.unique).toBe(true);
+  });
 });
