@@ -36,6 +36,13 @@
       "when": 1789639555282,
       "tag": "0004_young_bloodscream",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789976535081,
+      "tag": "0005_huge_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

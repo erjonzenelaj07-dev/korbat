@@ -104,3 +104,13 @@ describe("posting and feed 2a", () => {
     expect(byName.get("posts")!.indexes.map((i) => i.config.name)).toContain("posts_quote_of_idx");
   });
 });
+
+describe("images 2b", () => {
+  test("post_media has no path column, and its attachment and dimension columns are optional", () => {
+    const cols = byName.get("post_media")!.columns;
+    expect(cols.map((c) => c.name)).not.toContain("path");
+    for (const name of ["post_id", "position", "width", "height", "blurhash"]) {
+      expect(cols.find((c) => c.name === name)?.notNull, name).toBe(false);
+    }
+  });
+});

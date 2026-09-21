@@ -42,13 +42,13 @@ export const postMedia = pgTable(
   "post_media",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    postId: uuid("post_id").notNull().references(() => posts.id, { onDelete: "cascade" }),
-    position: integer("position").notNull(),
-    /** Random object key in the media bucket; never the original filename. */
-    path: text("path").notNull(),
-    width: integer("width").notNull(),
-    height: integer("height").notNull(),
-    blurhash: text("blurhash").notNull(),
+    /** Set, together with the position, when the image is attached to a post. */
+    postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
+    position: integer("position"),
+    /** Of the large size, after rotation. Set, together with the blurhash, when processing succeeds. */
+    width: integer("width"),
+    height: integer("height"),
+    blurhash: text("blurhash"),
     altText: text("alt_text"),
     nsfwScore: real("nsfw_score"),
   },
