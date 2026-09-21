@@ -5,6 +5,7 @@ import type { Author, PostView, QuotedPost, Tombstone } from "@korbat/contracts"
 import { errorMessage } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { social, timeAgo, type EngagementKind } from "@/lib/social";
+import { MediaGrid } from "./MediaGrid";
 import { RichText } from "./RichText";
 
 function AuthorLine({ author, createdAt }: { author: Author; createdAt: string }) {
@@ -36,7 +37,8 @@ export function QuoteEmbed({ quote }: { quote: QuotedPost | Tombstone }) {
   return (
     <Pressable accessibilityRole="link" onPress={() => router.push(`/post/${quote.id}`)} className="mt-2 rounded-lg border border-zinc-800 px-3 py-2">
       <AuthorLine author={quote.author} createdAt={quote.createdAt} />
-      <RichText body={quote.body} className="mt-1 text-sm leading-5 text-zinc-300" />
+      {quote.body ? <RichText body={quote.body} className="mt-1 text-sm leading-5 text-zinc-300" /> : null}
+      <MediaGrid media={quote.media} compact />
     </Pressable>
   );
 }
@@ -106,9 +108,13 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
           Replying to <Text className="text-sky-400" onPress={() => router.push(`/u/${post.replyTo!.authorHandle}`)}>@{post.replyTo.authorHandle}</Text>
         </Text>
       ) : null}
-      <Pressable accessibilityRole="link" onPress={() => router.push(`/post/${post.id}`)} className="mt-1">
-        <RichText body={post.body} />
-      </Pressable>
+      {/* A post may consist of images only, and then there is no text to link. */}
+      {post.body ? (
+        <Pressable accessibilityRole="link" onPress={() => router.push(`/post/${post.id}`)} className="mt-1">
+          <RichText body={post.body} />
+        </Pressable>
+      ) : null}
+      <MediaGrid media={post.media} />
       {post.quoteOf ? <QuoteEmbed quote={post.quoteOf} /> : null}
       <View className="mt-2 flex-row flex-wrap items-center">
         <Action label="Reply" count={post.counts.replies} onPress={() => router.push(`/post/${post.id}`)} />
