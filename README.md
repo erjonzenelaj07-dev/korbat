@@ -10,13 +10,22 @@ Pseudonymous social platform with a narrow public rulebook and transparent moder
 ## Dev quick start
 ```bash
 pnpm install
-node scripts/gen-dev-env.mjs                # creates or completes infra/.env, apps/api/.env and apps/app/.env; values are random and never printed
+node scripts/gen-dev-env.mjs                # creates or completes infra/.env, apps/api/.env and apps/app/.env, and derives apps/api/.env.test; values are random and never printed
 docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis minio minio-init mailpit   # dev host ports 55432, 56379, 59000, 59001, 51025, 58025
 pnpm --filter @korbat/api dev               # http://localhost:3000/api/health
 pnpm --filter @korbat/app web               # http://localhost:8081
 ```
 
 Emails sent in development (sign-in codes, new-device alerts, lockout notices) land in Mailpit at http://localhost:58025. Locally the web app uses Cloudflare's always-pass Turnstile test key, so the human check never blocks you.
+
+## Tests
+```bash
+pnpm test                                     # unit tests of every package
+node scripts/test-db.mjs                      # creates or migrates the korbat_test database; run it again after adding a migration
+pnpm --filter @korbat/api test:integration    # needs postgres, redis and mailpit up
+```
+
+Integration tests have their own database, `korbat_test`, and their own Redis database, 15. Both are named in `apps/api/.env.test`, which `node scripts/gen-dev-env.mjs` derives from `apps/api/.env`. Every run starts by emptying them, and refuses to start if a URL points anywhere else, so tests never touch development data.
 
 ## Full stack
 ```bash
