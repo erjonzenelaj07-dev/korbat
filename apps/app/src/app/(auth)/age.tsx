@@ -73,7 +73,7 @@ export default function AgeAndTerms() {
       </View>
       <Pressable
         accessibilityRole="checkbox"
-        accessibilityState={{ checked: accepted }}
+        aria-checked={accepted}
         onPress={() => setAccepted((a) => !a)}
         className="mt-6 flex-row items-center gap-3"
       >

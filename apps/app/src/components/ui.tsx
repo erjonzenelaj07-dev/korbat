@@ -53,7 +53,7 @@ export function Button({
   const surface = inactive ? "bg-zinc-800" : tone === "primary" ? "bg-zinc-50" : tone === "danger" ? "bg-red-600" : "border border-zinc-600";
   const text = inactive ? "text-zinc-500" : tone === "primary" ? "text-zinc-950" : "text-zinc-50";
   return (
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled: inactive, busy }} disabled={inactive} onPress={onPress} className={`mt-6 rounded-lg px-4 py-3 ${surface}`}>
+    <Pressable accessibilityRole="button" aria-busy={busy} disabled={inactive} onPress={onPress} className={`mt-6 rounded-lg px-4 py-3 ${surface}`}>
       <Text className={`text-center text-base font-semibold ${text}`}>{busy ? "Please wait…" : label}</Text>
     </Pressable>
   );

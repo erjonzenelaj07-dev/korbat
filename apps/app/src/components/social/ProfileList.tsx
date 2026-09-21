@@ -50,7 +50,7 @@ export function FollowButton({ handle, initial, onChange }: { handle: string; in
     <View className="items-end">
       <Pressable
         accessibilityRole="button"
-        accessibilityState={{ selected: following, busy }}
+        aria-busy={busy}
         disabled={busy}
         onPress={() => void toggle()}
         className={`rounded-full px-4 py-1.5 ${following ? "border border-zinc-600" : "bg-zinc-50"}`}

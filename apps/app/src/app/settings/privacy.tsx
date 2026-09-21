@@ -15,7 +15,7 @@ function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<
     <View className="items-end">
       <Pressable
         accessibilityRole="button"
-        accessibilityState={{ busy }}
+        aria-busy={busy}
         disabled={busy}
         onPress={() => {
           setBusy(true);
@@ -61,9 +61,9 @@ export default function Privacy() {
               A block hides you and the other account from each other while signed in and refuses their interactions. Posts on korbat are public, so anyone who signs out can
               still read them. A mute only hides an account from your timelines, and they are never told.
             </Text>
-            <View className="mt-4 flex-row">
+            <View accessibilityRole="tablist" className="mt-4 flex-row">
               {(["blocked", "muted"] as Tab[]).map((t) => (
-                <Pressable key={t} accessibilityRole="tab" accessibilityState={{ selected: tab === t }} onPress={() => setTab(t)} className={`mr-6 border-b-2 pb-2 ${tab === t ? "border-zinc-50" : "border-transparent"}`}>
+                <Pressable key={t} accessibilityRole="tab" aria-selected={tab === t} onPress={() => setTab(t)} className={`mr-6 border-b-2 pb-2 ${tab === t ? "border-zinc-50" : "border-transparent"}`}>
                   <Text className={`text-base ${tab === t ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{t === "blocked" ? "Blocked" : "Muted"}</Text>
                 </Pressable>
               ))}

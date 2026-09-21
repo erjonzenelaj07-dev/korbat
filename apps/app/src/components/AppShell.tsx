@@ -43,7 +43,7 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
         <View className="w-56 border-r border-zinc-800 px-4 py-6">
           <Text className="mb-6 text-2xl font-bold tracking-tight text-zinc-50">korbat</Text>
           {items.map((item) => (
-            <Pressable key={item.href} accessibilityRole="link" accessibilityState={{ selected: active(item.href) }} onPress={() => router.push(item.href)} className="rounded-lg px-3 py-2">
+            <Pressable key={item.href} accessibilityRole="link" aria-current={active(item.href) ? "page" : undefined} onPress={() => router.push(item.href)} className="rounded-lg px-3 py-2">
               <Text className={`text-base ${active(item.href) ? "font-semibold text-zinc-50" : "text-zinc-300"}`}>{item.label}</Text>
             </Pressable>
           ))}
@@ -65,7 +65,7 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
       {floating ? <View className="absolute bottom-16 right-4">{floating}</View> : null}
       <View className="flex-row border-t border-zinc-800 bg-zinc-950">
         {items.map((item) => (
-          <Pressable key={item.href} accessibilityRole="link" accessibilityState={{ selected: active(item.href) }} onPress={() => router.push(item.href)} className="flex-1 items-center py-3">
+          <Pressable key={item.href} accessibilityRole="link" aria-current={active(item.href) ? "page" : undefined} onPress={() => router.push(item.href)} className="flex-1 items-center py-3">
             <Text className={`text-sm ${active(item.href) ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{item.label}</Text>
           </Pressable>
         ))}

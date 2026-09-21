@@ -53,9 +53,14 @@ function StateChip({ state }: { state: PostView["state"] }) {
   );
 }
 
-function Action({ label, count, active, activeClass, onPress }: { label: string; count?: number; active?: boolean; activeClass?: string; onPress: () => void }) {
+/**
+ * `active` colours the action. `pressed` tells a screen reader that a toggle is on, and is for
+ * toggles whose label stays the same (Like, Repost); Save changes its label instead, which
+ * already says so.
+ */
+function Action({ label, count, active, pressed, activeClass, onPress }: { label: string; count?: number; active?: boolean; pressed?: boolean; activeClass?: string; onPress: () => void }) {
   return (
-    <Pressable accessibilityRole="button" accessibilityState={{ selected: active }} onPress={onPress} className="flex-row items-center gap-1 py-1 pr-4">
+    <Pressable accessibilityRole="button" aria-pressed={pressed} onPress={onPress} className="flex-row items-center gap-1 py-1 pr-4">
       <Text className={`text-sm ${active ? activeClass : "text-zinc-400"}`}>{label}</Text>
       {count !== undefined && count > 0 ? <Text className={`text-sm ${active ? activeClass : "text-zinc-400"}`}>{count}</Text> : null}
     </Pressable>
@@ -118,9 +123,9 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
       {post.quoteOf ? <QuoteEmbed quote={post.quoteOf} /> : null}
       <View className="mt-2 flex-row flex-wrap items-center">
         <Action label="Reply" count={post.counts.replies} onPress={() => router.push(`/post/${post.id}`)} />
-        <Action label="Repost" count={post.counts.reposts} active={post.viewer?.reposted} activeClass="text-emerald-400" onPress={() => void toggle("repost")} />
+        <Action label="Repost" count={post.counts.reposts} active={post.viewer?.reposted} pressed={post.viewer?.reposted} activeClass="text-emerald-400" onPress={() => void toggle("repost")} />
         <Action label="Quote" count={post.counts.quotes} onPress={() => (me ? router.push(`/post/${post.id}?quote=1`) : router.push("/signin"))} />
-        <Action label="Like" count={post.counts.likes} active={post.viewer?.liked} activeClass="text-rose-400" onPress={() => void toggle("like")} />
+        <Action label="Like" count={post.counts.likes} active={post.viewer?.liked} pressed={post.viewer?.liked} activeClass="text-rose-400" onPress={() => void toggle("like")} />
         <Action label={post.viewer?.bookmarked ? "Saved" : "Save"} active={post.viewer?.bookmarked} activeClass="text-sky-400" onPress={() => void toggle("bookmark")} />
         {post.author.id === me ? <Action label="Delete" onPress={() => void remove()} /> : null}
       </View>

@@ -42,9 +42,9 @@ export default function Home() {
           Home
         </Text>
         {signedIn ? (
-          <View className="mt-3 flex-row">
+          <View accessibilityRole="tablist" className="mt-3 flex-row">
             {(["following", "latest"] as Tab[]).map((t) => (
-              <Pressable key={t} accessibilityRole="tab" accessibilityState={{ selected: current === t }} onPress={() => setTab(t)} className={`mr-6 border-b-2 pb-2 ${current === t ? "border-zinc-50" : "border-transparent"}`}>
+              <Pressable key={t} accessibilityRole="tab" aria-selected={current === t} onPress={() => setTab(t)} className={`mr-6 border-b-2 pb-2 ${current === t ? "border-zinc-50" : "border-transparent"}`}>
                 <Text className={`text-base ${current === t ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{t === "following" ? "Following" : "Latest"}</Text>
               </Pressable>
             ))}

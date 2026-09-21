@@ -76,7 +76,7 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
           <Text
             key={m}
             accessibilityRole="button"
-            accessibilityState={{ selected: m === method }}
+            aria-pressed={m === method}
             onPress={() => {
               setMethod(m);
               setValue("");
