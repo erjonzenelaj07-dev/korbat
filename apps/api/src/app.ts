@@ -22,18 +22,23 @@ export interface AppDeps {
   social?: Social;
   /** Image uploads. Optional for the same reason; the server always wires it. */
   media?: Media;
+  /** Checks that report a part being down without marking the API unhealthy, the image worker for one. */
+  advisoryChecks?: HealthChecks;
 }
 
-export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media }: AppDeps) {
+export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, advisoryChecks }: AppDeps) {
   const app = new Hono<AppEnv>();
 
   app.use(observability(logger));
   app.use(securityHeaders, noStore);
   app.use(cors({ origin: config.TRUSTED_ORIGINS, credentials: true }));
+  // Image files come before the global limit and session resolution: they have their own bucket,
+  // and a public image needs no session. Everything else under /api/media falls through to below.
+  if (media) app.route("/api/media", media.fileRoutes);
   app.use(rateLimit({ name: "global", store: rateLimitStore, limit: 300, windowMs: 60_000, key: clientIp }));
   app.use(auth.resolveSession);
 
-  app.route("/api/health", healthRoutes(healthChecks, config.KORBAT_VERSION));
+  app.route("/api/health", healthRoutes(healthChecks, config.KORBAT_VERSION, advisoryChecks));
   app.route("/api/auth", auth.routes);
   app.get("/api/me", auth.requireOnboarding, auth.me);
   if (media) app.route("/api/media", media.routes);

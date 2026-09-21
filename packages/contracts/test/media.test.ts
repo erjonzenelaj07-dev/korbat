@@ -64,6 +64,11 @@ describe("alt text", () => {
     expect(AltText.safeParse("a\u001bb").success).toBe(false);
   });
 
+  test("media ids are canonical: any spelling of a UUID becomes its lowercase form", () => {
+    expect(MediaAttachment.parse({ id: id(10).toUpperCase().replace("0000000A", "0000000a"), alt: "x" }).id).toBe(id(10));
+    expect(MediaAttachment.parse({ id: "3F2A9C1E-8B7D-4E6F-A5C4-0123456789AB", alt: "x" }).id).toBe("3f2a9c1e-8b7d-4e6f-a5c4-0123456789ab");
+  });
+
   test("an attachment is an upload id and a description", () => {
     expect(MediaAttachment.parse({ id: id(1), alt: "  a   cat " })).toEqual({ id: id(1), alt: "a cat" });
     expect(MediaAttachment.safeParse({ id: "nope", alt: "a cat" }).success).toBe(false);

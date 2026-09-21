@@ -23,7 +23,7 @@ const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts"]
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
 /** Modules that may only be entered through their index file. */
-const MODULES = ["auth", "social"] as const;
+const MODULES = ["auth", "social", "media"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -81,6 +81,7 @@ function dbImports(source: string): string[] {
 
 const insideAuth = (path: string) => path.startsWith("auth/");
 const insideSocial = (path: string) => path.startsWith("social/");
+const insideMedia = (path: string) => path.startsWith("media/");
 
 function findViolations(files: SourceFile[], publicNames: Set<string>, authNames: Set<string>): string[] {
   const violations: string[] = [];
@@ -107,7 +108,10 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
         else if (publicNames.has(name)) violations.push(`${path}: imports public-schema ${name} from @korbat/db`);
       }
     }
-    if (insideSocial(path)) {
+    if (!insideMedia(path) && /\b(postMedia|post_media)\b/.test(source)) {
+      violations.push(`${path}: references post_media, which only the media module may touch`);
+    }
+    if (insideSocial(path) || insideMedia(path)) {
       for (const name of dbImports(source)) {
         if (name === "*") violations.push(`${path}: namespace import of @korbat/db (import public-schema names explicitly)`);
         else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db`);
@@ -122,6 +126,7 @@ describe("module boundaries", () => {
     const paths = loadSources().map((f) => f.path);
     expect(paths).toContain("auth/index.ts");
     expect(paths).toContain("social/index.ts");
+    expect(paths).toContain("media/index.ts");
     expect(paths).toContain("app.ts");
     expect(publicSchemaNames()).toContain("profiles");
     expect(publicSchemaNames()).not.toContain("users");
@@ -168,6 +173,22 @@ describe("module boundaries", () => {
     expect(findViolations(files, new Set(), new Set())).toEqual([
       "app.ts: imports ./social/repo, which is inside the social module (use ./social)",
       "auth/flows/signup.ts: imports ../../social/flows/posts, which is inside the social module (use ./social)",
+    ]);
+  });
+
+  test("catches a deep import into the media module, post_media outside it, and the auth schema inside it", () => {
+    const files: SourceFile[] = [
+      { path: "app.ts", source: `import { createMediaRepo } from "./media/repo";\nimport { createMedia } from "./media";` },
+      { path: "social/repo.ts", source: `import { postMedia, posts } from "@korbat/db";` },
+      { path: "social/views.ts", source: "const rows = await db.execute(sql`select * from post_media`);" },
+      { path: "media/repo.ts", source: `import { postMedia, posts, users, type Db } from "@korbat/db";` },
+      { path: "media/flows/serve.ts", source: `import type { MediaDeps } from "../context";` },
+    ];
+    expect(findViolations(files, new Set(["posts", "postMedia"]), new Set(["users"]))).toEqual([
+      "app.ts: imports ./media/repo, which is inside the media module (use ./media)",
+      "social/repo.ts: references post_media, which only the media module may touch",
+      "social/views.ts: references post_media, which only the media module may touch",
+      "media/repo.ts: imports auth-schema users from @korbat/db",
     ]);
   });
 

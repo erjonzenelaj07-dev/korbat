@@ -37,6 +37,8 @@ const media = createMedia({
   minFreeBytes: config.MEDIA_MIN_FREE_BYTES,
   logger,
   requireSession: auth.requireSession,
+  resolveSession: auth.resolveSession,
+  rateLimitStore,
   enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(rateLimitStore, userId, "upload", accountCreatedAt, now),
 });
 await media.prepare();
@@ -52,6 +54,7 @@ const app = createApp({
     postgres_auth: () => ping(authDb),
     redis: async () => { await redis.ping(); },
   },
+  advisoryChecks: { image_worker: media.healthCheck },
   auth,
   social,
   media,

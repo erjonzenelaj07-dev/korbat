@@ -14,7 +14,8 @@ export const securityHeaders = secureHeaders({
   permissionsPolicy: { camera: [], microphone: [], geolocation: [] },
 });
 
+/** Nothing the API returns may be cached, unless a handler said otherwise itself: image files of visible posts do. */
 export const noStore = createMiddleware<AppEnv>(async (c, next) => {
   await next();
-  c.res.headers.set("Cache-Control", "no-store");
+  if (!c.res.headers.has("Cache-Control")) c.res.headers.set("Cache-Control", "no-store");
 });

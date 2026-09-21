@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { postMedia, profiles, type Db } from "@korbat/db";
+import { postMedia, posts, profiles, type Db } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
 
 /** Every SQL statement on post_media lives in this module's repository, on the korbat_api pool. */
@@ -65,6 +65,17 @@ export function createMediaRepo(db: Db) {
     async deleteUnattached(id: string, ownerId: string): Promise<boolean> {
       const rows = await db.delete(postMedia).where(and(eq(postMedia.id, id), eq(postMedia.ownerId, ownerId), isNull(postMedia.postId))).returning({ id: postMedia.id });
       return rows.length === 1;
+    },
+
+    /** What serving an image file depends on: whether it is ready, and its post's state and author. */
+    async fileAccess(id: string): Promise<{ status: MediaRow["status"]; postState: string | null; authorId: string | null } | null> {
+      const rows = await db
+        .select({ status: postMedia.status, postState: posts.state, authorId: posts.authorId })
+        .from(postMedia)
+        .leftJoin(posts, eq(posts.id, postMedia.postId))
+        .where(eq(postMedia.id, id))
+        .limit(1);
+      return rows[0] ?? null;
     },
 
     /** Removes a row whatever its state. Used when an upload could not be handed to the worker. */

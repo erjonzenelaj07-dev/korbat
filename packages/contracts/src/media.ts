@@ -16,7 +16,8 @@ export const MEDIA_ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "i
 export type MediaAcceptedType = (typeof MEDIA_ACCEPTED_TYPES)[number];
 export const ALT_MAX_LENGTH = 1000;
 
-export const MediaId = z.uuid();
+/** A media id in its canonical lowercase form, which is also how it names files on the media volumes. */
+export const MediaId = z.uuid().transform((id) => id.toLowerCase());
 
 export const MEDIA_SIZES = ["small", "large"] as const;
 export type MediaSize = (typeof MEDIA_SIZES)[number];
