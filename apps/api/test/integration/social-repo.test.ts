@@ -210,11 +210,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: social repository", () =
     const [ada, bob, carol] = await Promise.all([newProfile(db), newProfile(db), newProfile(db)]);
     await repo.follow(bob.id, ada.id, clock.next());
     await repo.follow(carol.id, ada.id, clock.next());
-    const firstPage = await repo.followers(ada.id, undefined, 1);
+    const firstPage = await repo.followers(ada.id, null, undefined, 1);
     expect(firstPage.map((r) => r.profileId)).toEqual([carol.id]);
-    const secondPage = await repo.followers(ada.id, { t: firstPage[0]!.sortAt.getTime(), id: firstPage[0]!.profileId }, 1);
+    const secondPage = await repo.followers(ada.id, null, { t: firstPage[0]!.sortAt.getTime(), id: firstPage[0]!.profileId }, 1);
     expect(secondPage.map((r) => r.profileId)).toEqual([bob.id]);
-    expect((await repo.following(bob.id, undefined, 10)).map((r) => r.profileId)).toEqual([ada.id]);
+    expect((await repo.following(bob.id, null, undefined, 10)).map((r) => r.profileId)).toEqual([ada.id]);
     expect(await repo.followedBy(bob.id, [ada.id, carol.id])).toEqual(new Set([ada.id]));
 
     await repo.block(ada.id, carol.id, clock.next());

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FORBIDDEN_FORMAT } from "./text";
 
 /** Every code the media endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
 export const MediaErrorCode = z.enum(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable"]);
@@ -45,6 +46,7 @@ export const AltText = z
   .max(4000)
   .transform(normalizeAltText)
   .refine((alt) => !CONTROL.test(alt), { message: "control characters are not allowed" })
+  .refine((alt) => !FORBIDDEN_FORMAT.test(alt), { message: "invisible direction and spacing characters are not allowed" })
   .refine((alt) => altLength(alt) >= 1, { message: "every image needs a description" })
   .refine((alt) => altLength(alt) <= ALT_MAX_LENGTH, { message: `descriptions have at most ${ALT_MAX_LENGTH} characters` });
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { SocialError } from "../../src/social/context";
-import { decodeCursor, encodeCursor } from "../../src/social/cursor";
+import { MAX_CURSOR_TIME, decodeCursor, encodeCursor } from "../../src/social/cursor";
 
 const id = "00000000-0000-4000-8000-000000000001";
 const reposter = "00000000-0000-4000-8000-000000000002";
@@ -16,6 +16,11 @@ describe("cursors", () => {
       expect(() => decodeCursor(raw), raw).toThrow(SocialError);
       expect(() => decodeCursor(raw), raw).toThrow(/cursor/);
     }
+  });
+  test("a time beyond what a date can hold is invalid_request, never a crash", () => {
+    const raw = Buffer.from(JSON.stringify({ t: 9_000_000_000_000_000, id })).toString("base64url");
+    expect(() => decodeCursor(raw)).toThrow(/cursor/);
+    expect(decodeCursor(encodeCursor({ t: MAX_CURSOR_TIME, id })).t).toBe(MAX_CURSOR_TIME);
   });
   test("extra fields are rejected, so clients cannot smuggle filters through the cursor", () => {
     const raw = Buffer.from(JSON.stringify({ t: 5, id, viewer: "someone-else" })).toString("base64url");

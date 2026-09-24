@@ -30,7 +30,10 @@ export const posts = pgTable(
   (t) => [
     index("posts_author_created_idx").on(t.authorId, t.createdAt),
     index("posts_created_id_idx").on(t.createdAt, t.id),
-    index("posts_reply_to_idx").on(t.replyToId),
+    /** A thread's replies in order, and every lookup by parent. */
+    index("posts_reply_to_created_idx").on(t.replyToId, t.createdAt, t.id),
+    /** The public Latest timeline: visible top-level posts and quotes, newest first. */
+    index("posts_latest_idx").on(t.createdAt, t.id).where(sql`reply_to_id is null and state = 'visible'`),
     index("posts_quote_of_idx").on(t.quoteOfId),
     check("posts_body_len", sql`char_length(${t.body}) <= 1000`),
     check("posts_counts_nonnegative", sql`${t.likeCount} >= 0 and ${t.repostCount} >= 0 and ${t.replyCount} >= 0 and ${t.quoteCount} >= 0`),
@@ -88,7 +91,9 @@ function userPairTable(name: string, from: string, to: string) {
     },
     (t) => [
       primaryKey({ columns: [t.fromId, t.toId] }),
-      index(`${name}_to_idx`).on(t.toId),
+      /** Pages of either side, newest first, and every lookup by either side. */
+      index(`${name}_to_created_idx`).on(t.toId, t.createdAt, t.fromId),
+      index(`${name}_from_created_idx`).on(t.fromId, t.createdAt, t.toId),
       check(`${name}_not_self`, sql`${t.fromId} <> ${t.toId}`),
       fullAccess(`${name}_api_all`, apiRole),
     ],

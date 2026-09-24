@@ -110,7 +110,12 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
       {post.author.id === me ? <StateChip state={post.state} /> : null}
       {post.replyTo ? (
         <Text className="text-xs text-zinc-500">
-          Replying to <Text className="text-sky-400" onPress={() => router.push(`/u/${post.replyTo!.authorHandle}`)}>@{post.replyTo.authorHandle}</Text>
+          {post.replyTo.authorHandle ? "Replying to " : "Replying to a post you can't see"}
+          {post.replyTo.authorHandle ? (
+            <Text className="text-sky-400" onPress={() => router.push(`/u/${post.replyTo!.authorHandle}`)}>
+              @{post.replyTo.authorHandle}
+            </Text>
+          ) : null}
         </Text>
       ) : null}
       {/* A post may consist of images only, and then there is no text to link. */}

@@ -53,9 +53,23 @@ export interface RateLimitOptions {
   key: (c: Context<AppEnv>) => string;
 }
 
+let outageLoggedAt = 0;
+
 export function rateLimit(opts: RateLimitOptions) {
   return createMiddleware<AppEnv>(async (c, next) => {
-    const { count, resetMs } = await opts.store.hit(`${opts.name}:${opts.key(c)}`, opts.windowMs);
+    let hit: { count: number; resetMs: number };
+    try {
+      hit = await opts.store.hit(`${opts.name}:${opts.key(c)}`, opts.windowMs);
+    } catch (err) {
+      // Fails closed, and says so once a minute rather than once per request.
+      if (Date.now() - outageLoggedAt > 60_000) {
+        outageLoggedAt = Date.now();
+        c.get("log").error({ err, limiter: opts.name }, "rate limit store unavailable; refusing requests");
+      }
+      c.header("Retry-After", "30");
+      return c.json(errorBody("service_unavailable", "Requests cannot be counted right now. Try again shortly.", c.get("requestId")), 503);
+    }
+    const { count, resetMs } = hit;
     const resetSec = Math.max(1, Math.ceil(resetMs / 1000));
     c.header("RateLimit-Limit", String(opts.limit));
     c.header("RateLimit-Remaining", String(Math.max(0, opts.limit - count)));

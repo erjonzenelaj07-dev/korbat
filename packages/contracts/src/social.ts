@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
+import { FORBIDDEN_FORMAT, visibleLength } from "./text";
 
 /** Every code the social endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
 export const SocialErrorCode = z.enum(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new"]);
 export type SocialErrorCode = z.infer<typeof SocialErrorCode>;
 
-export const PostId = z.uuid();
+/** Postgres returns lowercase ids; the canonical form, so a lookup by any spelling finds the row. */
+export const PostId = z.uuid().transform((id) => id.toLowerCase());
 
 /** A handle from a URL or a lookup box: an optional leading @, then the 3 to 20 characters handles may contain. */
 export const HandleParam = z
@@ -29,13 +31,14 @@ export function normalizePostBody(raw: string): string {
 /** Any control character other than tab and line feed. */
 const FORBIDDEN_CONTROL = /[^\P{Cc}\t\n]/u;
 
-/** A post body as stored: normalized, 1 to 1000 code points, no control characters other than tab and line feed. */
+/** A post body as stored: normalized, 1 to 1000 code points, some of them visible, no control or disguising characters. */
 export const PostBody = z
   .string()
   .max(4000)
   .transform(normalizePostBody)
   .refine((body) => !FORBIDDEN_CONTROL.test(body), { message: "control characters are not allowed" })
-  .refine((body) => postLength(body) >= 1, { message: "a post needs some text" })
+  .refine((body) => !FORBIDDEN_FORMAT.test(body), { message: "invisible direction and spacing characters are not allowed" })
+  .refine((body) => visibleLength(body) >= 1, { message: "a post needs some text" })
   .refine((body) => postLength(body) <= POST_MAX_LENGTH, { message: `posts have at most ${POST_MAX_LENGTH} characters` });
 
 /** The text of a post that may also carry images: the same rule as PostBody, except that it may be empty. */
@@ -44,6 +47,7 @@ export const PostText = z
   .max(4000)
   .transform(normalizePostBody)
   .refine((body) => !FORBIDDEN_CONTROL.test(body), { message: "control characters are not allowed" })
+  .refine((body) => !FORBIDDEN_FORMAT.test(body), { message: "invisible direction and spacing characters are not allowed" })
   .refine((body) => postLength(body) <= POST_MAX_LENGTH, { message: `posts have at most ${POST_MAX_LENGTH} characters` });
 
 /** A new post, reply or quote: text, up to four images that are ready, or both. */
@@ -55,7 +59,7 @@ export const CreatePostRequest = z
     media: z.array(MediaAttachment).max(MEDIA_MAX_PER_POST).default([]),
   })
   .refine((post) => !(post.replyToId && post.quoteOfId), { message: "a post is a reply or a quote, not both", path: ["quoteOfId"] })
-  .refine((post) => postLength(post.body) >= 1 || post.media.length >= 1, { message: "a post needs text or an image", path: ["body"] })
+  .refine((post) => visibleLength(post.body) >= 1 || post.media.length >= 1, { message: "a post needs text or an image", path: ["body"] })
   .refine((post) => new Set(post.media.map((item) => item.id)).size === post.media.length, { message: "an image can be attached once", path: ["media"] });
 export type CreatePostRequest = z.infer<typeof CreatePostRequest>;
 
@@ -91,7 +95,8 @@ const postFields = {
   body: z.string(),
   createdAt: z.iso.datetime(),
   state: PostState,
-  replyTo: z.object({ id: z.uuid(), authorHandle: z.string() }).nullable(),
+  /** The handle is null when the viewer could not open the parent: its author is blocked either way, or it is hidden or deleted. */
+  replyTo: z.object({ id: z.uuid(), authorHandle: z.string().nullable() }).nullable(),
   counts: PostCounts,
   /** The post's images in order. Always present, often empty. */
   media: z.array(MediaView),

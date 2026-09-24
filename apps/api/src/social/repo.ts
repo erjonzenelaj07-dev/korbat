@@ -1,5 +1,6 @@
 import { and, eq, ne, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import { blocks, bookmarks, follows, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
+import { SocialError } from "./context";
 import type { Cursor } from "./cursor";
 import type { StoredPostState } from "./visibility";
 
@@ -43,6 +44,9 @@ export interface PostRow {
   deletedAt: Date | null;
   author: AuthorRow;
   replyToHandle: string | null;
+  /** The parent's author and state, so a view can decide whether the viewer may learn the handle. */
+  replyToAuthorId: string | null;
+  replyToState: StoredPostState | null;
 }
 
 /** One line of a list: which post, when it sorts, and who reposted it (timelines only). */
@@ -105,6 +109,8 @@ interface RawPost {
   author_display_name: string;
   author_verified: boolean;
   reply_to_handle: string | null;
+  reply_to_author_id: string | null;
+  reply_to_state: StoredPostState | null;
 }
 
 interface RawListRow {
@@ -151,6 +157,8 @@ const toPost = (r: RawPost): PostRow => ({
   deletedAt: r.deleted_at ? new Date(r.deleted_at) : null,
   author: { id: r.author_id, handle: r.author_handle, displayName: r.author_display_name, verified: r.author_verified },
   replyToHandle: r.reply_to_handle,
+  replyToAuthorId: r.reply_to_author_id,
+  replyToState: r.reply_to_state,
 });
 
 const toListRow = (r: RawListRow): ListRow => ({ postId: r.post_id, sortAt: new Date(r.sort_at), reposterId: r.reposter_id });
@@ -206,9 +214,24 @@ const beforeItem = (cursor: Cursor | undefined): SQL =>
 
 const POST_COLUMNS = sql`p.id, p.author_id, p.body, p.reply_to_id, p.quote_of_id, p.state, p.like_count, p.repost_count, p.reply_count, p.quote_count,
   ${iso("p.created_at")} as created_at, ${iso("p.deleted_at")} as deleted_at,
-  a.handle as author_handle, a.display_name as author_display_name, (a.verified_at is not null) as author_verified, rp.handle as reply_to_handle`;
+  a.handle as author_handle, a.display_name as author_display_name, (a.verified_at is not null) as author_verified,
+  rp.handle as reply_to_handle, pp.author_id as reply_to_author_id, pp.state as reply_to_state`;
 const POST_JOINS = sql`from posts p join profiles a on a.id = p.author_id left join posts pp on pp.id = p.reply_to_id left join profiles rp on rp.id = pp.author_id`;
 const PROFILE_SELECT = sql`select id, handle, display_name, bio, (verified_at is not null) as verified, follower_count, following_count, post_count, ${iso("created_at")} as created_at from profiles`;
+
+/** No block in either direction between the viewer and the account `other` names (a column reference). */
+const otherNotBlocked = (viewer: string | null, other: SQL): SQL =>
+  viewer === null
+    ? sql`true`
+    : sql`not exists (select 1 from blocks b where (b.blocker_id = ${viewer}::uuid and b.blocked_id = ${other}) or (b.blocked_id = ${viewer}::uuid and b.blocker_id = ${other}))`;
+
+/** The viewer neither blocks, is blocked by, nor mutes the account `other` names. */
+const otherWelcome = (viewer: string, other: SQL): SQL =>
+  sql`${otherNotBlocked(viewer, other)} and not exists (select 1 from mutes m where m.muter_id = ${viewer}::uuid and m.muted_id = ${other})`;
+
+/** A keyset bound on the three sort columns of a timeline branch. */
+const beforeTriple = (cursor: Cursor | undefined, sortAt: SQL, id: SQL, reposter: SQL): SQL =>
+  cursor ? sql`(${sortAt}, ${id}, ${reposter}) < (${at(cursor)}::timestamptz, ${cursor.id}::uuid, ${cursor.r ?? NO_REPOSTER}::uuid)` : sql`true`;
 
 /** The outer select of a list query whose inner query `i` carries post_id, sort_at and reposter_id. */
 const LIST_COLUMNS = sql`i.post_id, ${iso("i.sort_at")} as sort_at, i.reposter_id`;
@@ -223,9 +246,22 @@ export function createSocialRepo(db: Db) {
   return {
     // ------------------------------------------------------------ posts
 
-    /** `within` runs in the same transaction once the post exists, which is how its images are attached. */
-    async createPost(input: { authorId: string; body: string; replyToId: string | null; quoteOfId: string | null; now: Date; within?: (tx: DbTx, postId: string) => Promise<void> }): Promise<string> {
+    /**
+     * `within` runs in the same transaction once the post exists, which is how its images are attached.
+     * `lockWith` names the author of the post replied to or quoted: the pair is locked and a block
+     * between them refused inside the transaction, so a reply cannot land across a concurrent block.
+     */
+    async createPost(input: {
+      authorId: string;
+      body: string;
+      replyToId: string | null;
+      quoteOfId: string | null;
+      now: Date;
+      lockWith?: string | null;
+      within?: (tx: DbTx, postId: string) => Promise<void>;
+    }): Promise<string> {
       return db.transaction(async (tx) => {
+        if (input.lockWith) await guardPair(tx, input.authorId, input.lockWith, "post_unavailable");
         const [row] = await tx
           .insert(posts)
           .values({ authorId: input.authorId, body: input.body, replyToId: input.replyToId, quoteOfId: input.quoteOfId, createdAt: input.now })
@@ -291,8 +327,10 @@ export function createSocialRepo(db: Db) {
 
     // ------------------------------------------------------------ engagement
 
-    async like(userId: string, postId: string, now: Date): Promise<boolean> {
+    /** `other` is the post's author when that is someone else: the pair is locked and a block refused inside the transaction. */
+    async like(userId: string, postId: string, now: Date, other?: string): Promise<boolean> {
       return db.transaction(async (tx) => {
+        if (other) await guardPair(tx, userId, other, "not_found");
         const inserted = await tx.insert(likes).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: likes.postId });
         if (inserted.length > 0) await tx.update(posts).set({ likeCount: bump(posts.likeCount, 1) }).where(eq(posts.id, postId));
         return inserted.length > 0;
@@ -305,8 +343,9 @@ export function createSocialRepo(db: Db) {
         return deleted.length > 0;
       });
     },
-    async repost(userId: string, postId: string, now: Date): Promise<boolean> {
+    async repost(userId: string, postId: string, now: Date, other?: string): Promise<boolean> {
       return db.transaction(async (tx) => {
+        if (other) await guardPair(tx, userId, other, "not_found");
         const inserted = await tx.insert(reposts).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: reposts.postId });
         if (inserted.length > 0) await tx.update(posts).set({ repostCount: bump(posts.repostCount, 1) }).where(eq(posts.id, postId));
         return inserted.length > 0;
@@ -347,8 +386,10 @@ export function createSocialRepo(db: Db) {
 
     // ------------------------------------------------------------ graph
 
-    async follow(followerId: string, followeeId: string, now: Date): Promise<boolean> {
+    /** With `guard`, the pair is locked and a block refused inside the transaction, so a follow cannot land across a concurrent block. */
+    async follow(followerId: string, followeeId: string, now: Date, guard = false): Promise<boolean> {
       return db.transaction(async (tx) => {
+        if (guard) await guardPair(tx, followerId, followeeId, "not_found");
         const inserted = await tx.insert(follows).values({ fromId: followerId, toId: followeeId, createdAt: now }).onConflictDoNothing().returning({ toId: follows.toId });
         if (inserted.length > 0) {
           await tx.update(profiles).set({ followerCount: bump(profiles.followerCount, 1) }).where(eq(profiles.id, followeeId));
@@ -361,12 +402,18 @@ export function createSocialRepo(db: Db) {
       return db.transaction(async (tx) => removeFollow(tx, followerId, followeeId));
     },
 
-    /** Blocks and, in the same transaction, removes follows in both directions. False when the block already existed. */
+    /**
+     * Blocks and, in the same transaction, removes follows, reposts and likes in both directions, so
+     * neither account keeps amplifying or counting on the other. False when the block already existed.
+     */
     async block(blockerId: string, blockedId: string, now: Date): Promise<boolean> {
       return db.transaction(async (tx) => {
+        await pairLock(tx, blockerId, blockedId);
         const inserted = await tx.insert(blocks).values({ fromId: blockerId, toId: blockedId, createdAt: now }).onConflictDoNothing().returning({ toId: blocks.toId });
         await removeFollow(tx, blockerId, blockedId);
         await removeFollow(tx, blockedId, blockerId);
+        await retractEngagement(tx, blockedId, blockerId);
+        await retractEngagement(tx, blockerId, blockedId);
         return inserted.length > 0;
       });
     },
@@ -402,16 +449,17 @@ export function createSocialRepo(db: Db) {
       return new Set(raw.map((r) => r.other));
     },
 
-    followers(profileId: string, cursor: Cursor | undefined, limit: number): Promise<ProfileListRow[]> {
+    /** Accounts with a block in either direction with the viewer are left out before the page is cut, so pages stay full. */
+    followers(profileId: string, viewer: string | null, cursor: Cursor | undefined, limit: number): Promise<ProfileListRow[]> {
       return profileList(sql`
         select f.follower_id as profile_id, ${iso("f.created_at")} as sort_at from follows f
-        where f.followee_id = ${profileId}::uuid and ${before(cursor, sql`f.created_at`, sql`f.follower_id`)}
+        where f.followee_id = ${profileId}::uuid and ${otherNotBlocked(viewer, sql`f.follower_id`)} and ${before(cursor, sql`f.created_at`, sql`f.follower_id`)}
         order by f.created_at desc, f.follower_id desc limit ${limit}`);
     },
-    following(profileId: string, cursor: Cursor | undefined, limit: number): Promise<ProfileListRow[]> {
+    following(profileId: string, viewer: string | null, cursor: Cursor | undefined, limit: number): Promise<ProfileListRow[]> {
       return profileList(sql`
         select f.followee_id as profile_id, ${iso("f.created_at")} as sort_at from follows f
-        where f.follower_id = ${profileId}::uuid and ${before(cursor, sql`f.created_at`, sql`f.followee_id`)}
+        where f.follower_id = ${profileId}::uuid and ${otherNotBlocked(viewer, sql`f.followee_id`)} and ${before(cursor, sql`f.created_at`, sql`f.followee_id`)}
         order by f.created_at desc, f.followee_id desc limit ${limit}`);
     },
     blockedList(userId: string, cursor: Cursor | undefined, limit: number): Promise<ProfileListRow[]> {
@@ -435,19 +483,29 @@ export function createSocialRepo(db: Db) {
 
     // ------------------------------------------------------------ timelines and lists
 
-    /** Top-level posts and quotes by followed accounts and the viewer, plus their reposts; blocks and mutes apply to author and reposter. */
+    /**
+     * Top-level posts and quotes by followed accounts and the viewer, plus their reposts; blocks and mutes
+     * apply to author and reposter. Each branch applies the cursor, the filters and the limit itself, so
+     * only two small sorted sets meet in the union instead of everything the followed accounts ever wrote.
+     */
     async followingTimeline(viewer: string, cursor: Cursor | undefined, limit: number): Promise<ListRow[]> {
       const raw = await rows<RawListRow>(sql`
         with f as (select followee_id as id from follows where follower_id = ${viewer}::uuid union select ${viewer}::uuid),
-        i as (
+        own as (
           select p.id as post_id, p.created_at as sort_at, null::uuid as reposter_id, p.author_id
           from posts p where p.author_id in (select id from f) and p.reply_to_id is null and ${visibleTo(viewer)}
-          union all
-          select r.post_id, r.created_at, r.user_id, p.author_id
+            and ${otherWelcome(viewer, sql`p.author_id`)} and ${beforeTriple(cursor, sql`p.created_at`, sql`p.id`, sql`${NO_REPOSTER}::uuid`)}
+          order by p.created_at desc, p.id desc limit ${limit}
+        ),
+        shared as (
+          select r.post_id, r.created_at as sort_at, r.user_id as reposter_id, p.author_id
           from reposts r join posts p on p.id = r.post_id where r.user_id in (select id from f) and p.state = 'visible'
-        )
+            and ${otherWelcome(viewer, sql`p.author_id`)} and ${otherWelcome(viewer, sql`r.user_id`)}
+            and ${beforeTriple(cursor, sql`r.created_at`, sql`r.post_id`, sql`r.user_id`)}
+          order by r.created_at desc, r.post_id desc, r.user_id desc limit ${limit}
+        ),
+        i as (select * from own union all select * from shared)
         select ${LIST_COLUMNS} from i
-        where ${itemNotBlocked(viewer)} and ${itemNotMuted(viewer)} and ${beforeItem(cursor)}
         order by i.sort_at desc, i.post_id desc, coalesce(i.reposter_id, ${NO_REPOSTER}::uuid) desc limit ${limit}`);
       return raw.map(toListRow);
     },
@@ -519,6 +577,35 @@ export function createSocialRepo(db: Db) {
 }
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/**
+ * Serializes the writes between two accounts for the rest of the transaction: follow, block, like,
+ * repost, reply and quote all take it, so none of them can land while a block between the pair is
+ * being written. The key is the unordered pair, hashed; a collision only means extra waiting.
+ */
+async function pairLock(tx: Tx, a: string, b: string): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(least(${a}, ${b})), hashtext(greatest(${a}, ${b})))`);
+}
+
+/** Takes the pair lock and refuses, with `code`, when a block exists between the two in either direction. */
+async function guardPair(tx: Tx, me: string, other: string, code: "not_found" | "post_unavailable"): Promise<void> {
+  if (me === other) return;
+  await pairLock(tx, me, other);
+  const found = await tx.execute(
+    sql`select 1 from blocks where (blocker_id = ${me}::uuid and blocked_id = ${other}::uuid) or (blocker_id = ${other}::uuid and blocked_id = ${me}::uuid) limit 1`,
+  );
+  if (found.length > 0) throw new SocialError(code, code === "not_found" ? 404 : 400);
+}
+
+/** Removes `userId`'s reposts and likes of `authorId`'s posts and takes them off the counters, in the same transaction. */
+async function retractEngagement(tx: Tx, userId: string, authorId: string): Promise<void> {
+  await tx.execute(sql`
+    with gone as (delete from reposts r using posts p where r.post_id = p.id and r.user_id = ${userId}::uuid and p.author_id = ${authorId}::uuid returning r.post_id)
+    update posts set repost_count = greatest(0, repost_count - c.n) from (select post_id, count(*)::int as n from gone group by post_id) c where posts.id = c.post_id`);
+  await tx.execute(sql`
+    with gone as (delete from likes l using posts p where l.post_id = p.id and l.user_id = ${userId}::uuid and p.author_id = ${authorId}::uuid returning l.post_id)
+    update posts set like_count = greatest(0, like_count - c.n) from (select post_id, count(*)::int as n from gone group by post_id) c where posts.id = c.post_id`);
+}
 
 async function removeFollow(tx: Tx, followerId: string, followeeId: string): Promise<boolean> {
   const deleted = await tx.delete(follows).where(and(eq(follows.fromId, followerId), eq(follows.toId, followeeId))).returning({ toId: follows.toId });

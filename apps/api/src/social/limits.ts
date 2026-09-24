@@ -18,7 +18,14 @@ export async function enforceWriteLimit(
     throw new SocialError("account_too_new", 403);
   }
   for (const limit of limitsFor(action, accountAgeMs)) {
-    const { count, resetMs } = await store.hit(`social:${limit.bucket}:${userId}`, limit.windowMs);
+    let hit: { count: number; resetMs: number };
+    try {
+      hit = await store.hit(`social:${limit.bucket}:${userId}`, limit.windowMs);
+    } catch {
+      // Fails closed: a write that cannot be counted is not made, and the client is told to retry shortly.
+      throw new SocialError("service_unavailable", 503, undefined, 30);
+    }
+    const { count, resetMs } = hit;
     if (count > limit.max) {
       throw new SocialError("rate_limited", 429, undefined, Math.max(1, Math.ceil(resetMs / 1000)));
     }

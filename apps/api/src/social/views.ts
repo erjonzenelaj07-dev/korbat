@@ -30,19 +30,24 @@ export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerI
   const quoteIds = [...new Set([...primary.values()].map((row) => row.quoteOfId).filter((id): id is string => id !== null && !primary.has(id)))];
   const quoted = await repo.findPosts(quoteIds);
   const all = new Map([...primary, ...quoted]);
-  const authorIds = [...new Set([...all.values()].map((row) => row.authorId))];
+  const authorIds = [...new Set([...all.values()].flatMap((row) => (row.replyToAuthorId ? [row.authorId, row.replyToAuthorId] : [row.authorId])))];
   const blocked = viewer ? await repo.blockedEitherWay(viewer, authorIds) : new Set<string>();
   const states = viewer ? await repo.viewerPostStates(viewer, [...all.keys()]) : null;
   const images = await media.forPosts([...all.keys()]);
 
   const access = (row: PostRow) => postAccess(viewer, row, blocked.has(row.authorId));
+  /** The parent's handle only when the viewer could open the parent; a block either way, or a hidden or deleted parent, gives null. */
+  const parentHandle = (row: PostRow): string | null =>
+    row.replyToAuthorId && row.replyToState && postAccess(viewer, { authorId: row.replyToAuthorId, state: row.replyToState }, blocked.has(row.replyToAuthorId)) === "shown"
+      ? row.replyToHandle
+      : null;
   const base = (row: PostRow) => ({
     id: row.id,
     author: row.author,
     body: row.body,
     createdAt: row.createdAt.toISOString(),
     state: row.state as PostView["state"],
-    replyTo: row.replyToId ? { id: row.replyToId, authorHandle: row.replyToHandle ?? "" } : null,
+    replyTo: row.replyToId ? { id: row.replyToId, authorHandle: parentHandle(row) } : null,
     counts: { likes: row.likeCount, reposts: row.repostCount, replies: row.replyCount, quotes: row.quoteCount },
     media: images.get(row.id) ?? [],
     ...(states ? { viewer: states.get(row.id)! } : {}),

@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 import {
+  AltText,
   CreatePostRequest,
+  DisplayName,
   HandleParam,
   PostBody,
+  PostId,
   PostView,
   ProfileListItem,
   ProfileView,
@@ -12,6 +15,7 @@ import {
   TimelinePage,
   normalizePostBody,
   postLength,
+  visibleLength,
 } from "../src/index";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -50,6 +54,32 @@ describe("post bodies", () => {
     expect(CreatePostRequest.safeParse({ body: "x", replyToId: id(2) }).success).toBe(true);
     expect(CreatePostRequest.safeParse({ body: "x", quoteOfId: id(2) }).success).toBe(true);
     expect(CreatePostRequest.safeParse({ body: "x", replyToId: id(2), quoteOfId: id(3) }).success).toBe(false);
+  });
+});
+
+describe("invisible characters", () => {
+  const rlo = String.fromCharCode(0x202e);
+  const zwsp = String.fromCharCode(0x200b);
+  const zwj = String.fromCharCode(0x200d);
+  test("direction overrides and zero-width spaces are refused in bodies, alt text and display names", () => {
+    expect(PostBody.safeParse(`a${rlo}b`).success).toBe(false);
+    expect(PostBody.safeParse(`a${zwsp}b`).success).toBe(false);
+    expect(AltText.safeParse(`cat${rlo}`).success).toBe(false);
+    expect(DisplayName.safeParse(`Ada${zwsp}`).success).toBe(false);
+  });
+  test("joiners inside emoji stay allowed but do not count as text on their own", () => {
+    const family = `${String.fromCodePoint(0x1f468)}${zwj}${String.fromCodePoint(0x1f469)}`;
+    expect(PostBody.safeParse(family).success).toBe(true);
+    expect(PostBody.safeParse(zwj).success).toBe(false);
+    expect(CreatePostRequest.safeParse({ body: zwj, media: [] }).success).toBe(false);
+    expect(visibleLength(`a${zwj}b`)).toBe(2);
+  });
+  test("post ids are lowercased", () => {
+    expect(PostId.parse("3B241101-E2BB-4255-8CAF-4136C566A962")).toBe("3b241101-e2bb-4255-8caf-4136c566a962");
+  });
+  test("a reply may point at a parent whose author is hidden from the viewer", () => {
+    expect(PostView.safeParse(post(1, { replyTo: { id: id(2), authorHandle: null } })).success).toBe(true);
+    expect(PostView.safeParse(post(1, { replyTo: { id: id(2) } })).success).toBe(false);
   });
 });
 

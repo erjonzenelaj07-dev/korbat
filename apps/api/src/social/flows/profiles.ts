@@ -56,12 +56,12 @@ export async function profileItems(deps: SocialDeps, viewer: string, rows: Profi
 
 export async function followers(deps: SocialDeps, viewer: string, handle: string, query: Pagination): Promise<ProfilePage> {
   const target = await visibleProfile(deps, viewer, handle);
-  const rows = await deps.repo.followers(target.id, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit);
+  const rows = await deps.repo.followers(target.id, viewer, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit);
   return { items: await profileItems(deps, viewer, rows), nextCursor: pageCursor(rows, query.limit) };
 }
 
 export async function following(deps: SocialDeps, viewer: string, handle: string, query: Pagination): Promise<ProfilePage> {
   const target = await visibleProfile(deps, viewer, handle);
-  const rows = await deps.repo.following(target.id, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit);
+  const rows = await deps.repo.following(target.id, viewer, query.cursor ? decodeCursor(query.cursor) : undefined, query.limit);
   return { items: await profileItems(deps, viewer, rows), nextCursor: pageCursor(rows, query.limit) };
 }

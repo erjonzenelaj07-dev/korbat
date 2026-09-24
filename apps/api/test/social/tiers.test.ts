@@ -16,9 +16,15 @@ describe("account tiers", () => {
     expect(limitsFor("quote", 3 * DAY_MS)).toEqual(limitsFor("post", 3 * DAY_MS));
     expect(limitsFor("repost", 3 * DAY_MS)).toEqual([{ bucket: "repost", max: 30, windowMs: HOUR_MS }]);
   });
-  test("image uploads: 20 an hour in the first day, 120 afterwards", () => {
-    expect(limitsFor("upload", 0)).toEqual([{ bucket: "upload", max: 20, windowMs: HOUR_MS }]);
-    expect(limitsFor("upload", NEW_ACCOUNT_MS)).toEqual([{ bucket: "upload", max: 120, windowMs: HOUR_MS }]);
+  test("image uploads: 20 an hour and 60 a day in the first day, 120 an hour and 500 a day afterwards", () => {
+    expect(limitsFor("upload", 0)).toEqual([
+      { bucket: "upload", max: 20, windowMs: HOUR_MS },
+      { bucket: "upload-day", max: 60, windowMs: DAY_MS },
+    ]);
+    expect(limitsFor("upload", NEW_ACCOUNT_MS)).toEqual([
+      { bucket: "upload", max: 120, windowMs: HOUR_MS },
+      { bucket: "upload-day", max: 500, windowMs: DAY_MS },
+    ]);
   });
   test("engagement and graph limits do not depend on age, and follows have two windows", () => {
     for (const age of [0, 10 * DAY_MS]) {

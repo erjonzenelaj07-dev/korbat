@@ -56,6 +56,18 @@ describe("rateLimit", () => {
     now += 10_001;
     expect((await app.request("/x")).status).toBe(200);
   });
+  test("a failing store answers 503 with Retry-After instead of letting the request through", async () => {
+    const store = {
+      hit: async () => {
+        throw new Error("redis down");
+      },
+    };
+    const app = base().use(rateLimit({ name: "t", store, limit: 2, windowMs: 10_000, key: () => "k" })).get("/x", (c) => c.text("ok"));
+    const res = await app.request("/x");
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("30");
+    expect(await res.json()).toMatchObject({ error: { code: "service_unavailable" } });
+  });
   test("exposes RateLimit-* headers", async () => {
     const app = base()
       .use(rateLimit({ name: "t", store: new MemoryStore(), limit: 5, windowMs: 1000, key: () => "k" }))

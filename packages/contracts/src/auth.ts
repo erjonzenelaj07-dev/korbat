@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FORBIDDEN_FORMAT } from "./text";
 
 /** Every code the auth endpoints can put in ErrorEnvelope.error.code. */
 export const AuthErrorCode = z.enum([
@@ -53,7 +54,8 @@ export const DisplayName = z
   .trim()
   .min(1)
   .max(50)
-  .regex(/^[^\p{Cc}]+$/u);
+  .regex(/^[^\p{Cc}]+$/u)
+  .refine((name) => !FORBIDDEN_FORMAT.test(name), { message: "invisible direction and spacing characters are not allowed" });
 export const TurnstileToken = z.string().min(1).max(2048);
 /** Length rules (12-128) are enforced by the flow so it can return password_too_short or password_too_long. */
 export const PasswordInput = z.string().min(1).max(1024);

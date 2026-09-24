@@ -114,6 +114,31 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     expect((await thread(h.deps, ada.id, leaf.id, { limit: 20 })).replies.items.map((r) => r.body)).toEqual(["r0", "r1", "r2", "hidden reply"]);
   });
 
+  test("a reply names its parent's author only to viewers who could open the parent", async () => {
+    const [ada, bob, carol] = await Promise.all([h.established(), h.established(), h.established()]);
+    const root = await post(ada.id, "root");
+    const reply = await post(carol.id, "reply", { replyToId: root.id });
+    expect((await getPost(h.deps, bob.id, reply.id)).replyTo).toEqual({ id: root.id, authorHandle: ada.handle });
+    await h.repo.block(ada.id, bob.id, h.clock.next());
+    expect((await getPost(h.deps, bob.id, reply.id)).replyTo).toEqual({ id: root.id, authorHandle: null });
+    expect((await getPost(h.deps, carol.id, reply.id)).replyTo?.authorHandle).toBe(ada.handle);
+    await db.execute(sql`update posts set state = 'removed' where id = ${root.id}::uuid`);
+    expect((await getPost(h.deps, null, reply.id)).replyTo).toEqual({ id: root.id, authorHandle: null });
+    expect((await getPost(h.deps, ada.id, reply.id)).replyTo?.authorHandle).toBe(ada.handle);
+  });
+
+  test("a hidden post answers with its state before revealing a block, and an undo works across a block", async () => {
+    const [ada, viewer] = await Promise.all([h.established(), h.established()]);
+    const target = await post(ada.id, "engage");
+    await setEngagement(h.deps, viewer.id, target.id, "bookmark", true);
+    const withheld = await post(ada.id, "withheld");
+    await db.execute(sql`update posts set state = 'withheld' where id = ${withheld.id}::uuid`);
+    await h.repo.block(viewer.id, ada.id, h.clock.next());
+    expect(await rejection(setEngagement(h.deps, viewer.id, withheld.id, "like", true))).toBe("not_found");
+    expect(await rejection(setEngagement(h.deps, viewer.id, target.id, "like", true))).toBe("blocked");
+    expect((await setEngagement(h.deps, viewer.id, target.id, "bookmark", false)).viewer.bookmarked).toBe(false);
+  });
+
   test("likes, reposts and bookmarks are idempotent, honour blocks in both directions, and undo without limits", async () => {
     const [ada, bob, carol] = await Promise.all([h.established(), h.established(), h.established()]);
     const target = await post(ada.id, "engage");
@@ -128,6 +153,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     expect(await rejection(setEngagement(h.deps, carol.id, target.id, "like", true))).toBe("not_found");
     await h.repo.block(bob.id, ada.id, h.clock.next());
     expect(await rejection(setEngagement(h.deps, bob.id, target.id, "like", true))).toBe("blocked");
-    expect(await rejection(setEngagement(h.deps, bob.id, target.id, "repost", false))).toBe("blocked");
+    expect((await setEngagement(h.deps, bob.id, target.id, "repost", false)).viewer.reposted).toBe(false);
   });
 });

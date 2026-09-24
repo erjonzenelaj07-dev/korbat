@@ -4,7 +4,7 @@ import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { setEngagement } from "../../src/social/flows/engagement";
 import { blockedList, mutedList, setBlock, setFollow, setMute } from "../../src/social/flows/graph";
-import { createPost } from "../../src/social/flows/posts";
+import { createPost, getPost } from "../../src/social/flows/posts";
 import { followers, following, profile } from "../../src/social/flows/profiles";
 import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profilePosts, profileReplies } from "../../src/social/flows/timelines";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
@@ -62,6 +62,46 @@ describe.skipIf(!process.env.INTEGRATION)("integration: graph, profile and timel
     expect((await blockedList(h.deps, ada.id, page)).items).toEqual([]);
   });
 
+  test("blocking retracts the pair's reposts and likes of each other's posts, both ways; a third account's stay", async () => {
+    const [ada, bob, carol] = await Promise.all([h.established(), h.established(), h.established()]);
+    const a1 = await post(ada.id, "by ada");
+    const b1 = await post(bob.id, "by bob");
+    for (const [who, target, kind] of [[bob, a1, "repost"], [bob, a1, "like"], [ada, b1, "like"], [carol, a1, "like"]] as const) {
+      h.clock.next();
+      await setEngagement(h.deps, who.id, target.id, kind, true);
+    }
+    await setBlock(h.deps, ada.id, bob.handle, true);
+    expect((await getPost(h.deps, null, a1.id)).counts).toMatchObject({ reposts: 0, likes: 1 });
+    expect((await getPost(h.deps, null, b1.id)).counts.likes).toBe(0);
+    expect((await profilePosts(h.deps, carol.id, bob.handle, page)).items.map((i) => i.kind)).toEqual(["post"]);
+    expect((await getPost(h.deps, carol.id, a1.id)).viewer?.liked).toBe(true);
+  });
+
+  test("block and mute towards an account that blocks you are not_found; your own mute or block can still be undone", async () => {
+    const [viewer, carol] = await Promise.all([h.established(), h.established()]);
+    await setMute(h.deps, viewer.id, carol.handle, true);
+    await setBlock(h.deps, carol.id, viewer.handle, true);
+    expect(await rejection(setBlock(h.deps, viewer.id, carol.handle, true))).toBe("not_found");
+    expect(await rejection(setMute(h.deps, viewer.id, carol.handle, true))).toBe("not_found");
+    expect(await setMute(h.deps, viewer.id, carol.handle, false)).toEqual({ muted: false });
+    await setBlock(h.deps, carol.id, viewer.handle, false);
+    await setBlock(h.deps, viewer.id, carol.handle, true);
+    // The rule cuts both ways: once the viewer blocks carol, carol's block towards the viewer is not_found too.
+    expect(await rejection(setBlock(h.deps, carol.id, viewer.handle, true))).toBe("not_found");
+    expect(await setBlock(h.deps, viewer.id, carol.handle, false)).toEqual({ blocked: false });
+  });
+
+  test("a follow cannot land across a concurrent block", async () => {
+    for (let i = 0; i < 8; i++) {
+      const [ada, bob] = await Promise.all([h.established(), h.established()]);
+      const [followed, blocked] = await Promise.allSettled([setFollow(h.deps, bob.id, ada.handle, true), setBlock(h.deps, ada.id, bob.handle, true)]);
+      expect(blocked.status).toBe("fulfilled");
+      expect(followed.status === "fulfilled" || (followed.reason as { code: string }).code === "not_found").toBe(true);
+      expect((await h.repo.relation(bob.id, ada.id)).following).toBe(false);
+      expect((await h.repo.findProfiles([ada.id])).get(ada.id)!.followerCount).toBe(0);
+    }
+  });
+
   test("mutes are silent, listed for their owner, and hide timelines only", async () => {
     const [viewer, ada] = await Promise.all([h.established(), h.established()]);
     await setFollow(h.deps, viewer.id, ada.handle, true);
@@ -90,6 +130,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: graph, profile and timel
 
     await setBlock(h.deps, carol.id, viewer.handle, true);
     expect((await followers(h.deps, viewer.id, ada.handle, page)).items.map((i) => i.handle)).toEqual([bob.handle]);
+    // The blocked account is left out before the page is cut, so a page of one is bob, not an empty page with a cursor.
+    expect((await followers(h.deps, viewer.id, ada.handle, { limit: 1 })).items.map((i) => i.handle)).toEqual([bob.handle]);
     const one = await followers(h.deps, ada.id, ada.handle, { limit: 1 });
     expect(one.items).toHaveLength(1);
     expect(one.nextCursor).not.toBeNull();

@@ -2,16 +2,22 @@ import type { BlockResponse, FollowResponse, MuteResponse, Pagination, ProfileLi
 import { SocialError, type SocialDeps } from "../context";
 import { decodeCursor } from "../cursor";
 import { enforceWriteLimit } from "../limits";
-import type { ProfileRow } from "../repo";
+import type { ProfileRow, Relation } from "../repo";
 import { authorOf, pageCursor } from "../views";
 import { ownProfile } from "./posts";
 import { lookupProfile } from "./profiles";
 
-/** The account a graph action targets. Never yourself. */
-async function target(deps: SocialDeps, viewer: string, handle: string): Promise<ProfileRow> {
+/**
+ * The account a graph action targets. Never yourself. For an action, an account that blocks the
+ * viewer is `not_found`, like every other read or write towards it; undoing the viewer's own block
+ * or mute needs no such answer, since the viewer is looking at their own list.
+ */
+async function target(deps: SocialDeps, viewer: string, handle: string, on: boolean): Promise<{ profile: ProfileRow; relation: Relation }> {
   const profile = await lookupProfile(deps, handle);
   if (profile.id === viewer) throw new SocialError("self_target", 400);
-  return profile;
+  const relation = await deps.repo.relation(viewer, profile.id);
+  if (on && relation.blockedBy) throw new SocialError("not_found", 404);
+  return { profile, relation };
 }
 
 /**
@@ -19,14 +25,13 @@ async function target(deps: SocialDeps, viewer: string, handle: string): Promise
  * `not_found`, like every other read or write towards them. Only the follow itself is limited.
  */
 export async function setFollow(deps: SocialDeps, viewer: string, handle: string, on: boolean): Promise<FollowResponse> {
-  const profile = await target(deps, viewer, handle);
-  const relation = await deps.repo.relation(viewer, profile.id);
+  const { profile, relation } = await target(deps, viewer, handle, on);
   if (relation.blocked) throw new SocialError("blocked", 403);
   if (relation.blockedBy) throw new SocialError("not_found", 404);
   if (on) {
     const me = await ownProfile(deps, viewer);
     await enforceWriteLimit(deps.limits, viewer, "follow", me.createdAt, deps.now());
-    await deps.repo.follow(viewer, profile.id, deps.now());
+    await deps.repo.follow(viewer, profile.id, deps.now(), true);
   } else {
     await deps.repo.unfollow(viewer, profile.id);
   }
@@ -34,9 +39,9 @@ export async function setFollow(deps: SocialDeps, viewer: string, handle: string
   return { following: on, followerCount: fresh.followerCount };
 }
 
-/** Block or unblock. Blocking removes follows in both directions; unblocking restores nothing. */
+/** Block or unblock. Blocking removes follows, reposts and likes in both directions; unblocking restores nothing. */
 export async function setBlock(deps: SocialDeps, viewer: string, handle: string, on: boolean): Promise<BlockResponse> {
-  const profile = await target(deps, viewer, handle);
+  const { profile } = await target(deps, viewer, handle, on);
   if (on) {
     const me = await ownProfile(deps, viewer);
     await enforceWriteLimit(deps.limits, viewer, "block", me.createdAt, deps.now());
@@ -49,7 +54,7 @@ export async function setBlock(deps: SocialDeps, viewer: string, handle: string,
 
 /** Mute or unmute. Silent: the muted account is never told and nothing else changes. */
 export async function setMute(deps: SocialDeps, viewer: string, handle: string, on: boolean): Promise<MuteResponse> {
-  const profile = await target(deps, viewer, handle);
+  const { profile } = await target(deps, viewer, handle, on);
   if (on) {
     const me = await ownProfile(deps, viewer);
     await enforceWriteLimit(deps.limits, viewer, "mute", me.createdAt, deps.now());

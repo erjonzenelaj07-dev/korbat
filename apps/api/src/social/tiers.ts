@@ -48,6 +48,9 @@ export function limitsFor(action: WriteAction, accountAgeMs: number): WriteLimit
       return [{ bucket: "mute", max: 30, windowMs: HOUR_MS }];
     // Image uploads (2b). The media module counts them through this table, so every per-account limit lives here.
     case "upload":
-      return [{ bucket: "upload", max: fresh ? 20 : 120, windowMs: HOUR_MS }];
+      return [
+        { bucket: "upload", max: fresh ? 20 : 120, windowMs: HOUR_MS },
+        { bucket: "upload-day", max: fresh ? 60 : 500, windowMs: DAY_MS },
+      ];
   }
 }

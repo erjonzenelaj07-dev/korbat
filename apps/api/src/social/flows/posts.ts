@@ -14,20 +14,21 @@ export async function ownProfile(deps: SocialDeps, viewer: string): Promise<Prof
 }
 
 /**
- * A post the viewer wants to act on. The refusal is directional: when the viewer blocked the
- * author it is `blocked`; when the author blocked the viewer, or the post is hidden or deleted,
- * it is `hiddenCode`, which reveals nothing.
+ * A post the viewer wants to act on. The post's own state is judged first, so someone probing ids
+ * learns nothing about hidden or deleted posts from a block. Then the refusal is directional: when
+ * the viewer blocked the author it is `blocked`; when the author blocked the viewer it is
+ * `hiddenCode`, which reveals nothing.
  */
 export async function targetPost(deps: SocialDeps, viewer: string, id: string, hiddenCode: "not_found" | "post_unavailable" = "not_found"): Promise<PostRow> {
   const hidden = () => new SocialError(hiddenCode, hiddenCode === "not_found" ? 404 : 400);
   const row = (await deps.repo.findPosts([id])).get(id);
   if (!row) throw hidden();
+  if (postAccess(viewer, row, false) !== "shown") throw hidden();
   if (row.authorId !== viewer) {
     const relation = await deps.repo.relation(viewer, row.authorId);
     if (relation.blocked) throw new SocialError("blocked", 403);
     if (relation.blockedBy) throw hidden();
   }
-  if (postAccess(viewer, row, false) !== "shown") throw hidden();
   return row;
 }
 
@@ -35,7 +36,7 @@ export async function createPost(deps: SocialDeps, viewer: string, input: Create
   const me = await ownProfile(deps, viewer);
   const action = input.replyToId ? "reply" : input.quoteOfId ? "quote" : "post";
   const targetId = input.replyToId ?? input.quoteOfId;
-  if (targetId) await targetPost(deps, viewer, targetId, "post_unavailable");
+  const target = targetId ? await targetPost(deps, viewer, targetId, "post_unavailable") : null;
   await enforceWriteLimit(deps.limits, viewer, action, me.createdAt, deps.now());
   const id = await deps.repo.createPost({
     authorId: viewer,
@@ -43,6 +44,7 @@ export async function createPost(deps: SocialDeps, viewer: string, input: Create
     replyToId: input.replyToId ?? null,
     quoteOfId: input.quoteOfId ?? null,
     now: deps.now(),
+    lockWith: target && target.authorId !== viewer ? target.authorId : null,
     within: (tx, postId) => deps.media.attach(tx, { postId, ownerId: viewer, items: input.media }),
   });
   return (await postView(deps, viewer, id))!;

@@ -49,6 +49,15 @@ describe("write limits", () => {
     for (let i = 0; i < 30; i++) await enforceWriteLimit(old.store, user, "quote", old.createdAt, old.now());
     expect(await code(enforceWriteLimit(old.store, user, "post", old.createdAt, old.now()))).toBe("rate_limited");
   });
+  test("a store that fails refuses the write with service_unavailable and a 30-second Retry-After", async () => {
+    const failing = {
+      hit: async () => {
+        throw new Error("connection lost");
+      },
+    };
+    const err = await enforceWriteLimit(failing, user, "post", new Date(0), new Date()).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "service_unavailable", status: 503, retryAfterSeconds: 30 });
+  });
   test("follows stop at 400 a day even when each hour stays under 50", async () => {
     const h = harness(10 * DAY_MS);
     for (let hour = 0; hour < 8; hour++) {

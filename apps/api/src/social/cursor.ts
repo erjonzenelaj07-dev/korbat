@@ -6,8 +6,11 @@ import { SocialError } from "./context";
  * reposter id. Every timestamp the repository writes has millisecond precision (it passes the
  * clock's Date instead of relying on the database default), so the cursor round-trips exactly.
  */
+/** The largest time a JavaScript Date can hold; anything above it is not a cursor this module produced. */
+export const MAX_CURSOR_TIME = 8_640_000_000_000_000;
+
 const Cursor = z.strictObject({
-  t: z.number().int().nonnegative(),
+  t: z.number().int().min(0).max(MAX_CURSOR_TIME),
   id: z.uuid(),
   r: z.uuid().optional(),
 });

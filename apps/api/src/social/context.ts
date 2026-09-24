@@ -5,8 +5,8 @@ import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialRepo } from "./repo";
 
 /** The social codes plus the shared ones the module also raises. */
-export type SocialErrorKind = SocialErrorCode | "not_found" | "invalid_request" | "rate_limited";
-export type SocialErrorStatus = 400 | 403 | 404 | 429;
+export type SocialErrorKind = SocialErrorCode | "not_found" | "invalid_request" | "rate_limited" | "service_unavailable";
+export type SocialErrorStatus = 400 | 403 | 404 | 429 | 503;
 
 const MESSAGES: Record<SocialErrorKind, string> = {
   post_unavailable: "That post is not available to reply to or quote.",
@@ -17,6 +17,7 @@ const MESSAGES: Record<SocialErrorKind, string> = {
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   rate_limited: "Too many requests. Wait a moment and try again.",
+  service_unavailable: "That could not be done right now. Try again in a moment.",
 };
 
 /** An expected, user-facing failure. The HTTP layer turns it into an ErrorEnvelope with this code and status. */
@@ -25,7 +26,7 @@ export class SocialError extends Error {
     readonly code: SocialErrorKind,
     readonly status: SocialErrorStatus,
     message: string = MESSAGES[code],
-    /** Set for rate_limited so the response can carry Retry-After. */
+    /** Set for rate_limited and service_unavailable so the response can carry Retry-After. */
     readonly retryAfterSeconds?: number,
   ) {
     super(message);
