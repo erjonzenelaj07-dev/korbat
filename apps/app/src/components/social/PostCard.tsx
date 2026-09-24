@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Link, router } from "expo-router";
 import type { Author, PostView, QuotedPost, Tombstone } from "@korbat/contracts";
@@ -70,6 +70,7 @@ function Action({
   busy,
   activeClass,
   onPress,
+  ref,
 }: {
   label: string;
   count?: number;
@@ -78,9 +79,10 @@ function Action({
   busy?: boolean;
   activeClass?: string;
   onPress: () => void;
+  ref?: Ref<View>;
 }) {
   return (
-    <Pressable accessibilityRole="button" aria-pressed={pressed} aria-busy={busy} disabled={busy} onPress={onPress} className="flex-row items-center gap-1 py-1 pr-4">
+    <Pressable ref={ref} accessibilityRole="button" aria-pressed={pressed} aria-busy={busy} disabled={busy} onPress={onPress} className="flex-row items-center gap-1 py-1 pr-4">
       <Text className={`text-sm ${active ? activeClass : "text-zinc-400"}`}>{label}</Text>
       {count !== undefined && count > 0 ? <Text className={`text-sm ${active ? activeClass : "text-zinc-400"}`}>{count}</Text> : null}
     </Pressable>
@@ -99,6 +101,16 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => setPost(initial), [initial]);
+  const deleteRef = useRef<View>(null);
+  const keepRef = useRef<View>(null);
+  const wasConfirming = useRef(false);
+  // The Delete control leaves the tree while the question shows, so a keyboard user would drop to the page
+  // body: the safe answer takes the focus, and Delete takes it back when the question is withdrawn.
+  useEffect(() => {
+    if (confirmingDelete) keepRef.current?.focus();
+    else if (wasConfirming.current) deleteRef.current?.focus();
+    wasConfirming.current = confirmingDelete;
+  }, [confirmingDelete]);
 
   /** Runs one request at a time: a second tap while one is in flight does nothing, so a double tap cannot undo itself. */
   async function request(action: () => Promise<void>) {
@@ -166,7 +178,7 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
         <Action label="Quote" count={post.counts.quotes} onPress={() => (me ? router.push(`/post/${post.id}?quote=1`) : router.push("/signin"))} />
         <Action label="Like" count={post.counts.likes} active={post.viewer?.liked} pressed={post.viewer?.liked} busy={busy} activeClass="text-rose-400" onPress={() => toggle("like")} />
         <Action label={post.viewer?.bookmarked ? "Saved" : "Save"} active={post.viewer?.bookmarked} busy={busy} activeClass="text-sky-400" onPress={() => toggle("bookmark")} />
-        {post.author.id === me && !confirmingDelete ? <Action label="Delete" busy={busy} onPress={() => setConfirmingDelete(true)} /> : null}
+        {post.author.id === me && !confirmingDelete ? <Action ref={deleteRef} label="Delete" busy={busy} onPress={() => setConfirmingDelete(true)} /> : null}
       </View>
       {confirmingDelete ? (
         <View role="dialog" aria-labelledby={`delete-${post.id}`} className="mt-2 flex-row flex-wrap items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2">
@@ -174,7 +186,7 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
             Delete this post?
           </Text>
           <Action label="Delete" busy={busy} activeClass="text-red-400" active onPress={remove} />
-          <Action label="Keep" busy={busy} onPress={() => setConfirmingDelete(false)} />
+          <Action ref={keepRef} label="Keep" busy={busy} onPress={() => setConfirmingDelete(false)} />
         </View>
       ) : null}
       {error ? (
