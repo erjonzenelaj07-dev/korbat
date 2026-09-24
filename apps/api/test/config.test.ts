@@ -48,6 +48,11 @@ describe("loadConfig", () => {
       expect(() => loadConfig(env), name).toThrow(new RegExp(name));
     }
   });
+  test("previous TOTP keys are optional, comma-separated and each versioned", () => {
+    expect(loadConfig(good).TOTP_ENC_KEYS_PREVIOUS).toEqual([]);
+    expect(loadConfig({ ...good, TOTP_ENC_KEYS_PREVIOUS: `v0:${key}, v1:${key}` }).TOTP_ENC_KEYS_PREVIOUS).toEqual([`v0:${key}`, `v1:${key}`]);
+    expect(() => loadConfig({ ...good, TOTP_ENC_KEYS_PREVIOUS: key })).toThrow(/TOTP_ENC_KEYS_PREVIOUS/);
+  });
   test("media settings default to the development directories, every format and a 2 GiB free-space floor", () => {
     const c = loadConfig(good);
     expect(c.MEDIA_UPLOADS_DIR).toBe("../../.data/media/uploads");

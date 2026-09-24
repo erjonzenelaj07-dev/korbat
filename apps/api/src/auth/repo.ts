@@ -84,6 +84,11 @@ export function createAuthRepo(db: Db) {
         .where(eq(users.id, userId));
     },
 
+    /** Replaces the hash only, after a sign-in verified the password against older parameters. */
+    async replacePasswordHash(userId: string, passwordHash: string): Promise<void> {
+      await db.update(users).set({ passwordHash }).where(eq(users.id, userId));
+    },
+
     async setPasswordFailures(userId: string, failedLogins: number, lockedUntil: Date | null): Promise<void> {
       await db.update(users).set({ failedLogins, lockedUntil }).where(eq(users.id, userId));
     },
@@ -100,6 +105,11 @@ export function createAuthRepo(db: Db) {
         .update(users)
         .set({ totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] })
         .where(eq(users.id, userId));
+    },
+
+    /** The same secret re-encrypted with the current key; nothing else about MFA changes. */
+    async setTotpSecretEnc(userId: string, totpSecretEnc: string): Promise<void> {
+      await db.update(users).set({ totpSecretEnc }).where(eq(users.id, userId));
     },
 
     async setRecoveryCodes(userId: string, recoveryCodesHash: string[]): Promise<void> {
@@ -187,6 +197,11 @@ export function createAuthRepo(db: Db) {
 
     async touchDevice(id: string, ipHash: string | null, now: Date): Promise<void> {
       await db.update(devices).set({ lastSeenAt: now, ipHash }).where(eq(devices.id, id));
+    },
+
+    /** A revoked device no longer carries live sessions and counts as new at its next sign-in. */
+    async revokeDevice(id: string, now: Date): Promise<void> {
+      await db.update(devices).set({ revokedAt: now }).where(and(eq(devices.id, id), isNull(devices.revokedAt)));
     },
 
     // ------------------------------------------------------------ sessions

@@ -119,6 +119,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
 
     const fourth = await h.deps.sessions.issue(account.user.id, account.session.deviceId);
     expect(await revokeAllSessions(h.deps, account.session)).toBe(2);
+    expect(h.mailer.sent.filter((m) => m.template === "sessions_revoked_all").map((m) => m.data.count)).toEqual(["2"]);
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();
     expect(await h.deps.sessions.resolve(fourth.token)).toBeNull();
     expect((await repo.recentEvents(account.user.id)).map((e) => e.type)).toEqual(expect.arrayContaining(["session_revoked", "sessions_revoked_all"]));
@@ -128,7 +129,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
     const h = flowHarness(repo);
     const account = await onboardedUser(h, repo, { password: PASSWORD });
     const token = randomToken();
-    await h.kv.set(notMeKey(token), account.user.id, 60_000);
+    await h.kv.set(notMeKey(token), JSON.stringify({ userId: account.user.id, deviceId: account.session.deviceId }), 60_000);
 
     await notMe(h.deps, { token }, h.ctx);
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();

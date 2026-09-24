@@ -1,11 +1,12 @@
 import type { MfaVerifyRequest, TotpCodeRequest, TotpSetupResponse } from "@korbat/contracts";
 import { AuthError, type AuthDeps, type RequestContext } from "../context";
-import { decrypt, encrypt } from "../crypto";
+import { decrypt, encrypt, payloadVersion } from "../crypto";
 import { MINUTE, enforceLimit } from "../limits";
 import { hashRecoveryCode, newRecoveryCodes } from "../recovery-codes";
 import type { UserRow } from "../repo";
 import type { IssuedSession, Session } from "../sessions";
 import { newTotpSecret, totpQrSvg, totpUri, verifyTotp } from "../totp";
+import { notifyAccount } from "./notify";
 import { MFA_TICKET_TTL_MS, mfaTicketKey, signIn, type MfaTicket, type SignedIn } from "./signin";
 
 export const TOTP_PENDING_TTL_MS = 10 * MINUTE;
@@ -13,20 +14,28 @@ export const MAX_MFA_ATTEMPTS = 5;
 
 export const totpPendingKey = (userId: string) => `totp-pending:${userId}`;
 
-function storedSecret(deps: AuthDeps, user: UserRow): Uint8Array {
+/**
+ * The account's TOTP secret. Previous keys are accepted so that TOTP_ENC_KEY can rotate; a secret
+ * still encrypted with an earlier key is re-encrypted with the current one as soon as it is read.
+ */
+export async function storedSecret(deps: AuthDeps, user: UserRow): Promise<Uint8Array> {
   if (!user.totpSecretEnc) throw new AuthError("mfa_required", 400);
-  return new Uint8Array(decrypt(user.totpSecretEnc, [deps.config.totpKey]));
+  const secret = decrypt(user.totpSecretEnc, [deps.config.totpKey, ...deps.config.totpPreviousKeys]);
+  if (payloadVersion(user.totpSecretEnc) !== deps.config.totpKey.version) {
+    await deps.repo.setTotpSecretEnc(user.id, encrypt(secret, deps.config.totpKey));
+  }
+  return new Uint8Array(secret);
 }
 
 /** Verifies a TOTP code and claims its time step atomically, so the same code cannot be used twice. */
 async function acceptTotp(deps: AuthDeps, user: UserRow, code: string): Promise<boolean> {
-  const step = verifyTotp(storedSecret(deps, user), code, user.totpLastStep, deps.now().getTime());
+  const step = verifyTotp(await storedSecret(deps, user), code, user.totpLastStep, deps.now().getTime());
   return step !== null && (await deps.repo.claimTotpStep(user.id, step));
 }
 
-/** Starts setup with a new secret held encrypted for 10 minutes. Replacing an existing secret needs fresh auth. */
+/** Starts setup with a new secret held encrypted for 10 minutes. Needs a fresh session (the route checks as well). */
 export async function setupTotp(deps: AuthDeps, session: Session): Promise<TotpSetupResponse> {
-  if (session.mfaEnabled && !deps.sessions.isFresh(session)) throw new AuthError("reauth_required", 403);
+  if (!deps.sessions.isFresh(session)) throw new AuthError("reauth_required", 403);
   const secret = newTotpSecret();
   await deps.kv.set(totpPendingKey(session.userId), encrypt(Buffer.from(secret), deps.config.totpKey), TOTP_PENDING_TTL_MS);
   const profile = await deps.profiles.find(session.userId);
@@ -34,9 +43,11 @@ export async function setupTotp(deps: AuthDeps, session: Session): Promise<TotpS
   return { otpauthUri, qrSvg: totpQrSvg(otpauthUri) };
 }
 
-/** Turns MFA on with the pending secret, issues 10 recovery codes (shown once) and rotates the session. */
+/** Turns MFA on with the pending secret, issues 10 recovery codes (shown once), rotates the session and tells the owner. */
 export async function confirmTotp(deps: AuthDeps, session: Session, input: TotpCodeRequest): Promise<{ recoveryCodes: string[]; issued: IssuedSession }> {
-  if (session.mfaEnabled && !deps.sessions.isFresh(session)) throw new AuthError("reauth_required", 403);
+  if (!deps.sessions.isFresh(session)) throw new AuthError("reauth_required", 403);
+  const user = await deps.repo.findUserById(session.userId);
+  if (!user) throw new AuthError("invalid_credentials", 401);
   const pending = await deps.kv.get(totpPendingKey(session.userId));
   if (!pending) throw new AuthError("invalid_mfa_code", 400, "Two-factor setup expired. Start again.");
   const secret = new Uint8Array(decrypt(pending, [deps.config.totpKey]));
@@ -52,7 +63,9 @@ export async function confirmTotp(deps: AuthDeps, session: Session, input: TotpC
   await deps.repo.claimTotpStep(session.userId, step);
   await deps.kv.del(totpPendingKey(session.userId));
   await deps.repo.appendEvent({ userId: session.userId, type: "mfa_enabled", deviceId: session.deviceId });
-  return { recoveryCodes, issued: await deps.sessions.rotate(session) };
+  const issued = await deps.sessions.rotate(session);
+  await notifyAccount(deps, user.email, "mfa_enabled");
+  return { recoveryCodes, issued };
 }
 
 /**
@@ -94,22 +107,25 @@ export async function verifyMfa(deps: AuthDeps, input: MfaVerifyRequest, ctx: Re
   return signIn(deps, user, { deviceId: ticket.deviceId, platform: ticket.platform }, ctx, { alertNewDevice: true, mustReenrollMfa });
 }
 
-/** Turns MFA off (the route requires fresh auth). Staff accounts can never turn it off. */
+/** Turns MFA off (the route requires fresh auth) and tells the owner. Staff accounts can never turn it off. */
 export async function disableTotp(deps: AuthDeps, session: Session, input: TotpCodeRequest): Promise<void> {
   if (session.role !== "user") throw new AuthError("staff_mfa_required", 403);
   const user = await deps.repo.findUserById(session.userId);
   if (!user?.totpSecretEnc) throw new AuthError("mfa_required", 400);
   if (!(await acceptTotp(deps, user, input.code))) throw new AuthError("invalid_mfa_code", 400);
   await deps.repo.disableTotp(user.id);
+  await deps.sessions.forgetUser(user.id);
   await deps.repo.appendEvent({ userId: user.id, type: "mfa_disabled", deviceId: session.deviceId });
+  await notifyAccount(deps, user.email, "mfa_disabled");
 }
 
-/** Replaces all recovery codes (the route requires fresh auth). The old codes stop working. */
+/** Replaces all recovery codes (the route requires fresh auth) and tells the owner. The old codes stop working. */
 export async function regenerateRecoveryCodes(deps: AuthDeps, session: Session): Promise<string[]> {
   const user = await deps.repo.findUserById(session.userId);
   if (!user?.totpEnabledAt) throw new AuthError("mfa_required", 400);
   const recoveryCodes = newRecoveryCodes();
   await deps.repo.setRecoveryCodes(user.id, recoveryCodes.map((code) => hashRecoveryCode(deps.config.authHmacKey, code)));
   await deps.repo.appendEvent({ userId: user.id, type: "recovery_codes_regenerated", deviceId: session.deviceId });
+  await notifyAccount(deps, user.email, "recovery_codes_regenerated");
   return recoveryCodes;
 }

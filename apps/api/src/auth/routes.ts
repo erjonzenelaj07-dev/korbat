@@ -9,8 +9,10 @@ import {
   ReauthRequest,
   SignupCompleteRequest,
   TotpCodeRequest,
+  type Platform,
 } from "@korbat/contracts";
 import { Hono, type Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
@@ -41,6 +43,13 @@ export function authRoutes(deps: AuthDeps) {
   });
   const currentSession = (c: Context<AppEnv>): Session => c.get("session")!;
 
+  /**
+   * Browsers always send Sec-Fetch-Mode and, on state changes, Origin; native apps send neither. A
+   * request from a browser is a web session whatever the body says, so it gets cookies, never a token.
+   */
+  const fromBrowser = (c: Context<AppEnv>): boolean => c.req.header("sec-fetch-mode") !== undefined || c.req.header("origin") !== undefined;
+  const asWeb = <T extends { platform: Platform }>(c: Context<AppEnv>, input: T): T => (fromBrowser(c) ? { ...input, platform: "web" } : input);
+
   /** Web: cookies only, never the token in the body. Native: the bearer token in the body, no cookies. */
   const sessionIssued = (c: Context<AppEnv>, signed: SignedIn) => {
     if (signed.platform === "web") {
@@ -63,12 +72,16 @@ export function authRoutes(deps: AuthDeps) {
   };
 
   r.onError((err, c) => {
-    if (err instanceof AuthError) return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+    if (err instanceof AuthError) {
+      if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
+      return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+    }
+    if (err instanceof HTTPException) return c.json(errorBody("invalid_request", err.message, c.get("requestId")), err.status);
     c.get("log").error({ err }, "unhandled error in auth route");
     return c.json(errorBody("internal", "Internal error", c.get("requestId")), 500);
   });
 
-  r.post("/email/start", validate("json", EmailStartRequest), async (c) => c.json(await startEmail(deps, c.req.valid("json"), requestContext(c))));
+  r.post("/email/start", validate("json", EmailStartRequest), async (c) => c.json(await startEmail(deps, asWeb(c, c.req.valid("json")), requestContext(c))));
 
   r.post("/email/verify", validate("json", EmailVerifyRequest), async (c) => {
     const outcome = await verifyEmail(deps, c.req.valid("json"), requestContext(c));
@@ -86,7 +99,7 @@ export function authRoutes(deps: AuthDeps) {
   });
 
   r.post("/password/signin", validate("json", PasswordSigninRequest), async (c) =>
-    firstFactor(c, await passwordSignIn(deps, c.req.valid("json"), requestContext(c))),
+    firstFactor(c, await passwordSignIn(deps, asWeb(c, c.req.valid("json")), requestContext(c))),
   );
 
   r.post("/password/set", requireSession, fresh, validate("json", PasswordSetRequest), async (c) =>
@@ -95,9 +108,9 @@ export function authRoutes(deps: AuthDeps) {
 
   r.post("/mfa/verify", validate("json", MfaVerifyRequest), async (c) => sessionIssued(c, await verifyMfa(deps, c.req.valid("json"), requestContext(c))));
 
-  r.post("/mfa/totp/setup", requireSession, async (c) => c.json(await setupTotp(deps, currentSession(c))));
+  r.post("/mfa/totp/setup", requireSession, fresh, async (c) => c.json(await setupTotp(deps, currentSession(c))));
 
-  r.post("/mfa/totp/confirm", requireSession, validate("json", TotpCodeRequest), async (c) => {
+  r.post("/mfa/totp/confirm", requireSession, fresh, validate("json", TotpCodeRequest), async (c) => {
     const { recoveryCodes, issued } = await confirmTotp(deps, currentSession(c), c.req.valid("json"));
     return c.json({ recoveryCodes, ...rotated(c, issued) });
   });
@@ -118,7 +131,7 @@ export function authRoutes(deps: AuthDeps) {
 
   r.get("/sessions", requireSession, async (c) => c.json(await listSessions(deps, currentSession(c))));
 
-  r.delete("/sessions/:id", requireSession, validate("param", z.object({ id: z.string().regex(/^[0-9a-f]{64}$/) })), async (c) => {
+  r.delete("/sessions/:id", requireSession, fresh, validate("param", z.object({ id: z.string().regex(/^[0-9a-f]{64}$/) })), async (c) => {
     const revoked = await revokeSession(deps, currentSession(c), c.req.valid("param").id);
     return revoked ? c.body(null, 204) : c.json(errorBody("not_found", "No such session", c.get("requestId")), 404);
   });

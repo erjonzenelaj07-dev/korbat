@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { closeDb, createDb, type Db } from "@korbat/db";
-import { decrypt, randomToken } from "../../src/auth/crypto";
+import { hash } from "@node-rs/argon2";
+import { decrypt, parseVersionedKey, randomToken } from "../../src/auth/crypto";
 import { startEmail, verifyEmail } from "../../src/auth/flows/email";
 import { confirmTotp, disableTotp, regenerateRecoveryCodes, setupTotp, verifyMfa } from "../../src/auth/flows/mfa";
 import { passwordSignIn, setPassword } from "../../src/auth/flows/password";
-import { BreachCheckUnavailable, hashPassword } from "../../src/auth/passwords";
+import { BreachCheckUnavailable, hashPassword, needsRehash } from "../../src/auth/passwords";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
+import { REAUTH_WINDOW_MS } from "../../src/auth/sessions";
 import { currentStep, hotp } from "../../src/auth/totp";
 import { loadConfig } from "../../src/config";
 import {
@@ -128,6 +130,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: password and MFA flows",
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();
     expect(await h.deps.sessions.resolve(rotated.token)).not.toBeNull();
     await setPassword(h.deps, rotated.session, { password: `${PASSWORD} again` });
+    expect(h.mailer.sent.filter((m) => m.template === "password_changed").map((m) => m.to)).toEqual([account.email, account.email]);
     expect((await repo.recentEvents(account.user.id)).map((e) => e.type)).toEqual(expect.arrayContaining(["password_set", "password_changed"]));
   });
 
@@ -219,6 +222,54 @@ describe.skipIf(!process.env.INTEGRATION)("integration: password and MFA flows",
     h.clock.advance(30_000);
     await disableTotp(h.deps, regular.session, { code: await currentTotpCode(h, repo, account.user.id) });
     expect((await repo.findUserById(account.user.id))!.totpEnabledAt).toBeNull();
+  });
+
+  test("two-factor setup and confirmation need a fresh session, and the owner is told when it turns on or off", async () => {
+    const h = flowHarness(repo);
+    const account = await onboardedUser(h, repo);
+    h.clock.advance(REAUTH_WINDOW_MS + 1_000);
+    const stale = (await h.deps.sessions.resolve(account.token))!.session;
+    await expect(setupTotp(h.deps, stale)).rejects.toMatchObject({ code: "reauth_required", status: 403 });
+    await expect(confirmTotp(h.deps, stale, { code: "000000" })).rejects.toMatchObject({ code: "reauth_required" });
+
+    await h.deps.sessions.markReauth(stale.sessionId);
+    const fresh = (await h.deps.sessions.resolve(account.token))!.session;
+    const { issued } = await enableMfa(h, { ...account, session: fresh });
+    expect(h.mailer.sent.filter((m) => m.template === "mfa_enabled").map((m) => m.to)).toEqual([account.email]);
+
+    h.clock.advance(30_000);
+    await disableTotp(h.deps, issued.session, { code: await currentTotpCode(h, repo, account.user.id) });
+    expect(h.mailer.sent.filter((m) => m.template === "mfa_disabled")).toHaveLength(1);
+    expect((await h.deps.sessions.resolve(issued.token))!.session.mfaEnabled).toBe(false);
+  });
+
+  test("a secret encrypted with a previous key still verifies and is re-encrypted with the current key", async () => {
+    const h = flowHarness(repo);
+    const account = await onboardedUser(h, repo);
+    await enableMfa(h, account);
+    const v1 = h.deps.config.totpKey;
+    const v2 = parseVersionedKey(`v2:${Buffer.alloc(32, 9).toString("base64")}`);
+    h.deps.config = { ...h.deps.config, totpKey: v2, totpPreviousKeys: [v1] };
+
+    const before = (await repo.findUserById(account.user.id))!;
+    const ticket = await mfaTicketByEmail(h, account);
+    const code = hotp(new Uint8Array(decrypt(before.totpSecretEnc!, [v1])), currentStep(h.clock.ms()));
+    expect((await verifyMfa(h.deps, { mfaTicket: ticket, code }, h.ctx)).issued.session.mfaEnabled).toBe(true);
+    const after = (await repo.findUserById(account.user.id))!;
+    expect(after.totpSecretEnc).toMatch(/^v2:/);
+    expect(decrypt(after.totpSecretEnc!, [v2])).toEqual(decrypt(before.totpSecretEnc!, [v1]));
+  });
+
+  test("a password hashed with older parameters is re-hashed on the next sign-in", { timeout: 30_000 }, async () => {
+    const h = flowHarness(repo);
+    const account = await onboardedUser(h, repo);
+    const weak = await hash(PASSWORD, { memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32 });
+    await repo.setPasswordHash(account.user.id, weak, new Date());
+    expect(needsRehash(weak)).toBe(true);
+    expect((await passwordSignIn(h.deps, { email: account.email, password: PASSWORD, turnstileToken: "ok", ...account.device }, h.ctx)).kind).toBe("session");
+    const stored = (await repo.findUserById(account.user.id))!.passwordHash!;
+    expect(needsRehash(stored)).toBe(false);
+    expect(stored).not.toBe(weak);
   });
 
   test("hashPassword output is accepted by password sign-in on a fresh account", { timeout: 30_000 }, async () => {

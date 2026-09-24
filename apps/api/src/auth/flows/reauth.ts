@@ -1,10 +1,11 @@
 import type { ReauthRequest } from "@korbat/contracts";
 import { AuthError, type AuthDeps, type RequestContext } from "../context";
-import { decrypt, randomToken } from "../crypto";
+import { randomToken } from "../crypto";
 import { HOUR, MINUTE, enforceLimit } from "../limits";
 import { verifyPassword } from "../passwords";
 import type { Session } from "../sessions";
 import { verifyTotp } from "../totp";
+import { storedSecret } from "./mfa";
 import { CODE_TTL_MS, checkEmailCode, emailCodeHash, newEmailCode, sendCode } from "./email";
 
 /** Sends a code that can only re-authenticate this account (never sign anyone in). */
@@ -48,8 +49,7 @@ export async function reauthenticate(deps: AuthDeps, session: Session, input: Re
       break;
     }
     case "totp": {
-      if (!user.totpSecretEnc) throw new AuthError("mfa_required", 400);
-      const secret = new Uint8Array(decrypt(user.totpSecretEnc, [deps.config.totpKey]));
+      const secret = await storedSecret(deps, user);
       const step = verifyTotp(secret, input.code, user.totpLastStep, deps.now().getTime());
       if (step === null || !(await deps.repo.claimTotpStep(user.id, step))) throw new AuthError("invalid_mfa_code", 401);
       break;

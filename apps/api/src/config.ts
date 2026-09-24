@@ -35,6 +35,12 @@ const schema = z.object({
   IP_HASH_KEY: base64Key,
   /** Encrypts TOTP secrets at rest. */
   TOTP_ENC_KEY: versionedKey,
+  /** Earlier TOTP keys, comma-separated, still accepted for decryption; a secret read with one is re-encrypted with TOTP_ENC_KEY. */
+  TOTP_ENC_KEYS_PREVIOUS: z
+    .string()
+    .default("")
+    .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean))
+    .pipe(z.array(versionedKey)),
   TURNSTILE_SECRET_KEY: z.string().min(1),
   SMTP_URL: z.url({ protocol: /^smtps?$/ }),
   MAIL_FROM: z.string().min(3),

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { HTTPException } from "hono/http-exception";
 import type { Logger } from "pino";
 import { AuthError, type Auth } from "./auth";
 import type { Config } from "./config";
@@ -46,7 +47,11 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
 
   app.notFound((c) => c.json(errorBody("not_found", "No such route", c.get("requestId")), 404));
   app.onError((err, c) => {
-    if (err instanceof AuthError) return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+    if (err instanceof AuthError) {
+      if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
+      return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+    }
+    if (err instanceof HTTPException) return c.json(errorBody("invalid_request", err.message, c.get("requestId")), err.status);
     if (err instanceof MediaError) return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
     if (err instanceof SocialError) {
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));

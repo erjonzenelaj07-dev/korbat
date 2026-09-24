@@ -50,6 +50,21 @@ describe.skipIf(!process.env.INTEGRATION)("integration: sessions and lockout", (
     expect(await sessions.resolve(issued.token)).toBeNull();
   });
 
+  test("a revoked session stays revoked while a cache fill is in flight, and a foreign revoke leaves the cache alone", async () => {
+    const { kv, sessions } = setup();
+    const { user, device } = await newUserWithDevice(repo);
+    const issued = await sessions.issue(user.id, device.id);
+    const key = `sess:${issued.session.sessionId}`;
+    await sessions.resolve(issued.token);
+    const other = await newUserWithDevice(repo);
+    expect(await sessions.revoke(issued.session.sessionId, other.user.id)).toBe(false);
+    expect(await kv.get(key)).not.toBe("revoked");
+    expect(await sessions.revoke(issued.session.sessionId, user.id)).toBe(true);
+    expect(await kv.get(key)).toBe("revoked");
+    expect(await kv.setIfAbsent(key, "a stale copy", 60_000)).toBe(false);
+    expect(await sessions.resolve(issued.token)).toBeNull();
+  });
+
   test("a session cannot be revoked through another user's account", async () => {
     const { sessions } = setup();
     const owner = await newUserWithDevice(repo);

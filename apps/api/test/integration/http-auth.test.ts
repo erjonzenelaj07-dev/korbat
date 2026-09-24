@@ -11,7 +11,7 @@ import { loadConfig, type Config } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
-import { Browser } from "./http-client";
+import { Browser, NativeClient } from "./http-client";
 
 type App = ReturnType<typeof createApp>;
 
@@ -90,8 +90,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
   });
 
   test("native clients get the token in the body and never cookies; bearer requests need no CSRF token", async () => {
-    const b = new Browser(app, config.APP_ORIGIN);
-    const { complete } = await signUp(b, "ios");
+    const native = new NativeClient(app);
+    const email = `http-${randomUUID()}@korbat.local`;
+    const start = await native.fetch("/api/auth/email/start", { json: { email, turnstileToken: "ok", deviceId: randomToken(), platform: "ios" } });
+    const { flowId } = FlowResponse.parse(await start.json());
+    await native.fetch("/api/auth/email/verify", { json: { flowId, code: mailer.lastCodeFor(email) } });
+    const complete = await native.fetch("/api/auth/signup/complete", { json: { flowId, dateOfBirth: "2000-01-01", termsVersion: config.TERMS_VERSION } });
+    expect(complete.status).toBe(200);
     const body = SessionResult.parse(await complete.json());
     expect(body.token).toMatch(/^kb1_[A-Za-z0-9_-]{43}$/);
     expect(complete.headers.getSetCookie()).toHaveLength(0);
@@ -106,6 +111,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     expect(rotated).toMatch(/^kb1_/);
     expect((await app.request("/api/me", { headers: { authorization: `Bearer ${body.token}` } })).status).toBe(401);
     expect((await app.request("/api/me", { headers: { authorization: `Bearer ${rotated}` } })).status).toBe(200);
+  });
+
+  test("a browser gets cookies and no token even when it claims a native platform", async () => {
+    const b = new Browser(app, config.APP_ORIGIN);
+    const { complete } = await signUp(b, "ios");
+    expect(await complete.json()).toEqual({ result: "session", mustReenrollMfa: false });
+    expect(complete.headers.getSetCookie().some((c) => c.startsWith("__Host-korbat_session="))).toBe(true);
+  });
+
+  test("malformed JSON is a 400 with the error envelope, not a 500", async () => {
+    const b = new Browser(app, config.APP_ORIGIN);
+    const res = await b.fetch("/api/auth/email/verify", { raw: { type: "application/json", body: new TextEncoder().encode("{not json") } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "invalid_request" } });
+  });
+
+  test("revoking one session needs fresh re-authentication", async () => {
+    const b = new Browser(app, config.APP_ORIGIN);
+    await signUp(b);
+    await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Fresh" } });
+    const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
+    await auth.deps.repo.setReauth(sessionId, new Date(Date.now() - 10 * 60_000));
+    await auth.deps.kv.del(`sess:${sessionId}`);
+    const revoke = await b.fetch(`/api/auth/sessions/${"0".repeat(64)}`, { method: "DELETE" });
+    expect(revoke.status).toBe(403);
+    expect(await revoke.json()).toMatchObject({ error: { code: "reauth_required" } });
   });
 
   test("other origins cannot change state; no session gets 401; unfinished onboarding gets 403", async () => {

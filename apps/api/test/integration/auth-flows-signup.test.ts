@@ -3,8 +3,9 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { randomToken } from "../../src/auth/crypto";
 import { startEmail, verifyEmail } from "../../src/auth/flows/email";
+import { notMe } from "../../src/auth/flows/not-me";
 import { chooseHandle, completeSignup } from "../../src/auth/flows/signup";
-import { emailHash } from "../../src/auth/identifiers";
+import { deviceHash, emailHash } from "../../src/auth/identifiers";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { TEST_TERMS, flowHarness, type FlowHarness } from "./flow-harness";
@@ -148,6 +149,40 @@ describe.skipIf(!process.env.INTEGRATION)("integration: email entry, sign-up and
     const second = await start(h, email, device);
     await verifyEmail(h.deps, { flowId: second.flowId, code: second.code }, h.ctx);
     expect(h.mailer.sent.filter((m) => m.template === "new_device")).toHaveLength(1);
+  });
+
+  test("finishing a sign-up and choosing a handle are limited to 10 an hour per address and per session", async () => {
+    const h = flowHarness(repo);
+    const email = newEmail();
+    const { flowId, code } = await start(h, email);
+    await verifyEmail(h.deps, { flowId, code }, h.ctx);
+    for (let i = 0; i < 10; i++) await h.kv.incr(`rl:signup-complete:ip:${h.ctx.ipHash}`, 3_600_000);
+    await expect(completeSignup(h.deps, { flowId, dateOfBirth: "2000-01-01", termsVersion: TEST_TERMS }, h.ctx)).rejects.toMatchObject({
+      code: "rate_limited",
+      retryAfterSeconds: 3600,
+    });
+    const signedUp = await completeSignup(h.deps, { flowId, dateOfBirth: "2000-01-01", termsVersion: TEST_TERMS }, { ...h.ctx, ipHash: randomToken() });
+    for (let i = 0; i < 10; i++) await h.kv.incr(`rl:onboarding-handle:${signedUp.issued.session.sessionId}`, 3_600_000);
+    await expect(chooseHandle(h.deps, signedUp.issued.session, { handle: "limited_handle", displayName: "Ada" })).rejects.toMatchObject({ code: "rate_limited" });
+  });
+
+  test("the 'not me' link revokes the device it came from, so its next sign-in is a new device again", async () => {
+    const h = flowHarness(repo);
+    const email = newEmail();
+    const user = await repo.createUser({ email, termsVersion: TEST_TERMS, now: new Date() });
+    await repo.markOnboarded(user.id, new Date());
+    const device = newDevice();
+    const first = await start(h, email, device);
+    await verifyEmail(h.deps, { flowId: first.flowId, code: first.code }, h.ctx);
+    const url = h.mailer.sent.find((m) => m.template === "new_device")!.data.notMeUrl!;
+    await notMe(h.deps, { token: url.slice(url.lastIndexOf("/") + 1) }, h.ctx);
+    expect(await repo.findDevice(user.id, deviceHash(h.deps.config.authHmacKey, device.deviceId))).toBeUndefined();
+    expect(await repo.listActiveSessions(user.id, h.clock.now())).toHaveLength(0);
+
+    h.clock.advance(61_000);
+    const second = await start(h, email, device);
+    await verifyEmail(h.deps, { flowId: second.flowId, code: second.code }, h.ctx);
+    expect(h.mailer.sent.filter((m) => m.template === "new_device")).toHaveLength(2);
   });
 
   test("an account with MFA gets a ticket, not a session", async () => {

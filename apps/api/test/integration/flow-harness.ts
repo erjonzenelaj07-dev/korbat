@@ -49,6 +49,7 @@ export function flowHarness(repo: AuthRepo) {
     authHmacKey: Buffer.alloc(32, 3),
     ipHashKey: Buffer.alloc(32, 4),
     totpKey: parseVersionedKey(`v1:${Buffer.alloc(32, 5).toString("base64")}`),
+    totpPreviousKeys: [],
     termsVersion: TEST_TERMS,
   };
   const deps: AuthDeps = {

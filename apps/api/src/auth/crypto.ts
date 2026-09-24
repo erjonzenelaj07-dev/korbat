@@ -69,6 +69,11 @@ export function decrypt(payload: string, keys: VersionedKey[]): Buffer {
   return Buffer.concat([decipher.update(raw.subarray(IV_BYTES + TAG_BYTES)), decipher.final()]);
 }
 
+/** The key version a ciphertext was made with, or null when it is not of the expected shape. */
+export function payloadVersion(payload: string): string | null {
+  return /^(v[0-9]+):/.exec(payload)?.[1] ?? null;
+}
+
 /** A session token for the client and the id stored in auth.sessions (its sha256). */
 export function newSessionToken(): { token: string; id: string } {
   const token = SESSION_TOKEN_PREFIX + randomToken(32);

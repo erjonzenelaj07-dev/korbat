@@ -57,5 +57,30 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         `After several wrong passwords, password sign-in is paused for ${need(data, "minutes")} minutes.`,
         "You can still sign in with an emailed code. If you did not try to sign in, consider turning on two-factor authentication.",
       ]);
+    case "mfa_enabled":
+      return build("Two-factor authentication is on for your korbat account", [
+        "Two-factor authentication was just turned on for your korbat account, and a new set of recovery codes was issued.",
+        "If this was you, there is nothing to do. If not, sign in, open Security, and review your sessions and devices.",
+      ]);
+    case "mfa_disabled":
+      return build("Two-factor authentication is off for your korbat account", [
+        "Two-factor authentication was just turned off for your korbat account.",
+        "If this was you, there is nothing to do. If not, sign in, open Security, turn it back on and sign out everywhere.",
+      ]);
+    case "password_changed":
+      return build("Your korbat password changed", [
+        "The password of your korbat account was just set or changed.",
+        "If this was you, there is nothing to do. If not, sign in with an emailed code, open Security, set a new password and sign out everywhere.",
+      ]);
+    case "recovery_codes_regenerated":
+      return build("New recovery codes for your korbat account", [
+        "A new set of recovery codes was just issued for your korbat account. The old codes no longer work.",
+        "If this was you, there is nothing to do. If not, sign in, open Security, and review your sessions and devices.",
+      ]);
+    case "sessions_revoked_all":
+      return build("Signed out everywhere on korbat", [
+        `Every session of your korbat account was just signed out (${need(data, "count")} in total).`,
+        "If this was you, there is nothing to do. If not, sign in and set a new password.",
+      ]);
   }
 }

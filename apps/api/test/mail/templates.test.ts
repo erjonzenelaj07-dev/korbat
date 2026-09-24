@@ -12,8 +12,19 @@ describe("mail templates", () => {
     expect(r.html).not.toMatch(/<img|<a |https?:\/\//);
   });
   test("every template renders and HTML escapes its data", () => {
-    const data = { code: "123456", deviceLabel: "<b>Chrome</b> on Windows", notMeUrl: "http://localhost:8081/not-me/abc", minutes: "15" };
-    for (const template of ["sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked"] as const) {
+    const data = { code: "123456", deviceLabel: "<b>Chrome</b> on Windows", notMeUrl: "http://localhost:8081/not-me/abc", minutes: "15", count: "3" };
+    for (const template of [
+      "sign_in_code",
+      "sign_up_code",
+      "reauth_code",
+      "new_device",
+      "account_locked",
+      "mfa_enabled",
+      "mfa_disabled",
+      "password_changed",
+      "recovery_codes_regenerated",
+      "sessions_revoked_all",
+    ] as const) {
       const r = renderTemplate(template, data);
       expect(r.subject.length, template).toBeGreaterThan(5);
       expect(r.text.length, template).toBeGreaterThan(20);

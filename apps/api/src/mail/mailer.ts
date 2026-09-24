@@ -1,4 +1,14 @@
-export type TemplateName = "sign_in_code" | "sign_up_code" | "reauth_code" | "new_device" | "account_locked";
+export type TemplateName =
+  | "sign_in_code"
+  | "sign_up_code"
+  | "reauth_code"
+  | "new_device"
+  | "account_locked"
+  | "mfa_enabled"
+  | "mfa_disabled"
+  | "password_changed"
+  | "recovery_codes_regenerated"
+  | "sessions_revoked_all";
 
 export interface MailMessage {
   to: string;

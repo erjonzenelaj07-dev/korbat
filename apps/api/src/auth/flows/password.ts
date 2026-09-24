@@ -2,8 +2,9 @@ import type { PasswordSetRequest, PasswordSigninRequest } from "@korbat/contract
 import { AuthError, type AuthDeps, type RequestContext } from "../context";
 import { MINUTE, enforceLimit } from "../limits";
 import { LOCK_DURATION_MS } from "../lockout";
-import { BreachCheckUnavailable, checkPasswordLength, hashPassword, verifyPassword } from "../passwords";
+import { BreachCheckUnavailable, checkPasswordLength, hashPassword, needsRehash, verifyPassword } from "../passwords";
 import type { IssuedSession, Session } from "../sessions";
+import { notifyAccount } from "./notify";
 import { firstFactorPassed, type MfaPending, type SignedIn } from "./signin";
 
 /**
@@ -35,6 +36,8 @@ export async function passwordSignIn(deps: AuthDeps, input: PasswordSigninReques
   }
 
   await deps.lockout.recordSuccess(user.id);
+  // A hash made with older parameters is replaced while the password is at hand.
+  if (needsRehash(user.passwordHash)) await deps.repo.replacePasswordHash(user.id, await hashPassword(input.password));
   return firstFactorPassed(deps, user, { deviceId: input.deviceId, platform: input.platform }, ctx);
 }
 
@@ -59,5 +62,7 @@ export async function setPassword(deps: AuthDeps, session: Session, input: Passw
   if (!user) throw new AuthError("invalid_credentials", 401);
   await deps.repo.setPasswordHash(user.id, await hashPassword(input.password), deps.now());
   await deps.repo.appendEvent({ userId: user.id, type: user.passwordHash ? "password_changed" : "password_set", deviceId: session.deviceId });
-  return deps.sessions.rotate(session);
+  const issued = await deps.sessions.rotate(session);
+  await notifyAccount(deps, user.email, "password_changed");
+  return issued;
 }

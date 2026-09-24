@@ -35,6 +35,7 @@ interface CachedSession {
 export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: () => Date }) {
   const now = deps.now ?? (() => new Date());
   const cacheKey = (sessionId: string) => `sess:${sessionId}`;
+  const REVOKED = "revoked";
 
   const fromRow = (row: ActiveSessionRow): Session => ({
     sessionId: row.id,
@@ -48,6 +49,17 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
 
   async function forget(sessionIds: readonly string[]) {
     await Promise.all(sessionIds.map((id) => deps.kv.del(cacheKey(id))));
+  }
+
+  /** A tombstone that outlives any cache fill in flight, so a revoked session cannot come back for the cache TTL. */
+  async function tombstone(sessionIds: readonly string[]) {
+    await Promise.all(sessionIds.map((id) => deps.kv.set(cacheKey(id), REVOKED, SESSION_CACHE_TTL_MS)));
+  }
+
+  /** Drops the cached copy of every live session of the user, after a change to what a session carries. */
+  async function forgetUser(userId: string) {
+    const rows = await deps.repo.listActiveSessions(userId, now());
+    await forget(rows.map((r) => r.id));
   }
 
   /** A new session; its reauth time is now, because issuing one always follows a fresh credential. */
@@ -68,14 +80,16 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
   }
 
   /**
-   * Resolves a token to a live session. Results are cached for 60 seconds; revocation deletes the
-   * cache entry, so it takes effect at once. `slid` is true when the idle expiry was just extended
+   * Resolves a token to a live session. Results are cached for 60 seconds; revocation writes a
+   * tombstone over the entry and a fill never overwrites one, so it takes effect at once. `slid` is
+   * true when the idle expiry was just extended
    * (callers refresh the cookie then).
    */
   async function resolve(token: string): Promise<{ session: Session; slid: boolean } | null> {
     const id = sha256Hex(token);
     const t = now();
     const cached = await deps.kv.get(cacheKey(id));
+    if (cached === REVOKED) return null;
     if (cached) {
       const c = JSON.parse(cached) as CachedSession;
       if (new Date(c.absoluteExpiresAt).getTime() > t.getTime()) {
@@ -95,19 +109,19 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
       session: { ...session, reauthAt: session.reauthAt.toISOString() },
       absoluteExpiresAt: row.absoluteExpiresAt.toISOString(),
     };
-    await deps.kv.set(cacheKey(id), JSON.stringify(entry), SESSION_CACHE_TTL_MS);
+    await deps.kv.setIfAbsent(cacheKey(id), JSON.stringify(entry), SESSION_CACHE_TTL_MS);
     return { session, slid };
   }
 
   async function revoke(sessionId: string, userId: string): Promise<boolean> {
     const revoked = await deps.repo.revokeSession(sessionId, userId, now());
-    await forget([sessionId]);
+    if (revoked) await tombstone([sessionId]);
     return revoked;
   }
 
   async function revokeAll(userId: string): Promise<number> {
     const ids = await deps.repo.revokeAllSessions(userId, now());
-    await forget(ids);
+    await tombstone(ids);
     return ids.length;
   }
 
@@ -139,7 +153,7 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
     }));
   }
 
-  return { issue, resolve, revoke, revokeAll, rotate, markReauth, isFresh, list };
+  return { issue, resolve, revoke, revokeAll, rotate, markReauth, forgetUser, isFresh, list };
 }
 
 export type Sessions = ReturnType<typeof createSessions>;

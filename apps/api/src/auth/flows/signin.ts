@@ -32,6 +32,12 @@ export interface MfaTicket {
   platform: Platform;
 }
 
+/** What a "this wasn't me" link acts on: the account, and the device the alert was about. */
+export interface NotMeToken {
+  userId: string;
+  deviceId: string | null;
+}
+
 export const mfaTicketKey = (ticket: string) => `mfa-ticket:${sha256Hex(ticket)}`;
 export const notMeKey = (token: string) => `not-me:${sha256Hex(token)}`;
 
@@ -76,7 +82,8 @@ export async function firstFactorPassed(deps: AuthDeps, user: UserRow, device: D
 /** Best effort: a failed alert email is logged but does not block the sign-in. */
 async function alertNewDevice(deps: AuthDeps, user: UserRow, device: DeviceRow, ctx: RequestContext): Promise<void> {
   const token = randomToken();
-  await deps.kv.set(notMeKey(token), user.id, NOT_ME_TTL_MS);
+  const link: NotMeToken = { userId: user.id, deviceId: device.id };
+  await deps.kv.set(notMeKey(token), JSON.stringify(link), NOT_ME_TTL_MS);
   await deps.repo.appendEvent({ userId: user.id, type: "new_device", deviceId: device.id, ipHash: ctx.ipHash });
   try {
     await deps.mailer.send({

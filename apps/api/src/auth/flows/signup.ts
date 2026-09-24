@@ -3,7 +3,7 @@ import { meetsMinimumAge } from "../age";
 import { AuthError, isUniqueViolation, type AuthDeps, type RequestContext } from "../context";
 import { checkHandle } from "../handles";
 import { emailHash } from "../identifiers";
-import { HOUR } from "../limits";
+import { HOUR, enforceLimit } from "../limits";
 import type { IssuedSession, Session } from "../sessions";
 import { ageBlockKey, signupKey, type PendingSignup } from "./email";
 import { signIn, type SignedIn } from "./signin";
@@ -16,6 +16,7 @@ export const AGE_BLOCK_MS = 24 * HOUR;
  * never written anywhere.
  */
 export async function completeSignup(deps: AuthDeps, input: SignupCompleteRequest, ctx: RequestContext): Promise<SignedIn> {
+  await enforceLimit(deps.kv, `signup-complete:ip:${ctx.ipHash}`, 10, HOUR);
   const raw = await deps.kv.get(signupKey(input.flowId));
   if (!raw) throw new AuthError("invalid_code", 400);
   const pending = JSON.parse(raw) as PendingSignup;
@@ -47,6 +48,7 @@ export async function chooseHandle(
   session: Session,
   input: OnboardingHandleRequest,
 ): Promise<{ profile: Profile; issued: IssuedSession }> {
+  await enforceLimit(deps.kv, `onboarding-handle:${session.sessionId}`, 10, HOUR);
   if (session.onboarded) throw new AuthError("handle_taken", 409, "Your profile already exists.");
   const problem = checkHandle(input.handle);
   if (problem) throw new AuthError(problem, 400);

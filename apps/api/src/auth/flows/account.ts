@@ -1,6 +1,7 @@
 import type { MeResponse, SessionsResponse } from "@korbat/contracts";
 import { AuthError, type AuthDeps } from "../context";
 import type { Session } from "../sessions";
+import { notifyAccount } from "./notify";
 
 /** The signed-in account. The only response in the API that contains the email address. */
 export async function me(deps: AuthDeps, session: Session): Promise<MeResponse> {
@@ -32,8 +33,10 @@ export async function revokeSession(deps: AuthDeps, session: Session, sessionId:
 
 /** Signs out every session of the account, including the current one (the route requires fresh auth). */
 export async function revokeAllSessions(deps: AuthDeps, session: Session): Promise<number> {
+  const user = await deps.repo.findUserById(session.userId);
   const count = await deps.sessions.revokeAll(session.userId);
   await deps.repo.appendEvent({ userId: session.userId, type: "sessions_revoked_all", deviceId: session.deviceId, metadata: { count } });
+  if (user) await notifyAccount(deps, user.email, "sessions_revoked_all", { count: String(count) });
   return count;
 }
 

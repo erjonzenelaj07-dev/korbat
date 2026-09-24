@@ -17,6 +17,8 @@ export interface AuthConfig {
   authHmacKey: Buffer;
   ipHashKey: Buffer;
   totpKey: VersionedKey;
+  /** Keys TOTP_ENC_KEY replaced; still accepted for decryption. */
+  totpPreviousKeys: VersionedKey[];
   termsVersion: string;
 }
 
@@ -27,6 +29,7 @@ export function authConfigFrom(config: Config): AuthConfig {
     authHmacKey: decodeKey(config.AUTH_HMAC_KEY),
     ipHashKey: decodeKey(config.IP_HASH_KEY),
     totpKey: parseVersionedKey(config.TOTP_ENC_KEY),
+    totpPreviousKeys: config.TOTP_ENC_KEYS_PREVIOUS.map(parseVersionedKey),
     termsVersion: config.TERMS_VERSION,
   };
 }
@@ -95,6 +98,8 @@ export class AuthError extends Error {
     readonly code: AuthErrorCode,
     readonly status: AuthErrorStatus,
     message: string = MESSAGES[code],
+    /** For rate limits: seconds until the window resets, sent as Retry-After. */
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "AuthError";

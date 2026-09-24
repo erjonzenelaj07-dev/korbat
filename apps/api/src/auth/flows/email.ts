@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import type { EmailStartRequest, EmailVerifyRequest } from "@korbat/contracts";
 import { MailUnavailable } from "../../mail/mailer";
 import { AuthError, type AuthDeps, type RequestContext } from "../context";
-import { hmacHex, randomToken, safeEqual } from "../crypto";
+import { hmacHex, randomToken, safeEqual, sha256Hex } from "../crypto";
 import { isDisposableEmail } from "../disposable";
 import { emailHash } from "../identifiers";
 import { HOUR, MINUTE, enforceLimit, padResponseTime } from "../limits";
@@ -13,8 +13,9 @@ export const CODE_TTL_MS = 10 * MINUTE;
 export const MAX_CODE_ATTEMPTS = 5;
 export const MIN_START_RESPONSE_MS = 400;
 
-export const flowKey = (flowId: string) => `flow:${flowId}`;
-export const signupKey = (flowId: string) => `signup:${flowId}`;
+/** A flow id is a bearer credential while its sign-up is pending, so the store holds only its hash. */
+export const flowKey = (flowId: string) => `flow:${sha256Hex(flowId)}`;
+export const signupKey = (flowId: string) => `signup:${sha256Hex(flowId)}`;
 export const ageBlockKey = (emailHashValue: string) => `age-block:${emailHashValue}`;
 
 export interface PendingSignup extends DeviceInput {
@@ -62,9 +63,10 @@ export async function startEmail(deps: AuthDeps, input: EmailStartRequest, ctx: 
     if (!(await deps.turnstile.verify(input.turnstileToken))) throw new AuthError("turnstile_failed", 403);
     if (isDisposableEmail(input.email)) throw new AuthError("disposable_email", 400);
     const hashedEmail = emailHash(deps.config.authHmacKey, input.email);
-    if (await deps.kv.get(ageBlockKey(hashedEmail))) throw new AuthError("age_requirement", 403);
-
     await enforceLimit(deps.kv, `email-start:ip:${ctx.ipHash}`, 10, HOUR);
+    // After the per-address limit, so the age block of an address cannot be probed faster than codes could be
+    // requested, and before the per-email cooldown, which would otherwise hide the block behind a 429 for a minute.
+    if (await deps.kv.get(ageBlockKey(hashedEmail))) throw new AuthError("age_requirement", 403);
     if (!(await deps.kv.setIfAbsent(`email-cooldown:${hashedEmail}`, "1", MINUTE))) throw new AuthError("rate_limited", 429);
     await enforceLimit(deps.kv, `email-start:email:${hashedEmail}`, 3, HOUR);
 
