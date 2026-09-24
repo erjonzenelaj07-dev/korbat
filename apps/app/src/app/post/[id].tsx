@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { router, useLocalSearchParams } from "expo-router";
-import type { PostView, ThreadResponse, Tombstone } from "@korbat/contracts";
+import { Link, router, useLocalSearchParams } from "expo-router";
+import { PostId, type PostView, type ThreadResponse, type Tombstone } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { ComposeSheet } from "@/components/social/ComposeSheet";
 import { Composer } from "@/components/social/Composer";
@@ -16,7 +16,7 @@ function AncestorRow({ item }: { item: PostView | Tombstone }) {
   if (!("author" in item)) {
     return (
       <View className="border-b border-zinc-800 px-4 py-3">
-        <Text className="text-sm italic text-zinc-500">{item.deleted ? "This post was deleted by its author." : "This post is unavailable."}</Text>
+        <Text className="text-sm italic text-zinc-400">{item.deleted ? "This post was deleted by its author." : "This post is unavailable."}</Text>
       </View>
     );
   }
@@ -37,6 +37,11 @@ export default function Thread() {
     let cancelled = false;
     setThread(null);
     setError(null);
+    // The id comes from the address bar; anything but a post id is refused before a request is built from it.
+    if (!PostId.safeParse(id).success) {
+      setError("That address is not a post.");
+      return;
+    }
     social
       .thread(id)
       .then((t) => {
@@ -60,9 +65,11 @@ export default function Thread() {
             This post is not available
           </Text>
           <Text className="mt-2 text-base text-zinc-400">{error}</Text>
-          <Pressable accessibilityRole="link" onPress={() => router.replace("/")} className="mt-6">
-            <Text className="text-sm text-zinc-400 underline">Back to the timeline</Text>
-          </Pressable>
+          <Link href="/" replace asChild>
+            <Pressable className="mt-6">
+              <Text className="text-sm text-zinc-400 underline">Back to the timeline</Text>
+            </Pressable>
+          </Link>
         </View>
       </AppShell>
     );

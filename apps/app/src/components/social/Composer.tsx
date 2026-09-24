@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { MEDIA_MAX_PER_POST, POST_MAX_LENGTH, normalizePostBody, postLength, type PostView } from "@korbat/contracts";
 import { errorMessage } from "@/lib/api";
@@ -14,6 +14,8 @@ interface ComposerProps {
   onPosted?: (post: PostView) => void;
   onCancel?: () => void;
   autoFocus?: boolean;
+  /** Told whenever the draft gains or loses content, so a sheet can ask before discarding it. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 /**
@@ -23,7 +25,7 @@ interface ComposerProps {
  * States reach assistive technology through `aria-*` props: react-native-web 0.21 ignores
  * `accessibilityState`, and `disabled` already sets `aria-disabled`.
  */
-export function Composer({ replyTo, quoteOf, onPosted, onCancel, autoFocus }: ComposerProps) {
+export function Composer({ replyTo, quoteOf, onPosted, onCancel, autoFocus, onDirtyChange }: ComposerProps) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +34,7 @@ export function Composer({ replyTo, quoteOf, onPosted, onCancel, autoFocus }: Co
   const length = postLength(normalizePostBody(text));
   const { waiting, failed, undescribed } = describeState(uploads.images);
   const hasContent = length >= 1 || uploads.images.length >= 1;
+  useEffect(() => onDirtyChange?.(hasContent), [hasContent, onDirtyChange]);
   const ready = hasContent && length <= POST_MAX_LENGTH && !waiting && !failed && !undescribed && !busy;
   // While images hold the post back, the button itself says what is missing, what the user can act
   // on first. Its accessible name is then that sentence, so a screen reader hears the reason too.
@@ -65,16 +68,16 @@ export function Composer({ replyTo, quoteOf, onPosted, onCancel, autoFocus }: Co
 
   return (
     <View className="px-4 py-3">
-      {replyTo ? <Text className="mb-2 text-xs text-zinc-500">Replying to @{replyTo.author.handle}</Text> : null}
+      {replyTo ? <Text className="mb-2 text-xs text-zinc-400">Replying to @{replyTo.author.handle}</Text> : null}
       <TextInput
         accessibilityLabel={replyTo ? "Your reply" : quoteOf ? "Your comment on the quoted post" : "What's on your mind?"}
         placeholder={replyTo ? "Write your reply" : quoteOf ? "Add your comment" : "What's on your mind?"}
-        placeholderTextColor="#71717a"
+        placeholderTextColor="#a1a1aa"
         multiline
         autoFocus={autoFocus}
         value={text}
         onChangeText={setText}
-        className="min-h-[88px] rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-base leading-6 text-zinc-50"
+        className="min-h-[88px] rounded-lg border border-zinc-500 bg-zinc-900 px-4 py-3 text-base leading-6 text-zinc-50"
       />
       <ComposerImages images={uploads.images} onAlt={uploads.setAlt} onRemove={uploads.remove} />
       {quoteOf ? <QuoteEmbed quote={{ ...quoteOf, quoteOf: null }} /> : null}
@@ -95,7 +98,7 @@ export function Composer({ replyTo, quoteOf, onPosted, onCancel, autoFocus }: Co
           </Pressable>
         ) : null}
         <View className="flex-1" />
-        <Text className={`text-xs ${length > POST_MAX_LENGTH ? "text-red-400" : "text-zinc-500"}`}>
+        <Text className={`text-xs ${length > POST_MAX_LENGTH ? "text-red-400" : "text-zinc-400"}`}>
           {length}/{POST_MAX_LENGTH}
         </Text>
         {onCancel ? (

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Redirect, router } from "expo-router";
 import { SessionResult } from "@korbat/contracts";
-import { Body, Button, ErrorText, Field, Screen, TextLink, Title } from "@/components/ui";
+import { Body, Button, ErrorText, Field, Screen, TextButton, Title } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { flow } from "@/lib/flow";
 import { useSession } from "@/lib/session";
@@ -62,7 +62,7 @@ export default function MfaChallenge() {
       />
       <ErrorText message={error} />
       <Button label="Verify" onPress={submit} busy={busy} disabled={!valid} />
-      <TextLink
+      <TextButton
         label={useRecovery ? "Use my authenticator app" : "Use a recovery code"}
         onPress={() => {
           setUseRecovery((r) => !r);

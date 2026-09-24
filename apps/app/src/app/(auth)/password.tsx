@@ -67,7 +67,7 @@ export default function PasswordSignIn() {
       </View>
       <ErrorText message={error} />
       <Button label="Sign in" onPress={submit} busy={busy} disabled={!email.includes("@") || password.length === 0 || token === null} />
-      <TextLink label="Email me a code instead" onPress={() => router.replace("/signin")} />
+      <TextLink label="Email me a code instead" href="/signin" replace />
     </Screen>
   );
 }

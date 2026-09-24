@@ -1,6 +1,6 @@
 import { useState, type ReactElement } from "react";
 import { Pressable, Text, View } from "react-native";
-import { router } from "expo-router";
+import { Link } from "expo-router";
 import type { ProfileListItem } from "@korbat/contracts";
 import { errorMessage } from "@/lib/api";
 import { social, type Page } from "@/lib/social";
@@ -9,18 +9,20 @@ import { PagedList } from "./PagedList";
 export function ProfileRow({ item, action }: { item: ProfileListItem; action?: ReactElement }) {
   return (
     <View className="flex-row items-center border-b border-zinc-800 px-4 py-3">
-      <Pressable accessibilityRole="link" onPress={() => router.push(`/u/${item.handle}`)} className="flex-1 pr-3">
-        <Text className="text-base font-semibold text-zinc-50">
-          {item.displayName}
-          {item.verified ? <Text className="text-sky-400"> ✓</Text> : null}
-        </Text>
-        <Text className="text-sm text-zinc-500">@{item.handle}</Text>
-        {item.bio ? (
-          <Text className="mt-1 text-sm text-zinc-300" numberOfLines={2}>
-            {item.bio}
+      <Link href={`/u/${item.handle}`} asChild>
+        <Pressable className="flex-1 pr-3">
+          <Text className="text-base font-semibold text-zinc-50">
+            {item.displayName}
+            {item.verified ? <Text className="text-sky-400"> ✓</Text> : null}
           </Text>
-        ) : null}
-      </Pressable>
+          <Text className="text-sm text-zinc-400">@{item.handle}</Text>
+          {item.bio ? (
+            <Text className="mt-1 text-sm text-zinc-300" numberOfLines={2}>
+              {item.bio}
+            </Text>
+          ) : null}
+        </Pressable>
+      </Link>
       {action}
     </View>
   );

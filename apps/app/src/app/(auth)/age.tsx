@@ -82,7 +82,7 @@ export default function AgeAndTerms() {
         </View>
         <Text className="flex-1 text-sm text-zinc-300">I accept the korbat terms ({TERMS_VERSION}).</Text>
       </Pressable>
-      <TextLink label="Read the terms" onPress={() => router.push("/terms")} />
+      <TextLink label="Read the terms" href="/terms" />
       <ErrorText message={error} />
       <Button label="Create account" onPress={submit} busy={busy} disabled={!complete} />
     </Screen>

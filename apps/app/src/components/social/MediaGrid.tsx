@@ -29,7 +29,7 @@ function Picture({ item, style }: { item: MediaView; style: { width: number | "1
 
 function Cell({ item, onPress }: { item: MediaView; onPress: () => void }) {
   return (
-    <Pressable accessibilityRole="imagebutton" accessibilityLabel={`Open image: ${item.alt}`} onPress={onPress} style={{ flex: 1 }}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`Open image: ${item.alt}`} onPress={onPress} style={{ flex: 1 }}>
       <Picture item={item} style={{ width: "100%", height: "100%" }} />
     </Pressable>
   );

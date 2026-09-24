@@ -103,7 +103,10 @@ export function MfaSection({
             label={copied ? "Copied" : "Copy codes"}
             tone="secondary"
             onPress={() => {
-              void clipboard.writeText(stage.recoveryCodes.join("\n")).then(() => setCopied(true));
+              clipboard
+                .writeText(stage.recoveryCodes.join("\n"))
+                .then(() => setCopied(true))
+                .catch(() => setError("Copying is not allowed here. Select the codes and copy them by hand."));
             }}
           />
         ) : null}

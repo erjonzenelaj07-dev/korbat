@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import type { PostView, TimelineItem } from "@korbat/contracts";
 import { errorMessage } from "@/lib/api";
@@ -14,32 +14,49 @@ interface PagedListProps<T> {
   header?: ReactElement;
 }
 
-/** Cursor pagination with a load-more control, pull to refresh, and the same error text as the rest of the app. */
+/**
+ * Cursor pagination with a load-more control, pull to refresh, and the same error text as the rest
+ * of the app. One request is in flight at a time, and a response only lands if no newer request
+ * started meanwhile, so a double tap on Load more cannot append a page twice and a refresh cannot be
+ * overwritten by an older page.
+ */
 export function PagedList<T>({ fetchPage, keyOf, render, empty, header }: PagedListProps<T>) {
   const [items, setItems] = useState<T[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const sequence = useRef(0);
 
   const load = useCallback(
     async (after?: string) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      const mine = ++sequence.current;
       try {
         const page = await fetchPage(after);
+        if (mine !== sequence.current) return;
         setItems((current) => (after ? [...current, ...page.items] : page.items));
         setCursor(page.nextCursor);
         setError(null);
       } catch (err) {
-        setError(errorMessage(err));
+        if (mine === sequence.current) setError(errorMessage(err));
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (mine === sequence.current) {
+          inFlight.current = false;
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
     [fetchPage],
   );
 
   useEffect(() => {
+    // A new source (another tab, another profile) supersedes whatever the old one still has in flight.
+    sequence.current++;
+    inFlight.current = false;
     setLoading(true);
     void load();
   }, [load]);
@@ -57,7 +74,20 @@ export function PagedList<T>({ fetchPage, keyOf, render, empty, header }: PagedL
         setRefreshing(true);
         void load();
       }}
-      ListEmptyComponent={loading ? null : <Text className="px-4 py-10 text-center text-base text-zinc-500">{error ?? empty}</Text>}
+      ListEmptyComponent={
+        loading ? null : (
+          <View className="items-center px-4 py-10">
+            <Text accessibilityRole={error ? "alert" : undefined} className="text-center text-base text-zinc-400">
+              {error ?? empty}
+            </Text>
+            {error ? (
+              <Pressable accessibilityRole="button" onPress={() => void load()} className="mt-4 rounded-lg border border-zinc-700 px-4 py-2">
+                <Text className="text-sm text-zinc-200">Try again</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )
+      }
       ListFooterComponent={
         <View className="items-center py-4">
           {error && items.length > 0 ? (

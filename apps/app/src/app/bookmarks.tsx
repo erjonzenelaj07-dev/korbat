@@ -26,7 +26,7 @@ export default function Bookmarks() {
             <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
               Bookmarks
             </Text>
-            <Text className="mt-1 text-sm text-zinc-500">Private to you.</Text>
+            <Text className="mt-1 text-sm text-zinc-400">Private to you.</Text>
           </View>
         }
       />

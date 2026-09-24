@@ -1,12 +1,14 @@
 import type { ReactNode } from "react";
 import { Pressable, Text, View, useWindowDimensions } from "react-native";
-import { router, usePathname } from "expo-router";
+import { Link, usePathname } from "expo-router";
 import { useSession } from "@/lib/session";
 import { HandleBox } from "./HandleBox";
 
 interface NavItem {
   label: string;
   href: string;
+  /** Marks the item current on every page under this prefix, when that is wider than the href. */
+  match?: string;
 }
 
 const WIDE = 1024;
@@ -29,13 +31,13 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
         { label: "Home", href: "/" },
         { label: "Bookmarks", href: "/bookmarks" },
         { label: "Profile", href: handle ? `/u/${handle}` : "/handle" },
-        { label: "Settings", href: "/settings/security" },
+        { label: "Settings", href: "/settings/security", match: "/settings" },
       ]
     : [
         { label: "Home", href: "/" },
         { label: "Sign in", href: "/signin" },
       ];
-  const active = (href: string) => (href === "/" ? pathname === "/" : pathname.startsWith(href));
+  const active = (item: NavItem) => (item.href === "/" ? pathname === "/" : pathname.startsWith(item.match ?? item.href));
 
   if (width >= MEDIUM) {
     return (
@@ -43,9 +45,11 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
         <View className="w-56 border-r border-zinc-800 px-4 py-6">
           <Text className="mb-6 text-2xl font-bold tracking-tight text-zinc-50">korbat</Text>
           {items.map((item) => (
-            <Pressable key={item.href} accessibilityRole="link" aria-current={active(item.href) ? "page" : undefined} onPress={() => router.push(item.href)} className="rounded-lg px-3 py-2">
-              <Text className={`text-base ${active(item.href) ? "font-semibold text-zinc-50" : "text-zinc-300"}`}>{item.label}</Text>
-            </Pressable>
+            <Link key={item.href} href={item.href} asChild>
+              <Pressable aria-current={active(item) ? "page" : undefined} className="rounded-lg px-3 py-2">
+                <Text className={`text-base ${active(item) ? "font-semibold text-zinc-50" : "text-zinc-300"}`}>{item.label}</Text>
+              </Pressable>
+            </Link>
           ))}
           {floating ? <View className="mt-6">{floating}</View> : null}
         </View>
@@ -65,9 +69,11 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
       {floating ? <View className="absolute bottom-16 right-4">{floating}</View> : null}
       <View className="flex-row border-t border-zinc-800 bg-zinc-950">
         {items.map((item) => (
-          <Pressable key={item.href} accessibilityRole="link" aria-current={active(item.href) ? "page" : undefined} onPress={() => router.push(item.href)} className="flex-1 items-center py-3">
-            <Text className={`text-sm ${active(item.href) ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{item.label}</Text>
-          </Pressable>
+          <Link key={item.href} href={item.href} asChild>
+            <Pressable aria-current={active(item) ? "page" : undefined} className="flex-1 items-center py-3">
+              <Text className={`text-sm ${active(item) ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{item.label}</Text>
+            </Pressable>
+          </Link>
         ))}
       </View>
     </View>

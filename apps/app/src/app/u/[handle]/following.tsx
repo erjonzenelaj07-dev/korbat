@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { Pressable, Text, View } from "react-native";
-import { Redirect, router, useLocalSearchParams } from "expo-router";
+import { Link, Redirect, useLocalSearchParams } from "expo-router";
 import { AppShell } from "@/components/AppShell";
 import { FollowButton, ProfileList } from "@/components/social/ProfileList";
 import { Loading } from "@/components/ui";
@@ -24,9 +24,11 @@ export default function Following() {
         empty="Not following anyone yet."
         header={
           <View className="border-b border-zinc-800 px-4 py-4">
-            <Pressable accessibilityRole="link" onPress={() => router.push(`/u/${handle}`)}>
-              <Text className="text-sm text-zinc-400 underline">@{handle}</Text>
-            </Pressable>
+            <Link href={`/u/${handle}`} asChild>
+              <Pressable>
+                <Text className="text-sm text-zinc-400 underline">@{handle}</Text>
+              </Pressable>
+            </Link>
             <Text accessibilityRole="header" className="mt-1 text-xl font-bold text-zinc-50">
               Following
             </Text>

@@ -39,7 +39,7 @@ export function ComposerImages({ images, onAlt, onRemove }: { images: ComposerIm
                 className="mt-1 min-h-[44px] rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm leading-5 text-zinc-50"
               />
               <View className="mt-1 flex-row items-center justify-between">
-                <Text className={`text-xs ${length > ALT_MAX_LENGTH ? "text-red-400" : "text-zinc-500"}`}>
+                <Text className={`text-xs ${length > ALT_MAX_LENGTH ? "text-red-400" : "text-zinc-400"}`}>
                   {length}/{ALT_MAX_LENGTH}
                 </Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${label}`} onPress={() => onRemove(image.key)}>

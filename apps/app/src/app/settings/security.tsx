@@ -13,7 +13,7 @@ import { useSession } from "@/lib/session";
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <View className="mt-8 rounded-xl border border-zinc-800 p-5">
-      <Text accessibilityRole="header" className="text-lg font-semibold text-zinc-50">
+      <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
         {title}
       </Text>
       {children}
@@ -44,7 +44,7 @@ export default function SecuritySettings() {
         <Text className="mt-2 text-base text-zinc-400">
           @{me.profile?.handle} · {me.user.email}
         </Text>
-        <TextLink label="Privacy: blocked and muted accounts" onPress={() => router.push("/settings/privacy")} />
+        <TextLink label="Privacy: blocked and muted accounts" href="/settings/privacy" />
 
         {reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}
 

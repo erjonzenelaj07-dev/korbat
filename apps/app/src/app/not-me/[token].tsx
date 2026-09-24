@@ -45,7 +45,7 @@ export default function NotMe() {
       <Body>If you didn't just sign in to korbat on a new device, confirm below. We'll sign out every session, including this browser, and remove your password so only someone with your email can get back in.</Body>
       <ErrorText message={valid ? error : "This link is incomplete. Open it again from the email."} />
       <Button label="Sign out everywhere and remove my password" onPress={() => void confirm()} busy={busy} disabled={!valid} tone="danger" />
-      <TextLink label="It was me, go back" onPress={() => router.replace("/")} />
+      <TextLink label="It was me, go back" href="/" replace />
     </Screen>
   );
 }

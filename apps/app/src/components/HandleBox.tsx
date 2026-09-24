@@ -27,12 +27,12 @@ export function HandleBox() {
           autoCapitalize="none"
           autoCorrect={false}
           placeholder="@handle"
-          placeholderTextColor="#71717a"
+          placeholderTextColor="#a1a1aa"
           returnKeyType="go"
           value={value}
           onChangeText={setValue}
           onSubmitEditing={go}
-          className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-base text-zinc-50"
+          className="flex-1 rounded-lg border border-zinc-500 bg-zinc-900 px-3 py-2 text-base text-zinc-50"
         />
         <Pressable accessibilityRole="button" onPress={go} className="justify-center rounded-lg bg-zinc-50 px-3">
           <Text className="text-sm font-semibold text-zinc-950">Open</Text>

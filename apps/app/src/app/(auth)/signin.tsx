@@ -58,9 +58,9 @@ export default function EmailEntry() {
       </View>
       <ErrorText message={error} />
       <Button label="Continue" onPress={submit} busy={busy} disabled={!email.includes("@") || token === null} />
-      <TextLink label="Sign in with a password instead" onPress={() => router.push("/password")} />
-      <TextLink label="Read the terms" onPress={() => router.push("/terms")} />
-      <TextLink label="Back to the latest posts" onPress={() => router.replace("/")} />
+      <TextLink label="Sign in with a password instead" href="/password" />
+      <TextLink label="Read the terms" href="/terms" />
+      <TextLink label="Back to the latest posts" href="/" replace />
     </Screen>
   );
 }

@@ -56,9 +56,9 @@ export default function CodeEntry() {
       {wait > 0 ? (
         <Body>You can ask for a new code in {wait} s.</Body>
       ) : (
-        <TextLink label="Send a new code" onPress={() => router.replace("/signin")} />
+        <TextLink label="Send a new code" href="/signin" replace />
       )}
-      <TextLink label="Use a different email" onPress={() => { flow.clear(); router.replace("/signin"); }} />
+      <TextLink label="Use a different email" href="/signin" replace onPress={() => flow.clear()} />
     </Screen>
   );
 }

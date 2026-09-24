@@ -15,17 +15,36 @@ const SRC = path.resolve(import.meta.dirname, "..", "src");
 
 const html = (element: ReactElement): string => renderToStaticMarkup(element);
 
+/** Every source line matching `pattern`, as `file:line`. */
+function findInSource(pattern: RegExp): string[] {
+  const found: string[] = [];
+  for (const file of readdirSync(SRC, { recursive: true, encoding: "utf8" })) {
+    if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
+    const lines = readFileSync(path.join(SRC, file), "utf8").split("\n");
+    lines.forEach((line, index) => {
+      if (pattern.test(line)) found.push(`${file.split(path.sep).join("/")}:${index + 1}`);
+    });
+  }
+  return found.sort();
+}
+
 describe("screen-reader states", () => {
   test("no component passes accessibilityState, which react-native-web drops", () => {
-    const found: string[] = [];
-    for (const file of readdirSync(SRC, { recursive: true, encoding: "utf8" })) {
-      if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
-      const lines = readFileSync(path.join(SRC, file), "utf8").split("\n");
-      lines.forEach((line, index) => {
-        if (/accessibilityState[ ]*=/.test(line)) found.push(`${file.split(path.sep).join("/")}:${index + 1}`);
-      });
-    }
-    expect(found.sort()).toEqual([]);
+    expect(findInSource(/accessibilityState[ ]*=/)).toEqual([]);
+  });
+
+  test("no component gives a control the link role by hand: a link is a Link or a Text with an href, so it is a real anchor", () => {
+    // react-native-web deliberately does not fire onPress from the keyboard on role="link" without an href,
+    // so Tab reaches such a control and Enter does nothing.
+    expect(findInSource(/accessibilityRole=["']link["']|role=["']link["']/)).toEqual([]);
+  });
+
+  test("no component uses imagebutton, which react-native-web maps to no role", () => {
+    expect(findInSource(/imagebutton/)).toEqual([]);
+  });
+
+  test("no component uses accessibilityViewIsModal, which react-native-web drops", () => {
+    expect(findInSource(/accessibilityViewIsModal/)).toEqual([]);
   });
 
   test("a tab list and its selected tab", () => {
@@ -55,6 +74,35 @@ describe("screen-reader states", () => {
 
   test("the link to the current page", () => {
     expect(html(<Pressable accessibilityRole="link" aria-current="page" />)).toContain('aria-current="page"');
+  });
+
+  test("a text with an href is a real anchor that opens elsewhere without a reference back", () => {
+    const out = html(<Text {...({ href: "https://example.org/x", hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } } as object)}>x</Text>);
+    expect(out).toContain("<a ");
+    expect(out).toContain('href="https://example.org/x"');
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener noreferrer"');
+  });
+
+  test("a pressable with an href is an anchor with the link role", () => {
+    const out = html(<Pressable {...({ href: "/bookmarks" } as object)} />);
+    expect(out).toContain("<a ");
+    expect(out).toContain('href="/bookmarks"');
+  });
+
+  test("a dialog names itself through its heading", () => {
+    const out = html(
+      <View role="dialog" aria-labelledby="t">
+        <Text nativeID="t">Delete this post?</Text>
+      </View>,
+    );
+    expect(out).toContain('role="dialog"');
+    expect(out).toContain('aria-labelledby="t"');
+    expect(out).toContain('id="t"');
+  });
+
+  test("a heading can be a level below the page title", () => {
+    expect(html(<Text accessibilityRole="header" aria-level={2}>Password</Text>)).toContain("<h2");
   });
 
   test("a checkbox that is not ticked", () => {

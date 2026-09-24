@@ -4,6 +4,7 @@ import {
   FollowResponse,
   MediaStatusResponse,
   MuteResponse,
+  PostId,
   PostPage,
   PostView,
   ProfilePage,
@@ -18,15 +19,17 @@ export type EngagementKind = "like" | "repost" | "bookmark";
 export type Page<T> = { items: T[]; nextCursor: string | null };
 
 const query = (cursor?: string) => (cursor ? `?cursor=${encodeURIComponent(cursor)}` : "");
+/** Ids come from route params; only a UUID may become part of a path. */
+const postPath = (id: string) => `/api/posts/${encodeURIComponent(PostId.parse(id))}`;
 const handlePath = (handle: string) => `/api/profiles/${encodeURIComponent(handle.replace(/^@/, "").toLowerCase())}`;
 
 /** Every social endpoint, typed by the shared contracts. Cookies and CSRF are handled by `api`. */
 export const social = {
   createPost: (input: { body: string; replyToId?: string; quoteOfId?: string; media?: { id: string; alt: string }[] }) => api("/api/posts", { json: input, schema: PostView }),
-  getPost: (id: string) => api(`/api/posts/${id}`, { schema: PostView }),
-  deletePost: (id: string) => api(`/api/posts/${id}`, { method: "DELETE" }),
-  thread: (id: string, cursor?: string) => api(`/api/posts/${id}/thread${query(cursor)}`, { schema: ThreadResponse }),
-  engage: (id: string, kind: EngagementKind, on: boolean) => api(`/api/posts/${id}/${kind}`, { method: on ? "POST" : "DELETE", schema: EngagementResponse }),
+  getPost: (id: string) => api(postPath(id), { schema: PostView }),
+  deletePost: (id: string) => api(postPath(id), { method: "DELETE" }),
+  thread: (id: string, cursor?: string) => api(`${postPath(id)}/thread${query(cursor)}`, { schema: ThreadResponse }),
+  engage: (id: string, kind: EngagementKind, on: boolean) => api(`${postPath(id)}/${kind}`, { method: on ? "POST" : "DELETE", schema: EngagementResponse }),
 
   /** Sends one image file as the request body. The answer is an id to ask about, not a finished image. */
   uploadMedia: (file: Blob) => api("/api/media", { raw: { type: file.type, body: file }, schema: UploadResponse }),

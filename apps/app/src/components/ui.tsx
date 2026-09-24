@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View, type TextInputProps } from "react-native";
+import { Link, type Href } from "expo-router";
 
 /** A centred column on the dark background, used by every auth screen. */
 export function Screen({ children }: { children: ReactNode }) {
@@ -28,8 +29,8 @@ export function Field({ label, ...input }: { label: string } & TextInputProps) {
       <Text className="text-sm font-medium text-zinc-300">{label}</Text>
       <TextInput
         accessibilityLabel={label}
-        placeholderTextColor="#71717a"
-        className="mt-2 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-base text-zinc-50"
+        placeholderTextColor="#a1a1aa"
+        className="mt-2 rounded-lg border border-zinc-500 bg-zinc-900 px-4 py-3 text-base text-zinc-50"
         {...input}
       />
     </View>
@@ -51,7 +52,7 @@ export function Button({
 }) {
   const inactive = disabled || busy;
   const surface = inactive ? "bg-zinc-800" : tone === "primary" ? "bg-zinc-50" : tone === "danger" ? "bg-red-600" : "border border-zinc-600";
-  const text = inactive ? "text-zinc-500" : tone === "primary" ? "text-zinc-950" : "text-zinc-50";
+  const text = inactive ? "text-zinc-400" : tone === "primary" ? "text-zinc-950" : "text-zinc-50";
   return (
     <Pressable accessibilityRole="button" aria-busy={busy} disabled={inactive} onPress={onPress} className={`mt-6 rounded-lg px-4 py-3 ${surface}`}>
       <Text className={`text-center text-base font-semibold ${text}`}>{busy ? "Please wait…" : label}</Text>
@@ -59,9 +60,25 @@ export function Button({
   );
 }
 
-export function TextLink({ label, onPress }: { label: string; onPress: () => void }) {
+/**
+ * A small link under a form. It is a real anchor (expo-router's Link), so it opens with Enter, in a
+ * new tab with a modifier key, and by every other means a link works. `onPress` runs before the
+ * navigation, for a flow that has to forget its state first.
+ */
+export function TextLink({ label, href, replace = false, onPress }: { label: string; href: Href; replace?: boolean; onPress?: () => void }) {
   return (
-    <Pressable accessibilityRole="link" onPress={onPress} className="mt-6">
+    <Link href={href} replace={replace} onPress={onPress} asChild>
+      <Pressable className="mt-6">
+        <Text className="text-center text-sm text-zinc-400 underline">{label}</Text>
+      </Pressable>
+    </Link>
+  );
+}
+
+/** The same look for an action that is not a destination, such as switching a form's mode. */
+export function TextButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} className="mt-6">
       <Text className="text-center text-sm text-zinc-400 underline">{label}</Text>
     </Pressable>
   );

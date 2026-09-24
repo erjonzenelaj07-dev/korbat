@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!-- The shell around the single-page web export: `expo export` reads public/index.html, fills in the
+     language and title, and appends the bundle and stylesheet links. It says the page is dark before
+     the bundle loads, so there is no white flash, and carries the icon as inline SVG so no request for
+     it falls through to the app. Everything else is the Expo template. -->
+<html lang="%LANG_ISO_CODE%">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2309090b'/%3E%3Ctext x='16' y='23' font-size='20' font-family='system-ui,sans-serif' font-weight='700' text-anchor='middle' fill='%23fafafa'%3Ek%3C/text%3E%3C/svg%3E" />
+    <title>%WEB_TITLE%</title>
+    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <style id="expo-reset">
+      /* These styles make the body full-height */
+      html,
+      body {
+        height: 100%;
+      }
+      /* These styles disable body scrolling if you are using <ScrollView> */
+      body {
+        overflow: hidden;
+      }
+      /* These styles make the root element full-height */
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+      /* Dark before the bundle loads. */
+      html,
+      body {
+        background: #09090b;
+        color: #fafafa;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- Use static rendering with Expo Router to support running without JavaScript. -->
+    <noscript>
+      You need to enable JavaScript to run this app.
+    </noscript>
+    <!-- The root element for your Expo app. -->
+    <div id="root"></div>
+  </body>
+</html>

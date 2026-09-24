@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { router, useLocalSearchParams } from "expo-router";
+import { Link, router, useLocalSearchParams, type Href } from "expo-router";
 import type { ProfileView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { PostList, TimelineList } from "@/components/social/PagedList";
@@ -12,16 +12,16 @@ import { social } from "@/lib/social";
 
 type Tab = "posts" | "replies" | "likes";
 
-function Stat({ label, value, onPress }: { label: string; value: number; onPress?: () => void }) {
+function Stat({ label, value, href }: { label: string; value: number; href?: Href }) {
   const inner = (
     <Text className="text-sm text-zinc-400">
       <Text className="font-semibold text-zinc-50">{value}</Text> {label}
     </Text>
   );
-  return onPress ? (
-    <Pressable accessibilityRole="link" onPress={onPress} className="mr-4">
-      {inner}
-    </Pressable>
+  return href ? (
+    <Link href={href} asChild>
+      <Pressable className="mr-4">{inner}</Pressable>
+    </Link>
   ) : (
     <View className="mr-4">{inner}</View>
   );
@@ -38,6 +38,10 @@ export default function ProfileScreen() {
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const blockDialog = useRef<View>(null);
+  useEffect(() => {
+    if (confirmBlock) (blockDialog.current as unknown as { focus?: () => void } | null)?.focus?.();
+  }, [confirmBlock]);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,26 +107,33 @@ export default function ProfileScreen() {
         {profile.displayName}
         {profile.verified ? <Text className="text-sky-400"> ✓</Text> : null}
       </Text>
-      <Text className="text-base text-zinc-500">@{profile.handle}</Text>
+      <Text className="text-base text-zinc-400">@{profile.handle}</Text>
       {profile.bio ? <Text className="mt-2 text-base leading-6 text-zinc-200">{profile.bio}</Text> : null}
       <View className="mt-3 flex-row">
         <Stat label="posts" value={profile.counts.posts} />
-        <Stat label="followers" value={profile.counts.followers} onPress={me ? () => router.push(`/u/${profile.handle}/followers`) : undefined} />
-        <Stat label="following" value={profile.counts.following} onPress={me ? () => router.push(`/u/${profile.handle}/following`) : undefined} />
+        <Stat label="followers" value={profile.counts.followers} href={me ? `/u/${profile.handle}/followers` : undefined} />
+        <Stat label="following" value={profile.counts.following} href={me ? `/u/${profile.handle}/following` : undefined} />
       </View>
-      {viewer?.followedBy ? <Text className="mt-1 text-xs text-zinc-500">Follows you</Text> : null}
+      {viewer?.followedBy ? <Text className="mt-1 text-xs text-zinc-400">Follows you</Text> : null}
 
       {me && !own && viewer ? (
         <View className="mt-3 flex-row flex-wrap items-center gap-2">
           <FollowButton
             handle={profile.handle}
             initial={viewer.following}
-            onChange={(following, followerCount) => setProfile({ ...profile, counts: { ...profile.counts, followers: followerCount }, viewer: { ...viewer, following } })}
+            onChange={(following, followerCount) =>
+              setProfile((current) => (current ? { ...current, counts: { ...current.counts, followers: followerCount }, viewer: { ...current.viewer!, following } } : current))
+            }
           />
           <Pressable
             accessibilityRole="button"
             disabled={busy}
-            onPress={() => void act(async () => setProfile({ ...profile, viewer: { ...viewer, muted: (await social.setMute(profile.handle, !viewer.muted)).muted } }))}
+            onPress={() =>
+              void act(async () => {
+                const { muted } = await social.setMute(profile.handle, !viewer.muted);
+                setProfile((current) => (current ? { ...current, viewer: { ...current.viewer!, muted } } : current));
+              })
+            }
             className="rounded-full border border-zinc-600 px-4 py-1.5"
           >
             <Text className="text-sm text-zinc-200">{viewer.muted ? "Unmute" : "Mute"}</Text>
@@ -133,7 +144,7 @@ export default function ProfileScreen() {
         </View>
       ) : null}
       {own ? <Button label="Security and privacy settings" onPress={() => router.push("/settings/security")} tone="secondary" /> : null}
-      {!me ? <Text className="mt-3 text-xs text-zinc-500">Sign in to follow this account.</Text> : null}
+      {!me ? <Text className="mt-3 text-xs text-zinc-400">Sign in to follow this account.</Text> : null}
       {actionError ? (
         <Text accessibilityRole="alert" className="mt-2 text-sm text-red-400">
           {actionError}
@@ -141,8 +152,10 @@ export default function ProfileScreen() {
       ) : null}
 
       {confirmBlock ? (
-        <View accessibilityRole="alert" className="mt-3 rounded-lg border border-red-900 bg-zinc-900 p-4">
-          <Text className="text-base font-semibold text-zinc-50">Block @{profile.handle}?</Text>
+        <View ref={blockDialog} role="dialog" aria-labelledby="block-title" tabIndex={-1} className="mt-3 rounded-lg border border-red-900 bg-zinc-900 p-4">
+          <Text nativeID="block-title" className="text-base font-semibold text-zinc-50">
+            Block @{profile.handle}?
+          </Text>
           <Text className="mt-1 text-sm text-zinc-300">
             Neither of you will see the other's posts or profile while signed in, and you will unfollow each other. Posts on korbat are public, so a block does not hide them from
             someone who signs out. You can undo this in your privacy settings.

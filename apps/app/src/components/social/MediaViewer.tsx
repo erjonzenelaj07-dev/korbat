@@ -36,9 +36,9 @@ export function MediaViewer({ media, index, onIndex, onClose }: MediaViewerProps
 
   return (
     <Modal visible transparent animationType="none" onRequestClose={onClose}>
-      <View accessibilityViewIsModal className="flex-1 bg-black/95">
+      <View className="flex-1 bg-black/95">
         <View className="flex-row items-center justify-between px-4 py-3">
-          <Text className="text-sm text-zinc-400">{many ? `${index + 1} of ${media.length}` : ""}</Text>
+          <Text className="text-sm text-zinc-300">{many ? `${index + 1} of ${media.length}` : ""}</Text>
           <Pressable accessibilityRole="button" accessibilityLabel="Close the image viewer" onPress={onClose} className="rounded-lg border border-zinc-700 px-3 py-1.5">
             <Text className="text-sm text-zinc-200">Close</Text>
           </Pressable>

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { FlowResponse, type MeResponse } from "@korbat/contracts";
 import { Button, ErrorText, Field } from "@/components/ui";
@@ -36,6 +36,11 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
   const [flowId, setFlowId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const panel = useRef<View>(null);
+  // The panel appears in reply to an action elsewhere on the page; focus moves to it so the keyboard and a screen reader find it.
+  useEffect(() => {
+    (panel.current as unknown as { focus?: () => void } | null)?.focus?.();
+  }, []);
 
   async function sendEmailCode() {
     setBusy(true);
@@ -68,8 +73,10 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
   const labels: Record<Method, string> = { password: "Password", totp: "Authenticator code", email: "Email code" };
 
   return (
-    <View accessibilityRole="alert" className="mt-6 rounded-xl border border-amber-500/40 bg-zinc-900 p-5">
-      <Text className="text-lg font-semibold text-zinc-50">Confirm it's you</Text>
+    <View ref={panel} role="dialog" aria-labelledby="reauth-title" tabIndex={-1} className="mt-6 rounded-xl border border-amber-500/40 bg-zinc-900 p-5">
+      <Text nativeID="reauth-title" accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
+        Confirm it's you
+      </Text>
       <Text className="mt-1 text-sm text-zinc-400">This change needs a fresh confirmation. It stays valid for 5 minutes.</Text>
       <View className="mt-4 flex-row flex-wrap gap-2">
         {methods.map((m) => (

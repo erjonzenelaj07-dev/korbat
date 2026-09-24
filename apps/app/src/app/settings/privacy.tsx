@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { router } from "expo-router";
+import { Link } from "expo-router";
 import { AppShell } from "@/components/AppShell";
 import { ProfileList } from "@/components/social/ProfileList";
 import { errorMessage } from "@/lib/api";
@@ -51,9 +51,11 @@ export default function Privacy() {
         empty={tab === "blocked" ? "You have not blocked anyone." : "You have not muted anyone."}
         header={
           <View className="border-b border-zinc-800 px-4 pt-4">
-            <Pressable accessibilityRole="link" onPress={() => router.push("/settings/security")}>
-              <Text className="text-sm text-zinc-400 underline">Security settings</Text>
-            </Pressable>
+            <Link href="/settings/security" asChild>
+              <Pressable>
+                <Text className="text-sm text-zinc-400 underline">Security settings</Text>
+              </Pressable>
+            </Link>
             <Text accessibilityRole="header" className="mt-1 text-xl font-bold text-zinc-50">
               Privacy
             </Text>

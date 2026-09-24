@@ -15,6 +15,16 @@ const web = globalThis as unknown as {
   crypto: { getRandomValues<T extends Uint8Array>(array: T): T };
 };
 
+let onUnauthenticated: (() => void) | null = null;
+
+/**
+ * Called when a request outside the sign-in flow answers 401: the session ended elsewhere (signed
+ * out everywhere, revoked, expired). The session provider registers it to drop the signed-in state.
+ */
+export function setUnauthenticatedHandler(handler: (() => void) | null): void {
+  onUnauthenticated = handler;
+}
+
 /** A failed API call with the server's error code and a message fit to show the user. */
 export class ApiError extends Error {
   constructor(
@@ -141,6 +151,7 @@ export async function api<T = void>(path: string, options: RequestOptions<T> = {
   }
 
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith("/api/auth/") && path !== "/api/me") onUnauthenticated?.();
     const parsed = ErrorEnvelope.safeParse(await res.json().catch(() => null));
     const code = parsed.success ? parsed.data.error.code : "internal";
     // The server's message is written for people and can be more specific than the generic text for
