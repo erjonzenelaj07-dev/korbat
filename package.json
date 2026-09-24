@@ -9,9 +9,12 @@
     "build": "pnpm -r --if-present run build"
   },
   "devDependencies": {
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": ["esbuild"],
+    "overrides": {
+      "query-string": "9.5.1"
+    }
   }
 }

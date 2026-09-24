@@ -16,13 +16,13 @@
     "blurhash": "2.0.5",
     "pino": "10.3.1",
     "sharp": "0.35.4",
-    "zod": "4.5.4"
+    "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
+    "@types/node": "24.13.5",
     "tsup": "8.5.1",
     "tsx": "4.23.13",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "vitest": "4.1.11"
   }
 }

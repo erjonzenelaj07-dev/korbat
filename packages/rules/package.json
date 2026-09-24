@@ -5,5 +5,5 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "scripts": { "typecheck": "tsc -p .", "test": "vitest run" },
-  "devDependencies": { "vitest": "4.1.11", "typescript": "5.9.3" }
+  "devDependencies": { "vitest": "4.1.11", "typescript": "7.0.2" }
 }
