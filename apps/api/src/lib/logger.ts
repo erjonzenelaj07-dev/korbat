@@ -36,6 +36,6 @@ export function createLogger(level: string, pretty = false): Logger {
     },
   };
   // pino-pretty is used as an in-process stream, not a transport: transports spawn a
-  // worker thread that needs __dirname, which does not exist inside the tsup bundle.
+  // worker thread that needs __dirname, which does not exist inside the bundle.
   return pretty ? pino(options, pinoPretty({ colorize: true })) : pino(options);
 }
