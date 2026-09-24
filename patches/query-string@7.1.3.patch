@@ -1,0 +1,14 @@
+diff --git a/index.js b/index.js
+--- a/index.js
++++ b/index.js
+@@ -1,6 +1,9 @@
+ 'use strict';
+ const strictUriEncode = require('strict-uri-encode');
+-const decodeComponent = require('decode-uri-component');
++// decode-uri-component 0.5.0, the decoder without the exponential-time defect, is an ES module whose function
++// is its default export; a CommonJS require sees the module object, in Node and in Metro alike.
++const decodeComponentModule = require('decode-uri-component');
++const decodeComponent = decodeComponentModule.default ?? decodeComponentModule;
+ const splitOnFirst = require('split-on-first');
+ const filterObject = require('filter-obj');
+ 
