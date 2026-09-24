@@ -11,6 +11,9 @@ import { loadTestEnv } from "./test/integration/test-env";
 export default defineConfig({
   test: {
     include: ["test/integration/**/*.test.ts"],
+    // One file at a time: the suites share one database, and the sign-in timing check compares medians that
+    // parallel workers on a busy machine push past its 50 ms bound.
+    fileParallelism: false,
     env: { ...loadTestEnv(), INTEGRATION: "1" },
     globalSetup: ["test/integration/global-setup.ts"],
     setupFiles: ["test/integration/setup.ts"],
