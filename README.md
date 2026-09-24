@@ -11,7 +11,7 @@ Pseudonymous social platform with a narrow public rulebook and transparent moder
 ```bash
 pnpm install
 node scripts/gen-dev-env.mjs                # creates or completes infra/.env, apps/api/.env, apps/app/.env and apps/worker/.env, and derives apps/api/.env.test; values are random and never printed
-docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis mailpit   # dev host ports 55432, 56379, 51025, 58025
+docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis mailpit   # dev host ports 55432, 56379, 51025, 58025 (movable: DEV_*_PORT in infra/.env)
 pnpm --filter @korbat/api dev               # http://localhost:3000/api/health; reads apps/api/.env
 pnpm --filter @korbat/worker dev            # the image worker; reads apps/worker/.env and works on .data/media
 pnpm --filter @korbat/app web               # http://localhost:8081

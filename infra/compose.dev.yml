@@ -1,14 +1,17 @@
+# The development stack's host ports, all on 127.0.0.1. Any of them can be moved with a DEV_*_PORT line in
+# infra/.env (for example DEV_PG_PORT=55433) when another container on the machine holds the default; the
+# API's own apps/api/.env must then name the same port.
 services:
   postgres:
-    ports: ["127.0.0.1:55432:5432"]
+    ports: ["127.0.0.1:${DEV_PG_PORT:-55432}:5432"]
   redis:
-    ports: ["127.0.0.1:56379:6379"]
+    ports: ["127.0.0.1:${DEV_REDIS_PORT:-56379}:6379"]
   api:
-    ports: ["127.0.0.1:3000:3000"]
+    ports: ["127.0.0.1:${DEV_API_PORT:-3000}:3000"]
   caddy:
-    ports: ["127.0.0.1:8080:80"]
+    ports: ["127.0.0.1:${DEV_CADDY_PORT:-8080}:80"]
   # Development mail catcher: SMTP on 51025, web UI and HTTP API on 58025. Never used in production.
   mailpit:
     image: axllent/mailpit:v1.31.1
     restart: unless-stopped
-    ports: ["127.0.0.1:51025:1025", "127.0.0.1:58025:8025"]
+    ports: ["127.0.0.1:${DEV_SMTP_PORT:-51025}:1025", "127.0.0.1:${DEV_MAILPIT_PORT:-58025}:8025"]
