@@ -1,32 +1,52 @@
 {
   auto_https off
+  admin off
 }
 
-:80 {
-  encode gzip
-
-  header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-    Referrer-Policy "no-referrer"
-    Permissions-Policy "camera=(), microphone=(), geolocation=()"
-    # challenges.cloudflare.com serves the Turnstile widget script and its iframe (sign-in screens).
-    Content-Security-Policy "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-    -Server
-  }
-
+:8080 {
+  # The API. Its own headers pass through untouched: its CSP is the strict one for JSON and images.
   handle /api/* {
     # Image uploads. The API counts bytes itself and stops at 20 MiB; this is the second line behind it.
     @upload path /api/media
     request_body @upload {
       max_size 25MB
     }
-    reverse_proxy api:3000
+    # Everything else is JSON, and small. The API caps it at 64 KiB too.
+    @json {
+      not path /api/media
+    }
+    request_body @json {
+      max_size 64KB
+    }
+    header -Server
+    reverse_proxy api:3000 {
+      # Behind the tunnel cloudflared sets CF-Connecting-IP and the API needs it; anywhere else a
+      # client could set it, so Caddy drops it. Decided at build time by the TUNNEL argument.
+      import /etc/caddy/cf-header.caddy
+    }
   }
 
+  # The web app: static files, the page's security headers, and caching by kind of file.
   handle {
     root * /srv
+    encode gzip
+    header {
+      Strict-Transport-Security "max-age=31536000; includeSubDomains"
+      X-Content-Type-Options "nosniff"
+      X-Frame-Options "DENY"
+      Referrer-Policy "no-referrer"
+      Permissions-Policy "camera=(), microphone=(), geolocation=()"
+      # challenges.cloudflare.com serves the Turnstile widget script and its iframe (sign-in screens).
+      Content-Security-Policy "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+      -Server
+    }
+    # The page is revalidated on every load, so a deploy is seen at once; the hashed bundles never change.
+    @immutable path /_expo/* /assets/*
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+    @page {
+      not path /_expo/* /assets/*
+    }
+    header @page Cache-Control "no-cache"
     try_files {path} /index.html
     file_server
   }

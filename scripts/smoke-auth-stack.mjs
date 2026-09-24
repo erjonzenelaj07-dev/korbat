@@ -17,7 +17,7 @@
  *     restarted, and its memory peak is printed. Run it after every sharp upgrade.
  * 11. The grant-role CLI makes it a moderator, and its session stops working.
  *
- * Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
+ * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit. Makes its images with the sharp the worker uses. Tries a Turnstile refusal again for up to a
  * minute, since outbound calls can stall. Prints no codes or tokens.
  *
@@ -25,7 +25,7 @@
  *   node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --mailpit http://localhost:58025 \
  *     --terms draft-2026-09 [--worst-case] -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 
@@ -45,6 +45,19 @@ if (!base || !mailpit || !terms || compose.length === 0) {
   console.error("usage: node scripts/smoke-auth-stack.mjs --base <url> --mailpit <url> --terms <version> [--worst-case] -- <docker compose command>");
   process.exit(2);
 }
+function stop(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+/** Docker's current context must be this machine: a remote context would point these commands at another host. */
+function requireLocalDocker() {
+  const inspected = spawnSync("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], { encoding: "utf8" });
+  const host = inspected.status === 0 ? inspected.stdout.trim() : "";
+  if (!/^(unix:|npipe:)/.test(host)) stop(`Docker's current context points at "${host || "an unknown endpoint"}", not this machine. This script only runs against a local stack.`);
+}
+requireLocalDocker();
+
 /** The sharp the worker depends on, so the test images come from the same library that will read them. */
 const sharp = createRequire(new URL("../apps/worker/package.json", import.meta.url))("sharp");
 

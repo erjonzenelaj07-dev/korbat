@@ -6,7 +6,7 @@
  * - `change-me-<word>`          -> 48 random hex characters (passwords)
  * - `change-me-key-<name>`      -> 32 random bytes, base64 (HMAC keys)
  * - `v1:change-me-key-<name>`   -> `v1:` + 32 random bytes, base64 (versioned encryption keys)
- * - `change-me-api|auth|migrate` inside apps/api/.env -> the matching password from infra/.env
+ * - `change-me-api|auth|migrate|redis` inside apps/api/.env -> the matching password from infra/.env
  * - Keys used by both the API in Docker (`API_<NAME>` in infra/.env) and the API on the host
  *   (`<NAME>` in apps/api/.env) are generated once and copied to the other file, so both processes
  *   hash, sign and encrypt with the same keys.
@@ -18,6 +18,9 @@
  * the database URLs pointing at `<database>_test` and the Redis URL at database 15. That file is
  * derived on every run, so it cannot drift from apps/api/.env. `node scripts/test-db.mjs` creates
  * the database it names.
+ *
+ * It only serves development: it refuses to run when infra/.env already names a public origin,
+ * because production values are set by hand and never generated.
  *
  * Usage: node scripts/gen-dev-env.mjs
  */
@@ -49,7 +52,7 @@ function generate(name, value, infra, shared) {
   if (value.startsWith("v1:change-me-key-")) return `v1:${randomBytes(32).toString("base64")}`;
   if (value.startsWith("change-me-key-")) return randomBytes(32).toString("base64");
   return value
-    .replace(/change-me-(api|auth|migrate)\b/g, (match, role) => infra.get(`KORBAT_${role.toUpperCase()}_DB_PASSWORD`) ?? match)
+    .replace(/change-me-(api|auth|migrate|redis)\b/g, (match, role) => (role === "redis" ? infra.get("REDIS_PASSWORD") : infra.get(`KORBAT_${role.toUpperCase()}_DB_PASSWORD`)) ?? match)
     .replace(/change-me-[a-z]+/g, () => randomBytes(24).toString("hex"));
 }
 
@@ -84,12 +87,42 @@ function complete(relExample, relTarget, infra, shared) {
   console.log(`${relTarget}: completed, added ${added.join(", ")}`);
 }
 
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+const existingOrigin = read("infra/.env").get("API_APP_ORIGIN");
+if (existingOrigin !== undefined) {
+  let host = "";
+  try {
+    host = new URL(existingOrigin).hostname;
+  } catch {
+    host = "";
+  }
+  if (!LOCAL_HOSTS.includes(host)) {
+    console.error(`API_APP_ORIGIN in infra/.env is "${existingOrigin}", not a localhost origin. This script generates development values only; set production values by hand.`);
+    process.exit(1);
+  }
+}
+
 const hostApi = read("apps/api/.env");
 complete("infra/.env.example", "infra/.env", new Map(), new Map([...hostApi].map(([name, value]) => [`API_${name}`, value])));
 
 const infra = read("infra/.env");
 const dockerApi = new Map([...infra].filter(([name]) => name.startsWith("API_")).map(([name, value]) => [name.slice("API_".length), value]));
 complete("apps/api/.env.example", "apps/api/.env", infra, dockerApi);
+
+/** A REDIS_URL written before Valkey required a password gains the one infra/.env holds. */
+function addRedisPassword(relTarget, password) {
+  if (!password) return;
+  const path = resolve(root, relTarget);
+  const current = readFileSync(path, "utf8");
+  const line = current.split(/\r?\n/).find((l) => l.startsWith("REDIS_URL="));
+  if (!line) return;
+  const url = new URL(line.slice("REDIS_URL=".length));
+  if (url.password) return;
+  url.password = password;
+  writeFileSync(path, current.replace(line, `REDIS_URL=${url.href}`), "utf8");
+  console.log(`${relTarget}: REDIS_URL now carries the Valkey password`);
+}
+addRedisPassword("apps/api/.env", infra.get("REDIS_PASSWORD"));
 
 complete("apps/app/.env.example", "apps/app/.env", new Map(), new Map());
 complete("apps/worker/.env.example", "apps/worker/.env", new Map(), new Map());

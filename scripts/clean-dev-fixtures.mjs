@@ -12,7 +12,7 @@
  * post), that counter is recomputed from the rows, the way the app keeps it. The API's sweeper removes
  * the image files within about an hour, as it does for any image without a row.
  *
- * Refuses to run unless API_APP_ORIGIN in infra/.env is a localhost origin, so it never touches a
+ * Refuses to run unless Docker's context is this machine and API_APP_ORIGIN in infra/.env is a localhost origin, so it never touches a
  * deployed database. Runs psql inside the postgres container as its superuser: no password is read or
  * printed here.
  *
@@ -51,6 +51,14 @@ function stop(message) {
   console.error(message);
   process.exit(1);
 }
+
+/** Docker's current context must be this machine: a remote context would point these commands at another host. */
+function requireLocalDocker() {
+  const inspected = spawnSync("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], { encoding: "utf8" });
+  const host = inspected.status === 0 ? inspected.stdout.trim() : "";
+  if (!/^(unix:|npipe:)/.test(host)) stop(`Docker's current context points at "${host || "an unknown endpoint"}", not this machine. This script only runs against a local stack.`);
+}
+requireLocalDocker();
 
 const envFile = resolve(root, "infra/.env");
 if (!existsSync(envFile)) stop("infra/.env is missing. Run `node scripts/gen-dev-env.mjs` first.");

@@ -120,6 +120,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     expect(complete.headers.getSetCookie().some((c) => c.startsWith("__Host-korbat_session="))).toBe(true);
   });
 
+  test("a script that sends only Sec-Fetch-Mode, as Node's fetch does, keeps its native platform", async () => {
+    const headers = { "content-type": "application/json", "sec-fetch-mode": "cors", "cf-connecting-ip": "203.0.113.77" };
+    const email = `http-${randomUUID()}@korbat.local`;
+    const post = (path: string, body: unknown) => app.request(path, { method: "POST", headers, body: JSON.stringify(body) });
+    const start = await post("/api/auth/email/start", { email, turnstileToken: "ok", deviceId: randomToken(), platform: "ios" });
+    const { flowId } = FlowResponse.parse(await start.json());
+    await post("/api/auth/email/verify", { flowId, code: mailer.lastCodeFor(email) });
+    const complete = await post("/api/auth/signup/complete", { flowId, dateOfBirth: "2000-01-01", termsVersion: config.TERMS_VERSION });
+    expect(complete.status).toBe(200);
+    expect(SessionResult.parse(await complete.json()).token).toMatch(/^kb1_/);
+    expect(complete.headers.getSetCookie()).toHaveLength(0);
+  });
+
   test("malformed JSON is a 400 with the error envelope, not a 500", async () => {
     const b = new Browser(app, config.APP_ORIGIN);
     const res = await b.fetch("/api/auth/email/verify", { raw: { type: "application/json", body: new TextEncoder().encode("{not json") } });

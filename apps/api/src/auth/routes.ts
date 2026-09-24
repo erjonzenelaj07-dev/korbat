@@ -42,10 +42,13 @@ export function authRoutes(deps: AuthDeps) {
   const currentSession = (c: Context<AppEnv>): Session => c.get("session")!;
 
   /**
-   * Browsers always send Sec-Fetch-Mode and, on state changes, Origin; native apps send neither. A
-   * request from a browser is a web session whatever the body says, so it gets cookies, never a token.
+   * Browsers send Origin on state changes and the fetch metadata headers Sec-Fetch-Site and Sec-Fetch-Dest
+   * on every request; native apps send none of them, and Node's own fetch sends a bare Sec-Fetch-Mode that
+   * cannot be removed, which therefore does not count. A request from a browser is a web session whatever
+   * the body says, so it gets cookies, never a token.
    */
-  const fromBrowser = (c: Context<AppEnv>): boolean => c.req.header("sec-fetch-mode") !== undefined || c.req.header("origin") !== undefined;
+  const fromBrowser = (c: Context<AppEnv>): boolean =>
+    c.req.header("origin") !== undefined || c.req.header("sec-fetch-site") !== undefined || c.req.header("sec-fetch-dest") !== undefined;
   const asWeb = <T extends { platform: Platform }>(c: Context<AppEnv>, input: T): T => (fromBrowser(c) ? { ...input, platform: "web" } : input);
 
   /** Web: cookies only, never the token in the body. Native: the bearer token in the body, no cookies. */

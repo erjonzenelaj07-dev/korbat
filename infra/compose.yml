@@ -1,15 +1,27 @@
 name: korbat
 
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
 x-node-common: &node-common
   restart: unless-stopped
   read_only: true
   tmpfs: ["/tmp"]
   security_opt: ["no-new-privileges:true"]
+  logging: *logging
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # PostgreSQL 18. From 18 on the image keeps the cluster under /var/lib/postgresql/<major>/docker, so
+    # the volume is mounted one level up and a later major can pg_upgrade inside it. A cluster from the
+    # earlier pgdata volume (PostgreSQL 16) is moved over by scripts/pg-major-upgrade.mjs.
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     restart: unless-stopped
+    logging: *logging
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -18,8 +30,9 @@ services:
       KORBAT_API_DB_PASSWORD: ${KORBAT_API_DB_PASSWORD}
       KORBAT_AUTH_DB_PASSWORD: ${KORBAT_AUTH_DB_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata18:/var/lib/postgresql
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -27,13 +40,24 @@ services:
       retries: 20
 
   redis:
-    image: redis:7-alpine
+    # Valkey, the BSD-licensed fork of Redis, under the service name the URLs already use. A password
+    # is required: nothing on the data network may read the session cache without it.
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    logging: *logging
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 64
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in infra/.env}
+    command: ["sh", "-c", "exec valkey-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --requirepass $$REDIS_PASSWORD"]
     volumes:
-      - redisdata:/data
+    # A fresh volume: Valkey 9 cannot read the RDB format 12 that Redis 7.4 wrote into `redisdata`, and that
+    # volume held only transient state (limits, codes in flight, cached sessions, queued image jobs).
+      - valkeydata:/data
+    networks: [data]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "VALKEYCLI_AUTH=$$REDIS_PASSWORD valkey-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -48,6 +72,7 @@ services:
     environment:
       DATABASE_URL_MIGRATE: postgres://korbat_migrate:${KORBAT_MIGRATE_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MIGRATIONS_DIR: /app/migrations
+    networks: [data]
     depends_on:
       postgres: { condition: service_healthy }
 
@@ -58,19 +83,27 @@ services:
       dockerfile: apps/api/Dockerfile
       args:
         KORBAT_VERSION: ${KORBAT_VERSION:-0.0.0}
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 256
     environment:
-      NODE_ENV: production
+      # development or production, from infra/.env; production turns on the guards against test keys, plain-http
+      # origins and a relay without TLS. The worker below always runs as production.
+      NODE_ENV: ${KORBAT_ENV:?set KORBAT_ENV to development or production in infra/.env}
       PORT: "3000"
       LOG_LEVEL: ${API_LOG_LEVEL:-info}
       DATABASE_URL_API: postgres://korbat_api:${KORBAT_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DATABASE_URL_AUTH: postgres://korbat_auth:${KORBAT_AUTH_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       TRUSTED_ORIGINS: ${API_TRUSTED_ORIGINS:-}
+      # Which header names the client: the stack refuses to start without a choice.
+      TRUST_PROXY: ${API_TRUST_PROXY:?set API_TRUST_PROXY in infra/.env}
       # Auth settings. The stack refuses to start while any of these is missing from infra/.env.
       APP_ORIGIN: ${API_APP_ORIGIN:?set API_APP_ORIGIN in infra/.env}
       AUTH_HMAC_KEY: ${API_AUTH_HMAC_KEY:?set API_AUTH_HMAC_KEY in infra/.env}
       IP_HASH_KEY: ${API_IP_HASH_KEY:?set API_IP_HASH_KEY in infra/.env}
       TOTP_ENC_KEY: ${API_TOTP_ENC_KEY:?set API_TOTP_ENC_KEY in infra/.env}
+      TOTP_ENC_KEYS_PREVIOUS: ${API_TOTP_ENC_KEYS_PREVIOUS:-}
       TURNSTILE_SECRET_KEY: ${API_TURNSTILE_SECRET_KEY:?set API_TURNSTILE_SECRET_KEY in infra/.env}
       SMTP_URL: ${API_SMTP_URL:?set API_SMTP_URL in infra/.env}
       MAIL_FROM: ${API_MAIL_FROM:?set API_MAIL_FROM in infra/.env}
@@ -80,9 +113,11 @@ services:
       MEDIA_STORE_DIR: /media/store
       MEDIA_FORMATS: ${MEDIA_FORMATS:-jpeg,png,webp,gif,avif}
       MEDIA_MIN_FREE_BYTES: ${MEDIA_MIN_FREE_BYTES:-2147483648}
+      MEDIA_RECONCILE: ${MEDIA_RECONCILE:-on}
     volumes:
       - media-uploads:/media/uploads
       - media-store:/media/store:ro
+    networks: [app, data]
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
@@ -122,35 +157,62 @@ services:
       timeout: 5s
       retries: 4
 
+  # Caddy serves the web app and proxies /api. It runs as its own user on port 8080, sees only the
+  # API, and is the only thing cloudflared can reach.
   caddy:
     restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *logging
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
     build:
       context: ..
       dockerfile: infra/caddy/Dockerfile
       args:
         EXPO_PUBLIC_TURNSTILE_SITE_KEY: ${WEB_TURNSTILE_SITE_KEY:?set WEB_TURNSTILE_SITE_KEY in infra/.env}
+        KORBAT_ENV: ${KORBAT_ENV:?set KORBAT_ENV to development or production in infra/.env}
+        TUNNEL: ${TUNNEL:-off}
     depends_on:
       api: { condition: service_healthy }
     volumes:
-      - caddydata:/data
-      - caddyconfig:/config
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge, app]
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.9.1@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
     restart: unless-stopped
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *logging
     profiles: ["tunnel"]
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    networks: [edge]
     depends_on:
       - caddy
 
+# cloudflared reaches only Caddy, Caddy reaches only the API, and the API alone reaches the data services.
+networks:
+  edge:
+  app:
+  data:
+
 volumes:
-  pgdata:
-  redisdata:
+  # PostgreSQL 18. The earlier pgdata volume (PostgreSQL 16) stays until scripts/pg-major-upgrade.mjs has
+  # moved it and you remove it by hand.
+  pgdata18:
+  valkeydata:
   # Uploads wait here for the worker and are deleted once processed. Nothing in it needs a backup.
   media-uploads:
   # The images korbat serves. Back it up together with the database.
   media-store:
-  caddydata:
-  caddyconfig:
+  # Caddy's state, owned by its own user; the earlier root-owned caddydata and caddyconfig volumes can go.
+  caddy-data:
+  caddy-config:

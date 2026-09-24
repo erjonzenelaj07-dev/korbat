@@ -1,13 +1,14 @@
-FROM node:24-alpine AS build
-RUN npm install -g pnpm@10.30.0
+FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build
 WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+# pnpm at the version and hash the root package.json names; corepack verifies the download against the hash.
+RUN corepack enable && corepack install
 COPY packages ./packages
 COPY apps/worker ./apps/worker
 RUN pnpm install --frozen-lockfile --filter @korbat/worker...
 RUN pnpm --filter @korbat/worker build
 
-FROM node:24-alpine
+FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
 ENV NODE_ENV=production
 # libvips reads this when it loads, so it has to be in the environment before the process starts.
 ENV VIPS_BLOCK_UNTRUSTED=1
