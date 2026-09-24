@@ -427,3 +427,18 @@ Each item is a place where the verified build differs from `docs/superpowers/spe
 
 - **T16 to T18.** T16 is the HTTP layer. T17 is the boundary test and grant-role CLI. T18 is the end-to-end and timing tests.
 - **T19 to T21.** T19 is Docker. T20 is the web screens. T21 is the site key in the web image, the browser check, CI and docs.
+
+## 14. Amendments from the audit (2026-09-23)
+
+Applied by `docs/superpowers/specs/2026-09-23-audit-fixes-design.md` (Tasks 3, 4 and 5 of its prompts). Where this document and the audit design differ, the audit design is current.
+
+- **Fresh authentication for enrolment (section 5.3).** `POST /api/auth/mfa/totp/setup`, `POST /api/auth/mfa/totp/confirm` and `DELETE /api/auth/sessions/:id` require a re-authentication within five minutes, whether or not two-factor is already on. A sign-in counts as fresh.
+- **Owners hear about security changes (section 5).** Templates `mfa_enabled`, `mfa_disabled`, `password_changed`, `recovery_codes_regenerated` and `sessions_revoked_all` are sent best effort. A "this wasn't me" link also revokes the device its alert was about.
+- **Pending sign-ups are keyed by the hash of the flow id (section 2.1).** `flow:` and `signup:` keys hold `sha256(flowId)`, like sessions and tickets.
+- **The two limits section 6 named exist:** `signup/complete` 10 per address an hour, `onboarding/handle` 10 per session an hour. Every `rate_limited` answer carries `Retry-After`.
+- **A browser is a web client (section 4).** A request carrying `Sec-Fetch-Mode` or `Origin` is treated as `platform: web`, whatever the body says, so no script on the app origin can obtain a bearer token.
+- **Revocation outlives the cache (section 4).** Revoking writes a tombstone under the session cache key; a cache fill never overwrites one.
+- **Passwords are re-hashed at sign-in** when their parameters are older than the current ones, and **previous TOTP keys** (`TOTP_ENC_KEYS_PREVIOUS`) decrypt a secret that is then re-encrypted with the current key.
+- **Malformed JSON is `invalid_request` with status 400**, not an internal error.
+- **The client address (section 6).** `TRUST_PROXY` (`cloudflare`, `caddy`, `none`) decides which header names the client; every per-address limit and audit row uses the keyed hash of that address, never the address. Production refuses Cloudflare's Turnstile test secrets, plain-http origins and a mail relay without TLS.
+- **The retention job is in scope (section 1, previously out of scope).** Every ten minutes the API deletes email codes consumed or expired a day ago and sessions revoked or expired a month ago, nulls device address hashes not seen for 30 days (the design's IP-hash purge), and removes security events older than 90 days through `auth.purge_events`, a function the migrator owns so the table stays append-only for the API role.

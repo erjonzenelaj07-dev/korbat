@@ -326,3 +326,18 @@ Each item is a place where the verified build differs from `docs/superpowers/spe
 
 - **Fixtures.** Social integration tests create `profiles` rows directly (no auth user behind them) and drive a clock that advances on every read, so list order never depends on the id tie-breaker.
 - **HTTP tests.** Use the in-memory mailer for sign-up codes and a strictly increasing clock with an offset that ages accounts past the new-account tier.
+
+## 14. Amendments from the audit (2026-09-23)
+
+Applied by `docs/superpowers/specs/2026-09-23-audit-fixes-design.md` (Task 6 of its prompts). Where this document and the audit design differ, the audit design is current.
+
+- **A block retracts engagement (section 5.3).** Blocking also deletes, both ways, the pair's reposts and likes of each other's posts, adjusting the counters in the same transaction. Unblocking restores nothing.
+- **Undo never consults the block relation (section 5.2).** Unlike, unrepost and unbookmark remove the viewer's own row whatever stands between the accounts.
+- **A pair lock (section 3).** Follow, block, like, repost, reply and quote take `pg_advisory_xact_lock` on the unordered pair of accounts and check for a block inside the transaction, so none of them can land across a concurrent block.
+- **Hidden posts answer first (section 4).** A post's state is judged before the block direction, so a blocker probing ids learns nothing about hidden or deleted posts. Block and mute towards an account that blocks the viewer are `not_found`; the viewer's own block or mute can always be undone.
+- **A reply's parent (section 5.1).** `replyTo.authorHandle` is null when the viewer could not open the parent: its author is blocked either way, or the parent is hidden or deleted.
+- **Disguising characters (section 6).** Bodies, alt text and display names refuse bidirectional overrides and isolates, the zero-width space, the word joiner and the byte order mark; a body must have some visible text.
+- **Follower and following pages** leave out accounts with a block in either direction before the page is cut, so pages stay full.
+- **A failing limit store is `service_unavailable` (503) with `Retry-After: 30`**, for writes and for the global limiter alike; the write is not made.
+- **Cursors and ids.** A cursor's time is bounded by what a date can hold (anything else is `invalid_request`), and post ids are lowercased on input.
+- **Indexes (section 3).** `posts (reply_to_id, created_at, id)`, a partial `posts (created_at, id) where reply_to_id is null and state = 'visible'` for Latest, and `(to, created_at, from)` plus `(from, created_at, to)` on follows, blocks and mutes. The Following timeline applies the cursor, the filters and the limit inside each branch of its union.

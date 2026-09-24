@@ -492,3 +492,12 @@ The plan was dry-run task by task in a scratch clone before the execution prompt
 ### Test isolation (section 11)
 
 - `scripts/clean-dev-fixtures.mjs` matches only emails of the tests' shape, `<word>-<uuid>@korbat.local`, and profiles without an account. Deleting profiles cascades to their rows, so the counters of kept profiles and posts those rows touched are recomputed from the rows in the same transaction. It prints the counts and up to 25 of each kind. The prompts run it without `--yes`; deletion was verified on seeded data in the scratch clone, where it also removed 117 accounts and 53 profiles that earlier test runs had left.
+
+## 17. Amendments from the audit (2026-09-23)
+
+Applied by `docs/superpowers/specs/2026-09-23-audit-fixes-design.md` (Tasks 5 and 6 of its prompts). Where this document and the audit design differ, the audit design is current.
+
+- **Reconcile refuses large deletions (section 4.7).** The orphan pass refuses when the images without a row exceed 50 and 2% of the store, unless `MEDIA_RECONCILE=force`; `off` skips the pass for a restore window. A database restored from an older snapshot would otherwise lose every image posted since.
+- **The store is never opened blocking (section 7.3).** Entries are inspected with `lstat` before they are opened, and opens are non-blocking, so a FIFO planted in the store cannot hold an API thread.
+- **The sweeper is a job (section 4.7).** It runs on the API's job runner: one instance at a time, rounds never overlapping, the lock refreshed while a long reconcile runs.
+- **Daily upload caps (section 6).** Besides 20 or 120 an hour, an account may upload 60 images a day in its first day and 500 a day afterwards.
