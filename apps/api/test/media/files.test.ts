@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -167,6 +168,15 @@ describe("reading the store, which is not trusted", () => {
     mkdirSync(files.store.imageDir(id), { recursive: true });
     symlinkSync(secret, files.store.image(id, "large"));
     expect(await files.openImage(id, "large")).toBeNull();
+  });
+
+  test.skipIf(process.platform === "win32")("a FIFO in place of an image is refused at once instead of blocking a thread", { timeout: 5_000 }, async () => {
+    const files = await volumes();
+    const id = randomUUID();
+    mkdirSync(files.store.imageDir(id), { recursive: true });
+    execFileSync("mkfifo", [files.store.image(id, "large")]);
+    expect(await files.openImage(id, "large")).toBeNull();
+    expect(await files.readResult(id)).toBeNull();
   });
 
   test("an oversized image and a directory are refused", async () => {

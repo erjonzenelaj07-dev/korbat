@@ -4,6 +4,7 @@ import { closeDb, createDb, ping } from "@korbat/db";
 import { createApp } from "./app";
 import { createAuth } from "./auth";
 import { loadConfig } from "./config";
+import { redisJobLock } from "./lib/jobs";
 import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
 import { createMedia } from "./media";
@@ -35,6 +36,7 @@ const media = createMedia({
   storeDir: config.MEDIA_STORE_DIR,
   formats: config.MEDIA_FORMATS,
   minFreeBytes: config.MEDIA_MIN_FREE_BYTES,
+  reconcile: config.MEDIA_RECONCILE,
   logger,
   requireSession: auth.requireSession,
   resolveSession: auth.resolveSession,
@@ -42,8 +44,10 @@ const media = createMedia({
   enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(rateLimitStore, userId, "upload", accountCreatedAt, now),
 });
 await media.prepare();
-// One API instance sweeps at a time: the lock is a Redis key that expires on its own.
-const stopSweeper = media.startSweeper({ acquire: async (key, ttlMs) => (await redis.set(key, "1", "PX", ttlMs, "NX")) === "OK" });
+// Background work runs on one API instance at a time, under locks in Redis that are refreshed while a round runs.
+const jobLock = redisJobLock(redis);
+const stopSweeper = media.startSweeper(jobLock);
+const stopJanitor = auth.startJanitor(jobLock);
 
 const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, media: media.forPosts });
 
@@ -69,6 +73,7 @@ const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" 
 async function shutdown(signal: string) {
   logger.info({ signal }, "shutting down");
   stopSweeper();
+  stopJanitor();
   server.close();
   await Promise.allSettled([closeDb(apiDb), closeDb(authDb), redis.quit()]);
   process.exit(0);

@@ -312,6 +312,45 @@ export function createAuthRepo(db: Db) {
       });
     },
 
+    // ------------------------------------------------------------ retention
+
+    /** Codes consumed or expired before `before` are of no use to anyone; they still hold an email and an ip hash. */
+    async purgeEmailCodes(before: Date): Promise<number> {
+      const rows = await db
+        .delete(emailCodes)
+        .where(or(and(sql`${emailCodes.consumedAt} is not null`, lt(emailCodes.consumedAt, before)), lt(emailCodes.expiresAt, before)))
+        .returning({ id: emailCodes.id });
+      return rows.length;
+    },
+
+    /** Sessions revoked or expired before `before`. Live ones are never touched. */
+    async purgeSessions(before: Date): Promise<number> {
+      const rows = await db
+        .delete(sessions)
+        .where(or(and(sql`${sessions.revokedAt} is not null`, lt(sessions.revokedAt, before)), lt(sessions.expiresAt, before), lt(sessions.absoluteExpiresAt, before)))
+        .returning({ id: sessions.id });
+      return rows.length;
+    },
+
+    /** The design's IP-hash purge: a device not seen since `before` keeps no address hash. */
+    async purgeDeviceIpHashes(before: Date): Promise<number> {
+      const rows = await db
+        .update(devices)
+        .set({ ipHash: null })
+        .where(and(sql`${devices.ipHash} is not null`, lt(devices.lastSeenAt, before)))
+        .returning({ id: devices.id });
+      return rows.length;
+    },
+
+    /**
+     * Events older than `days` days, through auth.purge_events (migration 0007): the table stays
+     * append-only for this role, which holds no DELETE on it; the function is owned by the migrator.
+     */
+    async purgeEvents(days: number): Promise<number> {
+      const [row] = (await db.execute(sql`select auth.purge_events(make_interval(days => ${days}::int)) as removed`)) as unknown as { removed: number }[];
+      return Number(row?.removed ?? 0);
+    },
+
     async recentEvents(userId: string, limit = 20) {
       return db
         .select({ type: authEvents.type, deviceId: authEvents.deviceId, createdAt: authEvents.createdAt })

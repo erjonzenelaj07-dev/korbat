@@ -12,6 +12,8 @@ import { authConfigFrom, type AuthDeps, type ProfileStore } from "./context";
 import { redisKv, type KeyValueStore } from "./kv";
 import { createLockout } from "./lockout";
 import { requireFreshAuth, requireOnboarding, requireSession, requireStaffMfa, resolveSession } from "./middleware";
+import type { JobLock } from "../lib/jobs";
+import { createJanitor } from "./janitor";
 import { hibpChecker, type BreachChecker } from "./passwords";
 import { createAuthRepo } from "./repo";
 import { authRoutes, meHandler } from "./routes";
@@ -73,6 +75,8 @@ export function createAuth(options: CreateAuthOptions) {
     requireOnboarding,
     requireFreshAuth: (maxAgeSeconds?: number) => requireFreshAuth(deps, maxAgeSeconds),
     requireStaffMfa,
+    /** Starts the retention pass (dead codes, old sessions, device address hashes, old events) and returns the function that stops it. */
+    startJanitor: (lock: JobLock) => createJanitor(deps, lock).start(),
   };
 }
 

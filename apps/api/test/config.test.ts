@@ -83,6 +83,11 @@ describe("loadConfig", () => {
     expect(c.MEDIA_FORMATS).toEqual(["jpeg", "png", "webp", "gif", "avif"]);
     expect(c.MEDIA_MIN_FREE_BYTES).toBe(2_147_483_648);
   });
+  test("MEDIA_RECONCILE is on by default and takes off or force", () => {
+    expect(loadConfig(good).MEDIA_RECONCILE).toBe("on");
+    expect(loadConfig({ ...good, MEDIA_RECONCILE: "force" }).MEDIA_RECONCILE).toBe("force");
+    expect(() => loadConfig({ ...good, MEDIA_RECONCILE: "maybe" })).toThrow(/MEDIA_RECONCILE/);
+  });
   test("MEDIA_FORMATS enables a subset, and a typo stops the process instead of changing what is accepted", () => {
     expect(loadConfig({ ...good, MEDIA_FORMATS: "png, jpeg" }).MEDIA_FORMATS).toEqual(["jpeg", "png"]);
     expect(() => loadConfig({ ...good, MEDIA_FORMATS: "jpeg,tiff" })).toThrow(/unknown formats: tiff/);

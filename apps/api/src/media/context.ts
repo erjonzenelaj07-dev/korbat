@@ -60,6 +60,8 @@ export interface MediaDeps {
   formats: readonly MediaFormat[];
   /** Uploads are refused while either volume has less free space than this. */
   minFreeBytes: number;
+  /** See MEDIA_RECONCILE. `on` refuses to delete many orphans at once; `force` does not; `off` skips the pass. */
+  reconcileMode: "on" | "off" | "force";
   /** Counts one upload against the account's hourly limit and throws when it is used up. */
   enforceUploadLimit: (userId: string, accountCreatedAt: Date, now: Date) => Promise<void>;
   log: Logger;

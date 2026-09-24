@@ -76,6 +76,7 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
     files,
     formats: options.formats ?? MEDIA_FORMATS,
     minFreeBytes: options.minFreeBytes ?? 0,
+    reconcileMode: "on",
     enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(limits, userId, "upload", accountCreatedAt, now),
     log: pino({ level: "silent" }),
     now: clock.next,

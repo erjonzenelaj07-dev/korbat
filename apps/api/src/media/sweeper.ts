@@ -1,3 +1,4 @@
+import { createJob, type JobLock } from "../lib/jobs";
 import type { MediaDeps } from "./context";
 import { finalize } from "./flows/status";
 
@@ -15,6 +16,13 @@ export const ORPHAN_AGE_MS = 60 * 60_000;
 export const DELETION_GRACE_MS = 10 * 60_000;
 export const SWEEP_INTERVAL_MS = 30_000;
 export const RECONCILE_INTERVAL_MS = 10 * 60_000;
+/**
+ * Reconcile refuses to delete images without a row when there are more of them than both of these:
+ * a database restored from an older snapshot has rows missing for every image posted since, and
+ * those images must not go. MEDIA_RECONCILE=force overrides it once the operator has checked.
+ */
+export const RECONCILE_MAX_ORPHANS = 50;
+export const RECONCILE_MAX_ORPHAN_SHARE = 0.02;
 
 export interface SweepReport {
   finalized: number;
@@ -22,6 +30,8 @@ export interface SweepReport {
   expired: number;
   withdrawn: number;
   orphans: number;
+  /** Orphan images the reconcile pass refused to delete. */
+  refused: number;
 }
 
 /**
@@ -29,7 +39,7 @@ export interface SweepReport {
  * with whatever time they need. Every step is safe to repeat and safe to run next to live traffic.
  */
 export async function sweep(deps: MediaDeps, now: Date, options: { reconcile: boolean }): Promise<SweepReport> {
-  const report: SweepReport = { finalized: 0, timedOut: 0, expired: 0, withdrawn: 0, orphans: 0 };
+  const report: SweepReport = { finalized: 0, timedOut: 0, expired: 0, withdrawn: 0, orphans: 0, refused: 0 };
 
   // 1. Results nobody asked for: the composer was closed, or the post was written from another device.
   for (const id of await deps.repo.processingIds()) {
@@ -54,41 +64,56 @@ export async function sweep(deps: MediaDeps, now: Date, options: { reconcile: bo
 
   // 5. What a crash between a commit and a file operation left behind, and the files of deleted
   //    accounts, whose rows went by cascade.
-  if (options.reconcile) {
+  if (options.reconcile && deps.reconcileMode !== "off") {
     const nowMs = now.getTime();
-    const images = (await deps.files.storedImages(nowMs)).filter((entry) => entry.ageMs > ORPHAN_AGE_MS).map((entry) => entry.id);
+    const stored = await deps.files.storedImages(nowMs);
+    const images = stored.filter((entry) => entry.ageMs > ORPHAN_AGE_MS).map((entry) => entry.id);
     const uploads = (await deps.files.storedUploads(nowMs)).filter((entry) => entry.ageMs > ORPHAN_AGE_MS).map((entry) => entry.id);
     const known = await deps.repo.existing([...new Set([...images, ...uploads])]);
     const orphanImages = images.filter((id) => !known.has(id));
     const orphanUploads = uploads.filter((id) => !known.has(id));
-    await deps.files.requestDeletion(orphanImages);
     for (const id of orphanUploads) await deps.files.discardUpload(id);
-    report.orphans = orphanImages.length + orphanUploads.length;
-    if (report.orphans > 0) deps.log.warn({ images: orphanImages.length, uploads: orphanUploads.length }, "media: removed files that had no row");
+    const tooMany = orphanImages.length > RECONCILE_MAX_ORPHANS && orphanImages.length > stored.length * RECONCILE_MAX_ORPHAN_SHARE;
+    if (tooMany && deps.reconcileMode !== "force") {
+      report.refused = orphanImages.length;
+      report.orphans = orphanUploads.length;
+      deps.log.error(
+        { images: orphanImages.length, stored: stored.length },
+        "media: reconcile refused to delete this many images without a row. If the database was restored from an older snapshot, restore the store from the same one; if the images are really orphans, set MEDIA_RECONCILE=force for one pass",
+      );
+    } else {
+      await deps.files.requestDeletion(orphanImages);
+      report.orphans = orphanImages.length + orphanUploads.length;
+      if (report.orphans > 0) deps.log.warn({ images: orphanImages.length, uploads: orphanUploads.length }, "media: removed files that had no row");
+    }
   }
   return report;
 }
 
-/** Lets one API instance sweep at a time. The server builds it on Redis; nothing here knows Redis. */
-export interface SweepLock {
-  /** True when the key was free and is now held for `ttlMs`. */
-  acquire(key: string, ttlMs: number): Promise<boolean>;
-}
-
-export function createSweeper(deps: MediaDeps, lock: SweepLock) {
-  /** One round: skipped when another instance holds the lock; reconciles when that is due. */
-  async function round(): Promise<SweepReport | null> {
-    if (!(await lock.acquire("media:sweeper", SWEEP_INTERVAL_MS - 5_000))) return null;
-    const reconcile = await lock.acquire("media:sweeper:reconcile", RECONCILE_INTERVAL_MS);
-    return sweep(deps, deps.now(), { reconcile });
-  }
-  return {
-    round,
-    /** Sweeps every thirty seconds until the returned function is called. */
-    start(): () => void {
-      const timer = setInterval(() => void round().catch((err: unknown) => deps.log.error({ err }, "media: sweep failed")), SWEEP_INTERVAL_MS);
-      timer.unref();
-      return () => clearInterval(timer);
+/**
+ * The sweeper as a job: one instance at a time, rounds never overlapping, the lock refreshed while a
+ * long reconcile runs. The reconcile marker is a second key that simply expires every ten minutes.
+ */
+export function createSweeper(deps: MediaDeps, lock: JobLock) {
+  let last: SweepReport | null = null;
+  const job = createJob({
+    name: "media-sweeper",
+    intervalMs: SWEEP_INTERVAL_MS,
+    lockTtlMs: SWEEP_INTERVAL_MS,
+    lock,
+    log: deps.log,
+    run: async () => {
+      const reconcile = await lock.acquire("job:media-sweeper:reconcile", "due", RECONCILE_INTERVAL_MS);
+      last = await sweep(deps, deps.now(), { reconcile });
     },
+  });
+  return {
+    /** One round now: the report, or null when another instance holds the lock or a round is still in flight. */
+    async round(): Promise<SweepReport | null> {
+      last = null;
+      return (await job.round()) === "ran" ? last : null;
+    },
+    /** Sweeps every thirty seconds until the returned function is called. */
+    start: job.start,
   };
 }

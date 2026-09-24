@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { mkdir, open, readdir, rename, rm, stat, statfs, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, rm, stat, statfs, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
 import type { MediaSize } from "@korbat/contracts";
@@ -26,8 +26,12 @@ export interface MediaFilesOptions {
   storeDevice?: number;
 }
 
-/** Follows no symlink at the last path component where the platform can say so. Windows cannot; the device check still holds there. */
-const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+/**
+ * Follows no symlink at the last path component where the platform can say so (Windows cannot; the device
+ * check still holds there), and never waits: opening a FIFO planted in the store would otherwise block a
+ * thread of the pool until a writer appeared.
+ */
+const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 export function createMediaFiles(options: MediaFilesOptions) {
   const uploads = uploadsLayout(options.uploadsDir);
@@ -43,6 +47,17 @@ export function createMediaFiles(options: MediaFilesOptions) {
    * volume, /proc/self/environ for one, resolves to another device and is refused here.
    */
   async function openStored(file: string, maxBytes: number): Promise<StoredFile | null> {
+    // Looked at before it is opened, so that nothing but a plain file is ever opened; the handle is checked again after.
+    try {
+      const entry = await lstat(file);
+      if (!entry.isFile()) {
+        log.error({ file: path.basename(file), directory: entry.isDirectory(), symlink: entry.isSymbolicLink(), fifo: entry.isFIFO() }, "media store: refused an entry that is not a plain file");
+        return null;
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") log.warn({ file: path.basename(file), code: (err as NodeJS.ErrnoException).code }, "media store: a file could not be inspected");
+      return null;
+    }
     let handle: FileHandle;
     try {
       handle = await open(file, READ_FLAGS);

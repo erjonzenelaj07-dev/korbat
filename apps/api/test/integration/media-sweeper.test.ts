@@ -3,7 +3,18 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { upload } from "../../src/media/flows/upload";
-import { DELETION_GRACE_MS, ORPHAN_AGE_MS, PROCESSING_TIMEOUT_MS, RECONCILE_INTERVAL_MS, SWEEP_INTERVAL_MS, UNATTACHED_TTL_MS, createSweeper, sweep } from "../../src/media/sweeper";
+import { MemoryJobLock } from "../../src/lib/jobs";
+import {
+  DELETION_GRACE_MS,
+  ORPHAN_AGE_MS,
+  PROCESSING_TIMEOUT_MS,
+  RECONCILE_INTERVAL_MS,
+  RECONCILE_MAX_ORPHANS,
+  SWEEP_INTERVAL_MS,
+  UNATTACHED_TTL_MS,
+  createSweeper,
+  sweep,
+} from "../../src/media/sweeper";
 import { mediaHarness, type MediaHarness } from "./media-harness";
 
 const MINUTE = 60_000;
@@ -109,25 +120,45 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the media sweeper", () =
     expect(existsSync(h.files.store.imageDir(owned))).toBe(true);
   });
 
-  test("only the instance that holds the lock sweeps, and it reconciles when that lock is free too", async () => {
+  test("only the instance that holds the lock sweeps; it reconciles once every ten minutes and releases the lock afterwards", async () => {
     const h = await started(MINUTE);
-    const asked: string[] = [];
-    const lock = (grant: Record<string, boolean>) => ({
-      acquire: async (key: string, ttlMs: number) => {
-        asked.push(`${key}:${ttlMs}`);
-        return grant[key] ?? false;
-      },
-    });
-    expect(await createSweeper(h.deps, lock({})).round()).toBeNull();
-    expect(asked).toEqual(["media:sweeper:25000"]);
+    const lock = new MemoryJobLock();
+    await lock.acquire("job:media-sweeper", "another instance", 60_000);
+    expect(await createSweeper(h.deps, lock).round()).toBeNull();
+    await lock.release("job:media-sweeper", "another instance");
 
     const orphan = h.newId();
     mkdirSync(h.files.store.imageDir(orphan), { recursive: true });
     const longAgo = new Date(Date.now() - 2 * HOUR);
     utimesSync(h.files.store.imageDir(orphan), longAgo, longAgo);
     h.deps.now = () => new Date();
-    expect((await createSweeper(h.deps, lock({ "media:sweeper": true })).round())?.orphans).toBe(0);
-    expect((await createSweeper(h.deps, lock({ "media:sweeper": true, "media:sweeper:reconcile": true })).round())?.orphans).toBe(1);
-    expect(asked).toContain("media:sweeper:reconcile:600000");
+    const sweeper = createSweeper(h.deps, lock);
+    expect((await sweeper.round())?.orphans).toBe(1);
+    expect((await sweeper.round())?.orphans).toBe(0);
+    expect(await lock.acquire("job:media-sweeper", "another instance", 60_000)).toBe(true);
+    expect(await lock.acquire("job:media-sweeper:reconcile", "x", RECONCILE_INTERVAL_MS)).toBe(false);
+  });
+
+  test("reconcile refuses to delete many images without a row unless forced, and can be switched off", async () => {
+    const h = await started(MINUTE);
+    const longAgo = new Date(Date.now() - 2 * HOUR);
+    const orphans: string[] = [];
+    for (let i = 0; i <= RECONCILE_MAX_ORPHANS; i++) {
+      const id = h.newId();
+      mkdirSync(h.files.store.imageDir(id), { recursive: true });
+      utimesSync(h.files.store.imageDir(id), longAgo, longAgo);
+      orphans.push(id);
+    }
+    const refused = await sweep(h.deps, now(), { reconcile: true });
+    expect(refused.refused).toBe(orphans.length);
+    expect(refused.orphans).toBe(0);
+    expect(await h.files.deletionRequests()).toEqual([]);
+
+    h.deps.reconcileMode = "off";
+    expect(await sweep(h.deps, now(), { reconcile: true })).toMatchObject({ orphans: 0, refused: 0 });
+
+    h.deps.reconcileMode = "force";
+    expect((await sweep(h.deps, now(), { reconcile: true })).orphans).toBe(orphans.length);
+    expect((await h.files.deletionRequests()).sort()).toEqual([...orphans].sort());
   });
 });

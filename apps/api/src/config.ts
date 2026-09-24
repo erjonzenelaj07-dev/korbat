@@ -72,6 +72,12 @@ const schema = z.object({
     }),
   /** Uploads are refused while either media volume has less free space than this. The volumes share a disk with Postgres. */
   MEDIA_MIN_FREE_BYTES: z.coerce.number().int().nonnegative().default(2 * 1024 ** 3),
+  /**
+   * The sweeper's reconcile pass deletes images that have no row. `on` refuses when there are many of them
+   * (a database restored from an older snapshot looks like that); `force` deletes anyway; `off` skips the pass,
+   * for the restore window.
+   */
+  MEDIA_RECONCILE: z.enum(["on", "off", "force"]).default("on"),
 }).superRefine((c, ctx) => {
   if (c.NODE_ENV !== "production") return;
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
