@@ -7,6 +7,7 @@ import { observability } from "../src/middleware/observability";
 import { noStore, securityHeaders } from "../src/middleware/security-headers";
 import { MemoryStore, rateLimit } from "../src/middleware/rate-limit";
 import { validate } from "../src/lib/validate";
+import { clientIdentity, resolveClientIp } from "../src/auth/client-ip";
 
 const silent = pino({ level: "silent" });
 
@@ -62,6 +63,35 @@ describe("rateLimit", () => {
     const h = (await app.request("/x")).headers;
     expect(h.get("ratelimit-limit")).toBe("5");
     expect(h.get("ratelimit-remaining")).toBe("4");
+  });
+});
+
+describe("client identity", () => {
+  const key = Buffer.alloc(32, 1);
+  const spoofed = { "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "198.51.100.7, 10.0.0.1" };
+  const seen = async (trust: "cloudflare" | "caddy" | "none", ipHashKey = key) => {
+    const app = base().use(clientIdentity({ trust, ipHashKey })).get("/x", (c) => c.json({ ip: c.get("clientIp"), hash: c.get("clientIpHash") }));
+    return (await (await app.request("/x", { headers: spoofed })).json()) as { ip: string; hash: string };
+  };
+  test("cloudflare mode believes cf-connecting-ip", async () => {
+    expect((await seen("cloudflare")).ip).toBe("203.0.113.9");
+  });
+  test("caddy mode takes the first forwarded entry and ignores cf-connecting-ip", async () => {
+    expect((await seen("caddy")).ip).toBe("198.51.100.7");
+  });
+  test("none mode uses the socket only, so a spoofed header opens no bucket", async () => {
+    expect((await seen("none")).ip).toBe("direct");
+  });
+  test("the hash is keyed and never the address itself", async () => {
+    const a = await seen("cloudflare");
+    const b = await seen("cloudflare", Buffer.alloc(32, 2));
+    expect(a.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.hash).not.toContain(a.ip);
+    expect(a.hash).not.toBe(b.hash);
+  });
+  test("missing headers fall back down the list", () => {
+    const c = { req: { header: () => undefined } } as unknown as Parameters<typeof resolveClientIp>[0];
+    for (const trust of ["cloudflare", "caddy", "none"] as const) expect(resolveClientIp(c, trust)).toBe("direct");
   });
 });
 

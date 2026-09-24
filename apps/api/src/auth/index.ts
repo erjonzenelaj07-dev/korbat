@@ -7,6 +7,7 @@ import type Redis from "ioredis";
 import type { Logger } from "pino";
 import type { Config } from "../config";
 import type { Mailer } from "../mail/mailer";
+import { clientIdentity } from "./client-ip";
 import { authConfigFrom, type AuthDeps, type ProfileStore } from "./context";
 import { redisKv, type KeyValueStore } from "./kv";
 import { createLockout } from "./lockout";
@@ -19,6 +20,7 @@ import { cloudflareTurnstile, type TurnstileVerifier } from "./turnstile";
 
 export type { ProfileStore } from "./context";
 export type { UserRole } from "./repo";
+export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
 export { AuthError, isUniqueViolation } from "./context";
 export { grantRole } from "./admin";
@@ -64,6 +66,8 @@ export function createAuth(options: CreateAuthOptions) {
     deps,
     routes: authRoutes(deps),
     me: meHandler(deps),
+    /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it. */
+    clientIdentity: clientIdentity({ trust: deps.config.trustProxy, ipHashKey: deps.config.ipHashKey }),
     resolveSession: resolveSession(deps),
     requireSession,
     requireOnboarding,

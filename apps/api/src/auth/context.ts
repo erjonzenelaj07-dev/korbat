@@ -20,6 +20,8 @@ export interface AuthConfig {
   /** Keys TOTP_ENC_KEY replaced; still accepted for decryption. */
   totpPreviousKeys: VersionedKey[];
   termsVersion: string;
+  /** How the client address is read; see TRUST_PROXY in config.ts. */
+  trustProxy: "cloudflare" | "caddy" | "none";
 }
 
 export function authConfigFrom(config: Config): AuthConfig {
@@ -31,6 +33,7 @@ export function authConfigFrom(config: Config): AuthConfig {
     totpKey: parseVersionedKey(config.TOTP_ENC_KEY),
     totpPreviousKeys: config.TOTP_ENC_KEYS_PREVIOUS.map(parseVersionedKey),
     termsVersion: config.TERMS_VERSION,
+    trustProxy: config.TRUST_PROXY,
   };
 }
 

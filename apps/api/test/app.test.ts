@@ -105,6 +105,18 @@ describe("caching", () => {
   });
 });
 
+describe("request bodies", () => {
+  test("JSON bodies over 64 KiB are refused with 413; the raw upload route is exempt", async () => {
+    const a = app({});
+    const big = JSON.stringify({ email: "x".repeat(70_000) });
+    const refused = await a.request("/api/auth/email/start", { method: "POST", headers: { "content-type": "application/json" }, body: big });
+    expect(refused.status).toBe(413);
+    expect(await refused.json()).toMatchObject({ error: { code: "payload_too_large" } });
+    const upload = await a.request("/api/media", { method: "POST", headers: { "content-type": "image/jpeg" }, body: big });
+    expect(upload.status).toBe(401);
+  });
+});
+
 describe("media routes", () => {
   const id = "3f2a9c1e-8b7d-4e6f-a5c4-0123456789ab";
   test("uploading, status and removal need a session", async () => {

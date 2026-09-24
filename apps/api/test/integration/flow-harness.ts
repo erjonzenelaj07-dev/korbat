@@ -51,6 +51,7 @@ export function flowHarness(repo: AuthRepo) {
     totpKey: parseVersionedKey(`v1:${Buffer.alloc(32, 5).toString("base64")}`),
     totpPreviousKeys: [],
     termsVersion: TEST_TERMS,
+    trustProxy: "none",
   };
   const deps: AuthDeps = {
     repo,

@@ -48,6 +48,29 @@ describe("loadConfig", () => {
       expect(() => loadConfig(env), name).toThrow(new RegExp(name));
     }
   });
+  test("TRUST_PROXY defaults to none and accepts the three modes", () => {
+    expect(loadConfig(good).TRUST_PROXY).toBe("none");
+    for (const mode of ["cloudflare", "caddy", "none"]) expect(loadConfig({ ...good, TRUST_PROXY: mode }).TRUST_PROXY).toBe(mode);
+    expect(() => loadConfig({ ...good, TRUST_PROXY: "nginx" })).toThrow(/TRUST_PROXY/);
+  });
+  describe("production refuses development values", () => {
+    const prod = { ...good, NODE_ENV: "production", APP_ORIGIN: "https://korbat.example", TURNSTILE_SECRET_KEY: "0x4AAAAAAA-real-widget-secret" };
+    test("accepts a production configuration", () => {
+      expect(loadConfig(prod).NODE_ENV).toBe("production");
+    });
+    test("refuses Cloudflare's test secrets", () => {
+      for (const secret of ["1x0000000000000000000000000000000AA", "2x0000000000000000000000000000000AA", "3x0000000000000000000000000000000AA"]) {
+        expect(() => loadConfig({ ...prod, TURNSTILE_SECRET_KEY: secret }), secret).toThrow(/TURNSTILE_SECRET_KEY/);
+      }
+    });
+    test("requires https for the app origin and every trusted origin", () => {
+      expect(() => loadConfig({ ...prod, APP_ORIGIN: "http://korbat.example" })).toThrow(/APP_ORIGIN/);
+      expect(() => loadConfig({ ...prod, TRUSTED_ORIGINS: "https://a.example, http://b.example" })).toThrow(/TRUSTED_ORIGINS/);
+    });
+    test("development keeps accepting them", () => {
+      expect(loadConfig(good).TURNSTILE_SECRET_KEY).toBe("1x0000000000000000000000000000000AA");
+    });
+  });
   test("previous TOTP keys are optional, comma-separated and each versioned", () => {
     expect(loadConfig(good).TOTP_ENC_KEYS_PREVIOUS).toEqual([]);
     expect(loadConfig({ ...good, TOTP_ENC_KEYS_PREVIOUS: `v0:${key}, v1:${key}` }).TOTP_ENC_KEYS_PREVIOUS).toEqual([`v0:${key}`, `v1:${key}`]);

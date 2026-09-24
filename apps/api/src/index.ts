@@ -25,7 +25,7 @@ const auth = createAuth({
   logger,
   authDb,
   redis,
-  mailer: smtpMailer(config.SMTP_URL, config.MAIL_FROM),
+  mailer: smtpMailer(config.SMTP_URL, config.MAIL_FROM, { requireTls: config.NODE_ENV === "production" }),
   profiles: createProfileStore(apiDb),
 });
 

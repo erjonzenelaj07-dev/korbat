@@ -17,7 +17,6 @@ import { z } from "zod";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
-import { clientIp } from "../middleware/rate-limit";
 import { AuthError, type AuthDeps, type RequestContext } from "./context";
 import { clearSessionCookies, setSessionCookies } from "./cookies";
 import { listSessions, me, revokeAllSessions, revokeSession, signOut } from "./flows/account";
@@ -28,7 +27,6 @@ import { passwordSignIn, setPassword } from "./flows/password";
 import { reauthenticate, startReauthEmail } from "./flows/reauth";
 import type { MfaPending, SignedIn } from "./flows/signin";
 import { chooseHandle, completeSignup } from "./flows/signup";
-import { ipHash } from "./identifiers";
 import { requireFreshAuth, requireOnboarding, requireSession } from "./middleware";
 import type { IssuedSession, Session } from "./sessions";
 
@@ -38,7 +36,7 @@ export function authRoutes(deps: AuthDeps) {
   const fresh = requireFreshAuth(deps);
 
   const requestContext = (c: Context<AppEnv>): RequestContext => ({
-    ipHash: ipHash(deps.config.ipHashKey, clientIp(c)),
+    ipHash: c.get("clientIpHash") ?? "direct",
     userAgent: c.req.header("user-agent"),
   });
   const currentSession = (c: Context<AppEnv>): Session => c.get("session")!;

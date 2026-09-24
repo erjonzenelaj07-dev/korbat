@@ -68,7 +68,12 @@ export function rateLimit(opts: RateLimitOptions) {
   });
 }
 
-/** Cloudflare sets cf-connecting-ip; Caddy forwards it. Anything else is a direct/dev connection. */
+/** The client address the auth module's clientIdentity middleware resolved; "direct" before it ran. */
 export function clientIp(c: Context<AppEnv>): string {
-  return c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "direct";
+  return c.get("clientIp") ?? "direct";
+}
+
+/** The keyed hash of that address, shortened: the only form a rate-limit key may hold. */
+export function clientIpKey(c: Context<AppEnv>): string {
+  return (c.get("clientIpHash") ?? "direct").slice(0, 24);
 }

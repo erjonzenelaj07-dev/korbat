@@ -15,6 +15,9 @@ const versionedKey = z
   .regex(/^v\d+:[A-Za-z0-9+/]+={0,2}$/, "must look like v1:<base64>")
   .refine((s) => Buffer.from(s.slice(s.indexOf(":") + 1), "base64").length === 32, "must decode to exactly 32 bytes");
 
+/** Cloudflare's documented Turnstile test secrets: always pass, always fail, token spent. */
+const TURNSTILE_TEST_SECRET = /^[123]x0+AA$/;
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -27,6 +30,12 @@ const schema = z.object({
     .default("")
     .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean)),
   KORBAT_VERSION: z.string().default("0.0.0-dev"),
+  /**
+   * Which header names the client: `cloudflare` behind the tunnel (cf-connecting-ip), `caddy` behind Caddy
+   * alone (the first X-Forwarded-For entry, which Caddy sets itself), `none` for the socket address only.
+   * A header the mode does not trust is ignored, so a client cannot choose its own rate-limit bucket.
+   */
+  TRUST_PROXY: z.enum(["cloudflare", "caddy", "none"]).default("none"),
   /** Origin of the web app; state-changing cookie requests must come from here (or TRUSTED_ORIGINS). */
   APP_ORIGIN: z.url({ protocol: /^https?$/ }),
   /** Keys email codes, recovery codes, device ids and email rate-limit buckets. */
@@ -63,6 +72,12 @@ const schema = z.object({
     }),
   /** Uploads are refused while either media volume has less free space than this. The volumes share a disk with Postgres. */
   MEDIA_MIN_FREE_BYTES: z.coerce.number().int().nonnegative().default(2 * 1024 ** 3),
+}).superRefine((c, ctx) => {
+  if (c.NODE_ENV !== "production") return;
+  const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+  if (TURNSTILE_TEST_SECRET.test(c.TURNSTILE_SECRET_KEY)) refuse("TURNSTILE_SECRET_KEY", "is a Turnstile test secret; production needs the secret of your own widget");
+  if (!c.APP_ORIGIN.startsWith("https://")) refuse("APP_ORIGIN", "must be an https origin in production");
+  for (const origin of c.TRUSTED_ORIGINS) if (!origin.startsWith("https://")) refuse("TRUSTED_ORIGINS", `${origin} is not an https origin`);
 });
 
 export type Config = z.infer<typeof schema>;

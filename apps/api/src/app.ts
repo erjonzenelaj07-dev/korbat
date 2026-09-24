@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import type { Logger } from "pino";
@@ -8,10 +9,13 @@ import type { AppEnv } from "./env";
 import { errorBody } from "./lib/errors";
 import { MediaError, type Media } from "./media";
 import { observability } from "./middleware/observability";
-import { clientIp, rateLimit, type RateLimitStore } from "./middleware/rate-limit";
+import { clientIpKey, rateLimit, type RateLimitStore } from "./middleware/rate-limit";
 import { noStore, securityHeaders } from "./middleware/security-headers";
 import { healthRoutes, type HealthChecks } from "./routes/health";
 import { SocialError, type Social } from "./social";
+
+/** JSON requests are small; the one raw upload route counts its own bytes and is exempt. */
+export const JSON_BODY_LIMIT_BYTES = 64 * 1024;
 
 export interface AppDeps {
   config: Config;
@@ -31,12 +35,18 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   const app = new Hono<AppEnv>();
 
   app.use(observability(logger));
+  app.use(auth.clientIdentity);
   app.use(securityHeaders, noStore);
   app.use(cors({ origin: config.TRUSTED_ORIGINS, credentials: true }));
+  const jsonBodies = bodyLimit({
+    maxSize: JSON_BODY_LIMIT_BYTES,
+    onError: (c) => c.json(errorBody("payload_too_large", "The request body is too large", (c as typeof c & { get(key: "requestId"): string }).get("requestId")), 413),
+  });
+  app.use((c, next) => (c.req.method === "POST" && c.req.path === "/api/media" ? next() : jsonBodies(c, next)));
   // Image files come before the global limit and session resolution: they have their own bucket,
   // and a public image needs no session. Everything else under /api/media falls through to below.
   if (media) app.route("/api/media", media.fileRoutes);
-  app.use(rateLimit({ name: "global", store: rateLimitStore, limit: 300, windowMs: 60_000, key: clientIp }));
+  app.use(rateLimit({ name: "global", store: rateLimitStore, limit: 300, windowMs: 60_000, key: clientIpKey }));
   app.use(auth.resolveSession);
 
   app.route("/api/health", healthRoutes(healthChecks, config.KORBAT_VERSION, advisoryChecks));

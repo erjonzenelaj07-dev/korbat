@@ -19,7 +19,7 @@ export function scrub(value: unknown, key?: string): unknown {
     for (const [k, v] of Object.entries(value)) out[k] = scrub(v, k);
     return out;
   }
-  if (value instanceof Error) return { name: value.name, message: scrub(value.message), stack: value.stack };
+  if (value instanceof Error) return { name: value.name, message: scrub(value.message), stack: value.stack === undefined ? undefined : scrub(value.stack) };
   return value;
 }
 

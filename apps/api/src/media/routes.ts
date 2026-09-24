@@ -6,7 +6,7 @@ import { isMediaId } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
-import { clientIp, rateLimit, type RateLimitStore } from "../middleware/rate-limit";
+import { clientIpKey, rateLimit, type RateLimitStore } from "../middleware/rate-limit";
 import type { MediaDeps } from "./context";
 import { remove } from "./flows/remove";
 import { serve } from "./flows/serve";
@@ -47,7 +47,7 @@ const IMAGE_FILE = /^(small|large)\.webp$/;
  */
 export function mediaFileRoutes(deps: MediaDeps, options: { resolveSession: MiddlewareHandler<AppEnv>; rateLimitStore: RateLimitStore }) {
   const r = new Hono<AppEnv>();
-  const limit = rateLimit({ name: "media", store: options.rateLimitStore, limit: 1200, windowMs: 60_000, key: clientIp });
+  const limit = rateLimit({ name: "media", store: options.rateLimitStore, limit: 1200, windowMs: 60_000, key: clientIpKey });
 
   r.get("/:id/:file", limit, async (c) => {
     const notFound = () => c.json(errorBody("not_found", "Not found.", c.get("requestId")), 404);

@@ -17,6 +17,13 @@ describe("scrub", () => {
       nested: { token: "[redacted]" },
     });
   });
+  test("an Error's message and stack are both scrubbed", () => {
+    const err = new Error("relay rejected bob@example.com from 203.0.113.9");
+    const out = scrub(err) as { name: string; message: string; stack: string };
+    expect(out.message).toBe("relay rejected [email] from [ip]");
+    expect(out.stack).toContain("relay rejected [email] from [ip]");
+    expect(out.stack).not.toContain("example.com");
+  });
   test("walks arrays and keeps non-strings", () => {
     expect(scrub({ n: 1, ok: true, list: ["x@y.io", 2] })).toEqual({ n: 1, ok: true, list: ["[email]", 2] });
   });
