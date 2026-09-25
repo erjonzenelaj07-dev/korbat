@@ -1,0 +1,186 @@
+# korbat sub-project 1c: passkeys
+
+Date: 2026-09-25. Status: written without the user under the standing instruction of 2026-09-23 (keep going; leave only account-dependent steps). The decisions in section 2 were taken here and are flagged for review. Research: `korbat-scratch/research-1c/{library,practice,repo,threats,critic}.md` (four independent readers and a completeness critic, every fact with its source). The design went through two adversarial reviews (every finding judged by two refuting lenses): the first upheld 59 findings of 86 and split on 9, the second upheld 17 of 27 and split on 6 (`spec-review.json`, `spec-review-2.json`); this version answers all of them.
+
+## 1. Context
+
+korbat's auth module (1a) signs people in with an email code or an optional password, adds TOTP as an optional second factor with recovery codes, and keeps opaque hashed sessions: a cookie on the web, a bearer token on native. Sensitive actions need a re-authentication within five minutes. 1b added profile, email, badge, export and deletion flows. The main design (`2026-09-03-korbat-design.md`, sections 3a and 6) names passkeys through SimpleWebAuthn as the promoted sign-in; `auth.passkeys` exists in the schema since the foundation and is unused.
+
+The main risk for korbat's users is account takeover (they are pseudonymous and may be targeted). Passkeys remove phishing from sign-in, and a user-verified passkey is two factors in one gesture. They also add a way to keep access after a takeover: a passkey an attacker registers from a stolen session would survive every clean-up path that exists today (sign-out-everywhere, the not-me link, the email undo link). Sections 7.1, 7.2, 7.3 and 7.6 close that path; they also close a gap in 1b's email undo, where a password the attacker set before changing the address survived.
+
+## 2. Decisions taken without the user
+
+| Topic | Decision | Alternatives rejected |
+|---|---|---|
+| Role | Passkeys are a first factor next to the email code and the password, with username-less sign-in (discoverable credentials) from a button and from the email field's autofill. Email stays the recovery root; removing the last passkey is allowed. | Passkeys as a second factor only; passkey-only accounts. |
+| User verification | Options ask for `userVerification: "preferred"`; verification never requires it (`requireUserVerification: false`). A sign-in or re-authentication counts as two factors (`passkey_uv`) only when the assertion's UV flag is set and the passkey was registered with UV (`uv_initialized`); otherwise it is one factor (`passkey`). NIST SP 800-63B-4 ("SHALL indicate that UV is preferred ... treat as single-factor") and WebAuthn L3 section 7.2. | `required` everywhere (locks out security keys without a PIN). |
+| TOTP after a passkey | On an account with TOTP, a `passkey` sign-in goes to the TOTP step and a `passkey_uv` one skips it, except for staff (role other than `user`), who always go to the TOTP step. A staff account without TOTP signs in as with an email code, and `requireStaffMfa` keeps refusing its staff routes. Whether a passkey satisfies staff MFA is sub-project 3's decision. | Letting a passkey satisfy staff MFA now. |
+| Attestation | `attestationType: "none"`, and the API refuses any attestation format other than `none`, or `packed` without an `x5c` chain, before the library sees the response (`passkey_unsupported`). SimpleWebAuthn 14.0.2 fetches a certificate revocation list with no timeout or size limit for certificate-carrying formats, and the format comes from the client whatever was requested. | Trusting the library alone; MDS attestation. |
+| Algorithms | `[-8, -7, -257]` (Ed25519, ES256, RS256), pinned on both the options and the verification call. ML-DSA (-48) stays out while Node marks it experimental. | The library's runtime default, which adds ML-DSA on Node 24. |
+| Challenges | Stateless: 58 bytes carrying purpose, expiry, a nonce and, for registration and re-authentication, a hash of the session's handle, sealed with an HMAC keyed from `AUTH_HMAC_KEY`; valid 10 minutes (the top of WebAuthn L3's recommended range); checked by korbat before the library runs, then made single-use with a `setIfAbsent` marker. Handing out options stores nothing, so the unauthenticated sign-in options endpoint cannot fill Valkey (which runs with `noeviction`) beyond its per-IP rate counters. This departs from the main design's "challenges in Redis". | Challenges stored in Valkey at options time. |
+| User handle | A random 32-byte `users.webauthn_user_id`, set once with a compare-and-set; never the account id. | The account uuid. |
+| Name in the password manager | `user.name` and `user.displayName` are a label the owner types when adding a passkey, prefilled with the handle; the dialog says the password manager shows it to anyone who can see the device. korbat does not store it. | Always the handle; always the email. |
+| Per-account bounds | 10 passkeys at a time, and 5 added in any 24 hours (counted from `passkey_added` events, so removing a passkey does not free a slot of the day). No source gives a number; flagged. | Unlimited. |
+| Session factors | Every session records which factors it has proven and when (`sessions.factors`: kind to epoch milliseconds; kinds `email`, `password`, `totp`, `recovery`, `passkey`, `passkey_uv`). Sign-in writes the factors of the sign-in, and each re-authentication adds one. `reauth_at` is always the latest of them. "Fresh" keeps its meaning: any factor within five minutes. "Fresh at level 2" means, within those five minutes, `passkey_uv`, or `totp` or `recovery` together with `email`, `password` or `passkey`. | A stored level number (it went stale). |
+| When level 2 is needed | Only when the account has TOTP (the session carries `mfaEnabled`). Then these need level 2: adding and removing a passkey, TOTP setup and disable, regenerating recovery codes, setting or changing the password, starting an email change, and starting or confirming account deletion. An account without TOTP stays at today's level 1. TOTP brings recovery codes, and re-authentication accepts a recovery code (section 7.2), so an owner who loses the TOTP device can still reach level 2 inside a session. | Level 2 whenever any second factor exists (an account whose only UV passkey was lost could never reach level 2 again). |
+| Token rotation | `sessions.rotate` replaces the token in place for every caller (re-authentication, password set, TOTP confirm, handle choice): only the row's id, the token's hash, changes; its handle, factors, `reauth_at`, `passkey_id`, device and expiries stay; the old id gets a tombstone. A re-authentication therefore rotates as ASVS 5.0 7.2.4 asks, and an owner's re-authentication kills a thief's copy. | Keeping the token on re-authentication (1a); a new row per rotation (loses the factors). |
+| Session handle | `sessions.handle`, a random uuid that rotation keeps. The re-authentication limits and the challenge binding use it, so rotation cannot reset them and no other session of the account can spend them. | Keying them by account (any session could lock the owner out). |
+| TOTP setup, confirm and disable | Setup needs level 2 on an account that already has TOTP (it replaces the secret and the recovery codes). Confirm needs only the pending secret that setup stored for this session's handle, so scanning the QR code cannot run the window out. Disable needs level 2 and no longer takes a code (the TOTP re-authentication has already spent the current step). | Asking for a second code 30 seconds later. |
+| Lockdown | One routine, used by the not-me link, the passkey remove link, the email undo link and the Security screen's "not mine": every session revoked with tombstones, every device revoked, the password cleared, passkeys created at or after `since` removed (plus any passkey the caller names), and TOTP turned off when it was enabled at or after `since`. `since` is 24 hours before the caller's anchor: the alerted sign-in (not-me), the passkey's creation (remove link, "not mine"), or the address change (email undo). A TOTP secret or password an attacker set just before the event is caught whichever link the owner uses. | Device-provenance rules (they miss an attacker who uses two devices); an anchor with no look-back. |
+| Links tied to their address | Every link 1c mails (not-me, passkey remove) stores the keyed hash of the address it was sent to; it does nothing when the account's address has changed since. Links mailed to an attacker's address die when the email undo restores the owner's. | Links valid whatever happens to the address. |
+| Notification | Adding a passkey mails the account with a one-shot remove link, valid 7 days, which runs the lockdown. Removing one mails the account too. The Security screen marks passkeys added in the last 7 days as new and offers "not mine" on them. | Mail without a link. |
+| Counter | The library is given a stored counter of 0, so it never decides on counters. A regression is `(new > 0 or stored > 0) and new <= stored` (WebAuthn L3 section 6.1.1); two zeros, as Apple passkeys always send, are not. After the signature is verified, korbat writes the counter with one conditional update; when the update matches no row, the passkey is marked `suspect_at`, `passkey_counter_regression` is recorded and mailed, and the attempt is refused. A suspect passkey is refused from then on (`passkey_suspended`, answered only after its signature checked) until the owner removes it. The restore runbook resets counters. | Letting the library throw before it checks the signature (an unsigned response could mark a passkey). |
+| Signal API | None in 1c. WebKit bugs 322267 and 302624 (open) make the Signal API delete other accounts' passkeys on Safari, and `signalUnknownCredential` is in the affected family. | `signalUnknownCredential` on unknown credentials. |
+| Browser library | `@simplewebauthn/browser` 14.0.0 (no dependencies): base64url handling, conditional UI with its abort service, typed errors, feature detection. | Calling `navigator.credentials` with the native JSON helpers (Chrome 129, Firefox 119, Safari 18.4 only). |
+| Automatic passkey upgrade | Not in 1c (Chrome's conditional create). | - |
+| Native | Nothing native in 1c; the RP ID is configurable so sub-project 5 can share it through associated domains and `assetlinks.json`. | - |
+
+## 3. Research (facts the design depends on)
+
+- **@simplewebauthn/server 14.0.2** (MIT, published 2026-09-13, 12 days old on 2026-09-25) is the only version that fixes GHSA-j3h4-m3m2-7p7j (blind SSRF through the CRL URL of an attacker's x5c) and GHSA-2g3p-m8c9-hhwh (CRL cache poisoning); neither has a CVE and scanners do not list them, so `pnpm audit` would not flag an older pin. Dependencies: 24 packages, 3.2 MB, all MIT, BSD-3-Clause (asn1js), Apache-2.0 (reflect-metadata) or 0BSD (tslib); no install scripts; no trust downgrade. `@peculiar/asn1-*` 2.9.5 is under the 7-day floor until 2026-09-27T18:16Z, so a floored install resolves 2.9.4. `reflect-metadata` modifies the global `Reflect` object at import. On Node 24.21 (the API image) the package detects ML-DSA at import and prints two `ExperimentalWarning`s on every start. It declares `node >= 20`; its npm build is tested only under Deno in its CI.
+- **@simplewebauthn/browser 14.0.0** (MIT, 2026-09-02) has no dependencies.
+- `@simplewebauthn/server/helpers` exports `decodeAttestationObject`, `decodeClientDataJSON`, `isoCBOR`, `isoBase64URL` and `parseAuthenticatorData`: korbat's own checks and the tests' software authenticator use them.
+- `verifyAuthenticationResponse` looks at nothing but the credential it is given: it does not check the user handle or which account the credential belongs to. It throws on a counter regression before it verifies the signature. `verifyRegistrationResponse` never compares `response.id` with the authenticator data's credential id (korbat stores `registrationInfo.credential.id`), takes `transports` from the client unchecked, and has no 1023-byte credential-id limit. `generateRegistrationOptions` writes into the `authenticatorSelection` object it is given.
+- Conditional mediation ignores the ceremony timeout, so an autofill request can outlive its challenge.
+- WebAuthn refuses an origin whose host is an IP address. The built-in browser used for walk-throughs has no virtual authenticator.
+- Apple passkeys always report a signature counter of 0.
+- Both passkey Permissions-Policy features default to `self`; the Caddyfile needs no change.
+- No table references `auth.sessions.id`, so its value can change in place.
+
+## 4. Scope
+
+In: the passkey core, session factors and level-2 freshness, in-place token rotation, the lockdown routine (and with it the 1b undo fix), registration and management with notifications and the remove link, passkey sign-in (button and autofill) and re-authentication, deletion and export, the web app, documentation. Out: native apps, staff MFA policy, automatic passkey upgrade, attestation metadata, related origins, the Signal API.
+
+## 5. Architecture
+
+A folder `apps/api/src/auth/passkeys/` inside the auth module (passkeys are credentials and stay in the auth schema):
+
+- `challenge.ts`: `issueChallenge(key, purpose, now, bind?)`, `readChallenge(key, challenge, purpose, now, bind?)` and `spendChallenge(kv, challenge, now)`. The 58 bytes: version (1), purpose (1: sign-in 1, registration 2, re-authentication 3), expiry in ms (8, big-endian), nonce (16 random), binding (16: the first 16 bytes of `sha256(sessionHandle)`, zeros for sign-in), MAC (16: HMAC-SHA256 truncated) over the first 42. The key is `HKDF-SHA256(AUTH_HMAC_KEY, "korbat-webauthn-challenge")`. `readChallenge` checks the MAC in constant time, then purpose, binding and expiry (`challenge_expired`); `spendChallenge` writes `webauthn-used:<sha256(challenge)>` with `setIfAbsent` for the remaining lifetime and refuses a second use (`passkey_invalid`).
+- `webauthn.ts`: the only file that imports `@simplewebauthn/server`. Options: a fresh `authenticatorSelection` object on every call (`residentKey: "required"`, `userVerification: "preferred"`), the pinned algorithms, `timeout: 300000`, `attestationType: "none"`. Verification, in this order: decode `clientDataJSON` and run `readChallenge` and `spendChallenge` on its challenge (a spent challenge stays spent whatever happens next); for registration, the format check (`decodeAttestationObject`: `fmt` is `none`, or `packed` with no `x5c`), then the library with `requireUserVerification: false`, the expected origins, the RP ID, `expectedChallenge` set to the checked string and `supportedAlgorithmIDs` pinned, then the credential id (at most 1023 bytes) and `transports` (known values only, at most 5) from `registrationInfo`; for authentication, the library with the stored credential and a counter of 0. Any library error becomes `passkey_invalid`.
+- `flows.ts`: `registerOptions`, `registerVerify`, `listPasskeys`, `renamePasskey`, `removePasskey`, `notMine`, `removeByLink`, `signInOptions`, `signInVerify`, `reauthOptions`, and the `passkey` and `recovery` methods of the re-authentication flow.
+- `apps/api/src/auth/flows/lockdown.ts`: the lockdown routine.
+- The auth repository gains the passkey rows, the user handle, the conditional counter update, the factor writes and the in-place rotation; `signIn` gains an options argument `{ factors, passkeyId, method }` and records `metadata.method` on `signin_success` for every method. The account module receives both freshness middlewares and grows by what deletion and export need.
+
+## 6. Data model (migration 0010)
+
+- `auth.users.webauthn_user_id bytea unique` (null until the first registration; set with `update ... set webauthn_user_id = coalesce(webauthn_user_id, $new) returning webauthn_user_id`).
+- `auth.passkeys` keeps `id`, `user_id`, `credential_id`, `public_key`, `counter`, `transports`, `backed_up`, `name`, `created_at`, `last_used_at`, and gains `aaguid uuid`, `backup_eligible boolean not null default false`, `uv_initialized boolean not null default false`, `created_device_id uuid null references auth.devices on delete set null`, `suspect_at timestamptz null`; a unique index on `credential_id` if it is not there. `created_at` is written from the flows' clock, like `users.password_changed_at` and `totp_enabled_at`, because the lockdown compares them with flow times.
+- `auth.sessions` gains `handle uuid not null default gen_random_uuid()`, `factors jsonb not null default '{}'` and `passkey_id uuid null`. Sessions that exist when the migration runs have no factors and re-authenticate before their next sensitive action.
+- Event types: `passkey_added`, `passkey_removed`, `passkey_counter_regression`. Sign-ins keep `signin_success`, now with `metadata.method` (`email`, `password`, `passkey`).
+- Mail templates: `passkey_added` (with the remove link), `passkey_removed`, `passkey_suspect`; `new_device`, `email_changed` and `email_change_reverted` describe the lockdown.
+
+## 7. Flows
+
+### 7.1 Session factors and freshness
+
+Sign-in writes the session's factors: `email` for an email code, `password` for a password, `passkey` or `passkey_uv` for a passkey; the MFA step adds `totp` or `recovery`; the MFA ticket carries `{ userId, deviceId, platform, factors, passkeyId, method }`. `sessions.rotate` is the in-place rotation and does not touch `reauth_at`: freshness moves only when a factor is written. TOTP confirm writes `totp` (its code proves the new secret) and calls `forgetUser` before rotating, so the cached `mfaEnabled` is right. The auth module exports `requireFreshAuth` (level 1) and `requireStrongFreshAuth` (level 2 when the account has TOTP, level 1 otherwise); both read `factors`. A refusal is 403 `reauth_required` with `details: { level, have }` (`have`: the factor kinds within the window), and the error envelope and the app's `ApiError` gain an optional `details` object.
+
+### 7.2 Re-authentication
+
+`POST /api/auth/reauth` accepts `password`, `totp`, `email` (as today), `recovery` and `passkey`:
+
+- `recovery` `{ recoveryCode }` needs an account with TOTP (`mfa_required` otherwise), consumes the code with `consumeRecoveryCodeHash`, records `recovery_code_used` with the session's device and mails the owner; a wrong code is `invalid_mfa_code` and records `signin_failure` with `metadata.method = "recovery_code"`. The answer adds `mustReenrollMfa: true`.
+- `passkey` `{ response }` follows `POST /api/auth/reauth/passkey/options` (options with the account's usable passkeys in `allowCredentials` and a challenge bound to the session's handle). The passkey is looked up by credential id **and** the session's user (`where credential_id = $1 and user_id = $2`): another account's passkey and an unknown one are `passkey_invalid`, and the challenge is spent. After the signature checks, a suspect passkey is `passkey_suspended`, and the counter rule applies as at sign-in; on success `counter`, `last_used_at` and `backed_up` are written.
+
+Every method writes its factor and `reauth_at`, rotates the token in place, and answers `{ level, token?, mustReenrollMfa? }`, with the new token in the body for a bearer session and in the cookies for a web session. Limits: `reauth:<handle>` 5 per 15 minutes counted at each verification, `reauth-email:<handle>` 3 an hour, and `reauth:ip:<ipHash>` 30 per 15 minutes; wrong passwords keep counting towards the account lockout as today.
+
+### 7.3 Registration
+
+`POST /api/auth/passkeys/register/options` `{ label }` (session, onboarding, strong-fresh): `passkey_limit` (409, `details: { reason: "cap" }`) at 10 passkeys, or (`details: { reason: "daily", retryAfter }`) at 5 `passkey_added` events in the last 24 hours; sets `webauthn_user_id` when missing; answers `{ options }` with `excludeCredentials` listing the account's passkeys, `user.name` and `displayName` set to the label, and a challenge bound to the session's handle. Limit `passkey-register:<handle>` 10 an hour.
+
+`POST /api/auth/passkeys/register/verify` `{ name?, response }` (session, onboarding; the challenge, issued only to a strong-fresh session and bound to its handle, stands in for a second freshness check, so a ceremony that outlasts the window still completes): the checks of section 5; then one transaction locks the user row `for update`, checks both bounds again, inserts the passkey (flags, AAGUID, `created_device_id`, `created_at`, name, default "Passkey on <platform>") and inserts the `passkey_added` event in the same transaction; the session's factors do not change; the owner gets `passkey_added` with a remove link (`passkey-remove:<sha256(token)>` in Valkey for 7 days, holding `{ userId, passkeyId, createdAt, sentTo }`). Answers `{ passkey }`. When this step fails after the browser created the passkey, the app says the password manager may have kept a passkey korbat does not know and can be told to delete it there.
+
+### 7.4 Sign-in
+
+`POST /api/auth/passkey/signin/options` (no session): `{ options }` with an empty `allowCredentials` and a sign-in challenge. Limit 30 per IP per 15 minutes.
+
+`POST /api/auth/passkey/signin/verify` `{ response }` plus the device fields and the web/native handling exactly as `POST /api/auth/password/signin` takes them (no session): the passkey by credential id (unknown, or its account deleted: `passkey_invalid`); the response's user handle, when present, must equal the account's `webauthn_user_id`; the library; then a suspect passkey is `passkey_suspended`; then the counter rule's conditional update (which also writes `last_used_at` and `backed_up`). When no device of the account matches the request's device, `passkey-signin-new-device:<userId>` counts 5 an hour and 20 a day (a failed sign-in is never counted, so nobody but the passkey's holder can spend it). Then: when the account has TOTP and the sign-in is `passkey` or the account is staff, an MFA ticket is written and `mfa_required` answered; otherwise `signIn` is called directly with `{ factors, passkeyId, method: "passkey" }`. The new-device alert works as for the other methods. Limit 20 per IP per 15 minutes; no account lockout.
+
+### 7.5 Management
+
+`GET /api/auth/passkeys` (session): `{ passkeys: PasskeyView[] }` (id, name, created, last used, synced, the creating device's label, whether it started this session, `new` for the last 7 days, `suspended`). `PATCH /api/auth/passkeys/:id` `{ name }` (session) and `DELETE /api/auth/passkeys/:id` (session, strong-fresh) act only on a passkey of the session's account (`where id = $1 and user_id = $2`; otherwise 404 `passkey_not_found`); removal records `passkey_removed` and mails the account; the last passkey can go. `POST /api/auth/passkeys/:id/not-mine` (session, fresh at level 1, only for a passkey of the account created in the last 7 days, 5 per account a day) runs the lockdown anchored at that passkey's creation and names it; level 1 is enough because an attacker who re-enrolled TOTP holds level 2. `GET /api/me` gains `user.passkeys` (the count).
+
+### 7.6 Lockdown and the links
+
+- **not-me**: `NotMeToken` becomes `{ userId, deviceId, signedInAt, passkeyId?, sentTo }`, written by every sign-in's alert (`signedInAt` from the flows' clock). The lockdown is anchored at `signedInAt` and names `passkeyId`. A token from before the deploy (no `signedInAt`, or the bare-user-id form) is anchored at the moment it is used minus its 24-hour lifetime, so it removes more, never less.
+- **Passkey remove link** `POST /api/auth/passkeys/remove-link` `{ token }` (no session, 10 per IP an hour, the token taken once): anchored at the stored `createdAt`, so it works even when the passkey is already gone. Page `/passkey-remove/<token>`.
+- **Email undo** (1b): anchored at the address change; the revert state also records the changing session's `passkey_id`, which the lockdown names. A passkey created earlier than 24 hours before the change, and not the one that made the change, is left to its own remove link (7 days) and to the new-device alert of its next sign-in: the lockdown revokes every device, so that alert fires and its not-me link names the passkey.
+- Every link checks `sentTo` against the keyed hash of the account's current address and does nothing (`invalid_code`, "This link has expired or was already used.") when they differ or the account is gone.
+- Every lockdown records its caller's event with the removed passkeys and whether TOTP and the password were cleared; the mails and pages that offer these links say what the lockdown does.
+
+### 7.7 Deletion and export
+
+`takeDown` deletes the passkeys and clears `webauthn_user_id` in its transaction; `finishTakeDown` repeats it. The export's `account.passkeys` lists `{ name, createdAt, lastUsedAt, synced, createdOn }` (no keys, no ids; the format name stays `korbat-export-1`; the field is additive).
+
+## 8. Contracts
+
+`PasskeyName` and `PasskeyLabel` (the display-name rules), `PasskeyView`, `PasskeyListResponse`, `PasskeyRegisterOptionsRequest`, `PasskeyOptionsResponse` (the options JSON, validated loosely), `PasskeyRegisterVerifyRequest`, `PasskeySignInVerifyRequest`, `PasskeyRenameRequest`, `PasskeyRemoveLinkRequest`, the `recovery` and `passkey` re-authentication methods, `ReauthResponse { level, token?, mustReenrollMfa? }`, `MeResponse.user.passkeys`, the error envelope's optional `details`, and the response JSON shapes bounded in size (credential id at most 1400 base64url characters, `clientDataJSON` 4 KiB, `attestationObject` 64 KiB, `authenticatorData` 4 KiB, `signature` 1 KiB, `userHandle` 128 characters). The TOTP disable request becomes an empty body. New error codes: `passkey_invalid`, `passkey_unsupported`, `passkey_limit`, `passkey_suspended`, `passkey_not_found`, `challenge_expired`.
+
+## 9. Web app
+
+- **Sign-in**: "Sign in with a passkey" under the email field, shown only when the browser supports WebAuthn; autofill on the email field (`autoComplete` "email webauthn", cast because React Native's type does not list it). One controller owns the conditional request: it starts when the screen is focused and the browser supports conditional mediation, restarts after `challenge_expired` or 9 minutes, and is aborted by the button's modal request (the browser library's abort service) and when the screen loses focus or unmounts. The TOTP step follows when the API asks for it.
+- **Security**: a Passkeys section listing each passkey (name, added, last used, "synced", "added on <device>", "used for this session", "new", "suspended"), Add a passkey (a dialog with the name korbat shows and the label the password manager shows, prefilled with the handle, and one sentence on what the label reveals; it runs through `useReauth`), Rename, Remove, and "This wasn't me" on new passkeys (it explains the lockdown before running it). Without WebAuthn support the section lists the passkeys and says this browser cannot add one. TOTP disable sends no code.
+- **ReauthPanel**: "Use a passkey" when `me.user.passkeys > 0` and the browser supports WebAuthn, and "Use a recovery code" when the account has TOTP; when an answer carries `details.level: 2`, the panel reads `details.have` and asks for what is missing (a first factor, or TOTP, a recovery code or a UV passkey), says why, and keeps the new token each answer carries.
+- **Suggestion card** on the home screen when `me.user.passkeys === 0`, the browser has a platform authenticator, and "Not now" was not chosen on this device in the last 30 days; "Add a passkey" opens Security with the add dialog.
+- **Remove-link page** `/passkey-remove/<token>` on the not-me page's model; the not-me and email-undo pages describe the lockdown.
+- **Messages**: `passkey_invalid` "That passkey did not work. Try again or use your email.", `passkey_unsupported` "This passkey provider is not supported. Try another one.", `passkey_limit` "You have 10 passkeys. Remove one to add another." or, for the daily bound, "You added 5 passkeys today. You can add another in about N hours.", `passkey_suspended` "This passkey was switched off because a copy of it may exist. Remove it and add a new one.", `challenge_expired` "That took too long. Try again.", `passkey_not_found` "That passkey is gone."; a cancelled browser prompt (`NotAllowedError`) shows nothing.
+- **Terms**: passkeys keep a public key, a name, dates and the device that added them; nothing about fingerprints or faces leaves the device.
+
+## 10. Security
+
+Rate limits (429 `rate_limited` with `Retry-After`):
+
+| Endpoint | Guards | Limits |
+|---|---|---|
+| sign-in options | none | 30 per IP per 15 min |
+| sign-in verify | none | 20 per IP per 15 min; from a new device, 5 per account an hour and 20 a day |
+| register options | session, onboarding, strong-fresh | `passkey-register:<handle>` 10 an hour |
+| register verify | session, onboarding; bound challenge | - |
+| re-auth (every method) | session | `reauth:<handle>` 5 per 15 min, `reauth-email:<handle>` 3 an hour, `reauth:ip:<ipHash>` 30 per 15 min |
+| rename | session | 30 per account an hour |
+| remove | session, strong-fresh | 10 per account an hour |
+| not mine | session, fresh | 5 per account a day |
+| remove link | none | 10 per IP an hour |
+
+Level 2 (strong-fresh when the account has TOTP): `POST /api/auth/passkeys/register/options`, `DELETE /api/auth/passkeys/:id`, `POST /api/auth/mfa/totp/setup`, `/mfa/totp/disable`, `/mfa/recovery-codes/regenerate`, `/password/set`, `/email/change/start`, `/api/account/delete/start` and `/delete/confirm`. Level 1 as today: `/email/change/verify`, `/api/account/export`, the badge routes, session revocation. `/mfa/totp/confirm` drops its freshness check: it needs the session and the pending secret its setup stored for the session's handle.
+
+Other bounds: 10 passkeys and 5 added a day (`passkey_limit`, 409); every challenge single-use; every link taken once and tied to its address.
+
+Unauthenticated requests that fail store only the rate counters, plus a used-challenge marker when the challenge's MAC checked. A successful passkey sign-in stores what every sign-in stores (a device, a session, a not-me key), bounded by the new-device limit. The threats of `threats.md` map to controls: stolen-session persistence (T1: strong freshness, rotation, notification with the lockdown link, "not mine", the look-back lockdown, links tied to their address), phishing (T2: the email code stays phishable as the recovery root; the new-device alert and not-me stay the net), replay and cross-account use (T3: sealed, bound, single-use challenges; the credential looked up with the session's user at re-authentication), enumeration (T4: empty `allowCredentials`, one error for every failure before the signature), counters (T5), last credential (T6), MFA bypass (T7: the UV rule and the staff rule), malicious authenticators (T8: format check, pinned algorithms, bounded sizes), identity in the handle and label (T9), rate limits and denial of service (T10, T11), deletion and export (T13, T14), native (T15).
+
+## 11. Configuration and runbook
+
+- `WEBAUTHN_RP_ID` (default: the host of `APP_ORIGIN`) and `WEBAUTHN_RP_NAME` (default `korbat`). Production guard: the RP ID equals the host of `APP_ORIGIN`, or the host ends with `.` plus the RP ID and the RP ID contains a dot; never an IP address or `localhost` (browsers refuse a public suffix themselves). Expected origins: `APP_ORIGIN`, plus `TRUSTED_ORIGINS` outside production.
+- The production domain is the user's (Foundation Task 16). Changing the RP ID strands every passkey: choose the apex when an admin console on a subdomain should share passkeys (sub-project 3).
+- After restoring a database backup: `update auth.passkeys set counter = 0, suspect_at = null where suspect_at is null or suspect_at > <restore time>;` so keys whose counters moved on are not refused as clones.
+- The API prints two `ExperimentalWarning`s at start (the library's ML-DSA probe on Node 24); they are expected.
+
+## 12. Testing
+
+- Unit: the challenge codec (MAC, expiry, purpose, binding, single use, tampering); the format check (none, packed with and without x5c, tpm, android-key); the id and transports checks; the counter rule (two zeros pass, a regression suspends, the conditional update loses a race safely); the factor and level rules (`{email, totp}`, `{password, recovery}` and `{passkey_uv}` are level 2; `{totp, recovery}` and `{email}` are not); the lockdown and its anchors; the flows against the memory harness with a software authenticator (`apps/api/test/auth/soft-authenticator.ts`: ES256 keys from `node:crypto`, CBOR from the library's `isoCBOR`, the UP, UV, BE and BS flags, counters, user handles and formats under the test's control).
+- Integration (Postgres, Redis, Mailpit): registration, sign-in, re-authentication (passkey and recovery code) and removal; another account's passkey refused at re-authentication; the cap, the daily bound and their race; the remove link from the mailbox, also after the passkey is gone and after the address changed; not-me, the email undo and "not mine"; deletion and export; a counter regression and a suspect passkey; rotation keeping the factors and the handle; a staff account with and without TOTP.
+- HTTP: every row of section 10's tables, including each level-2 route (a TOTP account whose session has only `email` gets 403 `reauth_required` with `details.level` 2; with `email` and `totp` it passes; an account without TOTP passes with `email`); the rotated cookie and bearer token.
+- Existing tests that change with the design and are updated in the task that changes them: the re-authentication answer (Task 3), the 1b email undo tests (Task 3), the not-me tests (Task 3), the TOTP disable tests (Task 3), and the sign-in event metadata (Task 5).
+- Web: source scans and server-rendered checks as in 1b, and unit tests for the app's pure helpers (the autofill controller's schedule, the level-2 panel's choice from `details.have`, the card's visibility rule).
+- Browser walk-through on the scratch stack: the screens, the texts and the unsupported path. Ceremonies are proven by the integration tests with the software authenticator; the built-in browser has no authenticator.
+
+## 13. Tasks
+
+1. Dependencies (`@simplewebauthn/server` 14.0.2 in the API, `@simplewebauthn/browser` 14.0.0 in the app, installed under the release-age floor), contracts, migration 0010, configuration with its guards, event types and templates.
+2. The passkey core: challenges, checks, the library wrapper, the software authenticator.
+3. Session factors and handles, strong freshness on the routes of section 10, in-place rotation for every caller, the `recovery` re-authentication method, TOTP setup, confirm and disable as section 2 says, the lockdown routine with links tied to their address, and not-me and the email undo moved onto it (with their tests).
+4. Registration, management (with "not mine"), the remove link and the notifications.
+5. Passkey sign-in (the TOTP and staff rules, the counter rule, the new-device limit and alert, `signIn`'s options and the method in `signin_success`) and passkey re-authentication.
+6. Deletion and export.
+7. The web app.
+8. The fixes an adversarial review of Tasks 1 to 7 upholds, and the browser walk-through's findings.
+9. Documentation: the README's passkeys section and runbook lines, the 1a, 1b and main designs' records, this design's amendments.
+
+## 14. Success criteria
+
+1. With the software authenticator, the integration suite registers a passkey, signs in with it (a UV one skips TOTP, a UV-less one does not, a staff account with TOTP never does), re-authenticates with it, and removes it.
+2. A passkey added from a stolen session is announced by mail; its remove link and "not mine" remove it; not-me and the email undo remove it when it was added after 24 hours before their anchor or started the session in question; each clears the password.
+3. A passkey of another account never re-authenticates a session, and no rotation loses a session's factors.
+4. Deleting the account removes its passkeys; the export lists them without keys.
+5. Every rate limit of section 10 answers `rate_limited` with `Retry-After`; the passkey bounds answer `passkey_limit`; every level-2 route refuses a level-1 session of an account with TOTP.
+6. The web app's screens pass their tests and the walk-through; the smoke test and the full suites pass on the rebuilt stack.
