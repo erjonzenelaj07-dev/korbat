@@ -1,12 +1,16 @@
 import { describe, expect, test } from "vitest";
 import {
   AltText,
+  BIO_MAX_LENGTH,
+  Bio,
   CreatePostRequest,
   DisplayName,
+  HandleChangeRequest,
   HandleParam,
   PostBody,
   PostId,
   PostView,
+  ProfileEditRequest,
   ProfileListItem,
   ProfileView,
   SocialErrorCode,
@@ -122,6 +126,51 @@ describe("profiles", () => {
   });
   test("the error codes are exactly the five social ones", () => {
     expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new"]);
+  });
+});
+
+describe("profile editing", () => {
+  const rlo = String.fromCharCode(0x202e);
+  const zwsp = String.fromCharCode(0x200b);
+  const zwj = String.fromCharCode(0x200d);
+
+  test("a bio is trimmed, may be empty, and has at most 160 code points", () => {
+    expect(BIO_MAX_LENGTH).toBe(160);
+    expect(Bio.parse("  Unpopular opinions, daily.  ")).toBe("Unpopular opinions, daily.");
+    expect(Bio.parse("")).toBe("");
+    expect(Bio.parse("   ")).toBe("");
+    expect(Bio.safeParse("a".repeat(BIO_MAX_LENGTH)).success).toBe(true);
+    expect(Bio.safeParse("a".repeat(BIO_MAX_LENGTH + 1)).success).toBe(false);
+    const astral = String.fromCodePoint(0x1f600);
+    expect(Bio.safeParse(astral.repeat(BIO_MAX_LENGTH)).success).toBe(true);
+    expect(Bio.safeParse(astral.repeat(BIO_MAX_LENGTH + 1)).success).toBe(false);
+  });
+
+  test("a bio is one line of plain text: no control, direction or zero-width characters; emoji joiners stay", () => {
+    expect(Bio.safeParse(`a${String.fromCharCode(7)}b`).success).toBe(false);
+    expect(Bio.safeParse(`a${String.fromCharCode(10)}b`).success).toBe(false);
+    expect(Bio.safeParse(`a${String.fromCharCode(9)}b`).success).toBe(false);
+    expect(Bio.safeParse(`a${String.fromCharCode(0x85)}b`).success).toBe(false);
+    expect(Bio.safeParse(`a${rlo}b`).success).toBe(false);
+    expect(Bio.safeParse(`a${zwsp}b`).success).toBe(false);
+    expect(Bio.safeParse(`${String.fromCodePoint(0x1f468)}${zwj}${String.fromCodePoint(0x1f469)}`).success).toBe(true);
+  });
+
+  test("a profile edit changes the display name, the bio or both, never nothing", () => {
+    expect(ProfileEditRequest.parse({ displayName: " Ada " })).toEqual({ displayName: "Ada" });
+    expect(ProfileEditRequest.parse({ bio: "" })).toEqual({ bio: "" });
+    expect(ProfileEditRequest.parse({ displayName: "Ada", bio: " hi " })).toEqual({ displayName: "Ada", bio: "hi" });
+    expect(ProfileEditRequest.safeParse({}).success).toBe(false);
+    expect(ProfileEditRequest.safeParse({ displayName: "" }).success).toBe(false);
+    expect(ProfileEditRequest.safeParse({ displayName: "x".repeat(51) }).success).toBe(false);
+    expect(ProfileEditRequest.safeParse({ bio: `a${rlo}b` }).success).toBe(false);
+  });
+
+  test("a handle change carries the handle as typed, lowercased; the flow decides whether it is valid", () => {
+    expect(HandleChangeRequest.parse({ handle: " Ada_Lovelace " })).toEqual({ handle: "ada_lovelace" });
+    expect(HandleChangeRequest.safeParse({}).success).toBe(false);
+    expect(HandleChangeRequest.safeParse({ handle: "" }).success).toBe(false);
+    expect(HandleChangeRequest.safeParse({ handle: "x".repeat(65) }).success).toBe(false);
   });
 });
 

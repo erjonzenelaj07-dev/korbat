@@ -45,8 +45,8 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 21 tables in total", () => {
-    expect(tables.length).toBe(21);
+  test("there are 22 tables in total", () => {
+    expect(tables.length).toBe(22);
   });
   test("transparency_log carries no user identifiers", () => {
     const cols = byName.get("transparency_log")!.columns.map((c) => c.name);
@@ -125,5 +125,47 @@ describe("images 2b", () => {
     expect(cfg.checks.map((c) => c.name).sort()).toEqual(["post_media_alt_len", "post_media_attached_is_complete", "post_media_ready_has_dims"]);
     expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(["post_media_owner_created_idx", "post_media_post_position_idx", "post_media_status_created_idx"]);
     expect(cfg.indexes.find((i) => i.config.name === "post_media_post_position_idx")?.config.unique).toBe(true);
+  });
+});
+
+describe("account lifecycle 1b", () => {
+  test("handle_history reserves every lowercase handle a profile ever had, and goes with the profile", () => {
+    const cfg = byName.get("handle_history")!;
+    expect(cfg.schema).toBeUndefined(); // public
+    expect(cfg.columns.map((c) => c.name)).toEqual(["handle_lower", "profile_id", "changed_at"]);
+    expect(cfg.columns.find((c) => c.name === "handle_lower")?.primary).toBe(true);
+    expect(cfg.columns.find((c) => c.name === "profile_id")?.notNull).toBe(true);
+    expect(cfg.columns.find((c) => c.name === "changed_at")?.notNull).toBe(true);
+    expect(cfg.columns.find((c) => c.name === "changed_at")?.hasDefault).toBe(true);
+    const fk = cfg.foreignKeys.map((k) => ({ table: getTableConfig(k.reference().foreignTable).name, columns: k.reference().foreignColumns.map((c) => c.name), onDelete: k.onDelete }));
+    expect(fk).toEqual([{ table: "profiles", columns: ["id"], onDelete: "cascade" }]);
+    expect(cfg.policies.map((p) => [p.name, p.for])).toEqual([["handle_history_api_all", "all"]]);
+  });
+  test("profiles record when the handle last changed; users record when their purge finished", () => {
+    const handleChangedAt = byName.get("profiles")!.columns.find((c) => c.name === "handle_changed_at");
+    expect(handleChangedAt).toBeDefined();
+    expect(handleChangedAt?.notNull).toBe(false);
+    const purgedAt = byName.get("users")!.columns.find((c) => c.name === "purged_at");
+    expect(purgedAt).toBeDefined();
+    expect(purgedAt?.notNull).toBe(false);
+  });
+  test("one phone per account: a unique index on phone_hash that leaves out the accounts without one", () => {
+    const idx = byName.get("users")!.indexes.find((i) => i.config.name === "users_phone_hash_idx");
+    expect(idx?.config.unique).toBe(true);
+    expect(idx?.config.columns.map((c) => (c as { name?: string }).name)).toEqual(["phone_hash"]);
+    expect(idx?.config.where).toBeDefined();
+  });
+  test("email codes can be for deleting the account, and every account event of 1b has a type", () => {
+    expect(schema.emailCodePurpose.enumValues).toContain("delete_account");
+    expect(schema.authEventType.enumValues.slice(schema.authEventType.enumValues.indexOf("not_me"))).toEqual([
+      "not_me",
+      "profile_updated",
+      "handle_changed",
+      "email_changed",
+      "badge_verified",
+      "badge_removed",
+      "export_created",
+      "account_deleted",
+    ]);
   });
 });

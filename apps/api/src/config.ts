@@ -18,6 +18,12 @@ const versionedKey = z
 /** Cloudflare's documented Turnstile test secrets: always pass, always fail, token spent. */
 const TURNSTILE_TEST_SECRET = /^[123]x0+AA$/;
 
+/** A secret that may be absent. Compose passes a blank line of infra/.env as an empty string, which counts as absent too. */
+const optionalSecret = z
+  .string()
+  .optional()
+  .transform((value) => (value ? value : undefined));
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -78,12 +84,28 @@ const schema = z.object({
    * for the restore window.
    */
   MEDIA_RECONCILE: z.enum(["on", "off", "force"]).default("on"),
+  /**
+   * Who checks the phone number behind the verified badge: `off` hides the badge, `dev` accepts the code
+   * 000000 and nothing else (development only), `vonage` texts a real code through Vonage Verify with the
+   * two credentials below.
+   */
+  VERIFY_PROVIDER: z.enum(["off", "dev", "vonage"]).default("off"),
+  VONAGE_API_KEY: optionalSecret,
+  VONAGE_API_SECRET: optionalSecret,
+  /** The sender name in the verification text. Vonage allows 1 to 18 characters and none of / { } : $. */
+  VERIFY_BRAND: z.string().min(1).max(18).regex(/^[^\/{}:$]*$/, "must not contain / { } : or $").default("korbat"),
 }).superRefine((c, ctx) => {
   if (c.NODE_ENV !== "production") return;
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   if (TURNSTILE_TEST_SECRET.test(c.TURNSTILE_SECRET_KEY)) refuse("TURNSTILE_SECRET_KEY", "is a Turnstile test secret; production needs the secret of your own widget");
   if (!c.APP_ORIGIN.startsWith("https://")) refuse("APP_ORIGIN", "must be an https origin in production");
   for (const origin of c.TRUSTED_ORIGINS) if (!origin.startsWith("https://")) refuse("TRUSTED_ORIGINS", `${origin} is not an https origin`);
+  // The development provider would hand the badge to anyone who types 000000.
+  if (c.VERIFY_PROVIDER === "dev") refuse("VERIFY_PROVIDER", "VERIFY_PROVIDER=dev is for development only");
+  if (c.VERIFY_PROVIDER === "vonage") {
+    if (!c.VONAGE_API_KEY) refuse("VONAGE_API_KEY", "is required when VERIFY_PROVIDER is vonage");
+    if (!c.VONAGE_API_SECRET) refuse("VONAGE_API_SECRET", "is required when VERIFY_PROVIDER is vonage");
+  }
 });
 
 export type Config = z.infer<typeof schema>;

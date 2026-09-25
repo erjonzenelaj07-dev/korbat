@@ -20,10 +20,29 @@ export const profiles = pgTable(
     postCount: integer("post_count").notNull().default(0),
     createdAt: ts("created_at").notNull().defaultNow(),
     deletedAt: ts("deleted_at"),
+    /** When the handle was last changed after onboarding; the next change is allowed 30 days later. Null until the first change. */
+    handleChangedAt: ts("handle_changed_at"),
   },
   (t) => [
     uniqueIndex("profiles_handle_lower_idx").on(sql`lower(${t.handle})`),
     check("profiles_counts_nonnegative", sql`${t.followerCount} >= 0 and ${t.followingCount} >= 0 and ${t.postCount} >= 0`),
     fullAccess("profiles_api_all", apiRole),
   ],
+).enableRLS();
+
+/**
+ * Every handle a profile ever had, in lowercase: the one chosen at onboarding and each one later left
+ * behind. A handle here belongs to that profile for good, so nobody else can take a renamed account's
+ * old name; the profile itself may go back to it. The rows go only with the profile row.
+ */
+export const handleHistory = pgTable(
+  "handle_history",
+  {
+    handleLower: text("handle_lower").primaryKey(),
+    profileId: uuid("profile_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    changedAt: ts("changed_at").notNull().defaultNow(),
+  },
+  () => [fullAccess("handle_history_api_all", apiRole)],
 ).enableRLS();

@@ -8,7 +8,13 @@ export type TemplateName =
   | "mfa_disabled"
   | "password_changed"
   | "recovery_codes_regenerated"
-  | "sessions_revoked_all";
+  | "sessions_revoked_all"
+  | "email_change_code"
+  | "email_changed"
+  | "badge_verified"
+  | "badge_removed"
+  | "delete_account_code"
+  | "account_deleted";
 
 export interface MailMessage {
   to: string;

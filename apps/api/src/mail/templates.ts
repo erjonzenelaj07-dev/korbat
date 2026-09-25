@@ -82,5 +82,37 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         `Every session of your korbat account was just signed out (${need(data, "count")} in total).`,
         "If this was you, there is nothing to do. If not, sign in and set a new password.",
       ]);
+    case "email_change_code":
+      return build("Confirm your new korbat email address", [
+        `Your confirmation code is ${need(data, "code")}.`,
+        "It expires in 10 minutes. If you did not ask to move a korbat account to this address, you can ignore this email; nothing changes without the code.",
+      ]);
+    case "email_changed":
+      return build("Your korbat email address changed", [
+        `The email address of your korbat account was just changed to ${need(data, "email")}. This address no longer belongs to the account.`,
+        "Every session stays signed in. If this was you, there is nothing to do.",
+        "If this was not you, sign in, open Account, and change it back; then open Security and sign out everywhere.",
+      ]);
+    case "badge_verified":
+      return build("Your korbat account is verified", [
+        "Your phone number was just confirmed, and your korbat account now shows the verified badge.",
+        "korbat keeps only a keyed hash of the number, never the number itself. If this was not you, sign in, open Account, and remove the badge.",
+      ]);
+    case "badge_removed":
+      return build("The verified badge was removed from your korbat account", [
+        "The verified badge was just removed from your korbat account, and the phone number behind it was forgotten.",
+        "If this was you, there is nothing to do. If not, sign in, open Security, and review your sessions and devices.",
+      ]);
+    case "delete_account_code":
+      return build("Confirm deleting your korbat account", [
+        `Someone asked to delete your korbat account. The confirmation code is ${need(data, "code")}.`,
+        "It expires in 10 minutes. Deleting the account removes your posts, images and profile for good; nothing happens without the code.",
+        "If this was not you, do not enter the code: sign in, open Security, and revoke your other sessions.",
+      ]);
+    case "account_deleted":
+      return build("Your korbat account was deleted", [
+        "Your korbat account was deleted as you asked. Your posts, images and profile are gone, and your handle stays reserved so nobody can take it.",
+        "This cannot be undone. Thank you for having been part of korbat; you are welcome back with a new account any time.",
+      ]);
   }
 }

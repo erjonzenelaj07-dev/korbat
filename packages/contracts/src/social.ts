@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DisplayName, HandleInput } from "./auth";
 import { MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
 import { FORBIDDEN_FORMAT, visibleLength } from "./text";
 
@@ -177,3 +178,25 @@ export type ProfileListItem = z.infer<typeof ProfileListItem>;
 
 export const ProfilePage = page(ProfileListItem);
 export type ProfilePage = z.infer<typeof ProfilePage>;
+
+// ---------------------------------------------------------------- profile editing
+
+export const BIO_MAX_LENGTH = 160;
+
+/** A bio as stored: trimmed, at most 160 code points, one line of plain text with no control or disguising characters. Empty clears it. */
+export const Bio = z
+  .string()
+  .trim()
+  .regex(/^[^\p{Cc}]*$/u, "control characters are not allowed")
+  .refine((bio) => !FORBIDDEN_FORMAT.test(bio), { message: "invisible direction and spacing characters are not allowed" })
+  .refine((bio) => postLength(bio) <= BIO_MAX_LENGTH, { message: `bios have at most ${BIO_MAX_LENGTH} characters` });
+
+/** What the profile screen saves: either field, or both. The handle has its own route and rules. */
+export const ProfileEditRequest = z
+  .object({ displayName: DisplayName.optional(), bio: Bio.optional() })
+  .refine((edit) => edit.displayName !== undefined || edit.bio !== undefined, { message: "nothing to change" });
+export type ProfileEditRequest = z.infer<typeof ProfileEditRequest>;
+
+/** The handle rules and the 30-day cooldown are enforced by the flow, which answers with a specific error code. */
+export const HandleChangeRequest = z.object({ handle: HandleInput });
+export type HandleChangeRequest = z.infer<typeof HandleChangeRequest>;

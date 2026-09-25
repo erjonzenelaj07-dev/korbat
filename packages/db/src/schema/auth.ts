@@ -4,7 +4,7 @@ import { authRole, emptyTextArray, fullAccess, ts } from "./helpers";
 
 export const auth = pgSchema("auth");
 
-export const emailCodePurpose = auth.enum("email_code_purpose", ["signup", "login", "change_email", "recovery", "reauth"]);
+export const emailCodePurpose = auth.enum("email_code_purpose", ["signup", "login", "change_email", "recovery", "reauth", "delete_account"]);
 
 export const userRole = auth.enum("user_role", ["user", "moderator", "admin"]);
 
@@ -23,6 +23,13 @@ export const authEventType = auth.enum("auth_event_type", [
   "account_locked",
   "new_device",
   "not_me",
+  "profile_updated",
+  "handle_changed",
+  "email_changed",
+  "badge_verified",
+  "badge_removed",
+  "export_created",
+  "account_deleted",
 ]);
 
 export const users = auth.table(
@@ -53,8 +60,19 @@ export const users = auth.table(
     passwordChangedAt: ts("password_changed_at"),
     /** Last accepted TOTP time step; a code for this step or earlier is rejected (replay protection). */
     totpLastStep: bigint("totp_last_step", { mode: "number" }),
+    /**
+     * When the purge after deletion finished anonymising this row. deleted_at means the owner confirmed
+     * deletion and the account is gone for every purpose; purged_at null with deleted_at set means the purge
+     * job still has work to do.
+     */
+    purgedAt: ts("purged_at"),
   },
-  (t) => [uniqueIndex("users_email_lower_idx").on(sql`lower(${t.email})`), fullAccess("users_auth_all", authRole)],
+  (t) => [
+    uniqueIndex("users_email_lower_idx").on(sql`lower(${t.email})`),
+    /** One phone number per account, as a database fact; accounts without a number stay out of the index. */
+    uniqueIndex("users_phone_hash_idx").on(t.phoneHash).where(sql`phone_hash is not null`),
+    fullAccess("users_auth_all", authRole),
+  ],
 ).enableRLS();
 
 export const devices = auth.table(

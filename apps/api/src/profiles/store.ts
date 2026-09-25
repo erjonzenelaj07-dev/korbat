@@ -16,8 +16,15 @@ export function createProfileStore(apiDb: Db): ProfileStore {
       }
     },
     async find(id) {
-      const [profile] = await apiDb.select(columns).from(profiles).where(eq(profiles.id, id)).limit(1);
-      return profile ?? null;
+      const [profile] = await apiDb
+        .select({ ...columns, handleChangedAt: profiles.handleChangedAt, verifiedAt: profiles.verifiedAt })
+        .from(profiles)
+        .where(eq(profiles.id, id))
+        .limit(1);
+      if (!profile) return null;
+      const { handleChangedAt, verifiedAt, ...pub } = profile;
+      // The badge is a fact of the profile row (verified_at), read here so the account screen sees it on /me.
+      return { ...pub, handleChangedAt: handleChangedAt?.toISOString() ?? null, verified: verifiedAt !== null };
     },
   };
 }

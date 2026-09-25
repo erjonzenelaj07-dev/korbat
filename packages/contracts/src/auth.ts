@@ -26,6 +26,11 @@ export const AuthErrorCode = z.enum([
   "onboarding_required",
   "mail_unavailable",
   "rate_limited",
+  "handle_cooldown",
+  "email_in_use",
+  "phone_in_use",
+  "badge_unavailable",
+  "verify_unavailable",
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCode>;
 
@@ -42,6 +47,18 @@ export const OpaqueId = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const Email = z.string().trim().toLowerCase().max(254).pipe(z.email());
 export const EmailCode = z.string().regex(/^\d{6}$/);
 export const TotpCode = z.string().regex(/^\d{6}$/);
+/**
+ * A phone number in E.164 once the spaces, hyphens and parentheses people type are dropped: a plus and
+ * 7 to 15 digits, the first not zero. Whether the number exists is the verification provider's call.
+ */
+export const Phone = z
+  .string()
+  .trim()
+  .max(64)
+  .transform((raw) => raw.replace(/[\s()-]/g, ""))
+  .pipe(z.string().regex(/^\+[1-9][0-9]{6,14}$/, "phone numbers are written like +447911123456"));
+/** The six-digit code the verification provider texts to a phone; the development provider's is 000000. */
+export const PhoneCode = z.string().regex(/^\d{6}$/);
 export const RecoveryCode = z
   .string()
   .trim()
@@ -181,6 +198,14 @@ export type SessionsResponse = z.infer<typeof SessionsResponse>;
 export const NotMeRequest = z.object({ token: OpaqueId });
 export type NotMeRequest = z.infer<typeof NotMeRequest>;
 
+/**
+ * The signed-in account's own profile, as /me and the profile-editing routes return it: the public facts
+ * plus when the handle last changed (the app shows when the next change is allowed) and whether the
+ * verified badge is held.
+ */
+export const MeProfile = Profile.extend({ handleChangedAt: z.iso.datetime().nullable(), verified: z.boolean() });
+export type MeProfile = z.infer<typeof MeProfile>;
+
 export const MeResponse = z.object({
   user: z.object({
     id: z.uuid(),
@@ -190,6 +215,39 @@ export const MeResponse = z.object({
     mfaEnabled: z.boolean(),
     hasPassword: z.boolean(),
   }),
-  profile: Profile.nullable(),
+  profile: MeProfile.nullable(),
 });
 export type MeResponse = z.infer<typeof MeResponse>;
+
+// ---------------------------------------------------------------- email change
+
+/** The new address, under the sign-up rules. The flow refuses the current address and disposable ones. */
+export const EmailChangeStartRequest = z.object({ email: Email });
+export type EmailChangeStartRequest = z.infer<typeof EmailChangeStartRequest>;
+
+export const EmailChangeVerifyRequest = z.object({ flowId: OpaqueId, code: EmailCode });
+export type EmailChangeVerifyRequest = z.infer<typeof EmailChangeVerifyRequest>;
+
+/** The address the account now has. */
+export const EmailChangeResponse = z.object({ email: z.email() });
+export type EmailChangeResponse = z.infer<typeof EmailChangeResponse>;
+
+// ---------------------------------------------------------------- verified badge
+
+export const BadgeStartRequest = z.object({ phone: Phone });
+export type BadgeStartRequest = z.infer<typeof BadgeStartRequest>;
+
+export const BadgeVerifyRequest = z.object({ flowId: OpaqueId, code: PhoneCode });
+export type BadgeVerifyRequest = z.infer<typeof BadgeVerifyRequest>;
+
+export const BadgeVerifyResponse = z.object({ verified: z.literal(true) });
+export type BadgeVerifyResponse = z.infer<typeof BadgeVerifyResponse>;
+
+// ---------------------------------------------------------------- account deletion
+
+export const DeleteStartResponse = z.object({ flowId: OpaqueId });
+export type DeleteStartResponse = z.infer<typeof DeleteStartResponse>;
+
+/** The emailed code and the account's handle typed by the owner; the flow compares the handle case-insensitively. */
+export const DeleteConfirmRequest = z.object({ flowId: OpaqueId, code: EmailCode, handle: HandleInput });
+export type DeleteConfirmRequest = z.infer<typeof DeleteConfirmRequest>;

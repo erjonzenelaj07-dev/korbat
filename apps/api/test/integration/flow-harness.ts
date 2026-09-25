@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Profile } from "@korbat/contracts";
+import type { MeProfile } from "@korbat/contracts";
 import pino from "pino";
 import type { AuthConfig, AuthDeps, ProfileStore, RequestContext } from "../../src/auth/context";
 import { decrypt, parseVersionedKey, randomToken } from "../../src/auth/crypto";
@@ -13,17 +13,17 @@ import { currentStep, hotp } from "../../src/auth/totp";
 import { MemoryMailer } from "../../src/mail/memory";
 import { fakeClock } from "./auth-fixtures";
 
-/** Handles unique per store, like the real public.profiles index. */
+/** Handles unique per store, like the real public.profiles index. A new profile has never changed its handle and holds no badge. */
 export function memoryProfiles(): ProfileStore {
-  const byHandle = new Map<string, Profile>();
-  const byId = new Map<string, Profile>();
+  const byHandle = new Map<string, MeProfile>();
+  const byId = new Map<string, MeProfile>();
   return {
     async create({ id, handle, displayName }) {
       if (byHandle.has(handle) || byId.has(id)) return { ok: false, reason: "handle_taken" };
-      const profile = { id, handle, displayName };
+      const profile = { id, handle, displayName, handleChangedAt: null, verified: false };
       byHandle.set(handle, profile);
       byId.set(id, profile);
-      return { ok: true, profile };
+      return { ok: true, profile: { id, handle, displayName } };
     },
     async find(id) {
       return byId.get(id) ?? null;

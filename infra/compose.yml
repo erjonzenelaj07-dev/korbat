@@ -108,6 +108,11 @@ services:
       SMTP_URL: ${API_SMTP_URL:?set API_SMTP_URL in infra/.env}
       MAIL_FROM: ${API_MAIL_FROM:?set API_MAIL_FROM in infra/.env}
       TERMS_VERSION: ${API_TERMS_VERSION:?set API_TERMS_VERSION in infra/.env}
+      # The verified badge's phone check. off (the default) hides the badge; vonage needs the two credentials.
+      VERIFY_PROVIDER: ${API_VERIFY_PROVIDER:-off}
+      VONAGE_API_KEY: ${API_VONAGE_API_KEY:-}
+      VONAGE_API_SECRET: ${API_VONAGE_API_SECRET:-}
+      VERIFY_BRAND: ${API_VERIFY_BRAND:-korbat}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

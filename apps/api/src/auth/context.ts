@@ -1,4 +1,4 @@
-import type { AuthErrorCode, Profile } from "@korbat/contracts";
+import type { AuthErrorCode, MeProfile, Profile } from "@korbat/contracts";
 import type { Logger } from "pino";
 import type { Config } from "../config";
 import type { Mailer } from "../mail/mailer";
@@ -40,7 +40,8 @@ export function authConfigFrom(config: Config): AuthConfig {
 /** Public profiles live in the public schema, which the auth module cannot reach; the API supplies this. */
 export interface ProfileStore {
   create(input: { id: string; handle: string; displayName: string }): Promise<{ ok: true; profile: Profile } | { ok: false; reason: "handle_taken" }>;
-  find(id: string): Promise<Profile | null>;
+  /** The owner's view of their profile, which /me returns: the public facts plus the handle-change date and the badge. */
+  find(id: string): Promise<MeProfile | null>;
 }
 
 export interface AuthDeps {
@@ -89,6 +90,11 @@ const MESSAGES: Record<AuthErrorCode, string> = {
   onboarding_required: "Choose a handle to finish setting up your account.",
   mail_unavailable: "We could not send the email. Try again in a moment.",
   rate_limited: "Too many requests. Wait a moment and try again.",
+  handle_cooldown: "Handles can change once every 30 days.",
+  email_in_use: "That email address already belongs to an account.",
+  phone_in_use: "That phone number is already verified on another account.",
+  badge_unavailable: "Verification is not available on this korbat.",
+  verify_unavailable: "We could not reach the verification service. Try again in a moment.",
 };
 
 export function authErrorMessage(code: AuthErrorCode): string {

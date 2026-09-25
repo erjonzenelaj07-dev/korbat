@@ -1,19 +1,30 @@
 import { describe, expect, test } from "vitest";
 import {
   AuthErrorCode,
+  BadgeStartRequest,
+  BadgeVerifyRequest,
+  BadgeVerifyResponse,
+  DeleteConfirmRequest,
+  DeleteStartResponse,
   DeviceId,
   DisplayName,
   Email,
+  EmailChangeResponse,
+  EmailChangeStartRequest,
+  EmailChangeVerifyRequest,
   EmailVerifyResponse,
+  MeProfile,
   MeResponse,
   MfaVerifyRequest,
   OpaqueId,
+  Phone,
   ReauthRequest,
   RecoveryCode,
   SignupCompleteRequest,
 } from "../src/index";
 
 const flow = "a".repeat(43);
+const userId = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
 
 describe("auth primitives", () => {
   test("email is trimmed and lowercased, invalid rejected", () => {
@@ -39,6 +50,16 @@ describe("auth primitives", () => {
     expect(DisplayName.parse("  Ada Lovelace ")).toBe("Ada Lovelace");
     expect(DisplayName.safeParse(`bad${String.fromCharCode(7)}name`).success).toBe(false);
     expect(DisplayName.safeParse("x".repeat(51)).success).toBe(false);
+  });
+  test("phone numbers are E.164 once spaces, hyphens and parentheses are dropped", () => {
+    expect(Phone.parse(" +44 7911 123-456 ")).toBe("+447911123456");
+    expect(Phone.parse("+1 (415) 555-0132")).toBe("+14155550132");
+    expect(Phone.parse("+1234567")).toBe("+1234567");
+    expect(Phone.parse(`+${"9".repeat(15)}`)).toBe(`+${"9".repeat(15)}`);
+    // No plus, a leading zero, too short, too long, letters, a plus in the middle.
+    for (const bad of ["447911123456", "+0447911123456", "+123456", `+${"9".repeat(16)}`, "+44 7911 ext 12", "44+7911123456", ""]) {
+      expect(Phone.safeParse(bad).success, bad).toBe(false);
+    }
   });
 });
 
@@ -67,13 +88,55 @@ describe("auth requests and responses", () => {
   });
   test("me response carries email and a nullable profile", () => {
     const me = {
-      user: { id: "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a", email: "a@b.io", role: "user", onboarded: false, mfaEnabled: false, hasPassword: false },
+      user: { id: userId, email: "a@b.io", role: "user", onboarded: false, mfaEnabled: false, hasPassword: false },
       profile: null,
     };
     expect(MeResponse.parse(me)).toEqual(me);
   });
+  test("the own profile in the me response says when the handle last changed and whether the badge is held", () => {
+    const user = { id: userId, email: "a@b.io", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false };
+    const profile = { id: userId, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false };
+    expect(MeResponse.parse({ user, profile })).toEqual({ user, profile });
+    expect(MeProfile.parse({ ...profile, handleChangedAt: "2026-09-24T10:00:00.000Z", verified: true }).verified).toBe(true);
+    // Both fields are facts the account screen relies on, so a profile without them is not a valid answer.
+    expect(MeResponse.safeParse({ user, profile: { id: userId, handle: "ada", displayName: "Ada" } }).success).toBe(false);
+    expect(MeProfile.safeParse({ ...profile, handleChangedAt: "yesterday" }).success).toBe(false);
+    expect(MeProfile.safeParse({ ...profile, verified: "yes" }).success).toBe(false);
+  });
   test("every documented auth error code exists", () => {
-    expect(AuthErrorCode.options).toHaveLength(23);
+    expect(AuthErrorCode.options).toHaveLength(28);
     expect(AuthErrorCode.options).toContain("password_check_unavailable");
+    expect(AuthErrorCode.options).toEqual(expect.arrayContaining(["handle_cooldown", "email_in_use", "phone_in_use", "badge_unavailable", "verify_unavailable"]));
+  });
+});
+
+describe("account lifecycle requests and responses", () => {
+  test("an email change starts with an address under the sign-up rules and verifies with a flow id and code", () => {
+    expect(EmailChangeStartRequest.parse({ email: " New@Example.COM " })).toEqual({ email: "new@example.com" });
+    expect(EmailChangeStartRequest.safeParse({ email: "not-an-email" }).success).toBe(false);
+    expect(EmailChangeStartRequest.safeParse({}).success).toBe(false);
+    expect(EmailChangeVerifyRequest.parse({ flowId: flow, code: "123456" })).toEqual({ flowId: flow, code: "123456" });
+    expect(EmailChangeVerifyRequest.safeParse({ flowId: flow, code: "12345" }).success).toBe(false);
+    expect(EmailChangeVerifyRequest.safeParse({ flowId: "short", code: "123456" }).success).toBe(false);
+    expect(EmailChangeResponse.parse({ email: "new@example.com" })).toEqual({ email: "new@example.com" });
+    expect(EmailChangeResponse.safeParse({ email: "nope" }).success).toBe(false);
+  });
+  test("the badge starts with a phone number and verifies with a flow id and a six-digit code", () => {
+    expect(BadgeStartRequest.parse({ phone: "+44 7911 123456" })).toEqual({ phone: "+447911123456" });
+    expect(BadgeStartRequest.safeParse({ phone: "07911123456" }).success).toBe(false);
+    expect(BadgeStartRequest.safeParse({}).success).toBe(false);
+    expect(BadgeVerifyRequest.parse({ flowId: flow, code: "000000" })).toEqual({ flowId: flow, code: "000000" });
+    expect(BadgeVerifyRequest.safeParse({ flowId: flow, code: "abcdef" }).success).toBe(false);
+    expect(BadgeVerifyRequest.safeParse({ flowId: flow, code: "0000000" }).success).toBe(false);
+    expect(BadgeVerifyResponse.parse({ verified: true })).toEqual({ verified: true });
+    expect(BadgeVerifyResponse.safeParse({ verified: false }).success).toBe(false);
+  });
+  test("deletion starts with a flow id and is confirmed with the code and the typed handle", () => {
+    expect(DeleteStartResponse.parse({ flowId: flow })).toEqual({ flowId: flow });
+    expect(DeleteStartResponse.safeParse({ flowId: "x" }).success).toBe(false);
+    expect(DeleteConfirmRequest.parse({ flowId: flow, code: "123456", handle: " Ada_Lovelace " })).toEqual({ flowId: flow, code: "123456", handle: "ada_lovelace" });
+    expect(DeleteConfirmRequest.safeParse({ flowId: flow, code: "123456" }).success).toBe(false);
+    expect(DeleteConfirmRequest.safeParse({ flowId: flow, code: "123456", handle: "" }).success).toBe(false);
+    expect(DeleteConfirmRequest.safeParse({ flowId: flow, handle: "ada" }).success).toBe(false);
   });
 });
