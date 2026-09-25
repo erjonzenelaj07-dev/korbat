@@ -71,7 +71,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
       now,
     });
     await media.prepare();
-    const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, media: media.forPosts, now });
+    const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth(), media: media.forPosts, now });
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, advisoryChecks: { image_worker: media.healthCheck }, auth, social, media });
   });
   afterAll(async () => {

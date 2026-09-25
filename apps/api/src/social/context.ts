@@ -1,12 +1,16 @@
-import type { SocialErrorCode } from "@korbat/contracts";
+import type { AuthErrorCode, SocialErrorCode } from "@korbat/contracts";
 import type { Logger } from "pino";
+import type { AuthEventType } from "../auth";
 import { MediaError, type MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialRepo } from "./repo";
 
+/** The handle codes onboarding answers with, which a handle change raises too, plus its cooldown. */
+type HandleErrorCode = Extract<AuthErrorCode, "handle_invalid" | "handle_reserved" | "handle_taken" | "handle_cooldown">;
+
 /** The social codes plus the shared ones the module also raises. */
-export type SocialErrorKind = SocialErrorCode | "not_found" | "invalid_request" | "rate_limited" | "service_unavailable";
-export type SocialErrorStatus = 400 | 403 | 404 | 429 | 503;
+export type SocialErrorKind = SocialErrorCode | HandleErrorCode | "not_found" | "invalid_request" | "rate_limited" | "service_unavailable";
+export type SocialErrorStatus = 400 | 403 | 404 | 409 | 429 | 503;
 
 const MESSAGES: Record<SocialErrorKind, string> = {
   post_unavailable: "That post is not available to reply to or quote.",
@@ -18,6 +22,10 @@ const MESSAGES: Record<SocialErrorKind, string> = {
   invalid_request: "Some details are missing or invalid.",
   rate_limited: "Too many requests. Wait a moment and try again.",
   service_unavailable: "That could not be done right now. Try again in a moment.",
+  handle_invalid: "Handles are 3 to 20 characters: lowercase letters, numbers and underscores.",
+  handle_reserved: "That handle is reserved.",
+  handle_taken: "That handle is taken.",
+  handle_cooldown: "Handles can change once every 30 days.",
 };
 
 /** An expected, user-facing failure. The HTTP layer turns it into an ErrorEnvelope with this code and status. */
@@ -26,7 +34,7 @@ export class SocialError extends Error {
     readonly code: SocialErrorKind,
     readonly status: SocialErrorStatus,
     message: string = MESSAGES[code],
-    /** Set for rate_limited and service_unavailable so the response can carry Retry-After. */
+    /** Set for rate_limited, service_unavailable and handle_cooldown so the response can carry Retry-After. */
     readonly retryAfterSeconds?: number,
   ) {
     super(message);
@@ -51,6 +59,11 @@ export const WITHOUT_MEDIA: MediaForPosts = {
   forPosts: async () => new Map(),
 };
 
+/** Security events about an account go to the auth module's table; this is its appendEvent, as the server wires it. */
+export interface SocialEvents {
+  append(userId: string, type: AuthEventType, metadata?: Record<string, unknown>): Promise<void>;
+}
+
 export interface SocialDeps {
   repo: SocialRepo;
   /** Images on posts. The media module owns them; this module only passes its transaction along. */
@@ -59,4 +72,6 @@ export interface SocialDeps {
   limits: RateLimitStore;
   log: Logger;
   now: () => Date;
+  /** Records profile and handle changes as security events. Absent in the 2a tests, which record nothing. */
+  events?: SocialEvents;
 }

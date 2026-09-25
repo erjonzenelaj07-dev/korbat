@@ -48,7 +48,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
       turnstile: { verify: async () => true },
       breachChecker: { isBreached: async () => false },
     });
-    const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, now });
+    const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth(), now });
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social });
   });
   afterAll(async () => {

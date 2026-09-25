@@ -1,5 +1,6 @@
-import { and, eq, ne, sql, type SQL, type SQLWrapper } from "drizzle-orm";
-import { blocks, bookmarks, follows, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
+import { and, eq, isNull, ne, sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
+import { isUniqueViolation } from "../auth";
 import { SocialError } from "./context";
 import type { Cursor } from "./cursor";
 import type { StoredPostState } from "./visibility";
@@ -66,7 +67,12 @@ export interface ProfileRow {
   followingCount: number;
   postCount: number;
   createdAt: Date;
+  /** When the handle last changed after onboarding, null until then; the next change waits 30 days. */
+  handleChangedAt: Date | null;
 }
+
+/** How a handle change ended: the handle the profile had before, or why nothing was written. */
+export type HandleChangeResult = { ok: true; from: string } | { ok: false; reason: "not_found" | "unchanged" | "handle_taken" };
 
 export interface Relation {
   following: boolean;
@@ -134,6 +140,7 @@ interface RawProfile {
   following_count: number;
   post_count: number;
   created_at: string;
+  handle_changed_at: string | null;
 }
 
 /** A timestamptz expression as ISO text with milliseconds, in UTC. The expression is a column reference written here, never input. */
@@ -175,6 +182,7 @@ const toProfile = (r: RawProfile): ProfileRow => ({
   followingCount: r.following_count,
   postCount: r.post_count,
   createdAt: new Date(r.created_at),
+  handleChangedAt: r.handle_changed_at ? new Date(r.handle_changed_at) : null,
 });
 
 /** `p` is the posts alias in every read below. */
@@ -217,7 +225,7 @@ const POST_COLUMNS = sql`p.id, p.author_id, p.body, p.reply_to_id, p.quote_of_id
   a.handle as author_handle, a.display_name as author_display_name, (a.verified_at is not null) as author_verified,
   rp.handle as reply_to_handle, pp.author_id as reply_to_author_id, pp.state as reply_to_state`;
 const POST_JOINS = sql`from posts p join profiles a on a.id = p.author_id left join posts pp on pp.id = p.reply_to_id left join profiles rp on rp.id = pp.author_id`;
-const PROFILE_SELECT = sql`select id, handle, display_name, bio, (verified_at is not null) as verified, follower_count, following_count, post_count, ${iso("created_at")} as created_at from profiles`;
+const PROFILE_SELECT = sql`select id, handle, display_name, bio, (verified_at is not null) as verified, follower_count, following_count, post_count, ${iso("created_at")} as created_at, ${iso("handle_changed_at")} as handle_changed_at from profiles`;
 
 /** No block in either direction between the viewer and the account `other` names (a column reference). */
 const otherNotBlocked = (viewer: string | null, other: SQL): SQL =>
@@ -572,6 +580,54 @@ export function createSocialRepo(db: Db) {
       if (ids.length === 0) return new Map();
       const raw = await rows<RawProfile>(sql`${PROFILE_SELECT} where id = any(${uuidArray(ids)})`);
       return new Map(raw.map((r) => [r.id, toProfile(r)]));
+    },
+
+    // ------------------------------------------------------------ the owner's own profile
+
+    /** The owner's own row, which the profile edits start from. A deleted profile is gone for its owner too. */
+    async findProfileById(id: string): Promise<ProfileRow | null> {
+      const [r] = await rows<RawProfile>(sql`${PROFILE_SELECT} where id = ${id}::uuid and deleted_at is null`);
+      return r ? toProfile(r) : null;
+    },
+
+    /** Sets the display name, the bio, or both (`patch` names at least one). False when there is no such live profile. */
+    async updateProfile(id: string, patch: { displayName?: string; bio?: string }): Promise<boolean> {
+      const updated = await db
+        .update(profiles)
+        .set({ ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}), ...(patch.bio !== undefined ? { bio: patch.bio } : {}) })
+        .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)))
+        .returning({ id: profiles.id });
+      return updated.length === 1;
+    },
+
+    /**
+     * Renames the profile in one transaction. Its row is locked first, so two changes by the same
+     * account run one after the other and the second leaves behind the handle the first chose. The
+     * new handle must be nobody else's, in profiles (any case) or in handle_history; that check is
+     * one statement, so one snapshot: an account leaving a handle moves it from profiles to
+     * handle_history in one transaction, and either place shows it as theirs. The handle left behind
+     * is reserved in handle_history (it may be there already, from an earlier stint), then the row
+     * gets the new handle and the change time. Two accounts racing for a free handle are decided by
+     * the unique index on lower(handle): the loser's transaction is rolled back and answers handle_taken.
+     */
+    async changeHandle(id: string, to: string, now: Date): Promise<HandleChangeResult> {
+      try {
+        return await db.transaction(async (tx): Promise<HandleChangeResult> => {
+          const [current] = (await tx.execute(sql`select handle from profiles where id = ${id}::uuid and deleted_at is null for update`)) as unknown as { handle: string }[];
+          if (!current) return { ok: false, reason: "not_found" };
+          if (current.handle.toLowerCase() === to) return { ok: false, reason: "unchanged" };
+          const [claim] = (await tx.execute(sql`
+            select exists (select 1 from profiles where lower(handle) = ${to} and id <> ${id}::uuid)
+              or exists (select 1 from handle_history where handle_lower = ${to} and profile_id <> ${id}::uuid) as taken`)) as unknown as { taken: boolean }[];
+          if (claim!.taken) return { ok: false, reason: "handle_taken" };
+          await tx.insert(handleHistory).values({ handleLower: current.handle.toLowerCase(), profileId: id, changedAt: now }).onConflictDoNothing();
+          await tx.update(profiles).set({ handle: to, handleChangedAt: now }).where(eq(profiles.id, id));
+          return { ok: true, from: current.handle };
+        });
+      } catch (err) {
+        if (isUniqueViolation(err)) return { ok: false, reason: "handle_taken" };
+        throw err;
+      }
     },
   };
 }

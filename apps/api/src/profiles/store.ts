@@ -1,15 +1,24 @@
 import { eq } from "drizzle-orm";
-import { profiles, type Db } from "@korbat/db";
+import { handleHistory, profiles, type Db } from "@korbat/db";
 import { isUniqueViolation, type ProfileStore } from "../auth";
 
-/** Public profiles through the korbat_api pool. The unique index on lower(handle) decides races. */
+/**
+ * Public profiles through the korbat_api pool. Onboarding writes the profile and the reservation of
+ * its handle in one transaction; the unique index on lower(handle) and the primary key of
+ * handle_history decide races and refuse a handle another profile holds or ever held.
+ */
 export function createProfileStore(apiDb: Db): ProfileStore {
   const columns = { id: profiles.id, handle: profiles.handle, displayName: profiles.displayName };
   return {
     async create({ id, handle, displayName }) {
       try {
-        const [profile] = await apiDb.insert(profiles).values({ id, handle, displayName }).returning(columns);
-        return { ok: true, profile: profile! };
+        const profile = await apiDb.transaction(async (tx) => {
+          const [created] = await tx.insert(profiles).values({ id, handle, displayName }).returning(columns);
+          // The handle chosen at onboarding is reserved like every later one (1b design, section 6); a row for it under another profile ends the transaction.
+          await tx.insert(handleHistory).values({ handleLower: handle.toLowerCase(), profileId: id });
+          return created!;
+        });
+        return { ok: true, profile };
       } catch (err) {
         if (isUniqueViolation(err)) return { ok: false, reason: "handle_taken" };
         throw err;

@@ -49,7 +49,16 @@ const jobLock = redisJobLock(redis);
 const stopSweeper = media.startSweeper(jobLock);
 const stopJanitor = auth.startJanitor(jobLock);
 
-const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, media: media.forPosts });
+const social = createSocial({
+  apiDb,
+  rateLimitStore,
+  logger,
+  requireSession: auth.requireSession,
+  requireFreshAuth: auth.requireFreshAuth(),
+  media: media.forPosts,
+  // Profile and handle changes are security events; the social module hands them to the auth module, which owns the table.
+  events: { append: auth.appendEvent },
+});
 
 const app = createApp({
   config,

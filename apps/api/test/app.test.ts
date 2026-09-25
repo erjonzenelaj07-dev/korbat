@@ -46,7 +46,7 @@ function app(checks: Record<string, () => Promise<void>>, advisoryChecks?: Recor
     profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null },
   });
   const apiDb = createDb(config.DATABASE_URL_API, { max: 1 });
-  const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession });
+  const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth() });
   const media = createMedia({
     apiDb,
     uploadsDir: path.join(mediaRoot, "uploads"),

@@ -1,4 +1,4 @@
-import { CreatePostRequest, HandleParam, Pagination, PostId } from "@korbat/contracts";
+import { CreatePostRequest, HandleChangeRequest, HandleParam, Pagination, PostId, ProfileEditRequest } from "@korbat/contracts";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -9,6 +9,7 @@ import { SocialError, type SocialDeps, type ViewerId } from "./context";
 import { setEngagement, type EngagementKind } from "./flows/engagement";
 import { blockedList, mutedList, setBlock, setFollow, setMute } from "./flows/graph";
 import { createPost, deletePost, getPost, thread } from "./flows/posts";
+import { changeHandle, editProfile } from "./flows/profile-edit";
 import { followers, following, profile } from "./flows/profiles";
 import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profilePosts, profileReplies } from "./flows/timelines";
 
@@ -18,9 +19,10 @@ const ProfileParam = z.object({ handle: HandleParam });
 /**
  * Every social endpoint, mounted at `/api`. Handlers only validate, call a flow and shape the
  * response. `guard` is the auth module's requireSession: an onboarded account, with CSRF and
- * Origin already checked for cookie sessions.
+ * Origin already checked for cookie sessions. `fresh` is its requireFreshAuth: a credential proven
+ * in the last five minutes, which a handle change needs on top.
  */
-export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>) {
+export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>, fresh: MiddlewareHandler<AppEnv>) {
   const r = new Hono<AppEnv>();
   const viewer = (c: Context<AppEnv>): ViewerId => c.get("session")?.userId ?? null;
   const me = (c: Context<AppEnv>): string => c.get("session")!.userId;
@@ -87,6 +89,11 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>)
   r.get("/me/bookmarks", guard, validate("query", Pagination), async (c) => c.json(await bookmarkedPosts(deps, me(c), c.req.valid("query"))));
   r.get("/me/blocks", guard, validate("query", Pagination), async (c) => c.json(await blockedList(deps, me(c), c.req.valid("query"))));
   r.get("/me/mutes", guard, validate("query", Pagination), async (c) => c.json(await mutedList(deps, me(c), c.req.valid("query"))));
+
+  // ---------------------------------------------------------------- the viewer's own profile
+
+  r.patch("/me/profile", guard, validate("json", ProfileEditRequest), async (c) => c.json({ profile: await editProfile(deps, me(c), c.req.valid("json")) }));
+  r.post("/me/handle", guard, fresh, validate("json", HandleChangeRequest), async (c) => c.json({ profile: await changeHandle(deps, me(c), c.req.valid("json")) }));
 
   return r;
 }
