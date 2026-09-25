@@ -17,6 +17,14 @@ describe("scrub", () => {
       nested: { token: "[redacted]" },
     });
   });
+  test("a phone number is redacted by its key, as is the `to` field the mailer and the verification provider carry", () => {
+    expect(scrub({ phone: "+447911123456", to: "+447911123456", workflow: [{ channel: "sms", to: "+447911123456" }], nested: { Phone: "+447911123456" } })).toEqual({
+      phone: "[redacted]",
+      to: "[redacted]",
+      workflow: [{ channel: "sms", to: "[redacted]" }],
+      nested: { Phone: "[redacted]" },
+    });
+  });
   test("an Error's message and stack are both scrubbed", () => {
     const err = new Error("relay rejected bob@example.com from 203.0.113.9");
     const out = scrub(err) as { name: string; message: string; stack: string };

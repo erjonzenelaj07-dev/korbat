@@ -85,6 +85,15 @@ export function createAuthRepo(db: Db) {
       await db.update(users).set({ email, emailVerifiedAt: now }).where(eq(users.id, userId));
     },
 
+    /**
+     * The keyed hash of the phone number behind the verified badge, or null to drop it. When another row
+     * holds the same hash, the partial unique index on phone_hash raises the driver's unique violation;
+     * the flow reports that as phone_in_use.
+     */
+    async setPhoneHash(userId: string, phoneHash: string | null): Promise<void> {
+      await db.update(users).set({ phoneHash }).where(eq(users.id, userId));
+    },
+
     /** Setting or clearing a password also clears any password lockout. */
     async setPasswordHash(userId: string, passwordHash: string | null, now: Date): Promise<void> {
       await db

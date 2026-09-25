@@ -19,11 +19,15 @@ import { createAuthRepo, type AuthEventType } from "./repo";
 import { authRoutes, meHandler } from "./routes";
 import { createSessions } from "./sessions";
 import { cloudflareTurnstile, type TurnstileVerifier } from "./turnstile";
+import { devProvider } from "./verify/dev";
+import type { VerificationProvider } from "./verify/provider";
+import { vonageProvider } from "./verify/vonage";
 
 export type { ProfileStore } from "./context";
 export type { AuthEventType, UserRole } from "./repo";
 export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
+export type { VerificationProvider } from "./verify/provider";
 export { AuthError, isUniqueViolation } from "./context";
 export { grantRole } from "./admin";
 export { checkHandle } from "./handles";
@@ -43,7 +47,29 @@ export interface CreateAuthOptions {
   kv?: KeyValueStore;
   turnstile?: TurnstileVerifier;
   breachChecker?: BreachChecker;
+  /**
+   * The phone verification provider behind the verified badge. Absent or null, the badge routes answer
+   * badge_unavailable; the server passes verificationProviderFrom(config), tests the development provider.
+   */
+  verify?: VerificationProvider | null;
   now?: () => Date;
+}
+
+/**
+ * The provider VERIFY_PROVIDER names: none for `off` (the badge is hidden), the fixed-code one for `dev`,
+ * Vonage Verify with the configured credentials and brand for `vonage`. `fetchFn` is for tests only.
+ */
+export function verificationProviderFrom(config: Config, fetchFn?: typeof fetch): VerificationProvider | null {
+  switch (config.VERIFY_PROVIDER) {
+    case "off":
+      return null;
+    case "dev":
+      return devProvider();
+    case "vonage":
+      // Production refuses this configuration in config.ts; development gets the same refusal here, at start-up, rather than a failing first request.
+      if (!config.VONAGE_API_KEY || !config.VONAGE_API_SECRET) throw new Error("VERIFY_PROVIDER=vonage needs VONAGE_API_KEY and VONAGE_API_SECRET");
+      return vonageProvider({ apiKey: config.VONAGE_API_KEY, apiSecret: config.VONAGE_API_SECRET, brand: config.VERIFY_BRAND, fetch: fetchFn });
+  }
 }
 
 export function createAuth(options: CreateAuthOptions) {
@@ -61,6 +87,7 @@ export function createAuth(options: CreateAuthOptions) {
     turnstile: options.turnstile ?? cloudflareTurnstile(options.config.TURNSTILE_SECRET_KEY),
     breachChecker: options.breachChecker ?? hibpChecker(),
     profiles: options.profiles,
+    verify: options.verify ?? null,
     config: authConfigFrom(options.config),
     log: options.logger,
     now,

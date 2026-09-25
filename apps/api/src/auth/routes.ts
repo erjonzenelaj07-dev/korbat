@@ -1,4 +1,6 @@
 import {
+  BadgeStartRequest,
+  BadgeVerifyRequest,
   EmailChangeStartRequest,
   EmailChangeVerifyRequest,
   EmailStartRequest,
@@ -22,6 +24,7 @@ import { validate } from "../lib/validate";
 import { AuthError, type AuthDeps, type RequestContext } from "./context";
 import { clearSessionCookies, setSessionCookies } from "./cookies";
 import { listSessions, me, revokeAllSessions, revokeSession, signOut } from "./flows/account";
+import { removeBadge, startBadge, verifyBadge } from "./flows/badge";
 import { startEmail, verifyEmail } from "./flows/email";
 import { startEmailChange, verifyEmailChange } from "./flows/email-change";
 import { confirmTotp, disableTotp, regenerateRecoveryCodes, setupTotp, verifyMfa } from "./flows/mfa";
@@ -109,6 +112,19 @@ export function authRoutes(deps: AuthDeps) {
   r.post("/email/change/verify", requireSession, fresh, validate("json", EmailChangeVerifyRequest), async (c) =>
     c.json(await verifyEmailChange(deps, currentSession(c), c.req.valid("json"))),
   );
+
+  r.post("/badge/start", requireSession, fresh, validate("json", BadgeStartRequest), async (c) =>
+    c.json(await startBadge(deps, currentSession(c), c.req.valid("json"), requestContext(c))),
+  );
+
+  r.post("/badge/verify", requireSession, fresh, validate("json", BadgeVerifyRequest), async (c) =>
+    c.json(await verifyBadge(deps, currentSession(c), c.req.valid("json"))),
+  );
+
+  r.delete("/badge", requireSession, fresh, async (c) => {
+    await removeBadge(deps, currentSession(c));
+    return c.body(null, 204);
+  });
 
   r.post("/password/signin", validate("json", PasswordSigninRequest), async (c) =>
     firstFactor(c, await passwordSignIn(deps, asWeb(c, c.req.valid("json")), requestContext(c))),

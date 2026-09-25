@@ -9,6 +9,7 @@ import type { BreachChecker } from "./passwords";
 import type { AuthRepo } from "./repo";
 import type { Sessions } from "./sessions";
 import type { TurnstileVerifier } from "./turnstile";
+import type { VerificationProvider } from "./verify/provider";
 
 export interface AuthConfig {
   appOrigin: string;
@@ -22,6 +23,8 @@ export interface AuthConfig {
   termsVersion: string;
   /** How the client address is read; see TRUST_PROXY in config.ts. */
   trustProxy: "cloudflare" | "caddy" | "none";
+  /** Who checks the phone number behind the verified badge; see VERIFY_PROVIDER in config.ts. With `off` the badge routes answer badge_unavailable. */
+  verifyProvider: "off" | "dev" | "vonage";
 }
 
 export function authConfigFrom(config: Config): AuthConfig {
@@ -34,6 +37,7 @@ export function authConfigFrom(config: Config): AuthConfig {
     totpPreviousKeys: config.TOTP_ENC_KEYS_PREVIOUS.map(parseVersionedKey),
     termsVersion: config.TERMS_VERSION,
     trustProxy: config.TRUST_PROXY,
+    verifyProvider: config.VERIFY_PROVIDER,
   };
 }
 
@@ -42,6 +46,8 @@ export interface ProfileStore {
   create(input: { id: string; handle: string; displayName: string }): Promise<{ ok: true; profile: Profile } | { ok: false; reason: "handle_taken" }>;
   /** The owner's view of their profile, which /me returns: the public facts plus the handle-change date and the badge. */
   find(id: string): Promise<MeProfile | null>;
+  /** Sets or clears the badge (profiles.verified_at), which the auth module decides but cannot write itself. */
+  setVerified(id: string, at: Date | null): Promise<void>;
 }
 
 export interface AuthDeps {
@@ -53,6 +59,8 @@ export interface AuthDeps {
   turnstile: TurnstileVerifier;
   breachChecker: BreachChecker;
   profiles: ProfileStore;
+  /** The phone verification provider behind the badge, or null when VERIFY_PROVIDER is off. */
+  verify: VerificationProvider | null;
   config: AuthConfig;
   log: Logger;
   now: () => Date;
@@ -64,7 +72,7 @@ export interface RequestContext {
   userAgent: string | undefined;
 }
 
-export type AuthErrorStatus = 400 | 401 | 403 | 409 | 429 | 503;
+export type AuthErrorStatus = 400 | 401 | 403 | 404 | 409 | 429 | 503;
 
 /** The auth codes plus the shared one the module also raises, as the social and media modules do: a well-formed request that asks for nothing, such as the current address as the new one. */
 export type AuthErrorKind = AuthErrorCode | "invalid_request";

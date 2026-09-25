@@ -10,6 +10,7 @@ import { hashPassword } from "../../src/auth/passwords";
 import type { AuthRepo } from "../../src/auth/repo";
 import { createSessions } from "../../src/auth/sessions";
 import { currentStep, hotp } from "../../src/auth/totp";
+import { devProvider } from "../../src/auth/verify/dev";
 import { MemoryMailer } from "../../src/mail/memory";
 import { fakeClock } from "./auth-fixtures";
 
@@ -27,6 +28,10 @@ export function memoryProfiles(): ProfileStore {
     },
     async find(id) {
       return byId.get(id) ?? null;
+    },
+    async setVerified(id, at) {
+      const profile = byId.get(id);
+      if (profile) profile.verified = at !== null;
     },
   };
 }
@@ -52,6 +57,7 @@ export function flowHarness(repo: AuthRepo) {
     totpPreviousKeys: [],
     termsVersion: TEST_TERMS,
     trustProxy: "none",
+    verifyProvider: "dev",
   };
   const deps: AuthDeps = {
     repo,
@@ -64,6 +70,7 @@ export function flowHarness(repo: AuthRepo) {
     turnstile: { verify: async (token) => token !== "fail" },
     breachChecker: { isBreached: async (password) => password.includes("breached") },
     profiles: memoryProfiles(),
+    verify: devProvider(),
     log: pino({ level: "silent" }),
   };
   const ctx: RequestContext = { ipHash: randomToken(), userAgent: CHROME_WINDOWS };

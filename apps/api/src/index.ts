@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 import Redis from "ioredis";
 import { closeDb, createDb, ping } from "@korbat/db";
 import { createApp } from "./app";
-import { createAuth } from "./auth";
+import { createAuth, verificationProviderFrom } from "./auth";
 import { loadConfig } from "./config";
 import { redisJobLock } from "./lib/jobs";
 import { createLogger } from "./lib/logger";
@@ -28,6 +28,8 @@ const auth = createAuth({
   redis,
   mailer: smtpMailer(config.SMTP_URL, config.MAIL_FROM, { requireTls: config.NODE_ENV === "production" }),
   profiles: createProfileStore(apiDb),
+  // Null when VERIFY_PROVIDER is off: the badge routes then answer badge_unavailable and the app hides the section.
+  verify: verificationProviderFrom(config),
 });
 
 const media = createMedia({

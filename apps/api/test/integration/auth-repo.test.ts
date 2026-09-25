@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { closeDb, createDb, type Db } from "@korbat/db";
+import { isUniqueViolation } from "../../src/auth/context";
 import { randomToken, sha256Hex } from "../../src/auth/crypto";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
@@ -71,6 +72,24 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth repo", () => {
     expect(row.failedLogins).toBe(0);
     expect(row.lockedUntil).toBeNull();
     expect(row.passwordChangedAt).not.toBeNull();
+  });
+
+  test("one phone hash per account: the partial unique index refuses a second account's identical hash, and a cleared hash frees it", async () => {
+    const first = await newUserWithDevice(repo);
+    const second = await newUserWithDevice(repo);
+    const hash = sha256Hex(randomToken());
+    await repo.setPhoneHash(first.user.id, hash);
+    expect((await repo.findUserById(first.user.id))!.phoneHash).toBe(hash);
+    const conflict = await repo.setPhoneHash(second.user.id, hash).then(() => null, (err: unknown) => err);
+    expect(isUniqueViolation(conflict)).toBe(true);
+    expect((await repo.findUserById(second.user.id))!.phoneHash).toBeNull();
+    // The holder may write its own hash again; accounts without a number stay out of the index; a cleared hash is free to take.
+    await repo.setPhoneHash(first.user.id, hash);
+    await repo.setPhoneHash(second.user.id, null);
+    await repo.setPhoneHash(first.user.id, null);
+    await repo.setPhoneHash(second.user.id, hash);
+    expect((await repo.findUserById(first.user.id))!.phoneHash).toBeNull();
+    expect((await repo.findUserById(second.user.id))!.phoneHash).toBe(hash);
   });
 
   test("only live sessions are active, listed and revoked", async () => {

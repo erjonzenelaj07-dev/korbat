@@ -35,5 +35,8 @@ export function createProfileStore(apiDb: Db): ProfileStore {
       // The badge is a fact of the profile row (verified_at), read here so the account screen sees it on /me.
       return { ...pub, handleChangedAt: handleChangedAt?.toISOString() ?? null, verified: verifiedAt !== null };
     },
+    async setVerified(id, at) {
+      await apiDb.update(profiles).set({ verifiedAt: at }).where(eq(profiles.id, id));
+    },
   };
 }

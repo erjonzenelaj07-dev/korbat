@@ -7,7 +7,8 @@ const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 // Full form, compressed form with "::", and leading "::" form. Requires "::" or 8 groups so times like 10:30:45 are untouched.
 const IPV6 = /(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?|::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})/gi;
-const SECRET_KEYS = new Set(["authorization", "cookie", "set-cookie", "password", "token", "secret", "session", "code", "otp"]);
+// phone, and to (the field Vonage takes the number in, and the mailer its address), keep a phone number out of every log line (1b design, section 10).
+const SECRET_KEYS = new Set(["authorization", "cookie", "set-cookie", "password", "token", "secret", "session", "code", "otp", "phone", "to"]);
 
 /** Recursively masks emails, IPs, and secret-bearing keys. Applied to every log line. */
 export function scrub(value: unknown, key?: string): unknown {
