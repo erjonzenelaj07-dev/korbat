@@ -103,3 +103,23 @@ python docs/superpowers/prompts/account-lifecycle-1b/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-09-25)
+
+The nine prompts were replayed into this repository by the scratch tooling's `replay.py`. It ran each prompt's steps with no model session, through the same gated runner as the dry run. Every red step failed as recorded, every gate passed, and both stack rebuilds, in Tasks 7 and 8, ended with the smoke test passing. The commits are:
+
+| Task | Commit |
+|---|---|
+| 1 | `b99b4b3` |
+| 2 | `c1b4528` |
+| 3 | `0b4a71f` |
+| 4 | `d8c3508` |
+| 5 | `1f8ffcc` |
+| 6 | `8e1dddd` |
+| 7 | `a3f7a5b` |
+| 8 | `756f127` |
+| 9 | `ab0c549` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and every file is byte-identical, with one exception below. After every task, the whole tree outside `docs/superpowers`, `pnpm-workspace.yaml` and the migrations matched the dry run. `verify_prompts.py` reproduces all 116 files.
+- **One allowed difference, in Task 1.** `packages/db/migrations/meta/0009_snapshot.json` and `meta/_journal.json` end with a newline here and without one in the dry run. drizzle-kit writes these files without a trailing newline; `write_blocks.py` writes the prompt's block, which ends with one. drizzle reads both forms, and its next `generate` rewrites the journal without the newline.
+- **The review that shaped Task 8.** After Task 7, an adversarial review of the range read the first seven commits, with six reviewers and three refuting lenses per finding. It proposed 26 findings: 19 were upheld and are fixed in Task 8, and 7 were refuted. The refuted ones are listed under the dry-run-only checks above.
