@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { AuthError } from "../../src/auth/context";
 import { randomToken } from "../../src/auth/crypto";
-import { DELETE_STARTS_PER_HOUR, confirmDeletion, startDeletion } from "../../src/auth/flows/deletion";
+import { DELETE_STARTS_PER_HOUR, confirmDeletion, finishPurge, startDeletion } from "../../src/auth/flows/deletion";
 import { CODE_TTL_MS, MAX_CODE_ATTEMPTS, MIN_START_RESPONSE_MS, flowKey, startEmail } from "../../src/auth/flows/email";
 import { passwordSignIn } from "../../src/auth/flows/password";
 import { HOUR, MINUTE } from "../../src/auth/limits";
@@ -146,6 +146,99 @@ describe("account deletion: the confirmation", () => {
     expect(h.users.get(ada.user.id)!.deletedAt).toEqual(h.now());
     expect(h.mailer.sent.map((m) => m.template)).toEqual(["delete_account_code"]);
     expect(h.events.map((e) => e.type)).toEqual(["account_deleted"]);
+  });
+
+  test("a take-down whose transaction fails midway leaves the account live with its sessions, devices and codes, and tells nobody", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const other = h.session(ada.user.id);
+    await h.deps.repo.createEmailCode({ flowId: randomToken(), email: "ada@korbat.local", userId: ada.user.id, purpose: "login", codeHash: "h", expiresAt: new Date(h.now().getTime() + CODE_TTL_MS), ipHash: h.ctx.ipHash });
+    const { flowId, code } = await start(h, ada.session, "ada@korbat.local");
+    h.faults.add("takeDown");
+    await expect(confirmDeletion(h.deps, ada.session, { flowId, code, handle: "ada" })).rejects.toThrow(/midway/);
+
+    expect(h.users.get(ada.user.id)!.deletedAt).toBeNull();
+    expect(await h.deps.repo.findUserById(ada.user.id)).toBeDefined();
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null, null]);
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBeNull();
+    expect(h.devices.filter((d) => d.userId === ada.user.id)).toHaveLength(2);
+    expect(h.codes.map((c) => c.purpose)).toEqual(["login", "delete_account"]);
+    expect(h.events).toEqual([]);
+    // Nobody is told the account is gone while it is not.
+    expect(h.mailer.sent.map((m) => m.template)).toEqual(["delete_account_code"]);
+
+    // The code is spent, but the account is its owner's, who can start again and finish.
+    h.faults.clear();
+    const again = await start(h, ada.session, "ada@korbat.local");
+    await confirmDeletion(h.deps, ada.session, { flowId: again.flowId, code: again.code, handle: "ada" });
+    expect(h.users.get(ada.user.id)!.deletedAt).toEqual(h.now());
+  });
+
+  test("a cache failure after the take-down does not fail the confirmation: the rows are revoked, the owner is told, and only the tombstones are missing", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const { flowId, code } = await start(h, ada.session, "ada@korbat.local");
+    const set = h.kv.set.bind(h.kv);
+    h.kv.set = async () => {
+      throw new Error("the cache is unreachable");
+    };
+    await confirmDeletion(h.deps, ada.session, { flowId, code, handle: "ada" });
+    h.kv.set = set;
+    expect(h.users.get(ada.user.id)!.deletedAt).toEqual(h.now());
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now()]);
+    expect(h.devices.filter((d) => d.userId === ada.user.id)).toEqual([]);
+    expect(h.events.map((e) => e.type)).toEqual(["account_deleted"]);
+    expect(h.mailer.sent.map((m) => m.template)).toEqual(["delete_account_code", "account_deleted"]);
+    // A cached copy of the session can live out its minute; the revoked row is what every other lookup reads.
+    expect(await h.kv.get(`sess:${ada.session.sessionId}`)).toBeNull();
+  });
+});
+
+describe("account deletion: the purge's last step", () => {
+  test("repeats step 1's rows for an account marked deleted by hand, with tombstones, then anonymises the row; a repeat changes nothing", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const other = h.session(ada.user.id);
+    Object.assign(h.users.get(ada.user.id)!, { passwordHash: "hash", phoneHash: "phone", totpSecretEnc: "v1:secret", totpEnabledAt: h.now(), recoveryCodesHash: ["r"] });
+    await h.deps.repo.createEmailCode({ flowId: randomToken(), email: "ada@korbat.local", userId: ada.user.id, purpose: "login", codeHash: "h", expiresAt: new Date(h.now().getTime() + CODE_TTL_MS), ipHash: h.ctx.ipHash });
+    const bob = h.user("bob@korbat.local");
+    // Marked deleted and nothing else, as a take-down that stopped after the mark would leave it.
+    await h.deps.repo.markDeleted(ada.user.id, h.now());
+    h.advance(1000);
+    await finishPurge(h.deps, ada.user.id);
+
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    expect(h.devices.map((d) => d.userId)).toEqual([bob.user.id]);
+    expect(h.codes).toEqual([]);
+    expect(h.users.get(ada.user.id)).toMatchObject({
+      email: `deleted:${ada.user.id}`,
+      passwordHash: null,
+      phoneHash: null,
+      totpSecretEnc: null,
+      totpEnabledAt: null,
+      recoveryCodesHash: [],
+      termsVersion: null,
+      purgedAt: h.now(),
+    });
+    // Nothing is recorded or sent: the event and the notice belong to the confirmation.
+    expect(h.events).toEqual([]);
+    expect(h.mailer.sent).toEqual([]);
+
+    const purged = structuredClone(h.users.get(ada.user.id));
+    h.advance(1000);
+    await finishPurge(h.deps, ada.user.id);
+    expect(h.users.get(ada.user.id)).toEqual(purged);
+  });
+
+  test("leaves a live account alone", async () => {
+    const h = memoryFlowHarness();
+    const bob = h.user("bob@korbat.local");
+    await finishPurge(h.deps, bob.user.id);
+    expect(h.sessions.map((s) => s.revokedAt)).toEqual([null]);
+    expect(await h.kv.get(`sess:${bob.session.sessionId}`)).toBeNull();
+    expect(h.devices).toHaveLength(1);
+    expect(h.users.get(bob.user.id)).toMatchObject({ email: "bob@korbat.local", deletedAt: null, purgedAt: null });
   });
 });
 

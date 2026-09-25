@@ -12,7 +12,15 @@ describe("mail templates", () => {
     expect(r.html).not.toMatch(/<img|<a |https?:\/\//);
   });
   test("every template renders and HTML escapes its data", () => {
-    const data = { code: "123456", deviceLabel: "<b>Chrome</b> on Windows", notMeUrl: "http://localhost:8081/not-me/abc", minutes: "15", count: "3", email: "new<address>@example.com" };
+    const data = {
+      code: "123456",
+      deviceLabel: "<b>Chrome</b> on Windows",
+      notMeUrl: "http://localhost:8081/not-me/abc",
+      revertUrl: "http://localhost:8081/email-revert/def",
+      minutes: "15",
+      count: "3",
+      email: "new<address>@example.com",
+    };
     for (const template of [
       "sign_in_code",
       "sign_up_code",
@@ -26,6 +34,7 @@ describe("mail templates", () => {
       "sessions_revoked_all",
       "email_change_code",
       "email_changed",
+      "email_change_reverted",
       "badge_verified",
       "badge_removed",
       "delete_account_code",
@@ -43,15 +52,26 @@ describe("mail templates", () => {
     const emailChanged = renderTemplate("email_changed", data);
     expect(emailChanged.html).toContain("new&lt;address&gt;@example.com");
     expect(emailChanged.text).toContain("new<address>@example.com");
+    expect(emailChanged.text).toContain("http://localhost:8081/email-revert/def");
   });
   test("the account lifecycle templates say what happened and what to do if it was not the owner", () => {
     const changeCode = renderTemplate("email_change_code", { code: "654321" });
     expect(changeCode.text).toContain("654321");
     expect(changeCode.text).toContain("10 minutes");
-    const changed = renderTemplate("email_changed", { email: "new@example.com" });
+    const changed = renderTemplate("email_changed", { email: "new@example.com", revertUrl: "http://localhost:8081/email-revert/abc" });
     expect(changed.text).toContain("new@example.com");
     expect(changed.text).toMatch(/stays? signed in/);
-    expect(changed.text).toMatch(/change it back/);
+    expect(changed.text).toContain(
+      "If this was not you, open this link within 24 hours to move the account back to this address and sign out every session: http://localhost:8081/email-revert/abc",
+    );
+    // A change while an earlier change's link is still out sends no link of its own, and says where the one that works went.
+    const again = renderTemplate("email_changed", { email: "new@example.com" });
+    expect(again.text).toContain("new@example.com");
+    expect(again.text).not.toMatch(/https?:\/\//);
+    expect(again.text).toMatch(/less than a day ago/);
+    const reverted = renderTemplate("email_change_reverted", {});
+    expect(reverted.text).toMatch(/back at this address/);
+    expect(reverted.text).toMatch(/every session/i);
     const deleteCode = renderTemplate("delete_account_code", { code: "111222" });
     expect(deleteCode.text).toContain("111222");
     expect(deleteCode.text).toMatch(/delete/i);

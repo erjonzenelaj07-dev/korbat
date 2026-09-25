@@ -11,6 +11,7 @@ export type TemplateName =
   | "sessions_revoked_all"
   | "email_change_code"
   | "email_changed"
+  | "email_change_reverted"
   | "badge_verified"
   | "badge_removed"
   | "delete_account_code"

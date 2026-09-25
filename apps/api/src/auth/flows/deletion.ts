@@ -40,12 +40,27 @@ export async function startDeletion(deps: AuthDeps, session: Session, ctx: Reque
 }
 
 /**
+ * Writes the cache tombstones of sessions the database has just revoked, so a cached copy cannot serve
+ * them for the rest of its minute. Best effort: the rows are revoked whatever happens here, so a failure
+ * only lets a cached copy live out that minute, and the account is not left half gone because the cache
+ * was unreachable.
+ */
+async function tombstoneQuietly(deps: AuthDeps, userId: string, sessionIds: readonly string[]): Promise<void> {
+  try {
+    await deps.sessions.tombstone(sessionIds);
+  } catch (err) {
+    deps.log.error({ err, userId }, "account deletion: the session tombstones could not be written; the sessions are revoked in the database");
+  }
+}
+
+/**
  * The auth side of a deletion, step 1 of section 7.6: the typed handle must be the account's own,
- * then the code must be right; then the account is told, marked deleted (every lookup treats the row
- * as absent from here, so no request can succeed against it while the purge runs), every session is
- * revoked with a tombstone so the cache cannot revive one, its devices and codes go, and the event is
- * recorded. The row itself is anonymised by finishPurge, once the account module has purged the
- * other schemas.
+ * then the code must be right; then, in one transaction, the account is marked deleted (every lookup
+ * treats the row as absent from here, so no request can succeed against it while the purge runs),
+ * every session revoked, its devices and codes deleted and the event recorded; then the revoked
+ * sessions get their tombstones, so the cache cannot revive one, and the account is told. Nothing
+ * after the transaction can fail the request: the account is gone once it commits. The row itself is
+ * anonymised by finishPurge, once the account module has purged the other schemas.
  */
 export async function confirmDeletion(deps: AuthDeps, session: Session, input: DeleteConfirmRequest): Promise<void> {
   const user = await deps.repo.findUserById(session.userId);
@@ -60,12 +75,21 @@ export async function confirmDeletion(deps: AuthDeps, session: Session, input: D
   // Taken, not read: whatever happens next, this flow is over and the code is spent.
   if (!(await deps.kv.take(flowKey(input.flowId)))) throw new AuthError("code_expired", 400);
 
-  // Told first, while the address still belongs to the account; best effort, since no mail failure may keep an account its owner has given up.
+  const revoked = await deps.repo.takeDown(user.id, deps.now(), session.deviceId);
+  await tombstoneQuietly(deps, user.id, revoked);
+  // Told once the account is gone, and never before: a take-down that failed leaves the account as it was. The address
+  // still belongs to the row until finishPurge; best effort, since no mail failure may keep an account its owner has given up.
   await notifyAccount(deps, user.email, "account_deleted");
-  await deps.repo.markDeleted(user.id, deps.now());
-  await deps.sessions.revokeAll(user.id);
-  // The devices go after the revocation: their session rows go with them by cascade, and the tombstones must be written by then.
-  await deps.repo.deleteDevices(user.id);
-  await deps.repo.deleteEmailCodes(user.id);
-  await deps.repo.appendEvent({ userId: user.id, type: "account_deleted", deviceId: session.deviceId });
+}
+
+/**
+ * Step 4 of section 7.6, which the purge job runs for every account left half deleted: the rows of
+ * step 1 again (sessions still live revoked with their tombstones, devices and codes deleted), for an
+ * account marked deleted without the rest, then the row anonymised and marked purged. Both parts change
+ * nothing for an account that is live or already purged, so the job can repeat it after any failure.
+ */
+export async function finishPurge(deps: AuthDeps, userId: string): Promise<void> {
+  const revoked = await deps.repo.finishTakeDown(userId, deps.now());
+  await tombstoneQuietly(deps, userId, revoked);
+  await deps.repo.finishPurge(userId, deps.now());
 }

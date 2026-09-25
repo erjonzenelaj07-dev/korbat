@@ -3,6 +3,7 @@ import {
   BadgeVerifyRequest,
   EmailChangeStartRequest,
   EmailChangeVerifyRequest,
+  EmailRevertRequest,
   EmailStartRequest,
   EmailVerifyRequest,
   MfaVerifyRequest,
@@ -26,7 +27,7 @@ import { clearSessionCookies, setSessionCookies } from "./cookies";
 import { listSessions, me, revokeAllSessions, revokeSession, signOut } from "./flows/account";
 import { removeBadge, startBadge, verifyBadge } from "./flows/badge";
 import { startEmail, verifyEmail } from "./flows/email";
-import { startEmailChange, verifyEmailChange } from "./flows/email-change";
+import { revertEmailChange, startEmailChange, verifyEmailChange } from "./flows/email-change";
 import { confirmTotp, disableTotp, regenerateRecoveryCodes, setupTotp, verifyMfa } from "./flows/mfa";
 import { notMe } from "./flows/not-me";
 import { passwordSignIn, setPassword } from "./flows/password";
@@ -112,6 +113,12 @@ export function authRoutes(deps: AuthDeps) {
   r.post("/email/change/verify", requireSession, fresh, validate("json", EmailChangeVerifyRequest), async (c) =>
     c.json(await verifyEmailChange(deps, currentSession(c), c.req.valid("json"))),
   );
+
+  // The undo link from the email_changed notice: no session, like the not-me link, since the link itself is the credential.
+  r.post("/email/revert", validate("json", EmailRevertRequest), async (c) => {
+    await revertEmailChange(deps, c.req.valid("json"), requestContext(c));
+    return c.body(null, 204);
+  });
 
   r.post("/badge/start", requireSession, fresh, validate("json", BadgeStartRequest), async (c) =>
     c.json(await startBadge(deps, currentSession(c), c.req.valid("json"), requestContext(c))),

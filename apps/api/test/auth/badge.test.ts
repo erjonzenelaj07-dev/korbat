@@ -1,7 +1,17 @@
 import { describe, expect, test } from "vitest";
 import { AuthError } from "../../src/auth/context";
 import { randomToken } from "../../src/auth/crypto";
-import { BADGE_STARTS_PER_HOUR, badgeKey, removeBadge, startBadge, verifyBadge, type PendingBadge } from "../../src/auth/flows/badge";
+import {
+  BADGE_STARTS_PER_DAY,
+  BADGE_STARTS_PER_HOUR,
+  BADGE_STARTS_PER_IP_PER_HOUR,
+  badgeAttemptsKey,
+  badgeKey,
+  removeBadge,
+  startBadge,
+  verifyBadge,
+  type PendingBadge,
+} from "../../src/auth/flows/badge";
 import { CODE_TTL_MS, MAX_CODE_ATTEMPTS } from "../../src/auth/flows/email";
 import { phoneHash } from "../../src/auth/identifiers";
 import { HOUR } from "../../src/auth/limits";
@@ -40,11 +50,38 @@ const unreachable: VerificationProvider = {
   },
 };
 
+/** The development provider with every call counted, so a test can tell how many requests reached it. */
+function counting(): { provider: VerificationProvider; calls: { start: number; check: number } } {
+  const inner = devProvider();
+  const calls = { start: 0, check: 0 };
+  return {
+    calls,
+    provider: {
+      start: async (phone) => {
+        calls.start += 1;
+        return inner.start(phone);
+      },
+      check: async (reference, code) => {
+        calls.check += 1;
+        return inner.check(reference, code);
+      },
+    },
+  };
+}
+
 const pending = async (h: MemoryFlowHarness, flowId: string) => JSON.parse((await h.kv.get(badgeKey(flowId)))!) as PendingBadge;
 
 /** Starts a verification for the number and returns its flow id. */
 async function start(h: MemoryFlowHarness, session: Session, phone = PHONE): Promise<string> {
   return (await startBadge(h.deps, session, { phone }, h.ctx)).flowId;
+}
+
+/** Four wrong codes and then the right one: the right one is the fifth attempt, the last the flow allows. */
+async function fourWrongThenRight(h: MemoryFlowHarness, session: Session, flowId: string): Promise<void> {
+  for (let i = 0; i < MAX_CODE_ATTEMPTS - 1; i++) {
+    expect(await failure(verifyBadge(h.deps, session, { flowId, code: WRONG }))).toMatchObject({ code: "invalid_code" });
+  }
+  expect(await verifyBadge(h.deps, session, { flowId, code: DEV_CODE })).toEqual({ verified: true });
 }
 
 /** Starts and verifies with the development code, so the account holds the badge for the number. */
@@ -75,7 +112,6 @@ describe("badge: the start step", () => {
       userId: ada.user.id,
       phoneHash: phoneHash(h.deps.config.authHmacKey, PHONE),
       reference: expect.any(String),
-      attempts: 0,
       expiresAt: h.now().getTime() + CODE_TTL_MS,
     });
     // Nothing about the account changes until the code is right, and nobody is told.
@@ -119,22 +155,101 @@ describe("badge: the start step", () => {
     h.deps.verify = unreachable;
     expect(await failure(startBadge(h.deps, ada.session, { phone: PHONE }, h.ctx))).toMatchObject({ code: "verify_unavailable", status: 503 });
     expect(await h.kv.get(`rl:badge-start:${ada.user.id}`)).toBe("1");
+    expect(await h.kv.get(`rl:badge-start:ip:${h.ctx.ipHash}`)).toBe("1");
+    expect(await h.kv.get("rl:badge-start:all")).toBe("1");
     expect(h.mailer.sent).toEqual([]);
     expect(h.events).toEqual([]);
+  });
+
+  test("allows 10 starts an hour from one address, whatever the accounts and numbers, then rate_limited before the provider is asked", async () => {
+    const h = memoryFlowHarness();
+    const { provider, calls } = counting();
+    h.deps.verify = provider;
+    // Four accounts, each within its own three an hour, and a new number every time: only the address is shared.
+    const accounts = ["a", "b", "c", "d"].map((name) => h.user(`${name}@korbat.local`));
+    for (let i = 0; i < BADGE_STARTS_PER_IP_PER_HOUR; i++) await start(h, accounts[Math.floor(i / BADGE_STARTS_PER_HOUR)]!.session, `+4479111234${String(i).padStart(2, "0")}`);
+    expect(calls.start).toBe(BADGE_STARTS_PER_IP_PER_HOUR);
+    const refused = await failure(start(h, accounts[3]!.session, "+447911123499"));
+    expect(refused).toMatchObject({ code: "rate_limited", status: 429, retryAfterSeconds: HOUR / 1000 });
+    expect(calls.start).toBe(BADGE_STARTS_PER_IP_PER_HOUR);
+    // Another address has a window of its own, and this one opens again after the hour.
+    await startBadge(h.deps, accounts[3]!.session, { phone: "+447911123498" }, { ...h.ctx, ipHash: randomToken() });
+    expect(calls.start).toBe(BADGE_STARTS_PER_IP_PER_HOUR + 1);
+    h.advance(HOUR + 1);
+    await start(h, accounts[0]!.session, "+447911123497");
+    expect(calls.start).toBe(BADGE_STARTS_PER_IP_PER_HOUR + 2);
+  });
+
+  test("allows 200 starts a day on the whole instance, then rate_limited for a day before the provider is asked", async () => {
+    const h = memoryFlowHarness();
+    const { provider, calls } = counting();
+    h.deps.verify = provider;
+    // Every start from a fresh account, address and number, so only the instance-wide ceiling is shared.
+    const fresh = (i: number) => ({ session: h.user(`crowd-${i}@korbat.local`).session, ctx: { ...h.ctx, ipHash: randomToken() }, phone: `+3361${String(i).padStart(7, "0")}` });
+    for (let i = 0; i < BADGE_STARTS_PER_DAY; i++) {
+      const { session, ctx, phone } = fresh(i);
+      await startBadge(h.deps, session, { phone }, ctx);
+    }
+    expect(calls.start).toBe(BADGE_STARTS_PER_DAY);
+    const next = fresh(BADGE_STARTS_PER_DAY);
+    const refused = await failure(startBadge(h.deps, next.session, { phone: next.phone }, next.ctx));
+    expect(refused).toMatchObject({ code: "rate_limited", status: 429, retryAfterSeconds: (24 * HOUR) / 1000 });
+    expect(calls.start).toBe(BADGE_STARTS_PER_DAY);
+    // Still closed an hour later, when every per-account, per-address and per-number window has passed; open again after the day.
+    h.advance(HOUR + 1);
+    expect(await failure(startBadge(h.deps, next.session, { phone: next.phone }, next.ctx))).toMatchObject({ code: "rate_limited" });
+    h.advance(23 * HOUR);
+    await startBadge(h.deps, next.session, { phone: next.phone }, next.ctx);
+    expect(calls.start).toBe(BADGE_STARTS_PER_DAY + 1);
+  });
+
+  test("a start refused by the account's own limit does not count against the address or the instance", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    for (let i = 0; i < BADGE_STARTS_PER_HOUR; i++) await start(h, ada.session, `+44791112345${i}`);
+    for (let i = 0; i < 5; i++) expect(await failure(start(h, ada.session, "+447911123459"))).toMatchObject({ code: "rate_limited" });
+    // One account cannot use up the address's or the instance's allowance with starts it was never going to get.
+    expect(await h.kv.get(`rl:badge-start:ip:${h.ctx.ipHash}`)).toBe(String(BADGE_STARTS_PER_HOUR));
+    expect(await h.kv.get("rl:badge-start:all")).toBe(String(BADGE_STARTS_PER_HOUR));
   });
 });
 
 describe("badge: the verification step", () => {
-  test("a wrong code is invalid_code and counts an attempt; the right one still works within the limit", async () => {
+  test("a wrong code is invalid_code and leaves the pending verification as it was; the right one still works within the limit", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
     const flowId = await start(h, ada.session);
+    const before = await pending(h, flowId);
     expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: WRONG }))).toMatchObject({ code: "invalid_code", status: 400 });
-    expect(await pending(h, flowId)).toMatchObject({ attempts: 1, expiresAt: h.now().getTime() + CODE_TTL_MS });
+    // The attempt is counted in a counter of its own; the state is never written back.
+    expect(await pending(h, flowId)).toEqual(before);
+    expect(await h.kv.get(badgeAttemptsKey(flowId))).toBe("1");
     expect(h.users.get(ada.user.id)!.phoneHash).toBeNull();
     expect(h.mailer.sent).toEqual([]);
     expect(h.events).toEqual([]);
     expect(await verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE })).toEqual({ verified: true });
+  });
+
+  test("the right code after four wrong ones succeeds", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    await fourWrongThenRight(h, ada.session, await start(h, ada.session));
+    expect(h.users.get(ada.user.id)!.phoneHash).toBe(phoneHash(h.deps.config.authHmacKey, PHONE));
+  });
+
+  test("ten verifications at once with wrong codes: at most five reach the provider, the rest are too_many_attempts", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const { provider, calls } = counting();
+    h.deps.verify = provider;
+    const flowId = await start(h, ada.session);
+    const outcomes = await Promise.all(Array.from({ length: 10 }, () => failure(verifyBadge(h.deps, ada.session, { flowId, code: WRONG }))));
+    expect(calls.check).toBeLessThanOrEqual(MAX_CODE_ATTEMPTS);
+    expect(outcomes.filter((err) => err.code === "invalid_code")).toHaveLength(calls.check);
+    expect(outcomes.filter((err) => err.code === "too_many_attempts")).toHaveLength(10 - calls.check);
+    // Whatever order they ran in, the flow is spent: even the right code is refused now.
+    expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "too_many_attempts", status: 429 });
+    expect(calls.check).toBeLessThanOrEqual(MAX_CODE_ATTEMPTS);
   });
 
   test("counting an attempt keeps the flow's original expiry", async () => {
@@ -166,12 +281,32 @@ describe("badge: the verification step", () => {
     const ada = h.user("ada@korbat.local");
     const bob = h.user("bob@korbat.local");
     const flowId = await start(h, ada.session);
-    expect(await failure(verifyBadge(h.deps, bob.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "invalid_code", status: 400 });
-    expect((await pending(h, flowId)).attempts).toBe(0);
+    for (let i = 0; i < 10; i++) {
+      expect(await failure(verifyBadge(h.deps, bob.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "invalid_code", status: 400 });
+    }
     expect(h.users.get(bob.user.id)!.phoneHash).toBeNull();
-    expect(await failure(verifyBadge(h.deps, ada.session, { flowId: randomToken(), code: DEV_CODE }))).toMatchObject({ code: "invalid_code", status: 400 });
-    expect(await verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE })).toEqual({ verified: true });
+    const unknown = randomToken();
+    expect(await failure(verifyBadge(h.deps, ada.session, { flowId: unknown, code: DEV_CODE }))).toMatchObject({ code: "invalid_code", status: 400 });
+    expect(await h.kv.get(badgeAttemptsKey(unknown))).toBeNull();
+    // All five of the owner's attempts are still there.
+    await fourWrongThenRight(h, ada.session, flowId);
     expect(h.users.get(bob.user.id)!.phoneHash).toBeNull();
+  });
+
+  test("an expired flow is invalid_code and counts no attempt, even while the store still holds its state", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const flowId = await start(h, ada.session);
+    // A straggler: the state outlives its ten minutes in the store (Redis expires keys lazily), and the flow still treats it as gone.
+    const state = await pending(h, flowId);
+    await h.kv.set(badgeKey(flowId), JSON.stringify(state), HOUR);
+    h.advance(CODE_TTL_MS);
+    expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "invalid_code", status: 400 });
+    expect(await h.kv.get(badgeAttemptsKey(flowId))).toBeNull();
+    expect(h.users.get(ada.user.id)!.phoneHash).toBeNull();
+    h.advance(1);
+    expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "invalid_code", status: 400 });
+    expect(await h.kv.get(badgeAttemptsKey(flowId))).toBeNull();
   });
 
   test("a code the provider reports expired is code_expired and ends the flow", async () => {
@@ -191,10 +326,23 @@ describe("badge: the verification step", () => {
     const flowId = await start(h, ada.session);
     h.deps.verify = unreachable;
     expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "verify_unavailable", status: 503 });
-    expect((await pending(h, flowId)).attempts).toBe(1);
     expect(h.users.get(ada.user.id)!.phoneHash).toBeNull();
     h.deps.verify = devProvider();
     expect(await verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE })).toEqual({ verified: true });
+  });
+
+  test("an attempt the provider could not answer still counts: after it and four wrong codes the right one is too_many_attempts", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const flowId = await start(h, ada.session);
+    h.deps.verify = unreachable;
+    expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "verify_unavailable" });
+    h.deps.verify = devProvider();
+    for (let i = 0; i < MAX_CODE_ATTEMPTS - 1; i++) {
+      expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: WRONG }))).toMatchObject({ code: "invalid_code" });
+    }
+    expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "too_many_attempts", status: 429 });
+    expect(h.users.get(ada.user.id)!.phoneHash).toBeNull();
   });
 
   test("a number another account verified is phone_in_use only now, and the flow is spent", async () => {
@@ -257,7 +405,9 @@ describe("badge: the verification step", () => {
     const flowId = await start(h, ada.session);
     h.deps.verify = null;
     expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "badge_unavailable", status: 404 });
-    expect((await pending(h, flowId)).attempts).toBe(0);
+    // Back on, the flow still has all five attempts.
+    h.deps.verify = devProvider();
+    await fourWrongThenRight(h, ada.session, flowId);
   });
 });
 

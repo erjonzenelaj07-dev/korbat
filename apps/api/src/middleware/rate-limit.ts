@@ -7,6 +7,12 @@ import { errorBody } from "../lib/errors";
 export interface RateLimitStore {
   /** Increments the counter for key and returns the new count plus ms until the window resets. */
   hit(key: string, windowMs: number): Promise<{ count: number; resetMs: number }>;
+  /**
+   * Gives one hit back: lowers a positive counter for key by one and leaves its window as it is. Nothing
+   * happens to a key without a counter or with none left. For a request that was counted and then failed
+   * before it did anything, such as an export whose archive could not be started.
+   */
+  release(key: string): Promise<void>;
 }
 
 export class MemoryStore implements RateLimitStore {
@@ -22,6 +28,11 @@ export class MemoryStore implements RateLimitStore {
     b.count += 1;
     return { count: b.count, resetMs: b.resetAt - t };
   }
+  async release(key: string) {
+    const b = this.buckets.get(key);
+    // A window that is over holds nothing to give back; the next hit opens a fresh one either way.
+    if (b && b.resetAt > this.now() && b.count > 0) b.count -= 1;
+  }
 }
 
 const LUA = `
@@ -31,17 +42,34 @@ local ttl = redis.call('PTTL', KEYS[1])
 return {c, ttl}
 `;
 
-type RedisWithHit = Redis & { korbatRateHit(key: string, windowMs: number): Promise<[number, number]> };
+/**
+ * Lowers the counter only while it exists and is positive, so a release never creates a key (which would
+ * have no expiry) and never goes below zero. DECR keeps the key's expiry, so the window is not extended.
+ */
+const RELEASE_LUA = `
+local c = tonumber(redis.call('GET', KEYS[1]))
+if c and c > 0 then return redis.call('DECR', KEYS[1]) end
+return 0
+`;
+
+type RedisWithHit = Redis & {
+  korbatRateHit(key: string, windowMs: number): Promise<[number, number]>;
+  korbatRateRelease(key: string): Promise<number>;
+};
 
 export class RedisStore implements RateLimitStore {
   private readonly redis: RedisWithHit;
   constructor(redis: Redis) {
     redis.defineCommand("korbatRateHit", { numberOfKeys: 1, lua: LUA });
+    redis.defineCommand("korbatRateRelease", { numberOfKeys: 1, lua: RELEASE_LUA });
     this.redis = redis as RedisWithHit;
   }
   async hit(key: string, windowMs: number) {
     const [count, ttl] = await this.redis.korbatRateHit(`rl:${key}`, windowMs);
     return { count, resetMs: ttl > 0 ? ttl : windowMs };
+  }
+  async release(key: string) {
+    await this.redis.korbatRateRelease(`rl:${key}`);
   }
 }
 

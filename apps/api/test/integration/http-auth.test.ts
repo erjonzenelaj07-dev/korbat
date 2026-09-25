@@ -238,6 +238,37 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     expect(mailer.sent.at(-1)).toMatchObject({ to: email, template: "email_changed", data: { email: newAddress } });
   });
 
+  test("the undo link of an email change needs no session: a malformed token is 400, the right one 204 with every session signed out, a used one 400", async () => {
+    const b = new Browser(app, config.APP_ORIGIN);
+    const { email } = await signUp(b);
+    await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Undo" } });
+    const newAddress = `http-undo-${randomUUID()}@korbat.local`;
+    const { flowId } = FlowResponse.parse(await (await b.fetch("/api/auth/email/change/start", { json: { email: newAddress } })).json());
+    expect((await b.fetch("/api/auth/email/change/verify", { json: { flowId, code: mailer.lastCodeFor(newAddress) } })).status).toBe(200);
+    const notice = mailer.sent.at(-1)!;
+    expect(notice).toMatchObject({ to: email, template: "email_changed" });
+    const token = /\/email-revert\/([A-Za-z0-9_-]{43})$/.exec(notice.data.revertUrl ?? "")?.[1];
+    expect(token).toBeDefined();
+
+    // Opened in a browser that holds no session: the link is the only credential.
+    const stranger = new Browser(app, config.APP_ORIGIN);
+    for (const body of [{ token: "not-a-token" }, { token: `${token!.slice(1)}/` }, {}]) {
+      const malformed = await stranger.fetch("/api/auth/email/revert", { json: body });
+      expect(malformed.status, JSON.stringify(body)).toBe(400);
+      expect(await malformed.json()).toMatchObject({ error: { code: "invalid_request" } });
+    }
+    const reverted = await stranger.fetch("/api/auth/email/revert", { json: { token } });
+    expect(reverted.status).toBe(204);
+    expect(await reverted.text()).toBe("");
+    expect((await b.fetch("/api/me")).status).toBe(401);
+    expect((await auth.deps.repo.findUserByEmail(email))?.email).toBe(email);
+    expect(await auth.deps.repo.findUserByEmail(newAddress)).toBeUndefined();
+    expect(mailer.sent.at(-1)).toMatchObject({ to: email, template: "email_change_reverted" });
+    const used = await stranger.fetch("/api/auth/email/revert", { json: { token } });
+    expect(used.status).toBe(400);
+    expect(await used.json()).toMatchObject({ error: { code: "invalid_code" } });
+  });
+
   test("staff-only routes require a staff role and MFA", async () => {
     const b = new Browser(app, config.APP_ORIGIN);
     const { email } = await signUp(b);

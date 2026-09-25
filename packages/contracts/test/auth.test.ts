@@ -12,6 +12,7 @@ import {
   EmailChangeResponse,
   EmailChangeStartRequest,
   EmailChangeVerifyRequest,
+  EmailRevertRequest,
   EmailVerifyResponse,
   MeProfile,
   MeResponse,
@@ -120,6 +121,12 @@ describe("account lifecycle requests and responses", () => {
     expect(EmailChangeVerifyRequest.safeParse({ flowId: "short", code: "123456" }).success).toBe(false);
     expect(EmailChangeResponse.parse({ email: "new@example.com" })).toEqual({ email: "new@example.com" });
     expect(EmailChangeResponse.safeParse({ email: "nope" }).success).toBe(false);
+  });
+  test("the undo link of an email change carries one opaque token", () => {
+    expect(EmailRevertRequest.parse({ token: flow })).toEqual({ token: flow });
+    expect(EmailRevertRequest.safeParse({ token: "a".repeat(42) }).success).toBe(false);
+    expect(EmailRevertRequest.safeParse({ token: `${"a".repeat(42)}/` }).success).toBe(false);
+    expect(EmailRevertRequest.safeParse({}).success).toBe(false);
   });
   test("the badge starts with a phone number and verifies with a flow id and a six-digit code", () => {
     expect(BadgeStartRequest.parse({ phone: "+44 7911 123456" })).toEqual({ phone: "+447911123456" });

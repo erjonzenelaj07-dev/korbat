@@ -26,8 +26,11 @@ export interface SocialForAccount {
    * media rows. Safe to repeat: a second run changes nothing.
    */
   purgeProfile(userId: string, now: Date, within: (tx: DbTx) => Promise<void>): Promise<void>;
-  /** The profile, its posts with their images, its engagement and its side of the graph. */
-  exportProfile(userId: string): Promise<ProfileExport>;
+  /**
+   * The profile, read at once, and its posts with their images, its engagement and its side of the graph,
+   * each read in keyset pages of `pageSize` rows (1,000 unless a test says otherwise) as it is iterated.
+   */
+  exportProfile(userId: string, pageSize?: number): Promise<ProfileExport>;
 }
 
 export interface CreateSocialOptions {
@@ -58,7 +61,7 @@ export function createSocial(options: CreateSocialOptions) {
   };
   const forAccount: SocialForAccount = {
     purgeProfile: (userId, now, within) => deps.repo.purgeProfile(userId, now, within),
-    exportProfile: (userId) => exportProfile(deps, userId),
+    exportProfile: (userId, pageSize) => exportProfile(deps, userId, pageSize),
   };
   return {
     deps,

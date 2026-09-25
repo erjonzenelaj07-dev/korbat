@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Platform, ScrollView, Text, View } from "react-native";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { Platform, ScrollView, Text, View, type TextInput } from "react-native";
 import { router } from "expo-router";
 import { BadgeVerifyResponse, DeleteStartResponse, EmailChangeResponse, FlowResponse, type MeResponse } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
@@ -16,9 +16,10 @@ type Refresh = () => Promise<unknown>;
 /**
  * Expo inlines this public value into the web bundle at export time (WEB_BADGE in infra/.env). The
  * badge routes answer badge_unavailable when the API's verification provider is off, and there is no
- * harmless read to probe that with, so the build leaves the section out instead.
+ * harmless read to probe that with, so the section is shown only by a build that says "on"; the API's
+ * provider is off by default, and so is this.
  */
-const BADGE_SHOWN = process.env.EXPO_PUBLIC_BADGE !== "off";
+const BADGE_SHOWN = process.env.EXPO_PUBLIC_BADGE === "on";
 
 const CODE = /^\d{6}$/;
 
@@ -27,7 +28,9 @@ function useAction(run: Run, describe: (err: unknown) => string = errorMessage) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  // Enter in a field calls the action as the button does, so the button's busy rule is here too: a second Enter while a request is out sends nothing.
   async function act(action: () => Promise<void>) {
+    if (busy) return;
     setBusy(true);
     setError(null);
     setDone(null);
@@ -39,7 +42,20 @@ function useAction(run: Run, describe: (err: unknown) => string = errorMessage) 
       setBusy(false);
     }
   }
-  return { busy, error, done, setDone, act };
+  return { busy, error, setError, done, setDone, act };
+}
+
+/**
+ * Moves the focus to `target` when `away` turns false after being true: the section went back to the
+ * step `target` is in, and the control that had the focus (Start over, Cancel, Change, Verify, Remove
+ * badge) left the tree with the step it was in, which would drop the focus to the page body.
+ */
+function useFocusOnReturn(away: boolean, target: RefObject<{ focus(): void } | null>) {
+  const wasAway = useRef(away);
+  useEffect(() => {
+    if (!away && wasAway.current) target.current?.focus();
+    wasAway.current = away;
+  }, [away, target]);
 }
 
 /** A new address gets a code; the account moves to it once the code is entered, and every session stays signed in. */
@@ -47,17 +63,31 @@ function EmailSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
   const [email, setEmail] = useState("");
   const [flowId, setFlowId] = useState<string | null>(null);
   const [code, setCode] = useState("");
-  const { busy, error, done, setDone, act } = useAction(run);
+  const { busy, error, setError, done, setDone, act } = useAction(run);
+  const emailRef = useRef<TextInput>(null);
+  // The code field takes the focus itself (autoFocus); Change and Start over bring the address field back, which takes it here.
+  useFocusOnReturn(flowId !== null, emailRef);
+  // The API would answer a generic invalid_request for the account's own address; it is refused here in its own words instead.
+  const current = email.trim().toLowerCase() === me.user.email.toLowerCase();
 
-  const start = () =>
-    act(async () => {
+  // Enter in the field calls this as the button does, so the button's conditions come first.
+  async function start() {
+    if (email.trim().length === 0) return;
+    if (current) {
+      setDone(null);
+      setError("That is already your email address.");
+      return;
+    }
+    await act(async () => {
       const flow = await api("/api/auth/email/change/start", { json: { email: email.trim() }, schema: FlowResponse });
       setCode("");
       setFlowId(flow.flowId);
     });
+  }
 
-  const verify = () =>
-    act(async () => {
+  async function verify() {
+    if (!CODE.test(code.trim())) return;
+    await act(async () => {
       const changed = await api("/api/auth/email/change/verify", { json: { flowId, code: code.trim() }, schema: EmailChangeResponse });
       setFlowId(null);
       setEmail("");
@@ -66,6 +96,7 @@ function EmailSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
       // The address shown here and on the security screen reads the session.
       await refresh();
     });
+  }
 
   return (
     <View>
@@ -73,7 +104,7 @@ function EmailSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
       {flowId ? (
         <>
           <Body>We sent a code to {email.trim()}. Enter it to move your account to that address. Every session stays signed in.</Body>
-          <Field label="Code from the email" autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
+          <Field label="Code from the email" autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
           <ErrorText message={error} />
           <Button label="Change" onPress={() => void verify()} busy={busy} disabled={!CODE.test(code.trim())} />
           <Button
@@ -87,10 +118,10 @@ function EmailSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
         </>
       ) : (
         <>
-          <Field label="New email address" autoComplete="email" autoCapitalize="none" inputMode="email" value={email} onChangeText={setEmail} onSubmitEditing={() => void start()} />
+          <Field ref={emailRef} label="New email address" autoComplete="email" autoCapitalize="none" inputMode="email" value={email} onChangeText={setEmail} onSubmitEditing={() => void start()} />
           <ErrorText message={error} />
           <Notice message={done} />
-          <Button label="Send code" onPress={() => void start()} busy={busy} disabled={email.trim().length === 0} />
+          <Button label="Send code" onPress={() => void start()} busy={busy} disabled={email.trim().length === 0 || current} />
         </>
       )}
     </View>
@@ -110,16 +141,27 @@ function BadgeSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
   const [flowId, setFlowId] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const { busy, error, done, setDone, act } = useAction(run, badgeMessage);
+  const verified = me.profile?.verified === true;
+  const phoneRef = useRef<TextInput>(null);
+  const removeRef = useRef<View>(null);
+  // The code field takes the focus itself (autoFocus). Start over and a removed badge bring the phone field back, and a verified
+  // badge brings Remove badge: each takes the focus when its step returns.
+  useFocusOnReturn(verified || flowId !== null, phoneRef);
+  useFocusOnReturn(!verified, removeRef);
 
-  const start = () =>
-    act(async () => {
+  // Enter in the field calls this as the button does, so the button's condition comes first.
+  async function start() {
+    if (phone.trim().length === 0) return;
+    await act(async () => {
       const flow = await api("/api/auth/badge/start", { json: { phone: phone.trim() }, schema: FlowResponse });
       setCode("");
       setFlowId(flow.flowId);
     });
+  }
 
-  const verify = () =>
-    act(async () => {
+  async function verify() {
+    if (!CODE.test(code.trim())) return;
+    await act(async () => {
       await api("/api/auth/badge/verify", { json: { flowId, code: code.trim() }, schema: BadgeVerifyResponse });
       setFlowId(null);
       setPhone("");
@@ -128,6 +170,7 @@ function BadgeSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
       // The chip on posts and the profile, and this section, read the session.
       await refresh();
     });
+  }
 
   const remove = () =>
     act(async () => {
@@ -142,17 +185,17 @@ function BadgeSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
         The Verified badge means you hold a phone number that no other account uses. To check it, the number is handed to the verification provider for one text message; korbat
         keeps it only as a keyed hash, never the number itself.
       </Body>
-      {me.profile?.verified ? (
+      {verified ? (
         <>
           <Body>Your account holds the badge.</Body>
           <ErrorText message={error} />
           <Notice message={done} />
-          <Button label="Remove badge" onPress={() => void remove()} busy={busy} tone="danger" />
+          <Button ref={removeRef} label="Remove badge" onPress={() => void remove()} busy={busy} tone="danger" />
         </>
       ) : flowId ? (
         <>
           <Body>We texted a code to {phone.trim()}.</Body>
-          <Field label="Code from the text message" autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
+          <Field label="Code from the text message" autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
           <ErrorText message={error} />
           <Button label="Verify" onPress={() => void verify()} busy={busy} disabled={!CODE.test(code.trim())} />
           <Button
@@ -166,7 +209,7 @@ function BadgeSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
         </>
       ) : (
         <>
-          <Field label="Phone number" autoComplete="tel" inputMode="tel" placeholder="+447911123456" value={phone} onChangeText={setPhone} onSubmitEditing={() => void start()} />
+          <Field ref={phoneRef} label="Phone number" autoComplete="tel" inputMode="tel" placeholder="+447911123456" value={phone} onChangeText={setPhone} onSubmitEditing={() => void start()} />
           <Text className="mt-1 text-xs text-zinc-400">International format: a plus sign, the country code and the number, without the leading zero.</Text>
           <ErrorText message={error} />
           <Notice message={done} />
@@ -177,9 +220,22 @@ function BadgeSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
   );
 }
 
-/** The ZIP comes back as the response body, so the raw response is turned into a file the browser saves; native has no downloads folder to offer. */
+/** The export's own words for its daily limit: the generic "wait a moment" would be wrong for a window of a day. */
+export function exportMessage(err: unknown): string {
+  if (err instanceof ApiError && err.code === "rate_limited" && err.retryAfter) {
+    const hours = Math.ceil(err.retryAfter / 3600);
+    return hours <= 1 ? "You exported your data today already. You can export again in about an hour." : `You exported your data today already. You can export again in about ${hours} hours.`;
+  }
+  return errorMessage(err);
+}
+
+/**
+ * The ZIP comes back as the response body, so the raw response is turned into a file the browser saves;
+ * native has no downloads folder to offer. The API fails the body when the archive breaks off part way,
+ * so res.blob() rejects and the section shows an error, never the note that the export was downloaded.
+ */
 function ExportSection({ run }: { run: Run }) {
-  const { busy, error, done, setDone, act } = useAction(run);
+  const { busy, error, done, setDone, act } = useAction(run, exportMessage);
 
   const download = () =>
     act(async () => {
@@ -217,6 +273,9 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
   const typedHandle = typed.trim().replace(/^@/, "").toLowerCase();
   // The API compares the typed handle case-insensitively and answers a mismatch as a generic invalid request; the same rule here keeps the button off until it matches.
   const matches = typedHandle.length > 0 && typedHandle === handle.toLowerCase();
+  const sendRef = useRef<View>(null);
+  // The code field takes the focus itself (autoFocus); Cancel brings "Send me a code" back, which takes it here.
+  useFocusOnReturn(flowId !== null, sendRef);
 
   const start = () =>
     act(async () => {
@@ -226,13 +285,16 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
       setFlowId(flow.flowId);
     });
 
-  const confirm = () =>
-    act(async () => {
+  // The button's condition comes first, as in every other action of this screen.
+  async function confirm() {
+    if (!CODE.test(code.trim()) || !matches) return;
+    await act(async () => {
       await api("/api/account/delete/confirm", { json: { flowId, code: code.trim(), handle: typedHandle } });
       // The API cleared the cookies: the session reloads as signed out, and the home page is public.
       await refresh();
       router.replace("/");
     });
+  }
 
   return (
     <View>
@@ -243,7 +305,7 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
       {flowId ? (
         <>
           <Body>We emailed a code to {me.user.email}.</Body>
-          <Field label="Code from the email" autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} />
+          <Field label="Code from the email" autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} />
           <Field label="Type your handle to confirm" autoCapitalize="none" autoComplete="off" placeholder={`@${handle}`} value={typed} onChangeText={setTyped} />
           <ErrorText message={error} />
           <Button label="Delete my account" onPress={() => void confirm()} busy={busy} disabled={!CODE.test(code.trim()) || !matches} tone="danger" />
@@ -260,7 +322,7 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
       ) : (
         <>
           <ErrorText message={error} />
-          <Button label="Send me a code" onPress={() => void start()} busy={busy} tone="secondary" />
+          <Button ref={sendRef} label="Send me a code" onPress={() => void start()} busy={busy} tone="secondary" />
         </>
       )}
     </View>

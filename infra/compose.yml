@@ -181,7 +181,7 @@ services:
         EXPO_PUBLIC_TURNSTILE_SITE_KEY: ${WEB_TURNSTILE_SITE_KEY:?set WEB_TURNSTILE_SITE_KEY in infra/.env}
         KORBAT_ENV: ${KORBAT_ENV:?set KORBAT_ENV to development or production in infra/.env}
         TUNNEL: ${TUNNEL:-off}
-        EXPO_PUBLIC_BADGE: ${WEB_BADGE:-on}
+        EXPO_PUBLIC_BADGE: ${WEB_BADGE:-off}
     depends_on:
       api: { condition: service_healthy }
     volumes:

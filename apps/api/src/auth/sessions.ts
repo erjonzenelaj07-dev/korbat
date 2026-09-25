@@ -51,7 +51,10 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
     await Promise.all(sessionIds.map((id) => deps.kv.del(cacheKey(id))));
   }
 
-  /** A tombstone that outlives any cache fill in flight, so a revoked session cannot come back for the cache TTL. */
+  /**
+   * A tombstone that outlives any cache fill in flight, so a revoked session cannot come back for the cache TTL.
+   * Also for sessions revoked in the database by another statement, such as a deletion's take-down.
+   */
   async function tombstone(sessionIds: readonly string[]) {
     await Promise.all(sessionIds.map((id) => deps.kv.set(cacheKey(id), REVOKED, SESSION_CACHE_TTL_MS)));
   }
@@ -153,7 +156,7 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
     }));
   }
 
-  return { issue, resolve, revoke, revokeAll, rotate, markReauth, forgetUser, isFresh, list };
+  return { issue, resolve, revoke, revokeAll, rotate, markReauth, forgetUser, isFresh, list, tombstone };
 }
 
 export type Sessions = ReturnType<typeof createSessions>;

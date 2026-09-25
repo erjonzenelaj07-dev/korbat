@@ -88,10 +88,19 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         "It expires in 10 minutes. If you did not ask to move a korbat account to this address, you can ignore this email; nothing changes without the code.",
       ]);
     case "email_changed":
+      // The undo link goes with the first change in a day only (flows/email-change.ts); a later change in that day
+      // says where the link that works went, because signing in here is no longer possible.
       return build("Your korbat email address changed", [
         `The email address of your korbat account was just changed to ${need(data, "email")}. This address no longer belongs to the account.`,
         "Every session stays signed in. If this was you, there is nothing to do.",
-        "If this was not you, sign in, open Account, and change it back; then open Security and sign out everywhere.",
+        data.revertUrl
+          ? `If this was not you, open this link within 24 hours to move the account back to this address and sign out every session: ${data.revertUrl}`
+          : "If this was not you: the address had already changed less than a day ago, and the link sent then, to the address the account had before, can still move the account back there and sign out every session.",
+      ]);
+    case "email_change_reverted":
+      return build("Your korbat account is back at this address", [
+        "Your korbat account is back at this address, moved back from the link sent when its address changed, and every session was signed out.",
+        "Sign in with a code sent to this address. A password or two-factor authentication set up after the change was removed; set them up again from Security.",
       ]);
     case "badge_verified":
       return build("Your korbat account is verified", [

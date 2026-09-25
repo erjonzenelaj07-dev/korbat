@@ -232,6 +232,13 @@ export type EmailChangeVerifyRequest = z.infer<typeof EmailChangeVerifyRequest>;
 export const EmailChangeResponse = z.object({ email: z.email() });
 export type EmailChangeResponse = z.infer<typeof EmailChangeResponse>;
 
+/**
+ * The token from the link the email_changed notice sends to the old address. It is the only credential
+ * the undo needs, since a passwordless account cannot sign in at the old address any more.
+ */
+export const EmailRevertRequest = z.object({ token: OpaqueId });
+export type EmailRevertRequest = z.infer<typeof EmailRevertRequest>;
+
 // ---------------------------------------------------------------- verified badge
 
 export const BadgeStartRequest = z.object({ phone: Phone });

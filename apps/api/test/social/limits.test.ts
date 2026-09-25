@@ -54,6 +54,7 @@ describe("write limits", () => {
       hit: async () => {
         throw new Error("connection lost");
       },
+      release: async () => undefined,
     };
     const err = await enforceWriteLimit(failing, user, "post", new Date(0), new Date()).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "service_unavailable", status: 503, retryAfterSeconds: 30 });

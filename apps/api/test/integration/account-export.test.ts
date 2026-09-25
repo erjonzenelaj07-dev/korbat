@@ -1,12 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { sql } from "drizzle-orm";
 import { strFromU8, unzipSync } from "fflate";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ExportFormat } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import type { AccountDeps } from "../../src/account/context";
-import { buildExport, writeExport } from "../../src/account/flows/export";
+import { buildExport, exportJson, writeExport } from "../../src/account/flows/export";
 import { createZipWriter } from "../../src/account/zip";
 import { AuthError } from "../../src/auth/context";
 import { randomToken, sha256Hex } from "../../src/auth/crypto";
@@ -14,6 +15,7 @@ import { exportAccount } from "../../src/auth/flows/export";
 import { signIn } from "../../src/auth/flows/signin";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
+import { mediaForAccount } from "../../src/media";
 import { status } from "../../src/media/flows/status";
 import { upload } from "../../src/media/flows/upload";
 import { MemoryStore } from "../../src/middleware/rate-limit";
@@ -23,6 +25,7 @@ import { exportProfile } from "../../src/social/flows/export";
 import { createPost, deletePost } from "../../src/social/flows/posts";
 import { TEST_TERMS, flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
+import { newPost } from "./social-fixtures";
 import { socialHarness, type SocialHarness } from "./social-harness";
 
 const newHandle = () => `x_${randomBytes(5).toString("hex")}`;
@@ -86,12 +89,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
       exportAccount: (userId) => exportAccount(h.deps, userId),
       appendEvent: (userId, type, metadata) => authRepo.appendEvent({ userId, type, metadata }),
     },
-    social: { purgeProfile: notHere, exportProfile: (userId) => exportProfile(s.deps, userId) },
-    media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async (ownerId) => (await m.deps.repo.readyImages(ownerId)).map((id) => ({ id, path: m.files.store.image(id, "large") })) },
+    social: { purgeProfile: notHere, exportProfile: (userId, pageSize) => exportProfile(s.deps, userId, pageSize) },
+    // The media module's own interface for this one, over the harness's repository and volumes.
+    media: { ...mediaForAccount(m.deps), purgeOwner: notHere, requestDeletion: notHere },
     limits: new MemoryStore(),
     log: pino({ level: "silent" }),
     now: () => new Date(),
   });
+
+  const collect = async (pieces: AsyncIterable<string>): Promise<string> => {
+    let text = "";
+    for await (const piece of pieces) text += piece;
+    return text;
+  };
 
   /** An auth account signed in on one device, with a profile of the same id in the public schema. */
   async function account() {
@@ -198,5 +208,42 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     expect(nobody).toBeInstanceOf(SocialError);
     expect((nobody as SocialError).code).toBe("not_found");
     expect(await m.deps.repo.readyImages(randomUUID())).toEqual([]);
+  });
+
+  test("export.json read in keyset pages of two is, byte for byte, the document read in pages of a thousand; rows that share a moment are neither lost nor repeated", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const [bob, ...others] = await Promise.all(Array.from({ length: 10 }, () => s.established()));
+    const posts: string[] = [];
+    for (let i = 0; i < 5; i++) posts.push(await newPost(s.repo, userId, s.clock.next(), `post ${i}`));
+    const bobsPosts: string[] = [];
+    for (let i = 0; i < 5; i++) bobsPosts.push(await newPost(s.repo, bob!.id, s.clock.next(), `bob ${i}`));
+    // Five likes at one moment: within it the post id orders them, and a page may end between two of them.
+    const moment = s.clock.next();
+    for (const post of bobsPosts) expect(await s.repo.like(userId, post, moment)).toBe(true);
+    // Three reposts a microsecond apart inside one millisecond, as a database default writes them: a page key cut to the
+    // millisecond would read the same rows again or skip some.
+    for (const [i, post] of bobsPosts.slice(0, 3).entries()) {
+      await apiDb.execute(sql`insert into reposts (user_id, post_id, created_at) values (${userId}::uuid, ${post}::uuid, ${`2026-01-01T00:00:00.12345${i}Z`}::timestamptz)`);
+    }
+    for (const post of bobsPosts.slice(0, 4)) expect(await s.repo.bookmark(userId, post, s.clock.next())).toBe(true);
+    for (const other of others.slice(0, 5)) expect(await s.repo.follow(userId, other.id, moment)).toBe(true);
+    for (const other of others.slice(5, 8)) expect(await s.repo.block(userId, other.id, s.clock.next())).toBe(true);
+    for (const other of others.slice(0, 3)) expect(await s.repo.mute(userId, other.id, s.clock.next())).toBe(true);
+
+    const now = new Date();
+    const paged = await collect(exportJson(await buildExport(deps(), userId, owner.session.sessionId, now, 2)));
+    const whole = await collect(exportJson(await buildExport(deps(), userId, owner.session.sessionId, now)));
+    expect(paged).toBe(whole);
+    expect(paged).toBe(JSON.stringify(JSON.parse(paged), null, 2));
+    const json = ExportFormat.parse(JSON.parse(paged));
+    expect(json.posts.map((post) => post.id)).toEqual(posts);
+    expect(json.likes.map((like) => like.postId)).toEqual([...bobsPosts].sort());
+    expect(json.reposts.map((repost) => [repost.postId, repost.at])).toEqual(bobsPosts.slice(0, 3).map((post) => [post, "2026-01-01T00:00:00.123Z"]));
+    expect(json.bookmarks.map((bookmark) => bookmark.postId)).toEqual(bobsPosts.slice(0, 4));
+    const byId = (list: { id: string; handle: string }[]) => [...list].sort((a, b) => (a.id < b.id ? -1 : 1)).map((profile) => profile.handle);
+    expect(json.following.map((ref) => ref.handle)).toEqual(byId(others.slice(0, 5)));
+    expect(json.blocks.map((ref) => ref.handle)).toEqual(others.slice(5, 8).map((profile) => profile.handle));
+    expect(json.mutes.map((ref) => ref.handle)).toEqual(others.slice(0, 3).map((profile) => profile.handle));
   });
 });

@@ -24,9 +24,11 @@ interface LogLine {
 /**
  * The deletion flows and the purge job on stateful fakes of the three module interfaces: the auth
  * fake knows one account whose handle is "ada" and keeps deleted_at and purged_at per account; the
- * social fake keeps which profiles were purged and can be told to fail once for an account; the media
- * fake holds image ids per owner and hands them out once. Every call is logged in order, and the
- * transaction the social purge opens is a sentinel the media fake must be handed.
+ * social fake keeps which profiles were purged and can be told to fail once for an account, before its
+ * transaction does anything or at its commit (which puts back the image rows the transaction took, as a
+ * rollback would); the media fake holds image ids per owner and hands them out once. Every call is
+ * logged in order, the commit of the social purge's transaction included, and the transaction it opens
+ * is a sentinel the media fake must be handed.
  */
 function harness() {
   let t = T0;
@@ -35,6 +37,7 @@ function harness() {
   const users = new Map<string, { deletedAt: Date | null; purgedAt: Date | null }>();
   const purgedProfiles = new Map<string, Date>();
   const failing = new Set<string>();
+  const failingCommit = new Set<string>();
   const images = new Map<string, string[]>();
   const requested: string[][] = [];
   const started: { session: Session; ctx: RequestContext }[] = [];
@@ -73,7 +76,14 @@ function harness() {
       purgeProfile: async (userId, now, within) => {
         calls.push("social.purgeProfile");
         if (failing.delete(userId)) throw new Error("the social purge failed");
+        const rowsBefore = images.get(userId);
         await within(tx);
+        if (failingCommit.delete(userId)) {
+          calls.push("social.rollback");
+          if (rowsBefore) images.set(userId, rowsBefore);
+          throw new Error("the social purge's commit failed");
+        }
+        calls.push("social.commit");
         if (!purgedProfiles.has(userId)) purgedProfiles.set(userId, now);
       },
       exportProfile: async () => {
@@ -114,6 +124,7 @@ function harness() {
     users,
     purgedProfiles,
     failing,
+    failingCommit,
     images,
     requested,
     started,
@@ -137,13 +148,14 @@ describe("account deletion: the flows", () => {
     expect(h.calls).toEqual(["auth.startDeletion"]);
   });
 
-  test("confirming runs the auth confirmation, then the social purge with the media detach inside its transaction, then the file deletions, then the auth purge, in that order", async () => {
+  test("confirming runs the auth confirmation, then the social purge with the media detach and the file deletion requests inside its transaction, then the auth purge, in that order", async () => {
     const h = harness();
     const [imageA, imageB] = [randomUUID(), randomUUID()];
     const ada = h.account({ images: [imageA, imageB] });
     await confirmDeletion(h.deps, ada.session, { flowId: "f", code: "123456", handle: "Ada" });
-    expect(h.calls).toEqual(["auth.confirmDeletion", "social.purgeProfile", "media.purgeOwner", "media.requestDeletion(2)", "auth.finishPurge"]);
-    // The image rows go in the social purge's own transaction; their files are asked for afterwards, by id.
+    expect(h.calls).toEqual(["auth.confirmDeletion", "social.purgeProfile", "media.purgeOwner", "media.requestDeletion(2)", "social.commit", "auth.finishPurge"]);
+    // The image rows go in the social purge's own transaction, and their files are asked for by id before it commits,
+    // so no run can commit the rows away and then stop before asking.
     expect(h.seenTx).toEqual([h.tx]);
     expect(h.requested).toEqual([[imageA, imageB]]);
     expect(h.purgedProfiles.get(ada.userId)).toEqual(h.now());
@@ -187,9 +199,26 @@ describe("account deletion: the flows", () => {
     h.calls.length = 0;
     h.advance(60_000);
     await purge(h.deps, ada.userId);
-    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(0)", "auth.finishPurge"]);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(0)", "social.commit", "auth.finishPurge"]);
     expect(h.requested).toEqual([[expect.any(String)], []]);
     expect({ ...h.users.get(ada.userId)!, profilePurgedAt: h.purgedProfiles.get(ada.userId) }).toEqual(first);
+  });
+
+  test("a purge whose transaction fails at the commit has already asked for the files; the next run finds the rows again and asks for the same ids", async () => {
+    const h = harness();
+    const [imageA, imageB] = [randomUUID(), randomUUID()];
+    const ada = h.account({ deletedAt: new Date(T0 - 60_000), images: [imageA, imageB] });
+    h.failingCommit.add(ada.userId);
+    await expect(purge(h.deps, ada.userId)).rejects.toThrow(/commit/);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(2)", "social.rollback"]);
+    expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
+    // The requests are one per id, so asking again for the same ids changes nothing on disk.
+    await purge(h.deps, ada.userId);
+    expect(h.requested).toEqual([
+      [imageA, imageB],
+      [imageA, imageB],
+    ]);
+    expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
   });
 });
 

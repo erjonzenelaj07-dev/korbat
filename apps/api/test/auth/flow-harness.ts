@@ -28,12 +28,13 @@ export interface RecordedSession {
 export interface RecordedDevice {
   id: string;
   userId: string;
+  revokedAt: Date | null;
 }
 
 /**
  * The auth flows without a database: users, email codes, sessions and devices live in memory, and the
- * repository fake holds only the methods the email-change, badge and deletion flows call (and the
- * lookups the sign-in starts make), checked against the real signatures. The key-value store and the
+ * repository fake holds only the methods the email-change (with its undo link), badge and deletion
+ * flows call (and the lookups the sign-in starts make), checked against the real signatures. The key-value store and the
  * mailer are the in-memory ones; the clock moves only when a test says so, so expiries and timestamps
  * compare exactly; and events are kept as the server would write them to auth_events. The integration
  * harness (test/integration/flow-harness.ts) runs flows against the real repository instead.
@@ -48,6 +49,16 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   const devices: RecordedDevice[] = [];
   /** The handle of each account's profile, which the deletion flow compares the typed handle with. */
   const handles = new Map<string, string>();
+  /** Repository methods told to fail: "takeDown" fails its transaction midway, after staging its writes and before any lands. */
+  const faults = new Set<"takeDown">();
+  /** Step 1's rows for a user, as the real repository's takeDownRows writes them: live sessions revoked (their ids returned), devices and codes gone. */
+  const takeDownRows = (userId: string, at: Date): string[] => {
+    const live = sessions.filter((s) => s.userId === userId && s.revokedAt === null);
+    for (const s of live) s.revokedAt = at;
+    for (let i = devices.length - 1; i >= 0; i--) if (devices[i]!.userId === userId) devices.splice(i, 1);
+    for (let i = codes.length - 1; i >= 0; i--) if (codes[i]!.userId === userId) codes.splice(i, 1);
+    return live.map((s) => s.id);
+  };
   const repo = {
     async findUserById(id: string): Promise<UserRow | undefined> {
       const row = users.get(id);
@@ -96,6 +107,18 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       row.email = email;
       row.emailVerifiedAt = at;
     },
+    async setPasswordHash(userId: string, passwordHash: string | null, at: Date): Promise<void> {
+      // As the real statement: setting or clearing a password also clears any lockout, and records when.
+      const row = users.get(userId);
+      if (row) Object.assign(row, { passwordHash, passwordChangedAt: at, failedLogins: 0, lockedUntil: null });
+    },
+    async revokeDevices(userId: string, at: Date): Promise<void> {
+      for (const device of devices) if (device.userId === userId && device.revokedAt === null) device.revokedAt = at;
+    },
+    async disableTotp(userId: string): Promise<void> {
+      const row = users.get(userId);
+      if (row) Object.assign(row, { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
+    },
     async setPhoneHash(userId: string, phoneHash: string | null): Promise<void> {
       // As the real partial unique index on phone_hash, deleted rows included: the driver error that the flow recognises through isUniqueViolation.
       if (phoneHash !== null) {
@@ -120,11 +143,37 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       const row = users.get(userId);
       if (row && row.deletedAt === null) row.deletedAt = at;
     },
-    async deleteDevices(userId: string): Promise<void> {
-      for (let i = devices.length - 1; i >= 0; i--) if (devices[i]!.userId === userId) devices.splice(i, 1);
+    async takeDown(userId: string, at: Date, deviceId: string | null): Promise<string[]> {
+      // One transaction, as the real one: when it fails midway nothing it would have written lands.
+      if (faults.has("takeDown")) throw new Error("the take-down transaction failed midway and was rolled back");
+      const row = users.get(userId);
+      if (row && row.deletedAt === null) row.deletedAt = at;
+      const revoked = takeDownRows(userId, at);
+      events.push({ userId, type: "account_deleted", deviceId, metadata: {} });
+      return revoked;
     },
-    async deleteEmailCodes(userId: string): Promise<void> {
-      for (let i = codes.length - 1; i >= 0; i--) if (codes[i]!.userId === userId) codes.splice(i, 1);
+    async finishTakeDown(userId: string, at: Date): Promise<string[]> {
+      // As the real statement: only a row marked deleted and not purged yet.
+      const row = users.get(userId);
+      if (!row || row.deletedAt === null || row.purgedAt !== null) return [];
+      return takeDownRows(userId, at);
+    },
+    async finishPurge(userId: string, at: Date): Promise<void> {
+      const row = users.get(userId);
+      if (!row || row.deletedAt === null || row.purgedAt !== null) return;
+      Object.assign(row, {
+        email: `deleted:${userId}`,
+        emailVerifiedAt: null,
+        passwordHash: null,
+        totpSecretEnc: null,
+        totpEnabledAt: null,
+        recoveryCodesHash: [],
+        phoneHash: null,
+        ageConfirmedAt: null,
+        termsVersion: null,
+        termsAcceptedAt: null,
+        purgedAt: at,
+      });
     },
   } satisfies Pick<
     AuthRepo,
@@ -136,12 +185,16 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     | "addCodeAttempt"
     | "consumeEmailCode"
     | "changeEmail"
+    | "setPasswordHash"
+    | "revokeDevices"
+    | "disableTotp"
     | "setPhoneHash"
     | "appendEvent"
     | "revokeAllSessions"
     | "markDeleted"
-    | "deleteDevices"
-    | "deleteEmailCodes"
+    | "takeDown"
+    | "finishTakeDown"
+    | "finishPurge"
   >;
   const authRepo = repo as unknown as AuthRepo;
   const kv = new MemoryKv(() => t);
@@ -192,7 +245,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   const session = (userId: string): Session => {
     const s: Session = { sessionId: sha256Hex(randomToken()), userId, deviceId: randomUUID(), role: "user", onboarded: true, mfaEnabled: false, reauthAt: now() };
     sessions.push({ id: s.sessionId, userId, revokedAt: null });
-    devices.push({ id: s.deviceId, userId });
+    devices.push({ id: s.deviceId, userId, revokedAt: null });
     return s;
   };
   return {
@@ -206,6 +259,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     sessions,
     devices,
     verified,
+    faults,
     now,
     advance(ms: number) {
       t += ms;

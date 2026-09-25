@@ -151,6 +151,9 @@ describe("profile editing", () => {
     expect(Bio.safeParse(`a${String.fromCharCode(10)}b`).success).toBe(false);
     expect(Bio.safeParse(`a${String.fromCharCode(9)}b`).success).toBe(false);
     expect(Bio.safeParse(`a${String.fromCharCode(0x85)}b`).success).toBe(false);
+    // The Unicode line and paragraph separators are line breaks too, though not control characters.
+    expect(Bio.safeParse(`a${String.fromCharCode(0x2028)}b`).success).toBe(false);
+    expect(Bio.safeParse(`a${String.fromCharCode(0x2029)}b`).success).toBe(false);
     expect(Bio.safeParse(`a${rlo}b`).success).toBe(false);
     expect(Bio.safeParse(`a${zwsp}b`).success).toBe(false);
     expect(Bio.safeParse(`${String.fromCodePoint(0x1f468)}${zwj}${String.fromCodePoint(0x1f469)}`).success).toBe(true);

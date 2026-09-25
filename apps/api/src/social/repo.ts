@@ -97,18 +97,21 @@ export interface HandleRefRow {
   since: Date;
 }
 
-/** Everything the account owns in this module, for the data export, before its posts get their images from the media module. */
-export interface ProfileExportRows {
-  profile: ProfileRow;
-  /** Every handle in handle_history for this profile, in the order they were recorded. */
-  handleHistory: string[];
-  posts: ExportedPostRow[];
-  likes: PostRefRow[];
-  reposts: PostRefRow[];
-  bookmarks: PostRefRow[];
-  following: HandleRefRow[];
-  blocks: HandleRefRow[];
-  mutes: HandleRefRow[];
+/**
+ * Where a page of the data export ends: the last row's created_at to the microsecond, as ISO text, and its
+ * id (the post's, or the other account's). The next page starts after it. The microseconds matter: a row
+ * written by a database default carries them, and a key cut to the millisecond would read such rows twice
+ * or skip them.
+ */
+export interface ExportKey {
+  at: string;
+  id: string;
+}
+
+/** One page of a list for the data export, and the key to read the next one after, or null when this page was the last. */
+export interface ExportPage<T> {
+  rows: T[];
+  next: ExportKey | null;
 }
 
 export interface Relation {
@@ -182,6 +185,18 @@ interface RawProfile {
 
 /** A timestamptz expression as ISO text with milliseconds, in UTC. The expression is a column reference written here, never input. */
 const iso = (column: string): SQL => sql.raw(`to_char(${column} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
+
+/** The same with the microseconds a timestamp column holds, for the export's page keys, which must round-trip exactly. */
+const isoMicro = (column: string): SQL => sql.raw(`to_char(${column} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`);
+
+/** Rows after `after` in (created_at, id) order: the keyset condition of an export page. Always true for the first page. */
+const exportAfter = (after: ExportKey | null, at: SQL, id: SQL): SQL => (after ? sql`(${at}, ${id}) > (${after.at}::timestamptz, ${after.id}::uuid)` : sql`true`);
+
+/** The page a query answered, with its next key when the page is full (a full page may be followed by more). */
+function exportPage<R extends { key_at: string; key_id: string }, T>(raw: R[], limit: number, map: (row: R) => T): ExportPage<T> {
+  const last = raw.at(-1);
+  return { rows: raw.map(map), next: raw.length === limit && last ? { at: last.key_at, id: last.key_id } : null };
+}
 
 /** A list of ids as one parameter, split into a uuid array in SQL. */
 const uuidArray = (ids: string[]): SQL => sql`string_to_array(${ids.join(",")}, ',')::uuid[]`;
@@ -295,6 +310,9 @@ export function createSocialRepo(db: Db) {
      * `within` runs in the same transaction once the post exists, which is how its images are attached.
      * `lockWith` names the author of the post replied to or quoted: the pair is locked and a block
      * between them refused inside the transaction, so a reply cannot land across a concurrent block.
+     * The author's profile row is locked and a deleted one refused (not_found), and so is the row of the
+     * author of the post replied to or quoted (post_unavailable, as for a post that is gone), so no post
+     * lands behind a concurrent purge of either account (lockLive).
      */
     async createPost(input: {
       authorId: string;
@@ -307,6 +325,10 @@ export function createSocialRepo(db: Db) {
     }): Promise<string> {
       return db.transaction(async (tx) => {
         if (input.lockWith) await guardPair(tx, input.authorId, input.lockWith, "post_unavailable");
+        await lockLive(tx, sql`id = ${input.authorId}::uuid`);
+        if (input.replyToId || input.quoteOfId) {
+          await lockLive(tx, sql`id in (select author_id from posts where id in (${input.replyToId}::uuid, ${input.quoteOfId}::uuid))`, "post_unavailable");
+        }
         const [row] = await tx
           .insert(posts)
           .values({ authorId: input.authorId, body: input.body, replyToId: input.replyToId, quoteOfId: input.quoteOfId, createdAt: input.now })
@@ -372,10 +394,15 @@ export function createSocialRepo(db: Db) {
 
     // ------------------------------------------------------------ engagement
 
-    /** `other` is the post's author when that is someone else: the pair is locked and a block refused inside the transaction. */
+    /**
+     * `other` is the post's author when that is someone else: the pair is locked and a block refused inside the
+     * transaction. The liker's and the author's profile rows are locked too and a deleted one refused, so a like
+     * cannot land on an account a concurrent purge is removing (lockLive); the same goes for reposts and bookmarks.
+     */
     async like(userId: string, postId: string, now: Date, other?: string): Promise<boolean> {
       return db.transaction(async (tx) => {
         if (other) await guardPair(tx, userId, other, "not_found");
+        await lockLive(tx, actorAndAuthor(userId, postId));
         const inserted = await tx.insert(likes).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: likes.postId });
         if (inserted.length > 0) await tx.update(posts).set({ likeCount: bump(posts.likeCount, 1) }).where(eq(posts.id, postId));
         return inserted.length > 0;
@@ -391,6 +418,7 @@ export function createSocialRepo(db: Db) {
     async repost(userId: string, postId: string, now: Date, other?: string): Promise<boolean> {
       return db.transaction(async (tx) => {
         if (other) await guardPair(tx, userId, other, "not_found");
+        await lockLive(tx, actorAndAuthor(userId, postId));
         const inserted = await tx.insert(reposts).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: reposts.postId });
         if (inserted.length > 0) await tx.update(posts).set({ repostCount: bump(posts.repostCount, 1) }).where(eq(posts.id, postId));
         return inserted.length > 0;
@@ -404,8 +432,12 @@ export function createSocialRepo(db: Db) {
       });
     },
     async bookmark(userId: string, postId: string, now: Date): Promise<boolean> {
-      const inserted = await db.insert(bookmarks).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: bookmarks.postId });
-      return inserted.length > 0;
+      // A transaction of its own only for the lock: a bookmark counts nothing, but it must not outlive a purge of either account.
+      return db.transaction(async (tx) => {
+        await lockLive(tx, actorAndAuthor(userId, postId));
+        const inserted = await tx.insert(bookmarks).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: bookmarks.postId });
+        return inserted.length > 0;
+      });
     },
     async unbookmark(userId: string, postId: string): Promise<boolean> {
       const deleted = await db.delete(bookmarks).where(and(eq(bookmarks.userId, userId), eq(bookmarks.postId, postId))).returning({ postId: bookmarks.postId });
@@ -431,10 +463,15 @@ export function createSocialRepo(db: Db) {
 
     // ------------------------------------------------------------ graph
 
-    /** With `guard`, the pair is locked and a block refused inside the transaction, so a follow cannot land across a concurrent block. */
+    /**
+     * With `guard`, the pair is locked and a block refused inside the transaction, so a follow cannot land across a
+     * concurrent block. Both profile rows are locked and a deleted one refused either way, so a follow cannot land
+     * on an account a concurrent purge is removing and stay behind it (lockLive).
+     */
     async follow(followerId: string, followeeId: string, now: Date, guard = false): Promise<boolean> {
       return db.transaction(async (tx) => {
         if (guard) await guardPair(tx, followerId, followeeId, "not_found");
+        await lockLive(tx, sql`id in (${followerId}::uuid, ${followeeId}::uuid)`);
         const inserted = await tx.insert(follows).values({ fromId: followerId, toId: followeeId, createdAt: now }).onConflictDoNothing().returning({ toId: follows.toId });
         if (inserted.length > 0) {
           await tx.update(profiles).set({ followerCount: bump(profiles.followerCount, 1) }).where(eq(profiles.id, followeeId));
@@ -450,10 +487,13 @@ export function createSocialRepo(db: Db) {
     /**
      * Blocks and, in the same transaction, removes follows, reposts and likes in both directions, so
      * neither account keeps amplifying or counting on the other. False when the block already existed.
+     * Both profile rows are locked and a deleted one refused, so a block cannot land behind a concurrent
+     * purge of either account (lockLive).
      */
     async block(blockerId: string, blockedId: string, now: Date): Promise<boolean> {
       return db.transaction(async (tx) => {
         await pairLock(tx, blockerId, blockedId);
+        await lockLive(tx, sql`id in (${blockerId}::uuid, ${blockedId}::uuid)`);
         const inserted = await tx.insert(blocks).values({ fromId: blockerId, toId: blockedId, createdAt: now }).onConflictDoNothing().returning({ toId: blocks.toId });
         await removeFollow(tx, blockerId, blockedId);
         await removeFollow(tx, blockedId, blockerId);
@@ -466,9 +506,13 @@ export function createSocialRepo(db: Db) {
       const deleted = await db.delete(blocks).where(and(eq(blocks.fromId, blockerId), eq(blocks.toId, blockedId))).returning({ toId: blocks.toId });
       return deleted.length > 0;
     },
+    /** A transaction of its own only for the lock: a mute counts nothing, but it must not outlive a purge of either account (lockLive). */
     async mute(muterId: string, mutedId: string, now: Date): Promise<boolean> {
-      const inserted = await db.insert(mutes).values({ fromId: muterId, toId: mutedId, createdAt: now }).onConflictDoNothing().returning({ toId: mutes.toId });
-      return inserted.length > 0;
+      return db.transaction(async (tx) => {
+        await lockLive(tx, sql`id in (${muterId}::uuid, ${mutedId}::uuid)`);
+        const inserted = await tx.insert(mutes).values({ fromId: muterId, toId: mutedId, createdAt: now }).onConflictDoNothing().returning({ toId: mutes.toId });
+        return inserted.length > 0;
+      });
     },
     async unmute(muterId: string, mutedId: string): Promise<boolean> {
       const deleted = await db.delete(mutes).where(and(eq(mutes.fromId, muterId), eq(mutes.toId, mutedId))).returning({ toId: mutes.toId });
@@ -628,57 +672,60 @@ export function createSocialRepo(db: Db) {
     },
 
     /**
-     * Everything the account owns in this module, for the data export: its live profile row and handle
-     * history, every post it wrote whatever its state, what it liked, reposted and bookmarked, and the
-     * accounts it follows, blocks and mutes by their current handle (a deleted account keeps its handle).
-     * Null when there is no live profile. The images of the posts belong to the media module; the flow
-     * adds them. The table and column names below are fixed literals of this file, never input.
+     * The data export's head: the live profile row and every handle in handle_history for it, in the order they
+     * were recorded. Null when there is no live profile. The lists come page by page from the reads below.
      */
-    async exportProfile(id: string): Promise<ProfileExportRows | null> {
+    async exportHead(id: string): Promise<{ profile: ProfileRow; handleHistory: string[] } | null> {
       const [r] = await rows<RawProfile>(sql`${PROFILE_SELECT} where id = ${id}::uuid and deleted_at is null`);
       if (!r) return null;
-      const refs = async (table: "likes" | "reposts" | "bookmarks"): Promise<PostRefRow[]> =>
-        (await rows<{ post_id: string; at: string }>(sql`select post_id, ${iso("created_at")} as at from ${sql.raw(table)} where user_id = ${id}::uuid order by created_at, post_id`)).map((row) => ({
-          postId: row.post_id,
-          at: new Date(row.at),
-        }));
-      const handles = async (table: "follows" | "blocks" | "mutes", from: string, to: string): Promise<HandleRefRow[]> =>
-        (
-          await rows<{ handle: string; since: string }>(sql`
-            select p.handle, ${iso("r.created_at")} as since from ${sql.raw(table)} r join profiles p on p.id = r.${sql.raw(to)}
-            where r.${sql.raw(from)} = ${id}::uuid order by r.created_at, r.${sql.raw(to)}`)
-        ).map((row) => ({ handle: row.handle, since: new Date(row.since) }));
-      const [history, authored, likes, reposts, bookmarks, following, blocks, mutes] = await Promise.all([
-        rows<{ handle_lower: string }>(sql`select handle_lower from handle_history where profile_id = ${id}::uuid order by changed_at, handle_lower`),
-        rows<{ id: string; body: string; created_at: string; reply_to_id: string | null; quote_of_id: string | null; state: StoredPostState; deleted_at: string | null }>(sql`
-          select id, body, ${iso("created_at")} as created_at, reply_to_id, quote_of_id, state, ${iso("deleted_at")} as deleted_at
-          from posts where author_id = ${id}::uuid order by created_at, id`),
-        refs("likes"),
-        refs("reposts"),
-        refs("bookmarks"),
-        handles("follows", "follower_id", "followee_id"),
-        handles("blocks", "blocker_id", "blocked_id"),
-        handles("mutes", "muter_id", "muted_id"),
-      ]);
-      return {
-        profile: toProfile(r),
-        handleHistory: history.map((row) => row.handle_lower),
-        posts: authored.map((row) => ({
-          id: row.id,
-          body: row.body,
-          createdAt: new Date(row.created_at),
-          replyToId: row.reply_to_id,
-          quoteOfId: row.quote_of_id,
-          state: row.state,
-          deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
-        })),
-        likes,
-        reposts,
-        bookmarks,
-        following,
-        blocks,
-        mutes,
-      };
+      const history = await rows<{ handle_lower: string }>(sql`select handle_lower from handle_history where profile_id = ${id}::uuid order by changed_at, handle_lower`);
+      return { profile: toProfile(r), handleHistory: history.map((row) => row.handle_lower) };
+    },
+
+    /**
+     * A page of every post the account wrote, whatever its state, in (created_at, id) order after `after`, for the
+     * data export; a deleted one keeps its row with an empty body and its deletion time. The images of the posts
+     * belong to the media module; the flow adds them.
+     */
+    async exportPosts(id: string, after: ExportKey | null, limit: number): Promise<ExportPage<ExportedPostRow>> {
+      const raw = await rows<{ id: string; body: string; created_at: string; reply_to_id: string | null; quote_of_id: string | null; state: StoredPostState; deleted_at: string | null; key_at: string; key_id: string }>(sql`
+        select id, body, ${iso("created_at")} as created_at, reply_to_id, quote_of_id, state, ${iso("deleted_at")} as deleted_at, ${isoMicro("created_at")} as key_at, id as key_id
+        from posts where author_id = ${id}::uuid and ${exportAfter(after, sql`created_at`, sql`id`)} order by created_at, id limit ${limit}`);
+      return exportPage(raw, limit, (row) => ({
+        id: row.id,
+        body: row.body,
+        createdAt: new Date(row.created_at),
+        replyToId: row.reply_to_id,
+        quoteOfId: row.quote_of_id,
+        state: row.state,
+        deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
+      }));
+    },
+
+    /**
+     * A page of what the account liked, reposted or bookmarked, in (created_at, post id) order after `after`, for the
+     * data export. The table name is one of three fixed literals, never input.
+     */
+    async exportPostRefs(id: string, table: "likes" | "reposts" | "bookmarks", after: ExportKey | null, limit: number): Promise<ExportPage<PostRefRow>> {
+      const raw = await rows<{ post_id: string; at: string; key_at: string; key_id: string }>(sql`
+        select post_id, ${iso("created_at")} as at, ${isoMicro("created_at")} as key_at, post_id as key_id from ${sql.raw(table)}
+        where user_id = ${id}::uuid and ${exportAfter(after, sql`created_at`, sql`post_id`)} order by created_at, post_id limit ${limit}`);
+      return exportPage(raw, limit, (row) => ({ postId: row.post_id, at: new Date(row.at) }));
+    },
+
+    /**
+     * A page of the accounts the account follows, blocks or mutes, by the handle they have now (a deleted account
+     * keeps its handle), in (created_at, other id) order after `after`, for the data export. The table and column
+     * names are fixed literals of this function, never input.
+     */
+    async exportHandleRefs(id: string, table: "follows" | "blocks" | "mutes", after: ExportKey | null, limit: number): Promise<ExportPage<HandleRefRow>> {
+      const [from, to] = { follows: ["follower_id", "followee_id"], blocks: ["blocker_id", "blocked_id"], mutes: ["muter_id", "muted_id"] }[table];
+      const raw = await rows<{ handle: string; since: string; key_at: string; key_id: string }>(sql`
+        select p.handle, ${iso("r.created_at")} as since, ${isoMicro("r.created_at")} as key_at, r.${sql.raw(to!)} as key_id
+        from ${sql.raw(table)} r join profiles p on p.id = r.${sql.raw(to!)}
+        where r.${sql.raw(from!)} = ${id}::uuid and ${exportAfter(after, sql`r.created_at`, sql.raw(`r.${to!}`))}
+        order by r.created_at, r.${sql.raw(to!)} limit ${limit}`);
+      return exportPage(raw, limit, (row) => ({ handle: row.handle, since: new Date(row.since) }));
     },
 
     /** Sets the display name, the bio, or both (`patch` names at least one). False when there is no such live profile. */
@@ -733,6 +780,11 @@ export function createSocialRepo(db: Db) {
      * `within` runs in the same transaction, for the media rows. The profile row is locked first, so a
      * second purge of the same account (the request's and the job's) waits for the first and then finds
      * nothing left: every statement below changes only what is still there, so a repeat changes nothing.
+     * The same lock orders the purge against every write by or about the account (a follow, like, repost,
+     * bookmark, block, mute, post, reply or quote), which takes a shared lock on the row (lockLive): one that
+     * comes second waits for the purge and is refused, one that comes first makes the purge wait and has what
+     * it wrote removed or tombstoned here (a reply or a quote by another account stays, as one written before
+     * the deletion would).
      */
     async purgeProfile(id: string, now: Date, within: (tx: DbTx) => Promise<void>): Promise<void> {
       await db.transaction(async (tx) => {
@@ -799,6 +851,25 @@ async function guardPair(tx: Tx, me: string, other: string, code: "not_found" | 
     sql`select 1 from blocks where (blocker_id = ${me}::uuid and blocked_id = ${other}::uuid) or (blocker_id = ${other}::uuid and blocked_id = ${me}::uuid) limit 1`,
   );
   if (found.length > 0) throw new SocialError(code, code === "not_found" ? 404 : 400);
+}
+
+/** The profile rows an engagement is about, for lockLive: the account acting and the author of the post (one row when they are the same). */
+function actorAndAuthor(userId: string, postId: string): SQL {
+  return sql`id = ${userId}::uuid or id = (select author_id from posts where id = ${postId}::uuid)`;
+}
+
+/**
+ * Locks the profile rows `accounts` selects for the rest of the transaction and refuses the write, with the
+ * guard's `code` (not_found unless said), when one of them is deleted. The account purge holds its row `for
+ * update` for its whole transaction, so a write that comes second waits and then sees the deletion, and a
+ * purge that comes second waits for the write and then removes what it wrote. The lock is `for key share`,
+ * the weakest that conflicts with `for update`: `for share` would also conflict with the counter updates
+ * these same transactions make on the row (an update takes `for no key update`), so two follows of one
+ * account at once would each hold the lock the other's update waits for, and deadlock.
+ */
+async function lockLive(tx: Tx, accounts: SQL, code: "not_found" | "post_unavailable" = "not_found"): Promise<void> {
+  const found = (await tx.execute(sql`select deleted_at from profiles where ${accounts} for key share`)) as unknown as { deleted_at: string | null }[];
+  if (found.some((row) => row.deleted_at !== null)) throw new SocialError(code, code === "not_found" ? 404 : 400);
 }
 
 /** Removes `userId`'s reposts and likes of `authorId`'s posts and takes them off the counters, in the same transaction. */

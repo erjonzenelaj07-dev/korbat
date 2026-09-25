@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { count, eq, sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -14,6 +15,7 @@ import { signIn } from "../../src/auth/flows/signin";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { MemoryJobLock } from "../../src/lib/jobs";
+import { mediaForAccount } from "../../src/media";
 import { status } from "../../src/media/flows/status";
 import { upload } from "../../src/media/flows/upload";
 import { MemoryStore } from "../../src/middleware/rate-limit";
@@ -78,11 +80,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
       purgeProfile: (userId, now, within) => s.repo.purgeProfile(userId, now, within),
       exportProfile: (userId) => exportProfile(s.deps, userId),
     },
-    media: {
-      purgeOwner: (tx, ownerId) => m.deps.repo.purgeOwner(tx, ownerId),
-      requestDeletion: (ids) => m.files.requestDeletion(ids),
-      exportImages: async (ownerId) => (await m.deps.repo.readyImages(ownerId)).map((id) => ({ id, path: m.files.store.image(id, "large") })),
-    },
+    // The media module's own interface for this one, over the harness's repository and volumes.
+    media: mediaForAccount(m.deps),
     limits: new MemoryStore(),
     log: pino({ level: "silent" }),
     now: () => new Date(),
@@ -154,6 +153,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     const failed = (await upload(m.deps, userId, m.jpeg())).id;
     m.worker.failed(failed, "corrupt_image");
     await status(m.deps, userId, failed);
+    // The upload still in processing has its file waiting in the uploads volume for the worker.
+    expect(existsSync(m.files.uploads.upload(processing))).toBe(true);
 
     expect(await profileRow(bob.id)).toMatchObject({ followerCount: 2, followingCount: 2, postCount: 1 });
     expect(await profileRow(carol.id)).toMatchObject({ followerCount: 1, followingCount: 2 });
@@ -228,6 +229,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     for (const id of [imageA, imageB, loose, processing, failed]) expect(await m.deps.repo.find(id), id).toBeNull();
     expect(await m.deps.repo.readyImages(userId)).toEqual([]);
     expect(await m.files.deletionRequests()).toEqual(expect.arrayContaining([imageA, imageB, loose, processing, failed]));
+    // On the disk: every id has its request, and the processing upload's file is gone, so no worker picks it up afterwards.
+    for (const id of [imageA, imageB, loose, processing, failed]) expect(existsSync(m.files.uploads.deletion(id)), id).toBe(true);
+    for (const id of [imageA, imageB, loose, processing, failed]) expect(existsSync(m.files.uploads.upload(id)), id).toBe(false);
     expect(await authRepo.pendingPurges()).not.toContain(userId);
 
     // A second purge changes nothing: the rows read the same afterwards, and no further file deletion is asked for.

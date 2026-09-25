@@ -187,7 +187,8 @@ export const BIO_MAX_LENGTH = 160;
 export const Bio = z
   .string()
   .trim()
-  .regex(/^[^\p{Cc}]*$/u, "control characters are not allowed")
+  // The line and paragraph separators (Zl, Zp) break a line as a newline does, without being control characters.
+  .regex(/^[^\p{Cc}\p{Zl}\p{Zp}]*$/u, "control characters and line breaks are not allowed")
   .refine((bio) => !FORBIDDEN_FORMAT.test(bio), { message: "invisible direction and spacing characters are not allowed" })
   .refine((bio) => postLength(bio) <= BIO_MAX_LENGTH, { message: `bios have at most ${BIO_MAX_LENGTH} characters` });
 

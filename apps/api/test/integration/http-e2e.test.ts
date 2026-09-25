@@ -16,6 +16,7 @@ import { closeDb, createDb, type Db } from "@korbat/db";
 import { createApp } from "../../src/app";
 import { createAuth, redisKv, type Auth } from "../../src/auth";
 import { randomToken } from "../../src/auth/crypto";
+import { emailHash } from "../../src/auth/identifiers";
 import { hashPassword } from "../../src/auth/passwords";
 import { currentStep, hotp } from "../../src/auth/totp";
 import { loadConfig, type Config } from "../../src/config";
@@ -33,6 +34,7 @@ const SUBJECT = {
   locked: "Password sign-in paused on your korbat account",
   emailChangeCode: "Confirm your new korbat email address",
   emailChanged: "Your korbat email address changed",
+  emailReverted: "Your korbat account is back at this address",
 };
 
 const newEmail = (prefix: string) => `${prefix}-${randomUUID()}@korbat.local`;
@@ -313,6 +315,54 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth end to end (Postgre
     const newSignIn = await passwordSignIn(web(), newAddress, PASSWORD, randomToken());
     expect(newSignIn.status).toBe(200);
     expect(await newSignIn.json()).toEqual({ result: "session", mustReenrollMfa: false });
+  });
+
+  test("an email change undone from the old mailbox: the account moves back, the taker's sessions and password go, and the owner signs in at the old address with a code", { timeout: 60_000 }, async () => {
+    const owner = web();
+    const { email: oldAddress, box: oldBox } = await signUpAndOnboard(owner);
+    const ownerId = MeResponse.parse(await (await owner.fetch("/api/me")).json()).user.id;
+    // An address waits a minute between codes, in real time in Redis; the test clears that wait instead of sitting through it.
+    const skipCooldown = () => auth.deps.kv.del(`email-cooldown:${emailHash(auth.deps.config.authHmacKey, oldAddress)}`);
+    // Someone else gets into the account (here with a code from the owner's mailbox), moves it to an address of their own and sets a password there.
+    await skipCooldown();
+    const taker = web();
+    expect(await (await signInByCode(taker, oldAddress, oldBox, randomToken())).json()).toEqual({ result: "session", mustReenrollMfa: false });
+    const takerAddress = newEmail("taker");
+    const takerBox = await inbox(takerAddress);
+    const started = await taker.fetch("/api/auth/email/change/start", { json: { email: takerAddress } });
+    expect(started.status).toBe(200);
+    const { flowId } = FlowResponse.parse(await started.json());
+    const code = codeFrom(await takerBox.next(SUBJECT.emailChangeCode));
+    expect((await taker.fetch("/api/auth/email/change/verify", { json: { flowId, code } })).status).toBe(200);
+    expect((await taker.fetch("/api/auth/password/set", { json: { password: PASSWORD } })).status).toBe(200);
+    expect((await passwordSignIn(web(), takerAddress, PASSWORD, randomToken())).status).toBe(200);
+
+    // The notice in the old mailbox carries the link; a browser without any session opens it.
+    const notice = await oldBox.next(SUBJECT.emailChanged);
+    expect(notice).toContain(takerAddress);
+    const token = /\/email-revert\/([A-Za-z0-9_-]{43})/.exec(notice)?.[1];
+    expect(token).toBeDefined();
+    expect((await web().fetch("/api/auth/email/revert", { json: { token } })).status).toBe(204);
+    expect(await oldBox.next(SUBJECT.emailReverted)).toMatch(/every session/i);
+
+    // Every session is gone, the taker's and the owner's own, and so is the password set after the change. Every device is
+    // revoked too, so the taker's next sign-in on theirs counts as a new device and the owner is told of it.
+    expect(await auth.deps.repo.listDevices(ownerId)).toEqual([]);
+    expect((await taker.fetch("/api/me")).status).toBe(401);
+    expect((await owner.fetch("/api/me")).status).toBe(401);
+    for (const address of [takerAddress, oldAddress]) {
+      const refused = await passwordSignIn(web(), address, PASSWORD, randomToken());
+      expect(refused.status, address).toBe(401);
+      expect(await refused.json()).toMatchObject({ error: { code: "invalid_credentials" } });
+    }
+    // The owner signs in at the old address with a code from the old mailbox.
+    await skipCooldown();
+    const back = web();
+    expect(await (await signInByCode(back, oldAddress, oldBox, randomToken())).json()).toEqual({ result: "session", mustReenrollMfa: false });
+    const me = MeResponse.parse(await (await back.fetch("/api/me")).json());
+    expect(me.user).toMatchObject({ email: oldAddress, hasPassword: false });
+    expect((await auth.deps.repo.recentEvents(me.user.id)).filter((e) => e.type === "email_changed")).toHaveLength(2);
+    expect((await web().fetch("/api/auth/email/revert", { json: { token } })).status).toBe(400);
   });
 
   test("an under-16 sign-up is refused and leaves no account behind", async () => {

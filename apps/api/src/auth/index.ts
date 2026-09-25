@@ -10,7 +10,7 @@ import type { Config } from "../config";
 import type { Mailer } from "../mail/mailer";
 import { clientIdentity } from "./client-ip";
 import { authConfigFrom, type AuthDeps, type ProfileStore, type RequestContext } from "./context";
-import { confirmDeletion, startDeletion } from "./flows/deletion";
+import { confirmDeletion, finishPurge, startDeletion } from "./flows/deletion";
 import { exportAccount, type AccountExport } from "./flows/export";
 import { redisKv, type KeyValueStore } from "./kv";
 import { createLockout } from "./lockout";
@@ -49,11 +49,11 @@ export { createSessions } from "./sessions";
 export interface AuthForAccount {
   /** Mails the deletion code to the account's own address and answers the flow id. */
   startDeletion(session: Session, ctx: RequestContext): Promise<DeleteStartResponse>;
-  /** Checks the typed handle and the code, then marks the account deleted and revokes every session: from here the account is gone. */
+  /** Checks the typed handle and the code, then marks the account deleted and revokes every session, in one transaction: from here the account is gone. */
   confirmDeletion(session: Session, input: DeleteConfirmRequest): Promise<void>;
   /** Deleted accounts whose auth row is not anonymised yet, oldest deletion first. */
   pendingPurges(): Promise<string[]>;
-  /** Anonymises the auth row and marks it purged; a no-op when it already is. */
+  /** Finishes step 1's rows if a take-down stopped after the mark, then anonymises the auth row and marks it purged; a no-op when it already is. */
   finishPurge(userId: string): Promise<void>;
   /** The account's facts, its live sessions, its devices and its own events. */
   exportAccount(userId: string): Promise<AccountExport>;
@@ -123,7 +123,7 @@ export function createAuth(options: CreateAuthOptions) {
     startDeletion: (session, ctx) => startDeletion(deps, session, ctx),
     confirmDeletion: (session, input) => confirmDeletion(deps, session, input),
     pendingPurges: () => repo.pendingPurges(),
-    finishPurge: (userId) => repo.finishPurge(userId, now()),
+    finishPurge: (userId) => finishPurge(deps, userId),
     exportAccount: (userId) => exportAccount(deps, userId),
     appendEvent,
   };

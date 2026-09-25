@@ -1,12 +1,11 @@
 import { DeleteConfirmRequest } from "@korbat/contracts";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import { stream } from "hono/streaming";
 import { clearSessionCookies, type RequestContext } from "../auth";
 import type { AppEnv } from "../env";
 import { validate } from "../lib/validate";
 import type { AccountDeps } from "./context";
 import { confirmDeletion, startDeletion } from "./flows/deletion";
-import { buildExport, enforceExportLimit, exportFilename, writeExport } from "./flows/export";
+import { buildExport, enforceExportLimit, exportFilename, giveBackExport, writeExport, type ExportPlan } from "./flows/export";
 import { createZipWriter } from "./zip";
 
 /**
@@ -35,33 +34,64 @@ export function accountRoutes(deps: AccountDeps, guard: MiddlewareHandler<AppEnv
 
   r.post("/export", guard, fresh, async (c) => {
     const session = c.get("session")!;
-    // Taken before anything is built or streamed: a stream that fails midway still counts.
+    const log = c.get("log");
+    // Taken before anything is built or streamed; given back below when the export fails before its first byte.
     await enforceExportLimit(deps, session.userId);
     const now = deps.now();
-    // Built in memory before the first byte goes out, so a failing query is an error response, not a broken download.
-    const plan = await buildExport(deps, session.userId, session.sessionId, now);
+
+    // The body is a stream this handler writes itself, so a failure after the first byte can fail it: the
+    // connection then drops before the final chunk, and the client sees a broken download, never a short
+    // archive that ends cleanly.
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const body = writable.getWriter();
+    let started = false;
+    let clientLeft = false;
+    let plan: ExportPlan | undefined;
+    let begin!: () => void;
+    const begun = new Promise<void>((resolve) => (begin = resolve));
+    const archive = (async () => {
+      plan = await buildExport(deps, session.userId, session.sessionId, now);
+      const writer = createZipWriter(async (chunk) => {
+        if (!started) {
+          started = true;
+          begin();
+        }
+        try {
+          // Resolves once the client's side has taken the chunk: a slow client slows the file reads.
+          await body.write(chunk);
+        } catch (err) {
+          // Only a client that went away fails a write; reading on would be waste.
+          clientLeft = true;
+          throw err;
+        }
+      });
+      await writeExport(writer, plan);
+      // Every chunk is on its way: the export happened. Recorded before the body ends, so whoever read the whole body
+      // finds the event; a failure to record it is logged and does not spoil a complete download.
+      await deps.auth.appendEvent(session.userId, "export_created").catch((err: unknown) => log.error({ err, userId: session.userId }, "account export: the export_created event could not be recorded"));
+      await body.close();
+    })();
+
+    try {
+      // Until the first chunk the export can still fail as a plain error response.
+      await Promise.race([begun, archive]);
+    } catch (err) {
+      // Nothing was sent, so nothing was exported: the day's export goes back before the error is answered.
+      await giveBackExport(deps, session.userId, log);
+      throw err;
+    }
+    // From here the failure of the archive can only fail the body; as the design says, the day's export stays spent.
+    archive.catch(async (err: unknown) => {
+      await body.abort(err).catch(() => undefined);
+      if (clientLeft) log.warn({ userId: session.userId }, "account export: the client left before the archive was complete");
+      else log.error({ err, userId: session.userId }, "account export: the archive could not be completed");
+    });
+
     c.header("Content-Type", "application/zip");
-    c.header("Content-Disposition", `attachment; filename="${exportFilename(plan.json.profile.handle, now)}"`);
+    c.header("Content-Disposition", `attachment; filename="${exportFilename(plan!.profile.profile.handle, now)}"`);
     // The archive holds the account's email address; nothing on the way may keep a copy.
     c.header("Cache-Control", "no-store");
-    return stream(
-      c,
-      async (body) => {
-        // Hono's write swallows a closed connection; the abort flag is what says the client went away, and then reading on is waste.
-        const writer = createZipWriter(async (chunk) => {
-          if (body.aborted) throw new Error("the client closed the connection");
-          await body.write(chunk);
-        });
-        await writeExport(writer, plan);
-        // After the last chunk: an archive the client did not receive in full is no export.
-        await deps.auth.appendEvent(session.userId, "export_created");
-      },
-      async (err, body) => {
-        // The status went out with the first chunk; a failed stream can only be ended and noted here.
-        if (body.aborted) c.get("log").warn({ userId: session.userId }, "account export: the client left before the archive was complete");
-        else c.get("log").error({ err, userId: session.userId }, "account export: the archive could not be completed");
-      },
-    );
+    return c.body(readable, 200);
   });
 
   return r;

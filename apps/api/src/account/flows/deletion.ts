@@ -9,17 +9,19 @@ export function startDeletion(deps: AccountDeps, session: Session, ctx: RequestC
 
 /**
  * Steps 2 to 4 of section 7.6, for an account the auth module has marked deleted: the social purge,
- * with the image rows detached inside its transaction; the file deletions, once that transaction
- * committed, because files cannot be rolled back; then the auth row's anonymisation. Every step
- * changes only what is still there, so the purge can run again after a failure, from the request or
- * from the job, and finish what an earlier run left.
+ * with the image rows detached and their files asked for inside its transaction; then the auth row's
+ * anonymisation. The files are asked for before the commit, not after it: were the process to stop
+ * between a commit and the request, a rerun would find no rows left, mark the account purged and
+ * leave the files to the sweeper's reconcile pass, which refuses to act on many orphans at once. A
+ * request is one empty file per id, so a rerun after a failed commit, which finds the same rows again,
+ * asks again for the same ids and changes nothing; the files it asked for belong to an account that is
+ * being deleted either way. Every step changes only what is still there, so the purge can run again
+ * after a failure, from the request or from the job, and finish what an earlier run left.
  */
 export async function purge(deps: AccountDeps, userId: string): Promise<void> {
-  let images: string[] = [];
   await deps.social.purgeProfile(userId, deps.now(), async (tx) => {
-    images = await deps.media.purgeOwner(tx, userId);
+    await deps.media.requestDeletion(await deps.media.purgeOwner(tx, userId));
   });
-  await deps.media.requestDeletion(images);
   await deps.auth.finishPurge(userId);
 }
 

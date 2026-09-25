@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View, type TextInputProps } from "react-native";
 import { Link, type Href } from "expo-router";
 
@@ -37,21 +37,25 @@ export function Section({ title, children }: { title: string; children: ReactNod
 
 /**
  * The verified badge after a display name: the account proved it holds a phone number that no other
- * account uses. The label says what the one word means to a screen reader.
+ * account uses. The label says what the one word means to a screen reader. The chip is an image to
+ * assistive technology: ARIA forbids naming an element without a role, and screen readers ignore such
+ * a name, while an image is announced by it.
  */
 export function VerifiedChip() {
   return (
-    <View accessibilityLabel="verified account" className="self-center rounded-full bg-sky-950 px-2 py-0.5">
+    <View role="img" accessibilityLabel="verified account" className="self-center rounded-full bg-sky-950 px-2 py-0.5">
       <Text className="text-xs font-medium text-sky-300">Verified</Text>
     </View>
   );
 }
 
-export function Field({ label, ...input }: { label: string } & TextInputProps) {
+/** A labelled text field. `ref` reaches the input itself, whose focus() moves the browser's focus to it. */
+export function Field({ label, ref, ...input }: { label: string; ref?: Ref<TextInput> } & TextInputProps) {
   return (
     <View className="mt-6">
       <Text className="text-sm font-medium text-zinc-300">{label}</Text>
       <TextInput
+        ref={ref}
         accessibilityLabel={label}
         placeholderTextColor="#a1a1aa"
         className="mt-2 rounded-lg border border-zinc-500 bg-zinc-900 px-4 py-3 text-base text-zinc-50"
@@ -61,24 +65,27 @@ export function Field({ label, ...input }: { label: string } & TextInputProps) {
   );
 }
 
+/** A full-width button. `ref` reaches the pressable itself, whose focus() moves the browser's focus to it. */
 export function Button({
   label,
   onPress,
   busy = false,
   disabled = false,
   tone = "primary",
+  ref,
 }: {
   label: string;
   onPress: () => void;
   busy?: boolean;
   disabled?: boolean;
   tone?: "primary" | "secondary" | "danger";
+  ref?: Ref<View>;
 }) {
   const inactive = disabled || busy;
   const surface = inactive ? "bg-zinc-800" : tone === "primary" ? "bg-zinc-50" : tone === "danger" ? "bg-red-600" : "border border-zinc-600";
   const text = inactive ? "text-zinc-400" : tone === "primary" ? "text-zinc-950" : "text-zinc-50";
   return (
-    <Pressable accessibilityRole="button" aria-busy={busy} disabled={inactive} onPress={onPress} className={`mt-6 rounded-lg px-4 py-3 ${surface}`}>
+    <Pressable ref={ref} accessibilityRole="button" aria-busy={busy} disabled={inactive} onPress={onPress} className={`mt-6 rounded-lg px-4 py-3 ${surface}`}>
       <Text className={`text-center text-base font-semibold ${text}`}>{busy ? "Please wait…" : label}</Text>
     </Pressable>
   );

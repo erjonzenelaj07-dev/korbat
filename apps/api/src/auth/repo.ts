@@ -160,19 +160,44 @@ export function createAuthRepo(db: Db) {
 
     // ------------------------------------------------------------ deletion
 
-    /** The owner confirmed deletion: from now on every lookup above treats the row as absent. Once only; a later call changes nothing. */
+    /**
+     * Marks the row deleted and nothing else: from now on every lookup above treats it as absent. Once only; a
+     * later call changes nothing. A deletion goes through takeDown; this is the state a take-down that stopped
+     * after the mark would leave, which finishTakeDown completes.
+     */
     async markDeleted(userId: string, now: Date): Promise<void> {
       await db.update(users).set({ deletedAt: now }).where(and(eq(users.id, userId), isNull(users.deletedAt)));
     },
 
-    /** Every device of the user, and by cascade every session row. The sessions are revoked and tombstoned first, so the cache cannot revive one. */
-    async deleteDevices(userId: string): Promise<void> {
-      await db.delete(devices).where(eq(devices.userId, userId));
+    /**
+     * Step 1 of a deletion (1b design, section 7.6) in one transaction: the row is marked deleted, every live
+     * session revoked, every device and code deleted and the account_deleted event appended. Either all of it
+     * lands or none of it does, so a failure leaves a live account with its sessions, never a deleted one with
+     * sessions and devices that nothing would remove. Answers the ids of the sessions it revoked, for the cache
+     * tombstones, which are not the database's to write.
+     */
+    async takeDown(userId: string, now: Date, deviceId: string | null): Promise<string[]> {
+      return db.transaction(async (tx) => {
+        await tx.update(users).set({ deletedAt: now }).where(and(eq(users.id, userId), isNull(users.deletedAt)));
+        const revoked = await takeDownRows(tx, userId, now);
+        await tx.insert(authEvents).values({ userId, type: "account_deleted", deviceId, metadata: {} });
+        return revoked;
+      });
     },
 
-    /** Every code out for the user, whatever its purpose: none may complete a flow for an account that is gone. */
-    async deleteEmailCodes(userId: string): Promise<void> {
-      await db.delete(emailCodes).where(eq(emailCodes.userId, userId));
+    /**
+     * The rows of step 1 again, for a row marked deleted and not purged yet: a take-down that stopped after the
+     * mark, or a session that a sign-in already past its lookup created after it. Nothing for a live or a purged
+     * row. The event is not appended again: the confirmation that recorded it is the only one there was.
+     */
+    async finishTakeDown(userId: string, now: Date): Promise<string[]> {
+      return db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt)));
+        return row ? takeDownRows(tx, userId, now) : [];
+      });
     },
 
     /** Deleted accounts whose row the purge has not anonymised yet, oldest deletion first, at most 100 a round. */
@@ -272,6 +297,11 @@ export function createAuthRepo(db: Db) {
     /** A revoked device no longer carries live sessions and counts as new at its next sign-in. */
     async revokeDevice(id: string, now: Date): Promise<void> {
       await db.update(devices).set({ revokedAt: now }).where(and(eq(devices.id, id), isNull(devices.revokedAt)));
+    },
+
+    /** Every device of the user, as revokeDevice revokes one: the next sign-in on any of them counts as a new device. */
+    async revokeDevices(userId: string, now: Date): Promise<void> {
+      await db.update(devices).set({ revokedAt: now }).where(and(eq(devices.userId, userId), isNull(devices.revokedAt)));
     },
 
     /** The user's devices that are not revoked, oldest first, for the data export; a revoked one stands for nothing of the account's any more. */
@@ -448,6 +478,25 @@ export function createAuthRepo(db: Db) {
         .orderBy(desc(authEvents.createdAt), desc(authEvents.id));
     },
   };
+}
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/**
+ * The rows step 1 of a deletion takes down, inside the caller's transaction: every live session is revoked
+ * (its id answered, for the cache tombstones), every device is deleted, and with it by cascade every session
+ * row, and every code out for the user goes, whatever its purpose, so none can complete a flow for an
+ * account that is gone.
+ */
+async function takeDownRows(tx: Tx, userId: string, now: Date): Promise<string[]> {
+  const revoked = await tx
+    .update(sessions)
+    .set({ revokedAt: now })
+    .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+    .returning({ id: sessions.id });
+  await tx.delete(devices).where(eq(devices.userId, userId));
+  await tx.delete(emailCodes).where(eq(emailCodes.userId, userId));
+  return revoked.map((row) => row.id);
 }
 
 export type AuthRepo = ReturnType<typeof createAuthRepo>;

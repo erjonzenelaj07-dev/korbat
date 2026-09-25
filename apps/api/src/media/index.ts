@@ -9,7 +9,7 @@ import { HEARTBEAT_STALE_MS, type MediaFormat } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { MediaDeps, MediaForPosts } from "./context";
-import { createMediaFiles } from "./files";
+import { createMediaFiles, type StoredFile } from "./files";
 import { createMediaRepo } from "./repo";
 import { mediaFileRoutes, mediaRoutes } from "./routes";
 import type { JobLock } from "../lib/jobs";
@@ -17,16 +17,41 @@ import { createSweeper, sweep } from "./sweeper";
 
 export { MediaError } from "./context";
 export type { MediaDeps, MediaForPosts } from "./context";
+export type { StoredFile } from "./files";
 export type { SweepReport } from "./sweeper";
 
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
-  /** Removes every image row of the owner, on a post or not, whatever its state, inside the account purge's transaction; the ids name the files to delete afterwards. */
+  /** Removes every image row of the owner, on a post or not, whatever its state, inside the account purge's transaction; the ids name the files to delete. */
   purgeOwner(tx: DbTx, ownerId: string): Promise<string[]>;
-  /** Asks the worker to delete the files of these images, once the transaction committed: files cannot be rolled back. */
+  /**
+   * Asks the worker to delete the files of these images, whatever their state: an upload still waiting
+   * in the uploads volume is removed first, as the sweeper removes one it gives up on, so no worker picks
+   * it up after the account is gone (removing is idempotent, and costs nothing for an image whose upload
+   * was taken already); then one empty request file per id, so asking twice is asking once. The account
+   * purge asks inside its transaction, right after purgeOwner, so the requests are on disk before the rows
+   * are gone for good.
+   */
   requestDeletion(ids: readonly string[]): Promise<void>;
-  /** The account's ready images, on a post or not, each with the absolute path of its large variant in the store; the account module reads the files itself. */
-  exportImages(ownerId: string): Promise<{ id: string; path: string }[]>;
+  /**
+   * The account's ready images, on a post or not, each with the checked open of its large variant: the
+   * store is written by the worker and not trusted, so a file is read only when it is a plain file of the
+   * store's own device no larger than a variant may be, and only up to the size that check measured
+   * (null, and the export lists the image as missing, otherwise).
+   */
+  exportImages(ownerId: string): Promise<{ id: string; open(): Promise<StoredFile | null> }[]>;
+}
+
+/** The account module's interface over this module's dependencies, as createMedia hands it out; the integration tests build it the same way. */
+export function mediaForAccount(deps: MediaDeps): MediaForAccount {
+  return {
+    purgeOwner: (tx, ownerId) => deps.repo.purgeOwner(tx, ownerId),
+    async requestDeletion(ids) {
+      for (const id of ids) await deps.files.discardUpload(id);
+      await deps.files.requestDeletion(ids);
+    },
+    exportImages: async (ownerId) => (await deps.repo.readyImages(ownerId)).map((id) => ({ id, open: () => deps.files.openImage(id, "large") })),
+  };
 }
 
 export interface CreateMediaOptions {
@@ -68,11 +93,7 @@ export function createMedia(options: CreateMediaOptions) {
     requestDeletion: (ids) => deps.files.requestDeletion(ids),
     forPosts: (postIds) => deps.repo.forPosts(postIds),
   };
-  const forAccount: MediaForAccount = {
-    purgeOwner: (tx, ownerId) => deps.repo.purgeOwner(tx, ownerId),
-    requestDeletion: (ids) => deps.files.requestDeletion(ids),
-    exportImages: async (ownerId) => (await deps.repo.readyImages(ownerId)).map((id) => ({ id, path: deps.files.store.image(id, "large") })),
-  };
+  const forAccount = mediaForAccount(deps);
   return {
     deps,
     /** The interface the social module uses to put images on posts and read them back. */

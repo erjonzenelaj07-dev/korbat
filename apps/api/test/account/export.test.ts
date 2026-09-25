@@ -1,16 +1,25 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { strFromU8, unzipSync } from "fflate";
+import { Writable } from "node:stream";
+import { Deflate, strFromU8, unzipSync } from "fflate";
+import { Hono, type MiddlewareHandler } from "hono";
 import pino from "pino";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { ExportFormat } from "@korbat/contracts";
+import { MAX_VARIANT_BYTES } from "@korbat/media-protocol";
 import { AccountError, type AccountDeps } from "../../src/account/context";
-import { EXPORT_WINDOW_MS, buildExport, enforceExportLimit, exportFilename, mediaEntry, writeExport } from "../../src/account/flows/export";
-import { createZipWriter } from "../../src/account/zip";
-import type { AuthEventType } from "../../src/auth";
+import { EXPORT_WINDOW_MS, buildExport, enforceExportLimit, exportFilename, exportJson, mediaEntry, writeExport } from "../../src/account/flows/export";
+import { accountRoutes } from "../../src/account/routes";
+import { createZipWriter, type OpenFile } from "../../src/account/zip";
+import type { AccountExport, AuthEventType, Session } from "../../src/auth";
+import type { AppEnv } from "../../src/env";
+import { createMediaFiles } from "../../src/media/files";
 import { MemoryStore } from "../../src/middleware/rate-limit";
+import type { ExportedPost } from "../../src/social";
+import type { HandleRefRow, PostRefRow } from "../../src/social/repo";
 
 const root = mkdtempSync(path.join(tmpdir(), "korbat-account-export-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -18,6 +27,9 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const T0 = 1_789_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const iso = (ms: number) => new Date(ms).toISOString();
+const silent = pino({ level: "silent" });
+const KIB64 = 64 * 1024;
+const TWO_32 = 0x1_0000_0000;
 
 /** A file of the given bytes in a fresh directory, and its absolute path. */
 function fileOf(bytes: Uint8Array): string {
@@ -26,6 +38,22 @@ function fileOf(bytes: Uint8Array): string {
   const file = path.join(dir, "large.webp");
   writeFileSync(file, bytes);
   return file;
+}
+
+/** Opens a file as the media module's checked open answers: the handle with the size it measured, or null for no plain file. */
+function openerOf(file: string): OpenFile {
+  return async () => {
+    let handle: FileHandle;
+    try {
+      handle = await open(file, "r");
+    } catch {
+      return null;
+    }
+    const stats = await handle.stat();
+    if (stats.isFile()) return { handle, size: stats.size };
+    await handle.close();
+    return null;
+  };
 }
 
 /**
@@ -44,7 +72,7 @@ function memorySink() {
       chunks.push(Uint8Array.from(chunk));
       busy = false;
     },
-    bytes: (): Uint8Array => Buffer.concat(chunks),
+    bytes: (): Buffer => Buffer.concat(chunks),
     get overlapped() {
       return overlapped;
     },
@@ -54,16 +82,114 @@ function memorySink() {
   };
 }
 
-/** Every entry of the central directory with its compression method (0 stored, 8 deflated), in archive order. */
-function centralDirectory(archive: Uint8Array): [string, number][] {
+/**
+ * A stand-in for an opened store file: `size` bytes of `chunk` (zeros unless given), yielded lazily in
+ * chunks of its length, failing once `failAfter` chunks were read when asked to. It records how many
+ * chunks were read, whether the reading stopped and whether the handle was closed.
+ */
+function fakeFile(size: number, options: { failAfter?: number; chunk?: Uint8Array } = {}) {
+  const chunk = options.chunk ?? new Uint8Array(KIB64);
+  const state = { chunks: 0, stopped: false, closed: false };
+  const handle = {
+    createReadStream({ start = 0, end = size - 1 }: { start?: number; end?: number }): AsyncIterable<Uint8Array> {
+      return (async function* () {
+        try {
+          for (let at = start; at <= end; at += chunk.length) {
+            if (options.failAfter !== undefined && state.chunks >= options.failAfter) throw new Error("the disk failed in the middle of the file");
+            state.chunks += 1;
+            yield at + chunk.length - 1 <= end ? chunk : chunk.subarray(0, end - at + 1);
+          }
+        } finally {
+          state.stopped = true;
+        }
+      })();
+    },
+    async close() {
+      state.closed = true;
+    },
+  };
+  const opener: OpenFile = async () => ({ handle: handle as unknown as FileHandle, size });
+  return { open: opener, state, chunk };
+}
+
+async function collect(pieces: AsyncIterable<string>): Promise<string[]> {
+  const out: string[] = [];
+  for await (const piece of pieces) out.push(piece);
+  return out;
+}
+
+async function* piecesOf(...pieces: string[]): AsyncGenerator<string> {
+  yield* pieces;
+}
+
+/** One central directory entry as a reader finds it. */
+interface CentralEntry {
+  at: number;
+  name: string;
+  method: number;
+  versionNeeded: number;
+  flags: number;
+  compressed: number;
+  size: number;
+  offset: number;
+  /** The payload of the ZIP64 extra field (id 0x0001), as 64-bit values, or null without one. */
+  zip64: number[] | null;
+}
+
+const u64 = (bytes: Buffer, at: number) => bytes.readUInt32LE(at) + bytes.readUInt32LE(at + 4) * TWO_32;
+
+/** Every central directory entry in archive order, found by its signature (none of the test data holds it). */
+function centralDirectory(archive: Uint8Array, base = 0): CentralEntry[] {
   const bytes = Buffer.from(archive);
-  const entries: [string, number][] = [];
+  const entries: CentralEntry[] = [];
   for (let i = 0; i + 46 <= bytes.length; i++) {
     if (bytes.readUInt32LE(i) !== 0x02014b50) continue;
     const nameLength = bytes.readUInt16LE(i + 28);
-    entries.push([bytes.toString("utf8", i + 46, i + 46 + nameLength), bytes.readUInt16LE(i + 10)]);
+    const extraLength = bytes.readUInt16LE(i + 30);
+    let zip64: number[] | null = null;
+    for (let at = i + 46 + nameLength; at + 4 <= i + 46 + nameLength + extraLength; at += 4 + bytes.readUInt16LE(at + 2)) {
+      if (bytes.readUInt16LE(at) !== 0x0001) continue;
+      const length = bytes.readUInt16LE(at + 2);
+      zip64 = Array.from({ length: length / 8 }, (_, k) => u64(bytes, at + 4 + 8 * k));
+    }
+    entries.push({
+      at: base + i,
+      name: bytes.toString("utf8", i + 46, i + 46 + nameLength),
+      method: bytes.readUInt16LE(i + 10),
+      versionNeeded: bytes.readUInt16LE(i + 6),
+      flags: bytes.readUInt16LE(i + 8),
+      compressed: bytes.readUInt32LE(i + 20),
+      size: bytes.readUInt32LE(i + 24),
+      offset: bytes.readUInt32LE(i + 42),
+      zip64,
+    });
   }
   return entries;
+}
+
+/** The end records, read from the archive's last bytes as a reader does: the classic one, then the ZIP64 locator and record when present. */
+function endRecords(archive: Uint8Array, base = 0) {
+  const bytes = Buffer.from(archive);
+  const at = bytes.length - 22;
+  expect(bytes.readUInt32LE(at)).toBe(0x06054b50);
+  const end = { entriesHere: bytes.readUInt16LE(at + 8), entries: bytes.readUInt16LE(at + 10), size: bytes.readUInt32LE(at + 12), offset: bytes.readUInt32LE(at + 16), comment: bytes.readUInt16LE(at + 20) };
+  if (at < 20 || bytes.readUInt32LE(at - 20) !== 0x07064b50) return { end, locator: null, end64: null };
+  const locator = { disk: bytes.readUInt32LE(at - 16), offset: u64(bytes, at - 12), disks: bytes.readUInt32LE(at - 4) };
+  const r = locator.offset - base;
+  expect(bytes.readUInt32LE(r)).toBe(0x06064b50);
+  const end64 = {
+    at: base + r,
+    recordSize: u64(bytes, r + 4),
+    versionMadeBy: bytes.readUInt16LE(r + 12),
+    versionNeeded: bytes.readUInt16LE(r + 14),
+    disk: bytes.readUInt32LE(r + 16),
+    directoryDisk: bytes.readUInt32LE(r + 20),
+    entriesHere: u64(bytes, r + 24),
+    entries: u64(bytes, r + 32),
+    size: u64(bytes, r + 40),
+    offset: u64(bytes, r + 48),
+  };
+  return { end, locator, end64 };
 }
 
 interface RecordedEvent {
@@ -72,76 +198,120 @@ interface RecordedEvent {
   metadata: Record<string, unknown> | undefined;
 }
 
+interface Lists {
+  posts: ExportedPost[];
+  likes: PostRefRow[];
+  reposts: PostRefRow[];
+  bookmarks: PostRefRow[];
+  following: HandleRefRow[];
+  blocks: HandleRefRow[];
+  mutes: HandleRefRow[];
+}
+
 /**
- * The export flow on fakes of the three module interfaces: an account with two live sessions,
- * one device and two events; a profile with a post carrying two images and a deleted reply, one
- * like, one bookmark, a follow, a block and a mute; and whatever images the test puts in `images`.
+ * The export flow on fakes of the three module interfaces: an account with two live sessions, one
+ * device and two events; a profile with a post carrying two images and a deleted reply, one like, one
+ * bookmark, a follow, a block and a mute; and whatever images the test puts in `images`. The social
+ * fake hands each list out in pages of the size it is asked for, reading a page only when it is
+ * iterated, and records every read in `reads`; a test may add rows to `lists`. `failures` makes the
+ * next calls of a module read throw.
  */
 function harness() {
   let t = T0;
-  const images: { id: string; path: string }[] = [];
+  const images: { id: string; open: OpenFile }[] = [];
   const userId = randomUUID();
   const currentSession = randomBytes(32).toString("hex");
   const otherSession = randomBytes(32).toString("hex");
   const [postId, deletedId, likedId, bookmarkedId, imageA, imageB] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
   const events: RecordedEvent[] = [];
+  const reads: string[] = [];
+  const failures = { exportAccount: 0 };
   // The deletion side of the three interfaces is not exercised by the export; test/account/deletion.test.ts covers it.
   const notHere = async (): Promise<never> => {
     throw new Error("not exercised by the export");
   };
+  const account: AccountExport = {
+    account: { id: userId, email: "ada@korbat.local", createdAt: new Date(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: new Date(T0 - 3 * DAY_MS) },
+    sessions: [
+      { id: otherSession, createdAt: new Date(T0 - 2 * DAY_MS), lastUsedAt: new Date(T0 - DAY_MS) },
+      { id: currentSession, createdAt: new Date(T0 - DAY_MS), lastUsedAt: new Date(T0) },
+    ],
+    devices: [{ label: "Chrome on Windows", platform: "web", firstSeenAt: new Date(T0 - 3 * DAY_MS), lastSeenAt: new Date(T0) }],
+    events: [
+      { type: "signin_success", at: new Date(T0 - DAY_MS) },
+      { type: "signup", at: new Date(T0 - 3 * DAY_MS) },
+    ],
+  };
+  const lists: Lists = {
+    posts: [
+      {
+        id: postId,
+        body: "two photos",
+        createdAt: new Date(T0 - 2 * DAY_MS),
+        replyToId: null,
+        quoteOfId: null,
+        state: "visible",
+        deletedAt: null,
+        media: [
+          { id: imageA, altText: "a harbour at dawn", width: 1600, height: 1200 },
+          { id: imageB, altText: "a lighthouse", width: 900, height: 1600 },
+        ],
+      },
+      { id: deletedId, body: "", createdAt: new Date(T0 - DAY_MS), replyToId: postId, quoteOfId: null, state: "deleted_by_author", deletedAt: new Date(T0 - 1_000), media: [] },
+    ],
+    likes: [{ postId: likedId, at: new Date(T0 - DAY_MS) }],
+    reposts: [],
+    bookmarks: [{ postId: bookmarkedId, at: new Date(T0 - 500) }],
+    following: [{ handle: "bob", since: new Date(T0 - 2 * DAY_MS) }],
+    blocks: [{ handle: "eve", since: new Date(T0 - DAY_MS) }],
+    mutes: [{ handle: "carol", since: new Date(T0 - 200) }],
+  };
+  /** A list in pages of `pageSize`, each read when the one before has been used, as the social module pages its keyset reads. */
+  function paged<T>(name: keyof Lists, rows: T[], pageSize: number): AsyncIterable<T[]> {
+    return {
+      async *[Symbol.asyncIterator]() {
+        for (let at = 0; ; at += pageSize) {
+          reads.push(name);
+          const page = rows.slice(at, at + pageSize);
+          if (page.length > 0) yield page;
+          if (page.length < pageSize) return;
+        }
+      },
+    };
+  }
   const deps: AccountDeps = {
     auth: {
       startDeletion: notHere,
       confirmDeletion: notHere,
       pendingPurges: notHere,
       finishPurge: notHere,
-      exportAccount: async (id) => ({
-        account: { id, email: "ada@korbat.local", createdAt: new Date(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: new Date(T0 - 3 * DAY_MS) },
-        sessions: [
-          { id: otherSession, createdAt: new Date(T0 - 2 * DAY_MS), lastUsedAt: new Date(T0 - DAY_MS) },
-          { id: currentSession, createdAt: new Date(T0 - DAY_MS), lastUsedAt: new Date(T0) },
-        ],
-        devices: [{ label: "Chrome on Windows", platform: "web", firstSeenAt: new Date(T0 - 3 * DAY_MS), lastSeenAt: new Date(T0) }],
-        events: [
-          { type: "signin_success", at: new Date(T0 - DAY_MS) },
-          { type: "signup", at: new Date(T0 - 3 * DAY_MS) },
-        ],
-      }),
+      exportAccount: async () => {
+        if (failures.exportAccount > 0) {
+          failures.exportAccount -= 1;
+          throw new Error("the auth pool timed out");
+        }
+        return account;
+      },
       appendEvent: async (id, type, metadata) => {
         events.push({ userId: id, type, metadata });
       },
     },
     social: {
       purgeProfile: notHere,
-      exportProfile: async () => ({
+      exportProfile: async (_id, pageSize = 1000) => ({
         profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: new Date(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"] },
-        posts: [
-          {
-            id: postId,
-            body: "two photos",
-            createdAt: new Date(T0 - 2 * DAY_MS),
-            replyToId: null,
-            quoteOfId: null,
-            state: "visible",
-            deletedAt: null,
-            media: [
-              { id: imageA, altText: "a harbour at dawn", width: 1600, height: 1200 },
-              { id: imageB, altText: "a lighthouse", width: 900, height: 1600 },
-            ],
-          },
-          { id: deletedId, body: "", createdAt: new Date(T0 - DAY_MS), replyToId: postId, quoteOfId: null, state: "deleted_by_author", deletedAt: new Date(T0 - 1_000), media: [] },
-        ],
-        likes: [{ postId: likedId, at: new Date(T0 - DAY_MS) }],
-        reposts: [],
-        bookmarks: [{ postId: bookmarkedId, at: new Date(T0 - 500) }],
-        following: [{ handle: "bob", since: new Date(T0 - 2 * DAY_MS) }],
-        blocks: [{ handle: "eve", since: new Date(T0 - DAY_MS) }],
-        mutes: [{ handle: "carol", since: new Date(T0 - 200) }],
+        posts: paged("posts", lists.posts, pageSize),
+        likes: paged("likes", lists.likes, pageSize),
+        reposts: paged("reposts", lists.reposts, pageSize),
+        bookmarks: paged("bookmarks", lists.bookmarks, pageSize),
+        following: paged("following", lists.following, pageSize),
+        blocks: paged("blocks", lists.blocks, pageSize),
+        mutes: paged("mutes", lists.mutes, pageSize),
       }),
     },
     media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images },
     limits: new MemoryStore(() => t),
-    log: pino({ level: "silent" }),
+    log: silent,
     now: () => new Date(t),
   };
   return {
@@ -157,6 +327,9 @@ function harness() {
     imageB,
     images,
     events,
+    lists,
+    reads,
+    failures,
     now: () => new Date(t),
     advance(ms: number) {
       t += ms;
@@ -164,11 +337,79 @@ function harness() {
   };
 }
 
+type Harness = ReturnType<typeof harness>;
+
+/** export.json as a document in memory, built from the harness's rows the way the export describes them, for JSON.stringify to write. */
+function expectedDocument(h: Harness, missingMedia: string[] = []) {
+  const ref = (row: PostRefRow) => ({ postId: row.postId, at: row.at.toISOString() });
+  const other = (row: HandleRefRow) => ({ handle: row.handle, since: row.since.toISOString() });
+  return {
+    format: "korbat-export-1",
+    exportedAt: iso(T0),
+    account: { id: h.userId, email: "ada@korbat.local", createdAt: iso(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: iso(T0 - 3 * DAY_MS) },
+    profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"] },
+    posts: h.lists.posts.map((post) => ({
+      id: post.id,
+      body: post.body,
+      createdAt: post.createdAt.toISOString(),
+      replyToId: post.replyToId,
+      quoteOfId: post.quoteOfId,
+      state: post.state,
+      deletedAt: post.deletedAt ? post.deletedAt.toISOString() : null,
+      media: post.media.map((image) => ({ id: image.id, file: `media/${image.id}.webp`, altText: image.altText, width: image.width, height: image.height })),
+    })),
+    likes: h.lists.likes.map(ref),
+    reposts: h.lists.reposts.map(ref),
+    bookmarks: h.lists.bookmarks.map(ref),
+    following: h.lists.following.map(other),
+    blocks: h.lists.blocks.map(other),
+    mutes: h.lists.mutes.map(other),
+    sessions: [
+      { id: h.otherSession, createdAt: iso(T0 - 2 * DAY_MS), lastUsedAt: iso(T0 - DAY_MS), current: false },
+      { id: h.currentSession, createdAt: iso(T0 - DAY_MS), lastUsedAt: iso(T0), current: true },
+    ],
+    devices: [{ label: "Chrome on Windows", platform: "web", firstSeenAt: iso(T0 - 3 * DAY_MS), lastSeenAt: iso(T0) }],
+    events: [
+      { type: "signin_success", at: iso(T0 - DAY_MS) },
+      { type: "signup", at: iso(T0 - 3 * DAY_MS) },
+    ],
+    missingMedia,
+  };
+}
+
+/** More rows in every list than a few pages of two hold: text that JSON escapes, a line break inside a body, characters outside ASCII. */
+function addManyRows(h: Harness): void {
+  const quote = String.fromCharCode(34);
+  const newline = String.fromCharCode(10);
+  const accented = `caf${String.fromCharCode(0xe9)} ${String.fromCodePoint(0x1f600)}`;
+  for (let i = 0; i < 5; i++) {
+    h.lists.posts.push({
+      id: randomUUID(),
+      body: `post ${i}: ${quote}quoted${quote}${newline}second line, ${accented}`,
+      createdAt: new Date(T0 - DAY_MS + i),
+      replyToId: i % 2 === 0 ? h.postId : null,
+      quoteOfId: i === 3 ? h.postId : null,
+      state: i === 4 ? "withheld" : "visible",
+      deletedAt: null,
+      media: i === 1 ? [{ id: randomUUID(), altText: `alt ${accented}`, width: 10, height: 20 }] : [],
+    });
+  }
+  for (let i = 0; i < 6; i++) h.lists.likes.push({ postId: randomUUID(), at: new Date(T0 - 900 + i) });
+  for (let i = 0; i < 3; i++) h.lists.reposts.push({ postId: randomUUID(), at: new Date(T0 - 800 + i) });
+  for (let i = 0; i < 4; i++) h.lists.bookmarks.push({ postId: randomUUID(), at: new Date(T0 - 700 + i) });
+  for (let i = 0; i < 5; i++) h.lists.following.push({ handle: `friend_${i}`, since: new Date(T0 - 600 + i) });
+  for (let i = 0; i < 2; i++) h.lists.blocks.push({ handle: `blocked_${i}`, since: new Date(T0 - 500 + i) });
+  for (let i = 0; i < 3; i++) h.lists.mutes.push({ handle: `muted_${i}`, since: new Date(T0 - 400 + i) });
+}
+
+/** How many reads a list of `rows` takes in pages of `size`: full pages, then the short (maybe empty) one that says it is over. */
+const readsFor = (rows: number, size: number) => Math.floor(rows / size) + 1;
+
 describe("building the export", () => {
   test("the JSON follows the contract, marks the current session, and keeps a deleted post with its empty body and deletion time", async () => {
     const h = harness();
     const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
-    const json = ExportFormat.parse(plan.json);
+    const json = ExportFormat.parse(JSON.parse((await collect(exportJson(plan))).join("")));
     expect(json.format).toBe("korbat-export-1");
     expect(json.exportedAt).toBe(iso(T0));
     expect(json.account).toEqual({ id: h.userId, email: "ada@korbat.local", createdAt: iso(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: iso(T0 - 3 * DAY_MS) });
@@ -211,10 +452,46 @@ describe("building the export", () => {
 
   test("the images to write are the media module's, and the entry name is media/<id>.webp", async () => {
     const h = harness();
-    h.images.push({ id: randomUUID(), path: path.join(root, "a") }, { id: randomUUID(), path: path.join(root, "b") });
+    h.images.push({ id: randomUUID(), open: openerOf(path.join(root, "a")) }, { id: randomUUID(), open: openerOf(path.join(root, "b")) });
     const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
     expect(plan.images).toEqual(h.images);
     expect(mediaEntry(h.images[0]!.id)).toBe(`media/${h.images[0]!.id}.webp`);
+  });
+
+  test("export.json is read list by list in pages and written piece by piece, byte for byte as JSON.stringify(document, null, 2) writes it", async () => {
+    const h = harness();
+    addManyRows(h);
+    const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now(), 2);
+    // Only the account and the profile's own fields are read up front; the lists wait for the JSON to be written.
+    expect(h.reads).toEqual([]);
+    const text = (await collect(exportJson(plan))).join("");
+    expect(text).toBe(JSON.stringify(expectedDocument(h), null, 2));
+    expect(() => ExportFormat.parse(JSON.parse(text))).not.toThrow();
+    // Every list was read in pages of two, one page after the other, in the document's order.
+    const order: (keyof Lists)[] = ["posts", "likes", "reposts", "bookmarks", "following", "blocks", "mutes"];
+    expect(h.reads).toEqual(order.flatMap((name) => Array.from({ length: readsFor(h.lists[name].length, 2) }, () => name)));
+    // The same account in one page per list is the same text.
+    const whole = await buildExport(h.deps, h.userId, h.currentSession, h.now());
+    expect((await collect(exportJson(whole))).join("")).toBe(text);
+  });
+
+  test("empty lists and missing images are written as JSON.stringify writes them", async () => {
+    const h = harness();
+    for (const name of ["posts", "likes", "bookmarks", "following", "blocks", "mutes"] as const) h.lists[name].length = 0;
+    const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now(), 3);
+    plan.missingMedia.push(h.imageA, h.imageB);
+    expect((await collect(exportJson(plan))).join("")).toBe(JSON.stringify(expectedDocument(h, [h.imageA, h.imageB]), null, 2));
+  });
+
+  test("a large account's export.json comes in several pieces of at most 64 KiB of UTF-8", async () => {
+    const h = harness();
+    const accented = String.fromCharCode(0xe9).repeat(200);
+    for (let i = 0; i < 3_000; i++) h.lists.likes.push({ postId: randomUUID(), at: new Date(T0 - 100_000 + i) });
+    for (let i = 0; i < 1_000; i++) h.lists.posts.push({ id: randomUUID(), body: accented, createdAt: new Date(T0 - 50_000 + i), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [] });
+    const pieces = await collect(exportJson(await buildExport(h.deps, h.userId, h.currentSession, h.now())));
+    expect(pieces.length).toBeGreaterThan(5);
+    for (const piece of pieces) expect(Buffer.byteLength(piece, "utf8")).toBeLessThanOrEqual(KIB64);
+    expect(pieces.join("")).toBe(JSON.stringify(expectedDocument(h), null, 2));
   });
 
   test("the file name carries the handle and the day of the export", () => {
@@ -241,6 +518,7 @@ describe("building the export", () => {
         hit: async () => {
           throw new Error("store down");
         },
+        release: async () => undefined,
       },
     };
     const down = await enforceExportLimit(failing, h.userId).catch((err: unknown) => err);
@@ -256,7 +534,7 @@ describe("writing the archive", () => {
     const bytesA = randomBytes(200_000);
     const bytesB = Buffer.from("small-webp");
     const h = harness();
-    h.images.push({ id: h.imageA, path: fileOf(bytesA) }, { id: h.imageB, path: fileOf(bytesB) });
+    h.images.push({ id: h.imageA, open: openerOf(fileOf(bytesA)) }, { id: h.imageB, open: openerOf(fileOf(bytesB)) });
     const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
     const sink = memorySink();
     await writeExport(createZipWriter(sink.write), plan);
@@ -268,10 +546,8 @@ describe("writing the archive", () => {
     expect(Object.keys(files).sort()).toEqual(["export.json", `media/${h.imageA}.webp`, `media/${h.imageB}.webp`].sort());
     expect(Buffer.compare(Buffer.from(files[`media/${h.imageA}.webp`]!), bytesA)).toBe(0);
     expect(Buffer.compare(Buffer.from(files[`media/${h.imageB}.webp`]!), bytesB)).toBe(0);
-    const json = ExportFormat.parse(JSON.parse(strFromU8(files["export.json"]!)));
-    expect(json.posts[0]!.media.map((m) => m.file)).toEqual([`media/${h.imageA}.webp`, `media/${h.imageB}.webp`]);
-    expect(json.missingMedia).toEqual([]);
-    expect(centralDirectory(sink.bytes())).toEqual([
+    expect(strFromU8(files["export.json"]!)).toBe(JSON.stringify(expectedDocument(h), null, 2));
+    expect(centralDirectory(sink.bytes()).map((entry) => [entry.name, entry.method])).toEqual([
       [`media/${h.imageA}.webp`, 0],
       [`media/${h.imageB}.webp`, 0],
       ["export.json", 8],
@@ -281,7 +557,7 @@ describe("writing the archive", () => {
   test("an image whose file is gone is listed under missingMedia, and the archive still closes with the others", async () => {
     const bytesA = Buffer.from("still-there");
     const h = harness();
-    h.images.push({ id: h.imageA, path: fileOf(bytesA) }, { id: h.imageB, path: path.join(root, randomUUID(), "large.webp") });
+    h.images.push({ id: h.imageA, open: openerOf(fileOf(bytesA)) }, { id: h.imageB, open: openerOf(path.join(root, randomUUID(), "large.webp")) });
     const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
     const sink = memorySink();
     await writeExport(createZipWriter(sink.write), plan);
@@ -292,48 +568,101 @@ describe("writing the archive", () => {
     expect(json.missingMedia).toEqual([h.imageB]);
     // The post still names the entry the image would have had; missingMedia says why it is not there.
     expect(json.posts[0]!.media[1]!.file).toBe(`media/${h.imageB}.webp`);
-    expect(plan.json.missingMedia).toEqual([h.imageB]);
+    expect(plan.missingMedia).toEqual([h.imageB]);
+  });
+
+  /** A store with one image whose large variant holds `bytes`, read through the media module's checked open. */
+  async function storeWith(id: string, bytes: Uint8Array) {
+    const base = path.join(root, randomUUID());
+    const files = createMediaFiles({ uploadsDir: path.join(base, "uploads"), storeDir: path.join(base, "store"), log: silent });
+    await files.prepare();
+    mkdirSync(files.store.imageDir(id), { recursive: true });
+    writeFileSync(files.store.image(id, "large"), bytes);
+    return files;
+  }
+
+  test("an image larger than a variant may be is refused by the checked open and listed under missingMedia like a missing one", async () => {
+    const h = harness();
+    const files = await storeWith(h.imageA, Buffer.from("planted"));
+    // A sparse file of any size could be planted in the store; the checked open refuses anything over the variant limit.
+    truncateSync(files.store.image(h.imageA, "large"), MAX_VARIANT_BYTES + 1);
+    const kept = await storeWith(h.imageB, Buffer.from("fine"));
+    h.images.push({ id: h.imageA, open: () => files.openImage(h.imageA, "large") }, { id: h.imageB, open: () => kept.openImage(h.imageB, "large") });
+    const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
+    const sink = memorySink();
+    await writeExport(createZipWriter(sink.write), plan);
+    const archive = sink.bytes();
+    expect(archive.length).toBeLessThan(MAX_VARIANT_BYTES);
+    const unpacked = unzipSync(archive);
+    expect(Object.keys(unpacked).sort()).toEqual(["export.json", `media/${h.imageB}.webp`].sort());
+    expect(ExportFormat.parse(JSON.parse(strFromU8(unpacked["export.json"]!))).missingMedia).toEqual([h.imageA]);
+  });
+
+  test("a file that grows after the checked open is read only to the size the open measured", async () => {
+    const h = harness();
+    const original = randomBytes(150_000);
+    const files = await storeWith(h.imageA, original);
+    h.images.push({
+      id: h.imageA,
+      open: async () => {
+        const stored = await files.openImage(h.imageA, "large");
+        // Whatever lands in the file after the check is not the checked file's.
+        appendFileSync(files.store.image(h.imageA, "large"), randomBytes(100_000));
+        return stored;
+      },
+    });
+    const sink = memorySink();
+    await writeExport(createZipWriter(sink.write), await buildExport(h.deps, h.userId, h.currentSession, h.now()));
+    const unpacked = unzipSync(sink.bytes());
+    expect(Buffer.compare(Buffer.from(unpacked[`media/${h.imageA}.webp`]!), original)).toBe(0);
   });
 });
 
 describe("the zip writer", () => {
-  test("entries come out in the order they were added: JSON deflated with two-space indentation, files stored as they are", async () => {
+  test("entries come out in the order they were added: JSON pieces deflated as one text, files stored as they are", async () => {
     const stored = randomBytes(70_000);
-    const file = fileOf(stored);
-    const first = { kind: "first", filler: "x".repeat(2_000) };
-    const last = { kind: "last" };
+    const first = JSON.stringify({ kind: "first", filler: "x".repeat(2_000) }, null, 2);
     const sink = memorySink();
     const writer = createZipWriter(sink.write);
-    await writer.addJson("first.json", first);
-    expect(await writer.addFile("files/stored.bin", file)).toBe(true);
-    await writer.addJson("last.json", last);
+    await writer.addJsonPieces("first.json", piecesOf(first.slice(0, 700), first.slice(700)));
+    expect(await writer.addFile("files/stored.bin", openerOf(fileOf(stored)))).toBe(true);
+    await writer.addJsonPieces("last.json", piecesOf('{ "kind": "last" }'));
     await writer.end();
 
     const files = unzipSync(sink.bytes());
     expect(Object.keys(files)).toEqual(["first.json", "files/stored.bin", "last.json"]);
-    expect(strFromU8(files["first.json"]!)).toBe(JSON.stringify(first, null, 2));
+    expect(strFromU8(files["first.json"]!)).toBe(first);
     expect(Buffer.compare(Buffer.from(files["files/stored.bin"]!), stored)).toBe(0);
-    expect(strFromU8(files["last.json"]!)).toBe(JSON.stringify(last, null, 2));
-    expect(centralDirectory(sink.bytes())).toEqual([
+    expect(strFromU8(files["last.json"]!)).toBe('{ "kind": "last" }');
+    const directory = centralDirectory(sink.bytes());
+    expect(directory.map((entry) => [entry.name, entry.method])).toEqual([
       ["first.json", 8],
       ["files/stored.bin", 0],
       ["last.json", 8],
     ]);
+    // A plain archive has no ZIP64 field or record, and every entry streams its sizes after its data.
+    expect(directory.map((entry) => entry.zip64)).toEqual([null, null, null]);
+    expect(directory.every((entry) => entry.versionNeeded === 45 && (entry.flags & 0x0008) !== 0)).toBe(true);
+    expect(endRecords(sink.bytes()).end64).toBeNull();
     expect(sink.overlapped).toBe(false);
   });
 
-  test("a file that cannot be opened adds nothing and answers false; a directory in its place counts as no file", async () => {
+  test("a file the open refuses adds nothing and answers false; a zero-byte file is an entry without data", async () => {
     const dir = path.join(root, randomUUID());
     mkdirSync(dir, { recursive: true });
     const sink = memorySink();
     const writer = createZipWriter(sink.write);
-    expect(await writer.addFile("missing.bin", path.join(root, randomUUID(), "missing.webp"))).toBe(false);
-    expect(await writer.addFile("dir.bin", dir)).toBe(false);
-    await writer.addJson("only.json", { ok: true });
+    expect(await writer.addFile("missing.bin", openerOf(path.join(root, randomUUID(), "missing.webp")))).toBe(false);
+    expect(await writer.addFile("dir.bin", openerOf(dir))).toBe(false);
+    const empty = fakeFile(0);
+    expect(await writer.addFile("empty.bin", empty.open)).toBe(true);
+    expect(empty.state).toEqual({ chunks: 0, stopped: false, closed: true });
+    await writer.addJsonPieces("only.json", piecesOf('{ "ok": true }'));
     await writer.end();
     const files = unzipSync(sink.bytes());
-    expect(Object.keys(files)).toEqual(["only.json"]);
-    expect(centralDirectory(sink.bytes())).toEqual([["only.json", 8]]);
+    expect(Object.keys(files)).toEqual(["empty.bin", "only.json"]);
+    expect(files["empty.bin"]!.length).toBe(0);
+    expect(centralDirectory(sink.bytes()).map((entry) => entry.name)).toEqual(["empty.bin", "only.json"]);
   });
 
   test("an empty archive is still a valid archive", async () => {
@@ -341,5 +670,253 @@ describe("the zip writer", () => {
     const writer = createZipWriter(sink.write);
     await writer.end();
     expect(unzipSync(sink.bytes())).toEqual({});
+  });
+
+  test("the JSON is fed to the deflate at most 64 KiB at a time, and the event loop turns between two feeds", async () => {
+    const push = vi.spyOn(Deflate.prototype, "push");
+    const chunks: Uint8Array[] = [];
+    const writer = createZipWriter(async (chunk) => {
+      chunks.push(Uint8Array.from(chunk));
+    });
+    let turns = 0;
+    let running = true;
+    const tick = () => {
+      if (!running) return;
+      turns += 1;
+      setImmediate(tick);
+    };
+    setImmediate(tick);
+    // One piece of 300 KiB and ten small ones.
+    const big = "y".repeat(300 * 1024);
+    let fed: number[];
+    try {
+      await writer.addJsonPieces("big.json", piecesOf(big, ...Array.from({ length: 10 }, (_, i) => `,${i}`)));
+      await writer.end();
+      // Read before the spy is restored, which forgets its calls.
+      fed = push.mock.calls.map(([chunk]) => chunk.length);
+    } finally {
+      running = false;
+      push.mockRestore();
+    }
+    expect(Math.max(...fed)).toBeLessThanOrEqual(KIB64);
+    expect(fed.filter((length) => length > 0)).toHaveLength(5 + 10);
+    expect(turns).toBeGreaterThanOrEqual(10);
+    expect(strFromU8(unzipSync(Buffer.concat(chunks))["big.json"]!)).toBe(big + Array.from({ length: 10 }, (_, i) => `,${i}`).join(""));
+  });
+
+  test("forced ZIP64 on a small archive: it opens and gives back its bytes, and its records say what a ZIP64 reader needs", async () => {
+    const stored = randomBytes(5_000);
+    const sink = memorySink();
+    const writer = createZipWriter(sink.write, { zip64: "always" });
+    expect(await writer.addFile("a.bin", openerOf(fileOf(stored)))).toBe(true);
+    await writer.addJsonPieces("b.json", piecesOf('{ "b": 1 }'));
+    await writer.end();
+    const archive = sink.bytes();
+
+    const files = unzipSync(archive);
+    expect(Object.keys(files)).toEqual(["a.bin", "b.json"]);
+    expect(Buffer.compare(Buffer.from(files["a.bin"]!), stored)).toBe(0);
+    expect(strFromU8(files["b.json"]!)).toBe('{ "b": 1 }');
+
+    // Every 32-bit field reads 0xFFFFFFFF and the extra field holds the uncompressed size, the compressed size and the offset, in that order.
+    const [a, b] = centralDirectory(archive);
+    expect(a).toMatchObject({ name: "a.bin", compressed: 0xffffffff, size: 0xffffffff, offset: 0xffffffff, zip64: [5_000, 5_000, 0] });
+    expect(b!.zip64![2]).toBe(30 + "a.bin".length + 5_000 + 24);
+    expect(b!.zip64![0]).toBe(10);
+    // The data descriptor after a.bin's bytes carries 8-byte sizes.
+    const descriptor = 30 + "a.bin".length + 5_000;
+    expect(archive.readUInt32LE(descriptor)).toBe(0x08074b50);
+    expect([u64(archive, descriptor + 8), u64(archive, descriptor + 16)]).toEqual([5_000, 5_000]);
+
+    const { end, locator, end64 } = endRecords(archive);
+    const directoryOffset = a!.at;
+    expect(end64).toEqual({
+      at: archive.length - 22 - 20 - 56,
+      recordSize: 44,
+      versionMadeBy: 45,
+      versionNeeded: 45,
+      disk: 0,
+      directoryDisk: 0,
+      entriesHere: 2,
+      entries: 2,
+      size: end64!.at - directoryOffset,
+      offset: directoryOffset,
+    });
+    expect(locator).toEqual({ disk: 0, offset: end64!.at, disks: 1 });
+    expect(end).toEqual({ entriesHere: 0xffff, entries: 0xffff, size: 0xffffffff, offset: 0xffffffff, comment: 0 });
+  });
+
+  test("the writer turns to ZIP64 by itself once an offset passes 4 GiB", async () => {
+    const start = TWO_32 - 100;
+    const sink = memorySink();
+    const writer = createZipWriter(sink.write, { startOffset: start });
+    await writer.addFile("a.bin", openerOf(fileOf(Buffer.alloc(50, 1))));
+    await writer.addFile("b.bin", openerOf(fileOf(Buffer.alloc(40, 2))));
+    await writer.end();
+    const archive = sink.bytes();
+
+    const bOffset = start + 30 + 5 + 50 + 16;
+    expect(bOffset).toBeGreaterThan(0xffffffff);
+    const [a, b] = centralDirectory(archive, start);
+    // a.bin starts below 4 GiB and needs nothing; b.bin's offset goes into the extra field alone.
+    expect(a).toMatchObject({ name: "a.bin", compressed: 50, size: 50, offset: start, zip64: null });
+    expect(b).toMatchObject({ name: "b.bin", compressed: 40, size: 40, offset: 0xffffffff, zip64: [bOffset] });
+    // Neither entry reached 4 GiB, so both descriptors keep 4-byte sizes.
+    expect(archive.readUInt32LE(30 + 5 + 50)).toBe(0x08074b50);
+    expect(archive.readUInt32LE(30 + 5 + 50 + 16)).toBe(0x04034b50);
+
+    const { end, locator, end64 } = endRecords(archive, start);
+    expect(end64).toMatchObject({ entriesHere: 2, entries: 2, size: end64!.at - a!.at, offset: a!.at });
+    expect(a!.at).toBeGreaterThan(0xffffffff);
+    expect(locator).toEqual({ disk: 0, offset: end64!.at, disks: 1 });
+    // Only the directory's offset overflows the classic record.
+    expect(end).toEqual({ entriesHere: 2, entries: 2, size: end64!.at - a!.at, offset: 0xffffffff, comment: 0 });
+  });
+
+  test("an entry of more than 4 GiB is a ZIP64 entry by itself, without the archive being kept in memory", { timeout: 120_000 }, async () => {
+    const huge = fakeFile(TWO_32 + 1);
+    // Counts every byte and keeps only what is not the file's own data, with where it starts.
+    const kept: { at: number; bytes: Uint8Array }[] = [];
+    let written = 0;
+    const writer = createZipWriter(async (chunk) => {
+      if (chunk.buffer !== huge.chunk.buffer) kept.push({ at: written, bytes: Uint8Array.from(chunk) });
+      written += chunk.length;
+    });
+    expect(await writer.addFile("huge.bin", huge.open)).toBe(true);
+    await writer.addJsonPieces("after.json", piecesOf('{ "after": true }'));
+    await writer.end();
+    expect(huge.state).toEqual({ chunks: TWO_32 / KIB64 + 1, stopped: true, closed: true });
+
+    // Everything after the file's data is kept together: its descriptor, the next entry, the directory and the end records.
+    const dataEnd = 30 + "huge.bin".length + TWO_32 + 1;
+    const tail = Buffer.concat(kept.filter((piece) => piece.at >= dataEnd).map((piece) => piece.bytes));
+    expect(dataEnd + tail.length).toBe(written);
+    expect(tail.readUInt32LE(0)).toBe(0x08074b50);
+    expect([u64(tail, 8), u64(tail, 16)]).toEqual([TWO_32 + 1, TWO_32 + 1]);
+    const [hugeEntry, after] = centralDirectory(tail, dataEnd);
+    expect(hugeEntry).toMatchObject({ name: "huge.bin", compressed: 0xffffffff, size: 0xffffffff, offset: 0, zip64: [TWO_32 + 1, TWO_32 + 1] });
+    expect(after).toMatchObject({ name: "after.json", offset: 0xffffffff, zip64: [dataEnd + 24] });
+    const { end, end64 } = endRecords(tail, dataEnd);
+    expect(end64).toMatchObject({ entries: 2, offset: hugeEntry!.at });
+    expect(end).toMatchObject({ entries: 2, offset: 0xffffffff });
+  });
+});
+
+describe("the export route", () => {
+  /**
+   * The account routes on their own, with the session and the logger a request would carry and an error
+   * handler that renders AccountError as the app's does; everything else is a 500. The freshness and
+   * session guards are passed through: http-account.test.ts covers them on the real app.
+   */
+  function app(h: Harness, log = silent) {
+    const session: Session = { sessionId: h.currentSession, userId: h.userId, deviceId: randomUUID(), role: "user", onboarded: true, mfaEnabled: false, reauthAt: h.now() };
+    const pass: MiddlewareHandler<AppEnv> = async (_c, next) => {
+      await next();
+    };
+    const a = new Hono<AppEnv>();
+    a.use(async (c, next) => {
+      c.set("requestId", "test");
+      c.set("log", log);
+      c.set("session", session);
+      c.set("authVia", "cookie");
+      await next();
+    });
+    a.route("/api/account", accountRoutes(h.deps, pass, pass));
+    a.onError((err, c) => (err instanceof AccountError ? c.json({ error: { code: err.code } }, err.status) : c.json({ error: { code: "internal" } }, 500)));
+    return a;
+  }
+  const exportOf = (a: Hono<AppEnv>) => a.request("/api/account/export", { method: "POST" });
+  const errorCode = async (res: Response) => ((await res.json()) as { error: { code: string } }).error.code;
+  const exported = (h: Harness) => h.events.filter((event) => event.type === "export_created").length;
+
+  test("a complete export streams a valid archive with its headers and records export_created", async () => {
+    const h = harness();
+    const bytesA = randomBytes(300_000);
+    h.images.push({ id: h.imageA, open: openerOf(fileOf(bytesA)) });
+    const res = await exportOf(app(h));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/zip");
+    expect(res.headers.get("content-disposition")).toBe(`attachment; filename="korbat-export-ada-${iso(T0).slice(0, 10)}.zip"`);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const files = unzipSync(new Uint8Array(await res.arrayBuffer()));
+    expect(Buffer.compare(Buffer.from(files[`media/${h.imageA}.webp`]!), bytesA)).toBe(0);
+    expect(strFromU8(files["export.json"]!)).toBe(JSON.stringify(expectedDocument(h), null, 2));
+    // Recorded once every chunk was taken, before the body ended.
+    expect(h.events).toEqual([{ userId: h.userId, type: "export_created", metadata: undefined }]);
+  });
+
+  test("a failure before the first byte answers an error and gives the day's export back", async () => {
+    const h = harness();
+    const a = app(h);
+    // The build fails: a pool timeout while the account is read.
+    h.failures.exportAccount = 1;
+    const failed = await exportOf(a);
+    expect(failed.status).toBe(500);
+    expect(await errorCode(failed)).toBe("internal");
+    // The first image cannot even be opened: still nothing sent.
+    h.images.push({
+      id: h.imageA,
+      open: async () => {
+        throw new Error("too many open files");
+      },
+    });
+    const unopened = await exportOf(a);
+    expect(unopened.status).toBe(500);
+    expect(exported(h)).toBe(0);
+    h.images.length = 0;
+    const ok = await exportOf(a);
+    expect(ok.status).toBe(200);
+    expect(Object.keys(unzipSync(new Uint8Array(await ok.arrayBuffer())))).toEqual(["export.json"]);
+    expect(exported(h)).toBe(1);
+    expect(await errorCode(await exportOf(a))).toBe("rate_limited");
+  });
+
+  test("a limit store that cannot give the export back is logged, and the build's own error is answered", async () => {
+    const h = harness();
+    const lines: string[] = [];
+    const log = pino({ level: "warn" }, new Writable({ write: (chunk: Buffer, _encoding, done) => (lines.push(chunk.toString("utf8")), done()) }));
+    const store = new MemoryStore(() => h.now().getTime());
+    h.deps.limits = {
+      hit: (key, windowMs) => store.hit(key, windowMs),
+      release: async () => {
+        throw new Error("the store went away");
+      },
+    };
+    h.failures.exportAccount = 1;
+    const res = await exportOf(app(h, log));
+    expect(res.status).toBe(500);
+    expect(await errorCode(res)).toBe("internal");
+    expect(lines.map((line) => (JSON.parse(line) as { level: number; msg: string }).level)).toEqual([40]);
+    expect(lines[0]).toMatch(/could not be given back/);
+  });
+
+  test("an image that fails in the middle of its reading fails the response body, and the day's export stays spent", async () => {
+    const h = harness();
+    const failing = fakeFile(1_000_000, { failAfter: 3 });
+    h.images.push({ id: h.imageA, open: failing.open });
+    const a = app(h);
+    const res = await exportOf(a);
+    // The status went out with the first bytes; what follows can only end the body with an error, never cleanly.
+    expect(res.status).toBe(200);
+    await expect(res.arrayBuffer()).rejects.toThrow();
+    expect(failing.state).toMatchObject({ chunks: 3, stopped: true, closed: true });
+    expect(exported(h)).toBe(0);
+    h.images.length = 0;
+    expect(await errorCode(await exportOf(a))).toBe("rate_limited");
+  });
+
+  test("a client that goes away stops the file reads", async () => {
+    const h = harness();
+    // A hundred megabytes, read only as fast as the response is taken.
+    const big = fakeFile(100 * 1024 * 1024);
+    h.images.push({ id: h.imageA, open: big.open });
+    const res = await exportOf(app(h));
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    await vi.waitFor(() => expect(big.state).toMatchObject({ stopped: true, closed: true }));
+    expect(big.state.chunks).toBeLessThan(10);
+    expect(exported(h)).toBe(0);
   });
 });

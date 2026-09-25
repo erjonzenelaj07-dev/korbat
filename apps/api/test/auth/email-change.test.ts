@@ -1,10 +1,19 @@
 import { describe, expect, test } from "vitest";
 import { AuthError } from "../../src/auth/context";
-import { randomToken } from "../../src/auth/crypto";
+import { randomToken, sha256Hex } from "../../src/auth/crypto";
 import { CODE_TTL_MS, MAX_CODE_ATTEMPTS, MIN_START_RESPONSE_MS, flowKey } from "../../src/auth/flows/email";
-import { EMAIL_CHANGE_STARTS_PER_HOUR, startEmailChange, verifyEmailChange } from "../../src/auth/flows/email-change";
+import {
+  EMAIL_CHANGE_STARTS_PER_HOUR,
+  EMAIL_REVERTS_PER_IP_PER_HOUR,
+  EMAIL_REVERT_TTL_MS,
+  emailRevertKey,
+  revertEmailChange,
+  startEmailChange,
+  verifyEmailChange,
+} from "../../src/auth/flows/email-change";
 import { emailHash } from "../../src/auth/identifiers";
 import { HOUR, MINUTE } from "../../src/auth/limits";
+import type { AuthRepo } from "../../src/auth/repo";
 import type { Session } from "../../src/auth/sessions";
 import { memoryFlowHarness, type MemoryFlowHarness } from "./flow-harness";
 
@@ -25,6 +34,19 @@ const wrong = (code: string) => String((Number(code) + 1) % 1_000_000).padStart(
 async function start(h: MemoryFlowHarness, session: Session, email: string) {
   const { flowId } = await startEmailChange(h.deps, session, { email }, h.ctx);
   return { flowId, code: h.mailer.lastCodeFor(email)! };
+}
+
+const REVERT_URL = /^http:\/\/localhost:8081\/email-revert\/([A-Za-z0-9_-]{43})$/;
+const LINK_GONE = "This link has expired or was already used.";
+
+/** Moves the account to `email` with the code from its mailbox, and returns the undo link's token from the notice to the old address, if it carried one. */
+async function change(h: MemoryFlowHarness, session: Session, email: string): Promise<string | null> {
+  const { flowId, code } = await start(h, session, email);
+  await verifyEmailChange(h.deps, session, { flowId, code });
+  const notice = h.mailer.sent.at(-1)!;
+  expect(notice.template).toBe("email_changed");
+  const url = notice.data.revertUrl;
+  return url === undefined ? null : REVERT_URL.exec(url)![1]!;
 }
 
 describe("email change: the start step", () => {
@@ -171,7 +193,7 @@ describe("email change: the verification step", () => {
     expect([stored.email, stored.emailVerifiedAt]).toEqual(["ada-new@korbat.local", h.now()]);
     expect(h.mailer.sent.map((m) => [m.to, m.template, m.data])).toEqual([
       ["ada-new@korbat.local", "email_change_code", { code }],
-      ["ada@korbat.local", "email_changed", { email: "ada-new@korbat.local" }],
+      ["ada@korbat.local", "email_changed", { email: "ada-new@korbat.local", revertUrl: expect.stringMatching(REVERT_URL) }],
     ]);
     const key = h.deps.config.authHmacKey;
     expect(h.events).toEqual([
@@ -193,5 +215,169 @@ describe("email change: the verification step", () => {
     expect(h.users.get(ada.user.id)!.email).toBe("ada-new@korbat.local");
     expect(h.events.map((e) => e.type)).toEqual(["email_changed"]);
     expect(h.mailer.sent.map((m) => m.template)).toEqual(["email_change_code"]);
+  });
+});
+
+describe("email change: the undo link sent to the old address", () => {
+  test("the notice carries a link good for 24 hours, kept under its hashed token with the old address and the time of the change", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    h.advance(1000);
+    const token = (await change(h, ada.session, "ada-new@korbat.local"))!;
+    const raw = (await h.kv.get(emailRevertKey(token)))!;
+    expect(emailRevertKey(token)).toBe(`email-revert:${sha256Hex(token)}`);
+    expect(JSON.parse(raw)).toEqual({ userId: ada.user.id, oldEmail: "ada@korbat.local", changedAt: h.now().getTime() });
+    expect(raw).not.toContain(token);
+    h.advance(EMAIL_REVERT_TTL_MS - 1);
+    expect(await h.kv.get(emailRevertKey(token))).not.toBeNull();
+    h.advance(1);
+    expect(await h.kv.get(emailRevertKey(token))).toBeNull();
+  });
+
+  test("the link moves the account back, signs every session out, records the undo with both hashes, tells the old address and nobody else", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    // The session an attacker got hold of, which makes the change, and the owner's own, which the change leaves alone.
+    const owners = h.session(ada.user.id);
+    const token = (await change(h, ada.session, "attacker@korbat.local"))!;
+    const appended: Parameters<AuthRepo["appendEvent"]>[0][] = [];
+    const append = h.deps.repo.appendEvent;
+    h.deps.repo.appendEvent = async (input) => {
+      appended.push(input);
+      await append(input);
+    };
+    h.advance(60_000);
+    await revertEmailChange(h.deps, { token }, h.ctx);
+
+    const stored = h.users.get(ada.user.id)!;
+    expect([stored.email, stored.emailVerifiedAt]).toEqual(["ada@korbat.local", h.now()]);
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
+    for (const id of [ada.session.sessionId, owners.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    const key = h.deps.config.authHmacKey;
+    expect(appended).toEqual([
+      {
+        userId: ada.user.id,
+        type: "email_changed",
+        ipHash: h.ctx.ipHash,
+        metadata: { from: emailHash(key, "attacker@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true },
+      },
+    ]);
+    // The address the account was moved to is told nothing; the old one gets a short note.
+    expect(h.mailer.sent.filter((m) => m.to === "attacker@korbat.local").map((m) => m.template)).toEqual(["email_change_code"]);
+    expect(h.mailer.sent.at(-1)).toEqual({ to: "ada@korbat.local", template: "email_change_reverted", data: {} });
+    // The old address signs in again; the other one no longer belongs to any account.
+    expect((await h.deps.repo.findUserByEmail("ada@korbat.local"))?.id).toBe(ada.user.id);
+    expect(await h.deps.repo.findUserByEmail("attacker@korbat.local")).toBeUndefined();
+  });
+
+  test("the undo also revokes every device of the account, so a sign-in on any of them counts as a new device again", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    // The device whoever made the change used, and the owner's own; another account's device is not touched.
+    h.session(ada.user.id);
+    const bob = h.user("bob@korbat.local");
+    const token = (await change(h, ada.session, "attacker@korbat.local"))!;
+    h.advance(60_000);
+    await revertEmailChange(h.deps, { token }, h.ctx);
+    expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([h.now(), h.now()]);
+    expect(h.devices.filter((d) => d.userId === bob.user.id).map((d) => d.revokedAt)).toEqual([null]);
+  });
+
+  test("a password set after the change goes and two-factor turned on before it stays", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    Object.assign(h.users.get(ada.user.id)!, { totpSecretEnc: "v1:owner", totpEnabledAt: h.now(), recoveryCodesHash: ["owner-code"] });
+    h.advance(1000);
+    const token = (await change(h, ada.session, "attacker@korbat.local"))!;
+    h.advance(1000);
+    await h.deps.repo.setPasswordHash(ada.user.id, "attacker-password", h.now());
+    h.advance(1000);
+    await revertEmailChange(h.deps, { token }, h.ctx);
+    expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null, totpSecretEnc: "v1:owner", recoveryCodesHash: ["owner-code"] });
+  });
+
+  test("a password set before the change stays and two-factor turned on after it goes", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    await h.deps.repo.setPasswordHash(ada.user.id, "owner-password", h.now());
+    h.advance(1000);
+    const token = (await change(h, ada.session, "attacker@korbat.local"))!;
+    h.advance(1000);
+    Object.assign(h.users.get(ada.user.id)!, { totpSecretEnc: "v1:attacker", totpEnabledAt: h.now(), totpLastStep: 42, recoveryCodesHash: ["attacker-code"] });
+    h.advance(1000);
+    await revertEmailChange(h.deps, { token }, h.ctx);
+    expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: "owner-password", totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
+  });
+
+  test("a used link and an expired one are refused and change nothing", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const token = (await change(h, ada.session, "ada-new@korbat.local"))!;
+    await revertEmailChange(h.deps, { token }, h.ctx);
+    const used = await failure(revertEmailChange(h.deps, { token }, h.ctx));
+    expect(used).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+
+    const bob = h.user("bob@korbat.local");
+    const late = (await change(h, bob.session, "bob-new@korbat.local"))!;
+    h.advance(EMAIL_REVERT_TTL_MS);
+    expect(await failure(revertEmailChange(h.deps, { token: late }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(h.users.get(bob.user.id)!.email).toBe("bob-new@korbat.local");
+    expect(h.sessions.filter((s) => s.userId === bob.user.id).map((s) => s.revokedAt)).toEqual([null]);
+    expect(h.mailer.sent.filter((m) => m.template === "email_change_reverted").map((m) => m.to)).toEqual(["ada@korbat.local"]);
+  });
+
+  test("an old address that got another account meanwhile is email_in_use, and nothing changes", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const token = (await change(h, ada.session, "ada-new@korbat.local"))!;
+    h.user("Ada@korbat.local");
+    const eventsBefore = h.events.length;
+    expect(await failure(revertEmailChange(h.deps, { token }, h.ctx))).toMatchObject({ code: "email_in_use", status: 409 });
+    expect(h.users.get(ada.user.id)!.email).toBe("ada-new@korbat.local");
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null]);
+    expect(h.events).toHaveLength(eventsBefore);
+    expect(h.mailer.sent.map((m) => m.template)).not.toContain("email_change_reverted");
+  });
+
+  test("allows 10 tries an hour per address, then rate_limited with a Retry-After", async () => {
+    const h = memoryFlowHarness();
+    for (let i = 0; i < EMAIL_REVERTS_PER_IP_PER_HOUR; i++) {
+      expect(await failure(revertEmailChange(h.deps, { token: randomToken() }, h.ctx))).toMatchObject({ code: "invalid_code" });
+    }
+    expect(await failure(revertEmailChange(h.deps, { token: randomToken() }, h.ctx))).toMatchObject({ code: "rate_limited", status: 429, retryAfterSeconds: HOUR / 1000 });
+    // Another address has its own window.
+    expect(await failure(revertEmailChange(h.deps, { token: randomToken() }, { ...h.ctx, ipHash: randomToken() }))).toMatchObject({ code: "invalid_code" });
+  });
+
+  test("a second change while the link is out sends no second link, so whoever made it holds none; the one link undoes both and clears what was set since the first", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const token = (await change(h, ada.session, "middle@korbat.local"))!;
+    h.advance(MINUTE + 1);
+    // Were the middle address sent a link to itself, an attacker who made both changes could use it after the owner used theirs and take the account back.
+    expect(await change(h, ada.session, "last@korbat.local")).toBeNull();
+    const toMiddle = h.mailer.sent.at(-1)!;
+    expect([toMiddle.to, toMiddle.data]).toEqual(["middle@korbat.local", { email: "last@korbat.local" }]);
+    await h.deps.repo.setPasswordHash(ada.user.id, "attacker-password", h.now());
+    h.advance(1000);
+    await revertEmailChange(h.deps, { token }, h.ctx);
+    expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", passwordHash: null });
+    const key = h.deps.config.authHmacKey;
+    expect(h.events.at(-1)!.metadata).toEqual({ from: emailHash(key, "last@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true });
+
+    // Once the link was used, the next change sends one again.
+    const owner = h.session(ada.user.id);
+    h.advance(HOUR);
+    expect(await change(h, owner, "ada-2@korbat.local")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  test("the note to the old address is best effort: a mail failure does not undo the revert", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const token = (await change(h, ada.session, "ada-new@korbat.local"))!;
+    h.mailer.failing = true;
+    await revertEmailChange(h.deps, { token }, h.ctx);
+    expect(h.users.get(ada.user.id)!.email).toBe("ada@korbat.local");
+    expect(h.events.map((e) => e.type)).toEqual(["email_changed", "email_changed"]);
   });
 });

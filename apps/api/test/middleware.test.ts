@@ -56,11 +56,33 @@ describe("rateLimit", () => {
     now += 10_001;
     expect((await app.request("/x")).status).toBe(200);
   });
+  test("a hit given back with release leaves the count one lower in the same window, and never below zero", async () => {
+    let now = 1_000_000;
+    const store = new MemoryStore(() => now);
+    await store.hit("k", 10_000);
+    now += 4_000;
+    await store.hit("k", 10_000);
+    await store.release("k");
+    // One hit left, and the window still ends where the first hit put it: nothing was restarted.
+    expect(await store.hit("k", 10_000)).toEqual({ count: 2, resetMs: 6_000 });
+    await store.release("k");
+    await store.release("k");
+    await store.release("k");
+    expect(await store.hit("k", 10_000)).toEqual({ count: 1, resetMs: 6_000 });
+    // A key that was never hit has nothing to give back, and another key is not touched.
+    await store.release("never");
+    expect(await store.hit("never", 10_000)).toEqual({ count: 1, resetMs: 10_000 });
+    // Once the window is over, a release belongs to no window and the next hit opens a fresh one.
+    now += 6_000;
+    await store.release("k");
+    expect(await store.hit("k", 10_000)).toEqual({ count: 1, resetMs: 10_000 });
+  });
   test("a failing store answers 503 with Retry-After instead of letting the request through", async () => {
     const store = {
       hit: async () => {
         throw new Error("redis down");
       },
+      release: async () => undefined,
     };
     const app = base().use(rateLimit({ name: "t", store, limit: 2, windowMs: 10_000, key: () => "k" })).get("/x", (c) => c.text("ok"));
     const res = await app.request("/x");

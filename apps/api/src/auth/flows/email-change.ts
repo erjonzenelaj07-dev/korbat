@@ -1,6 +1,6 @@
-import type { EmailChangeResponse, EmailChangeStartRequest, EmailChangeVerifyRequest } from "@korbat/contracts";
+import type { EmailChangeResponse, EmailChangeStartRequest, EmailChangeVerifyRequest, EmailRevertRequest } from "@korbat/contracts";
 import { AuthError, isUniqueViolation, type AuthDeps, type RequestContext } from "../context";
-import { randomToken } from "../crypto";
+import { randomToken, sha256Hex } from "../crypto";
 import { isDisposableEmail } from "../disposable";
 import { emailHash } from "../identifiers";
 import { HOUR, MINUTE, enforceLimit, padResponseTime } from "../limits";
@@ -9,12 +9,33 @@ import { CODE_TTL_MS, MIN_START_RESPONSE_MS, checkEmailCode, emailCodeHash, flow
 import { notifyAccount } from "./notify";
 
 export const EMAIL_CHANGE_STARTS_PER_HOUR = 3;
+/** How long the old address can undo a change, as long as the new-device "not me" link works. */
+export const EMAIL_REVERT_TTL_MS = 24 * HOUR;
+export const EMAIL_REVERTS_PER_IP_PER_HOUR = 10;
+
+/** The undo link is a bearer credential for a day, so the store holds only its hash. */
+export const emailRevertKey = (token: string) => `email-revert:${sha256Hex(token)}`;
+/** Present while an account's undo link is out; see openRevert. */
+export const emailRevertOpenKey = (userId: string) => `email-revert-open:${userId}`;
 
 /** The change a code is out for: kept under the hashed flow id until the code is entered or expires. */
 export interface PendingEmailChange {
   userId: string;
   email: string;
 }
+
+/**
+ * What an undo link puts back: the address the account had, and when it left it (epoch milliseconds from
+ * the flows' clock, the one passwordChangedAt and totpEnabledAt are written with, so the credential
+ * check at the undo compares like with like).
+ */
+export interface PendingEmailRevert {
+  userId: string;
+  oldEmail: string;
+  changedAt: number;
+}
+
+const LINK_GONE = "This link has expired or was already used.";
 
 /**
  * Sends a code to the address the account wants to move to. The answer, the mail and the time taken
@@ -60,7 +81,10 @@ export async function startEmailChange(deps: AuthDeps, session: Session, input: 
 /**
  * Moves the account to the new address once its code is right. The unique index on the address
  * decides conflicts, so an address that got an account after the code went out is email_in_use here.
- * The old address is told; every session stays signed in, because the owner just proved a credential.
+ * Every session stays signed in, because the owner just proved a credential. The old address is told,
+ * with a link that undoes the change for 24 hours (revertEmailChange): an account without a password
+ * signs in only by a code to its address, so once the address is someone else's, the old one could not
+ * sign in to change it back.
  */
 export async function verifyEmailChange(deps: AuthDeps, session: Session, input: EmailChangeVerifyRequest): Promise<EmailChangeResponse> {
   const row = await deps.repo.findEmailCode(input.flowId);
@@ -75,8 +99,9 @@ export async function verifyEmailChange(deps: AuthDeps, session: Session, input:
 
   const user = await deps.repo.findUserById(session.userId);
   if (!user) throw new AuthError("invalid_credentials", 401);
+  const changedAt = deps.now();
   try {
-    await deps.repo.changeEmail(user.id, pending.email, deps.now());
+    await deps.repo.changeEmail(user.id, pending.email, changedAt);
   } catch (err) {
     if (isUniqueViolation(err)) throw new AuthError("email_in_use", 409);
     throw err;
@@ -88,6 +113,65 @@ export async function verifyEmailChange(deps: AuthDeps, session: Session, input:
     deviceId: session.deviceId,
     metadata: { from: emailHash(deps.config.authHmacKey, user.email), to: emailHash(deps.config.authHmacKey, pending.email) },
   });
-  await notifyAccount(deps, user.email, "email_changed", { email: pending.email });
+  const revertUrl = await openRevert(deps, { userId: user.id, oldEmail: user.email, changedAt: changedAt.getTime() });
+  await notifyAccount(deps, user.email, "email_changed", revertUrl === null ? { email: pending.email } : { email: pending.email, revertUrl });
   return { email: pending.email };
+}
+
+/**
+ * Mints the undo link for a change, or none. One link per account at a time: the first change opens a
+ * day in which later changes get no link of their own, and the one link, used, goes back to the address
+ * before that first change. A link per change would undo nothing: someone who took the account and
+ * changed the address twice would hold the link sent to the address in the middle, one of their own,
+ * and could use it after the owner used theirs to move the account back to it.
+ */
+async function openRevert(deps: AuthDeps, revert: PendingEmailRevert): Promise<string | null> {
+  if (!(await deps.kv.setIfAbsent(emailRevertOpenKey(revert.userId), "1", EMAIL_REVERT_TTL_MS))) return null;
+  const token = randomToken();
+  await deps.kv.set(emailRevertKey(token), JSON.stringify(revert), EMAIL_REVERT_TTL_MS);
+  return `${deps.config.appOrigin}/email-revert/${token}`;
+}
+
+/**
+ * The undo link from the email_changed notice, which needs no session: the link is the credential, and
+ * works once. The account goes back to the old address (email_in_use when that address got another
+ * account meanwhile), every session is signed out, every device revoked, and a password or two-factor
+ * set up after the change is removed, so whoever made the change keeps no way in while the owner's own
+ * credentials from before stay. The address the account was moved to is told nothing; the old one gets
+ * a short note.
+ */
+export async function revertEmailChange(deps: AuthDeps, input: EmailRevertRequest, ctx: RequestContext): Promise<void> {
+  await enforceLimit(deps.kv, `email-revert:ip:${ctx.ipHash}`, EMAIL_REVERTS_PER_IP_PER_HOUR, HOUR);
+  // Taken, not read: two requests with the same link cannot both act on it.
+  const raw = await deps.kv.take(emailRevertKey(input.token));
+  if (!raw) throw new AuthError("invalid_code", 400, LINK_GONE);
+  const revert = JSON.parse(raw) as PendingEmailRevert;
+  // An account deleted since has nothing left to move back.
+  const user = await deps.repo.findUserById(revert.userId);
+  if (!user) throw new AuthError("invalid_code", 400, LINK_GONE);
+  const now = deps.now();
+  try {
+    await deps.repo.changeEmail(user.id, revert.oldEmail, now);
+  } catch (err) {
+    if (isUniqueViolation(err)) throw new AuthError("email_in_use", 409);
+    throw err;
+  }
+  await deps.sessions.revokeAll(user.id);
+  // Whoever made the change signed in from a device the account now knows; revoked, it counts as new at its next sign-in,
+  // which mails the owner an alert with a "not me" link. The owner's own devices go too: no one can tell them apart here.
+  await deps.repo.revokeDevices(user.id, now);
+  // Only what was set after the change can be the work of whoever made it; what the owner had before stays.
+  if (user.passwordHash !== null && user.passwordChangedAt !== null && user.passwordChangedAt.getTime() > revert.changedAt) {
+    await deps.repo.setPasswordHash(user.id, null, now);
+  }
+  if (user.totpEnabledAt !== null && user.totpEnabledAt.getTime() > revert.changedAt) await deps.repo.disableTotp(user.id);
+  // The link is spent, so the next change may send one again.
+  await deps.kv.del(emailRevertOpenKey(user.id));
+  await deps.repo.appendEvent({
+    userId: user.id,
+    type: "email_changed",
+    ipHash: ctx.ipHash,
+    metadata: { from: emailHash(deps.config.authHmacKey, user.email), to: emailHash(deps.config.authHmacKey, revert.oldEmail), reverted: true },
+  });
+  await notifyAccount(deps, revert.oldEmail, "email_change_reverted");
 }

@@ -59,8 +59,10 @@ function ProfileForm({ handle, refresh }: { handle: string; refresh: Refresh }) 
   const changed = saved !== null && (name !== saved.displayName || text !== saved.bio);
   const ready = changed && nameLength >= 1 && nameLength <= DISPLAY_NAME_MAX && bioLength <= BIO_MAX_LENGTH;
 
+  // Enter in the bio calls this as the button does, so the button's conditions come first: nothing unchanged or invalid is
+  // sent, and a second Enter while the first request is out sends nothing.
   async function save() {
-    if (!saved) return;
+    if (!saved || !ready || busy) return;
     setBusy(true);
     setError(null);
     setDone(null);
@@ -113,7 +115,9 @@ function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
   const normalized = handle.trim().replace(/^@/, "").toLowerCase();
   const ready = normalized.length > 0 && normalized !== current.toLowerCase();
 
+  // Enter in the field calls this as the button does, so the button's conditions come first.
   async function change() {
+    if (!ready || busy) return;
     setBusy(true);
     setError(null);
     setDone(null);
