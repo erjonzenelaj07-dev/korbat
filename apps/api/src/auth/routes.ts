@@ -1,4 +1,6 @@
 import {
+  EmailChangeStartRequest,
+  EmailChangeVerifyRequest,
   EmailStartRequest,
   EmailVerifyRequest,
   MfaVerifyRequest,
@@ -21,6 +23,7 @@ import { AuthError, type AuthDeps, type RequestContext } from "./context";
 import { clearSessionCookies, setSessionCookies } from "./cookies";
 import { listSessions, me, revokeAllSessions, revokeSession, signOut } from "./flows/account";
 import { startEmail, verifyEmail } from "./flows/email";
+import { startEmailChange, verifyEmailChange } from "./flows/email-change";
 import { confirmTotp, disableTotp, regenerateRecoveryCodes, setupTotp, verifyMfa } from "./flows/mfa";
 import { notMe } from "./flows/not-me";
 import { passwordSignIn, setPassword } from "./flows/password";
@@ -98,6 +101,14 @@ export function authRoutes(deps: AuthDeps) {
     const { profile, issued } = await chooseHandle(deps, currentSession(c), c.req.valid("json"));
     return c.json({ profile, ...rotated(c, issued) });
   });
+
+  r.post("/email/change/start", requireSession, fresh, validate("json", EmailChangeStartRequest), async (c) =>
+    c.json(await startEmailChange(deps, currentSession(c), c.req.valid("json"), requestContext(c))),
+  );
+
+  r.post("/email/change/verify", requireSession, fresh, validate("json", EmailChangeVerifyRequest), async (c) =>
+    c.json(await verifyEmailChange(deps, currentSession(c), c.req.valid("json"))),
+  );
 
   r.post("/password/signin", validate("json", PasswordSigninRequest), async (c) =>
     firstFactor(c, await passwordSignIn(deps, asWeb(c, c.req.valid("json")), requestContext(c))),

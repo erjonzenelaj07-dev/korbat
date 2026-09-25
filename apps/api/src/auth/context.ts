@@ -66,7 +66,10 @@ export interface RequestContext {
 
 export type AuthErrorStatus = 400 | 401 | 403 | 409 | 429 | 503;
 
-const MESSAGES: Record<AuthErrorCode, string> = {
+/** The auth codes plus the shared one the module also raises, as the social and media modules do: a well-formed request that asks for nothing, such as the current address as the new one. */
+export type AuthErrorKind = AuthErrorCode | "invalid_request";
+
+const MESSAGES: Record<AuthErrorKind, string> = {
   invalid_code: "That code is not valid. Check the latest email or request a new code.",
   code_expired: "That code has expired. Request a new one.",
   too_many_attempts: "Too many attempts. Request a new code.",
@@ -95,16 +98,17 @@ const MESSAGES: Record<AuthErrorCode, string> = {
   phone_in_use: "That phone number is already verified on another account.",
   badge_unavailable: "Verification is not available on this korbat.",
   verify_unavailable: "We could not reach the verification service. Try again in a moment.",
+  invalid_request: "Some details are missing or invalid.",
 };
 
-export function authErrorMessage(code: AuthErrorCode): string {
+export function authErrorMessage(code: AuthErrorKind): string {
   return MESSAGES[code];
 }
 
 /** An expected, user-facing failure. The HTTP layer turns it into an ErrorEnvelope with this code and status. */
 export class AuthError extends Error {
   constructor(
-    readonly code: AuthErrorCode,
+    readonly code: AuthErrorKind,
     readonly status: AuthErrorStatus,
     message: string = MESSAGES[code],
     /** For rate limits: seconds until the window resets, sent as Retry-After. */

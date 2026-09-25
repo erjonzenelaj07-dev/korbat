@@ -76,6 +76,15 @@ export function createAuthRepo(db: Db) {
       await db.update(users).set({ onboardedAt: now }).where(eq(users.id, userId));
     },
 
+    /**
+     * Moves the account to an address its owner just proved with a code, so it is verified as of now.
+     * When another row holds the address, in any case, the unique index on lower(email) raises the
+     * driver's unique violation; the flow reports that as email_in_use.
+     */
+    async changeEmail(userId: string, email: string, now: Date): Promise<void> {
+      await db.update(users).set({ email, emailVerifiedAt: now }).where(eq(users.id, userId));
+    },
+
     /** Setting or clearing a password also clears any password lockout. */
     async setPasswordHash(userId: string, passwordHash: string | null, now: Date): Promise<void> {
       await db

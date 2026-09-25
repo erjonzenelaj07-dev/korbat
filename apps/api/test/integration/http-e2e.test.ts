@@ -31,6 +31,8 @@ const SUBJECT = {
   signIn: "Your korbat sign-in code",
   newDevice: "New sign-in to your korbat account",
   locked: "Password sign-in paused on your korbat account",
+  emailChangeCode: "Confirm your new korbat email address",
+  emailChanged: "Your korbat email address changed",
 };
 
 const newEmail = (prefix: string) => `${prefix}-${randomUUID()}@korbat.local`;
@@ -271,6 +273,46 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth end to end (Postgre
     expect((await laptop.fetch("/api/auth/sessions/revoke-all", { method: "POST" })).status).toBe(204);
     expect((await laptop.fetch("/api/me")).status).toBe(401);
     expect((await phone.fetch("/api/me")).status).toBe(401);
+  });
+
+  test("moving the account to a new address: the code goes to the new mailbox, the old address is told, and only the new address signs in", { timeout: 60_000 }, async () => {
+    const b = web();
+    const { email: oldAddress, box: oldBox } = await signUpAndOnboard(b);
+    expect((await b.fetch("/api/auth/password/set", { json: { password: PASSWORD } })).status).toBe(200);
+
+    // An address that already has an account gets its code like any other; the refusal waits for the code to prove the mailbox.
+    const taken = await existingAccount();
+    const takenBox = await inbox(taken.email);
+    const conflict = await b.fetch("/api/auth/email/change/start", { json: { email: taken.email } });
+    expect(conflict.status).toBe(200);
+    const conflictFlow = FlowResponse.parse(await conflict.json());
+    const conflictCode = codeFrom(await takenBox.next(SUBJECT.emailChangeCode));
+    const refused = await b.fetch("/api/auth/email/change/verify", { json: { flowId: conflictFlow.flowId, code: conflictCode } });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: { code: "email_in_use" } });
+
+    const newAddress = newEmail("moved");
+    const newBox = await inbox(newAddress);
+    const started = await b.fetch("/api/auth/email/change/start", { json: { email: newAddress } });
+    expect(started.status).toBe(200);
+    const { flowId } = FlowResponse.parse(await started.json());
+    const code = codeFrom(await newBox.next(SUBJECT.emailChangeCode));
+    const verified = await b.fetch("/api/auth/email/change/verify", { json: { flowId, code } });
+    expect(verified.status).toBe(200);
+    expect(await verified.json()).toEqual({ email: newAddress });
+    expect(await oldBox.next(SUBJECT.emailChanged)).toContain(newAddress);
+
+    // The session that made the change stays signed in and sees the new address.
+    const me = MeResponse.parse(await (await b.fetch("/api/me")).json());
+    expect(me.user.email).toBe(newAddress);
+    expect((await auth.deps.repo.recentEvents(me.user.id)).map((e) => e.type)).toContain("email_changed");
+
+    const oldSignIn = await passwordSignIn(web(), oldAddress, PASSWORD, randomToken());
+    expect(oldSignIn.status).toBe(401);
+    expect(await oldSignIn.json()).toMatchObject({ error: { code: "invalid_credentials" } });
+    const newSignIn = await passwordSignIn(web(), newAddress, PASSWORD, randomToken());
+    expect(newSignIn.status).toBe(200);
+    expect(await newSignIn.json()).toEqual({ result: "session", mustReenrollMfa: false });
   });
 
   test("an under-16 sign-up is refused and leaves no account behind", async () => {

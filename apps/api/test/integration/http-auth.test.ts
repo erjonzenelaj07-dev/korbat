@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ErrorEnvelope, FlowResponse, MeResponse, SessionResult, SessionsResponse } from "@korbat/contracts";
+import { EmailChangeResponse, ErrorEnvelope, FlowResponse, MeResponse, SessionResult, SessionsResponse } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { createApp } from "../../src/app";
 import { createAuth, type Auth } from "../../src/auth";
@@ -191,6 +191,51 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     expect(await set.json()).toEqual({});
     expect(b.cookie("__Host-korbat_session")).not.toBe(token);
     expect(MeResponse.parse(await (await b.fetch("/api/me")).json()).user.hasPassword).toBe(true);
+  });
+
+  test("changing the email address needs an onboarded, fresh session on both routes; the new address is then verified by its code and shown by /me", async () => {
+    const newAddress = `http-moved-${randomUUID()}@korbat.local`;
+    const routes = [
+      ["/api/auth/email/change/start", { email: newAddress }],
+      ["/api/auth/email/change/verify", { flowId: randomToken(), code: "123456" }],
+    ] as const;
+    for (const [path, body] of routes) {
+      const anonymous = await app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      expect(anonymous.status, path).toBe(401);
+      expect(await anonymous.json()).toMatchObject({ error: { code: "unauthenticated" } });
+    }
+
+    const b = new Browser(app, config.APP_ORIGIN);
+    const { email } = await signUp(b);
+    for (const [path, body] of routes) {
+      const early = await b.fetch(path, { json: body });
+      expect(early.status, path).toBe(403);
+      expect(await early.json()).toMatchObject({ error: { code: "onboarding_required" } });
+    }
+
+    await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Mover" } });
+    const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
+    await auth.deps.repo.setReauth(sessionId, new Date(Date.now() - 10 * 60_000));
+    await auth.deps.kv.del(`sess:${sessionId}`);
+    for (const [path, body] of routes) {
+      const stale = await b.fetch(path, { json: body });
+      expect(stale.status, path).toBe(403);
+      expect(await stale.json()).toMatchObject({ error: { code: "reauth_required" } });
+    }
+    const { flowId: reauthFlow } = FlowResponse.parse(await (await b.fetch("/api/auth/reauth/email/start", { method: "POST" })).json());
+    expect((await b.fetch("/api/auth/reauth", { json: { method: "email", flowId: reauthFlow, code: mailer.lastCodeFor(email) } })).status).toBe(204);
+
+    const malformed = await b.fetch("/api/auth/email/change/start", { json: { email: "not an address" } });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({ error: { code: "invalid_request" } });
+    const started = await b.fetch("/api/auth/email/change/start", { json: { email: newAddress } });
+    expect(started.status).toBe(200);
+    const { flowId } = FlowResponse.parse(await started.json());
+    const verified = await b.fetch("/api/auth/email/change/verify", { json: { flowId, code: mailer.lastCodeFor(newAddress) } });
+    expect(verified.status).toBe(200);
+    expect(EmailChangeResponse.parse(await verified.json())).toEqual({ email: newAddress });
+    expect(MeResponse.parse(await (await b.fetch("/api/me")).json()).user.email).toBe(newAddress);
+    expect(mailer.sent.at(-1)).toMatchObject({ to: email, template: "email_changed", data: { email: newAddress } });
   });
 
   test("staff-only routes require a staff role and MFA", async () => {
