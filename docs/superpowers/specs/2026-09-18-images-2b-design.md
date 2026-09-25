@@ -501,3 +501,5 @@ Applied by `docs/superpowers/specs/2026-09-23-audit-fixes-design.md` (Tasks 5 an
 - **The store is never opened blocking (section 7.3).** Entries are inspected with `lstat` before they are opened, and opens are non-blocking, so a FIFO planted in the store cannot hold an API thread.
 - **The sweeper is a job (section 4.7).** It runs on the API's job runner: one instance at a time, rounds never overlapping, the lock refreshed while a long reconcile runs.
 - **Daily upload caps (section 6).** Besides 20 or 120 an hour, an account may upload 60 images a day in its first day and 500 a day afterwards.
+
+- **Avatars stay deferred (section 12, 1b).** The 1b design leaves `profiles.avatar_path` unused; the pipeline is unchanged. The data export reads each ready image's `large.webp` from the store.

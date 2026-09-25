@@ -442,3 +442,7 @@ Applied by `docs/superpowers/specs/2026-09-23-audit-fixes-design.md` (Tasks 3, 4
 - **Malformed JSON is `invalid_request` with status 400**, not an internal error.
 - **The client address (section 6).** `TRUST_PROXY` (`cloudflare`, `caddy`, `none`) decides which header names the client; every per-address limit and audit row uses the keyed hash of that address, never the address. Production refuses Cloudflare's Turnstile test secrets, plain-http origins and a mail relay without TLS.
 - **The retention job is in scope (section 1, previously out of scope).** Every ten minutes the API deletes email codes consumed or expired a day ago and sessions revoked or expired a month ago, nulls device address hashes not seen for 30 days (the design's IP-hash purge), and removes security events older than 90 days through `auth.purge_events`, a function the migrator owns so the table stays append-only for the API role.
+
+## 15. Delivered by 1b (2026-09-24)
+
+`docs/superpowers/specs/2026-09-24-account-lifecycle-1b-design.md` delivers the 1b row of section 1's table (profile editing, handle-change rules, the verified badge, data export, account deletion) and adds the email change this table left out. Where this document and the 1b design differ, the 1b design is current: handles may change once every 30 days at any age (section 2 of the 1b design; this document's onboarding handle is the first entry of `handle_history`), the badge is a phone proof through a provider interface, and deletion needs fresh authentication, an emailed code and the typed handle.

@@ -199,7 +199,7 @@ export const NotMeRequest = z.object({ token: OpaqueId });
 export type NotMeRequest = z.infer<typeof NotMeRequest>;
 
 /**
- * The signed-in account's own profile, as /me and the profile-editing routes return it: the public facts
+ * The signed-in account's own profile as /me returns it (the profile-editing routes answer the public ProfileView): the public facts
  * plus when the handle last changed (the app shows when the next change is allowed) and whether the
  * verified badge is held.
  */
