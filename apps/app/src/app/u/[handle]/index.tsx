@@ -5,7 +5,7 @@ import type { ProfileView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { PostList, TimelineList } from "@/components/social/PagedList";
 import { FollowButton } from "@/components/social/ProfileList";
-import { Button, Loading } from "@/components/ui";
+import { Button, Loading, VerifiedChip } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
@@ -103,10 +103,12 @@ export default function ProfileScreen() {
 
   const header = (
     <View className="border-b border-zinc-800 px-4 pt-4">
-      <Text accessibilityRole="header" className="text-2xl font-bold text-zinc-50">
-        {profile.displayName}
-        {profile.verified ? <Text className="text-sky-400"> ✓</Text> : null}
-      </Text>
+      <View className="flex-row flex-wrap items-center gap-x-2">
+        <Text accessibilityRole="header" className="text-2xl font-bold text-zinc-50">
+          {profile.displayName}
+        </Text>
+        {profile.verified ? <VerifiedChip /> : null}
+      </View>
       <Text className="text-base text-zinc-400">@{profile.handle}</Text>
       {profile.bio ? <Text className="mt-2 text-base leading-6 text-zinc-200">{profile.bio}</Text> : null}
       <View className="mt-3 flex-row">

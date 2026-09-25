@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { Link } from "expo-router";
 import { AppShell } from "@/components/AppShell";
+import { SettingsNav } from "@/components/SettingsNav";
 import { ProfileList } from "@/components/social/ProfileList";
 import { errorMessage } from "@/lib/api";
 import { social } from "@/lib/social";
@@ -51,14 +51,10 @@ export default function Privacy() {
         empty={tab === "blocked" ? "You have not blocked anyone." : "You have not muted anyone."}
         header={
           <View className="border-b border-zinc-800 px-4 pt-4">
-            <Link href="/settings/security" asChild>
-              <Pressable>
-                <Text className="text-sm text-zinc-400 underline">Security settings</Text>
-              </Pressable>
-            </Link>
-            <Text accessibilityRole="header" className="mt-1 text-xl font-bold text-zinc-50">
+            <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
               Privacy
             </Text>
+            <SettingsNav current="privacy" />
             <Text className="mt-2 text-sm leading-5 text-zinc-400">
               A block hides you and the other account from each other while signed in and refuses their interactions. Posts on korbat are public, so anyone who signs out can
               still read them. A mute only hides an account from your timelines, and they are never told.

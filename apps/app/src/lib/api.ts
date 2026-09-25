@@ -31,6 +31,8 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Seconds until the request may be repeated, from Retry-After: a rate limit or the handle cooldown. */
+    readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "ApiError";
@@ -121,7 +123,7 @@ export function deviceId(): string {
 export const platform: "web" | "ios" | "android" = Platform.OS === "ios" || Platform.OS === "android" ? Platform.OS : "web";
 
 interface RequestOptions<T> {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   json?: unknown;
   /** A raw body sent as it is, with its declared type: how an image is uploaded. */
   raw?: { type: string; body: Blob };
@@ -130,10 +132,11 @@ interface RequestOptions<T> {
 }
 
 /**
- * Calls the API with the session cookie. State-changing requests echo the CSRF cookie in
- * X-CSRF-Token; the session cookie itself is HttpOnly and never readable here.
+ * Calls the API with the session cookie and answers with the raw response, for a body that is not
+ * JSON (the account export's ZIP). State-changing requests echo the CSRF cookie in X-CSRF-Token; the
+ * session cookie itself is HttpOnly and never readable here. A failed call throws an ApiError.
  */
-export async function api<T = void>(path: string, options: RequestOptions<T> = {}): Promise<T> {
+export async function apiResponse(path: string, options: Omit<RequestOptions<unknown>, "schema"> = {}): Promise<Response> {
   const method = options.method ?? (options.json === undefined && options.raw === undefined ? "GET" : "POST");
   const headers: Record<string, string> = {};
   if (options.json !== undefined) headers["content-type"] = "application/json";
@@ -163,8 +166,16 @@ export async function api<T = void>(path: string, options: RequestOptions<T> = {
     // its code ("Two-factor setup expired. Start again."). Only validation and internal errors use
     // the local wording, because their server messages are technical.
     const generic = code === "invalid_request" || code === "internal" || !parsed.success;
-    throw new ApiError(res.status, code, generic ? messageFor(code) : parsed.data.error.message);
+    // Retry-After is whole seconds: on a rate limit, and on the handle cooldown, where it says when the next change is allowed.
+    const retryAfter = Number(res.headers.get("retry-after"));
+    throw new ApiError(res.status, code, generic ? messageFor(code) : parsed.data.error.message, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
   }
+  return res;
+}
+
+/** Calls the API as `apiResponse` does and parses the JSON answer with `schema`; omit it for a 204 response. */
+export async function api<T = void>(path: string, options: RequestOptions<T> = {}): Promise<T> {
+  const res = await apiResponse(path, options);
   if (!options.schema) return undefined as T;
   return options.schema.parse(await res.json());
 }

@@ -23,6 +23,30 @@ export function Body({ children }: { children: ReactNode }) {
   return <Text className="mt-2 text-base leading-6 text-zinc-400">{children}</Text>;
 }
 
+/** A titled box on a settings screen; the title is a heading one level under the screen's own. */
+export function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <View className="mt-8 rounded-xl border border-zinc-800 p-5">
+      <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
+        {title}
+      </Text>
+      {children}
+    </View>
+  );
+}
+
+/**
+ * The verified badge after a display name: the account proved it holds a phone number that no other
+ * account uses. The label says what the one word means to a screen reader.
+ */
+export function VerifiedChip() {
+  return (
+    <View accessibilityLabel="verified account" className="self-center rounded-full bg-sky-950 px-2 py-0.5">
+      <Text className="text-xs font-medium text-sky-300">Verified</Text>
+    </View>
+  );
+}
+
 export function Field({ label, ...input }: { label: string } & TextInputProps) {
   return (
     <View className="mt-6">

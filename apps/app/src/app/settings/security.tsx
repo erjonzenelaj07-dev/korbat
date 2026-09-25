@@ -1,25 +1,14 @@
-import type { ReactNode } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { ScrollView, Text } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { AppShell } from "@/components/AppShell";
 import { MfaSection } from "@/components/security/MfaSection";
 import { PasswordSection } from "@/components/security/PasswordSection";
 import { ReauthPanel, useReauth } from "@/components/security/ReauthPanel";
 import { SessionsSection } from "@/components/security/SessionsSection";
-import { Button, Loading, TextLink } from "@/components/ui";
+import { SettingsNav } from "@/components/SettingsNav";
+import { Button, Loading, Section } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <View className="mt-8 rounded-xl border border-zinc-800 p-5">
-      <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
-        {title}
-      </Text>
-      {children}
-    </View>
-  );
-}
 
 export default function SecuritySettings() {
   const { state, refresh } = useSession();
@@ -44,7 +33,7 @@ export default function SecuritySettings() {
         <Text className="mt-2 text-base text-zinc-400">
           @{me.profile?.handle} · {me.user.email}
         </Text>
-        <TextLink label="Privacy: blocked and muted accounts" href="/settings/privacy" />
+        <SettingsNav current="security" />
 
         {reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}
 

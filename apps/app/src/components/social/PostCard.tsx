@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Ref } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Link, router } from "expo-router";
 import type { Author, PostView, QuotedPost, Tombstone } from "@korbat/contracts";
+import { VerifiedChip } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { social, timeAgo, type EngagementKind } from "@/lib/social";
@@ -13,12 +14,10 @@ function AuthorLine({ author, createdAt }: { author: Author; createdAt: string }
     <View className="flex-row flex-wrap items-baseline gap-x-2">
       <Link href={`/u/${author.handle}`} asChild>
         <Pressable>
-          <Text className="text-base font-semibold text-zinc-50">
-            {author.displayName}
-            {author.verified ? <Text className="text-sky-400"> ✓</Text> : null}
-          </Text>
+          <Text className="text-base font-semibold text-zinc-50">{author.displayName}</Text>
         </Pressable>
       </Link>
+      {author.verified ? <VerifiedChip /> : null}
       <Text className="text-sm text-zinc-400">
         @{author.handle} · {timeAgo(createdAt)}
       </Text>

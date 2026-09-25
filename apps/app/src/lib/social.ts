@@ -7,12 +7,14 @@ import {
   PostId,
   PostPage,
   PostView,
+  type ProfileEditRequest,
   ProfilePage,
   ProfileView,
   ThreadResponse,
   TimelinePage,
   UploadResponse,
 } from "@korbat/contracts";
+import { z } from "zod";
 import { api } from "./api";
 
 export type EngagementKind = "like" | "repost" | "bookmark";
@@ -22,6 +24,9 @@ const query = (cursor?: string) => (cursor ? `?cursor=${encodeURIComponent(curso
 /** Ids come from route params; only a UUID may become part of a path. */
 const postPath = (id: string) => `/api/posts/${encodeURIComponent(PostId.parse(id))}`;
 const handlePath = (handle: string) => `/api/profiles/${encodeURIComponent(handle.replace(/^@/, "").toLowerCase())}`;
+
+/** The signed-in account's own profile as the editing routes answer it: the public view, since /api/me carries no bio. */
+const OwnProfileResponse = z.object({ profile: ProfileView });
 
 /** Every social endpoint, typed by the shared contracts. Cookies and CSRF are handled by `api`. */
 export const social = {
@@ -52,6 +57,11 @@ export const social = {
   myBookmarks: (cursor?: string) => api(`/api/me/bookmarks${query(cursor)}`, { schema: PostPage }),
   myBlocks: (cursor?: string) => api(`/api/me/blocks${query(cursor)}`, { schema: ProfilePage }),
   myMutes: (cursor?: string) => api(`/api/me/mutes${query(cursor)}`, { schema: ProfilePage }),
+
+  /** Either field or both; the caller refreshes the session afterwards, so the shell's Profile link follows a new name. */
+  editProfile: (edit: ProfileEditRequest) => api("/api/me/profile", { method: "PATCH", json: edit, schema: OwnProfileResponse }),
+  /** Needs fresh authentication: the caller runs it through useReauth. */
+  changeHandle: (handle: string) => api("/api/me/handle", { json: { handle }, schema: OwnProfileResponse }),
 };
 
 /** "just now", "5m", "3h", "2d", or a date for anything older than a week. */
