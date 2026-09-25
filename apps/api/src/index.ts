@@ -73,6 +73,8 @@ const account = createAccount({
   rateLimitStore,
   logger,
 });
+// Deletions the process did not finish (a crash after the auth step, a failed purge) are completed within five minutes.
+const stopPurge = account.startPurge(jobLock);
 
 const app = createApp({
   config,
@@ -98,6 +100,7 @@ async function shutdown(signal: string) {
   logger.info({ signal }, "shutting down");
   stopSweeper();
   stopJanitor();
+  stopPurge();
   server.close();
   await Promise.allSettled([closeDb(apiDb), closeDb(authDb), redis.quit()]);
   process.exit(0);

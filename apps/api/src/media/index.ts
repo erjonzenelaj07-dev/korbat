@@ -4,7 +4,7 @@
  */
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
-import type { Db } from "@korbat/db";
+import type { Db, DbTx } from "@korbat/db";
 import { HEARTBEAT_STALE_MS, type MediaFormat } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
 import type { RateLimitStore } from "../middleware/rate-limit";
@@ -19,8 +19,12 @@ export { MediaError } from "./context";
 export type { MediaDeps, MediaForPosts } from "./context";
 export type { SweepReport } from "./sweeper";
 
-/** What the account module needs from this one (1b design, section 5), as far as the data export goes. */
+/** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
+  /** Removes every image row of the owner, on a post or not, whatever its state, inside the account purge's transaction; the ids name the files to delete afterwards. */
+  purgeOwner(tx: DbTx, ownerId: string): Promise<string[]>;
+  /** Asks the worker to delete the files of these images, once the transaction committed: files cannot be rolled back. */
+  requestDeletion(ids: readonly string[]): Promise<void>;
   /** The account's ready images, on a post or not, each with the absolute path of its large variant in the store; the account module reads the files itself. */
   exportImages(ownerId: string): Promise<{ id: string; path: string }[]>;
 }
@@ -65,6 +69,8 @@ export function createMedia(options: CreateMediaOptions) {
     forPosts: (postIds) => deps.repo.forPosts(postIds),
   };
   const forAccount: MediaForAccount = {
+    purgeOwner: (tx, ownerId) => deps.repo.purgeOwner(tx, ownerId),
+    requestDeletion: (ids) => deps.files.requestDeletion(ids),
     exportImages: async (ownerId) => (await deps.repo.readyImages(ownerId)).map((id) => ({ id, path: deps.files.store.image(id, "large") })),
   };
   return {

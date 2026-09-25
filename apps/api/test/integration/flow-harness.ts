@@ -42,9 +42,10 @@ export const CHROME_WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWe
 /**
  * Real auth repository (Postgres) with an in-memory key-value store, mailer and profile store, a fake
  * clock shared by all of them, Turnstile that fails only for the token "fail", and a breach checker
- * that flags passwords containing "breached".
+ * that flags passwords containing "breached". A suite whose profiles live in the public schema (the
+ * deletion flow compares the typed handle with the profile's) passes the real profile store instead.
  */
-export function flowHarness(repo: AuthRepo) {
+export function flowHarness(repo: AuthRepo, options: { profiles?: ProfileStore } = {}) {
   const clock = fakeClock();
   const kv = new MemoryKv(clock.ms);
   const mailer = new MemoryMailer();
@@ -69,7 +70,7 @@ export function flowHarness(repo: AuthRepo) {
     lockout: createLockout({ repo, kv, now: clock.now }),
     turnstile: { verify: async (token) => token !== "fail" },
     breachChecker: { isBreached: async (password) => password.includes("breached") },
-    profiles: memoryProfiles(),
+    profiles: options.profiles ?? memoryProfiles(),
     verify: devProvider(),
     log: pino({ level: "silent" }),
   };

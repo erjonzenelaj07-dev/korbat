@@ -101,6 +101,15 @@ export function createMediaRepo(db: Db) {
       return rows.map((row) => row.id);
     },
 
+    /**
+     * Removes every image row of the owner, on a post or not, whatever its state, inside the transaction
+     * that purges the account, and says which files to delete afterwards (1b design, section 7.6).
+     */
+    async purgeOwner(tx: DbTx, ownerId: string): Promise<string[]> {
+      const rows = await tx.delete(postMedia).where(eq(postMedia.ownerId, ownerId)).returning({ id: postMedia.id });
+      return rows.map((row) => row.id);
+    },
+
     /** The images of a page of posts, in one query, in their order on each post. */
     async forPosts(postIds: readonly string[]): Promise<Map<string, MediaView[]>> {
       const byPost = new Map<string, MediaView[]>();

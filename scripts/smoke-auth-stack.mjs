@@ -16,6 +16,10 @@
  *     progressive JPEG, 48 MP GIF, 16 MP AVIF) all become ready without the worker being OOM-killed or
  *     restarted, and its memory peak is printed. Run it after every sharp upgrade.
  * 11. The grant-role CLI makes it a moderator, and its session stops working.
+ * 12. A second throwaway account (the first one's session is gone by now, and a deleted account could not
+ *     be granted a role) edits its bio, changes its handle, downloads its export as a ZIP, posts, and
+ *     deletes itself with a code read from Mailpit and its handle typed; afterwards its profile is not
+ *     found, its session is gone, and its post has left the Latest timeline.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit. Makes its images with the sharp the worker uses. Tries a Turnstile refusal again for up to a
@@ -74,11 +78,11 @@ function check(label, ok, detail) {
   return ok;
 }
 
-async function api(path, { json, token } = {}) {
+async function api(path, { json, token, method } = {}) {
   const headers = {};
   if (json !== undefined) headers["content-type"] = "application/json";
   if (token) headers.authorization = `Bearer ${token}`;
-  const res = await fetch(`${base}${path}`, { method: json === undefined ? "GET" : "POST", headers, body: json === undefined ? undefined : JSON.stringify(json) });
+  const res = await fetch(`${base}${path}`, { method: method ?? (json === undefined ? "GET" : "POST"), headers, body: json === undefined ? undefined : JSON.stringify(json) });
   const text = await res.text();
   let body = null;
   try {
@@ -232,11 +236,12 @@ async function worstCaseImages(token) {
   console.log(`info worst case: the worker's memory peak is ${Math.round(peak / 1048576)} MiB of ${Math.round(worker.memory / 1048576)} MiB`);
 }
 
-async function signUpCode(to) {
+/** The first 6-digit code in the newest message to `to`, or in the newest one with `subject` when an older code email is already in the box. */
+async function emailCode(to, subject) {
   const query = encodeURIComponent(`to:"${to}"`);
   for (let attempt = 0; attempt < 40; attempt++) {
     const list = await (await fetch(`${mailpit}/api/v1/search?query=${query}`)).json();
-    const newest = list.messages?.[0];
+    const newest = subject === undefined ? list.messages?.[0] : list.messages?.find((message) => message.Subject === subject);
     if (newest) {
       const message = await (await fetch(`${mailpit}/api/v1/message/${newest.ID}`)).json();
       const code = /\b(\d{6})\b/.exec(message.Text)?.[1];
@@ -245,6 +250,49 @@ async function signUpCode(to) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`no code email to ${to} arrived in Mailpit`);
+}
+
+/**
+ * A second account, since the first one's session is gone by now and a deleted account could not be
+ * granted a role: the lifecycle of section 7 of the 1b design, end to end, on the bearer session.
+ */
+async function accountLifecycle() {
+  const email = `lifecycle-${randomUUID()}@korbat.local`;
+  const handle = `life_${randomBytes(4).toString("hex")}`;
+  const start = await withTurnstile("/api/auth/email/start", { email, turnstileToken: TURNSTILE_TOKEN, deviceId, platform: "ios" });
+  if (!check("lifecycle: email/start", start.status === 200, start.summary)) return;
+  const { flowId } = start.body;
+  const verify = await api("/api/auth/email/verify", { json: { flowId, code: await emailCode(email) } });
+  if (!check("lifecycle: sign-up code read from Mailpit", verify.body?.result === "signup_required", verify.summary)) return;
+  const complete = await api("/api/auth/signup/complete", { json: { flowId, dateOfBirth: "1990-01-01", termsVersion: terms } });
+  if (!check("lifecycle: sign-up returns a bearer token", typeof complete.body?.token === "string", complete.summary)) return;
+  const onboarding = await api("/api/auth/onboarding/handle", { json: { handle, displayName: "Lifecycle Test" }, token: complete.body.token });
+  if (!check("lifecycle: onboarding rotates the token", typeof onboarding.body?.token === "string", onboarding.summary)) return;
+  const token = onboarding.body.token;
+
+  const edited = await api("/api/me/profile", { method: "PATCH", json: { bio: "Here for the smoke test." }, token });
+  check("edit the bio", edited.status === 200 && edited.body?.profile?.bio === "Here for the smoke test.", edited.summary);
+  const renamed = `${handle}_2`;
+  const changed = await api("/api/me/handle", { json: { handle: renamed }, token });
+  check("change the handle", changed.status === 200 && changed.body?.profile?.handle === renamed, changed.summary);
+  const exported = await send("/api/account/export", { method: "POST", token });
+  const zip = exported.bytes[0] === 0x50 && exported.bytes[1] === 0x4b;
+  check("the export is a ZIP", exported.status === 200 && exported.headers.get("content-type") === "application/zip" && zip, `HTTP ${exported.status}, ${exported.headers.get("content-type")}, ${exported.bytes.length} bytes`);
+  const posted = await api("/api/posts", { json: { body: "a post that will not outlive its author" }, token });
+  check("lifecycle: create a post", posted.status === 201 && typeof posted.body?.id === "string", posted.summary);
+
+  const deletion = await api("/api/account/delete/start", { json: {}, token });
+  if (!check("delete/start", deletion.status === 200 && typeof deletion.body?.flowId === "string", deletion.summary)) return;
+  // The sign-up code email is still in the box, so the deletion code is picked by its subject.
+  const code = await emailCode(email, "Confirm deleting your korbat account");
+  const confirmed = await api("/api/account/delete/confirm", { json: { flowId: deletion.body.flowId, code, handle: renamed }, token });
+  check("delete/confirm with the code from Mailpit and the handle typed", confirmed.status === 204, confirmed.summary);
+  const profile = await api(`/api/profiles/${renamed}`);
+  check("the deleted profile is not found", profile.status === 404 && profile.body?.error?.code === "not_found", profile.summary);
+  const me = await api("/api/me", { token });
+  check("the deleted account's session is gone", me.status === 401, me.summary);
+  const latest = await api("/api/timeline/latest");
+  check("its post has left the Latest timeline", Array.isArray(latest.body?.items) && !latest.body.items.some((item) => item.post?.id === posted.body?.id), latest.summary);
 }
 
 async function main() {
@@ -258,7 +306,7 @@ async function main() {
   const start = await withTurnstile("/api/auth/email/start", { email, turnstileToken: TURNSTILE_TOKEN, deviceId, platform: "ios" });
   if (!check("email/start", start.status === 200, start.summary)) return;
   const { flowId } = start.body;
-  const verify = await api("/api/auth/email/verify", { json: { flowId, code: await signUpCode(email) } });
+  const verify = await api("/api/auth/email/verify", { json: { flowId, code: await emailCode(email) } });
   if (!check("sign-up code read from Mailpit", verify.body?.result === "signup_required", verify.summary)) return;
   const complete = await api("/api/auth/signup/complete", { json: { flowId, dateOfBirth: "1990-01-01", termsVersion: terms } });
   if (!check("sign-up returns a bearer token", typeof complete.body?.token === "string", complete.summary)) return;
@@ -286,6 +334,8 @@ async function main() {
   check("grant-role CLI", output.includes("role user -> moderator; every session revoked"), output.trim());
   const after = await api("/api/me", { token });
   check("the session stops working after the role change", after.status === 401, after.summary);
+
+  await accountLifecycle();
 }
 
 try {

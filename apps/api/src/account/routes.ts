@@ -1,7 +1,11 @@
-import { Hono, type MiddlewareHandler } from "hono";
+import { DeleteConfirmRequest } from "@korbat/contracts";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { stream } from "hono/streaming";
+import { clearSessionCookies, type RequestContext } from "../auth";
 import type { AppEnv } from "../env";
+import { validate } from "../lib/validate";
 import type { AccountDeps } from "./context";
+import { confirmDeletion, startDeletion } from "./flows/deletion";
 import { buildExport, enforceExportLimit, exportFilename, writeExport } from "./flows/export";
 import { createZipWriter } from "./zip";
 
@@ -13,6 +17,21 @@ import { createZipWriter } from "./zip";
  */
 export function accountRoutes(deps: AccountDeps, guard: MiddlewareHandler<AppEnv>, fresh: MiddlewareHandler<AppEnv>) {
   const r = new Hono<AppEnv>();
+
+  /** What the auth flows record about a request, as the auth routes build it: the hashed address, never the address. */
+  const requestContext = (c: Context<AppEnv>): RequestContext => ({
+    ipHash: c.get("clientIpHash") ?? "direct",
+    userAgent: c.req.header("user-agent"),
+  });
+
+  r.post("/delete/start", guard, fresh, async (c) => c.json(await startDeletion(deps, c.get("session")!, requestContext(c))));
+
+  r.post("/delete/confirm", guard, fresh, validate("json", DeleteConfirmRequest), async (c) => {
+    await confirmDeletion(deps, c.get("session")!, c.req.valid("json"));
+    // The session behind a web request's cookies is revoked; the browser is told to drop them so it does not keep sending a dead token.
+    if (c.get("authVia") === "cookie") clearSessionCookies(c);
+    return c.body(null, 204);
+  });
 
   r.post("/export", guard, fresh, async (c) => {
     const session = c.get("session")!;

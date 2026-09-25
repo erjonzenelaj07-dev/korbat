@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { authEventType, authEvents, devices, emailCodePurpose, emailCodes, sessions, userRole, users, type Db } from "@korbat/db";
 
 /**
@@ -156,6 +156,58 @@ export function createAuthRepo(db: Db) {
 
     async setRole(userId: string, role: UserRole): Promise<void> {
       await db.update(users).set({ role }).where(eq(users.id, userId));
+    },
+
+    // ------------------------------------------------------------ deletion
+
+    /** The owner confirmed deletion: from now on every lookup above treats the row as absent. Once only; a later call changes nothing. */
+    async markDeleted(userId: string, now: Date): Promise<void> {
+      await db.update(users).set({ deletedAt: now }).where(and(eq(users.id, userId), isNull(users.deletedAt)));
+    },
+
+    /** Every device of the user, and by cascade every session row. The sessions are revoked and tombstoned first, so the cache cannot revive one. */
+    async deleteDevices(userId: string): Promise<void> {
+      await db.delete(devices).where(eq(devices.userId, userId));
+    },
+
+    /** Every code out for the user, whatever its purpose: none may complete a flow for an account that is gone. */
+    async deleteEmailCodes(userId: string): Promise<void> {
+      await db.delete(emailCodes).where(eq(emailCodes.userId, userId));
+    },
+
+    /** Deleted accounts whose row the purge has not anonymised yet, oldest deletion first, at most 100 a round. */
+    async pendingPurges(): Promise<string[]> {
+      const rows = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(isNotNull(users.deletedAt), isNull(users.purgedAt)))
+        .orderBy(users.deletedAt, users.id)
+        .limit(100);
+      return rows.map((r) => r.id);
+    },
+
+    /**
+     * The last step of a deletion: the address becomes deleted:<id> (unique, and never a real address),
+     * every credential and personal fact is cleared, and purged_at says it is done. Only a deleted row
+     * not purged yet is written, so a second call, or a call for a live account, changes nothing.
+     */
+    async finishPurge(userId: string, now: Date): Promise<void> {
+      await db
+        .update(users)
+        .set({
+          email: `deleted:${userId}`,
+          emailVerifiedAt: null,
+          passwordHash: null,
+          totpSecretEnc: null,
+          totpEnabledAt: null,
+          recoveryCodesHash: [],
+          phoneHash: null,
+          ageConfirmedAt: null,
+          termsVersion: null,
+          termsAcceptedAt: null,
+          purgedAt: now,
+        })
+        .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt)));
     },
 
     // ------------------------------------------------------------ email codes

@@ -85,8 +85,16 @@ function harness() {
   const otherSession = randomBytes(32).toString("hex");
   const [postId, deletedId, likedId, bookmarkedId, imageA, imageB] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
   const events: RecordedEvent[] = [];
+  // The deletion side of the three interfaces is not exercised by the export; test/account/deletion.test.ts covers it.
+  const notHere = async (): Promise<never> => {
+    throw new Error("not exercised by the export");
+  };
   const deps: AccountDeps = {
     auth: {
+      startDeletion: notHere,
+      confirmDeletion: notHere,
+      pendingPurges: notHere,
+      finishPurge: notHere,
       exportAccount: async (id) => ({
         account: { id, email: "ada@korbat.local", createdAt: new Date(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: new Date(T0 - 3 * DAY_MS) },
         sessions: [
@@ -104,6 +112,7 @@ function harness() {
       },
     },
     social: {
+      purgeProfile: notHere,
       exportProfile: async () => ({
         profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: new Date(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"] },
         posts: [
@@ -130,7 +139,7 @@ function harness() {
         mutes: [{ handle: "carol", since: new Date(T0 - 200) }],
       }),
     },
-    media: { exportImages: async () => images },
+    media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images },
     limits: new MemoryStore(() => t),
     log: pino({ level: "silent" }),
     now: () => new Date(t),

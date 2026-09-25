@@ -73,13 +73,21 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     await Promise.all([closeDb(apiDb), closeDb(authDb)]);
   });
 
+  // The deletion side of the three interfaces is not exercised by the export; account-deletion.test.ts covers it.
+  const notHere = async (): Promise<never> => {
+    throw new Error("not exercised by the export");
+  };
   const deps = (): AccountDeps => ({
     auth: {
+      startDeletion: notHere,
+      confirmDeletion: notHere,
+      pendingPurges: notHere,
+      finishPurge: notHere,
       exportAccount: (userId) => exportAccount(h.deps, userId),
       appendEvent: (userId, type, metadata) => authRepo.appendEvent({ userId, type, metadata }),
     },
-    social: { exportProfile: (userId) => exportProfile(s.deps, userId) },
-    media: { exportImages: async (ownerId) => (await m.deps.repo.readyImages(ownerId)).map((id) => ({ id, path: m.files.store.image(id, "large") })) },
+    social: { purgeProfile: notHere, exportProfile: (userId) => exportProfile(s.deps, userId) },
+    media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async (ownerId) => (await m.deps.repo.readyImages(ownerId)).map((id) => ({ id, path: m.files.store.image(id, "large") })) },
     limits: new MemoryStore(),
     log: pino({ level: "silent" }),
     now: () => new Date(),

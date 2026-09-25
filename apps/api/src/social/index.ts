@@ -4,7 +4,7 @@
  */
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
-import type { Db } from "@korbat/db";
+import type { Db, DbTx } from "@korbat/db";
 import type { AppEnv } from "../env";
 import type { MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
@@ -18,8 +18,14 @@ export { enforceWriteLimit } from "./limits";
 export type { SocialDeps, SocialEvents, ViewerId } from "./context";
 export type { ExportedMedia, ExportedPost, ProfileExport } from "./flows/export";
 
-/** What the account module needs from this one (1b design, section 5), as far as the data export goes. */
+/** What the account module needs from this one (1b design, section 5): the purge of a deleted account, and the data export. */
 export interface SocialForAccount {
+  /**
+   * One transaction that tombstones every post, removes the engagement and graph rows with their
+   * counters and anonymises the profile row, keeping its handle; `within` runs inside it, for the
+   * media rows. Safe to repeat: a second run changes nothing.
+   */
+  purgeProfile(userId: string, now: Date, within: (tx: DbTx) => Promise<void>): Promise<void>;
   /** The profile, its posts with their images, its engagement and its side of the graph. */
   exportProfile(userId: string): Promise<ProfileExport>;
 }
@@ -50,7 +56,10 @@ export function createSocial(options: CreateSocialOptions) {
     now: options.now ?? (() => new Date()),
     events: options.events,
   };
-  const forAccount: SocialForAccount = { exportProfile: (userId) => exportProfile(deps, userId) };
+  const forAccount: SocialForAccount = {
+    purgeProfile: (userId, now, within) => deps.repo.purgeProfile(userId, now, within),
+    exportProfile: (userId) => exportProfile(deps, userId),
+  };
   return {
     deps,
     /** The interface the account module uses. */

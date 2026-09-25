@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import { isUniqueViolation } from "../auth";
 import { SocialError } from "./context";
@@ -719,6 +719,63 @@ export function createSocialRepo(db: Db) {
         if (isUniqueViolation(err)) return { ok: false, reason: "handle_taken" };
         throw err;
       }
+    },
+
+    // ------------------------------------------------------------ deletion
+
+    /**
+     * Everything the account owns or is part of in this module goes in one transaction (1b design,
+     * section 7.6): its posts become tombstones as after a deletion by the author, with the reply
+     * counters of their parents and the quote counters of what they quoted adjusted for those not
+     * tombstoned already; its likes, reposts and bookmarks go with the counters of their posts; its
+     * follows go in both directions with the other side's counters; its blocks and mutes go in both
+     * directions; the profile row stays, anonymised, with its handle, so the handle is never reused.
+     * `within` runs in the same transaction, for the media rows. The profile row is locked first, so a
+     * second purge of the same account (the request's and the job's) waits for the first and then finds
+     * nothing left: every statement below changes only what is still there, so a repeat changes nothing.
+     */
+    async purgeProfile(id: string, now: Date, within: (tx: DbTx) => Promise<void>): Promise<void> {
+      await db.transaction(async (tx) => {
+        const [row] = (await tx.execute(sql`select handle from profiles where id = ${id}::uuid for update`)) as unknown as { handle: string }[];
+        // The counters come off first, from the posts about to go, in one statement each: a self-reply's parent is a post of the author's too, and a row may be written once per statement.
+        await tx.execute(sql`
+          update posts set reply_count = greatest(0, reply_count - c.n)
+          from (select reply_to_id, count(*)::int as n from posts where author_id = ${id}::uuid and state <> 'deleted_by_author' and reply_to_id is not null group by reply_to_id) c
+          where posts.id = c.reply_to_id`);
+        await tx.execute(sql`
+          update posts set quote_count = greatest(0, quote_count - c.n)
+          from (select quote_of_id, count(*)::int as n from posts where author_id = ${id}::uuid and state <> 'deleted_by_author' and quote_of_id is not null group by quote_of_id) c
+          where posts.id = c.quote_of_id`);
+        await tx
+          .update(posts)
+          .set({ state: "deleted_by_author", deletedAt: now, body: "" })
+          .where(and(eq(posts.authorId, id), ne(posts.state, "deleted_by_author")));
+        await within(tx);
+        // The account's own engagement, with the counters of the posts it was on; bookmarks count nothing.
+        await tx.execute(sql`
+          with gone as (delete from likes where user_id = ${id}::uuid returning post_id)
+          update posts set like_count = greatest(0, like_count - c.n) from (select post_id, count(*)::int as n from gone group by post_id) c where posts.id = c.post_id`);
+        await tx.execute(sql`
+          with gone as (delete from reposts where user_id = ${id}::uuid returning post_id)
+          update posts set repost_count = greatest(0, repost_count - c.n) from (select post_id, count(*)::int as n from gone group by post_id) c where posts.id = c.post_id`);
+        await tx.delete(bookmarks).where(eq(bookmarks.userId, id));
+        // The graph, both ways, with the other side's counters; the account's own counters are zeroed with the row below.
+        await tx.execute(sql`
+          with gone as (delete from follows where follower_id = ${id}::uuid returning followee_id)
+          update profiles set follower_count = greatest(0, follower_count - c.n) from (select followee_id, count(*)::int as n from gone group by followee_id) c where profiles.id = c.followee_id`);
+        await tx.execute(sql`
+          with gone as (delete from follows where followee_id = ${id}::uuid returning follower_id)
+          update profiles set following_count = greatest(0, following_count - c.n) from (select follower_id, count(*)::int as n from gone group by follower_id) c where profiles.id = c.follower_id`);
+        await tx.delete(blocks).where(or(eq(blocks.fromId, id), eq(blocks.toId, id)));
+        await tx.delete(mutes).where(or(eq(mutes.fromId, id), eq(mutes.toId, id)));
+        // The handle stays on the row and is reserved in handle_history like one left behind, so nobody can take it whatever becomes of the row; it may be there already, from an earlier stint.
+        if (row) await tx.insert(handleHistory).values({ handleLower: row.handle.toLowerCase(), profileId: id, changedAt: now }).onConflictDoNothing();
+        // The row stays with its handle; everything else about the person goes. Only a live row is written, so a repeat leaves the deletion time alone.
+        await tx
+          .update(profiles)
+          .set({ displayName: "Deleted account", bio: "", avatarPath: null, verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0, deletedAt: now })
+          .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)));
+      });
     },
   };
 }

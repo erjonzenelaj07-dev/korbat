@@ -6,10 +6,12 @@ import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import type { AuthForAccount } from "../auth";
 import type { AppEnv } from "../env";
+import type { JobLock } from "../lib/jobs";
 import type { MediaForAccount } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForAccount } from "../social";
 import type { AccountDeps } from "./context";
+import { createPurgeJob } from "./purge";
 import { accountRoutes } from "./routes";
 
 export { AccountError } from "./context";
@@ -39,7 +41,12 @@ export function createAccount(options: CreateAccountOptions) {
     log: options.logger,
     now: options.now ?? (() => new Date()),
   };
-  return { deps, routes: accountRoutes(deps, options.requireSession, options.requireFreshAuth) };
+  return {
+    deps,
+    routes: accountRoutes(deps, options.requireSession, options.requireFreshAuth),
+    /** Starts the purge job (deletions left half done, every five minutes under the shared lock) and returns the function that stops it. */
+    startPurge: (lock: JobLock) => createPurgeJob(deps, lock).start(),
+  };
 }
 
 export type Account = ReturnType<typeof createAccount>;
