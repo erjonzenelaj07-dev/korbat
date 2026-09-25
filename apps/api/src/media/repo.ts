@@ -118,6 +118,16 @@ export function createMediaRepo(db: Db) {
       return byPost;
     },
 
+    /** Every ready image of the account, on a post or not, oldest first: the images the data export takes files for. */
+    async readyImages(ownerId: string): Promise<string[]> {
+      const rows = await db
+        .select({ id: postMedia.id })
+        .from(postMedia)
+        .where(and(eq(postMedia.ownerId, ownerId), eq(postMedia.status, "ready")))
+        .orderBy(postMedia.createdAt, postMedia.id);
+      return rows.map((row) => row.id);
+    },
+
     /** Uploads that still wait for the worker's verdict. */
     async processingIds(): Promise<string[]> {
       const rows = await db.select({ id: postMedia.id }).from(postMedia).where(eq(postMedia.status, "processing")).orderBy(postMedia.createdAt);

@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import Redis from "ioredis";
 import { closeDb, createDb, ping } from "@korbat/db";
+import { createAccount } from "./account";
 import { createApp } from "./app";
 import { createAuth, verificationProviderFrom } from "./auth";
 import { loadConfig } from "./config";
@@ -62,6 +63,17 @@ const social = createSocial({
   events: { append: auth.appendEvent },
 });
 
+// The account module owns no table: it reaches the three modules above only through the interfaces their index files export.
+const account = createAccount({
+  auth: auth.forAccount,
+  social: social.forAccount,
+  media: media.forAccount,
+  requireSession: auth.requireSession,
+  requireFreshAuth: auth.requireFreshAuth(),
+  rateLimitStore,
+  logger,
+});
+
 const app = createApp({
   config,
   logger,
@@ -75,6 +87,7 @@ const app = createApp({
   auth,
   social,
   media,
+  account,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {

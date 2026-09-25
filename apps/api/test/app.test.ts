@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import pino from "pino";
 import { HealthResponse } from "@korbat/contracts";
 import { createDb } from "@korbat/db";
+import { createAccount } from "../src/account";
 import { createApp } from "../src/app";
 import { createAuth } from "../src/auth";
 import { MemoryKv } from "../src/auth/kv";
@@ -59,7 +60,16 @@ function app(checks: Record<string, () => Promise<void>>, advisoryChecks?: Recor
     rateLimitStore,
     enforceUploadLimit: async () => undefined,
   });
-  return createApp({ config, logger, rateLimitStore, healthChecks: checks, advisoryChecks, auth, social, media });
+  const account = createAccount({
+    auth: auth.forAccount,
+    social: social.forAccount,
+    media: media.forAccount,
+    requireSession: auth.requireSession,
+    requireFreshAuth: auth.requireFreshAuth(),
+    rateLimitStore,
+    logger,
+  });
+  return createApp({ config, logger, rateLimitStore, healthChecks: checks, advisoryChecks, auth, social, media, account });
 }
 
 describe("GET /api/health", () => {
@@ -193,5 +203,15 @@ describe("social routes", () => {
     expect(await post.json()).toMatchObject({ error: { code: "invalid_request" } });
     expect((await a.request("/api/profiles/has%20space")).status).toBe(400);
     expect((await a.request("/api/timeline/latest?limit=500")).status).toBe(400);
+  });
+});
+
+describe("account routes", () => {
+  test("the data export is mounted at /api/account and needs a session", async () => {
+    const a = app({});
+    const res = await a.request("/api/account/export", { method: "POST" });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: { code: "unauthenticated" } });
+    expect((await a.request("/api/account/export")).status).toBe(404);
   });
 });

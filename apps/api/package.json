@@ -21,6 +21,7 @@
     "@korbat/rules": "workspace:*",
     "@node-rs/argon2": "2.2.1",
     "drizzle-orm": "0.45.2",
+    "fflate": "0.8.3",
     "hono": "4.13.8",
     "ioredis": "6.0.0",
     "nodemailer": "10.0.10",

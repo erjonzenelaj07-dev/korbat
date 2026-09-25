@@ -19,6 +19,12 @@ export { MediaError } from "./context";
 export type { MediaDeps, MediaForPosts } from "./context";
 export type { SweepReport } from "./sweeper";
 
+/** What the account module needs from this one (1b design, section 5), as far as the data export goes. */
+export interface MediaForAccount {
+  /** The account's ready images, on a post or not, each with the absolute path of its large variant in the store; the account module reads the files itself. */
+  exportImages(ownerId: string): Promise<{ id: string; path: string }[]>;
+}
+
 export interface CreateMediaOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
   apiDb: Db;
@@ -58,10 +64,15 @@ export function createMedia(options: CreateMediaOptions) {
     requestDeletion: (ids) => deps.files.requestDeletion(ids),
     forPosts: (postIds) => deps.repo.forPosts(postIds),
   };
+  const forAccount: MediaForAccount = {
+    exportImages: async (ownerId) => (await deps.repo.readyImages(ownerId)).map((id) => ({ id, path: deps.files.store.image(id, "large") })),
+  };
   return {
     deps,
     /** The interface the social module uses to put images on posts and read them back. */
     forPosts,
+    /** The interface the account module uses. */
+    forAccount,
     /** Creates the uploads volume's directories. Call once before serving. */
     prepare: () => deps.files.prepare(),
     routes: mediaRoutes(deps, options.requireSession),

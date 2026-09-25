@@ -23,7 +23,7 @@ const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts"]
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
 /** Modules that may only be entered through their index file. */
-const MODULES = ["auth", "social", "media"] as const;
+const MODULES = ["auth", "social", "media", "account"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -82,6 +82,7 @@ function dbImports(source: string): string[] {
 const insideAuth = (path: string) => path.startsWith("auth/");
 const insideSocial = (path: string) => path.startsWith("social/");
 const insideMedia = (path: string) => path.startsWith("media/");
+const insideAccount = (path: string) => path.startsWith("account/");
 
 function findViolations(files: SourceFile[], publicNames: Set<string>, authNames: Set<string>): string[] {
   const violations: string[] = [];
@@ -117,6 +118,16 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
         else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db`);
       }
     }
+    // The account module sequences the other three through their index files and holds no table access of its own
+    // (1b spec, section 5): no table or enum of either schema may be named in it. Db and DbTx, which are not schema
+    // names, stay allowed, since a transaction is passed through it.
+    if (insideAccount(path)) {
+      for (const name of dbImports(source)) {
+        if (name === "*") violations.push(`${path}: namespace import of @korbat/db (the account module holds no table access)`);
+        else if (publicNames.has(name)) violations.push(`${path}: imports public-schema ${name} from @korbat/db (the account module holds no table access)`);
+        else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db (the account module holds no table access)`);
+      }
+    }
   }
   return violations;
 }
@@ -127,6 +138,7 @@ describe("module boundaries", () => {
     expect(paths).toContain("auth/index.ts");
     expect(paths).toContain("social/index.ts");
     expect(paths).toContain("media/index.ts");
+    expect(paths).toContain("account/index.ts");
     expect(paths).toContain("app.ts");
     expect(publicSchemaNames()).toContain("profiles");
     expect(publicSchemaNames()).not.toContain("users");
@@ -148,6 +160,9 @@ describe("module boundaries", () => {
       { path: "auth/repo.ts", source: `import { users, sessions, type Db } from "@korbat/db";\nconst k = config.TOTP_ENC_KEY;` },
       { path: "social/repo.ts", source: `import { posts, profiles, type Db } from "@korbat/db";\nimport { SocialError } from "./context";` },
       { path: "social/routes.ts", source: `import type { Auth } from "../auth";` },
+      { path: "index.ts", source: `import { createAccount } from "./account";\nimport { createMedia } from "./media";` },
+      { path: "account/routes.ts", source: `import type { AuthForAccount } from "../auth";\nimport type { SocialForAccount } from "../social";\nimport { buildExport } from "./flows/export";` },
+      { path: "account/flows/deletion.ts", source: `import type { DbTx } from "@korbat/db";\nimport type { MediaForAccount } from "../../media";` },
     ];
     expect(findViolations(files, new Set(["profiles", "posts"]), new Set(["users", "sessions"]))).toEqual([]);
   });
@@ -189,6 +204,23 @@ describe("module boundaries", () => {
       "social/repo.ts: references post_media, which only the media module may touch",
       "social/views.ts: references post_media, which only the media module may touch",
       "media/repo.ts: imports auth-schema users from @korbat/db",
+    ]);
+  });
+
+  test("catches a deep import into the account module, and a table or enum of either schema inside it", () => {
+    const files: SourceFile[] = [
+      { path: "app.ts", source: `import { createZipWriter } from "./account/zip";\nimport { createAccount } from "./account";` },
+      { path: "social/flows/graph.ts", source: `import { buildExport } from "../../account/flows/export";` },
+      { path: "account/flows/export.ts", source: `import { posts, users, type DbTx } from "@korbat/db";` },
+      { path: "account/purge.ts", source: `import * as db from "@korbat/db";` },
+      { path: "account/zip.ts", source: `import type { Db } from "@korbat/db";` },
+    ];
+    expect(findViolations(files, new Set(["posts"]), new Set(["users"]))).toEqual([
+      "app.ts: imports ./account/zip, which is inside the account module (use ./account)",
+      "social/flows/graph.ts: imports ../../account/flows/export, which is inside the account module (use ./account)",
+      "account/flows/export.ts: imports public-schema posts from @korbat/db (the account module holds no table access)",
+      "account/flows/export.ts: imports auth-schema users from @korbat/db (the account module holds no table access)",
+      "account/purge.ts: namespace import of @korbat/db (the account module holds no table access)",
     ]);
   });
 

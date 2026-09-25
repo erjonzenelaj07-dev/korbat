@@ -1,0 +1,194 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { strFromU8, unzipSync } from "fflate";
+import pino from "pino";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { ExportFormat } from "@korbat/contracts";
+import { closeDb, createDb, type Db } from "@korbat/db";
+import type { AccountDeps } from "../../src/account/context";
+import { buildExport, writeExport } from "../../src/account/flows/export";
+import { createZipWriter } from "../../src/account/zip";
+import { AuthError } from "../../src/auth/context";
+import { randomToken, sha256Hex } from "../../src/auth/crypto";
+import { exportAccount } from "../../src/auth/flows/export";
+import { signIn } from "../../src/auth/flows/signin";
+import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
+import { loadConfig } from "../../src/config";
+import { status } from "../../src/media/flows/status";
+import { upload } from "../../src/media/flows/upload";
+import { MemoryStore } from "../../src/middleware/rate-limit";
+import { createProfileStore } from "../../src/profiles/store";
+import { SocialError } from "../../src/social/context";
+import { exportProfile } from "../../src/social/flows/export";
+import { createPost, deletePost } from "../../src/social/flows/posts";
+import { TEST_TERMS, flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
+import { mediaHarness, type MediaHarness } from "./media-harness";
+import { socialHarness, type SocialHarness } from "./social-harness";
+
+const newHandle = () => `x_${randomBytes(5).toString("hex")}`;
+
+/** Collects the archive in memory, copying each chunk as the sink of a response would consume it. */
+function memorySink() {
+  const chunks: Uint8Array[] = [];
+  return {
+    write: async (chunk: Uint8Array): Promise<void> => {
+      chunks.push(Uint8Array.from(chunk));
+    },
+    bytes: (): Uint8Array => Buffer.concat(chunks),
+  };
+}
+
+/**
+ * The export across the three modules on real Postgres: the auth repository behind the auth flow,
+ * the social repository and flows, and the media repository with both volumes in a temporary
+ * directory and the stand-in for the worker. Only the account module's dependencies are composed
+ * here, the way the server composes them from the module indexes.
+ */
+describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an account", () => {
+  let apiDb: Db;
+  let authDb: Db;
+  let authRepo: AuthRepo;
+  let h: FlowHarness;
+  let m: MediaHarness;
+  let s: SocialHarness;
+
+  beforeAll(async () => {
+    const config = loadConfig();
+    apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
+    authRepo = createAuthRepo(authDb);
+    h = flowHarness(authRepo);
+    m = await mediaHarness(apiDb);
+    s = socialHarness(apiDb, {
+      media: {
+        attach: (tx, input) => m.deps.repo.attach(tx, input),
+        detachAll: (tx, postId) => m.deps.repo.detachAll(tx, postId),
+        requestDeletion: (ids) => m.files.requestDeletion(ids),
+        forPosts: (postIds) => m.deps.repo.forPosts(postIds),
+      },
+    });
+  });
+  afterAll(async () => {
+    m.cleanup();
+    await Promise.all([closeDb(apiDb), closeDb(authDb)]);
+  });
+
+  const deps = (): AccountDeps => ({
+    auth: {
+      exportAccount: (userId) => exportAccount(h.deps, userId),
+      appendEvent: (userId, type, metadata) => authRepo.appendEvent({ userId, type, metadata }),
+    },
+    social: { exportProfile: (userId) => exportProfile(s.deps, userId) },
+    media: { exportImages: async (ownerId) => (await m.deps.repo.readyImages(ownerId)).map((id) => ({ id, path: m.files.store.image(id, "large") })) },
+    limits: new MemoryStore(),
+    log: pino({ level: "silent" }),
+    now: () => new Date(),
+  });
+
+  /** An auth account signed in on one device, with a profile of the same id in the public schema. */
+  async function account() {
+    const owner = await onboardedUser(h, authRepo, { password: "correct horse battery staple" });
+    const handle = newHandle();
+    const created = await createProfileStore(apiDb).create({ id: owner.user.id, handle, displayName: "Owner" });
+    expect(created.ok).toBe(true);
+    return { ...owner, handle };
+  }
+
+  test("an account with real uploads exports an archive whose images are the store's large.webp byte for byte, and whose JSON holds its rows", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    // A second live session on the same device, and a third one revoked: only the two live ones are listed.
+    const second = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false });
+    const revoked = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false });
+    await h.deps.sessions.revoke(revoked.issued.session.sessionId, userId);
+    // The handle left behind is reserved in handle_history; the export lists both.
+    const renamed = newHandle();
+    expect((await s.repo.changeHandle(userId, renamed, s.clock.next())).ok).toBe(true);
+
+    const [imageA, imageB] = [await m.readyImage(userId, { width: 1600, height: 1200 }), await m.readyImage(userId, { width: 900, height: 1600 })];
+    const post = await createPost(s.deps, userId, {
+      body: "two photos",
+      media: [
+        { id: imageA, alt: "a harbour at dawn" },
+        { id: imageB, alt: "a lighthouse" },
+      ],
+    });
+    const reply = await createPost(s.deps, userId, { body: "a reply, soon deleted", replyToId: post.id, media: [] });
+    await deletePost(s.deps, userId, reply.id);
+    // A ready image on no post is still the account's upload; one still processing and one that failed have no file to export.
+    const loose = await m.readyImage(userId);
+    await upload(m.deps, userId, m.jpeg());
+    const failed = (await upload(m.deps, userId, m.jpeg())).id;
+    m.worker.failed(failed, "corrupt_image");
+    await status(m.deps, userId, failed);
+
+    const [bob, eve, carol] = await Promise.all([s.established(), s.established(), s.established()]);
+    const bobsPost = await createPost(s.deps, bob.id, { body: "bob's post", media: [] });
+    expect(await s.repo.like(userId, bobsPost.id, s.clock.next())).toBe(true);
+    expect(await s.repo.repost(userId, bobsPost.id, s.clock.next())).toBe(true);
+    expect(await s.repo.bookmark(userId, bobsPost.id, s.clock.next())).toBe(true);
+    expect(await s.repo.follow(userId, bob.id, s.clock.next())).toBe(true);
+    expect(await s.repo.block(userId, eve.id, s.clock.next())).toBe(true);
+    expect(await s.repo.mute(userId, carol.id, s.clock.next())).toBe(true);
+    await authRepo.appendEvent({ userId, type: "profile_updated" });
+
+    const plan = await buildExport(deps(), userId, owner.session.sessionId, new Date());
+    const sink = memorySink();
+    await writeExport(createZipWriter(sink.write), plan);
+    const files = unzipSync(sink.bytes());
+    expect(Object.keys(files).sort()).toEqual(["export.json", `media/${imageA}.webp`, `media/${imageB}.webp`, `media/${loose}.webp`].sort());
+    for (const id of [imageA, imageB, loose]) {
+      expect(Buffer.compare(Buffer.from(files[`media/${id}.webp`]!), readFileSync(m.files.store.image(id, "large"))), id).toBe(0);
+    }
+    const json = ExportFormat.parse(JSON.parse(strFromU8(files["export.json"]!)));
+    expect(json.missingMedia).toEqual([]);
+
+    expect(json.account).toMatchObject({ id: userId, email: owner.email, role: "user", mfaEnabled: false, hasPassword: true, verified: false, termsVersion: TEST_TERMS });
+    expect(json.account.termsAcceptedAt).not.toBeNull();
+    expect(json.sessions.map((session) => session.id).sort()).toEqual([owner.session.sessionId, second.issued.session.sessionId].sort());
+    expect(json.sessions.find((session) => session.id === owner.session.sessionId)!.current).toBe(true);
+    expect(json.sessions.find((session) => session.id === second.issued.session.sessionId)!.current).toBe(false);
+    expect(json.devices).toHaveLength(1);
+    expect(json.devices[0]!.platform).toBe("web");
+    // The account's own events, newest first; the sign-ins are among them.
+    expect(json.events[0]!.type).toBe("profile_updated");
+    expect(json.events.map((event) => event.type)).toContain("signin_success");
+    for (let i = 1; i < json.events.length; i++) expect(json.events[i]!.at <= json.events[i - 1]!.at).toBe(true);
+
+    expect(json.profile).toMatchObject({ handle: renamed, displayName: "Owner", bio: "", handleHistory: [owner.handle, renamed] });
+    expect(json.posts.map((p) => p.id)).toEqual([post.id, reply.id]);
+    expect(json.posts[0]).toMatchObject({
+      body: "two photos",
+      state: "visible",
+      deletedAt: null,
+      media: [
+        { id: imageA, file: `media/${imageA}.webp`, altText: "a harbour at dawn", width: 1600, height: 1200 },
+        { id: imageB, file: `media/${imageB}.webp`, altText: "a lighthouse", width: 900, height: 1600 },
+      ],
+    });
+    expect(json.posts[1]).toMatchObject({ body: "", state: "deleted_by_author", replyToId: post.id, media: [] });
+    expect(json.posts[1]!.deletedAt).not.toBeNull();
+    expect(json.likes.map((ref) => ref.postId)).toEqual([bobsPost.id]);
+    expect(json.reposts.map((ref) => ref.postId)).toEqual([bobsPost.id]);
+    expect(json.bookmarks.map((ref) => ref.postId)).toEqual([bobsPost.id]);
+    expect(json.following).toEqual([{ handle: bob.handle, since: expect.any(String) }]);
+    expect(json.blocks).toEqual([{ handle: eve.handle, since: expect.any(String) }]);
+    expect(json.mutes).toEqual([{ handle: carol.handle, since: expect.any(String) }]);
+  });
+
+  test("the badge and two-factor are reported as held; an unknown account or profile is refused", async () => {
+    const owner = await account();
+    await authRepo.setPhoneHash(owner.user.id, sha256Hex(randomToken()));
+    await authRepo.enableTotp(owner.user.id, { secretEnc: "v1:test", recoveryCodesHash: ["a"], now: new Date() });
+    const exported = await exportAccount(h.deps, owner.user.id);
+    expect(exported.account).toMatchObject({ verified: true, mfaEnabled: true, hasPassword: true });
+
+    const unknown = await exportAccount(h.deps, randomUUID()).catch((err: unknown) => err);
+    expect(unknown).toBeInstanceOf(AuthError);
+    expect((unknown as AuthError).code).toBe("invalid_credentials");
+    const nobody = await exportProfile(s.deps, randomUUID()).catch((err: unknown) => err);
+    expect(nobody).toBeInstanceOf(SocialError);
+    expect((nobody as SocialError).code).toBe("not_found");
+    expect(await m.deps.repo.readyImages(randomUUID())).toEqual([]);
+  });
+});

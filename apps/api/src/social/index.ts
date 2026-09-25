@@ -9,12 +9,20 @@ import type { AppEnv } from "../env";
 import type { MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import { WITHOUT_MEDIA, type SocialDeps, type SocialEvents } from "./context";
+import { exportProfile, type ProfileExport } from "./flows/export";
 import { createSocialRepo } from "./repo";
 import { socialRoutes } from "./routes";
 
 export { SocialError } from "./context";
 export { enforceWriteLimit } from "./limits";
 export type { SocialDeps, SocialEvents, ViewerId } from "./context";
+export type { ExportedMedia, ExportedPost, ProfileExport } from "./flows/export";
+
+/** What the account module needs from this one (1b design, section 5), as far as the data export goes. */
+export interface SocialForAccount {
+  /** The profile, its posts with their images, its engagement and its side of the graph. */
+  exportProfile(userId: string): Promise<ProfileExport>;
+}
 
 export interface CreateSocialOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
@@ -42,7 +50,13 @@ export function createSocial(options: CreateSocialOptions) {
     now: options.now ?? (() => new Date()),
     events: options.events,
   };
-  return { deps, routes: socialRoutes(deps, options.requireSession, options.requireFreshAuth) };
+  const forAccount: SocialForAccount = { exportProfile: (userId) => exportProfile(deps, userId) };
+  return {
+    deps,
+    /** The interface the account module uses. */
+    forAccount,
+    routes: socialRoutes(deps, options.requireSession, options.requireFreshAuth),
+  };
 }
 
 export type Social = ReturnType<typeof createSocial>;

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { authEventType, authEvents, devices, emailCodePurpose, emailCodes, sessions, userRole, users, type Db } from "@korbat/db";
 
 /**
@@ -222,6 +222,15 @@ export function createAuthRepo(db: Db) {
       await db.update(devices).set({ revokedAt: now }).where(and(eq(devices.id, id), isNull(devices.revokedAt)));
     },
 
+    /** The user's devices that are not revoked, oldest first, for the data export; a revoked one stands for nothing of the account's any more. */
+    async listDevices(userId: string): Promise<{ label: string | null; platform: string; firstSeenAt: Date; lastSeenAt: Date }[]> {
+      return db
+        .select({ label: devices.label, platform: devices.platform, firstSeenAt: devices.firstSeenAt, lastSeenAt: devices.lastSeenAt })
+        .from(devices)
+        .where(and(eq(devices.userId, userId), isNull(devices.revokedAt)))
+        .orderBy(devices.firstSeenAt, devices.id);
+    },
+
     // ------------------------------------------------------------ sessions
 
     async createSession(input: { id: string; userId: string; deviceId: string; now: Date; expiresAt: Date; absoluteExpiresAt: Date }): Promise<void> {
@@ -376,6 +385,15 @@ export function createAuthRepo(db: Db) {
         .where(eq(authEvents.userId, userId))
         .orderBy(desc(authEvents.createdAt), desc(authEvents.id))
         .limit(limit);
+    },
+
+    /** The user's own events since `since`, newest first, for the data export: their kind and time, never the metadata. */
+    async eventsSince(userId: string, since: Date): Promise<{ type: AuthEventType; createdAt: Date }[]> {
+      return db
+        .select({ type: authEvents.type, createdAt: authEvents.createdAt })
+        .from(authEvents)
+        .where(and(eq(authEvents.userId, userId), gte(authEvents.createdAt, since)))
+        .orderBy(desc(authEvents.createdAt), desc(authEvents.id));
     },
   };
 }

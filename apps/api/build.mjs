@@ -15,8 +15,10 @@ await build({
   // runtime, so the Docker image ships it in node_modules next to the bundle.
   packages: "bundle",
   external: ["@node-rs/argon2", "@node-rs/argon2/*"],
-  // Bundled CommonJS dependencies call require(); an ES module bundle has to provide it.
-  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+  // Bundled CommonJS dependencies call require(); an ES module bundle has to provide it. The import is
+  // aliased because esbuild cannot rename a banner's names, and a bundled ES module (fflate) imports
+  // createRequire itself at top level: with the plain name the bundle declares it twice and Node refuses to load it.
+  banner: { js: "import { createRequire as createRequireForBundle } from 'node:module'; const require = createRequireForBundle(import.meta.url);" },
   logLevel: "info",
 });
 console.log("Build success");

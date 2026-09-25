@@ -9,6 +9,7 @@ import type { Config } from "../config";
 import type { Mailer } from "../mail/mailer";
 import { clientIdentity } from "./client-ip";
 import { authConfigFrom, type AuthDeps, type ProfileStore } from "./context";
+import { exportAccount, type AccountExport } from "./flows/export";
 import { redisKv, type KeyValueStore } from "./kv";
 import { createLockout } from "./lockout";
 import { requireFreshAuth, requireOnboarding, requireSession, requireStaffMfa, resolveSession } from "./middleware";
@@ -24,6 +25,7 @@ import type { VerificationProvider } from "./verify/provider";
 import { vonageProvider } from "./verify/vonage";
 
 export type { ProfileStore } from "./context";
+export type { AccountExport } from "./flows/export";
 export type { AuthEventType, UserRole } from "./repo";
 export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
@@ -34,6 +36,16 @@ export { checkHandle } from "./handles";
 export { redisKv, type KeyValueStore } from "./kv";
 export { createAuthRepo } from "./repo";
 export { createSessions } from "./sessions";
+
+/**
+ * What the account module needs from this one (1b design, section 5), as far as the data export goes:
+ * the auth side of the archive, and the event log for what the account module does.
+ */
+export interface AuthForAccount {
+  /** The account's facts, its live sessions, its devices and its own events. */
+  exportAccount(userId: string): Promise<AccountExport>;
+  appendEvent(userId: string, type: AuthEventType, metadata?: Record<string, unknown>): Promise<void>;
+}
 
 export interface CreateAuthOptions {
   config: Config;
@@ -92,12 +104,16 @@ export function createAuth(options: CreateAuthOptions) {
     log: options.logger,
     now,
   };
+  /** A security event about an account, for the modules that own no auth table (the social module's profile and handle changes, the account module's export). */
+  const appendEvent = (userId: string, type: AuthEventType, metadata?: Record<string, unknown>) => repo.appendEvent({ userId, type, metadata });
+  const forAccount: AuthForAccount = { exportAccount: (userId) => exportAccount(deps, userId), appendEvent };
   return {
     deps,
     routes: authRoutes(deps),
     me: meHandler(deps),
-    /** A security event about an account, for the modules that own no auth table (the social module's profile and handle changes). */
-    appendEvent: (userId: string, type: AuthEventType, metadata?: Record<string, unknown>) => repo.appendEvent({ userId, type, metadata }),
+    appendEvent,
+    /** The interface the account module uses. */
+    forAccount,
     /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it. */
     clientIdentity: clientIdentity({ trust: deps.config.trustProxy, ipHashKey: deps.config.ipHashKey }),
     resolveSession: resolveSession(deps),

@@ -74,6 +74,43 @@ export interface ProfileRow {
 /** How a handle change ended: the handle the profile had before, or why nothing was written. */
 export type HandleChangeResult = { ok: true; from: string } | { ok: false; reason: "not_found" | "unchanged" | "handle_taken" };
 
+/** A post as its author wrote it, for the data export; a deleted one keeps its row with an empty body and its deletion time. */
+export interface ExportedPostRow {
+  id: string;
+  body: string;
+  createdAt: Date;
+  replyToId: string | null;
+  quoteOfId: string | null;
+  state: StoredPostState;
+  deletedAt: Date | null;
+}
+
+/** Something the account did to a post (a like, a repost, a bookmark), and when. */
+export interface PostRefRow {
+  postId: string;
+  at: Date;
+}
+
+/** The other side of a graph relation by the handle it has now (nothing else about them), and since when. */
+export interface HandleRefRow {
+  handle: string;
+  since: Date;
+}
+
+/** Everything the account owns in this module, for the data export, before its posts get their images from the media module. */
+export interface ProfileExportRows {
+  profile: ProfileRow;
+  /** Every handle in handle_history for this profile, in the order they were recorded. */
+  handleHistory: string[];
+  posts: ExportedPostRow[];
+  likes: PostRefRow[];
+  reposts: PostRefRow[];
+  bookmarks: PostRefRow[];
+  following: HandleRefRow[];
+  blocks: HandleRefRow[];
+  mutes: HandleRefRow[];
+}
+
 export interface Relation {
   following: boolean;
   followedBy: boolean;
@@ -588,6 +625,60 @@ export function createSocialRepo(db: Db) {
     async findProfileById(id: string): Promise<ProfileRow | null> {
       const [r] = await rows<RawProfile>(sql`${PROFILE_SELECT} where id = ${id}::uuid and deleted_at is null`);
       return r ? toProfile(r) : null;
+    },
+
+    /**
+     * Everything the account owns in this module, for the data export: its live profile row and handle
+     * history, every post it wrote whatever its state, what it liked, reposted and bookmarked, and the
+     * accounts it follows, blocks and mutes by their current handle (a deleted account keeps its handle).
+     * Null when there is no live profile. The images of the posts belong to the media module; the flow
+     * adds them. The table and column names below are fixed literals of this file, never input.
+     */
+    async exportProfile(id: string): Promise<ProfileExportRows | null> {
+      const [r] = await rows<RawProfile>(sql`${PROFILE_SELECT} where id = ${id}::uuid and deleted_at is null`);
+      if (!r) return null;
+      const refs = async (table: "likes" | "reposts" | "bookmarks"): Promise<PostRefRow[]> =>
+        (await rows<{ post_id: string; at: string }>(sql`select post_id, ${iso("created_at")} as at from ${sql.raw(table)} where user_id = ${id}::uuid order by created_at, post_id`)).map((row) => ({
+          postId: row.post_id,
+          at: new Date(row.at),
+        }));
+      const handles = async (table: "follows" | "blocks" | "mutes", from: string, to: string): Promise<HandleRefRow[]> =>
+        (
+          await rows<{ handle: string; since: string }>(sql`
+            select p.handle, ${iso("r.created_at")} as since from ${sql.raw(table)} r join profiles p on p.id = r.${sql.raw(to)}
+            where r.${sql.raw(from)} = ${id}::uuid order by r.created_at, r.${sql.raw(to)}`)
+        ).map((row) => ({ handle: row.handle, since: new Date(row.since) }));
+      const [history, authored, likes, reposts, bookmarks, following, blocks, mutes] = await Promise.all([
+        rows<{ handle_lower: string }>(sql`select handle_lower from handle_history where profile_id = ${id}::uuid order by changed_at, handle_lower`),
+        rows<{ id: string; body: string; created_at: string; reply_to_id: string | null; quote_of_id: string | null; state: StoredPostState; deleted_at: string | null }>(sql`
+          select id, body, ${iso("created_at")} as created_at, reply_to_id, quote_of_id, state, ${iso("deleted_at")} as deleted_at
+          from posts where author_id = ${id}::uuid order by created_at, id`),
+        refs("likes"),
+        refs("reposts"),
+        refs("bookmarks"),
+        handles("follows", "follower_id", "followee_id"),
+        handles("blocks", "blocker_id", "blocked_id"),
+        handles("mutes", "muter_id", "muted_id"),
+      ]);
+      return {
+        profile: toProfile(r),
+        handleHistory: history.map((row) => row.handle_lower),
+        posts: authored.map((row) => ({
+          id: row.id,
+          body: row.body,
+          createdAt: new Date(row.created_at),
+          replyToId: row.reply_to_id,
+          quoteOfId: row.quote_of_id,
+          state: row.state,
+          deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
+        })),
+        likes,
+        reposts,
+        bookmarks,
+        following,
+        blocks,
+        mutes,
+      };
     },
 
     /** Sets the display name, the bio, or both (`patch` names at least one). False when there is no such live profile. */
