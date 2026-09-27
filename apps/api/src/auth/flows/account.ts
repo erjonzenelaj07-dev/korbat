@@ -15,6 +15,8 @@ export async function me(deps: AuthDeps, session: Session): Promise<MeResponse> 
       onboarded: user.onboardedAt !== null,
       mfaEnabled: user.totpEnabledAt !== null,
       hasPassword: user.passwordHash !== null,
+      // The count only (1c design, section 7.5); the Security list is where the passkeys themselves are read.
+      passkeys: await deps.repo.countPasskeys(user.id),
     },
     profile: await deps.profiles.find(user.id),
   };

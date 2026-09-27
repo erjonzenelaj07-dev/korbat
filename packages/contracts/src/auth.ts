@@ -242,6 +242,8 @@ export const MeResponse = z.object({
     onboarded: z.boolean(),
     mfaEnabled: z.boolean(),
     hasPassword: z.boolean(),
+    /** How many passkeys the account holds (1c design, section 7.5): above zero the app offers a passkey re-authentication, at zero it suggests adding one. */
+    passkeys: z.number().int().nonnegative(),
   }),
   profile: MeProfile.nullable(),
 });

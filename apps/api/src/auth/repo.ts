@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { authEventType, authEvents, devices, emailCodePurpose, emailCodes, passkeys, sessions, userRole, users, type Db } from "@korbat/db";
 
 /**
@@ -13,6 +13,25 @@ export type EmailCodeRow = typeof emailCodes.$inferSelect;
 export type AuthEventType = (typeof authEventType.enumValues)[number];
 export type EmailCodePurpose = (typeof emailCodePurpose.enumValues)[number];
 export type UserRole = (typeof userRole.enumValues)[number];
+export type PasskeyRow = typeof passkeys.$inferSelect;
+/** A passkey with the label of the device that added it, null once that device is gone. */
+export type PasskeyListRow = PasskeyRow & { createdOn: string | null };
+/** What a registration stores of a verified passkey; the id, the last use and the suspicion are the row's own. */
+export type NewPasskey = Omit<PasskeyRow, "id" | "lastUsedAt" | "suspectAt">;
+
+/** The per-account bounds a registration checks in its transaction (1c design, section 2): at most `passkeys` at a time, and `additions` within `windowMs`. */
+export interface PasskeyLimits {
+  passkeys: number;
+  additions: number;
+  windowMs: number;
+}
+
+/** What addPasskey answers: the row it inserted; which bound refused it, with the seconds until the day has a slot again; or that the account is gone. */
+export type AddPasskeyOutcome =
+  | { ok: true; passkey: PasskeyRow }
+  | { ok: false; reason: "gone" }
+  | { ok: false; reason: "cap" }
+  | { ok: false; reason: "daily"; retryAfterSeconds: number };
 
 export interface ActiveSessionRow {
   id: string;
@@ -290,6 +309,12 @@ export function createAuthRepo(db: Db) {
       return row;
     },
 
+    /** The device by its row id, revoked or not: a session's device, whose platform names a passkey and whose label the passkey notices carry. */
+    async findDeviceById(id: string): Promise<DeviceRow | undefined> {
+      const [row] = await db.select().from(devices).where(eq(devices.id, id)).limit(1);
+      return row;
+    },
+
     async createDevice(input: { userId: string; deviceHash: string; label: string; platform: string; ipHash: string | null }): Promise<DeviceRow> {
       const [row] = await db.insert(devices).values(input).returning();
       return row!;
@@ -453,6 +478,97 @@ export function createAuthRepo(db: Db) {
     // ------------------------------------------------------------ passkeys
 
     /**
+     * The account's WebAuthn user handle, set to `candidate` when there is none yet (1c design, section 6): a
+     * compare-and-set in one statement, so two registrations at once end with the same handle, whichever wrote it.
+     * Undefined for an account that is gone.
+     */
+    async ensureWebauthnUserId(userId: string, candidate: Buffer): Promise<Buffer | undefined> {
+      const [row] = await db
+        .update(users)
+        .set({ webauthnUserId: sql`coalesce(${users.webauthnUserId}, ${candidate})` })
+        .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+        .returning({ webauthnUserId: users.webauthnUserId });
+      return row?.webauthnUserId ?? undefined;
+    },
+
+    async countPasskeys(userId: string): Promise<number> {
+      const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(passkeys).where(eq(passkeys.userId, userId));
+      return row?.count ?? 0;
+    },
+
+    /** The account's passkeys newest first, each with the label of the device that added it, for the Security list and the options' exclusions. */
+    async listPasskeys(userId: string): Promise<PasskeyListRow[]> {
+      return db
+        .select({ ...getTableColumns(passkeys), createdOn: devices.label })
+        .from(passkeys)
+        .leftJoin(devices, eq(devices.id, passkeys.createdDeviceId))
+        .where(eq(passkeys.userId, userId))
+        .orderBy(desc(passkeys.createdAt), desc(passkeys.id));
+    },
+
+    /** One passkey of the account, with its device's label. Undefined when it is another account's or gone, which the flows do not tell apart. */
+    async findPasskey(id: string, userId: string): Promise<PasskeyListRow | undefined> {
+      const [row] = await db
+        .select({ ...getTableColumns(passkeys), createdOn: devices.label })
+        .from(passkeys)
+        .leftJoin(devices, eq(devices.id, passkeys.createdDeviceId))
+        .where(and(eq(passkeys.id, id), eq(passkeys.userId, userId)))
+        .limit(1);
+      return row;
+    },
+
+    /** The daily bound's reading for the options step; the registration's transaction reads it again. */
+    async recentPasskeyAdditions(userId: string, withinMs: number, limit: number): Promise<{ count: number; retryAfterSeconds: number }> {
+      return recentPasskeyAdditions(db, userId, withinMs, limit);
+    },
+
+    /**
+     * A registration's transaction (1c design, section 7.3): the user row locked `for update`, so two registrations of one
+     * account run one after the other and the later one sees what the earlier committed; both bounds checked again there;
+     * then the passkey and its passkey_added event, or neither. A credential id already held raises the driver's unique
+     * violation, which the flow reports as passkey_invalid.
+     */
+    async addPasskey(input: NewPasskey, limits: PasskeyLimits): Promise<AddPasskeyOutcome> {
+      return db.transaction(async (tx): Promise<AddPasskeyOutcome> => {
+        const [locked] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.id, input.userId), isNull(users.deletedAt)))
+          .for("update");
+        if (!locked) return { ok: false, reason: "gone" };
+        const [held] = await tx.select({ count: sql<number>`count(*)::int` }).from(passkeys).where(eq(passkeys.userId, input.userId));
+        if ((held?.count ?? 0) >= limits.passkeys) return { ok: false, reason: "cap" };
+        const additions = await recentPasskeyAdditions(tx, input.userId, limits.windowMs, limits.additions);
+        if (additions.count >= limits.additions) return { ok: false, reason: "daily", retryAfterSeconds: additions.retryAfterSeconds };
+        const [passkey] = await tx.insert(passkeys).values(input).returning();
+        await tx.insert(authEvents).values({ userId: input.userId, type: "passkey_added", deviceId: input.createdDeviceId, metadata: { passkeyId: passkey!.id } });
+        return { ok: true, passkey: passkey! };
+      });
+    },
+
+    /** Renames one passkey of the account. False when it is another account's or gone. */
+    async renamePasskey(id: string, userId: string, name: string): Promise<boolean> {
+      const rows = await db
+        .update(passkeys)
+        .set({ name })
+        .where(and(eq(passkeys.id, id), eq(passkeys.userId, userId)))
+        .returning({ id: passkeys.id });
+      return rows.length === 1;
+    },
+
+    /**
+     * Removes one passkey of the account and answers its name, for the notice; undefined when it is another account's or
+     * gone. The sessions it started keep running without it: the foreign key sets their passkey_id to null.
+     */
+    async deletePasskey(id: string, userId: string): Promise<{ name: string } | undefined> {
+      const [row] = await db
+        .delete(passkeys)
+        .where(and(eq(passkeys.id, id), eq(passkeys.userId, userId)))
+        .returning({ name: passkeys.name });
+      return row;
+    },
+
+    /**
      * The lockdown's removal (1c design, section 7.6): the user's passkeys created at or after `since`, plus any of theirs
      * the caller names, whatever their age. Answers the ids removed, for the caller's event. A named passkey of another
      * account is not the caller's to remove and stays.
@@ -544,6 +660,31 @@ export function createAuthRepo(db: Db) {
 }
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+/** What a read runs through: the pool, or a transaction that needs the read to see its own lock. */
+type Querier = Pick<Db, "select">;
+
+/**
+ * The daily bound's reading (1c design, section 2): how many passkey_added events the account has within the window, at
+ * most `limit` of them, and the seconds until the oldest of those is out of the window, when the day has a slot again.
+ * Counted from the events, so a removal frees nothing, and by the database clock, which wrote them.
+ */
+async function recentPasskeyAdditions(q: Querier, userId: string, withinMs: number, limit: number): Promise<{ count: number; retryAfterSeconds: number }> {
+  const window = sql`make_interval(secs => ${withinMs / 1000}::float8)`;
+  const recent = q
+    .select({ createdAt: authEvents.createdAt })
+    .from(authEvents)
+    .where(and(eq(authEvents.userId, userId), eq(authEvents.type, "passkey_added"), gt(authEvents.createdAt, sql`now() - ${window}`)))
+    .orderBy(desc(authEvents.createdAt))
+    .limit(limit)
+    .as("recent");
+  const [row] = await q
+    .select({
+      count: sql<number>`count(*)::int`,
+      retryAfterSeconds: sql<number>`coalesce(ceil(extract(epoch from (min(${recent.createdAt}) + ${window} - now())))::int, 0)`,
+    })
+    .from(recent);
+  return { count: row?.count ?? 0, retryAfterSeconds: row?.retryAfterSeconds ?? 0 };
+}
 
 /**
  * The rows step 1 of a deletion takes down, inside the caller's transaction: every live session is revoked

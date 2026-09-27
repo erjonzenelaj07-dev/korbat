@@ -9,6 +9,10 @@ import {
   MfaVerifyRequest,
   NotMeRequest,
   OnboardingHandleRequest,
+  PasskeyRegisterOptionsRequest,
+  PasskeyRegisterVerifyRequest,
+  PasskeyRemoveLinkRequest,
+  PasskeyRenameRequest,
   PasswordSetRequest,
   PasswordSigninRequest,
   ReauthRequest,
@@ -36,6 +40,7 @@ import { reauthenticate, startReauthEmail } from "./flows/reauth";
 import type { MfaPending, SignedIn } from "./flows/signin";
 import { chooseHandle, completeSignup } from "./flows/signup";
 import { requireFreshAuth, requireOnboarding, requireSession, requireStrongFreshAuth } from "./middleware";
+import { listPasskeys, notMine, registerOptions, registerVerify, removeByLink, removePasskey, renamePasskey } from "./passkeys/flows";
 import type { IssuedSession, Session } from "./sessions";
 
 /** Every `/api/auth/*` endpoint. Handlers only validate, call a flow and shape the response. */
@@ -190,6 +195,41 @@ export function authRoutes(deps: AuthDeps) {
 
   r.post("/not-me", validate("json", NotMeRequest), async (c) => {
     await notMe(deps, c.req.valid("json"), requestContext(c));
+    return c.body(null, 204);
+  });
+
+  // Passkeys (1c design, sections 7.3 and 7.5). Registration takes any signed-in session, one still choosing a handle too:
+  // the options need level 2 on an account with TOTP, the verification only the challenge those options carried, which
+  // is bound to the session (a ceremony that outlasts the window still completes).
+  r.post("/passkeys/register/options", requireOnboarding, strong, validate("json", PasskeyRegisterOptionsRequest), async (c) =>
+    c.json(await registerOptions(deps, currentSession(c), c.req.valid("json"))),
+  );
+
+  r.post("/passkeys/register/verify", requireOnboarding, validate("json", PasskeyRegisterVerifyRequest), async (c) =>
+    c.json(await registerVerify(deps, currentSession(c), c.req.valid("json"))),
+  );
+
+  r.get("/passkeys", requireSession, async (c) => c.json(await listPasskeys(deps, currentSession(c))));
+
+  r.patch("/passkeys/:id", requireSession, validate("param", z.object({ id: z.uuid() })), validate("json", PasskeyRenameRequest), async (c) =>
+    c.json(await renamePasskey(deps, currentSession(c), c.req.valid("param").id, c.req.valid("json"))),
+  );
+
+  r.delete("/passkeys/:id", requireSession, strong, validate("param", z.object({ id: z.uuid() })), async (c) => {
+    await removePasskey(deps, currentSession(c), c.req.valid("param").id);
+    return c.body(null, 204);
+  });
+
+  // "This wasn't me" on a new passkey: the lockdown signs this session out with every other, so a web session loses its cookies here.
+  r.post("/passkeys/:id/not-mine", requireSession, fresh, validate("param", z.object({ id: z.uuid() })), async (c) => {
+    await notMine(deps, currentSession(c), c.req.valid("param").id, requestContext(c));
+    if (c.get("authVia") === "cookie") clearSessionCookies(c);
+    return c.body(null, 204);
+  });
+
+  // The remove link from the passkey_added notice: no session, like the not-me link, since the link itself is the credential.
+  r.post("/passkeys/remove-link", validate("json", PasskeyRemoveLinkRequest), async (c) => {
+    await removeByLink(deps, c.req.valid("json"), requestContext(c));
     return c.body(null, 204);
   });
 

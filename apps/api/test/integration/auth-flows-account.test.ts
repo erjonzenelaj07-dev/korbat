@@ -199,7 +199,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
     const account = await onboardedUser(h, repo, { password: PASSWORD });
     await h.deps.profiles.create({ id: account.user.id, handle: "me_test", displayName: "Me Test" });
     expect(await me(h.deps, account.session)).toEqual({
-      user: { id: account.user.id, email: account.email, role: "user", onboarded: true, mfaEnabled: false, hasPassword: true },
+      user: { id: account.user.id, email: account.email, role: "user", onboarded: true, mfaEnabled: false, hasPassword: true, passkeys: 0 },
       profile: { id: account.user.id, handle: "me_test", displayName: "Me Test", handleChangedAt: null, verified: false },
     });
   });

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
+import type { Platform } from "@korbat/contracts";
 import pino from "pino";
 import type { AuthConfig, AuthDeps, RequestContext } from "../../src/auth/context";
 import { parseVersionedKey, randomToken, sha256Hex } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
 import { createLockout } from "../../src/auth/lockout";
-import type { AuthEventType, AuthRepo, EmailCodeRow, UserRow } from "../../src/auth/repo";
+import type { AddPasskeyOutcome, AuthEventType, AuthRepo, DeviceRow, EmailCodeRow, NewPasskey, PasskeyLimits, PasskeyListRow, PasskeyRow, UserRow } from "../../src/auth/repo";
 import { createSessions, type Factors, type Session } from "../../src/auth/sessions";
 import { devProvider } from "../../src/auth/verify/dev";
 import { MemoryMailer } from "../../src/mail/memory";
@@ -29,14 +30,13 @@ export interface RecordedDevice {
   id: string;
   userId: string;
   revokedAt: Date | null;
+  /** What the passkey flows read of the row: the platform for a passkey's default name and the label for the Security list. */
+  platform: Platform;
+  label: string | null;
 }
 
-/** A passkey of a user, as the lockdown removes it: only what its rule reads, the owner and the creation time. */
-export interface RecordedPasskey {
-  id: string;
-  userId: string;
-  createdAt: Date;
-}
+/** A passkey of a user, as the registration writes it and the lockdown and the management flows read it. */
+export type RecordedPasskey = PasskeyRow;
 
 /**
  * The auth flows without a database: users, email codes, sessions, devices and passkeys live in memory, and the
@@ -55,10 +55,47 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   const sessions: RecordedSession[] = [];
   const devices: RecordedDevice[] = [];
   const passkeys: RecordedPasskey[] = [];
+  /**
+   * When each event was recorded, at the harness clock, kept beside the events rather than on them: the tests compare
+   * the events with the exact objects the flows write, and the daily passkey bound is the only reader of the times.
+   */
+  const eventTimes = new WeakMap<RecordedEvent, number>();
+  const recordEvent = (event: RecordedEvent) => {
+    events.push(event);
+    eventTimes.set(event, t);
+  };
   /** The handle of each account's profile, which the deletion flow compares the typed handle with. */
   const handles = new Map<string, string>();
   /** Repository methods told to fail: "takeDown" fails its transaction midway, after staging its writes and before any lands. */
   const faults = new Set<"takeDown">();
+  /** A device as the real row reads, from what the harness keeps of it; the hash and the times are placeholders no flow reads here. */
+  const deviceRow = (device: RecordedDevice): DeviceRow => ({
+    id: device.id,
+    userId: device.userId,
+    deviceHash: `hash-${device.id}`,
+    label: device.label,
+    platform: device.platform,
+    firstSeenAt: now(),
+    lastSeenAt: now(),
+    ipHash: null,
+    revokedAt: device.revokedAt,
+  });
+  /** A passkey with the label of the device that added it, as the real join answers it: null once that device is gone. */
+  const withDevice = (passkey: RecordedPasskey): PasskeyListRow => ({ ...passkey, createdOn: devices.find((d) => d.id === passkey.createdDeviceId)?.label ?? null });
+  /**
+   * The daily bound's reading, as the real statement makes it: the times of the account's latest passkey_added events within
+   * the window, at most `limit` of them, and the seconds until the oldest of those leaves the window.
+   */
+  const recentPasskeyAdditions = (userId: string, withinMs: number, limit: number) => {
+    const recent = events
+      .filter((e) => e.userId === userId && e.type === "passkey_added")
+      .map((e) => eventTimes.get(e)!)
+      .filter((at) => at > t - withinMs)
+      .sort((a, b) => b - a)
+      .slice(0, limit);
+    const oldest = recent.at(-1);
+    return { count: recent.length, retryAfterSeconds: oldest === undefined ? 0 : Math.ceil((oldest + withinMs - t) / 1000) };
+  };
   /** Step 1's rows for a user, as the real repository's takeDownRows writes them: live sessions revoked (their ids returned), devices and codes gone. */
   const takeDownRows = (userId: string, at: Date): string[] => {
     const live = sessions.filter((s) => s.userId === userId && s.revokedAt === null);
@@ -153,7 +190,63 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       if (row) row.phoneHash = phoneHash;
     },
     async appendEvent(input: Parameters<AuthRepo["appendEvent"]>[0]): Promise<void> {
-      events.push({ userId: input.userId, type: input.type, deviceId: input.deviceId ?? null, metadata: input.metadata ?? {} });
+      recordEvent({ userId: input.userId, type: input.type, deviceId: input.deviceId ?? null, metadata: input.metadata ?? {} });
+    },
+    async findDeviceById(id: string): Promise<DeviceRow | undefined> {
+      const device = devices.find((d) => d.id === id);
+      return device ? deviceRow(device) : undefined;
+    },
+    async ensureWebauthnUserId(userId: string, candidate: Buffer): Promise<Buffer | undefined> {
+      // As the real compare-and-set: the first candidate sticks, every later call reads it back.
+      const row = users.get(userId);
+      if (!row || row.deletedAt !== null) return undefined;
+      row.webauthnUserId ??= candidate;
+      return row.webauthnUserId;
+    },
+    async countPasskeys(userId: string): Promise<number> {
+      return passkeys.filter((p) => p.userId === userId).length;
+    },
+    async listPasskeys(userId: string): Promise<PasskeyListRow[]> {
+      // Newest first, as the real statement orders them.
+      return passkeys
+        .filter((p) => p.userId === userId)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .map(withDevice);
+    },
+    async findPasskey(id: string, userId: string): Promise<PasskeyListRow | undefined> {
+      const passkey = passkeys.find((p) => p.id === id && p.userId === userId);
+      return passkey ? withDevice(passkey) : undefined;
+    },
+    async recentPasskeyAdditions(userId: string, withinMs: number, limit: number): Promise<{ count: number; retryAfterSeconds: number }> {
+      return recentPasskeyAdditions(userId, withinMs, limit);
+    },
+    async addPasskey(input: NewPasskey, limits: PasskeyLimits): Promise<AddPasskeyOutcome> {
+      // As the real transaction: the account locked, both bounds checked again, then the row and its event, or nothing.
+      const row = users.get(input.userId);
+      if (!row || row.deletedAt !== null) return { ok: false, reason: "gone" };
+      if (passkeys.filter((p) => p.userId === input.userId).length >= limits.passkeys) return { ok: false, reason: "cap" };
+      const additions = recentPasskeyAdditions(input.userId, limits.windowMs, limits.additions);
+      if (additions.count >= limits.additions) return { ok: false, reason: "daily", retryAfterSeconds: additions.retryAfterSeconds };
+      // As the real unique index on credential_id: the driver error that the flow recognises through isUniqueViolation.
+      if (passkeys.some((p) => p.credentialId === input.credentialId)) {
+        throw Object.assign(new Error('duplicate key value violates unique constraint "passkeys_credential_idx"'), { code: "23505" });
+      }
+      const passkey: RecordedPasskey = { id: randomUUID(), lastUsedAt: null, suspectAt: null, ...input };
+      passkeys.push(passkey);
+      recordEvent({ userId: input.userId, type: "passkey_added", deviceId: input.createdDeviceId, metadata: { passkeyId: passkey.id } });
+      return { ok: true, passkey: { ...passkey } };
+    },
+    async renamePasskey(id: string, userId: string, name: string): Promise<boolean> {
+      const passkey = passkeys.find((p) => p.id === id && p.userId === userId);
+      if (!passkey) return false;
+      passkey.name = name;
+      return true;
+    },
+    async deletePasskey(id: string, userId: string): Promise<{ name: string } | undefined> {
+      const index = passkeys.findIndex((p) => p.id === id && p.userId === userId);
+      if (index === -1) return undefined;
+      const [removed] = passkeys.splice(index, 1);
+      return { name: removed!.name };
     },
     async revokeAllSessions(userId: string, at: Date): Promise<string[]> {
       const live = sessions.filter((s) => s.userId === userId && s.revokedAt === null);
@@ -170,7 +263,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       const row = users.get(userId);
       if (row && row.deletedAt === null) row.deletedAt = at;
       const revoked = takeDownRows(userId, at);
-      events.push({ userId, type: "account_deleted", deviceId, metadata: {} });
+      recordEvent({ userId, type: "account_deleted", deviceId, metadata: {} });
       return revoked;
     },
     async finishTakeDown(userId: string, at: Date): Promise<string[]> {
@@ -212,6 +305,15 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     | "deletePasskeys"
     | "setPhoneHash"
     | "appendEvent"
+    | "findDeviceById"
+    | "ensureWebauthnUserId"
+    | "countPasskeys"
+    | "listPasskeys"
+    | "findPasskey"
+    | "recentPasskeyAdditions"
+    | "addPasskey"
+    | "renamePasskey"
+    | "deletePasskey"
     | "revokeAllSessions"
     | "markDeleted"
     | "takeDown"
@@ -267,8 +369,9 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   /**
    * A live session on a device of its own, both recorded as the deletion flow will find them. It proved an email code
    * just now unless given other factors, as a session behind requireFreshAuth has, and started from no passkey unless told so.
+   * The device is a web browser labelled as the sign-in labels one, unless the test says otherwise.
    */
-  const session = (userId: string, options: { factors?: Factors; passkeyId?: string | null } = {}): Session => {
+  const session = (userId: string, options: { factors?: Factors; passkeyId?: string | null; platform?: Platform; label?: string | null } = {}): Session => {
     const s: Session = {
       sessionId: sha256Hex(randomToken()),
       userId,
@@ -282,7 +385,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       passkeyId: options.passkeyId ?? null,
     };
     sessions.push({ id: s.sessionId, userId, revokedAt: null });
-    devices.push({ id: s.deviceId, userId, revokedAt: null });
+    devices.push({ id: s.deviceId, userId, revokedAt: null, platform: options.platform ?? "web", label: options.label === undefined ? "Chrome on Windows" : options.label });
     return s;
   };
   return {
@@ -304,10 +407,30 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     },
     /** Another session of an existing account, on another device. */
     session,
-    /** A passkey of an existing account, created at `createdAt` (now unless given); answers its id. */
-    passkey(userId: string, createdAt: Date = now()): string {
+    /**
+     * A passkey of an existing account, created at `createdAt` (now unless given) with the row's defaults (a plain,
+     * unnamed synced key added from no device) unless overridden; answers its id.
+     */
+    passkey(userId: string, createdAt: Date = now(), overrides: Partial<Omit<RecordedPasskey, "id" | "userId" | "createdAt">> = {}): string {
       const id = randomUUID();
-      passkeys.push({ id, userId, createdAt });
+      passkeys.push({
+        id,
+        userId,
+        createdAt,
+        credentialId: randomToken(),
+        publicKey: "cose-key",
+        counter: 0,
+        transports: [],
+        backedUp: false,
+        name: "Passkey",
+        lastUsedAt: null,
+        aaguid: null,
+        backupEligible: false,
+        uvInitialized: false,
+        createdDeviceId: null,
+        suspectAt: null,
+        ...overrides,
+      });
       return id;
     },
     /**
