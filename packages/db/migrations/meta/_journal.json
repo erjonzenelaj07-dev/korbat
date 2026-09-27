@@ -71,6 +71,13 @@
       "when": 1790241720737,
       "tag": "0009_clever_ezekiel",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790332470171,
+      "tag": "0010_free_thunderbolt",
+      "breakpoints": true
     }
   ]
 }

@@ -59,6 +59,7 @@ export function flowHarness(repo: AuthRepo, options: { profiles?: ProfileStore }
     termsVersion: TEST_TERMS,
     trustProxy: "none",
     verifyProvider: "dev",
+    webauthn: { rpId: "localhost", rpName: "korbat", origins: ["http://localhost:8081"] },
   };
   const deps: AuthDeps = {
     repo,

@@ -20,6 +20,9 @@ describe("mail templates", () => {
       minutes: "15",
       count: "3",
       email: "new<address>@example.com",
+      name: "<i>Work</i> laptop",
+      time: "2026-09-25 10:00 UTC",
+      removeUrl: "http://localhost:8081/passkey-remove/ghi",
     };
     for (const template of [
       "sign_in_code",
@@ -39,6 +42,9 @@ describe("mail templates", () => {
       "badge_removed",
       "delete_account_code",
       "account_deleted",
+      "passkey_added",
+      "passkey_removed",
+      "passkey_suspect",
     ] as const) {
       const r = renderTemplate(template, data);
       expect(r.subject.length, template).toBeGreaterThan(5);
@@ -80,8 +86,51 @@ describe("mail templates", () => {
     expect(renderTemplate("badge_verified", {}).text).toMatch(/verified/i);
     expect(renderTemplate("badge_removed", {}).text).toMatch(/removed/i);
   });
+  test("the passkey templates name the passkey, say what happened and what to do, and never let the name become HTML", () => {
+    const name = `<img src=x onerror=alert(1)> "Work" laptop`;
+    const removeUrl = "http://localhost:8081/passkey-remove/abc";
+    const added = renderTemplate("passkey_added", { name, deviceLabel: "Chrome on Windows", time: "2026-09-25 10:00 UTC", removeUrl });
+    expect(added.subject).toBe("A passkey was added to your korbat account");
+    expect(added.text).toContain(name);
+    expect(added.text).toContain("Chrome on Windows");
+    expect(added.text).toContain("2026-09-25 10:00 UTC");
+    expect(added.text).toContain(removeUrl);
+    expect(added.text).toContain("7 days");
+    // What the link does (the lockdown of the 1c design, section 7.6), before the owner opens it.
+    expect(added.text).toMatch(/removes? (this|the) passkey/);
+    expect(added.text).toMatch(/sign(s)? out every session/);
+    expect(added.text).toMatch(/password/);
+    expect(added.text).toMatch(/two-factor authentication/);
+    expect(added.text).toMatch(/the day before/);
+    expect(added.html).toContain("&lt;img src=x onerror=alert(1)&gt; &quot;Work&quot; laptop");
+    expect(added.html).not.toMatch(/<img|<a /);
+    expect(added.html).toContain(removeUrl);
+
+    const removed = renderTemplate("passkey_removed", { name, time: "2026-09-25 11:00 UTC" });
+    expect(removed.subject).toBe("A passkey was removed from your korbat account");
+    expect(removed.text).toContain(name);
+    expect(removed.text).toContain("2026-09-25 11:00 UTC");
+    expect(removed.text).not.toMatch(/https?:\/\//);
+    expect(removed.html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(removed.html).not.toMatch(/<img|<a /);
+
+    const suspect = renderTemplate("passkey_suspect", { name });
+    expect(suspect.subject).toBe("A passkey on your korbat account was switched off");
+    expect(suspect.text).toContain(name);
+    expect(suspect.text).toMatch(/copy/);
+    expect(suspect.text).toMatch(/switched (it|that passkey) off/);
+    expect(suspect.text).toMatch(/remove it/i);
+    expect(suspect.text).toMatch(/add a new one/);
+    expect(suspect.text).not.toMatch(/https?:\/\//);
+    expect(suspect.html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(suspect.html).not.toMatch(/<img|<a /);
+  });
   test("missing template data is a programming error", () => {
     expect(() => renderTemplate("sign_in_code", {})).toThrow(/code/);
+    expect(() => renderTemplate("passkey_added", { name: "Phone", deviceLabel: "Chrome on Windows", time: "2026-09-25 10:00 UTC" })).toThrow(/removeUrl/);
+    expect(() => renderTemplate("passkey_added", { deviceLabel: "Chrome on Windows", time: "2026-09-25 10:00 UTC", removeUrl: "http://localhost:8081/passkey-remove/abc" })).toThrow(/name/);
+    expect(() => renderTemplate("passkey_removed", { name: "Phone" })).toThrow(/time/);
+    expect(() => renderTemplate("passkey_suspect", {})).toThrow(/name/);
   });
   test("the memory mailer records messages and finds the latest code per address", async () => {
     const mailer = new MemoryMailer();

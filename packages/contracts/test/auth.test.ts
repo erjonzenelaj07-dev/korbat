@@ -105,9 +105,13 @@ describe("auth requests and responses", () => {
     expect(MeProfile.safeParse({ ...profile, verified: "yes" }).success).toBe(false);
   });
   test("every documented auth error code exists", () => {
-    expect(AuthErrorCode.options).toHaveLength(28);
+    expect(AuthErrorCode.options).toHaveLength(34);
     expect(AuthErrorCode.options).toContain("password_check_unavailable");
     expect(AuthErrorCode.options).toEqual(expect.arrayContaining(["handle_cooldown", "email_in_use", "phone_in_use", "badge_unavailable", "verify_unavailable"]));
+    // Passkeys (1c design, section 8).
+    expect(AuthErrorCode.options).toEqual(
+      expect.arrayContaining(["passkey_invalid", "passkey_unsupported", "passkey_limit", "passkey_suspended", "passkey_not_found", "challenge_expired"]),
+    );
   });
 });
 

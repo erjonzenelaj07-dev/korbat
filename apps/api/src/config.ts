@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { z } from "zod";
 import { parseFormats } from "@korbat/media-protocol";
 
@@ -23,6 +24,31 @@ const optionalSecret = z
   .string()
   .optional()
   .transform((value) => (value ? value : undefined));
+
+/** A setting whose blank value means "use the default": compose passes a variable infra/.env leaves empty as an empty string. */
+const blankAsUnset = z
+  .string()
+  .optional()
+  .transform((value) => (value?.trim() ? value.trim() : undefined));
+
+/**
+ * A domain name as WebAuthn takes an RP ID: dot-separated labels of letters, digits and hyphens, each at most 63
+ * characters and neither starting nor ending with a hyphen; no scheme, port, path or final dot.
+ */
+const RP_ID = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/** Printable text: no control, format, private-use or unassigned characters, and no line or paragraph separators. */
+const PRINTABLE = /^[^\p{C}\p{Zl}\p{Zp}]+$/u;
+
+/** The host of an origin as an RP ID would name it: lowercase, without the port or the brackets of an IPv6 address. */
+function hostOf(origin: string): string {
+  return new URL(origin).hostname.replace(/^\[(.*)\]$/, "$1");
+}
+
+/** localhost and its subdomains (RFC 6761): names that only ever mean this machine. */
+function isLocalhost(name: string): boolean {
+  return name === "localhost" || name.endsWith(".localhost");
+}
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -94,6 +120,13 @@ const schema = z.object({
   VONAGE_API_SECRET: optionalSecret,
   /** The sender name in the verification text. Vonage allows 1 to 18 characters and none of / { } : $. */
   VERIFY_BRAND: z.string().min(1).max(18).regex(/^[^\/{}:$]*$/, "must not contain / { } : or $").default("korbat"),
+  /**
+   * The relying party ID every passkey is bound to (1c design, section 11): the host of APP_ORIGIN when unset, or a
+   * parent domain of it, which subdomains can then share. Changing it later strands every passkey already added.
+   */
+  WEBAUTHN_RP_ID: blankAsUnset.pipe(z.string().toLowerCase().regex(RP_ID, "must be a bare domain name such as korbat.example: no scheme, port or path").optional()),
+  /** The site name password managers show next to a korbat passkey. */
+  WEBAUTHN_RP_NAME: blankAsUnset.pipe(z.string().max(64).regex(PRINTABLE, "must be printable: no control or invisible characters").default("korbat")),
 }).superRefine((c, ctx) => {
   if (c.NODE_ENV !== "production") return;
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
@@ -106,7 +139,19 @@ const schema = z.object({
     if (!c.VONAGE_API_KEY) refuse("VONAGE_API_KEY", "is required when VERIFY_PROVIDER is vonage");
     if (!c.VONAGE_API_SECRET) refuse("VONAGE_API_SECRET", "is required when VERIFY_PROVIDER is vonage");
   }
-});
+  // Browsers accept an RP ID only on its own host or a subdomain of it, and never an address; localhost would
+  // bind every passkey to one machine. The dot keeps a bare top-level name out (browsers refuse public suffixes
+  // such as co.uk themselves).
+  const host = hostOf(c.APP_ORIGIN);
+  const rpId = c.WEBAUTHN_RP_ID ?? host;
+  if (isIP(rpId) || isIP(host)) {
+    refuse("WEBAUTHN_RP_ID", "WEBAUTHN_RP_ID cannot be an IP address, nor can APP_ORIGIN name one: WebAuthn refuses them, so production needs a domain name");
+  } else if (isLocalhost(rpId) || isLocalhost(host)) {
+    refuse("WEBAUTHN_RP_ID", "WEBAUTHN_RP_ID cannot be localhost in production, nor can APP_ORIGIN name it");
+  } else if (rpId !== host && !(host.endsWith(`.${rpId}`) && rpId.includes("."))) {
+    refuse("WEBAUTHN_RP_ID", `WEBAUTHN_RP_ID must be the host of APP_ORIGIN (${host}) or a parent domain of it that has a dot`);
+  }
+}).transform((c) => ({ ...c, WEBAUTHN_RP_ID: c.WEBAUTHN_RP_ID ?? hostOf(c.APP_ORIGIN) }));
 
 export type Config = z.infer<typeof schema>;
 

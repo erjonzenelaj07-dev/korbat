@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { is } from "drizzle-orm";
-import { PgTable, getTableConfig } from "drizzle-orm/pg-core";
+import { PgTable, getTableConfig, pgTable } from "drizzle-orm/pg-core";
+import { bytea } from "../src/schema/helpers";
 import * as schema from "../src/schema/index";
 
 const tables = Object.values(schema).filter((v) => is(v, PgTable)) as PgTable[];
@@ -157,7 +158,8 @@ describe("account lifecycle 1b", () => {
   });
   test("email codes can be for deleting the account, and every account event of 1b has a type", () => {
     expect(schema.emailCodePurpose.enumValues).toContain("delete_account");
-    expect(schema.authEventType.enumValues.slice(schema.authEventType.enumValues.indexOf("not_me"))).toEqual([
+    const values = schema.authEventType.enumValues;
+    expect(values.slice(values.indexOf("not_me"), values.indexOf("account_deleted") + 1)).toEqual([
       "not_me",
       "profile_updated",
       "handle_changed",
@@ -167,5 +169,79 @@ describe("account lifecycle 1b", () => {
       "export_created",
       "account_deleted",
     ]);
+  });
+});
+
+describe("passkeys 1c", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** The foreign keys of one local column: the table and columns they point at and what a delete there does. */
+  const foreignKeys = (table: string, name: string) =>
+    byName
+      .get(table)!
+      .foreignKeys.filter((k) => k.reference().columns.some((c) => c.name === name))
+      .map((k) => ({ table: getTableConfig(k.reference().foreignTable).name, columns: k.reference().foreignColumns.map((c) => c.name), onDelete: k.onDelete }));
+
+  test("bytea is the bytea SQL type and hands Buffers both ways", () => {
+    const table = pgTable("bytea_probe", { value: bytea("value") });
+    const probe = getTableConfig(table).columns[0]!;
+    expect(probe.getSQLType()).toBe("bytea");
+    const bytes = Buffer.from([0, 1, 254, 255]);
+    expect(probe.mapToDriverValue(bytes)).toEqual(bytes);
+    // postgres.js already parses bytea into a Buffer; a driver that answers a plain Uint8Array gets one too.
+    const read = probe.mapFromDriverValue(new Uint8Array([0, 1, 254, 255]));
+    expect(Buffer.isBuffer(read)).toBe(true);
+    expect(read).toEqual(bytes);
+    expect(probe.mapFromDriverValue(bytes)).toEqual(bytes);
+  });
+
+  test("users carry an optional WebAuthn user handle in bytea, unique among the accounts that have one", () => {
+    const handle = column("users", "webauthn_user_id");
+    expect(handle?.getSQLType()).toBe("bytea");
+    expect(handle?.notNull).toBe(false);
+    expect(handle?.hasDefault).toBe(false);
+    const idx = byName.get("users")!.indexes.find((i) => i.config.name === "users_webauthn_user_id_idx");
+    expect(idx?.config.unique).toBe(true);
+    expect(idx?.config.columns.map((c) => (c as { name?: string }).name)).toEqual(["webauthn_user_id"]);
+    expect(idx?.config.where).toBeDefined();
+  });
+
+  test("passkeys record the AAGUID, the backup and verification flags, the creating device and a suspected copy", () => {
+    expect(column("passkeys", "aaguid")?.getSQLType()).toBe("uuid");
+    expect(column("passkeys", "aaguid")?.notNull).toBe(false);
+    for (const name of ["backup_eligible", "uv_initialized"]) {
+      expect(column("passkeys", name)?.getSQLType(), name).toBe("boolean");
+      expect(column("passkeys", name)?.notNull, name).toBe(true);
+      expect(column("passkeys", name)?.default, name).toBe(false);
+    }
+    expect(column("passkeys", "created_device_id")?.getSQLType()).toBe("uuid");
+    expect(column("passkeys", "created_device_id")?.notNull).toBe(false);
+    expect(foreignKeys("passkeys", "created_device_id")).toEqual([{ table: "devices", columns: ["id"], onDelete: "set null" }]);
+    expect(column("passkeys", "suspect_at")?.getSQLType()).toBe("timestamp with time zone");
+    expect(column("passkeys", "suspect_at")?.notNull).toBe(false);
+    // One row per credential: the index the foundation created stays.
+    const idx = byName.get("passkeys")!.indexes.find((i) => i.config.name === "passkeys_credential_idx");
+    expect(idx?.config.unique).toBe(true);
+    expect(idx?.config.columns.map((c) => (c as { name?: string }).name)).toEqual(["credential_id"]);
+  });
+
+  test("sessions carry a random handle that is unique, the factors they proved and the passkey that started them", () => {
+    const handle = column("sessions", "handle");
+    expect(handle?.getSQLType()).toBe("uuid");
+    expect(handle?.notNull).toBe(true);
+    expect(handle?.hasDefault).toBe(true);
+    const idx = byName.get("sessions")!.indexes.find((i) => i.config.name === "sessions_handle_idx");
+    expect(idx?.config.unique).toBe(true);
+    expect(idx?.config.columns.map((c) => (c as { name?: string }).name)).toEqual(["handle"]);
+    const factors = column("sessions", "factors");
+    expect(factors?.getSQLType()).toBe("jsonb");
+    expect(factors?.notNull).toBe(true);
+    expect(factors?.hasDefault).toBe(true);
+    expect(column("sessions", "passkey_id")?.notNull).toBe(false);
+    expect(foreignKeys("sessions", "passkey_id")).toEqual([{ table: "passkeys", columns: ["id"], onDelete: "set null" }]);
+  });
+
+  test("adding, removing and a counter regression of a passkey are security events", () => {
+    const values = schema.authEventType.enumValues;
+    expect(values.slice(values.indexOf("account_deleted"))).toEqual(["account_deleted", "passkey_added", "passkey_removed", "passkey_counter_regression"]);
   });
 });

@@ -113,6 +113,9 @@ services:
       VONAGE_API_KEY: ${API_VONAGE_API_KEY:-}
       VONAGE_API_SECRET: ${API_VONAGE_API_SECRET:-}
       VERIFY_BRAND: ${API_VERIFY_BRAND:-korbat}
+      # Passkeys. Empty values leave the API's defaults: the host of APP_ORIGIN as the RP ID and korbat as the name.
+      WEBAUTHN_RP_ID: ${API_WEBAUTHN_RP_ID:-}
+      WEBAUTHN_RP_NAME: ${API_WEBAUTHN_RP_NAME:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

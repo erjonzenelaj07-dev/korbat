@@ -123,5 +123,25 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         "Your korbat account was deleted as you asked. Your posts, images and profile are gone, and your handle stays reserved so nobody can take it.",
         "This cannot be undone. Thank you for having been part of korbat; you are welcome back with a new account any time.",
       ]);
+    case "passkey_added":
+      // The link runs the lockdown anchored at the passkey's creation (1c design, section 7.6): it reaches back a day,
+      // so a password or two-factor set up just before the passkey, from the same stolen session, goes with it.
+      return build("A passkey was added to your korbat account", [
+        `A passkey named "${need(data, "name")}" was added to your korbat account from ${need(data, "deviceLabel")} at ${need(data, "time")}.`,
+        "If this was you, there is nothing to do.",
+        `If this was not you, open this link within 7 days. It removes this passkey, signs out every session, removes your password, and turns off every passkey and two-factor authentication set up since the day before this one was added; then you sign in with a code sent to this address: ${need(data, "removeUrl")}`,
+      ]);
+    case "passkey_removed":
+      return build("A passkey was removed from your korbat account", [
+        `The passkey named "${need(data, "name")}" was removed from your korbat account at ${need(data, "time")}. It can no longer sign in.`,
+        "If this was you, there is nothing to do. If not, sign in, open Security, and review your passkeys, sessions and devices.",
+      ]);
+    case "passkey_suspect":
+      // A counter that went backwards (1c design, section 2): the signature was right, so someone holds the key, and
+      // either the authenticator was cloned or a backup was restored. Only the owner can tell, so the key stays off.
+      return build("A passkey on your korbat account was switched off", [
+        `A sign-in just used what looks like a copy of your passkey named "${need(data, "name")}", so korbat switched that passkey off. It can no longer sign in.`,
+        "Sign in with a code sent to this address, open Security, remove it and add a new one. If you did not try to sign in just now, also review your sessions and devices.",
+      ]);
   }
 }

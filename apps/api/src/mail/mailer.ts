@@ -15,7 +15,10 @@ export type TemplateName =
   | "badge_verified"
   | "badge_removed"
   | "delete_account_code"
-  | "account_deleted";
+  | "account_deleted"
+  | "passkey_added"
+  | "passkey_removed"
+  | "passkey_suspect";
 
 export interface MailMessage {
   to: string;

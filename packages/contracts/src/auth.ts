@@ -31,6 +31,13 @@ export const AuthErrorCode = z.enum([
   "phone_in_use",
   "badge_unavailable",
   "verify_unavailable",
+  // Passkeys (1c design, sections 8 and 9).
+  "passkey_invalid",
+  "passkey_unsupported",
+  "passkey_limit",
+  "passkey_suspended",
+  "passkey_not_found",
+  "challenge_expired",
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCode>;
 

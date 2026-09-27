@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { bigint, bigserial, boolean, index, integer, jsonb, pgPolicy, pgSchema, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { authRole, emptyTextArray, fullAccess, ts } from "./helpers";
+import { authRole, bytea, emptyTextArray, fullAccess, ts } from "./helpers";
 
 export const auth = pgSchema("auth");
 
@@ -30,6 +30,9 @@ export const authEventType = auth.enum("auth_event_type", [
   "badge_removed",
   "export_created",
   "account_deleted",
+  "passkey_added",
+  "passkey_removed",
+  "passkey_counter_regression",
 ]);
 
 export const users = auth.table(
@@ -66,11 +69,20 @@ export const users = auth.table(
      * job still has work to do.
      */
     purgedAt: ts("purged_at"),
+    /**
+     * The WebAuthn user handle: 32 random bytes that every passkey of the account carries and a discoverable passkey
+     * returns at sign-in. Never the account id, so a password manager's records say nothing about the account. Null
+     * until the first passkey is added; the passkey flows set it once with a compare-and-set, and the account's
+     * deletion clears it (1c design, sections 6 and 7.7).
+     */
+    webauthnUserId: bytea("webauthn_user_id"),
   },
   (t) => [
     uniqueIndex("users_email_lower_idx").on(sql`lower(${t.email})`),
     /** One phone number per account, as a database fact; accounts without a number stay out of the index. */
     uniqueIndex("users_phone_hash_idx").on(t.phoneHash).where(sql`phone_hash is not null`),
+    /** A user handle names one account; accounts without passkeys stay out of the index. */
+    uniqueIndex("users_webauthn_user_id_idx").on(t.webauthnUserId).where(sql`webauthn_user_id is not null`),
     fullAccess("users_auth_all", authRole),
   ],
 ).enableRLS();
@@ -107,10 +119,23 @@ export const sessions = auth.table(
     absoluteExpiresAt: ts("absolute_expires_at").notNull(),
     lastUsedAt: ts("last_used_at").notNull().defaultNow(),
     revokedAt: ts("revoked_at"),
-    /** Last time the user proved possession of a credential on this session. */
+    /** Last time the user proved possession of a credential on this session: the latest of `factors`. */
     reauthAt: ts("reauth_at").notNull().defaultNow(),
+    /**
+     * A random id the session keeps for its whole life, while the token and with it `id` rotate. The re-authentication
+     * limits and the passkey challenges are keyed by it, so a rotation cannot reset them and no other session can
+     * spend them.
+     */
+    handle: uuid("handle").notNull().defaultRandom(),
+    /**
+     * The factors this session has proven and when: kind (email, password, totp, recovery, passkey, passkey_uv) to
+     * epoch milliseconds. Sessions from before migration 0010 have none and re-authenticate before a sensitive action.
+     */
+    factors: jsonb("factors").$type<Record<string, number>>().notNull().default(sql`'{}'::jsonb`),
+    /** The passkey that started this session, for the lockdown and the Security list; it outlives the passkey. */
+    passkeyId: uuid("passkey_id").references(() => passkeys.id, { onDelete: "set null" }),
   },
-  (t) => [index("sessions_user_idx").on(t.userId), fullAccess("sessions_auth_all", authRole)],
+  (t) => [index("sessions_user_idx").on(t.userId), uniqueIndex("sessions_handle_idx").on(t.handle), fullAccess("sessions_auth_all", authRole)],
 ).enableRLS();
 
 export const emailCodes = auth.table(
@@ -148,8 +173,19 @@ export const passkeys = auth.table(
     transports: text("transports").array().notNull().default(emptyTextArray),
     backedUp: boolean("backed_up").notNull().default(false),
     name: text("name").notNull(),
+    /** Written from the flows' clock, like password_changed_at, because the lockdown compares it with flow times. */
     createdAt: ts("created_at").notNull().defaultNow(),
     lastUsedAt: ts("last_used_at"),
+    /** The authenticator model the registration reported (all zeros for most synced passkeys); null when none was given. */
+    aaguid: uuid("aaguid"),
+    /** The BE flag at registration: the key may be synced to other devices. backed_up is the BS flag, which can change. */
+    backupEligible: boolean("backup_eligible").notNull().default(false),
+    /** The registration verified the user (UV flag); only then does a verified sign-in with it count as two factors. */
+    uvInitialized: boolean("uv_initialized").notNull().default(false),
+    /** The device whose session added it, for the Security list; it outlives the device. */
+    createdDeviceId: uuid("created_device_id").references(() => devices.id, { onDelete: "set null" }),
+    /** When a sign-in showed a signature counter that went backwards (a copy of the key may exist); refused from then on. */
+    suspectAt: ts("suspect_at"),
   },
   (t) => [uniqueIndex("passkeys_credential_idx").on(t.credentialId), index("passkeys_user_idx").on(t.userId), fullAccess("passkeys_auth_all", authRole)],
 ).enableRLS();

@@ -211,6 +211,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     termsVersion: TEST_TERMS,
     trustProxy: "none",
     verifyProvider: "dev",
+    webauthn: { rpId: "localhost", rpName: "korbat", origins: ["http://localhost:8081"] },
   };
   const deps: AuthDeps = {
     repo: authRepo,
@@ -293,6 +294,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
         passwordChangedAt: null,
         totpLastStep: null,
         purgedAt: null,
+        webauthnUserId: null,
       };
       users.set(id, user);
       handles.set(id, handle);

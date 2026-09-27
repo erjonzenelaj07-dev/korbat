@@ -25,6 +25,13 @@ export interface AuthConfig {
   trustProxy: "cloudflare" | "caddy" | "none";
   /** Who checks the phone number behind the verified badge; see VERIFY_PROVIDER in config.ts. With `off` the badge routes answer badge_unavailable. */
   verifyProvider: "off" | "dev" | "vonage";
+  /** The relying party passkeys are bound to; see WEBAUTHN_RP_ID and WEBAUTHN_RP_NAME in config.ts. */
+  webauthn: {
+    rpId: string;
+    rpName: string;
+    /** The origins a ceremony's clientDataJSON may name. */
+    origins: string[];
+  };
 }
 
 export function authConfigFrom(config: Config): AuthConfig {
@@ -38,6 +45,13 @@ export function authConfigFrom(config: Config): AuthConfig {
     termsVersion: config.TERMS_VERSION,
     trustProxy: config.TRUST_PROXY,
     verifyProvider: config.VERIFY_PROVIDER,
+    webauthn: {
+      rpId: config.WEBAUTHN_RP_ID,
+      rpName: config.WEBAUTHN_RP_NAME,
+      // A passkey ceremony run from a development origin (Expo's dev server, say) is accepted outside production only:
+      // in production the web app is served from APP_ORIGIN, and no other origin may use its passkeys.
+      origins: config.NODE_ENV === "production" ? [config.APP_ORIGIN] : [config.APP_ORIGIN, ...config.TRUSTED_ORIGINS],
+    },
   };
 }
 
@@ -106,6 +120,13 @@ const MESSAGES: Record<AuthErrorKind, string> = {
   phone_in_use: "That phone number is already verified on another account.",
   badge_unavailable: "Verification is not available on this korbat.",
   verify_unavailable: "We could not reach the verification service. Try again in a moment.",
+  passkey_invalid: "That passkey did not work. Try again or use your email.",
+  passkey_unsupported: "This passkey provider is not supported. Try another one.",
+  // The cap of 10; the flow passes its own message, with the hours left, for the bound of 5 a day.
+  passkey_limit: "You have 10 passkeys. Remove one to add another.",
+  passkey_suspended: "This passkey was switched off because a copy of it may exist. Remove it and add a new one.",
+  passkey_not_found: "That passkey is gone.",
+  challenge_expired: "That took too long. Try again.",
   invalid_request: "Some details are missing or invalid.",
 };
 
