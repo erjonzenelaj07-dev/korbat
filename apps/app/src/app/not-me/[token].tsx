@@ -34,7 +34,7 @@ export default function NotMe() {
       <Screen>
         <Title>Your account is locked down</Title>
         <Body>
-          Every session is signed out, your password is removed, and any passkeys and two-factor authentication set up in the day before that sign-in are removed. Sign in again
+          Every session is signed out, your password is removed, and any passkeys and two-factor authentication set up since the day before that sign-in are removed. Sign in again
           with a code sent to your email, then set a new password and turn on two-factor authentication.
         </Body>
         <Button label="Sign in" onPress={() => router.replace("/signin")} />
@@ -47,7 +47,7 @@ export default function NotMe() {
       <Title>This wasn't me</Title>
       <Body>
         If you didn't just sign in to korbat on a new device, confirm below. We'll sign out every session, including this browser, remove your password, and remove any passkeys
-        and two-factor authentication set up in the day before that sign-in, so only someone with your email can get back in.
+        and two-factor authentication set up since the day before that sign-in, so only someone with your email can get back in.
       </Body>
       <ErrorText message={valid ? error : "This link is incomplete. Open it again from the email."} />
       <Button label="Sign out everywhere and lock down my account" onPress={() => void confirm()} busy={busy} disabled={!valid} tone="danger" />

@@ -79,7 +79,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
   async function makeStale(b: Browser) {
     const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
     await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionId}`);
+    await auth.deps.kv.del(`sess:2:${sessionId}`);
   }
   const eventTypes = async (userId: string) => (await auth.deps.repo.recentEvents(userId)).map((e) => e.type);
   const signedOut = (path: string, method: string, body: unknown) =>

@@ -52,7 +52,7 @@ describe("'This wasn't me' on the lockdown (1c design, section 7.6)", () => {
     await notMe(h.deps, { token }, h.ctx);
 
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
-    for (const id of [ada.session.sessionId, owners.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of [ada.session.sessionId, owners.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([h.now(), h.now()]);
     expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null, totpSecretEnc: null, totpEnabledAt: null, recoveryCodesHash: [] });
     expect(h.passkeys.map((p) => p.id)).toEqual([old]);
@@ -97,29 +97,55 @@ describe("'This wasn't me' on the lockdown (1c design, section 7.6)", () => {
     ]);
   });
 
-  test("after the account's address changed, the link does nothing but refuse, and is spent; a change of case alone is no change", async () => {
+  test("while the account's address differs from the one the alert went to, the link does nothing but refuse and is not spent; once the address is back it works, once; a change of case alone is no change", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
     await h.deps.repo.setPasswordHash(ada.user.id, "owner-password", h.now());
-    h.passkey(ada.user.id);
+    const added = h.passkey(ada.user.id);
     const key = h.deps.config.authHmacKey;
-    const stale = await link(h, { userId: ada.user.id, deviceId: ada.session.deviceId, signedInAt: h.now().getTime(), passkeyId: null, sentTo: emailHash(key, "ada@korbat.local") });
+    const signedInAt = h.now().getTime();
+    const stale = await link(h, { userId: ada.user.id, deviceId: ada.session.deviceId, signedInAt, passkeyId: null, sentTo: emailHash(key, "ada@korbat.local") });
+    const stored = await h.kv.get(notMeKey(stale));
     await h.deps.repo.changeEmail(ada.user.id, "attacker@korbat.local", h.now());
     h.advance(HOUR);
-    expect(await failure(notMe(h.deps, { token: stale }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    for (let i = 0; i < 2; i++) expect(await failure(notMe(h.deps, { token: stale }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null]);
     expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([null]);
     expect(h.users.get(ada.user.id)).toMatchObject({ email: "attacker@korbat.local", passwordHash: "owner-password" });
     expect(h.passkeys).toHaveLength(1);
     expect(h.events).toEqual([]);
-    // Taken once: a second try finds nothing, so nobody can wait for the address to come back and use it then.
-    expect(await failure(notMe(h.deps, { token: stale }, h.ctx))).toMatchObject({ code: "invalid_code", message: LINK_GONE });
+    // Refused, not spent: the link is in the store as it was, for the rest of its day.
+    expect(await h.kv.get(notMeKey(stale))).toBe(stored);
+    // The address is the owner's again, as the email undo leaves it: the same link now runs the lockdown, anchored at its sign-in.
+    await h.deps.repo.changeEmail(ada.user.id, "ada@korbat.local", h.now());
+    h.advance(HOUR);
+    await notMe(h.deps, { token: stale }, h.ctx);
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now()]);
+    expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", passwordHash: null });
+    expect(h.passkeys).toEqual([]);
+    expect(h.events).toEqual([{ userId: ada.user.id, type: "not_me", deviceId: ada.session.deviceId, metadata: { passkeysRemoved: [added], totpCleared: false, passwordCleared: true } }]);
+    // Once: it is spent now.
+    expect(await h.kv.get(notMeKey(stale))).toBeNull();
+    expect(await failure(notMe(h.deps, { token: stale }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(h.events).toHaveLength(1);
 
     const bob = h.user("bob@korbat.local");
     const fine = await link(h, { userId: bob.user.id, deviceId: bob.session.deviceId, signedInAt: h.now().getTime(), passkeyId: null, sentTo: emailHash(key, "bob@korbat.local") });
     await h.deps.repo.changeEmail(bob.user.id, "Bob@korbat.local", h.now());
     await notMe(h.deps, { token: fine }, h.ctx);
     expect(h.sessions.filter((s) => s.userId === bob.user.id).map((s) => s.revokedAt)).toEqual([h.now()]);
+  });
+
+  test("two uses of one link at once act once: one runs the lockdown, the other is refused", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const key = h.deps.config.authHmacKey;
+    const token = await link(h, { userId: ada.user.id, deviceId: ada.session.deviceId, signedInAt: h.now().getTime(), passkeyId: null, sentTo: emailHash(key, "ada@korbat.local") });
+    const outcomes = await Promise.allSettled([notMe(h.deps, { token }, h.ctx), notMe(h.deps, { token }, { ...h.ctx, ipHash: randomToken() })]);
+    expect(outcomes.map((o) => o.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(outcomes.find((o): o is PromiseRejectedResult => o.status === "rejected")!.reason).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(h.events).toEqual([{ userId: ada.user.id, type: "not_me", deviceId: ada.session.deviceId, metadata: { passkeysRemoved: [], totpCleared: false, passwordCleared: true } }]);
+    expect(h.sessions.map((s) => s.revokedAt)).toEqual([h.now()]);
   });
 
   test("a link of an account that is gone, an unknown link and a used one are refused alike, and change nothing", async () => {

@@ -38,7 +38,7 @@ export default function PasskeyRemove() {
       <Screen>
         <Title>Your account is locked down</Title>
         <Body>
-          The passkey is removed. Every session is signed out, your password is removed, and any passkeys and two-factor authentication set up in the day before it was added
+          The passkey is removed. Every session is signed out, your password is removed, and any passkeys and two-factor authentication set up since the day before it was added
           are removed. Sign in again with a code sent to your email, then set a new password and turn on two-factor authentication.
         </Body>
         <Button label="Sign in" onPress={() => router.replace("/signin")} />
@@ -51,7 +51,7 @@ export default function PasskeyRemove() {
       <Title>Remove this passkey</Title>
       <Body>
         If you did not add this passkey to your korbat account, confirm below. We'll remove it, sign out every session, including this browser, remove your password, and
-        remove any passkeys and two-factor authentication set up in the day before it was added, so only someone with your email can get back in.
+        remove any passkeys and two-factor authentication set up since the day before it was added, so only someone with your email can get back in.
       </Body>
       <ErrorText message={valid ? error : "This link is incomplete. Open it again from the email."} />
       <Button label="Remove the passkey and lock down my account" onPress={() => void confirm()} busy={busy} disabled={!valid} tone="danger" />

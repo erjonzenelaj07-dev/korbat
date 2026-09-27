@@ -220,8 +220,9 @@ function harness() {
   let t = T0;
   const images: { id: string; open: OpenFile }[] = [];
   const userId = randomUUID();
-  const currentSession = randomBytes(32).toString("hex");
-  const otherSession = randomBytes(32).toString("hex");
+  // Sessions are named by their handles, as the auth module's export lists them; the hash of a token is in no part of the archive.
+  const currentSession = randomUUID();
+  const otherSession = randomUUID();
   const [postId, deletedId, likedId, bookmarkedId, imageA, imageB] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
   const events: RecordedEvent[] = [];
   const reads: string[] = [];
@@ -844,14 +845,15 @@ describe("the export route", () => {
    */
   function app(h: Harness, log = silent) {
     const session: Session = {
-      sessionId: h.currentSession,
+      sessionId: randomBytes(32).toString("hex"),
       userId: h.userId,
       deviceId: randomUUID(),
       role: "user",
       onboarded: true,
       mfaEnabled: false,
       reauthAt: h.now(),
-      handle: randomUUID(),
+      // The route marks the current session by this, the id the list carries, and not by the token's hash above.
+      handle: h.currentSession,
       factors: { email: h.now().getTime() },
       passkeyId: null,
     };

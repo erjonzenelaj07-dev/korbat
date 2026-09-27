@@ -5,7 +5,22 @@ import type { AuthConfig, AuthDeps, RequestContext } from "../../src/auth/contex
 import { parseVersionedKey, randomToken, sha256Hex } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
 import { createLockout } from "../../src/auth/lockout";
-import type { ActiveSessionRow, AddPasskeyOutcome, AuthEventType, AuthRepo, DeviceRow, EmailCodeRow, NewPasskey, PasskeyLimits, PasskeyListRow, PasskeyRow, UserRow } from "../../src/auth/repo";
+import type {
+  ActiveSessionRow,
+  AddPasskeyOutcome,
+  AuthEventType,
+  AuthRepo,
+  DeviceRow,
+  EmailCodeRow,
+  LockDownInput,
+  LockDownOutcome,
+  NewPasskey,
+  PasskeyLimits,
+  PasskeyListRow,
+  PasskeyRow,
+  SessionListRow,
+  UserRow,
+} from "../../src/auth/repo";
 import { createSessions, SESSION_ABSOLUTE_MS, SESSION_IDLE_MS, type Factors, type Session } from "../../src/auth/sessions";
 import { devProvider } from "../../src/auth/verify/dev";
 import { MemoryMailer } from "../../src/mail/memory";
@@ -55,8 +70,8 @@ export type RecordedPasskey = PasskeyRow;
 
 /**
  * The auth flows without a database: users, email codes, sessions, devices and passkeys live in memory, and the
- * repository fake holds only the methods the email-change (with its undo link), badge, deletion, not-me and
- * lockdown flows call (and the lookups the sign-in starts make), checked against the real signatures. The key-value store and the
+ * repository fake holds only the methods the email-change (with its undo link), badge, deletion, not-me,
+ * lockdown and TOTP confirmation flows call (and the lookups the sign-in starts make), checked against the real signatures. The key-value store and the
  * mailer are the in-memory ones; the clock moves only when a test says so, so expiries and timestamps
  * compare exactly; and events are kept as the server would write them to auth_events. The integration
  * harness (test/integration/flow-harness.ts) runs flows against the real repository instead.
@@ -81,8 +96,8 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   };
   /** The handle of each account's profile, which the deletion flow compares the typed handle with. */
   const handles = new Map<string, string>();
-  /** Repository methods told to fail: "takeDown" fails its transaction midway, after staging its writes and before any lands. */
-  const faults = new Set<"takeDown">();
+  /** Repository methods told to fail: "takeDown" and "lockDown" each fail as a transaction that breaks off midway, after staging its writes and before any lands. */
+  const faults = new Set<"takeDown" | "lockDown">();
   /** A device as the real row reads, from what the harness keeps of it; the hash and the times are placeholders no flow reads here. */
   const deviceRow = (device: RecordedDevice): DeviceRow => ({
     id: device.id,
@@ -178,25 +193,41 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       const row = users.get(userId);
       if (row) Object.assign(row, { passwordHash, passwordChangedAt: at, failedLogins: 0, lockedUntil: null });
     },
-    async revokeDevices(userId: string, at: Date): Promise<void> {
-      for (const device of devices) if (device.userId === userId && device.revokedAt === null) device.revokedAt = at;
+    async enableTotp(userId: string, input: { secretEnc: string; recoveryCodesHash: string[]; now: Date }): Promise<void> {
+      // As the real statement: unconditional, whatever the row held, and the last accepted step starts over.
+      const row = users.get(userId);
+      if (row) Object.assign(row, { totpSecretEnc: input.secretEnc, totpEnabledAt: input.now, totpLastStep: null, recoveryCodesHash: input.recoveryCodesHash });
     },
     async disableTotp(userId: string): Promise<void> {
       const row = users.get(userId);
       if (row) Object.assign(row, { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
     },
-    async deletePasskeys(userId: string, input: { since: Date; ids: readonly string[] }): Promise<string[]> {
+    async lockDown(userId: string, input: LockDownInput): Promise<LockDownOutcome> {
+      // One transaction, as the real one: when it fails midway nothing it would have written lands.
+      if (faults.has("lockDown")) throw new Error("the lockdown transaction failed midway and was rolled back");
+      const live = sessions.filter((s) => s.userId === userId && s.revokedAt === null);
+      for (const s of live) s.revokedAt = input.now;
+      for (const device of devices) if (device.userId === userId && device.revokedAt === null) device.revokedAt = input.now;
       // As the real statement: the user's passkeys created at or after `since`, plus any of theirs the caller names.
-      const removed: string[] = [];
+      const passkeysRemoved: string[] = [];
       for (let i = passkeys.length - 1; i >= 0; i--) {
         const passkey = passkeys[i]!;
         if (passkey.userId !== userId) continue;
-        if (passkey.createdAt.getTime() >= input.since.getTime() || input.ids.includes(passkey.id)) {
-          removed.push(passkey.id);
+        if (passkey.createdAt.getTime() >= input.since.getTime() || input.passkeyIds.includes(passkey.id)) {
+          passkeysRemoved.push(passkey.id);
           passkeys.splice(i, 1);
         }
       }
-      return removed;
+      const row = users.get(userId);
+      // As the real read of the locked row: an account that is gone has no two-factor to clear.
+      const totpCleared = row !== undefined && row.deletedAt === null && row.totpEnabledAt !== null && row.totpEnabledAt.getTime() >= input.since.getTime();
+      if (row) {
+        // The password as setPasswordHash clears it, and two-factor as disableTotp turns it off.
+        Object.assign(row, { passwordHash: null, passwordChangedAt: input.now, failedLogins: 0, lockedUntil: null });
+        if (totpCleared) Object.assign(row, { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
+      }
+      recordEvent({ userId, type: input.event.type, deviceId: input.event.deviceId, metadata: { ...input.event.metadata, passkeysRemoved, totpCleared, passwordCleared: true } });
+      return { sessionIds: live.map((s) => s.id), passkeysRemoved, totpCleared };
     },
     async setPhoneHash(userId: string, phoneHash: string | null): Promise<void> {
       // As the real partial unique index on phone_hash, deleted rows included: the driver error that the flow recognises through isUniqueViolation.
@@ -382,6 +413,16 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       for (const s of live) s.revokedAt = at;
       return live.map((s) => s.id);
     },
+    async listActiveSessions(userId: string, at: Date): Promise<SessionListRow[]> {
+      // As the real statement: the user's sessions that are neither revoked nor expired, most recently used first, each with its device's label.
+      return sessions
+        .filter((s) => s.userId === userId && s.revokedAt === null && s.expiresAt > at && s.absoluteExpiresAt > at)
+        .sort((a, b) => b.lastUsedAt.getTime() - a.lastUsedAt.getTime())
+        .map((s) => {
+          const device = devices.find((d) => d.id === s.deviceId);
+          return { id: s.id, handle: s.handle, deviceLabel: device?.label ?? null, platform: device?.platform ?? "web", createdAt: s.createdAt, lastUsedAt: s.lastUsedAt };
+        });
+    },
     async markDeleted(userId: string, at: Date): Promise<void> {
       const row = users.get(userId);
       if (row && row.deletedAt === null) row.deletedAt = at;
@@ -429,9 +470,9 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     | "consumeEmailCode"
     | "changeEmail"
     | "setPasswordHash"
-    | "revokeDevices"
+    | "enableTotp"
     | "disableTotp"
-    | "deletePasskeys"
+    | "lockDown"
     | "setPhoneHash"
     | "appendEvent"
     | "findDeviceById"
@@ -456,6 +497,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     | "writeFactor"
     | "claimTotpStep"
     | "revokeAllSessions"
+    | "listActiveSessions"
     | "markDeleted"
     | "takeDown"
     | "finishTakeDown"

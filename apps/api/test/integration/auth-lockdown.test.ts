@@ -9,7 +9,7 @@ import { notMe } from "../../src/auth/flows/not-me";
 import { notMeKey, type NotMeToken } from "../../src/auth/flows/signin";
 import { emailHash } from "../../src/auth/identifiers";
 import { HOUR } from "../../src/auth/limits";
-import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
+import { createAuthRepo, type AuthEventType, type AuthRepo } from "../../src/auth/repo";
 import { newTotpSecret } from "../../src/auth/totp";
 import { loadConfig } from "../../src/config";
 import { flowHarness, newTestDevice, newTestEmail, onboardedUser, type FlowHarness } from "./flow-harness";
@@ -79,7 +79,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the lockdown and the lin
     expect(await passkeyIds(bystander.user.id)).toEqual([bystanders]);
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();
     expect(await h.deps.sessions.resolve(other.token)).toBeNull();
-    expect(await h.kv.get(`sess:${account.session.sessionId}`)).toBe("revoked");
+    expect(await h.kv.get(`sess:2:${account.session.sessionId}`)).toBe("revoked");
     expect(await repo.listActiveSessions(account.user.id, h.clock.now())).toEqual([]);
     expect(await repo.listDevices(account.user.id)).toEqual([]);
     expect((await repo.findUserById(account.user.id))!).toMatchObject({ passwordHash: null, totpSecretEnc: null, totpEnabledAt: null, recoveryCodesHash: [] });
@@ -99,6 +99,44 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the lockdown and the lin
     await withTotp(h, earlier.user.id, new Date(since.getTime() - 1));
     expect((await lockdown(h.deps, { userId: earlier.user.id, anchor, caller: { type: "not_me" }, ctx: h.ctx })).totpCleared).toBe(false);
     expect((await repo.findUserById(earlier.user.id))!.totpEnabledAt).toEqual(new Date(since.getTime() - 1));
+  });
+
+  test("the lockdown is one transaction: when its last statement, the event, cannot be written, nothing of it lands, and the next run finds everything still to do", { timeout: 30_000 }, async () => {
+    const h = flowHarness(repo);
+    const account = await onboardedUser(h, repo, { password: PASSWORD });
+    const other = await h.deps.sessions.issue(account.user.id, account.session.deviceId, { factors: { email: h.clock.ms() } });
+    const passkey = await newPasskey(account.user.id, h.clock.now());
+    await withTotp(h, account.user.id, h.clock.now());
+    const before = (await repo.findUserById(account.user.id))!;
+    h.clock.advance(HOUR);
+
+    // An event type the database does not know: the insert, which comes after every other write, is refused.
+    const unknown = "no_such_event" as AuthEventType;
+    await expect(lockdown(h.deps, { userId: account.user.id, anchor: h.clock.now(), passkeyIds: [passkey], caller: { type: unknown, deviceId: account.session.deviceId }, ctx: h.ctx })).rejects.toThrow();
+    expect(await h.deps.sessions.resolve(account.token)).not.toBeNull();
+    expect(await h.deps.sessions.resolve(other.token)).not.toBeNull();
+    expect(await h.kv.get(`sess:2:${account.session.sessionId}`)).not.toBe("revoked");
+    expect(await repo.listActiveSessions(account.user.id, h.clock.now())).toHaveLength(2);
+    expect(await repo.listDevices(account.user.id)).toHaveLength(1);
+    expect(await passkeyIds(account.user.id)).toEqual([passkey]);
+    expect((await repo.findUserById(account.user.id))!).toEqual(before);
+    expect(before).toMatchObject({ passwordHash: expect.stringMatching(/^\$argon2id\$/), totpSecretEnc: expect.stringMatching(/^v1:/), recoveryCodesHash: ["owner-code"] });
+    // The sign-in that made the account's session is the one event on record: the refused lockdown left none.
+    expect((await eventsOf(account.user.id)).map((e) => e.type)).toEqual(["signin_success"]);
+
+    // The same lockdown with an event the database takes: the rows and the event land together.
+    const report = await lockdown(h.deps, { userId: account.user.id, anchor: h.clock.now(), passkeyIds: [passkey], caller: { type: "not_me", deviceId: account.session.deviceId }, ctx: h.ctx });
+    expect(report).toEqual({ passkeysRemoved: [passkey], totpCleared: true, passwordCleared: true });
+    expect(await h.deps.sessions.resolve(account.token)).toBeNull();
+    expect(await h.deps.sessions.resolve(other.token)).toBeNull();
+    for (const id of [account.session.sessionId, other.session.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
+    expect(await repo.listActiveSessions(account.user.id, h.clock.now())).toEqual([]);
+    expect(await repo.listDevices(account.user.id)).toEqual([]);
+    expect(await passkeyIds(account.user.id)).toEqual([]);
+    expect((await repo.findUserById(account.user.id))!).toMatchObject({ passwordHash: null, passwordChangedAt: h.clock.now(), failedLogins: 0, lockedUntil: null, totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
+    expect((await eventsOf(account.user.id)).filter((e) => e.type !== "signin_success")).toEqual([
+      { type: "not_me", deviceId: account.session.deviceId, ipHash: h.ctx.ipHash, metadata: { passkeysRemoved: [passkey], totpCleared: true, passwordCleared: true } },
+    ]);
   });
 
   test("the alert of a sign-in on a new device stores the sign-in's time and the address, and its link locks the account down anchored there", { timeout: 30_000 }, async () => {

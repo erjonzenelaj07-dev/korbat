@@ -132,7 +132,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     // A second live session on the same device, and a third one revoked: only the two live ones are listed.
     const second = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
     const revoked = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
-    await h.deps.sessions.revoke(revoked.issued.session.sessionId, userId);
+    await h.deps.sessions.revoke(revoked.issued.session.handle, userId);
     // Two passkeys a minute apart on the harness clock, both from the signed-in device: a synced one, used once since, and a plain one never used.
     const laptopAt = h.clock.now();
     const laptop = await register(owner.session, new SoftAuthenticator(), "Laptop", ALL);
@@ -172,7 +172,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     expect(await s.repo.mute(userId, carol.id, s.clock.next())).toBe(true);
     await authRepo.appendEvent({ userId, type: "profile_updated" });
 
-    const plan = await buildExport(deps(), userId, owner.session.sessionId, new Date());
+    const plan = await buildExport(deps(), userId, owner.session.handle, new Date());
     const sink = memorySink();
     await writeExport(createZipWriter(sink.write), plan);
     const files = unzipSync(sink.bytes());
@@ -199,9 +199,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     }
     // The archive's JSON is the document exactly as JSON.stringify writes it, the passkeys in their place inside the account.
     expect(text).toBe(JSON.stringify(raw, null, 2));
-    expect(json.sessions.map((session) => session.id).sort()).toEqual([owner.session.sessionId, second.issued.session.sessionId].sort());
-    expect(json.sessions.find((session) => session.id === owner.session.sessionId)!.current).toBe(true);
-    expect(json.sessions.find((session) => session.id === second.issued.session.sessionId)!.current).toBe(false);
+    // The live sessions under their handles, the ids the session list shows; the hash of a token, which is what the server
+    // looks a session up by, is nowhere in the archive.
+    expect(json.sessions.map((session) => session.id).sort()).toEqual([owner.session.handle, second.issued.session.handle].sort());
+    expect(json.sessions.find((session) => session.id === owner.session.handle)!.current).toBe(true);
+    expect(json.sessions.find((session) => session.id === second.issued.session.handle)!.current).toBe(false);
+    for (const hash of [owner.session.sessionId, second.issued.session.sessionId, revoked.issued.session.sessionId]) expect(text, hash).not.toContain(hash);
     expect(json.devices).toHaveLength(1);
     expect(json.devices[0]!.platform).toBe("web");
     // The account's own events, newest first; the sign-ins are among them.
@@ -270,8 +273,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     for (const other of others.slice(0, 3)) expect(await s.repo.mute(userId, other.id, s.clock.next())).toBe(true);
 
     const now = new Date();
-    const paged = await collect(exportJson(await buildExport(deps(), userId, owner.session.sessionId, now, 2)));
-    const whole = await collect(exportJson(await buildExport(deps(), userId, owner.session.sessionId, now)));
+    const paged = await collect(exportJson(await buildExport(deps(), userId, owner.session.handle, now, 2)));
+    const whole = await collect(exportJson(await buildExport(deps(), userId, owner.session.handle, now)));
     expect(paged).toBe(whole);
     expect(paged).toBe(JSON.stringify(JSON.parse(paged), null, 2));
     const json = ExportFormat.parse(JSON.parse(paged));

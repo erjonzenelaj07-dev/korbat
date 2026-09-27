@@ -54,20 +54,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: sessions and lockout", (
     const { user, device } = await newUserWithDevice(repo);
     const issued = await sessions.issue(user.id, device.id, { factors: { email: clock.ms() } });
     expect(await sessions.resolve(issued.token)).not.toBeNull();
-    expect(await sessions.revoke(issued.session.sessionId, user.id)).toBe(true);
+    // A session is revoked by its handle, the id the list shows; a second revoke finds nothing live.
+    expect(await sessions.revoke(issued.session.handle, user.id)).toBe(true);
     expect(await sessions.resolve(issued.token)).toBeNull();
+    expect(await sessions.revoke(issued.session.handle, user.id)).toBe(false);
   });
 
   test("a revoked session stays revoked while a cache fill is in flight, and a foreign revoke leaves the cache alone", async () => {
     const { clock, kv, sessions } = setup();
     const { user, device } = await newUserWithDevice(repo);
     const issued = await sessions.issue(user.id, device.id, { factors: { email: clock.ms() } });
-    const key = `sess:${issued.session.sessionId}`;
+    const key = `sess:2:${issued.session.sessionId}`;
     await sessions.resolve(issued.token);
     const other = await newUserWithDevice(repo);
-    expect(await sessions.revoke(issued.session.sessionId, other.user.id)).toBe(false);
+    expect(await sessions.revoke(issued.session.handle, other.user.id)).toBe(false);
     expect(await kv.get(key)).not.toBe("revoked");
-    expect(await sessions.revoke(issued.session.sessionId, user.id)).toBe(true);
+    // Revoked by the handle; the tombstone lies where the cached copy does, under the token's hash.
+    expect(await sessions.revoke(issued.session.handle, user.id)).toBe(true);
     expect(await kv.get(key)).toBe("revoked");
     expect(await kv.setIfAbsent(key, "a stale copy", 60_000)).toBe(false);
     expect(await sessions.resolve(issued.token)).toBeNull();
@@ -78,7 +81,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: sessions and lockout", (
     const owner = await newUserWithDevice(repo);
     const other = await newUserWithDevice(repo);
     const issued = await sessions.issue(owner.user.id, owner.device.id, { factors: { email: clock.ms() } });
-    expect(await sessions.revoke(issued.session.sessionId, other.user.id)).toBe(false);
+    expect(await sessions.revoke(issued.session.handle, other.user.id)).toBe(false);
     expect(await sessions.resolve(issued.token)).not.toBeNull();
   });
 
@@ -114,24 +117,47 @@ describe.skipIf(!process.env.INTEGRATION)("integration: sessions and lockout", (
     // Only the id, the token's hash, changed; the reauth time did not move, since no factor was proven.
     expect(second.session).toEqual({ ...first.session, sessionId: sha256Hex(second.token) });
     expect(await sessions.resolve(first.token)).toBeNull();
-    expect(await kv.get(`sess:${first.session.sessionId}`)).toBe("revoked");
+    expect(await kv.get(`sess:2:${first.session.sessionId}`)).toBe("revoked");
     expect((await sessions.resolve(second.token))?.session).toEqual(second.session);
     const after = (await repo.findActiveSession(second.session.sessionId, clock.now()))!;
     expect(after).toEqual({ ...before, id: second.session.sessionId });
-    // One row, under the new id: the list marks it current, and only the new id revokes it.
-    expect((await sessions.list(user.id, second.session.sessionId)).map((s) => [s.id, s.current])).toEqual([[second.session.sessionId, true]]);
-    expect(await sessions.revoke(first.session.sessionId, user.id)).toBe(false);
-    expect(await sessions.revoke(second.session.sessionId, user.id)).toBe(true);
-    expect(await sessions.resolve(second.token)).toBeNull();
+    // One row, under the new id and the same handle: the list names it by the handle and marks it current by it.
+    expect((await sessions.list(user.id, second.session.handle)).map((s) => [s.id, s.current])).toEqual([[first.session.handle, true]]);
+  });
+
+  test("a session listed before its token rotated is revoked by the id the list gave: the rotated token stops working, with a tombstone under its hash", async () => {
+    const { clock, kv, sessions } = setup();
+    const { user, device } = await newUserWithDevice(repo);
+    const owners = await sessions.issue(user.id, device.id, { factors: { email: clock.ms() } });
+    const target = await sessions.issue(user.id, device.id, { factors: { email: clock.ms() } });
+    const before = await sessions.list(user.id, owners.session.handle);
+    // The ids a client sees are the handles: no token's hash is among them.
+    expect(before.map((s) => s.id).sort()).toEqual([owners.session.handle, target.session.handle].sort());
+    const listed = before.find((s) => !s.current)!;
+    expect(listed.id).toBe(target.session.handle);
+
+    // The listed session re-authenticates before the revoke lands: a factor is written and its token rotates, twice over.
+    await sessions.addFactor(target.session.sessionId, "password");
+    const once = await sessions.rotate(target.session);
+    const twice = await sessions.rotate(once.session);
+    expect((await sessions.resolve(twice.token))?.session.handle).toBe(listed.id);
+
+    expect(await sessions.revoke(listed.id, user.id)).toBe(true);
+    expect(await sessions.resolve(twice.token)).toBeNull();
+    // The tombstone is keyed by the row's id at the moment of the revoke, where a cached copy lies.
+    expect(await kv.get(`sess:2:${twice.session.sessionId}`)).toBe("revoked");
+    expect((await sessions.list(user.id, owners.session.handle)).map((s) => s.id)).toEqual([owners.session.handle]);
+    expect(await sessions.resolve(owners.token)).not.toBeNull();
+    expect(await sessions.revoke(listed.id, user.id)).toBe(false);
   });
 
   test("a session revoked meanwhile cannot be rotated: nothing replaces it", async () => {
     const { clock, sessions } = setup();
     const { user, device } = await newUserWithDevice(repo);
     const issued = await sessions.issue(user.id, device.id, { factors: { email: clock.ms() } });
-    expect(await sessions.revoke(issued.session.sessionId, user.id)).toBe(true);
+    expect(await sessions.revoke(issued.session.handle, user.id)).toBe(true);
     await expect(sessions.rotate(issued.session)).rejects.toMatchObject({ code: "invalid_credentials", status: 401 });
-    expect(await sessions.list(user.id, issued.session.sessionId)).toEqual([]);
+    expect(await sessions.list(user.id, issued.session.handle)).toEqual([]);
   });
 
   test("signing out everywhere revokes every session of the user and lists them first", async () => {
@@ -139,9 +165,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: sessions and lockout", (
     const { user, device } = await newUserWithDevice(repo);
     const a = await sessions.issue(user.id, device.id, { factors: { email: clock.ms() } });
     const b = await sessions.issue(user.id, device.id, { factors: { email: clock.ms() } });
-    const listed = await sessions.list(user.id, a.session.sessionId);
+    const listed = await sessions.list(user.id, a.session.handle);
     expect(listed).toHaveLength(2);
-    expect(listed.filter((s) => s.current).map((s) => s.id)).toEqual([a.session.sessionId]);
+    expect(listed.filter((s) => s.current).map((s) => s.id)).toEqual([a.session.handle]);
+    expect(listed.filter((s) => !s.current).map((s) => s.id)).toEqual([b.session.handle]);
     expect(await sessions.revokeAll(user.id)).toBe(2);
     expect(await sessions.resolve(a.token)).toBeNull();
     expect(await sessions.resolve(b.token)).toBeNull();

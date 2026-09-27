@@ -48,20 +48,28 @@ export async function setupTotp(deps: AuthDeps, session: Session): Promise<TotpS
   return { otpauthUri, qrSvg: totpQrSvg(otpauthUri) };
 }
 
+const SETUP_EXPIRED = "Two-factor setup expired. Start again.";
+
 /**
  * Turns MFA on with the pending secret its setup stored for this session's handle: no freshness check of its own, so
  * scanning the QR code cannot run the window out. Issues 10 recovery codes (shown once), writes the totp factor (the
  * code proved the new secret), drops every cached copy of the account's sessions so mfaEnabled is right, rotates the
- * token in place and tells the owner.
+ * token in place and tells the owner. The pending secret is read first, so a wrong code does not end the setup, and
+ * spent once the code is right, before anything is written: of two confirmations at once (a double submit) one
+ * turns two-factor on, and the other is refused before it could replace the recovery codes the first one shows.
  */
 export async function confirmTotp(deps: AuthDeps, session: Session, input: TotpCodeRequest): Promise<{ recoveryCodes: string[]; issued: IssuedSession }> {
   const user = await deps.repo.findUserById(session.userId);
   if (!user) throw new AuthError("invalid_credentials", 401);
-  const pending = await deps.kv.get(totpPendingKey(session.handle));
-  if (!pending) throw new AuthError("invalid_mfa_code", 400, "Two-factor setup expired. Start again.");
+  const pendingKey = totpPendingKey(session.handle);
+  const pending = await deps.kv.get(pendingKey);
+  if (!pending) throw new AuthError("invalid_mfa_code", 400, SETUP_EXPIRED);
   const secret = new Uint8Array(decrypt(pending, [deps.config.totpKey]));
   const step = verifyTotp(secret, input.code, null, deps.now().getTime());
   if (step === null) throw new AuthError("invalid_mfa_code", 400);
+  // Taken, and compared with what the code was checked against: gone means another confirmation spent it, and another
+  // value means a newer setup replaced the secret this code proved.
+  if ((await deps.kv.take(pendingKey)) !== pending) throw new AuthError("invalid_mfa_code", 400, SETUP_EXPIRED);
 
   const recoveryCodes = newRecoveryCodes();
   await deps.repo.enableTotp(session.userId, {
@@ -70,7 +78,6 @@ export async function confirmTotp(deps: AuthDeps, session: Session, input: TotpC
     now: deps.now(),
   });
   await deps.repo.claimTotpStep(session.userId, step);
-  await deps.kv.del(totpPendingKey(session.handle));
   await deps.repo.appendEvent({ userId: session.userId, type: "mfa_enabled", deviceId: session.deviceId });
   await deps.sessions.addFactor(session.sessionId, "totp");
   await deps.sessions.forgetUser(session.userId);

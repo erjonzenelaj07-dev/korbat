@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { BIO_MAX_LENGTH, postLength, type MeResponse, type ProfileView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
-import { ReauthPanel, useReauth } from "@/components/security/ReauthPanel";
+import { ReauthPanel, ReenrollNotice, useReauth } from "@/components/security/ReauthPanel";
 import { SettingsNav } from "@/components/SettingsNav";
 import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/components/ui";
 import { ApiError, errorMessage } from "@/lib/api";
@@ -169,6 +169,8 @@ export default function ProfileSettings() {
         <SettingsNav current="profile" />
 
         {reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}
+        {/* After a recovery code confirmed the handle change: the screen stays as it is and says where two-factor is set up again. */}
+        <ReenrollNotice me={me} />
 
         <Section title="Name and bio">
           <ProfileForm handle={me.profile.handle} refresh={refresh} />

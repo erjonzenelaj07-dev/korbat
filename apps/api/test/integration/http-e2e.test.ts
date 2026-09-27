@@ -263,6 +263,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth end to end (Postgre
     expect(sessions).toHaveLength(2);
     const other = sessions.find((s) => !s.current)!;
     expect(other.platform).toBe("ios");
+    // The phone re-authenticates after the laptop listed it and before the laptop's revoke lands: its token rotates, and
+    // the id the list gave, the session's handle, still names it.
+    const listedToken = phone.token!;
+    const reauthed = await phone.fetch("/api/auth/reauth", { json: { method: "password", password: PASSWORD } });
+    expect(reauthed.status).toBe(200);
+    phone.token = ((await reauthed.json()) as { token: string }).token;
+    expect(phone.token).not.toBe(listedToken);
+    expect((await phone.fetch("/api/me")).status).toBe(200);
     expect((await laptop.fetch(`/api/auth/sessions/${other.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await phone.fetch("/api/me")).status).toBe(401);
     expect((await laptop.fetch(`/api/auth/sessions/${other.id}`, { method: "DELETE" })).status).toBe(404);

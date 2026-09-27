@@ -104,7 +104,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
   /** The session's only factor is the sign-up's email code; moved ten minutes back, nothing within the window is left, so the freshness check fails. */
   async function makeStale(b: Browser) {
     await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
+    await auth.deps.kv.del(`sess:2:${sessionIdOf(b)}`);
   }
 
   test("both routes need an onboarded, fresh session", async () => {

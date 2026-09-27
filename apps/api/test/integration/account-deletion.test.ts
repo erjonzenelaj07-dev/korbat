@@ -185,7 +185,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     });
     for (const id of [owner.session.sessionId, other.issued.session.sessionId]) {
       expect(await authRepo.findActiveSession(id, new Date()), id).toBeUndefined();
-      expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+      expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     }
     expect(await authRepo.listDevices(userId)).toEqual([]);
     expect((await authDb.execute(sql`select count(*)::int as n from auth.email_codes where user_id = ${userId}::uuid`)) as unknown as { n: number }[]).toEqual([{ n: 0 }]);

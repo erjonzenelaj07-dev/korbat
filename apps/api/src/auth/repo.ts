@@ -33,6 +33,25 @@ export type AddPasskeyOutcome =
   | { ok: false; reason: "cap" }
   | { ok: false; reason: "daily"; retryAfterSeconds: number };
 
+/** What the lockdown's transaction is told (1c design, sections 2 and 7.6); the flow works it out from the caller's anchor. */
+export interface LockDownInput {
+  /** The flows' clock, for the revocations and the password's change time. */
+  now: Date;
+  /** How far back the lockdown reaches: passkeys created at or after this go, and two-factor enabled at or after it is turned off. */
+  since: Date;
+  /** Passkeys to remove whatever their age: the one that signed in, or the one a link is about. */
+  passkeyIds: readonly string[];
+  /** The caller's event, recorded in the same transaction with what the lockdown did added to its metadata. */
+  event: { type: AuthEventType; deviceId: string | null; ipHash: string | null; metadata: Record<string, unknown> };
+}
+
+/** What a lockdown did: the ids of the sessions it revoked, for the cache tombstones, the passkeys it removed, and whether it turned two-factor off. */
+export interface LockDownOutcome {
+  sessionIds: string[];
+  passkeysRemoved: string[];
+  totpCleared: boolean;
+}
+
 export interface ActiveSessionRow {
   id: string;
   userId: string;
@@ -52,7 +71,10 @@ export interface ActiveSessionRow {
 }
 
 export interface SessionListRow {
+  /** The hash of the session's token, which its cached copy is keyed by; it changes when the token rotates and is never shown to a client. */
   id: string;
+  /** The session's id for life: what the list shows, and what the targeted revoke takes. */
+  handle: string;
   deviceLabel: string | null;
   platform: string;
   createdAt: Date;
@@ -261,6 +283,62 @@ export function createAuthRepo(db: Db) {
         .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt)));
     },
 
+    // ------------------------------------------------------------ lockdown
+
+    /**
+     * The lockdown (1c design, sections 2 and 7.6) in one transaction, as takeDown is one: every live session
+     * revoked, every device revoked (so the next sign-in on any of them counts as a new device), the password
+     * cleared as setPasswordHash clears it, the passkeys in reach removed, two-factor turned off as disableTotp
+     * does when it was enabled at or after `since`, and the caller's event appended with what was done. Either
+     * all of it lands or none of it does: the link that started it is spent by then, so a lockdown that stopped
+     * halfway could not be asked for again, and would be on no record. The user row is locked first, as takeDown
+     * and a registration take it first, so none of the three can wait on another in a circle, and two-factor is
+     * read from the locked row. Answers the ids of the sessions it revoked, for the cache tombstones, which are
+     * not the database's to write.
+     */
+    async lockDown(userId: string, input: LockDownInput): Promise<LockDownOutcome> {
+      return db.transaction(async (tx) => {
+        // An account that is gone has no two-factor to clear; its rows, if any are left, are still locked down below.
+        const [locked] = await tx
+          .select({ totpEnabledAt: users.totpEnabledAt })
+          .from(users)
+          .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+          .for("update");
+        const revoked = await tx
+          .update(sessions)
+          .set({ revokedAt: input.now })
+          .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+          .returning({ id: sessions.id });
+        await tx.update(devices).set({ revokedAt: input.now }).where(and(eq(devices.userId, userId), isNull(devices.revokedAt)));
+        // The user's passkeys from `since` on, plus any of theirs the caller names; a named passkey of another account is not the caller's to remove and stays.
+        const reach = input.passkeyIds.length > 0 ? or(gte(passkeys.createdAt, input.since), inArray(passkeys.id, [...input.passkeyIds])) : gte(passkeys.createdAt, input.since);
+        const removed = await tx
+          .delete(passkeys)
+          .where(and(eq(passkeys.userId, userId), reach))
+          .returning({ id: passkeys.id });
+        const totpCleared = locked !== undefined && locked.totpEnabledAt !== null && locked.totpEnabledAt.getTime() >= input.since.getTime();
+        await tx
+          .update(users)
+          .set({
+            passwordHash: null,
+            passwordChangedAt: input.now,
+            failedLogins: 0,
+            lockedUntil: null,
+            ...(totpCleared ? { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] } : {}),
+          })
+          .where(eq(users.id, userId));
+        const passkeysRemoved = removed.map((row) => row.id);
+        await tx.insert(authEvents).values({
+          userId,
+          type: input.event.type,
+          deviceId: input.event.deviceId,
+          ipHash: input.event.ipHash,
+          metadata: { ...input.event.metadata, passkeysRemoved, totpCleared, passwordCleared: true },
+        });
+        return { sessionIds: revoked.map((row) => row.id), passkeysRemoved, totpCleared };
+      });
+    },
+
     // ------------------------------------------------------------ email codes
 
     async createEmailCode(input: {
@@ -329,11 +407,6 @@ export function createAuthRepo(db: Db) {
     /** A revoked device no longer carries live sessions and counts as new at its next sign-in. */
     async revokeDevice(id: string, now: Date): Promise<void> {
       await db.update(devices).set({ revokedAt: now }).where(and(eq(devices.id, id), isNull(devices.revokedAt)));
-    },
-
-    /** Every device of the user, as revokeDevice revokes one: the next sign-in on any of them counts as a new device. */
-    async revokeDevices(userId: string, now: Date): Promise<void> {
-      await db.update(devices).set({ revokedAt: now }).where(and(eq(devices.userId, userId), isNull(devices.revokedAt)));
     },
 
     /** The user's devices that are not revoked, oldest first, for the data export; a revoked one stands for nothing of the account's any more. */
@@ -442,14 +515,18 @@ export function createAuthRepo(db: Db) {
       return rows.length === 1;
     },
 
-    /** Revokes one session of this user. False when it does not belong to the user or is already revoked. */
-    async revokeSession(id: string, userId: string, now: Date): Promise<boolean> {
-      const rows = await db
+    /**
+     * Revokes one session of this user, named by its handle: the id a rotation keeps, so a session listed before its
+     * token rotated is still found. Answers the row's id as it is now, which its cached copy is keyed by; undefined
+     * when the session does not belong to the user or is already revoked.
+     */
+    async revokeSession(handle: string, userId: string, now: Date): Promise<string | undefined> {
+      const [row] = await db
         .update(sessions)
         .set({ revokedAt: now })
-        .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+        .where(and(eq(sessions.handle, handle), eq(sessions.userId, userId), isNull(sessions.revokedAt)))
         .returning({ id: sessions.id });
-      return rows.length === 1;
+      return row?.id;
     },
 
     /** Revokes every live session of the user and returns their ids (for cache invalidation). */
@@ -466,6 +543,7 @@ export function createAuthRepo(db: Db) {
       return db
         .select({
           id: sessions.id,
+          handle: sessions.handle,
           deviceLabel: devices.label,
           platform: devices.platform,
           createdAt: sessions.createdAt,
@@ -611,20 +689,6 @@ export function createAuthRepo(db: Db) {
         .where(and(eq(passkeys.id, id), eq(passkeys.userId, userId)))
         .returning({ name: passkeys.name });
       return row;
-    },
-
-    /**
-     * The lockdown's removal (1c design, section 7.6): the user's passkeys created at or after `since`, plus any of theirs
-     * the caller names, whatever their age. Answers the ids removed, for the caller's event. A named passkey of another
-     * account is not the caller's to remove and stays.
-     */
-    async deletePasskeys(userId: string, input: { since: Date; ids: readonly string[] }): Promise<string[]> {
-      const reach = input.ids.length > 0 ? or(gte(passkeys.createdAt, input.since), inArray(passkeys.id, [...input.ids])) : gte(passkeys.createdAt, input.since);
-      const rows = await db
-        .delete(passkeys)
-        .where(and(eq(passkeys.userId, userId), reach))
-        .returning({ id: passkeys.id });
-      return rows.map((row) => row.id);
     },
 
     // ------------------------------------------------------------ events

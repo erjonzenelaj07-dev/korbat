@@ -22,14 +22,18 @@ export async function me(deps: AuthDeps, session: Session): Promise<MeResponse> 
   };
 }
 
+/** The user's live sessions, each under its handle: the id that stays while the session's token rotates. */
 export async function listSessions(deps: AuthDeps, session: Session): Promise<SessionsResponse> {
-  return { sessions: await deps.sessions.list(session.userId, session.sessionId) };
+  return { sessions: await deps.sessions.list(session.userId, session.handle) };
 }
 
-/** Revokes one of the user's own sessions. False when no such live session belongs to them. */
-export async function revokeSession(deps: AuthDeps, session: Session, sessionId: string): Promise<boolean> {
-  const revoked = await deps.sessions.revoke(sessionId, session.userId);
-  if (revoked) await deps.repo.appendEvent({ userId: session.userId, type: "session_revoked", deviceId: session.deviceId, metadata: { sessionId } });
+/**
+ * Revokes one of the user's own sessions, named by the handle the list gave, so a session that re-authenticated since
+ * it was listed (its token rotated) is still revoked. False when no such live session belongs to them.
+ */
+export async function revokeSession(deps: AuthDeps, session: Session, handle: string): Promise<boolean> {
+  const revoked = await deps.sessions.revoke(handle, session.userId);
+  if (revoked) await deps.repo.appendEvent({ userId: session.userId, type: "session_revoked", deviceId: session.deviceId, metadata: { handle } });
   return revoked;
 }
 
@@ -43,6 +47,6 @@ export async function revokeAllSessions(deps: AuthDeps, session: Session): Promi
 }
 
 export async function signOut(deps: AuthDeps, session: Session): Promise<void> {
-  await deps.sessions.revoke(session.sessionId, session.userId);
+  await deps.sessions.revoke(session.handle, session.userId);
   await deps.repo.appendEvent({ userId: session.userId, type: "session_revoked", deviceId: session.deviceId, metadata: { signOut: true } });
 }

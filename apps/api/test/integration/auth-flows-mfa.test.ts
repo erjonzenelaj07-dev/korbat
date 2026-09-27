@@ -6,6 +6,7 @@ import { startEmail, verifyEmail } from "../../src/auth/flows/email";
 import { confirmTotp, disableTotp, regenerateRecoveryCodes, setupTotp, verifyMfa } from "../../src/auth/flows/mfa";
 import { passwordSignIn, setPassword } from "../../src/auth/flows/password";
 import { BreachCheckUnavailable, hashPassword, needsRehash } from "../../src/auth/passwords";
+import { hashRecoveryCode } from "../../src/auth/recovery-codes";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { REAUTH_WINDOW_MS } from "../../src/auth/sessions";
 import { currentStep, hotp } from "../../src/auth/totp";
@@ -164,6 +165,47 @@ describe.skipIf(!process.env.INTEGRATION)("integration: password and MFA flows",
     expect(stored.totpSecretEnc).toMatch(/^v1:/);
     expect(stored.recoveryCodesHash).toHaveLength(10);
     expect(stored.recoveryCodesHash).not.toContain(confirmed.recoveryCodes[0]);
+  });
+
+  test("two confirmations of one setup at once turn two-factor on once: the recovery codes the one answer shows are the ones stored, and the other is refused before it writes", async () => {
+    const h = flowHarness(repo);
+    const account = await onboardedUser(h, repo);
+    await setupTotp(h.deps, account.session);
+    const pending = (await h.kv.get(`totp-pending:${account.session.handle}`))!;
+    const code = hotp(new Uint8Array(decrypt(pending, [h.deps.config.totpKey])), currentStep(h.clock.ms()));
+    // A double submit: the same session and the same code, twice at once. Each read of the pending secret waits for the
+    // other, so both requests hold it before either goes on, whatever the database's timing.
+    const get = h.kv.get.bind(h.kv);
+    let readers = 0;
+    let release!: () => void;
+    const bothRead = new Promise<void>((resolve) => (release = resolve));
+    h.kv.get = async (key) => {
+      const value = await get(key);
+      if (key === `totp-pending:${account.session.handle}`) {
+        if (++readers === 2) release();
+        await bothRead;
+      }
+      return value;
+    };
+    const outcomes = await Promise.allSettled([confirmTotp(h.deps, account.session, { code }), confirmTotp(h.deps, account.session, { code })]);
+    h.kv.get = get;
+    expect(readers).toBe(2);
+    const won = outcomes.filter((o): o is PromiseFulfilledResult<Awaited<ReturnType<typeof confirmTotp>>> => o.status === "fulfilled");
+    const lost = outcomes.filter((o): o is PromiseRejectedResult => o.status === "rejected");
+    expect([won.length, lost.length]).toEqual([1, 1]);
+    expect(lost[0]!.reason).toMatchObject({ code: "invalid_mfa_code", status: 400, message: "Two-factor setup expired. Start again." });
+
+    const stored = (await repo.findUserById(account.user.id))!;
+    expect(stored.recoveryCodesHash).toEqual(won[0]!.value.recoveryCodes.map((recoveryCode) => hashRecoveryCode(h.deps.config.authHmacKey, recoveryCode)));
+    expect(stored).toMatchObject({ totpSecretEnc: pending, totpEnabledAt: h.clock.now() });
+    expect((await repo.recentEvents(account.user.id)).filter((e) => e.type === "mfa_enabled")).toHaveLength(1);
+    expect(h.mailer.sent.filter((m) => m.template === "mfa_enabled").map((m) => m.to)).toEqual([account.email]);
+    // One rotation: the old token is dead, and the token the one answer carries is the session's.
+    expect(await h.deps.sessions.resolve(account.token)).toBeNull();
+    expect((await h.deps.sessions.resolve(won[0]!.value.issued.token))!.session).toMatchObject({ handle: account.session.handle, mfaEnabled: true, factors: { ...account.session.factors, totp: h.clock.ms() } });
+    // Every recovery code shown works; the first one proves it at the next sign-in.
+    const signed = await verifyMfa(h.deps, { mfaTicket: await mfaTicketByEmail(h, account), recoveryCode: won[0]!.value.recoveryCodes[0]! }, h.ctx);
+    expect(signed.mustReenrollMfa).toBe(true);
   });
 
   test("MFA sign-in accepts a current code once, rejects a replay, and voids a ticket after five wrong codes", { timeout: 60_000 }, async () => {

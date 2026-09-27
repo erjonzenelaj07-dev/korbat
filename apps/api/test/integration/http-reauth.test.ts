@@ -119,7 +119,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: strong freshness and re-
   /** The session's only factor is the sign-up's email code; moved ten minutes back, nothing within the window is left. */
   async function makeStale(b: Browser) {
     await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
+    await auth.deps.kv.del(`sess:2:${sessionIdOf(b)}`);
   }
   const error = async (res: Response) => ErrorEnvelope.parse(await res.json()).error;
   const post = (b: Browser, route: string, body: unknown) => (body === undefined ? b.fetch(route, { method: "POST" }) : b.fetch(route, { json: body }));
@@ -148,7 +148,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: strong freshness and re-
     const verify = await b.fetch("/api/auth/email/change/verify", { json: { flowId: randomToken(), code: "123456" } });
     expect(verify.status).toBe(400);
     expect((await error(verify)).code).toBe("invalid_code");
-    expect((await b.fetch(`/api/auth/sessions/${"0".repeat(64)}`, { method: "DELETE" })).status).toBe(404);
+    expect((await b.fetch(`/api/auth/sessions/${randomUUID()}`, { method: "DELETE" })).status).toBe(404);
     expect((await b.fetch("/api/account/export", { method: "POST" })).status).toBe(200);
 
     const before = b.cookie("__Host-korbat_session")!;

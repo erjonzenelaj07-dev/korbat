@@ -22,7 +22,7 @@ describe("the lockdown (1c design, sections 2 and 7.6)", () => {
     const report = await lockdown(h.deps, { userId: ada.user.id, anchor: h.now(), caller: { type: "not_me", deviceId: ada.session.deviceId }, ctx: h.ctx });
     expect(report).toEqual({ passkeysRemoved: [], totpCleared: false, passwordCleared: true });
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
-    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([h.now(), h.now()]);
     expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null, passwordChangedAt: h.now() });
     // Another account is not touched.
@@ -86,22 +86,75 @@ describe("the lockdown (1c design, sections 2 and 7.6)", () => {
   test("the caller's own metadata is kept beside the lockdown's, with the request's address hash and no device unless the caller names one", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
-    const appended: Parameters<AuthRepo["appendEvent"]>[0][] = [];
-    const append = h.deps.repo.appendEvent;
-    h.deps.repo.appendEvent = async (input) => {
-      appended.push(input);
-      await append(input);
+    const named = h.passkey(ada.user.id, new Date(h.now().getTime() - 30 * DAY));
+    // What the flow hands the repository for its one transaction: the clock, the reach, the named passkeys and the caller's event.
+    const handed: Parameters<AuthRepo["lockDown"]>[] = [];
+    const lockDown = h.deps.repo.lockDown;
+    h.deps.repo.lockDown = async (...args) => {
+      handed.push(args);
+      return lockDown(...args);
     };
-    await lockdown(h.deps, { userId: ada.user.id, anchor: h.now(), caller: { type: "email_changed", metadata: { from: "a", to: "b", reverted: true } }, ctx: h.ctx });
-    expect(appended).toEqual([
-      {
-        userId: ada.user.id,
-        type: "email_changed",
-        deviceId: null,
-        ipHash: h.ctx.ipHash,
-        metadata: { from: "a", to: "b", reverted: true, passkeysRemoved: [], totpCleared: false, passwordCleared: true },
-      },
+    h.advance(HOUR);
+    const anchor = new Date(h.now().getTime() - MINUTE);
+    await lockdown(h.deps, { userId: ada.user.id, anchor, passkeyIds: [named], caller: { type: "email_changed", metadata: { from: "a", to: "b", reverted: true } }, ctx: h.ctx });
+    expect(handed).toEqual([
+      [
+        ada.user.id,
+        {
+          now: h.now(),
+          since: new Date(anchor.getTime() - LOCKDOWN_LOOKBACK_MS),
+          passkeyIds: [named],
+          event: { type: "email_changed", deviceId: null, ipHash: h.ctx.ipHash, metadata: { from: "a", to: "b", reverted: true } },
+        },
+      ],
     ]);
+    expect(h.events).toEqual([
+      { userId: ada.user.id, type: "email_changed", deviceId: null, metadata: { from: "a", to: "b", reverted: true, passkeysRemoved: [named], totpCleared: false, passwordCleared: true } },
+    ]);
+  });
+
+  test("a lockdown whose transaction fails lands nothing: the sessions and devices stay live with no tombstone, the password, the passkeys and two-factor stay, and no event is recorded", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const other = h.session(ada.user.id);
+    await h.deps.repo.setPasswordHash(ada.user.id, "owner-password", h.now());
+    withTotp(h, ada.user.id, h.now());
+    const passkey = h.passkey(ada.user.id);
+    h.advance(HOUR);
+    h.faults.add("lockDown");
+    await expect(lockdown(h.deps, { userId: ada.user.id, anchor: h.now(), passkeyIds: [passkey], caller: { type: "not_me", deviceId: ada.session.deviceId }, ctx: h.ctx })).rejects.toThrow(/midway/);
+
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null, null]);
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBeNull();
+    expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([null, null]);
+    expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: "owner-password", totpSecretEnc: "v1:owner", totpLastStep: 7, recoveryCodesHash: ["owner-code"] });
+    expect(h.passkeys.map((p) => p.id)).toEqual([passkey]);
+    expect(h.events).toEqual([]);
+
+    // The account is as it was, so the next lockdown, from another link or from "not mine", finds everything still to do.
+    h.faults.clear();
+    const report = await lockdown(h.deps, { userId: ada.user.id, anchor: h.now(), passkeyIds: [passkey], caller: { type: "not_me", deviceId: ada.session.deviceId }, ctx: h.ctx });
+    expect(report).toEqual({ passkeysRemoved: [passkey], totpCleared: true, passwordCleared: true });
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
+    expect(h.events).toHaveLength(1);
+  });
+
+  test("a cache failure after the lockdown landed does not fail it: the rows are revoked and the event recorded, and only the tombstones are missing", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    await h.deps.repo.setPasswordHash(ada.user.id, "owner-password", h.now());
+    const set = h.kv.set.bind(h.kv);
+    h.kv.set = async () => {
+      throw new Error("the cache is unreachable");
+    };
+    const report = await lockdown(h.deps, { userId: ada.user.id, anchor: h.now(), caller: { type: "not_me" }, ctx: h.ctx });
+    h.kv.set = set;
+    expect(report).toEqual({ passkeysRemoved: [], totpCleared: false, passwordCleared: true });
+    expect(h.sessions.map((s) => s.revokedAt)).toEqual([h.now()]);
+    expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null });
+    expect(h.events.map((e) => e.type)).toEqual(["not_me"]);
+    // A cached copy of the session can live out its minute; the revoked row is what every other lookup reads.
+    expect(await h.kv.get(`sess:2:${ada.session.sessionId}`)).toBeNull();
   });
 
   test("run again, it changes nothing more: the first revocation times stay, and the second event says nothing was left to remove", async () => {

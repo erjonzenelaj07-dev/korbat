@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { authEvents, closeDb, createDb, type Db } from "@korbat/db";
@@ -204,22 +205,37 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
     });
   });
 
-  test("sessions can be listed, revoked one at a time, signed out, and revoked all at once", async () => {
+  test("sessions can be listed, revoked one at a time, signed out, and revoked all at once", { timeout: 30_000 }, async () => {
     const h = flowHarness(repo);
-    const account = await onboardedUser(h, repo);
+    const account = await onboardedUser(h, repo, { password: PASSWORD });
     const second = await h.deps.sessions.issue(account.user.id, account.session.deviceId, { factors: { email: h.clock.ms() } });
     const third = await h.deps.sessions.issue(account.user.id, account.session.deviceId, { factors: { email: h.clock.ms() } });
 
+    // Each session is listed under its handle, the id a rotation keeps; the hash of a token is never listed.
     const { sessions } = await listSessions(h.deps, account.session);
-    expect(sessions).toHaveLength(3);
-    expect(sessions.filter((s) => s.current).map((s) => s.id)).toEqual([account.session.sessionId]);
+    expect(sessions.map((s) => s.id).sort()).toEqual([account.session.handle, second.session.handle, third.session.handle].sort());
+    expect(sessions.filter((s) => s.current).map((s) => s.id)).toEqual([account.session.handle]);
 
-    expect(await revokeSession(h.deps, account.session, second.session.sessionId)).toBe(true);
-    expect(await revokeSession(h.deps, account.session, "0".repeat(64))).toBe(false);
+    // The listed session re-authenticates before the revoke lands, so its token rotates: the listed id still names it.
+    const rotated = await reauthenticate(h.deps, second.session, { method: "password", password: PASSWORD }, h.ctx);
     expect(await h.deps.sessions.resolve(second.token)).toBeNull();
+    expect(await h.deps.sessions.resolve(rotated.issued.token)).not.toBeNull();
+    expect(await revokeSession(h.deps, account.session, second.session.handle)).toBe(true);
+    expect(await h.deps.sessions.resolve(rotated.issued.token)).toBeNull();
+    expect(await revokeSession(h.deps, account.session, second.session.handle)).toBe(false);
+    expect(await revokeSession(h.deps, account.session, randomUUID())).toBe(false);
+    // Another account's session is not this one's to revoke.
+    const stranger = await onboardedUser(h, repo);
+    expect(await revokeSession(h.deps, account.session, stranger.session.handle)).toBe(false);
+    expect(await h.deps.sessions.resolve(stranger.token)).not.toBeNull();
+    expect((await eventsOf(account.user.id)).filter((e) => e.type === "session_revoked")).toEqual([
+      { type: "session_revoked", deviceId: account.session.deviceId, ipHash: null, metadata: { handle: second.session.handle } },
+    ]);
 
-    await signOut(h.deps, third.session);
-    expect(await h.deps.sessions.resolve(third.token)).toBeNull();
+    // Signing out after a rotation ends the session under its new token.
+    const thirdRotated = await h.deps.sessions.rotate(third.session);
+    await signOut(h.deps, thirdRotated.session);
+    expect(await h.deps.sessions.resolve(thirdRotated.token)).toBeNull();
 
     const fourth = await h.deps.sessions.issue(account.user.id, account.session.deviceId, { factors: { email: h.clock.ms() } });
     expect(await revokeAllSessions(h.deps, account.session)).toBe(2);
@@ -252,14 +268,20 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
     ]);
     await expect(notMe(h.deps, { token }, h.ctx)).rejects.toMatchObject({ code: "invalid_code", message: LINK_GONE });
 
-    // A link sent to an address the account has since left does nothing, and is spent.
+    // A link sent to an address the account has since left does nothing but refuse, and is not spent by the refusal.
     const moved = await onboardedUser(h, repo, { password: PASSWORD });
     const stale = await link({ userId: moved.user.id, deviceId: moved.session.deviceId, signedInAt: h.clock.ms(), passkeyId: null, sentTo: emailHash(key, moved.email) });
     await repo.changeEmail(moved.user.id, newTestEmail("moved"), h.clock.now());
-    await expect(notMe(h.deps, { token: stale }, h.ctx)).rejects.toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    for (let i = 0; i < 2; i++) await expect(notMe(h.deps, { token: stale }, h.ctx)).rejects.toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
     expect(await h.deps.sessions.resolve(moved.token)).not.toBeNull();
     expect((await repo.findUserById(moved.user.id))!.passwordHash).not.toBeNull();
     expect((await repo.recentEvents(moved.user.id)).map((e) => e.type)).not.toContain("not_me");
+    // Once the account is back at the address the alert went to, as the email undo puts it, the link works, once.
+    await repo.changeEmail(moved.user.id, moved.email, h.clock.now());
+    await notMe(h.deps, { token: stale }, h.ctx);
+    expect(await h.deps.sessions.resolve(moved.token)).toBeNull();
+    expect((await repo.findUserById(moved.user.id))!.passwordHash).toBeNull();
+    expect((await repo.recentEvents(moved.user.id)).map((e) => e.type).filter((type) => type === "not_me")).toHaveLength(1);
     await expect(notMe(h.deps, { token: stale }, h.ctx)).rejects.toMatchObject({ code: "invalid_code", message: LINK_GONE });
   });
 

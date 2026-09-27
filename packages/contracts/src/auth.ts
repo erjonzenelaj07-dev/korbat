@@ -205,7 +205,12 @@ export type ReauthResponse = z.infer<typeof ReauthResponse>;
 // ---------------------------------------------------------------- sessions and account
 
 export const SessionInfo = z.object({
-  id: z.string().regex(/^[0-9a-f]{64}$/),
+  /**
+   * The session's handle: a random id it keeps for its whole life, which `DELETE /api/auth/sessions/:id` takes. Never the
+   * token's hash, which changes whenever the token rotates (at every re-authentication, for one), so a session listed
+   * before a rotation can still be revoked after it.
+   */
+  id: z.uuid(),
   deviceLabel: z.string(),
   platform: Platform,
   createdAt: z.iso.datetime(),

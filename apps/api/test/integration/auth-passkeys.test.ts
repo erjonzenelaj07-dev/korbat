@@ -2,17 +2,19 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { authEvents, closeDb, createDb, passkeys, sessions, type Db } from "@korbat/db";
 import { AuthError } from "../../src/auth/context";
-import { randomToken } from "../../src/auth/crypto";
+import { encrypt, randomToken } from "../../src/auth/crypto";
 import { me } from "../../src/auth/flows/account";
+import { revertEmailChange, startEmailChange, verifyEmailChange } from "../../src/auth/flows/email-change";
 import { LOCKDOWN_LOOKBACK_MS } from "../../src/auth/flows/lockdown";
 import { emailHash } from "../../src/auth/identifiers";
 import { HOUR, MINUTE } from "../../src/auth/limits";
 import { listPasskeys, notMine, passkeyRemoveKey, registerOptions, registerVerify, removeByLink, removePasskey, renamePasskey, type PasskeyRemoveToken } from "../../src/auth/passkeys/flows";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import type { Session } from "../../src/auth/sessions";
+import { newTotpSecret } from "../../src/auth/totp";
 import { loadConfig } from "../../src/config";
 import { SoftAuthenticator, type SoftFlags } from "../auth/soft-authenticator";
-import { flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
+import { flowHarness, newTestEmail, onboardedUser, type FlowHarness } from "./flow-harness";
 
 const DAY = 24 * HOUR;
 const PASSWORD = "correct horse battery staple";
@@ -194,6 +196,47 @@ describe.skipIf(!process.env.INTEGRATION)("integration: passkey registration and
     expect(removed[0]!.metadata).toMatchObject({ passkeyId: added.id, via: "link", totpCleared: false, passwordCleared: true });
     expect([...(removed[0]!.metadata as { passkeysRemoved: string[] }).passkeysRemoved].sort()).toEqual([earlier, added.id, later].sort());
     await expect(removeByLink(h.deps, { token }, h.ctx)).rejects.toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+  });
+
+  test("the remove link opened while an attacker's address change stands is refused and kept; after the email undo it removes the passkey and the two-factor that the undo's day did not reach", { timeout: 30_000 }, async () => {
+    const h = flowHarness(repo);
+    const account = await onboardedUser(h, repo, { password: PASSWORD });
+    const createdAt = h.clock.ms();
+    // From a stolen session: a passkey, whose notice with the remove link goes to the owner, and two-factor from an hour before it.
+    const added = await register(h, account.session, new SoftAuthenticator(), "Not the owner's");
+    const removeUrl = h.mailer.sent.at(-1)!.data.removeUrl!;
+    const removeToken = removeUrl.slice(removeUrl.lastIndexOf("/") + 1);
+    await repo.enableTotp(account.user.id, { secretEnc: encrypt(Buffer.from(newTotpSecret()), h.deps.config.totpKey), recoveryCodesHash: ["attackers-code"], now: new Date(createdAt - HOUR) });
+    await h.deps.sessions.forgetUser(account.user.id);
+    // More than a day later the address is changed; the undo link goes to the owner's address too.
+    h.clock.advance(28 * HOUR);
+    const changing = (await h.deps.sessions.resolve(account.token))!.session;
+    const newAddress = newTestEmail("attacker");
+    const started = await startEmailChange(h.deps, changing, { email: newAddress }, h.ctx);
+    await verifyEmailChange(h.deps, changing, { flowId: started.flowId, code: h.mailer.lastCodeFor(newAddress)! });
+    const undoToken = /\/email-revert\/([A-Za-z0-9_-]{43})$/.exec(h.mailer.sent.at(-1)!.data.revertUrl!)![1]!;
+
+    // The owner opens the mails oldest first. The remove link does not match the address the account is at: refused, and kept.
+    h.clock.advance(HOUR);
+    await expect(removeByLink(h.deps, { token: removeToken }, h.ctx)).rejects.toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(await passkeyIds(account.user.id)).toEqual([added.id]);
+    expect(await h.deps.sessions.resolve(account.token)).not.toBeNull();
+    expect(await h.kv.get(passkeyRemoveKey(removeToken))).not.toBeNull();
+
+    // The undo puts the address back and locks down from the day before the change: the passkey and the two-factor are older.
+    await revertEmailChange(h.deps, { token: undoToken }, h.ctx);
+    expect((await repo.findUserById(account.user.id))!).toMatchObject({ email: account.email, passwordHash: null, totpSecretEnc: expect.stringMatching(/^v1:/), recoveryCodesHash: ["attackers-code"] });
+    expect(await passkeyIds(account.user.id)).toEqual([added.id]);
+    expect(await h.deps.sessions.resolve(account.token)).toBeNull();
+
+    // The remove link again, now that the address is the one it went to: anchored at the passkey's creation, it reaches both.
+    await removeByLink(h.deps, { token: removeToken }, h.ctx);
+    expect(await passkeyIds(account.user.id)).toEqual([]);
+    expect((await repo.findUserById(account.user.id))!).toMatchObject({ email: account.email, totpSecretEnc: null, totpEnabledAt: null, recoveryCodesHash: [] });
+    expect((await eventsOf(account.user.id)).filter((e) => e.type === "passkey_removed")).toEqual([
+      { type: "passkey_removed", deviceId: null, ipHash: h.ctx.ipHash, metadata: { passkeyId: added.id, via: "link", passkeysRemoved: [added.id], totpCleared: true, passwordCleared: true } },
+    ]);
+    await expect(removeByLink(h.deps, { token: removeToken }, h.ctx)).rejects.toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
   });
 
   test("'not mine' on a passkey of the last 7 days does the same from inside a session, and is recorded with that session's device", { timeout: 30_000 }, async () => {

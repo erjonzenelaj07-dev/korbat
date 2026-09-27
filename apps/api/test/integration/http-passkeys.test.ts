@@ -5,7 +5,7 @@ import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { ErrorEnvelope, FlowResponse, MeResponse, PasskeyListResponse, PasskeyOptionsResponse, PasskeyView, ReauthResponse } from "@korbat/contracts";
-import { closeDb, createDb, sessions, type Db } from "@korbat/db";
+import { closeDb, createDb, passkeys, sessions, type Db } from "@korbat/db";
 import { createApp } from "../../src/app";
 import { createAuth, redisKv, type Auth } from "../../src/auth";
 import { encrypt, randomToken, sha256Hex } from "../../src/auth/crypto";
@@ -16,7 +16,7 @@ import { smtpMailer } from "../../src/mail/smtp";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { SoftAuthenticator, type SoftFlags } from "../auth/soft-authenticator";
-import { Browser } from "./http-client";
+import { Browser, NativeClient } from "./http-client";
 import { codeFrom, inbox } from "./mailpit";
 
 const PASSWORD = "correct horse battery staple";
@@ -108,7 +108,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the passkey routes over 
   /** The session's only factor is the sign-up's email code; moved ten minutes back, nothing within the window is left. */
   async function makeStale(b: Browser) {
     await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
+    await auth.deps.kv.del(`sess:2:${sessionIdOf(b)}`);
   }
 
   const optionsFor = async (b: Browser, label = "ada") => {
@@ -220,8 +220,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the passkey routes over 
     expect((await ada.b.fetch("/api/me")).status).toBe(200);
   });
 
-  test("the limits: 10 options an hour per session, 30 renames and 10 removals an hour per account, 5 'not mine' a day, 10 remove links an hour per address; each answers rate_limited with a Retry-After", { timeout: 60_000 }, async () => {
-    const { b } = await signUp();
+  test("the limits: 10 options an hour per session, 30 renames and 10 removals an hour per account, 5 'not mine' lockdowns a day, 10 remove links an hour per address; each answers rate_limited with a Retry-After", { timeout: 60_000 }, async () => {
+    const { b, userId } = await signUp();
     const limited = async (res: Response, retryAfter: number) => {
       expect(res.status).toBe(429);
       expect((await error(res)).code).toBe("rate_limited");
@@ -233,10 +233,36 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the passkey routes over 
     await limited(await b.fetch(`/api/auth/passkeys/${randomUUID()}`, { method: "PATCH", json: { name: "Name" } }), 3600);
     for (let i = 0; i < 10; i++) expect((await b.fetch(`/api/auth/passkeys/${randomUUID()}`, { method: "DELETE" })).status).toBe(404);
     await limited(await b.fetch(`/api/auth/passkeys/${randomUUID()}`, { method: "DELETE" }), 3600);
-    for (let i = 0; i < 5; i++) expect((await b.fetch(`/api/auth/passkeys/${randomUUID()}/not-mine`, { method: "POST" })).status).toBe(404);
-    await limited(await b.fetch(`/api/auth/passkeys/${randomUUID()}/not-mine`, { method: "POST" }), 86400);
+    // "Not mine" counts only the calls that will run the lockdown: a miss, which any session of the account can make, costs nothing.
+    for (let i = 0; i < 7; i++) {
+      const miss = await b.fetch(`/api/auth/passkeys/${randomUUID()}/not-mine`, { method: "POST" });
+      expect(miss.status).toBe(404);
+      expect((await error(miss)).code).toBe("passkey_not_found");
+    }
     // Still signed in: none of the refusals was a lockdown.
     expect((await b.fetch("/api/me")).status).toBe(200);
+    /** A call that will run the lockdown: a passkey added just now, named by a session of the account that is fresh now, on a device of its own. */
+    const lockdownBound = async () => {
+      const device = await auth.deps.repo.createDevice({ userId, deviceHash: randomToken(), label: "Phone", platform: "ios", ipHash: null });
+      const issued = await auth.deps.sessions.issue(userId, device.id, { factors: { email: Date.now() } });
+      const [row] = await authDb.insert(passkeys).values({ userId, credentialId: randomToken(), publicKey: "cose-key", name: "Passkey", createdAt: new Date() }).returning({ id: passkeys.id });
+      const phone = new NativeClient(app);
+      phone.token = issued.token;
+      return { phone, res: await phone.fetch(`/api/auth/passkeys/${row!.id}/not-mine`, { method: "POST" }) };
+    };
+    for (let i = 0; i < 5; i++) {
+      const { phone, res } = await lockdownBound();
+      expect(res.status, `lockdown ${i + 1}`).toBe(204);
+      expect((await phone.fetch("/api/me")).status).toBe(401);
+    }
+    expect(await auth.deps.repo.countPasskeys(userId)).toBe(0);
+    expect((await b.fetch("/api/me")).status).toBe(401);
+    const sixth = await lockdownBound();
+    await limited(sixth.res, 86400);
+    // Refused before it ran: the sixth session is still signed in and its passkey is still there.
+    expect((await sixth.phone.fetch("/api/me")).status).toBe(200);
+    expect(await auth.deps.repo.countPasskeys(userId)).toBe(1);
+    expect((await auth.deps.repo.eventsSince(userId, new Date(0))).filter((e) => e.type === "passkey_removed")).toHaveLength(5);
 
     const stranger = web();
     for (let i = 0; i < 10; i++) {
@@ -302,7 +328,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the passkey routes over 
     const passkey = await register(b, "Laptop");
     await box.next(SUBJECT.passkeyAdded);
     await authDb.update(sessions).set({ passkeyId: passkey.id }).where(eq(sessions.id, sessionIdOf(b)));
-    await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
+    await auth.deps.kv.del(`sess:2:${sessionIdOf(b)}`);
     expect((await listed(b)).map((p) => [p.id, p.current])).toEqual([[passkey.id, true]]);
     expect((await b.fetch(`/api/auth/passkeys/${passkey.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await b.fetch("/api/me")).status).toBe(200);

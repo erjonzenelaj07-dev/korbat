@@ -40,7 +40,7 @@ export default function EmailRevert() {
         <Title>Your account is back at this address</Title>
         <Body>
           Every session is signed out, including any in this browser. Sign in again with a code sent to this address. Your password was removed, and so were any passkeys and
-          two-factor authentication set up in the day before the change; set them up again from Security.
+          two-factor authentication set up since the day before the change; set them up again from Security.
         </Body>
         <Button label="Sign in" onPress={() => router.replace("/signin")} />
       </Screen>
@@ -52,7 +52,7 @@ export default function EmailRevert() {
       <Title>Undo the email change</Title>
       <Body>
         If you did not move your korbat account to a new email address, confirm below. We will move it back to the address this link was sent to, sign out every session,
-        including this browser, remove your password, and remove any passkeys and two-factor authentication set up in the day before the change.
+        including this browser, remove your password, and remove any passkeys and two-factor authentication set up since the day before the change.
       </Body>
       <ErrorText message={valid ? error : "This link is incomplete. Open it again from the email."} />
       <Button label="Move my account back to this address" onPress={() => void confirm()} busy={busy} disabled={!valid} tone="danger" />

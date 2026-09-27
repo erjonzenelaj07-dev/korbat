@@ -188,7 +188,8 @@ export function authRoutes(deps: AuthDeps) {
 
   r.get("/sessions", requireSession, async (c) => c.json(await listSessions(deps, currentSession(c))));
 
-  r.delete("/sessions/:id", requireSession, fresh, validate("param", z.object({ id: z.string().regex(/^[0-9a-f]{64}$/) })), async (c) => {
+  // The id is the session's handle, as the list gives it: it stays while the session's token rotates.
+  r.delete("/sessions/:id", requireSession, fresh, validate("param", z.object({ id: z.uuid() })), async (c) => {
     const revoked = await revokeSession(deps, currentSession(c), c.req.valid("param").id);
     return revoked ? c.body(null, 204) : c.json(errorBody("not_found", "No such session", c.get("requestId")), 404);
   });

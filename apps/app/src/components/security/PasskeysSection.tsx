@@ -279,9 +279,11 @@ export function PasskeysSection({ me, run, refresh, openAdd }: { me: MeResponse;
           <Text nativeID="not-mine-title" accessibilityRole="header" aria-level={3} className="text-base font-semibold text-zinc-50">
             Lock down your account?
           </Text>
+          {/* What the lockdown reaches, as it is: from the day before this passkey to now, which can be a week, the person's own additions since included. */}
           <Text className="mt-1 text-sm text-zinc-300">
-            If you did not add the passkey named {notMine.name}, confirm below. Every session is signed out, including this browser, your password is removed, and anything
-            set up in the day before this passkey (other passkeys and two-factor authentication) is removed, so only someone with your email can get back in.
+            If you did not add the passkey named {notMine.name}, confirm below. Every session is signed out, including this browser, your password is removed, and every
+            passkey and two-factor authentication set up since the day before this passkey was added is removed, including any you set up yourself after it, so only someone
+            with your email can get back in.
           </Text>
           <Button label="Sign out everywhere and lock down" onPress={() => void lockDown(notMine)} busy={busy} tone="danger" />
           <Button label="Cancel" onPress={() => setNotMine(null)} tone="secondary" />

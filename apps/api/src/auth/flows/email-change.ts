@@ -143,17 +143,22 @@ async function openRevert(deps: AuthDeps, revert: PendingEmailRevert): Promise<s
  * before the change and the one behind the changing session removed, and two-factor set up since then
  * turned off, so whoever made the change keeps no way in. What the owner set up earlier stays, except
  * the password, which nobody can tell from one an attacker set. The address the account was moved to
- * is told nothing; the old one gets a short note.
+ * is told nothing; the old one gets a short note. The link is read and checked first and taken only
+ * just before the address is restored, as the other links are before their lockdown: a refusal that
+ * comes before the restore leaves it as it was. The restore itself can still refuse (email_in_use),
+ * and by then the link is spent.
  */
 export async function revertEmailChange(deps: AuthDeps, input: EmailRevertRequest, ctx: RequestContext): Promise<void> {
   await enforceLimit(deps.kv, `email-revert:ip:${ctx.ipHash}`, EMAIL_REVERTS_PER_IP_PER_HOUR, HOUR);
-  // Taken, not read: two requests with the same link cannot both act on it.
-  const raw = await deps.kv.take(emailRevertKey(input.token));
+  const linkKey = emailRevertKey(input.token);
+  const raw = await deps.kv.get(linkKey);
   if (!raw) throw new AuthError("invalid_code", 400, LINK_GONE);
   const revert = JSON.parse(raw) as PendingEmailRevert;
   // An account deleted since has nothing left to move back.
   const user = await deps.repo.findUserById(revert.userId);
   if (!user) throw new AuthError("invalid_code", 400, LINK_GONE);
+  // Taken only now, just before it acts: of two requests with the same link, one gets it and the other is refused.
+  if (!(await deps.kv.take(linkKey))) throw new AuthError("invalid_code", 400, LINK_GONE);
   try {
     await deps.repo.changeEmail(user.id, revert.oldEmail, deps.now());
   } catch (err) {

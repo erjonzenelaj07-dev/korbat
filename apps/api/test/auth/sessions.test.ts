@@ -6,8 +6,9 @@ import { randomToken, sha256Hex } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
 import { requireFreshAuth, requireStrongFreshAuth } from "../../src/auth/middleware";
 import type { AuthRepo } from "../../src/auth/repo";
-import { REAUTH_WINDOW_MS, createSessions, type Factors, type Session, type Sessions } from "../../src/auth/sessions";
+import { REAUTH_WINDOW_MS, SESSION_ABSOLUTE_MS, SESSION_CACHE_TTL_MS, createSessions, type Factors, type Session, type Sessions } from "../../src/auth/sessions";
 import type { AppEnv } from "../../src/env";
+import { memoryFlowHarness } from "./flow-harness";
 
 const T0 = 1_789_000_000_000;
 const MINUTE = 60_000;
@@ -94,6 +95,48 @@ describe("session factors: freshness and level (1c design, sections 2 and 7.1)",
     advance(REAUTH_WINDOW_MS + 1);
     expect(sessions.reauthNeeded(onlyEmail, 1)).toEqual({ level: 1, have: [] });
     expect(sessions.reauthNeeded(onlyEmail, 2)).toEqual({ level: 2, have: [] });
+  });
+});
+
+describe("the session cache key carries a version (1c design, amendments)", () => {
+  test("a copy the release before 1c cached, without handle or factors, is never read: the session comes from its row and is cached under the versioned key", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const issued = await h.deps.sessions.issue(ada.user.id, ada.session.deviceId, { factors: { email: h.now().getTime() } });
+    const id = issued.session.sessionId;
+    // What the previous release wrote under its key: seven fields, a year of life left, and no handle, factors or passkey.
+    const before = JSON.stringify({
+      session: { sessionId: id, userId: ada.user.id, deviceId: ada.session.deviceId, role: "user", onboarded: true, mfaEnabled: false, reauthAt: h.now().toISOString() },
+      absoluteExpiresAt: new Date(h.now().getTime() + SESSION_ABSOLUTE_MS).toISOString(),
+    });
+    await h.kv.set(`sess:${id}`, before, SESSION_CACHE_TTL_MS);
+
+    const resolved = (await h.deps.sessions.resolve(issued.token))!.session;
+    expect(resolved).toEqual(issued.session);
+    expect(resolved.handle).toBe(issued.session.handle);
+    // The freshness rules read the factors; on the old copy they would have had none to read.
+    expect(h.deps.sessions.recentFactors(resolved)).toEqual(["email"]);
+    expect(h.deps.sessions.reauthNeeded(resolved, 1)).toBeNull();
+    // The fill went under the versioned key, and the old entry is left to run out on its own.
+    expect(JSON.parse((await h.kv.get(`sess:2:${id}`))!)).toEqual({
+      session: { ...issued.session, reauthAt: issued.session.reauthAt.toISOString() },
+      absoluteExpiresAt: new Date(h.now().getTime() + SESSION_ABSOLUTE_MS).toISOString(),
+    });
+    expect(await h.kv.get(`sess:${id}`)).toBe(before);
+    h.advance(SESSION_CACHE_TTL_MS);
+    expect(await h.kv.get(`sess:${id}`)).toBeNull();
+  });
+
+  test("tombstones are written under the versioned key too, so a rotated token stops working at once", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const issued = await h.deps.sessions.issue(ada.user.id, ada.session.deviceId, { factors: { email: h.now().getTime() } });
+    expect(await h.deps.sessions.resolve(issued.token)).not.toBeNull();
+    const rotated = await h.deps.sessions.rotate(issued.session);
+    expect(await h.kv.get(`sess:2:${issued.session.sessionId}`)).toBe("revoked");
+    expect(await h.kv.get(`sess:${issued.session.sessionId}`)).toBeNull();
+    expect(await h.deps.sessions.resolve(issued.token)).toBeNull();
+    expect((await h.deps.sessions.resolve(rotated.token))?.session).toEqual(rotated.session);
   });
 });
 

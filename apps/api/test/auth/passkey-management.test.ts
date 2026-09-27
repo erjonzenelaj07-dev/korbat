@@ -3,11 +3,13 @@ import { describe, expect, test } from "vitest";
 import { AuthError } from "../../src/auth/context";
 import { randomToken } from "../../src/auth/crypto";
 import { me } from "../../src/auth/flows/account";
+import { revertEmailChange, startEmailChange, verifyEmailChange } from "../../src/auth/flows/email-change";
 import { LOCKDOWN_LOOKBACK_MS } from "../../src/auth/flows/lockdown";
 import { emailHash } from "../../src/auth/identifiers";
 import { HOUR, MINUTE } from "../../src/auth/limits";
 import {
   NEW_PASSKEY_MS,
+  NOT_MINE_PER_DAY,
   PASSKEY_ADDITIONS_PER_DAY,
   PASSKEY_CAP,
   PASSKEY_REMOVE_TTL_MS,
@@ -89,6 +91,8 @@ describe("passkey registration (1c design, section 7.3)", () => {
     expect(again.options.user.id).toBe(options.user.id);
     expect(again.options.challenge).not.toBe(options.challenge);
 
+    // The browser's prompt takes a minute, so a factor written at the verification would carry a later time than the sign-in's.
+    h.advance(MINUTE);
     const { passkey } = await registerVerify(h.deps, ada.session, { name: "Laptop", response });
     expect(passkey).toEqual({
       id: expect.stringMatching(/^[0-9a-f-]{36}$/),
@@ -121,8 +125,16 @@ describe("passkey registration (1c design, section 7.3)", () => {
       },
     ]);
     expect(h.events).toEqual([{ userId: ada.user.id, type: "passkey_added", deviceId: ada.session.deviceId, metadata: { passkeyId: passkey.id } }]);
-    // The session's factors are not touched: adding a passkey proves nothing about the session.
-    expect(await h.kv.get(`sess:${ada.session.sessionId}`)).toBeNull();
+    // The session's factors are not touched: adding a passkey proves nothing about the session. Its row holds what the
+    // sign-in proved, at the sign-in's time, and the freshness window was not moved on.
+    const row = h.sessions.find((s) => s.handle === ada.session.handle)!;
+    expect(ada.session.factors).toEqual({ email: h.now().getTime() - MINUTE });
+    expect(row.factors).toEqual(ada.session.factors);
+    expect(row.reauthAt).toEqual(ada.session.reauthAt);
+    expect(row.reauthAt).toEqual(new Date(h.now().getTime() - MINUTE));
+    // Nor was its token rotated or revoked: the row is under the same id, and no tombstone was written.
+    expect([row.id, row.revokedAt]).toEqual([ada.session.sessionId, null]);
+    expect(await h.kv.get(`sess:2:${ada.session.sessionId}`)).toBeNull();
 
     // The next options exclude the passkey, with its transports, so the same authenticator does not add another.
     const next = await registerOptions(h.deps, ada.session, { label: "ada" });
@@ -445,7 +457,7 @@ describe("'This wasn't me' on a passkey (1c design, sections 7.5 and 7.6)", () =
     await notMine(h.deps, ada.session, suspect, h.ctx);
     expect(h.passkeys.map((p) => p.id).sort()).toEqual([kept, bobs].sort());
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
-    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([h.now(), h.now()]);
     expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null, totpSecretEnc: null, totpEnabledAt: null });
     expect(h.events).toEqual([
@@ -480,18 +492,58 @@ describe("'This wasn't me' on a passkey (1c design, sections 7.5 and 7.6)", () =
     expect(h.events.at(-1)!.metadata.passkeysRemoved).toEqual(expect.arrayContaining([week, newest]));
   });
 
-  test("needs a fresh session at level 1 only, and allows 5 a day per account", async () => {
+  test("needs a fresh session at level 1 only; a call that finds no new passkey of the account costs the account nothing, however many a session makes", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
+    const bob = h.user("bob@korbat.local");
     const stale = h.session(ada.user.id, { factors: { email: h.now().getTime() - 10 * MINUTE } });
     const refused = await failure(notMine(h.deps, stale, randomUUID(), h.ctx));
     expect(refused).toMatchObject({ code: "reauth_required", status: 403 });
     expect(refused.details).toEqual({ level: 1, have: [] });
     // Level 1 is enough on an account with TOTP: whoever re-enrolled it holds level 2.
-    withTotp(h, ada.user.id, h.now());
+    withTotp(h, ada.user.id, new Date(h.now().getTime() - 30 * DAY));
     const weak = mfaSession(h, ada.user.id, { email: h.now().getTime() });
-    for (let i = 0; i < 5; i++) expect(await failure(notMine(h.deps, weak, randomUUID(), h.ctx))).toMatchObject({ code: "passkey_not_found" });
-    expect(await failure(notMine(h.deps, weak, randomUUID(), h.ctx))).toMatchObject({ code: "rate_limited", status: 429, retryAfterSeconds: DAY / 1000 });
+    // Any session of the account can make these calls, a stolen one too: unknown ids, another account's passkey, one older than a week.
+    const misses = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), h.passkey(bob.user.id), h.passkey(ada.user.id, new Date(h.now().getTime() - NEW_PASSKEY_MS))];
+    for (const id of misses) expect(await failure(notMine(h.deps, weak, id, h.ctx)), id).toMatchObject({ code: "passkey_not_found", status: 404 });
+    // None of them was counted, so the owner's five lockdowns of the day are all still there.
+    expect(await h.kv.get(`rl:passkey-not-mine:${ada.user.id}`)).toBeNull();
+    expect(h.events).toEqual([]);
+    const owners = mfaSession(h, ada.user.id, { email: h.now().getTime() });
+    const added = h.passkey(ada.user.id);
+    await notMine(h.deps, owners, added, h.ctx);
+    expect(await h.kv.get(`rl:passkey-not-mine:${ada.user.id}`)).toBe("1");
+    expect(h.events.map((e) => [e.type, e.metadata.passkeysRemoved])).toEqual([["passkey_removed", [added]]]);
+  });
+
+  test("allows five lockdowns a day per account: the sixth call that would run one is rate_limited and runs none, while a miss is still answered as a miss", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    expect(NOT_MINE_PER_DAY).toBe(5);
+    /** A call that will run the lockdown: a passkey added just now, named from a session that is fresh now. */
+    const bound = () => ({ session: h.session(ada.user.id), passkey: h.passkey(ada.user.id) });
+    for (let i = 0; i < NOT_MINE_PER_DAY; i++) {
+      const { session, passkey } = bound();
+      await notMine(h.deps, session, passkey, h.ctx);
+      h.advance(HOUR);
+    }
+    expect(h.events.map((e) => e.type)).toEqual(Array.from({ length: NOT_MINE_PER_DAY }, () => "passkey_removed"));
+    expect(h.passkeys).toEqual([]);
+
+    const sixth = bound();
+    expect(await failure(notMine(h.deps, sixth.session, sixth.passkey, h.ctx))).toMatchObject({ code: "rate_limited", status: 429, retryAfterSeconds: DAY / 1000 });
+    // Refused before it ran: the passkey, the session and the log are as they were.
+    expect(h.passkeys.map((p) => p.id)).toEqual([sixth.passkey]);
+    expect(h.sessions.find((s) => s.id === sixth.session.sessionId)!.revokedAt).toBeNull();
+    expect(h.events).toHaveLength(NOT_MINE_PER_DAY);
+    // The lookup comes before the bucket, so a miss says what it is, whatever the bucket holds.
+    expect(await failure(notMine(h.deps, sixth.session, randomUUID(), h.ctx))).toMatchObject({ code: "passkey_not_found", status: 404 });
+    // The day is counted from the first lockdown; once it is over the account has its five again.
+    h.advance(DAY - NOT_MINE_PER_DAY * HOUR);
+    const next = h.session(ada.user.id);
+    await notMine(h.deps, next, sixth.passkey, h.ctx);
+    expect(h.passkeys).toEqual([]);
+    expect(h.events).toHaveLength(NOT_MINE_PER_DAY + 1);
   });
 });
 
@@ -519,7 +571,7 @@ describe("the passkey remove link (1c design, section 7.6)", () => {
     await removeByLink(h.deps, { token }, stranger);
     expect(h.passkeys.map((p) => p.id)).toEqual([kept]);
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
-    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([h.now(), h.now()]);
     expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null, totpSecretEnc: null, totpEnabledAt: null });
     expect(h.events.at(-1)).toEqual({
@@ -555,26 +607,90 @@ describe("the passkey remove link (1c design, section 7.6)", () => {
     });
   });
 
-  test("after the account's address changed, the link does nothing but refuse, and is spent", async () => {
+  test("while the account's address differs from the one the link went to, the link does nothing but refuse and is not spent; once the address is back it works, once", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
     await h.deps.repo.setPasswordHash(ada.user.id, "owner-password", h.now());
-    const { token } = await registeredWithLink(h, ada.session);
+    const { passkey, token } = await registeredWithLink(h, ada.session);
+    const stored = await h.kv.get(passkeyRemoveKey(token));
     await h.deps.repo.changeEmail(ada.user.id, "attacker@korbat.local", h.now());
-    expect(await failure(removeByLink(h.deps, { token }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    for (let i = 0; i < 2; i++) expect(await failure(removeByLink(h.deps, { token }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
     expect(h.passkeys).toHaveLength(1);
     expect(h.sessions.map((s) => s.revokedAt)).toEqual([null]);
     expect(h.users.get(ada.user.id)).toMatchObject({ email: "attacker@korbat.local", passwordHash: "owner-password" });
     expect(h.events.map((e) => e.type)).toEqual(["passkey_added"]);
-    // Taken once: nobody can wait for the address to come back and use it then.
+    // Refused, not spent: the link is in the store as it was, and its seven days go on running.
+    expect(await h.kv.get(passkeyRemoveKey(token))).toBe(stored);
+    h.advance(DAY);
+    // The address is the owner's again, as the email undo leaves it: the same link now runs the lockdown.
     await h.deps.repo.changeEmail(ada.user.id, "ada@korbat.local", h.now());
-    expect(await failure(removeByLink(h.deps, { token }, h.ctx))).toMatchObject({ code: "invalid_code", message: LINK_GONE });
+    await removeByLink(h.deps, { token }, h.ctx);
+    expect(h.passkeys).toEqual([]);
+    expect(h.sessions.map((s) => s.revokedAt)).toEqual([h.now()]);
+    expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", passwordHash: null });
+    expect(h.events.map((e) => e.type)).toEqual(["passkey_added", "passkey_removed"]);
+    expect(h.events.at(-1)!.metadata).toMatchObject({ passkeyId: passkey.id, via: "link", passkeysRemoved: [passkey.id] });
+    // Once: it is spent now.
+    expect(await h.kv.get(passkeyRemoveKey(token))).toBeNull();
+    expect(await failure(removeByLink(h.deps, { token }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(h.events).toHaveLength(2);
     // A change of case alone is no change.
     const bob = h.user("bob@korbat.local");
     const bobs = await registeredWithLink(h, bob.session);
     await h.deps.repo.changeEmail(bob.user.id, "Bob@korbat.local", h.now());
     await removeByLink(h.deps, { token: bobs.token }, h.ctx);
     expect(h.sessions.filter((s) => s.userId === bob.user.id).map((s) => s.revokedAt)).toEqual([h.now()]);
+  });
+
+  test("the owner who opens the remove link before the email undo loses nothing: refused while the attacker's address stands, the link then removes what the undo's day did not reach", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    // From a stolen session: two-factor after an hour, a passkey after two (its notice, with the remove link, goes to the owner).
+    h.advance(HOUR);
+    withTotp(h, ada.user.id, h.now());
+    h.advance(HOUR);
+    const { passkey, token: removeToken } = await registeredWithLink(h, mfaSession(h, ada.user.id, { email: h.now().getTime(), totp: h.now().getTime() }));
+    // More than a day later, so that the undo's lockdown will not reach either, the address is changed; the undo link goes to the owner too.
+    h.advance(28 * HOUR);
+    const changing = mfaSession(h, ada.user.id, { email: h.now().getTime(), totp: h.now().getTime() });
+    const { flowId } = await startEmailChange(h.deps, changing, { email: "attacker@korbat.local" }, h.ctx);
+    await verifyEmailChange(h.deps, changing, { flowId, code: h.mailer.lastCodeFor("attacker@korbat.local")! });
+    const undoUrl = h.mailer.sent.at(-1)!.data.revertUrl!;
+    const undoToken = undoUrl.slice(undoUrl.lastIndexOf("/") + 1);
+
+    // The owner reads the mails oldest first: the remove link, which the address no longer matches.
+    h.advance(HOUR);
+    expect(await failure(removeByLink(h.deps, { token: removeToken }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    // Then the undo: the address is back, every session is out, and what was set up more than a day before the change stays.
+    await revertEmailChange(h.deps, { token: undoToken }, h.ctx);
+    expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", totpSecretEnc: "v1:owner" });
+    expect(h.passkeys.map((p) => p.id)).toEqual([passkey.id]);
+    expect(h.sessions.filter((s) => s.userId === ada.user.id && s.revokedAt === null)).toEqual([]);
+    expect(h.events.at(-1)!.metadata).toMatchObject({ reverted: true, passkeysRemoved: [], totpCleared: false });
+
+    // The remove link again: anchored at the passkey's creation, it reaches the day before it, and so the attacker's two-factor.
+    await removeByLink(h.deps, { token: removeToken }, h.ctx);
+    expect(h.passkeys).toEqual([]);
+    expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", totpSecretEnc: null, totpEnabledAt: null, recoveryCodesHash: [] });
+    expect(h.events.at(-1)).toEqual({
+      userId: ada.user.id,
+      type: "passkey_removed",
+      deviceId: null,
+      metadata: { passkeyId: passkey.id, via: "link", passkeysRemoved: [passkey.id], totpCleared: true, passwordCleared: true },
+    });
+    expect(await failure(removeByLink(h.deps, { token: removeToken }, h.ctx))).toMatchObject({ code: "invalid_code", message: LINK_GONE });
+  });
+
+  test("two uses of one link at once act once: one runs the lockdown, the other is refused", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const { passkey, token } = await registeredWithLink(h, ada.session);
+    const outcomes = await Promise.allSettled([removeByLink(h.deps, { token }, h.ctx), removeByLink(h.deps, { token }, { ...h.ctx, ipHash: randomToken() })]);
+    expect(outcomes.map((o) => o.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(outcomes.find((o): o is PromiseRejectedResult => o.status === "rejected")!.reason).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(h.events.filter((e) => e.type === "passkey_removed")).toEqual([
+      { userId: ada.user.id, type: "passkey_removed", deviceId: null, metadata: { passkeyId: passkey.id, via: "link", passkeysRemoved: [passkey.id], totpCleared: false, passwordCleared: true } },
+    ]);
   });
 
   test("an unknown link and one of an account that is gone are refused alike, and 10 tries an hour per address are allowed", async () => {

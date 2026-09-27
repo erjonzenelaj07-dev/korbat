@@ -3,7 +3,7 @@ import { Platform, ScrollView, Text, View, type TextInput } from "react-native";
 import { router } from "expo-router";
 import { BadgeVerifyResponse, DeleteStartResponse, EmailChangeResponse, FlowResponse, type MeResponse } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
-import { ReauthPanel, useReauth } from "@/components/security/ReauthPanel";
+import { ReauthPanel, ReenrollNotice, useReauth } from "@/components/security/ReauthPanel";
 import { SettingsNav } from "@/components/SettingsNav";
 import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/components/ui";
 import { api, ApiError, apiResponse, errorMessage } from "@/lib/api";
@@ -346,6 +346,8 @@ export default function AccountSettings() {
         <SettingsNav current="account" />
 
         {reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}
+        {/* After a recovery code confirmed an action here: the screen stays, with the field for the code it mailed, and says where two-factor is set up again. */}
+        <ReenrollNotice me={me} />
 
         <Section title="Email address">
           <EmailSection me={me} run={reauth.run} refresh={refresh} />

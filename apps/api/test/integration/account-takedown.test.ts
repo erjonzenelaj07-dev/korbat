@@ -152,7 +152,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: step 1 of an account del
     expect(row.deletedAt).not.toBeNull();
     // Only step 1 ran: the purge anonymises the row later.
     expect([row.email, row.purgedAt]).toEqual([owner.email, null]);
-    for (const id of owner.sessionIds) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of owner.sessionIds) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(await authRepo.pendingPurges()).toContain(owner.user.id);
   });
 
@@ -178,7 +178,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: step 1 of an account del
     expect(report.purged).toBeGreaterThanOrEqual(1);
 
     expect(await stepOneRows(ghost.user.id)).toEqual({ live_sessions: 0, sessions: 0, devices: 0, codes: 0, events: 0, passkeys: 0, user_handles: 0 });
-    for (const id of ghost.sessionIds) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of ghost.sessionIds) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(await authRow(ghost.user.id)).toMatchObject({ email: `deleted:${ghost.user.id}`, emailVerifiedAt: null, termsVersion: null });
     expect((await authRow(ghost.user.id)).purgedAt).not.toBeNull();
     expect((await apiDb.select().from(profiles).where(eq(profiles.id, ghost.user.id)))[0]).toMatchObject({ displayName: "Deleted account", handle: ghost.handle });

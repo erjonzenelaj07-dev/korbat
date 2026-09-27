@@ -34,7 +34,8 @@ const full = {
   following: [{ handle: "grace", since: at }],
   blocks: [{ handle: "troll", since: at }],
   mutes: [{ handle: "loud", since: at }],
-  sessions: [{ id: "a".repeat(64), createdAt: at, lastUsedAt: at, current: true }],
+  // A session is named by its handle, as the session list names it; the token's hash stays on the server.
+  sessions: [{ id: id(9), createdAt: at, lastUsedAt: at, current: true }],
   devices: [{ label: "Chrome on Windows", platform: "web", firstSeenAt: at, lastSeenAt: at }],
   events: [{ type: "signup", at }],
   missingMedia: [id(6)],
@@ -93,7 +94,7 @@ describe("export format", () => {
   });
 
   test("sessions, devices, events and missing media keep their shapes", () => {
-    expect(ExportFormat.safeParse({ ...full, sessions: [{ id: "a".repeat(64), createdAt: at, lastUsedAt: at }] }).success).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, sessions: [{ id: id(9), createdAt: at, lastUsedAt: at }] }).success).toBe(false);
     expect(ExportFormat.safeParse({ ...full, devices: [{ ...full.devices[0], label: null }] }).success).toBe(true);
     expect(ExportFormat.safeParse({ ...full, devices: [{ ...full.devices[0], platform: "desktop" }] }).success).toBe(false);
     expect(ExportFormat.safeParse({ ...full, events: [{ type: "signup" }] }).success).toBe(false);

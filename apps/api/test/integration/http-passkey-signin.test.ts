@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import Redis from "ioredis";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ErrorEnvelope, FlowResponse, MeResponse, PasskeyOptionsResponse, SessionResult } from "@korbat/contracts";
+import { ErrorEnvelope, FlowResponse, MeResponse, PasskeyOptionsResponse, ReauthResponse, SessionResult } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { createApp } from "../../src/app";
 import { createAuth, redisKv, type Auth } from "../../src/auth";
@@ -104,6 +104,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the passkey sign-in rout
     authenticator.get({ credentialId, rpId: config.WEBAUTHN_RP_ID, challenge: options.challenge, origin: config.APP_ORIGIN, flags, counter: 0 });
   const signinVerify = (client: Browser | NativeClient, response: unknown, platform: "web" | "ios", deviceId = randomToken()) =>
     client.fetch("/api/auth/passkey/signin/verify", { json: { deviceId, platform, response } });
+  /** The re-authentication options of the browser's session: its account's usable passkeys and a challenge bound to it. */
+  const reauthOptions = async (b: Browser) => {
+    const res = await b.fetch("/api/auth/reauth/passkey/options", { method: "POST" });
+    expect(res.status).toBe(200);
+    return PasskeyOptionsResponse.parse(await res.json()).options as unknown as PublicKeyCredentialRequestOptionsJSON;
+  };
 
   test("the sign-in routes need no session; the verify body is validated; re-auth options need a session", { timeout: 60_000 }, async () => {
     const stranger = web();
@@ -143,6 +149,81 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the passkey sign-in rout
     expect(nativeRes.headers.getSetCookie()).toHaveLength(0);
     phone.token = body.token;
     expect((await phone.fetch("/api/me")).status).toBe(200);
+  });
+
+  test("a sign-in assertion without the user handle is passkey_invalid, well-formed as it is; with the handle the same passkey signs in", { timeout: 60_000 }, async () => {
+    const { b } = await signUp();
+    const { authenticator, credentialId } = await register(b);
+    const browser = web();
+    const options = await signinOptions(browser);
+    // The options named no account (the allow list is empty), so the response has to: a discoverable passkey always does.
+    const withoutHandle = authenticator.get({ credentialId, rpId: config.WEBAUTHN_RP_ID, challenge: options.challenge, origin: config.APP_ORIGIN, flags: ALL, counter: 0, userHandle: null });
+    expect("userHandle" in withoutHandle.response).toBe(false);
+    const refused = await signinVerify(browser, withoutHandle, "web");
+    expect(refused.status).toBe(401);
+    expect((await error(refused)).code).toBe("passkey_invalid");
+    expect(browser.cookie("__Host-korbat_session")).toBeUndefined();
+    expect((await auth.deps.repo.findPasskeyByCredentialId(credentialId))!.lastUsedAt).toBeNull();
+
+    const signedIn = await signinVerify(browser, assertion(authenticator, await signinOptions(browser), credentialId), "web");
+    expect(signedIn.status).toBe(200);
+    expect(browser.cookie("__Host-korbat_session")).toBeDefined();
+  });
+
+  test("re-authentication with a passkey over HTTP: the session's own passkey gives level 2 and a rotated cookie, with or without a user handle; another account's passkey is passkey_invalid and changes nothing", { timeout: 60_000 }, async () => {
+    const ada = await signUp();
+    const bob = await signUp();
+    const { authenticator, credentialId } = await register(ada.b);
+
+    // bob's session gets a challenge of its own and answers it with ada's passkey: the signature checks, the account does not.
+    const bobsOptions = await reauthOptions(bob.b);
+    expect(bobsOptions.allowCredentials).toEqual([]);
+    const bobsCookie = bob.b.cookie("__Host-korbat_session");
+    const foreign = await bob.b.fetch("/api/auth/reauth", { json: { method: "passkey", response: assertion(authenticator, bobsOptions, credentialId) } });
+    expect(foreign.status).toBe(401);
+    expect((await error(foreign)).code).toBe("passkey_invalid");
+    expect(foreign.headers.getSetCookie()).toHaveLength(0);
+    expect(bob.b.cookie("__Host-korbat_session")).toBe(bobsCookie);
+    expect((await bob.b.fetch("/api/me")).status).toBe(200);
+    expect((await auth.deps.repo.findPasskeyByCredentialId(credentialId))!).toMatchObject({ userId: ada.userId, counter: 0, lastUsedAt: null, suspectAt: null });
+    // A level-1 route still passes on the sign-up's email code, a moment ago; nothing was added to bob's session.
+    const bobsSession = (await auth.deps.sessions.resolve(bobsCookie!))!.session;
+    expect(Object.keys(bobsSession.factors)).toEqual(["email"]);
+
+    // ada's own session: the options list the passkey, and the assertion, here without a user handle as an authenticator
+    // given an allow list may answer, re-authenticates at level 2.
+    const adasOptions = await reauthOptions(ada.b);
+    expect(adasOptions.allowCredentials!.map((c) => c.id)).toEqual([credentialId]);
+    const adasCookie = ada.b.cookie("__Host-korbat_session")!;
+    const withoutHandle = authenticator.get({ credentialId, rpId: config.WEBAUTHN_RP_ID, challenge: adasOptions.challenge, origin: config.APP_ORIGIN, flags: ALL, counter: 0, userHandle: null });
+    const own = await ada.b.fetch("/api/auth/reauth", { json: { method: "passkey", response: withoutHandle } });
+    expect(own.status).toBe(200);
+    expect(ReauthResponse.parse(await own.json())).toEqual({ level: 2 });
+    expect(ada.b.cookie("__Host-korbat_session")).not.toBe(adasCookie);
+    expect((await app.request("/api/me", { headers: { cookie: `__Host-korbat_session=${adasCookie}` } })).status).toBe(401);
+    expect((await ada.b.fetch("/api/me")).status).toBe(200);
+    expect((await auth.deps.repo.findPasskeyByCredentialId(credentialId))!.lastUsedAt).not.toBeNull();
+    // The challenge answered once.
+    const replay = await ada.b.fetch("/api/auth/reauth", { json: { method: "passkey", response: withoutHandle } });
+    expect(replay.status).toBe(401);
+    expect((await error(replay)).code).toBe("passkey_invalid");
+  });
+
+  test("on an account with TOTP, a passkey registered with user verification but asserted without it stops at the TOTP step; asserted with it, it signs in", { timeout: 60_000 }, async () => {
+    const { b, userId } = await signUp();
+    const { authenticator, credentialId } = await register(b, ALL);
+    await withTotp(userId);
+
+    const browser = web();
+    const pending = await signinVerify(browser, assertion(authenticator, await signinOptions(browser), credentialId, BARE), "web");
+    expect(pending.status).toBe(200);
+    expect(((await pending.json()) as { result: string }).result).toBe("mfa_required");
+    expect(browser.cookie("__Host-korbat_session")).toBeUndefined();
+
+    const verified = await signinVerify(browser, assertion(authenticator, await signinOptions(browser), credentialId, ALL), "web");
+    expect(verified.status).toBe(200);
+    expect(await verified.json()).toEqual({ result: "session", mustReenrollMfa: false });
+    expect(browser.cookie("__Host-korbat_session")).toBeDefined();
   });
 
   test("on an account with TOTP, a passkey without user verification stops at the TOTP step, whose code completes the sign-in", { timeout: 60_000 }, async () => {

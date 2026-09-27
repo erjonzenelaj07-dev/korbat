@@ -69,9 +69,18 @@ interface CachedSession {
   absoluteExpiresAt: string;
 }
 
+/**
+ * The version of the cached copy's shape, part of every cache key. The key-value store keeps running across a deploy, so
+ * for a minute the new release would read copies the previous one wrote: raise this whenever CachedSession changes, and
+ * those copies are never read and run out on their own. 2 is the shape with the handle, the factors and the passkey
+ * (1c); before it the key was `sess:<id>`. Tombstones move with the entries: a revoked session is revoked in the
+ * database first, so one the previous release wrote is not needed to keep it out.
+ */
+const CACHE_VERSION = 2;
+
 export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: () => Date }) {
   const now = deps.now ?? (() => new Date());
-  const cacheKey = (sessionId: string) => `sess:${sessionId}`;
+  const cacheKey = (sessionId: string) => `sess:${CACHE_VERSION}:${sessionId}`;
   const REVOKED = "revoked";
 
   const fromRow = (row: ActiveSessionRow): Session => ({
@@ -158,10 +167,16 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
     return { session, slid };
   }
 
-  async function revoke(sessionId: string, userId: string): Promise<boolean> {
-    const revoked = await deps.repo.revokeSession(sessionId, userId, now());
-    if (revoked) await tombstone([sessionId]);
-    return revoked;
+  /**
+   * Revokes one session of the user by its handle, the id the list shows: the token's hash changes with every rotation,
+   * so a session that re-authenticated since it was listed could not be found by it. The tombstone goes under the id
+   * the row has now, where its cached copy lies. False when no such live session belongs to the user.
+   */
+  async function revoke(handle: string, userId: string): Promise<boolean> {
+    const id = await deps.repo.revokeSession(handle, userId, now());
+    if (id === undefined) return false;
+    await tombstone([id]);
+    return true;
   }
 
   async function revokeAll(userId: string): Promise<number> {
@@ -223,15 +238,16 @@ export function createSessions(deps: { repo: AuthRepo; kv: KeyValueStore; now?: 
     return met ? null : { level: need, have };
   }
 
-  async function list(userId: string, currentSessionId: string): Promise<SessionInfo[]> {
+  /** The user's live sessions, each under its handle, which stays while its token rotates; `currentHandle` marks the asking one. */
+  async function list(userId: string, currentHandle: string): Promise<SessionInfo[]> {
     const rows = await deps.repo.listActiveSessions(userId, now());
     return rows.map((r) => ({
-      id: r.id,
+      id: r.handle,
       deviceLabel: r.deviceLabel ?? "Unknown device",
       platform: r.platform as Platform,
       createdAt: r.createdAt.toISOString(),
       lastUsedAt: r.lastUsedAt.toISOString(),
-      current: r.id === currentSessionId,
+      current: r.handle === currentHandle,
     }));
   }
 

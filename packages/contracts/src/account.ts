@@ -70,6 +70,7 @@ export const ExportFormat = z.object({
   following: z.array(HandleRef),
   blocks: z.array(HandleRef),
   mutes: z.array(HandleRef),
+  /** The live sessions. `id` is the session's handle, as the session list names it; the hash of its token never leaves the server. */
   sessions: z.array(z.object({ id: z.string(), createdAt: at, lastUsedAt: at, current: z.boolean() })),
   devices: z.array(z.object({ label: z.string().nullable(), platform: Platform, firstSeenAt: at, lastSeenAt: at })),
   /** The account's own security events: their kind and time, without the metadata. */

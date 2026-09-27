@@ -7,6 +7,7 @@ import { encrypt, randomToken } from "../../src/auth/crypto";
 import { notMe } from "../../src/auth/flows/not-me";
 import { reauthenticate } from "../../src/auth/flows/reauth";
 import { notMeKey } from "../../src/auth/flows/signin";
+import { MINUTE } from "../../src/auth/limits";
 import { reauthOptions, registerOptions, registerVerify, signInOptions, signInVerify } from "../../src/auth/passkeys/flows";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import type { Session } from "../../src/auth/sessions";
@@ -79,7 +80,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: passkey sign-in and re-a
     const auth = new SoftAuthenticator();
     const credentialId = await register(h, account.session, auth);
     // Sign out the registration session; the passkey signs in without it.
-    await h.deps.sessions.revoke(account.session.sessionId, account.user.id);
+    await h.deps.sessions.revoke(account.session.handle, account.user.id);
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();
 
     const outcome = await passkeySignIn(h, auth, credentialId, randomToken(), { counter: 1 });
@@ -125,6 +126,52 @@ describe.skipIf(!process.env.INTEGRATION)("integration: passkey sign-in and re-a
     const { verifyMfa } = await import("../../src/auth/flows/mfa");
     const signed = await verifyMfa(h.deps, { mfaTicket: pending.mfaTicket, code: hotp(secret, currentStep(h.clock.ms())) }, h.ctx);
     expect(Object.keys(signed.issued.session.factors).sort()).toEqual(["passkey", "totp"]);
+
+    // The user-verified passkey asserted without user verification stops there too: the registration alone does not make two factors.
+    expect((await passkeyRow(uvId)).uvInitialized).toBe(true);
+    expect((await passkeySignIn(h, uv, uvId, randomToken(), { flags: BARE })).kind).toBe("mfa");
+    // And re-authenticating with it that way writes the one-factor kind, which is not level 2.
+    const session = (await h.deps.sessions.resolve(skipped.issued.token))!.session;
+    h.clock.advance(10 * MINUTE);
+    const { options } = await reauthOptions(h.deps, session);
+    const response = uv.get({ credentialId: uvId, rpId: RP_ID, challenge: options.challenge, origin: ORIGIN, flags: BARE, counter: 0 });
+    const reauthed = await reauthenticate(h.deps, session, { method: "passkey", response }, h.ctx);
+    expect(reauthed.level).toBe(1);
+    expect(reauthed.issued.session.factors).toMatchObject({ passkey: h.clock.ms() });
+  });
+
+  test("another account's passkey never re-authenticates a session: the repository looks it up with the session's account, and the passkey's row stays as it was", { timeout: 30_000 }, async () => {
+    const h = flowHarness(repo);
+    const ada = await onboardedUser(h, repo);
+    const bob = await onboardedUser(h, repo);
+    const auth = new SoftAuthenticator();
+    const credentialId = await register(h, ada.session, auth);
+    // ada's passkey has a use on the record.
+    expect((await passkeySignIn(h, auth, credentialId, randomToken(), { counter: 7 })).kind).toBe("session");
+    const before = await passkeyRow(credentialId);
+    expect(before).toMatchObject({ userId: ada.user.id, counter: 7, lastUsedAt: h.clock.now(), suspectAt: null });
+    h.clock.advance(MINUTE);
+
+    // bob's session gets a challenge of its own and answers it with ada's passkey: a signature that checks, over bob's challenge.
+    const { options } = await reauthOptions(h.deps, bob.session);
+    expect(options.allowCredentials).toEqual([]);
+    const response = auth.get({ credentialId, rpId: RP_ID, challenge: options.challenge, origin: ORIGIN, flags: ALL, counter: 20 });
+    expect(await failure(reauthenticate(h.deps, bob.session, { method: "passkey", response }, h.ctx))).toMatchObject({ code: "passkey_invalid", status: 401 });
+    // ada's passkey was never found, so nothing of it moved: not the counter, not the use, and it was not suspected.
+    expect(await passkeyRow(credentialId)).toEqual(before);
+    // bob's session proved nothing: its factors are the sign-in's, and its token was not rotated.
+    const bobs = (await h.deps.sessions.resolve(bob.token))!.session;
+    expect(bobs).toEqual(bob.session);
+    expect(h.deps.sessions.level(bobs)).toBe(1);
+    const events = await db.select({ type: authEvents.type }).from(authEvents).where(eq(authEvents.userId, ada.user.id));
+    expect(events.map((e) => e.type)).not.toContain("passkey_counter_regression");
+
+    // The passkey still re-authenticates a session of its own account.
+    const signedIn = (await h.deps.sessions.resolve(ada.token))!.session;
+    const own = await reauthOptions(h.deps, signedIn);
+    const ownResponse = auth.get({ credentialId, rpId: RP_ID, challenge: own.options.challenge, origin: ORIGIN, flags: ALL, counter: 21 });
+    expect((await reauthenticate(h.deps, signedIn, { method: "passkey", response: ownResponse }, h.ctx)).level).toBe(2);
+    expect(await passkeyRow(credentialId)).toMatchObject({ counter: 21, lastUsedAt: h.clock.now() });
   });
 
   test("a counter regression end to end suspends the passkey, records it, mails the owner and refuses; a later good sign-in is passkey_suspended", { timeout: 30_000 }, async () => {

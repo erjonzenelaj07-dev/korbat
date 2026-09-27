@@ -22,6 +22,8 @@ import {
   ReauthRequest,
   ReauthResponse,
   RecoveryCode,
+  SessionInfo,
+  SessionsResponse,
   SignupCompleteRequest,
   TotpDisableRequest,
 } from "../src/index";
@@ -118,6 +120,18 @@ describe("auth requests and responses", () => {
   test("signup completion needs an ISO calendar date", () => {
     expect(SignupCompleteRequest.safeParse({ flowId: flow, dateOfBirth: "2008-02-29", termsVersion: "draft" }).success).toBe(true);
     expect(SignupCompleteRequest.safeParse({ flowId: flow, dateOfBirth: "29/02/2008", termsVersion: "draft" }).success).toBe(false);
+  });
+  test("a listed session is named by its handle, a uuid that stays while its token rotates, and never by the token's hash", () => {
+    const session = { id: userId, deviceLabel: "Chrome on Windows", platform: "web", createdAt: "2026-09-24T10:00:00.000Z", lastUsedAt: "2026-09-24T10:05:00.000Z", current: true };
+    expect(SessionsResponse.parse({ sessions: [session, { ...session, id: "0b0e7c1a-5a53-4f0e-8a3f-2f6f8f5d9c11", platform: "ios", current: false }] }).sessions.map((s) => [s.id, s.current])).toEqual([
+      [userId, true],
+      ["0b0e7c1a-5a53-4f0e-8a3f-2f6f8f5d9c11", false],
+    ]);
+    // What the list carried before: sha256 of the token, which a rotation replaces, so a listed session could not be revoked after one.
+    expect(SessionInfo.safeParse({ ...session, id: "a".repeat(64) }).success).toBe(false);
+    expect(SessionInfo.safeParse({ ...session, id: "not-a-uuid" }).success).toBe(false);
+    expect(SessionInfo.safeParse({ ...session, id: undefined }).success).toBe(false);
+    expect(SessionInfo.safeParse({ ...session, platform: "desktop" }).success).toBe(false);
   });
   test("me response carries email, the count of passkeys and a nullable profile", () => {
     const me = {

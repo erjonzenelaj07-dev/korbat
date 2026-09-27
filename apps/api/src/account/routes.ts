@@ -52,7 +52,8 @@ export function accountRoutes(deps: AccountDeps, guard: MiddlewareHandler<AppEnv
     let begin!: () => void;
     const begun = new Promise<void>((resolve) => (begin = resolve));
     const archive = (async () => {
-      plan = await buildExport(deps, session.userId, session.sessionId, now);
+      // By its handle, as the auth module lists the sessions: the hash of the token is no part of the export.
+      plan = await buildExport(deps, session.userId, session.handle, now);
       const writer = createZipWriter(async (chunk) => {
         if (!started) {
           started = true;

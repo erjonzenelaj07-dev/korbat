@@ -108,12 +108,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export over HTT
   /** The session's only factor is the sign-up's email code; moved ten minutes back, nothing within the window is left, so the freshness check fails. */
   async function makeStale(b: Browser) {
     await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
+    await auth.deps.kv.del(`sess:2:${sessionIdOf(b)}`);
   }
   /** The opposite: the session proved a credential just now. */
   async function makeFresh(b: Browser) {
     await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date());
-    await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
+    await auth.deps.kv.del(`sess:2:${sessionIdOf(b)}`);
   }
   const eventTypes = async (userId: string) => (await auth.deps.repo.recentEvents(userId)).map((e) => e.type);
 
@@ -160,10 +160,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export over HTT
     const files = unzipSync(new Uint8Array(await res.arrayBuffer()));
     expect(Object.keys(files).sort()).toEqual(["export.json", `media/${image}.webp`].sort());
     expect(strFromU8(files[`media/${image}.webp`]!)).toBe(`large-webp-of-${image}`);
-    const json = ExportFormat.parse(JSON.parse(strFromU8(files["export.json"]!)));
+    const text = strFromU8(files["export.json"]!);
+    const json = ExportFormat.parse(JSON.parse(text));
     expect(json.account).toMatchObject({ id: ada.userId, email: ada.email, role: "user", termsVersion: config.TERMS_VERSION });
     expect(json.profile).toMatchObject({ handle: ada.handle, displayName: `User ${ada.handle}`, handleHistory: [ada.handle] });
-    expect(json.sessions).toEqual([{ id: sessionIdOf(ada.b), createdAt: expect.any(String), lastUsedAt: expect.any(String), current: true }]);
+    // The session under its handle, marked as the one that asked for the export; the hash of its token stays on the server.
+    const { handle: sessionHandle } = (await auth.deps.repo.findActiveSession(sessionIdOf(ada.b), new Date()))!;
+    expect(json.sessions).toEqual([{ id: sessionHandle, createdAt: expect.any(String), lastUsedAt: expect.any(String), current: true }]);
+    expect(text).not.toContain(sessionIdOf(ada.b));
     expect(json.posts).toHaveLength(1);
     expect(json.posts[0]).toMatchObject({ id: post.id, body: "a photo", media: [{ id: image, file: `media/${image}.webp`, altText: "a harbour at dawn", width: 1200, height: 800 }] });
     expect(json.missingMedia).toEqual([]);

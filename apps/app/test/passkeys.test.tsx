@@ -3,12 +3,12 @@ import path from "node:path";
 import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { MeResponse, PasskeyView } from "@korbat/contracts";
+import { ReauthResponse, type MeResponse, type PasskeyView } from "@korbat/contracts";
 import EmailRevert from "../src/app/email-revert/[token]";
 import NotMe from "../src/app/not-me/[token]";
 import PasskeyRemove from "../src/app/passkey-remove/[token]";
 import { AddPasskeyDialog, PasskeyItem } from "../src/components/security/PasskeysSection";
-import { methodsForLevel, ReauthPanel, reauthNeeded, type Method } from "../src/components/security/ReauthPanel";
+import { methodsForLevel, panelStart, REENROLL_HINT, ReauthPanel, reauthNeeded, recoveryCodeSpent, ReenrollNotice, type Method } from "../src/components/security/ReauthPanel";
 import { ApiError, apiResponse, messageFor } from "../src/lib/api";
 import { AUTOFILL_RESTART_MS, createAutofillScheduler, SUGGESTION_SNOOZE_MS, suggestPasskey, type AutofillEffects } from "../src/lib/passkeys";
 import { TERMS_SECTIONS } from "../src/lib/terms";
@@ -29,7 +29,7 @@ const route = vi.hoisted(() => ({ params: {} as Record<string, string> }));
 // href, a page reads its route parameters, and nothing navigates in a static render.
 vi.mock("expo-router", () => ({
   Link: ({ href, children }: { href: string; children: ReactElement }) => cloneElement(children, { href } as object),
-  router: { replace: () => undefined, push: () => undefined },
+  router: { replace: () => undefined, push: () => undefined, setParams: () => undefined },
   useLocalSearchParams: () => route.params,
   useFocusEffect: () => undefined,
 }));
@@ -357,6 +357,87 @@ describe("the re-authentication panel", () => {
     const first = html(<ReauthPanel me={me} pending={{ action: noop, needed: { level: 2, have: ["totp"] } }} onClose={() => undefined} />);
     expect(chips(first)).toEqual(["Password", "Email code"]);
   });
+
+  test("closing the panel never replaces the route, which would mount the screen anew and lose what the action just showed: the hint is a parameter set on the route the screen is on", () => {
+    const source = read("components", "security", "ReauthPanel.tsx");
+    // A replace builds a route with a new key: the new recovery codes, a setup's QR code and the flow id of a mailed code would go with the old one.
+    expect(source).not.toMatch(/router\.(replace|push|navigate)\(/);
+    expect(source.match(/router\.setParams\(\{ reenroll: "1" \}\)/g)).toHaveLength(1);
+    // Security reads the parameter where it stands and hands it to the two-factor section; Account and Profile show the notice.
+    const security = read("app", "settings", "security.tsx");
+    expect(security).toContain("useLocalSearchParams<{ reenroll?: string; add?: string }>()");
+    expect(security).toContain('reenroll={reenroll === "1"}');
+    for (const screen of ["account.tsx", "profile.tsx"]) expect(read("app", "settings", screen), screen).toContain("<ReenrollNotice me={me} />");
+  });
+
+  test("on a screen without a two-factor section the hint is a notice with a link to Security, shown when the parameter is set and two-factor is on", () => {
+    route.params = { reenroll: "1" };
+    const out = html(<ReenrollNotice me={me} />);
+    expect(out).toContain(REENROLL_HINT);
+    expect(out).toMatch(/<a[^>]*href="\/settings\/security\?reenroll=1"[^>]*>/);
+    // One sentence on the three screens: Security's own, which its two-factor section shows.
+    expect(REENROLL_HINT).toBe("You used a recovery code. Set up two-factor again to get a fresh set of codes.");
+    expect(read("components", "security", "MfaSection.tsx")).toContain(REENROLL_HINT);
+    route.params = {};
+    expect(html(<ReenrollNotice me={me} />)).toBe("");
+    route.params = { reenroll: "0" };
+    expect(html(<ReenrollNotice me={me} />)).toBe("");
+    // Without two-factor there is nothing to set up again, as on Security.
+    route.params = { reenroll: "1" };
+    expect(html(<ReenrollNotice me={{ ...me, user: { ...me.user, mfaEnabled: false } }} />)).toBe("");
+    route.params = {};
+  });
+
+  test("a spent recovery code is remembered for the panel's life: whichever answer carried it, and whether or not the action then went through, the panel closes with the hint", () => {
+    const spent = (answers: unknown[]): boolean => answers.map((answer) => ReauthResponse.parse(answer)).reduce(recoveryCodeSpent, false);
+    // At level 2 with nothing proved in time: the recovery code first, after which the action is refused again, then the password.
+    expect(spent([{ level: 1, mustReenrollMfa: true }, { level: 2 }])).toBe(true);
+    // The password first, then the recovery code.
+    expect(spent([{ level: 1 }, { level: 2, mustReenrollMfa: true }])).toBe(true);
+    // A recovery code, after which the action fails for a reason of its own: the panel stays open with the error and closes by Cancel.
+    expect(spent([{ level: 2, mustReenrollMfa: true }])).toBe(true);
+    // No recovery code, no hint.
+    expect(spent([{ level: 1 }, { level: 2 }])).toBe(false);
+    expect(spent([{ level: 2, mustReenrollMfa: false }])).toBe(false);
+    expect(spent([])).toBe(false);
+
+    const source = read("components", "security", "ReauthPanel.tsx");
+    // Held in a ref, which outlives one answer, and read from every answer before the action runs.
+    expect(source).toContain("const recoveryUsed = useRef(false);");
+    expect(source).toContain("recoveryUsed.current = recoveryCodeSpent(recoveryUsed.current, result);");
+    expect(source.indexOf("recoveryUsed.current = recoveryCodeSpent(")).toBeLessThan(source.indexOf("await pending.action();"));
+    // Acted on in one place, which both ways out of the panel go through: the action that went through, and Cancel.
+    expect(source).toMatch(/function close\(\) \{\s*onClose\(\);\s*if \(recoveryUsed\.current\) router\.setParams\(\{ reenroll: "1" \}\);\s*\}/);
+    expect(source).toContain('<Button label="Cancel" onPress={close} tone="secondary" />');
+    expect(source.match(/^\s*close\(\);$/gm)).toHaveLength(1);
+    expect(source).not.toMatch(/onPress=\{onClose\}/);
+    expect(source.match(/\bonClose\(\)/g)).toHaveLength(1);
+  });
+
+  test("the panel follows the refusal it is answering: when another action's refusal replaces the one it shows, it starts over from what that one needs", () => {
+    const available: Method[] = ["password", "totp", "email", "recovery"];
+    // A level-2 action refused after the password: the two-factor sentence, and second factors only.
+    expect(methodsForLevel({ level: 2, have: ["password"] }, available)).toEqual({ methods: ["totp", "recovery"], missing: "second" });
+    expect(panelStart({ level: 2, have: ["password"] }, available)).toEqual({ needed: { level: 2, have: ["password"] }, method: "totp", value: "", flowId: null, error: null });
+    // "This wasn't me" or "Sign out everywhere" refused while that panel is open: level 1 with nothing proved in time, so
+    // every method the account has, the password and the email code among them, and nothing typed, mailed or refused yet.
+    expect(methodsForLevel({ level: 1, have: [] }, available)).toEqual({ methods: available, missing: null });
+    expect(panelStart({ level: 1, have: [] }, available)).toEqual({ needed: { level: 1, have: [] }, method: "password", value: "", flowId: null, error: null });
+
+    const source = read("components", "security", "ReauthPanel.tsx");
+    // The panel is one instance whatever refusal it shows (the screens give it no key), so it compares the refusal it
+    // started from with the one it is given, and starts over when they differ.
+    expect(source).toContain("const [asked, setAsked] = useState(pending);");
+    const reset = /if \(asked !== pending\) \{([^}]*)\}/.exec(source)?.[1] ?? "";
+    for (const line of ["const next = panelStart(pending.needed, available);", "setAsked(pending);", "setNeeded(next.needed);", "setMethod(next.method);", "setValue(next.value);", "setFlowId(next.flowId);", "setError(next.error);"]) {
+      expect(reset, line).toContain(line);
+    }
+    // The focus moves to the panel for every refusal, not only the first.
+    expect(source).toMatch(/\.focus\?\.\(\);\s*\}, \[pending\]\);/);
+    for (const screen of ["security.tsx", "account.tsx", "profile.tsx"]) {
+      expect(read("app", "settings", screen), screen).toContain("{reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}");
+    }
+  });
 });
 
 describe("the sign-in screen", () => {
@@ -390,7 +471,10 @@ describe("the pages behind the links", () => {
     const role = at === -1 ? -1 : markup.lastIndexOf('role="button"', at);
     return role === -1 ? "" : markup.slice(markup.lastIndexOf("<", role), markup.indexOf(">", role) + 1);
   };
-  const LOCKDOWN = /passkeys and two-factor authentication set up in the day before/;
+  // The lockdown reaches from the day before its anchor to the moment it runs, which can be a week later: "since", never "in".
+  const LOCKDOWN = /passkeys and two-factor authentication set up since the day before/;
+  /** A page before the confirmation and after it: the second render starts from the state the confirmation leaves. */
+  const sentences = (source: string): string[] => source.replace(/\s+/g, " ").match(/[^.]*set up (?:since|in) the day before[^.;]*/g) ?? [];
 
   test("the passkey-remove page explains the lockdown, confirms, and offers the button only with the link's token", () => {
     route.params = { token: TOKEN };
@@ -414,7 +498,7 @@ describe("the pages behind the links", () => {
     expect(source).toMatch(/router\.replace\("\/signin"\)/);
   });
 
-  test("the not-me and email-undo pages describe the lockdown: every session out, the password removed, and what was set up the day before", () => {
+  test("the not-me and email-undo pages describe the lockdown: every session out, the password removed, and what was set up since the day before", () => {
     route.params = { token: TOKEN };
     for (const [name, page] of [
       ["not-me", <NotMe />],
@@ -425,6 +509,22 @@ describe("the pages behind the links", () => {
       expect(out, name).toMatch(/remove (your|any) password/i);
       expect(out, name).toMatch(LOCKDOWN);
     }
+  });
+
+  test("every explanation of the lockdown names its reach as it is, before the confirmation and after it: what was set up since the day before, the person's own later additions included", () => {
+    const anchors = { "passkey-remove": "it was added", "not-me": "that sign-in", "email-revert": "the change" };
+    for (const [page, anchor] of Object.entries(anchors)) {
+      const found = sentences(read("app", page, "[token].tsx"));
+      // Twice on each page: what confirming will do, and what it did.
+      expect(found, page).toHaveLength(2);
+      for (const sentence of found) expect(sentence, page).toContain(`passkeys and two-factor authentication set up since the day before ${anchor}`);
+    }
+    // The dialog behind "This wasn't me", whose passkey can be a week old by then.
+    const dialog = sentences(read("components", "security", "PasskeysSection.tsx"));
+    expect(dialog).toHaveLength(1);
+    expect(dialog[0]).toContain("every passkey and two-factor authentication set up since the day before this passkey was added is removed, including any you set up yourself after it");
+    // Nowhere does the app say "in the day before", which names one day of what can be eight.
+    expect(findInSource(/in the day before/)).toEqual([]);
   });
 });
 

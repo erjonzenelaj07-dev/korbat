@@ -103,12 +103,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth repo", () => {
     const live = await make(new Date(now.getTime() + 60_000));
     const expired = await make(new Date(now.getTime() - 1_000));
     const revoked = await make(new Date(now.getTime() + 60_000));
-    expect(await repo.revokeSession(revoked, user.id, now)).toBe(true);
+    // A session is revoked by its handle, which the column's default gave it; the answer is the row's id, for the cache.
+    const handleOf = async (id: string) => (await repo.findActiveSession(id, now))!.handle;
+    const liveHandle = await handleOf(live);
+    expect(liveHandle).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(await repo.revokeSession(await handleOf(revoked), user.id, now)).toBe(revoked);
 
     expect((await repo.findActiveSession(live, new Date()))?.role).toBe("user");
     expect(await repo.findActiveSession(expired, new Date())).toBeUndefined();
     expect(await repo.findActiveSession(revoked, new Date())).toBeUndefined();
-    expect((await repo.listActiveSessions(user.id, new Date())).map((s) => s.id)).toEqual([live]);
+    expect((await repo.listActiveSessions(user.id, new Date())).map((s) => [s.id, s.handle])).toEqual([[live, liveHandle]]);
     // Sessions that expired without being revoked are revoked too, so nothing stale stays live.
     expect((await repo.revokeAllSessions(user.id, new Date())).sort()).toEqual([live, expired].sort());
     expect(await repo.findActiveSession(live, new Date())).toBeUndefined();
@@ -120,8 +124,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth repo", () => {
     const now = new Date();
     const id = sha256Hex(randomToken());
     await repo.createSession({ id, userId: owner.user.id, deviceId: owner.device.id, now, expiresAt: new Date(now.getTime() + 60_000), absoluteExpiresAt: new Date(now.getTime() + 86_400_000) });
-    expect(await repo.revokeSession(id, other.user.id, now)).toBe(false);
+    const { handle } = (await repo.findActiveSession(id, now))!;
+    expect(await repo.revokeSession(handle, other.user.id, now)).toBeUndefined();
     expect(await repo.findActiveSession(id, new Date())).toBeDefined();
+    // The owner's revoke answers the row's id, once: a session already revoked answers nothing.
+    expect(await repo.revokeSession(handle, owner.user.id, now)).toBe(id);
+    expect(await repo.revokeSession(handle, owner.user.id, now)).toBeUndefined();
   });
 
   test("auth events are append-only for the auth role", async () => {

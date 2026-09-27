@@ -146,10 +146,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Fresh" } });
     const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
     await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionId}`);
-    const revoke = await b.fetch(`/api/auth/sessions/${"0".repeat(64)}`, { method: "DELETE" });
+    await auth.deps.kv.del(`sess:2:${sessionId}`);
+    const revoke = await b.fetch(`/api/auth/sessions/${randomUUID()}`, { method: "DELETE" });
     expect(revoke.status).toBe(403);
     expect(await revoke.json()).toMatchObject({ error: { code: "reauth_required" } });
+  });
+
+  test("a session is revoked by its handle: an unknown one is 404, and anything that is not a uuid, a token's hash included, is 400", async () => {
+    const b = new Browser(app, config.APP_ORIGIN);
+    await signUp(b);
+    await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Handles" } });
+    const { sessions } = SessionsResponse.parse(await (await b.fetch("/api/auth/sessions")).json());
+    const row = (await auth.deps.repo.findActiveSession(sha256Hex(b.cookie("__Host-korbat_session")!), new Date()))!;
+    expect(sessions.map((s) => [s.id, s.current])).toEqual([[row.handle, true]]);
+
+    const unknown = await b.fetch(`/api/auth/sessions/${randomUUID()}`, { method: "DELETE" });
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ error: { code: "not_found" } });
+    for (const id of [row.id, "0".repeat(64), "not-a-uuid"]) {
+      const malformed = await b.fetch(`/api/auth/sessions/${id}`, { method: "DELETE" });
+      expect(malformed.status, id).toBe(400);
+      expect(await malformed.json()).toMatchObject({ error: { code: "invalid_request" } });
+    }
+    expect((await b.fetch("/api/me")).status).toBe(200);
+    // Its own handle signs the session out.
+    expect((await b.fetch(`/api/auth/sessions/${row.handle}`, { method: "DELETE" })).status).toBe(204);
+    expect((await b.fetch("/api/me")).status).toBe(401);
   });
 
   test("other origins cannot change state; no session gets 401; unfinished onboarding gets 403", async () => {
@@ -176,7 +198,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     const token = b.cookie("__Host-korbat_session")!;
     const sessionId = sha256Hex(token);
     await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionId}`);
+    await auth.deps.kv.del(`sess:2:${sessionId}`);
 
     const blocked = await b.fetch("/api/auth/password/set", { json: { password: "correct horse battery staple" } });
     expect(blocked.status).toBe(403);
@@ -221,7 +243,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Mover" } });
     const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
     await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
-    await auth.deps.kv.del(`sess:${sessionId}`);
+    await auth.deps.kv.del(`sess:2:${sessionId}`);
     for (const [path, body] of routes) {
       const stale = await b.fetch(path, { json: body });
       expect(stale.status, path).toBe(403);
@@ -285,13 +307,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     const user = (await auth.deps.repo.findUserByEmail(email))!;
     const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
     await auth.deps.repo.setRole(user.id, "moderator");
-    await auth.deps.kv.del(`sess:${sessionId}`);
+    await auth.deps.kv.del(`sess:2:${sessionId}`);
     const withoutMfa = await b.fetch("/api/test/staff-only");
     expect(withoutMfa.status).toBe(403);
     expect(await withoutMfa.json()).toMatchObject({ error: { code: "staff_mfa_required" } });
 
     await auth.deps.repo.enableTotp(user.id, { secretEnc: "v1:unused", recoveryCodesHash: [], now: new Date() });
-    await auth.deps.kv.del(`sess:${sessionId}`);
+    await auth.deps.kv.del(`sess:2:${sessionId}`);
     expect((await b.fetch("/api/test/staff-only")).status).toBe(200);
   });
 

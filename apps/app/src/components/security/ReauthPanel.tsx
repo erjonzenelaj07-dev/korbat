@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { z } from "zod";
 import { FlowResponse, PasskeyOptionsResponse, ReauthResponse, type MeResponse, type ReauthRequest } from "@korbat/contracts";
-import { Body, Button, ErrorText, Field } from "@/components/ui";
+import { Body, Button, ErrorText, Field, TextLink } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { confirmWithPasskey, passkeysSupported } from "@/lib/passkeys";
 import { useSession } from "@/lib/session";
@@ -79,6 +79,41 @@ export function methodsForLevel(needed: ReauthNeeded, available: Method[]): { me
   return { methods: available, missing: null };
 }
 
+/**
+ * What the panel starts from for a refusal: what the refusal said is needed, the first method that closes the gap, and
+ * nothing typed, mailed or refused yet. The same at mount and whenever another action's refusal takes the panel over.
+ */
+export function panelStart(needed: ReauthNeeded, available: Method[]): { needed: ReauthNeeded; method: Method; value: string; flowId: string | null; error: string | null } {
+  return { needed, method: methodsForLevel(needed, available).methods[0]!, value: "", flowId: null, error: null };
+}
+
+/**
+ * Whether the panel owes the hint to set two-factor up again: once any answer of its life spent a recovery code, whatever
+ * was answered before or after it. `before` is what the earlier answers left.
+ */
+export function recoveryCodeSpent(before: boolean, answer: { mustReenrollMfa?: boolean }): boolean {
+  return before || answer.mustReenrollMfa === true;
+}
+
+/** The hint after a recovery code was used, in the words of the Security screen's two-factor section. */
+export const REENROLL_HINT = "You used a recovery code. Set up two-factor again to get a fresh set of codes.";
+
+/**
+ * The hint on a screen that has no two-factor section of its own (Account, Profile): shown once the panel set the
+ * parameter on the route, with a link to Security, where two-factor is set up. The screen stays as it is, with what the
+ * action just put on it.
+ */
+export function ReenrollNotice({ me }: { me: MeResponse }) {
+  const { reenroll } = useLocalSearchParams<{ reenroll?: string }>();
+  if (reenroll !== "1" || !me.user.mfaEnabled) return null;
+  return (
+    <View className="mt-6 rounded-lg bg-amber-500/10 px-4 py-3">
+      <Text className="text-sm text-amber-300">{REENROLL_HINT}</Text>
+      <TextLink label="Open Security" href="/settings/security?reenroll=1" />
+    </View>
+  );
+}
+
 const LABELS: Record<Method, string> = { password: "Password", passkey: "Passkey", totp: "Authenticator code", email: "Email code", recovery: "Recovery code" };
 
 export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending: Pending; onClose: () => void }) {
@@ -91,19 +126,48 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
     "email",
     ...(me.user.mfaEnabled ? (["recovery"] as const) : []),
   ];
+  const start = panelStart(pending.needed, available);
   // What the last refusal said is needed; the action's own refusal after a first answer replaces it.
-  const [needed, setNeeded] = useState(pending.needed);
+  const [needed, setNeeded] = useState(start.needed);
   const { methods, missing } = methodsForLevel(needed, available);
-  const [method, setMethod] = useState<Method>(methods[0]!);
-  const [value, setValue] = useState("");
-  const [flowId, setFlowId] = useState<string | null>(null);
+  const [method, setMethod] = useState<Method>(start.method);
+  const [value, setValue] = useState(start.value);
+  const [flowId, setFlowId] = useState(start.flowId);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(start.error);
+  // The screens render one panel for whatever refusal is pending, so another action refused while this one is open
+  // hands the same panel a new refusal. It starts over from that one, here rather than in an effect, so that no frame
+  // shows the old refusal's sentence and methods above an action that needs something else.
+  const [asked, setAsked] = useState(pending);
+  if (asked !== pending) {
+    const next = panelStart(pending.needed, available);
+    setAsked(pending);
+    setNeeded(next.needed);
+    setMethod(next.method);
+    setValue(next.value);
+    setFlowId(next.flowId);
+    setError(next.error);
+  }
+  // Whether an answer of this panel's life spent a recovery code. A ref, since the answer's own result is gone when the
+  // action is refused again (the code was the first of two answers) or fails, and the hint is due all the same.
+  const recoveryUsed = useRef(false);
   const panel = useRef<View>(null);
-  // The panel appears in reply to an action elsewhere on the page; focus moves to it so the keyboard and a screen reader find it.
+  // The panel appears in reply to an action elsewhere on the page, and so does each refusal that takes it over; focus
+  // moves to it so the keyboard and a screen reader find it.
   useEffect(() => {
     (panel.current as unknown as { focus?: () => void } | null)?.focus?.();
-  }, []);
+  }, [pending]);
+
+  /**
+   * Closes the panel, after the action went through and on Cancel alike. A recovery code works once, so after one
+   * two-factor should be set up again for a fresh set: the hint is a parameter set on the route the screen is on, which
+   * keeps the screen mounted, with what the action just showed (new recovery codes, a QR code, the field for a mailed
+   * code). Replacing the route would build the screen anew and lose that.
+   */
+  function close() {
+    onClose();
+    if (recoveryUsed.current) router.setParams({ reenroll: "1" });
+  }
 
   async function sendEmailCode() {
     setBusy(true);
@@ -127,6 +191,7 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
     setError(null);
     try {
       const result = await api("/api/auth/reauth", { json: body, schema: ReauthResponse });
+      recoveryUsed.current = recoveryCodeSpent(recoveryUsed.current, result);
       setValue("");
       await refresh();
       try {
@@ -141,9 +206,7 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
         }
         throw err;
       }
-      onClose();
-      // A recovery code works once: two-factor should be set up again for a fresh set, as after a sign-in with one.
-      if (result.mustReenrollMfa) router.replace("/settings/security?reenroll=1");
+      close();
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -238,7 +301,7 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
         </>
       )}
       <ErrorText message={error} />
-      <Button label="Cancel" onPress={onClose} tone="secondary" />
+      <Button label="Cancel" onPress={close} tone="secondary" />
     </View>
   );
 }

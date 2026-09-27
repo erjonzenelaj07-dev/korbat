@@ -27,28 +27,28 @@ export interface LockdownReport {
  * day. The anchor is the event the owner is answering: the alerted sign-in, the address change, a passkey's creation.
  * What the owner had from before stays, except the password, which nobody can tell from one an attacker set. Running
  * it again finds nothing more to remove and records that.
+ *
+ * All of it, the event included, is one transaction of the repository's: the link behind a lockdown is spent before it
+ * starts, so a run that a database fault stopped halfway could not be repeated. A run that fails leaves the account as
+ * it was. The tombstones follow the commit, since the cache is not the database's to write.
  */
 export async function lockdown(
   deps: AuthDeps,
   input: { userId: string; anchor: Date; passkeyIds?: readonly string[]; caller: LockdownCaller; ctx: RequestContext },
 ): Promise<LockdownReport> {
-  const now = deps.now();
   const since = new Date(input.anchor.getTime() - LOCKDOWN_LOOKBACK_MS);
-  await deps.sessions.revokeAll(input.userId);
-  await deps.repo.revokeDevices(input.userId, now);
-  await deps.repo.setPasswordHash(input.userId, null, now);
-  const passkeysRemoved = await deps.repo.deletePasskeys(input.userId, { since, ids: input.passkeyIds ?? [] });
-  // The row is read after the writes above, none of which touch two-factor; an account that is gone has none to clear.
-  const user = await deps.repo.findUserById(input.userId);
-  const totpCleared = user !== undefined && user.totpEnabledAt !== null && user.totpEnabledAt.getTime() >= since.getTime();
-  if (totpCleared) await deps.repo.disableTotp(input.userId);
-  const report: LockdownReport = { passkeysRemoved, totpCleared, passwordCleared: true };
-  await deps.repo.appendEvent({
-    userId: input.userId,
-    type: input.caller.type,
-    deviceId: input.caller.deviceId ?? null,
-    ipHash: input.ctx.ipHash,
-    metadata: { ...input.caller.metadata, ...report },
+  const done = await deps.repo.lockDown(input.userId, {
+    now: deps.now(),
+    since,
+    passkeyIds: input.passkeyIds ?? [],
+    event: { type: input.caller.type, deviceId: input.caller.deviceId ?? null, ipHash: input.ctx.ipHash, metadata: input.caller.metadata ?? {} },
   });
-  return report;
+  try {
+    await deps.sessions.tombstone(done.sessionIds);
+  } catch (err) {
+    // Best effort, as after a deletion's take-down: the rows are revoked whatever happens here, so a failure only lets a
+    // cached copy live out its minute, and the owner is not told that a lockdown which landed has failed.
+    deps.log.error({ err, userId: input.userId }, "lockdown: the session tombstones could not be written; the sessions are revoked in the database");
+  }
+  return { passkeysRemoved: done.passkeysRemoved, totpCleared: done.totpCleared, passwordCleared: true };
 }

@@ -29,7 +29,8 @@ export function exportFilename(handle: string, now: Date): string {
  */
 export interface ExportPlan {
   exportedAt: Date;
-  currentSessionId: string;
+  /** The handle of the session that asked for the export: the id the auth module lists each session under. */
+  currentSession: string;
   account: AccountExport;
   profile: ProfileExport;
   images: { id: string; open: OpenFile }[];
@@ -73,12 +74,13 @@ const isoOrNull = (at: Date | null): string | null => (at ? at.toISOString() : n
 /**
  * Reads what is needed before the first byte: the account's facts, sessions, devices and events (one
  * read, bounded by the 90 days of events), the profile's own fields, and the list of images. The three
- * modules are asked at once. `pageSize` is how many rows of each profile list are read at a time; tests
+ * modules are asked at once. `currentSession` is the handle of the session asking, which marks its
+ * entry among the sessions. `pageSize` is how many rows of each profile list are read at a time; tests
  * lower it.
  */
-export async function buildExport(deps: AccountDeps, userId: string, currentSessionId: string, now: Date, pageSize?: number): Promise<ExportPlan> {
+export async function buildExport(deps: AccountDeps, userId: string, currentSession: string, now: Date, pageSize?: number): Promise<ExportPlan> {
   const [account, profile, images] = await Promise.all([deps.auth.exportAccount(userId), deps.social.exportProfile(userId, pageSize), deps.media.exportImages(userId)]);
-  return { exportedAt: now, currentSessionId, account, profile, images, missingMedia: [] };
+  return { exportedAt: now, currentSession, account, profile, images, missingMedia: [] };
 }
 
 /** A list member of export.json, read in pages and written one element at a time. */
@@ -176,7 +178,7 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
     ["mutes", new Paged(profile.mutes, other)],
     [
       "sessions",
-      inMemory(account.sessions, (session) => ({ id: session.id, createdAt: iso(session.createdAt), lastUsedAt: iso(session.lastUsedAt), current: session.id === plan.currentSessionId })),
+      inMemory(account.sessions, (session) => ({ id: session.id, createdAt: iso(session.createdAt), lastUsedAt: iso(session.lastUsedAt), current: session.id === plan.currentSession })),
     ],
     [
       "devices",

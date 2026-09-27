@@ -130,9 +130,9 @@ describe("account deletion: the confirmation", () => {
     // The row is anonymised by the purge, not here: the address and the credentials are still in place for the moment.
     expect([stored.email, stored.purgedAt]).toEqual(["ada@korbat.local", null]);
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
-    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(h.sessions.filter((s) => s.userId === bob.user.id).map((s) => s.revokedAt)).toEqual([null]);
-    expect(await h.kv.get(`sess:${bob.session.sessionId}`)).toBeNull();
+    expect(await h.kv.get(`sess:2:${bob.session.sessionId}`)).toBeNull();
     expect(h.devices.map((d) => d.userId)).toEqual([bob.user.id]);
     expect(h.codes.map((c) => [c.userId, c.purpose])).toEqual([[bob.user.id, "login"]]);
     expect(h.passkeys.map((p) => p.id)).toEqual([bobs]);
@@ -168,7 +168,7 @@ describe("account deletion: the confirmation", () => {
     expect(h.users.get(ada.user.id)!.deletedAt).toBeNull();
     expect(await h.deps.repo.findUserById(ada.user.id)).toBeDefined();
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null, null]);
-    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBeNull();
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBeNull();
     expect(h.devices.filter((d) => d.userId === ada.user.id)).toHaveLength(2);
     expect(h.codes.map((c) => c.purpose)).toEqual(["login", "delete_account"]);
     expect(h.events).toEqual([]);
@@ -198,7 +198,7 @@ describe("account deletion: the confirmation", () => {
     expect(h.events.map((e) => e.type)).toEqual(["account_deleted"]);
     expect(h.mailer.sent.map((m) => m.template)).toEqual(["delete_account_code", "account_deleted"]);
     // A cached copy of the session can live out its minute; the revoked row is what every other lookup reads.
-    expect(await h.kv.get(`sess:${ada.session.sessionId}`)).toBeNull();
+    expect(await h.kv.get(`sess:2:${ada.session.sessionId}`)).toBeNull();
   });
 });
 
@@ -217,7 +217,7 @@ describe("account deletion: the purge's last step", () => {
     await finishPurge(h.deps, ada.user.id);
 
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
-    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     expect(h.devices.map((d) => d.userId)).toEqual([bob.user.id]);
     expect(h.codes).toEqual([]);
     expect(h.passkeys).toEqual([]);
@@ -247,7 +247,7 @@ describe("account deletion: the purge's last step", () => {
     const bob = h.user("bob@korbat.local");
     await finishPurge(h.deps, bob.user.id);
     expect(h.sessions.map((s) => s.revokedAt)).toEqual([null]);
-    expect(await h.kv.get(`sess:${bob.session.sessionId}`)).toBeNull();
+    expect(await h.kv.get(`sess:2:${bob.session.sessionId}`)).toBeNull();
     expect(h.devices).toHaveLength(1);
     expect(h.users.get(bob.user.id)).toMatchObject({ email: "bob@korbat.local", deletedAt: null, purgedAt: null });
   });

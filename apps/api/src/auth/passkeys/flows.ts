@@ -252,13 +252,17 @@ export async function removePasskey(deps: AuthDeps, session: Session, id: string
  * "This wasn't me" on a passkey of the last 7 days, the ones the Security list offers it on (1c design, section 7.5):
  * the lockdown anchored at the passkey's creation, naming it, recorded with this session's device. Level 1 is enough,
  * on an account with TOTP too: whoever re-enrolled it from a stolen session holds level 2, and the owner may not.
+ * Five a day per account, counted only for a call that will run the lockdown: the bucket is the account's, so were a
+ * miss to count, any session of the account, a stolen one too, could spend the owner's five with unknown ids and keep
+ * its access. A call that does count signs its own session out with every other.
  */
 export async function notMine(deps: AuthDeps, session: Session, id: string, ctx: RequestContext): Promise<void> {
   requireFresh(deps, session, 1);
-  await enforceLimit(deps.kv, `passkey-not-mine:${session.userId}`, NOT_MINE_PER_DAY, DAY);
+  // The lookup is by the session's account, so a miss tells the caller nothing about anyone else's passkeys.
   const passkey = await deps.repo.findPasskey(id, session.userId);
   // An older passkey, another account's and an unknown one are not told apart.
   if (!passkey || !isNew(passkey.createdAt, deps.now())) throw new AuthError("passkey_not_found", 404);
+  await enforceLimit(deps.kv, `passkey-not-mine:${session.userId}`, NOT_MINE_PER_DAY, DAY);
   await lockdown(deps, {
     userId: session.userId,
     anchor: passkey.createdAt,
@@ -272,17 +276,22 @@ export async function notMine(deps: AuthDeps, session: Session, id: string, ctx:
  * The remove link from the passkey_added notice, which needs no session: the link is the credential, and works once.
  * The lockdown runs anchored at the passkey's creation and names it, so the link works whether or not the passkey is
  * still there (1c design, section 7.6). It does nothing but refuse when the account is gone or its address is no longer
- * the one the notice went to: a link mailed to an attacker's address dies when the owner's is restored.
+ * the one the notice went to: a link mailed to an attacker's address dies when the owner's is restored. A refusal does
+ * not spend the link. The owner may open it while an attacker's address change stands, and once the email undo has
+ * restored the address this link is the one whose lockdown reaches the day before the passkey, which the undo's may not.
  */
 export async function removeByLink(deps: AuthDeps, input: PasskeyRemoveLinkRequest, ctx: RequestContext): Promise<void> {
   await enforceLimit(deps.kv, `passkey-remove-link:ip:${ctx.ipHash}`, REMOVE_LINKS_PER_IP_PER_HOUR, HOUR);
-  // Taken, not read: two requests with the same link cannot both act on it.
-  const raw = await deps.kv.take(passkeyRemoveKey(input.token));
+  const key = passkeyRemoveKey(input.token);
+  // Read first, so that a refusal leaves the link as it was.
+  const raw = await deps.kv.get(key);
   if (!raw) throw new AuthError("invalid_code", 400, LINK_GONE);
   const link = JSON.parse(raw) as PasskeyRemoveToken;
   const user = await deps.repo.findUserById(link.userId);
   if (!user) throw new AuthError("invalid_code", 400, LINK_GONE);
   if (link.sentTo !== emailHash(deps.config.authHmacKey, user.email)) throw new AuthError("invalid_code", 400, LINK_GONE);
+  // Taken only now, just before it acts: of two requests with the same link, one gets it and the other is refused.
+  if (!(await deps.kv.take(key))) throw new AuthError("invalid_code", 400, LINK_GONE);
   await lockdown(deps, {
     userId: user.id,
     anchor: new Date(link.createdAt),
@@ -328,7 +337,8 @@ export async function signInOptions(deps: AuthDeps, ctx: RequestContext): Promis
  * Verifies a passkey sign-in (1c design, section 7.4). The challenge is read from the response, checked with no session
  * binding and spent before anything else runs, so a forged, foreign or spent one never reaches the library. The passkey is
  * found by its credential id and its account read: an unknown credential, and a deleted or purged account, are alike
- * passkey_invalid, as is a user handle the response carries that is not this account's. Only after the signature checks is
+ * passkey_invalid, as is a response without a user handle, or with one that is not this account's: the options named no
+ * account, so the response has to (WebAuthn L3, section 7.2, step 6). Only after the signature checks is
  * a suspect passkey passkey_suspended, and only then does the counter write run (a counter that did not move forward
  * suspends the passkey and refuses); the factor is passkey_uv only when the authenticator verified the user and the passkey
  * was registered with UV. A sign-in from a device the account has not used is counted, and only after a verified signature,
@@ -348,9 +358,12 @@ export async function signInVerify(deps: AuthDeps, input: PasskeySignInVerifyReq
   const user = await deps.repo.findUserById(passkey.userId);
   // A deleted or purged account's row is gone from findUserById: its passkey signs nobody in.
   if (!user) throw new AuthError("passkey_invalid", 401);
-  // A discoverable passkey returns the account's handle; when present it must be this account's, or the response is another's.
+  // The allow list was empty, so nothing named an account before the ceremony: the response must carry the account's user
+  // handle, which every passkey korbat registers returns (they are discoverable). Without one, or on an account that has
+  // none, or with another's, the answer is the one every failure before the signature gets. The field stays optional in
+  // the contract, which re-authentication shares: there the session names the account and the handle may be absent.
   const userHandle = input.response.response.userHandle;
-  if (userHandle !== undefined && !(user.webauthnUserId !== null && Buffer.from(userHandle, "base64url").equals(user.webauthnUserId))) {
+  if (userHandle === undefined || user.webauthnUserId === null || !Buffer.from(userHandle, "base64url").equals(user.webauthnUserId)) {
     throw new AuthError("passkey_invalid", 401);
   }
 

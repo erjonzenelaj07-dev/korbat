@@ -212,7 +212,7 @@ describe("email change: the verification step", () => {
     expect(h.codes[0]!.consumedAt).toEqual(h.now());
     expect(await h.kv.get(flowKey(flowId))).toBeNull();
     // No revocation tombstone was written for the session that made the change.
-    expect(await h.kv.get(`sess:${ada.session.sessionId}`)).toBeNull();
+    expect(await h.kv.get(`sess:2:${ada.session.sessionId}`)).toBeNull();
     expect(await failure(verifyEmailChange(h.deps, ada.session, { flowId, code }))).toMatchObject({ code: "invalid_code" });
   });
 
@@ -257,11 +257,13 @@ describe("email change: the undo link sent to the old address", () => {
     // The session an attacker got hold of, which makes the change, and the owner's own, which the change leaves alone.
     const owners = h.session(ada.user.id);
     const token = (await change(h, ada.session, "attacker@korbat.local"))!;
-    const appended: Parameters<AuthRepo["appendEvent"]>[0][] = [];
-    const append = h.deps.repo.appendEvent;
-    h.deps.repo.appendEvent = async (input) => {
-      appended.push(input);
-      await append(input);
+    const changedAt = h.now();
+    // What the undo hands the lockdown's one transaction: the change as its anchor, and the event to record with it.
+    const handed: Parameters<AuthRepo["lockDown"]>[] = [];
+    const lockDown = h.deps.repo.lockDown;
+    h.deps.repo.lockDown = async (...args) => {
+      handed.push(args);
+      return lockDown(...args);
     };
     h.advance(60_000);
     await revertEmailChange(h.deps, { token }, h.ctx);
@@ -269,17 +271,16 @@ describe("email change: the undo link sent to the old address", () => {
     const stored = h.users.get(ada.user.id)!;
     expect([stored.email, stored.emailVerifiedAt]).toEqual(["ada@korbat.local", h.now()]);
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now(), h.now()]);
-    for (const id of [ada.session.sessionId, owners.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
+    for (const id of [ada.session.sessionId, owners.sessionId]) expect(await h.kv.get(`sess:2:${id}`), id).toBe("revoked");
     const key = h.deps.config.authHmacKey;
-    expect(appended).toEqual([
-      {
-        userId: ada.user.id,
-        type: "email_changed",
-        deviceId: null,
-        ipHash: h.ctx.ipHash,
-        metadata: { from: emailHash(key, "attacker@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true, ...NOTHING_ELSE },
-      },
+    const hashes = { from: emailHash(key, "attacker@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true };
+    expect(handed).toEqual([
+      [
+        ada.user.id,
+        { now: h.now(), since: new Date(changedAt.getTime() - LOCKDOWN_LOOKBACK_MS), passkeyIds: [], event: { type: "email_changed", deviceId: null, ipHash: h.ctx.ipHash, metadata: hashes } },
+      ],
     ]);
+    expect(h.events.at(-1)).toEqual({ userId: ada.user.id, type: "email_changed", deviceId: null, metadata: { ...hashes, ...NOTHING_ELSE } });
     // The address the account was moved to is told nothing; the old one gets a short note.
     expect(h.mailer.sent.filter((m) => m.to === "attacker@korbat.local").map((m) => m.template)).toEqual(["email_change_code"]);
     expect(h.mailer.sent.at(-1)).toEqual({ to: "ada@korbat.local", template: "email_change_reverted", data: {} });
@@ -373,6 +374,36 @@ describe("email change: the undo link sent to the old address", () => {
     expect(h.mailer.sent.filter((m) => m.template === "email_change_reverted").map((m) => m.to)).toEqual(["ada@korbat.local"]);
   });
 
+  test("the link of an account deleted since is refused before it is spent, and nothing is restored", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const token = (await change(h, ada.session, "ada-new@korbat.local"))!;
+    const stored = await h.kv.get(emailRevertKey(token));
+    await h.deps.repo.markDeleted(ada.user.id, h.now());
+    const eventsBefore = h.events.length;
+    expect(await failure(revertEmailChange(h.deps, { token }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(h.users.get(ada.user.id)!.email).toBe("ada-new@korbat.local");
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null]);
+    expect(h.events).toHaveLength(eventsBefore);
+    expect(h.mailer.sent.map((m) => m.template)).not.toContain("email_change_reverted");
+    // The checks come first and the link is taken only just before the address is restored: a refusal leaves it to run out with its day.
+    expect(await h.kv.get(emailRevertKey(token))).toBe(stored);
+  });
+
+  test("two uses of one link at once act once: the address is restored and the lockdown recorded once, and the other use is refused", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const token = (await change(h, ada.session, "attacker@korbat.local"))!;
+    h.advance(MINUTE);
+    const outcomes = await Promise.allSettled([revertEmailChange(h.deps, { token }, h.ctx), revertEmailChange(h.deps, { token }, { ...h.ctx, ipHash: randomToken() })]);
+    expect(outcomes.map((o) => o.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(outcomes.find((o): o is PromiseRejectedResult => o.status === "rejected")!.reason).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
+    expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", emailVerifiedAt: h.now() });
+    expect(h.events.filter((e) => e.metadata.reverted)).toHaveLength(1);
+    expect(h.mailer.sent.filter((m) => m.template === "email_change_reverted").map((m) => m.to)).toEqual(["ada@korbat.local"]);
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([h.now()]);
+  });
+
   test("an old address that got another account meanwhile is email_in_use, and nothing changes", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
@@ -384,6 +415,8 @@ describe("email change: the undo link sent to the old address", () => {
     expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null]);
     expect(h.events).toHaveLength(eventsBefore);
     expect(h.mailer.sent.map((m) => m.template)).not.toContain("email_change_reverted");
+    // The unique index on the address decides at the restore itself, for which the link was already taken: this one refusal spends it.
+    expect(await failure(revertEmailChange(h.deps, { token }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
   });
 
   test("allows 10 tries an hour per address, then rate_limited with a Retry-After", async () => {
@@ -394,6 +427,25 @@ describe("email change: the undo link sent to the old address", () => {
     expect(await failure(revertEmailChange(h.deps, { token: randomToken() }, h.ctx))).toMatchObject({ code: "rate_limited", status: 429, retryAfterSeconds: HOUR / 1000 });
     // Another address has its own window.
     expect(await failure(revertEmailChange(h.deps, { token: randomToken() }, { ...h.ctx, ipHash: randomToken() }))).toMatchObject({ code: "invalid_code" });
+  });
+
+  test("an undo whose lockdown fails leaves the address restored and nothing else changed: no session revoked, the password in place, no undo recorded and no note sent", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    await h.deps.repo.setPasswordHash(ada.user.id, "set-since", h.now());
+    const token = (await change(h, ada.session, "attacker@korbat.local"))!;
+    h.advance(MINUTE);
+    h.faults.add("lockDown");
+    await expect(revertEmailChange(h.deps, { token }, h.ctx)).rejects.toThrow(/midway/);
+    // The address went back before the lockdown began; the lockdown is one transaction, so none of it landed.
+    expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", passwordHash: "set-since" });
+    expect(h.sessions.filter((s) => s.userId === ada.user.id).map((s) => s.revokedAt)).toEqual([null]);
+    expect(h.devices.filter((d) => d.userId === ada.user.id).map((d) => d.revokedAt)).toEqual([null]);
+    expect(h.events.map((e) => [e.type, e.metadata.reverted])).toEqual([["email_changed", undefined]]);
+    expect(h.mailer.sent.map((m) => m.template)).not.toContain("email_change_reverted");
+    // The link was spent by the attempt.
+    h.faults.clear();
+    expect(await failure(revertEmailChange(h.deps, { token }, h.ctx))).toMatchObject({ code: "invalid_code", status: 400, message: LINK_GONE });
   });
 
   test("a second change while the link is out sends no second link, so whoever made it holds none; the one link undoes both and clears what was set since the first", async () => {
