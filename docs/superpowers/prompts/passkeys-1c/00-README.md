@@ -108,3 +108,26 @@ python docs/superpowers/prompts/passkeys-1c/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-09-27)
+
+The nine prompts were replayed into this repository by the scratch tooling's `replay.py`. It ran each prompt's steps with no model session, through the same gated runner as the dry run. Every red step failed as recorded, every gate passed, and both stack rebuilds, in Tasks 7 and 8, ended with the smoke test passing. The commits are:
+
+| Task | Commit |
+|---|---|
+| 1 | `41ac97a` |
+| 2 | `018131a` |
+| 3 | `6435288` |
+| 4 | `7239883` |
+| 5 | `9ac20c3` |
+| 6 | `9a26a7a` |
+| 7 | `0be531e` |
+| 8 | `cf8eee7` |
+| 9 | `05cf442` |
+
+- **Identical to the dry run, with two exceptions below.** Each commit changes the same paths as its dry-run commit, and every file of Tasks 2 to 9 is byte-identical. `verify_prompts.py` reproduces all 109 files.
+- **The lockfile resolved a newer patch.** Task 1 installs under the 7-day release-age floor. On the dry run (2026-09-25) `@peculiar/asn1-*` 2.9.5 was younger than 7 days, so every one of them resolved to 2.9.4; on the replay (2026-09-27) 2.9.5 had passed the floor and the lockfile holds it. No other entry of the lockfile differs, and the release-age check and every test passed with it.
+- **Two drizzle files end with a newline.** `packages/db/migrations/0010_free_thunderbolt.sql` and `meta/0010_snapshot.json` end with a newline here and without one in the dry run, as in the 1b replay: drizzle-kit writes them without one, and `write_blocks.py` writes the prompt's block, which ends with one. drizzle reads both.
+- **One retry, in Task 3.** The first attempt stopped before any gate ran: while the runner hid the implementation for the red step, Windows refused for a moment to reopen `apps/api/src/auth/flows/password.ts` (another process held it). The files were restored to Task 2's commit and the task was replayed from its first step. The runner now retries such a write for up to twenty seconds, and restores what it already hid if hiding fails.
+- **The reviews that shaped Task 8.** After Task 6, an adversarial review read the API range with five reviewers, each finding checked by three refuters with different lenses (the code, the tests, whether a user can reach it). After Task 7 a sixth reviewer read the web app the same way. Of 21 findings, 18 were upheld and are fixed in Task 8; the 3 refuted ones are listed under the dry-run-only checks above.
+- **The browser walk-throughs.** The ceremonies and the screens ran in Chromium with a virtual authenticator against the scratch stack, on the build of Task 7 and again on the final build of Task 8, and passed both times. They stay in the scratch tooling (`pw-walkthrough.mjs`, `pw-screens.mjs`), since they need seed accounts and a browser this repository's tests do not have.
