@@ -14,6 +14,7 @@ import {
   ReauthRequest,
   SignupCompleteRequest,
   TotpCodeRequest,
+  TotpDisableRequest,
   type Platform,
 } from "@korbat/contracts";
 import { Hono, type Context } from "hono";
@@ -34,13 +35,15 @@ import { passwordSignIn, setPassword } from "./flows/password";
 import { reauthenticate, startReauthEmail } from "./flows/reauth";
 import type { MfaPending, SignedIn } from "./flows/signin";
 import { chooseHandle, completeSignup } from "./flows/signup";
-import { requireFreshAuth, requireOnboarding, requireSession } from "./middleware";
+import { requireFreshAuth, requireOnboarding, requireSession, requireStrongFreshAuth } from "./middleware";
 import type { IssuedSession, Session } from "./sessions";
 
 /** Every `/api/auth/*` endpoint. Handlers only validate, call a flow and shape the response. */
 export function authRoutes(deps: AuthDeps) {
   const r = new Hono<AppEnv>();
   const fresh = requireFreshAuth(deps);
+  // Level 2 on an account with TOTP (1c design, section 10): the routes that replace or remove a credential.
+  const strong = requireStrongFreshAuth(deps);
 
   const requestContext = (c: Context<AppEnv>): RequestContext => ({
     ipHash: c.get("clientIpHash") ?? "direct",
@@ -82,7 +85,7 @@ export function authRoutes(deps: AuthDeps) {
   r.onError((err, c) => {
     if (err instanceof AuthError) {
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
-      return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+      return c.json(errorBody(err.code, err.message, c.get("requestId"), err.details), err.status);
     }
     if (err instanceof HTTPException) return c.json(errorBody("invalid_request", err.message, c.get("requestId")), err.status);
     c.get("log").error({ err }, "unhandled error in auth route");
@@ -106,7 +109,7 @@ export function authRoutes(deps: AuthDeps) {
     return c.json({ profile, ...rotated(c, issued) });
   });
 
-  r.post("/email/change/start", requireSession, fresh, validate("json", EmailChangeStartRequest), async (c) =>
+  r.post("/email/change/start", requireSession, strong, validate("json", EmailChangeStartRequest), async (c) =>
     c.json(await startEmailChange(deps, currentSession(c), c.req.valid("json"), requestContext(c))),
   );
 
@@ -137,31 +140,33 @@ export function authRoutes(deps: AuthDeps) {
     firstFactor(c, await passwordSignIn(deps, asWeb(c, c.req.valid("json")), requestContext(c))),
   );
 
-  r.post("/password/set", requireSession, fresh, validate("json", PasswordSetRequest), async (c) =>
+  r.post("/password/set", requireSession, strong, validate("json", PasswordSetRequest), async (c) =>
     c.json(rotated(c, await setPassword(deps, currentSession(c), c.req.valid("json")))),
   );
 
   r.post("/mfa/verify", validate("json", MfaVerifyRequest), async (c) => sessionIssued(c, await verifyMfa(deps, c.req.valid("json"), requestContext(c))));
 
-  r.post("/mfa/totp/setup", requireSession, fresh, async (c) => c.json(await setupTotp(deps, currentSession(c))));
+  r.post("/mfa/totp/setup", requireSession, strong, async (c) => c.json(await setupTotp(deps, currentSession(c))));
 
-  r.post("/mfa/totp/confirm", requireSession, fresh, validate("json", TotpCodeRequest), async (c) => {
+  // No freshness check: the pending secret its setup stored for the session is the proof, so scanning the QR code cannot run the window out.
+  r.post("/mfa/totp/confirm", requireSession, validate("json", TotpCodeRequest), async (c) => {
     const { recoveryCodes, issued } = await confirmTotp(deps, currentSession(c), c.req.valid("json"));
     return c.json({ recoveryCodes, ...rotated(c, issued) });
   });
 
-  r.post("/mfa/totp/disable", requireSession, fresh, validate("json", TotpCodeRequest), async (c) => {
-    await disableTotp(deps, currentSession(c), c.req.valid("json"));
+  r.post("/mfa/totp/disable", requireSession, strong, validate("json", TotpDisableRequest), async (c) => {
+    await disableTotp(deps, currentSession(c));
     return c.body(null, 204);
   });
 
-  r.post("/mfa/recovery-codes/regenerate", requireSession, fresh, async (c) => c.json({ recoveryCodes: await regenerateRecoveryCodes(deps, currentSession(c)) }));
+  r.post("/mfa/recovery-codes/regenerate", requireSession, strong, async (c) => c.json({ recoveryCodes: await regenerateRecoveryCodes(deps, currentSession(c)) }));
 
   r.post("/reauth/email/start", requireOnboarding, async (c) => c.json(await startReauthEmail(deps, currentSession(c), requestContext(c))));
 
+  // The level reached and, after a recovery code, the call to set MFA up again; the rotated token as every rotation hands it out.
   r.post("/reauth", requireOnboarding, validate("json", ReauthRequest), async (c) => {
-    await reauthenticate(deps, currentSession(c), c.req.valid("json"));
-    return c.body(null, 204);
+    const { level, issued, mustReenrollMfa } = await reauthenticate(deps, currentSession(c), c.req.valid("json"), requestContext(c));
+    return c.json({ level, ...(mustReenrollMfa ? { mustReenrollMfa } : {}), ...rotated(c, issued) });
   });
 
   r.get("/sessions", requireSession, async (c) => c.json(await listSessions(deps, currentSession(c))));

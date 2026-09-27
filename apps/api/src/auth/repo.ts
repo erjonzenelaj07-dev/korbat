@@ -1,5 +1,5 @@
-import { and, desc, eq, gt, gte, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
-import { authEventType, authEvents, devices, emailCodePurpose, emailCodes, sessions, userRole, users, type Db } from "@korbat/db";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { authEventType, authEvents, devices, emailCodePurpose, emailCodes, passkeys, sessions, userRole, users, type Db } from "@korbat/db";
 
 /**
  * Every SQL statement the auth module runs. It receives only the korbat_auth pool and touches only
@@ -25,6 +25,11 @@ export interface ActiveSessionRow {
   lastUsedAt: Date;
   expiresAt: Date;
   absoluteExpiresAt: Date;
+  /** The session's id for life, which a rotation keeps. */
+  handle: string;
+  /** The factors proven, kind to epoch milliseconds; empty for a session from before migration 0010. */
+  factors: Record<string, number>;
+  passkeyId: string | null;
 }
 
 export interface SessionListRow {
@@ -315,16 +320,34 @@ export function createAuthRepo(db: Db) {
 
     // ------------------------------------------------------------ sessions
 
-    async createSession(input: { id: string; userId: string; deviceId: string; now: Date; expiresAt: Date; absoluteExpiresAt: Date }): Promise<void> {
+    /**
+     * A new session with the factors its sign-in proved (kind to epoch milliseconds from the flows' clock) and the passkey
+     * that started it, if one did. The reauth time is the latest of the factors, which is what freshness is read from. A row
+     * without factors, as migration 0010 left the sessions from before it, re-authenticates before its next sensitive action.
+     */
+    async createSession(input: {
+      id: string;
+      userId: string;
+      deviceId: string;
+      now: Date;
+      expiresAt: Date;
+      absoluteExpiresAt: Date;
+      factors?: Record<string, number>;
+      passkeyId?: string | null;
+    }): Promise<void> {
+      const factors = input.factors ?? {};
+      const times = Object.values(factors);
       await db.insert(sessions).values({
         id: input.id,
         userId: input.userId,
         deviceId: input.deviceId,
         createdAt: input.now,
         lastUsedAt: input.now,
-        reauthAt: input.now,
+        reauthAt: times.length > 0 ? new Date(Math.max(...times)) : input.now,
         expiresAt: input.expiresAt,
         absoluteExpiresAt: input.absoluteExpiresAt,
+        factors,
+        passkeyId: input.passkeyId ?? null,
       });
     },
 
@@ -342,6 +365,9 @@ export function createAuthRepo(db: Db) {
           lastUsedAt: sessions.lastUsedAt,
           expiresAt: sessions.expiresAt,
           absoluteExpiresAt: sessions.absoluteExpiresAt,
+          handle: sessions.handle,
+          factors: sessions.factors,
+          passkeyId: sessions.passkeyId,
         })
         .from(sessions)
         .innerJoin(users, eq(users.id, sessions.userId))
@@ -364,8 +390,29 @@ export function createAuthRepo(db: Db) {
       await db.update(sessions).set({ expiresAt, lastUsedAt: now }).where(eq(sessions.id, id));
     },
 
-    async setReauth(id: string, now: Date): Promise<void> {
-      await db.update(sessions).set({ reauthAt: now }).where(eq(sessions.id, id));
+    /**
+     * Records a factor the session proved at `at`: the kind's time is set or replaced, and reauth_at, the latest of
+     * them, follows the write. The flows always pass their clock's now.
+     */
+    async writeFactor(id: string, kind: string, at: Date): Promise<void> {
+      await db
+        .update(sessions)
+        .set({ factors: sql`${sessions.factors} || ${JSON.stringify({ [kind]: at.getTime() })}::jsonb`, reauthAt: at })
+        .where(eq(sessions.id, id));
+    },
+
+    /**
+     * Replaces the session's id, the token's hash, and nothing else, for a live session only: the handle, factors, reauth
+     * time, passkey, device and expiries stay. False when the session is revoked or gone, so a rotation never revives one.
+     * Nothing references sessions.id, so the primary key changes in place.
+     */
+    async rotateSession(id: string, newId: string): Promise<boolean> {
+      const rows = await db
+        .update(sessions)
+        .set({ id: newId })
+        .where(and(eq(sessions.id, id), isNull(sessions.revokedAt)))
+        .returning({ id: sessions.id });
+      return rows.length === 1;
     },
 
     /** Revokes one session of this user. False when it does not belong to the user or is already revoked. */
@@ -401,6 +448,22 @@ export function createAuthRepo(db: Db) {
         .innerJoin(devices, eq(devices.id, sessions.deviceId))
         .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt), gt(sessions.expiresAt, now), gt(sessions.absoluteExpiresAt, now)))
         .orderBy(desc(sessions.lastUsedAt));
+    },
+
+    // ------------------------------------------------------------ passkeys
+
+    /**
+     * The lockdown's removal (1c design, section 7.6): the user's passkeys created at or after `since`, plus any of theirs
+     * the caller names, whatever their age. Answers the ids removed, for the caller's event. A named passkey of another
+     * account is not the caller's to remove and stays.
+     */
+    async deletePasskeys(userId: string, input: { since: Date; ids: readonly string[] }): Promise<string[]> {
+      const reach = input.ids.length > 0 ? or(gte(passkeys.createdAt, input.since), inArray(passkeys.id, [...input.ids])) : gte(passkeys.createdAt, input.since);
+      const rows = await db
+        .delete(passkeys)
+        .where(and(eq(passkeys.userId, userId), reach))
+        .returning({ id: passkeys.id });
+      return rows.map((row) => row.id);
     },
 
     // ------------------------------------------------------------ events

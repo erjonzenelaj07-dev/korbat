@@ -22,4 +22,11 @@ describe("auth error messages", () => {
     const daily = new AuthError("passkey_limit", 409, "You added 5 passkeys today. You can add another in about 3 hours.");
     expect(daily).toMatchObject({ code: "passkey_limit", status: 409, message: "You added 5 passkeys today. You can add another in about 3 hours." });
   });
+
+  test("an AuthError can carry details for the app, such as the level a refusal asks for and the factors proven in time", () => {
+    const refusal = new AuthError("reauth_required", 403, undefined, undefined, { level: 2, have: ["email"] });
+    expect(refusal).toMatchObject({ code: "reauth_required", status: 403, message: "Confirm it's you to continue.", details: { level: 2, have: ["email"] } });
+    expect(refusal.retryAfterSeconds).toBeUndefined();
+    expect(new AuthError("rate_limited", 429, undefined, 60).details).toBeUndefined();
+  });
 });

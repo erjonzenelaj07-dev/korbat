@@ -809,7 +809,18 @@ describe("the export route", () => {
    * session guards are passed through: http-account.test.ts covers them on the real app.
    */
   function app(h: Harness, log = silent) {
-    const session: Session = { sessionId: h.currentSession, userId: h.userId, deviceId: randomUUID(), role: "user", onboarded: true, mfaEnabled: false, reauthAt: h.now() };
+    const session: Session = {
+      sessionId: h.currentSession,
+      userId: h.userId,
+      deviceId: randomUUID(),
+      role: "user",
+      onboarded: true,
+      mfaEnabled: false,
+      reauthAt: h.now(),
+      handle: randomUUID(),
+      factors: { email: h.now().getTime() },
+      passkeyId: null,
+    };
     const pass: MiddlewareHandler<AppEnv> = async (_c, next) => {
       await next();
     };
@@ -821,7 +832,7 @@ describe("the export route", () => {
       c.set("authVia", "cookie");
       await next();
     });
-    a.route("/api/account", accountRoutes(h.deps, pass, pass));
+    a.route("/api/account", accountRoutes(h.deps, pass, pass, pass));
     a.onError((err, c) => (err instanceof AccountError ? c.json({ error: { code: err.code } }, err.status) : c.json({ error: { code: "internal" } }, 500)));
     return a;
   }

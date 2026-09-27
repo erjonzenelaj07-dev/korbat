@@ -93,7 +93,7 @@ export async function onboardedUser(h: FlowHarness, repo: AuthRepo, options: { p
   if (options.password) await repo.setPasswordHash(created.id, await hashPassword(options.password), new Date());
   const user = (await repo.findUserById(created.id))!;
   const device = newTestDevice();
-  const signed = await signIn(h.deps, user, device, h.ctx, { alertNewDevice: false });
+  const signed = await signIn(h.deps, user, device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
   return { email, user, device, session: signed.issued.session, token: signed.issued.token };
 }
 

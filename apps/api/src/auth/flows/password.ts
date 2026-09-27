@@ -38,7 +38,7 @@ export async function passwordSignIn(deps: AuthDeps, input: PasswordSigninReques
   await deps.lockout.recordSuccess(user.id);
   // A hash made with older parameters is replaced while the password is at hand.
   if (needsRehash(user.passwordHash)) await deps.repo.replacePasswordHash(user.id, await hashPassword(input.password));
-  return firstFactorPassed(deps, user, { deviceId: input.deviceId, platform: input.platform }, ctx);
+  return firstFactorPassed(deps, user, { deviceId: input.deviceId, platform: input.platform }, ctx, { factors: { password: deps.now().getTime() }, method: "password" });
 }
 
 /**

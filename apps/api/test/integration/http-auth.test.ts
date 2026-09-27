@@ -145,7 +145,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     await signUp(b);
     await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Fresh" } });
     const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
-    await auth.deps.repo.setReauth(sessionId, new Date(Date.now() - 10 * 60_000));
+    await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
     await auth.deps.kv.del(`sess:${sessionId}`);
     const revoke = await b.fetch(`/api/auth/sessions/${"0".repeat(64)}`, { method: "DELETE" });
     expect(revoke.status).toBe(403);
@@ -175,7 +175,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Fresh" } });
     const token = b.cookie("__Host-korbat_session")!;
     const sessionId = sha256Hex(token);
-    await auth.deps.repo.setReauth(sessionId, new Date(Date.now() - 10 * 60_000));
+    await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
     await auth.deps.kv.del(`sess:${sessionId}`);
 
     const blocked = await b.fetch("/api/auth/password/set", { json: { password: "correct horse battery staple" } });
@@ -184,12 +184,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
 
     const { flowId } = FlowResponse.parse(await (await b.fetch("/api/auth/reauth/email/start", { method: "POST" })).json());
     const reauth = await b.fetch("/api/auth/reauth", { json: { method: "email", flowId, code: mailer.lastCodeFor(email) } });
-    expect(reauth.status).toBe(204);
+    expect(reauth.status).toBe(200);
+    // The level reached; the token rotated into the cookies, never into a browser's body (1c design, section 7.2).
+    expect(await reauth.json()).toEqual({ level: 1 });
+    const rotated = b.cookie("__Host-korbat_session")!;
+    expect(rotated).not.toBe(token);
+    expect((await app.request("/api/me", { headers: { cookie: `__Host-korbat_session=${token}` } })).status).toBe(401);
 
     const set = await b.fetch("/api/auth/password/set", { json: { password: "correct horse battery staple" } });
     expect(set.status).toBe(200);
     expect(await set.json()).toEqual({});
-    expect(b.cookie("__Host-korbat_session")).not.toBe(token);
+    expect(b.cookie("__Host-korbat_session")).not.toBe(rotated);
     expect(MeResponse.parse(await (await b.fetch("/api/me")).json()).user.hasPassword).toBe(true);
   });
 
@@ -215,7 +220,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
 
     await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Mover" } });
     const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
-    await auth.deps.repo.setReauth(sessionId, new Date(Date.now() - 10 * 60_000));
+    await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
     await auth.deps.kv.del(`sess:${sessionId}`);
     for (const [path, body] of routes) {
       const stale = await b.fetch(path, { json: body });
@@ -223,7 +228,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
       expect(await stale.json()).toMatchObject({ error: { code: "reauth_required" } });
     }
     const { flowId: reauthFlow } = FlowResponse.parse(await (await b.fetch("/api/auth/reauth/email/start", { method: "POST" })).json());
-    expect((await b.fetch("/api/auth/reauth", { json: { method: "email", flowId: reauthFlow, code: mailer.lastCodeFor(email) } })).status).toBe(204);
+    expect((await b.fetch("/api/auth/reauth", { json: { method: "email", flowId: reauthFlow, code: mailer.lastCodeFor(email) } })).status).toBe(200);
 
     const malformed = await b.fetch("/api/auth/email/change/start", { json: { email: "not an address" } });
     expect(malformed.status).toBe(400);

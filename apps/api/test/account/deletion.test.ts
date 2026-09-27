@@ -113,7 +113,18 @@ function harness() {
     const userId = randomUUID();
     users.set(userId, { deletedAt: options.deletedAt ?? null, purgedAt: null });
     if (options.images) images.set(userId, options.images);
-    const session: Session = { sessionId: sha256Hex(randomToken()), userId, deviceId: randomUUID(), role: "user", onboarded: true, mfaEnabled: false, reauthAt: new Date(t) };
+    const session: Session = {
+      sessionId: sha256Hex(randomToken()),
+      userId,
+      deviceId: randomUUID(),
+      role: "user",
+      onboarded: true,
+      mfaEnabled: false,
+      reauthAt: new Date(t),
+      handle: randomUUID(),
+      factors: { email: t },
+      passkeyId: null,
+    };
     return { userId, session };
   }
   const ctx: RequestContext = { ipHash: randomToken(), userAgent: "test" };

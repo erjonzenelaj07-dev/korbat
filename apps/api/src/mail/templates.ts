@@ -47,10 +47,12 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         "It expires in 10 minutes. korbat asks for it before sensitive account changes.",
       ]);
     case "new_device":
+      // The link runs the lockdown anchored at this sign-in (1c design, section 7.6): it reaches back a day, so a
+      // passkey or two-factor set up just before, from the same stolen session, goes with it.
       return build("New sign-in to your korbat account", [
         `Your account was just signed in from a new device: ${need(data, "deviceLabel")}.`,
         "If this was you, there is nothing to do.",
-        `If this was not you, open this link within 24 hours to sign out every session and remove your password: ${need(data, "notMeUrl")}`,
+        `If this was not you, open this link within 24 hours. It signs out every session, removes your password, and turns off every passkey and two-factor authentication set up since the day before this sign-in; then you sign in with a code sent to this address: ${need(data, "notMeUrl")}`,
       ]);
     case "account_locked":
       return build("Password sign-in paused on your korbat account", [
@@ -94,13 +96,13 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         `The email address of your korbat account was just changed to ${need(data, "email")}. This address no longer belongs to the account.`,
         "Every session stays signed in. If this was you, there is nothing to do.",
         data.revertUrl
-          ? `If this was not you, open this link within 24 hours to move the account back to this address and sign out every session: ${data.revertUrl}`
+          ? `If this was not you, open this link within 24 hours. It moves the account back to this address, signs out every session, removes the password, and turns off every passkey and two-factor authentication set up since the day before the change; then you sign in with a code sent to this address: ${data.revertUrl}`
           : "If this was not you: the address had already changed less than a day ago, and the link sent then, to the address the account had before, can still move the account back there and sign out every session.",
       ]);
     case "email_change_reverted":
       return build("Your korbat account is back at this address", [
         "Your korbat account is back at this address, moved back from the link sent when its address changed, and every session was signed out.",
-        "Sign in with a code sent to this address. A password or two-factor authentication set up after the change was removed; set them up again from Security.",
+        "Sign in with a code sent to this address. The password was removed, and every passkey and two-factor authentication set up since the day before the change was turned off; set them up again from Security.",
       ]);
     case "badge_verified":
       return build("Your korbat account is verified", [
@@ -142,6 +144,12 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
       return build("A passkey on your korbat account was switched off", [
         `A sign-in just used what looks like a copy of your passkey named "${need(data, "name")}", so korbat switched that passkey off. It can no longer sign in.`,
         "Sign in with a code sent to this address, open Security, remove it and add a new one. If you did not try to sign in just now, also review your sessions and devices.",
+      ]);
+    case "recovery_code_used":
+      // A code spent at re-authentication (1c design, section 7.2): each of the ten works once, so the owner should know the count is down.
+      return build("A recovery code was used on your korbat account", [
+        "A recovery code was just used to confirm it's you on your korbat account. Each code works once; set up two-factor authentication again from Security to get a new set.",
+        "If this was not you, sign in, open Security, sign out everywhere and set up two-factor authentication again.",
       ]);
   }
 }

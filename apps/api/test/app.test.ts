@@ -7,7 +7,7 @@ import { HealthResponse } from "@korbat/contracts";
 import { createDb } from "@korbat/db";
 import { createAccount } from "../src/account";
 import { createApp } from "../src/app";
-import { createAuth } from "../src/auth";
+import { AuthError, createAuth } from "../src/auth";
 import { MemoryKv } from "../src/auth/kv";
 import { loadConfig } from "../src/config";
 import { MemoryMailer } from "../src/mail/memory";
@@ -66,6 +66,7 @@ function app(checks: Record<string, () => Promise<void>>, advisoryChecks?: Recor
     media: media.forAccount,
     requireSession: auth.requireSession,
     requireFreshAuth: auth.requireFreshAuth(),
+    requireStrongFreshAuth: auth.requireStrongFreshAuth(),
     rateLimitStore,
     logger,
   });
@@ -184,6 +185,20 @@ describe("routing", () => {
     const text = await res.text();
     expect(text).not.toContain("secret detail");
     expect(JSON.parse(text)).toMatchObject({ error: { code: "internal" } });
+  });
+  test("an auth error's details reach the envelope, so the app can ask for what a refusal names", async () => {
+    const a = app({});
+    a.get("/api/needs-more", () => {
+      throw new AuthError("reauth_required", 403, undefined, undefined, { level: 2, have: ["email"] });
+    });
+    a.get("/api/needs-nothing", () => {
+      throw new AuthError("mfa_required", 400);
+    });
+    const refused = await a.request("/api/needs-more");
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "reauth_required", message: "Confirm it's you to continue.", details: { level: 2, have: ["email"] } } });
+    const plain = (await (await a.request("/api/needs-nothing")).json()) as { error: Record<string, unknown> };
+    expect(plain.error).not.toHaveProperty("details");
   });
 });
 

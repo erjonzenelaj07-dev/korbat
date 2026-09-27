@@ -26,7 +26,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
     const kv = new MemoryKv();
     const sessions = createSessions({ repo, kv });
     const { user, device } = await newUserWithDevice(repo);
-    const issued = await sessions.issue(user.id, device.id);
+    const issued = await sessions.issue(user.id, device.id, { factors: { email: Date.now() } });
     expect(await sessions.resolve(issued.token)).not.toBeNull();
 
     const result = await runGrantRole({ authDb, apiDb, kv }, user.email, "moderator");

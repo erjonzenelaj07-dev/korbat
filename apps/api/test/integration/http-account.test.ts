@@ -76,6 +76,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export over HTT
       media: media.forAccount,
       requireSession: auth.requireSession,
       requireFreshAuth: auth.requireFreshAuth(),
+      requireStrongFreshAuth: auth.requireStrongFreshAuth(),
       rateLimitStore,
       logger,
     });
@@ -104,14 +105,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export over HTT
   const errorCode = async (res: Response) => ErrorEnvelope.parse(await res.json()).error.code;
   const exportOf = (b: Browser) => b.fetch("/api/account/export", { method: "POST" });
   const sessionIdOf = (b: Browser) => sha256Hex(b.cookie("__Host-korbat_session")!);
-  /** Puts the session's last proof of a credential ten minutes back, so the freshness check fails. */
+  /** The session's only factor is the sign-up's email code; moved ten minutes back, nothing within the window is left, so the freshness check fails. */
   async function makeStale(b: Browser) {
-    await auth.deps.repo.setReauth(sessionIdOf(b), new Date(Date.now() - 10 * 60_000));
+    await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date(Date.now() - 10 * 60_000));
     await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
   }
   /** The opposite: the session proved a credential just now. */
   async function makeFresh(b: Browser) {
-    await auth.deps.repo.setReauth(sessionIdOf(b), new Date());
+    await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date());
     await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
   }
   const eventTypes = async (userId: string) => (await auth.deps.repo.recentEvents(userId)).map((e) => e.type);

@@ -86,7 +86,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: step 1 of an account del
     const owner = await onboardedUser(h, authRepo);
     const handle = newHandle();
     expect((await createProfileStore(apiDb).create({ id: owner.user.id, handle, displayName: "Owner" })).ok).toBe(true);
-    const other = await signIn(h.deps, owner.user, newTestDevice(), h.ctx, { alertNewDevice: false });
+    const other = await signIn(h.deps, owner.user, newTestDevice(), h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
     await authRepo.createEmailCode({ flowId: randomBytes(16).toString("hex"), email: owner.email, userId: owner.user.id, purpose: "reauth", codeHash: "h", expiresAt: new Date(Date.now() + 600_000), ipHash: "x" });
     return { ...owner, handle, sessionIds: [owner.session.sessionId, other.issued.session.sessionId] };
   }

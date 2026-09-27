@@ -142,6 +142,11 @@ export class AuthError extends Error {
     message: string = MESSAGES[code],
     /** For rate limits: seconds until the window resets, sent as Retry-After. */
     readonly retryAfterSeconds?: number,
+    /**
+     * What the app needs beyond the code, sent as the envelope's `details`: for reauth_required, the level the action
+     * asks for and the factor kinds the session proved in time (1c design, section 7.1).
+     */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "AuthError";

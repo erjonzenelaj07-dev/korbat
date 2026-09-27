@@ -18,7 +18,8 @@ export type TemplateName =
   | "account_deleted"
   | "passkey_added"
   | "passkey_removed"
-  | "passkey_suspect";
+  | "passkey_suspect"
+  | "recovery_code_used";
 
 export interface MailMessage {
   to: string;

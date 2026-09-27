@@ -37,7 +37,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: password and MFA flows",
 
   async function enableMfa(h: FlowHarness, account: OnboardedUser) {
     await setupTotp(h.deps, account.session);
-    const pending = (await h.kv.get(`totp-pending:${account.user.id}`))!;
+    // The pending secret is kept for the session's handle, which a rotation keeps (1c design, section 2).
+    const pending = (await h.kv.get(`totp-pending:${account.session.handle}`))!;
     const secret = new Uint8Array(decrypt(pending, [h.deps.config.totpKey]));
     return confirmTotp(h.deps, account.session, { code: hotp(secret, currentStep(h.clock.ms())) });
   }
@@ -141,17 +142,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: password and MFA flows",
     expect(setup.otpauthUri).toMatch(/^otpauth:\/\/totp\/korbat:account\?secret=/);
     expect(setup.qrSvg.startsWith("<svg")).toBe(true);
 
-    const pending = (await h.kv.get(`totp-pending:${account.user.id}`))!;
+    const pending = (await h.kv.get(`totp-pending:${account.session.handle}`))!;
     const right = hotp(new Uint8Array(decrypt(pending, [h.deps.config.totpKey])), currentStep(h.clock.ms()));
     await expect(confirmTotp(h.deps, account.session, { code: wrongCode(right) })).rejects.toMatchObject({ code: "invalid_mfa_code" });
     expect((await repo.findUserById(account.user.id))!.totpEnabledAt).toBeNull();
 
     const confirmed = await confirmTotp(h.deps, account.session, { code: right });
     expect(confirmed.recoveryCodes).toHaveLength(10);
-    expect(confirmed.issued.session.mfaEnabled).toBe(true);
+    // The code proved the new secret, so the session gains the totp factor; the token rotates in place and the cached copy knows MFA is on.
+    expect(confirmed.issued.session).toMatchObject({
+      mfaEnabled: true,
+      handle: account.session.handle,
+      factors: { ...account.session.factors, totp: h.clock.ms() },
+      reauthAt: h.clock.now(),
+    });
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();
-    expect(await h.kv.get(`totp-pending:${account.user.id}`)).toBeNull();
+    expect((await h.deps.sessions.resolve(confirmed.issued.token))!.session).toEqual(confirmed.issued.session);
+    expect(await h.kv.get(`totp-pending:${account.session.handle}`)).toBeNull();
     const stored = (await repo.findUserById(account.user.id))!;
+    expect(stored.totpEnabledAt).toEqual(h.clock.now());
     expect(stored.totpSecretEnc).toMatch(/^v1:/);
     expect(stored.recoveryCodesHash).toHaveLength(10);
     expect(stored.recoveryCodesHash).not.toContain(confirmed.recoveryCodes[0]);
@@ -184,21 +193,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: password and MFA flows",
     await expect(verifyMfa(h.deps, { mfaTicket: ticket, code }, h.ctx)).rejects.toMatchObject({ code: "invalid_mfa_code" });
   });
 
-  test("a recovery code signs in once, asks for MFA to be set up again, and cannot be reused", async () => {
+  test("a recovery code signs in once, asks for MFA to be set up again, is recorded with the device and announced, and cannot be reused", async () => {
     const h = flowHarness(repo);
     const account = await onboardedUser(h, repo);
     const { recoveryCodes } = await enableMfa(h, account);
 
     const signed = await verifyMfa(h.deps, { mfaTicket: await mfaTicketByEmail(h, account), recoveryCode: recoveryCodes[0]!.toUpperCase() }, h.ctx);
     expect(signed.mustReenrollMfa).toBe(true);
+    expect(signed.issued.session.factors).toMatchObject({ email: h.clock.ms(), recovery: h.clock.ms() });
     await expect(verifyMfa(h.deps, { mfaTicket: await mfaTicketByEmail(h, account), recoveryCode: recoveryCodes[0]! }, h.ctx)).rejects.toMatchObject({
       code: "invalid_mfa_code",
     });
     expect((await repo.findUserById(account.user.id))!.recoveryCodesHash).toHaveLength(9);
-    expect((await repo.recentEvents(account.user.id)).map((e) => e.type)).toContain("recovery_code_used");
+    // The event names the device the session was issued on, as the re-authentication path's does; the owner is told once, whichever path spent the code.
+    const used = (await repo.recentEvents(account.user.id)).filter((e) => e.type === "recovery_code_used");
+    expect(used.map((e) => e.deviceId)).toEqual([signed.issued.session.deviceId]);
+    expect(h.mailer.sent.filter((m) => m.template === "recovery_code_used").map((m) => m.to)).toEqual([account.email]);
   });
 
-  test("recovery codes can be regenerated; turning MFA off needs a valid code and is refused for staff", async () => {
+  test("recovery codes can be regenerated; turning MFA off takes no code (the re-authentication spent it), and is refused for staff and for an account without it", async () => {
     const h = flowHarness(repo);
     const account = await onboardedUser(h, repo);
     const { recoveryCodes, issued } = await enableMfa(h, account);
@@ -211,34 +224,47 @@ describe.skipIf(!process.env.INTEGRATION)("integration: password and MFA flows",
     });
 
     await repo.setRole(account.user.id, "moderator");
-    const staff = await h.deps.sessions.issue(account.user.id, issued.session.deviceId);
-    await expect(disableTotp(h.deps, staff.session, { code: await currentTotpCode(h, repo, account.user.id) })).rejects.toMatchObject({ code: "staff_mfa_required" });
+    const staff = await h.deps.sessions.issue(account.user.id, issued.session.deviceId, { factors: { email: h.clock.ms(), totp: h.clock.ms() } });
+    await expect(disableTotp(h.deps, staff.session)).rejects.toMatchObject({ code: "staff_mfa_required" });
+    expect((await repo.findUserById(account.user.id))!.totpEnabledAt).not.toBeNull();
 
     await repo.setRole(account.user.id, "user");
-    const regular = await h.deps.sessions.issue(account.user.id, issued.session.deviceId);
-    await expect(disableTotp(h.deps, regular.session, { code: wrongCode(await currentTotpCode(h, repo, account.user.id)) })).rejects.toMatchObject({
-      code: "invalid_mfa_code",
-    });
-    h.clock.advance(30_000);
-    await disableTotp(h.deps, regular.session, { code: await currentTotpCode(h, repo, account.user.id) });
-    expect((await repo.findUserById(account.user.id))!.totpEnabledAt).toBeNull();
+    const regular = await h.deps.sessions.issue(account.user.id, issued.session.deviceId, { factors: { email: h.clock.ms(), totp: h.clock.ms() } });
+    await disableTotp(h.deps, regular.session);
+    expect((await repo.findUserById(account.user.id))!).toMatchObject({ totpEnabledAt: null, totpSecretEnc: null, recoveryCodesHash: [] });
+    expect((await h.deps.sessions.resolve(regular.token))!.session.mfaEnabled).toBe(false);
+    await expect(disableTotp(h.deps, regular.session)).rejects.toMatchObject({ code: "mfa_required", status: 400 });
   });
 
-  test("two-factor setup and confirmation need a fresh session, and the owner is told when it turns on or off", async () => {
+  test("setup needs a fresh session and, once two-factor is on, level 2; confirmation needs only the pending secret, even six minutes later; the owner is told when it turns on or off", async () => {
     const h = flowHarness(repo);
     const account = await onboardedUser(h, repo);
     h.clock.advance(REAUTH_WINDOW_MS + 1_000);
     const stale = (await h.deps.sessions.resolve(account.token))!.session;
-    await expect(setupTotp(h.deps, stale)).rejects.toMatchObject({ code: "reauth_required", status: 403 });
-    await expect(confirmTotp(h.deps, stale, { code: "000000" })).rejects.toMatchObject({ code: "reauth_required" });
+    await expect(setupTotp(h.deps, stale)).rejects.toMatchObject({ code: "reauth_required", status: 403, details: { level: 1, have: [] } });
+    // Without a setup there is no pending secret, whatever the code says.
+    await expect(confirmTotp(h.deps, stale, { code: "000000" })).rejects.toMatchObject({ code: "invalid_mfa_code", message: "Two-factor setup expired. Start again." });
 
-    await h.deps.sessions.markReauth(stale.sessionId);
+    await h.deps.sessions.addFactor(stale.sessionId, "email");
     const fresh = (await h.deps.sessions.resolve(account.token))!.session;
-    const { issued } = await enableMfa(h, { ...account, session: fresh });
+    await setupTotp(h.deps, fresh);
+    const pending = (await h.kv.get(`totp-pending:${fresh.handle}`))!;
+    const secret = new Uint8Array(decrypt(pending, [h.deps.config.totpKey]));
+    // Scanning the QR code took a while: the session is no longer fresh, and the confirmation does not care.
+    h.clock.advance(6 * 60_000);
+    expect(h.deps.sessions.isFresh((await h.deps.sessions.resolve(account.token))!.session)).toBe(false);
+    const { issued } = await confirmTotp(h.deps, fresh, { code: hotp(secret, currentStep(h.clock.ms())) });
+    expect(issued.session).toMatchObject({ mfaEnabled: true, factors: { ...fresh.factors, totp: h.clock.ms() } });
     expect(h.mailer.sent.filter((m) => m.template === "mfa_enabled").map((m) => m.to)).toEqual([account.email]);
 
-    h.clock.advance(30_000);
-    await disableTotp(h.deps, issued.session, { code: await currentTotpCode(h, repo, account.user.id) });
+    // Now that the account has TOTP, replacing the secret needs level 2: an email code alone is refused, with a TOTP code beside it accepted.
+    const onlyEmail = await h.deps.sessions.issue(account.user.id, fresh.deviceId, { factors: { email: h.clock.ms() } });
+    await expect(setupTotp(h.deps, onlyEmail.session)).rejects.toMatchObject({ code: "reauth_required", status: 403, details: { level: 2, have: ["email"] } });
+    await h.deps.sessions.addFactor(onlyEmail.session.sessionId, "totp");
+    const strong = (await h.deps.sessions.resolve(onlyEmail.token))!.session;
+    expect((await setupTotp(h.deps, strong)).otpauthUri).toMatch(/^otpauth:\/\/totp\//);
+
+    await disableTotp(h.deps, issued.session);
     expect(h.mailer.sent.filter((m) => m.template === "mfa_disabled")).toHaveLength(1);
     expect((await h.deps.sessions.resolve(issued.token))!.session.mfaEnabled).toBe(false);
   });

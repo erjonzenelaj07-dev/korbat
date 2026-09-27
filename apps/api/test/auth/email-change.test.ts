@@ -11,11 +11,21 @@ import {
   startEmailChange,
   verifyEmailChange,
 } from "../../src/auth/flows/email-change";
+import { LOCKDOWN_LOOKBACK_MS } from "../../src/auth/flows/lockdown";
 import { emailHash } from "../../src/auth/identifiers";
 import { HOUR, MINUTE } from "../../src/auth/limits";
 import type { AuthRepo } from "../../src/auth/repo";
 import type { Session } from "../../src/auth/sessions";
 import { memoryFlowHarness, type MemoryFlowHarness } from "./flow-harness";
+
+const DAY = 24 * HOUR;
+/** What the undo's event carries beside the address hashes once the lockdown ran and found nothing else to remove. */
+const NOTHING_ELSE = { passkeysRemoved: [], totpCleared: false, passwordCleared: true };
+
+/** An account with two-factor on since `enabledAt`, as the confirm step leaves it. */
+function withTotp(h: MemoryFlowHarness, userId: string, enabledAt: Date) {
+  Object.assign(h.users.get(userId)!, { totpSecretEnc: "v1:owner", totpEnabledAt: enabledAt, totpLastStep: 7, recoveryCodesHash: ["owner-code"] });
+}
 
 /** The AuthError a flow rejects with; anything else fails the test. */
 async function failure(promise: Promise<unknown>): Promise<AuthError> {
@@ -219,19 +229,26 @@ describe("email change: the verification step", () => {
 });
 
 describe("email change: the undo link sent to the old address", () => {
-  test("the notice carries a link good for 24 hours, kept under its hashed token with the old address and the time of the change", async () => {
+  test("the notice carries a link good for 24 hours, kept under its hashed token with the old address, the time of the change and the passkey behind the changing session", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
     h.advance(1000);
     const token = (await change(h, ada.session, "ada-new@korbat.local"))!;
     const raw = (await h.kv.get(emailRevertKey(token)))!;
     expect(emailRevertKey(token)).toBe(`email-revert:${sha256Hex(token)}`);
-    expect(JSON.parse(raw)).toEqual({ userId: ada.user.id, oldEmail: "ada@korbat.local", changedAt: h.now().getTime() });
+    expect(JSON.parse(raw)).toEqual({ userId: ada.user.id, oldEmail: "ada@korbat.local", changedAt: h.now().getTime(), passkeyId: null });
     expect(raw).not.toContain(token);
     h.advance(EMAIL_REVERT_TTL_MS - 1);
     expect(await h.kv.get(emailRevertKey(token))).not.toBeNull();
     h.advance(1);
     expect(await h.kv.get(emailRevertKey(token))).toBeNull();
+
+    // A session a passkey started names it, so the undo removes that passkey whatever its age.
+    const bob = h.user("bob@korbat.local");
+    const passkeyId = h.passkey(bob.user.id);
+    const byPasskey = h.session(bob.user.id, { passkeyId });
+    const bobsToken = (await change(h, byPasskey, "bob-new@korbat.local"))!;
+    expect(JSON.parse((await h.kv.get(emailRevertKey(bobsToken)))!)).toMatchObject({ userId: bob.user.id, passkeyId });
   });
 
   test("the link moves the account back, signs every session out, records the undo with both hashes, tells the old address and nobody else", async () => {
@@ -258,8 +275,9 @@ describe("email change: the undo link sent to the old address", () => {
       {
         userId: ada.user.id,
         type: "email_changed",
+        deviceId: null,
         ipHash: h.ctx.ipHash,
-        metadata: { from: emailHash(key, "attacker@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true },
+        metadata: { from: emailHash(key, "attacker@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true, ...NOTHING_ELSE },
       },
     ]);
     // The address the account was moved to is told nothing; the old one gets a short note.
@@ -283,30 +301,59 @@ describe("email change: the undo link sent to the old address", () => {
     expect(h.devices.filter((d) => d.userId === bob.user.id).map((d) => d.revokedAt)).toEqual([null]);
   });
 
-  test("a password set after the change goes and two-factor turned on before it stays", async () => {
+  test("the password goes whenever it was set, and two-factor turned on more than a day before the change stays", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
-    Object.assign(h.users.get(ada.user.id)!, { totpSecretEnc: "v1:owner", totpEnabledAt: h.now(), recoveryCodesHash: ["owner-code"] });
-    h.advance(1000);
+    // The owner's own, from before: a password nobody can tell from one an attacker set, and two-factor from just outside the day the lockdown reaches back.
+    await h.deps.repo.setPasswordHash(ada.user.id, "owner-password", h.now());
+    withTotp(h, ada.user.id, h.now());
+    h.advance(LOCKDOWN_LOOKBACK_MS + 1);
     const token = (await change(h, ada.session, "attacker@korbat.local"))!;
-    h.advance(1000);
-    await h.deps.repo.setPasswordHash(ada.user.id, "attacker-password", h.now());
-    h.advance(1000);
+    h.advance(HOUR);
     await revertEmailChange(h.deps, { token }, h.ctx);
-    expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null, totpSecretEnc: "v1:owner", recoveryCodesHash: ["owner-code"] });
+    expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: null, totpSecretEnc: "v1:owner", totpLastStep: 7, recoveryCodesHash: ["owner-code"] });
+    expect(h.events.at(-1)!.metadata).toMatchObject({ reverted: true, totpCleared: false, passwordCleared: true });
   });
 
-  test("a password set before the change stays and two-factor turned on after it goes", async () => {
+  test("two-factor turned on within the day before the change, or after it, goes with it", async () => {
+    const h = memoryFlowHarness();
+    const before = h.user("before@korbat.local");
+    // Exactly a day before the change: the first moment the lockdown reaches.
+    withTotp(h, before.user.id, h.now());
+    h.advance(LOCKDOWN_LOOKBACK_MS);
+    const beforesToken = (await change(h, before.session, "attacker-1@korbat.local"))!;
+    const after = h.user("after@korbat.local");
+    const aftersToken = (await change(h, after.session, "attacker-2@korbat.local"))!;
+    h.advance(1000);
+    Object.assign(h.users.get(after.user.id)!, { totpSecretEnc: "v1:attacker", totpEnabledAt: h.now(), totpLastStep: 42, recoveryCodesHash: ["attacker-code"] });
+    h.advance(1000);
+    await revertEmailChange(h.deps, { token: beforesToken }, h.ctx);
+    await revertEmailChange(h.deps, { token: aftersToken }, h.ctx);
+    for (const account of [before, after]) {
+      expect(h.users.get(account.user.id), account.user.email).toMatchObject({ passwordHash: null, totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
+    }
+    expect(h.events.filter((e) => e.metadata.reverted).map((e) => [e.userId, e.metadata.totpCleared])).toEqual([
+      [before.user.id, true],
+      [after.user.id, true],
+    ]);
+  });
+
+  test("a passkey added since the day before the change goes, an older one stays, and the passkey that started the changing session goes whatever its age", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
-    await h.deps.repo.setPasswordHash(ada.user.id, "owner-password", h.now());
-    h.advance(1000);
-    const token = (await change(h, ada.session, "attacker@korbat.local"))!;
-    h.advance(1000);
-    Object.assign(h.users.get(ada.user.id)!, { totpSecretEnc: "v1:attacker", totpEnabledAt: h.now(), totpLastStep: 42, recoveryCodesHash: ["attacker-code"] });
-    h.advance(1000);
+    const older = h.passkey(ada.user.id, new Date(h.now().getTime() - 1));
+    const ownSince = h.passkey(ada.user.id, h.now());
+    const named = h.passkey(ada.user.id, new Date(h.now().getTime() - 30 * DAY));
+    const changing = h.session(ada.user.id, { passkeyId: named });
+    h.advance(LOCKDOWN_LOOKBACK_MS);
+    const token = (await change(h, changing, "attacker@korbat.local"))!;
+    h.advance(HOUR);
+    const added = h.passkey(ada.user.id);
+    h.advance(HOUR);
     await revertEmailChange(h.deps, { token }, h.ctx);
-    expect(h.users.get(ada.user.id)).toMatchObject({ passwordHash: "owner-password", totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
+    expect(h.passkeys.map((p) => p.id)).toEqual([older]);
+    const removed = h.events.at(-1)!.metadata.passkeysRemoved as string[];
+    expect([...removed].sort()).toEqual([ownSince, named, added].sort());
   });
 
   test("a used link and an expired one are refused and change nothing", async () => {
@@ -363,7 +410,7 @@ describe("email change: the undo link sent to the old address", () => {
     await revertEmailChange(h.deps, { token }, h.ctx);
     expect(h.users.get(ada.user.id)).toMatchObject({ email: "ada@korbat.local", passwordHash: null });
     const key = h.deps.config.authHmacKey;
-    expect(h.events.at(-1)!.metadata).toEqual({ from: emailHash(key, "last@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true });
+    expect(h.events.at(-1)!.metadata).toEqual({ from: emailHash(key, "last@korbat.local"), to: emailHash(key, "ada@korbat.local"), reverted: true, ...NOTHING_ELSE });
 
     // Once the link was used, the next change sends one again.
     const owner = h.session(ada.user.id);

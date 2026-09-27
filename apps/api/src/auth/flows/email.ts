@@ -114,5 +114,6 @@ export async function verifyEmail(
 
   const user = row.userId ? await deps.repo.findUserById(row.userId) : undefined;
   if (!user) throw new AuthError("invalid_code", 400);
-  return firstFactorPassed(deps, user, parsed, ctx);
+  // The code proved the address just now: the session's email factor, at the flows' clock.
+  return firstFactorPassed(deps, user, parsed, ctx, { factors: { email: deps.now().getTime() }, method: "email" });
 }

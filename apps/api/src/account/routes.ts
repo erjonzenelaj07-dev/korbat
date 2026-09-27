@@ -11,10 +11,12 @@ import { createZipWriter } from "./zip";
 /**
  * The account endpoints, mounted at /api/account. `guard` is the auth module's requireSession: an
  * onboarded account, with CSRF and Origin already checked for cookie sessions. `fresh` is its
- * requireFreshAuth: a credential proven in the last five minutes, which every route here needs on top
- * (1b design, section 10). Errors are the app's to render: AccountError and those of the three modules.
+ * requireFreshAuth: a credential proven in the last five minutes, which the export needs on top
+ * (1b design, section 10). `strong` is its requireStrongFreshAuth: level 2 on an account with TOTP,
+ * which starting and confirming a deletion need (1c design, section 10). Errors are the app's to
+ * render: AccountError and those of the three modules.
  */
-export function accountRoutes(deps: AccountDeps, guard: MiddlewareHandler<AppEnv>, fresh: MiddlewareHandler<AppEnv>) {
+export function accountRoutes(deps: AccountDeps, guard: MiddlewareHandler<AppEnv>, fresh: MiddlewareHandler<AppEnv>, strong: MiddlewareHandler<AppEnv>) {
   const r = new Hono<AppEnv>();
 
   /** What the auth flows record about a request, as the auth routes build it: the hashed address, never the address. */
@@ -23,9 +25,9 @@ export function accountRoutes(deps: AccountDeps, guard: MiddlewareHandler<AppEnv
     userAgent: c.req.header("user-agent"),
   });
 
-  r.post("/delete/start", guard, fresh, async (c) => c.json(await startDeletion(deps, c.get("session")!, requestContext(c))));
+  r.post("/delete/start", guard, strong, async (c) => c.json(await startDeletion(deps, c.get("session")!, requestContext(c))));
 
-  r.post("/delete/confirm", guard, fresh, validate("json", DeleteConfirmRequest), async (c) => {
+  r.post("/delete/confirm", guard, strong, validate("json", DeleteConfirmRequest), async (c) => {
     await confirmDeletion(deps, c.get("session")!, c.req.valid("json"));
     // The session behind a web request's cookies is revoked; the browser is told to drop them so it does not keep sending a dead token.
     if (c.get("authVia") === "cookie") clearSessionCookies(c);

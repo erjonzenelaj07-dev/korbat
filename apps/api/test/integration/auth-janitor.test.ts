@@ -35,9 +35,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the auth janitor", () =>
     await code(new Date(now.getTime() - EMAIL_CODE_RETENTION_MS - DAY));
     await code(new Date(now.getTime() + 600_000));
 
-    const old = await h.deps.sessions.issue(user.id, device.id);
+    const old = await h.deps.sessions.issue(user.id, device.id, { factors: { email: now.getTime() } });
     await repo.revokeSession(old.session.sessionId, user.id, new Date(now.getTime() - SESSION_RETENTION_MS - DAY));
-    const live = await h.deps.sessions.issue(user.id, device.id);
+    const live = await h.deps.sessions.issue(user.id, device.id, { factors: { email: now.getTime() } });
 
     await repo.touchDevice(device.id, "stale-hash", new Date(now.getTime() - 31 * DAY));
     const { device: recent } = await newUserWithDevice(repo);

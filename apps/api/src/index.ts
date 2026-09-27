@@ -70,6 +70,7 @@ const account = createAccount({
   media: media.forAccount,
   requireSession: auth.requireSession,
   requireFreshAuth: auth.requireFreshAuth(),
+  requireStrongFreshAuth: auth.requireStrongFreshAuth(),
   rateLimitStore,
   logger,
 });

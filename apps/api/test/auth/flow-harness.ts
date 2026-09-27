@@ -5,7 +5,7 @@ import { parseVersionedKey, randomToken, sha256Hex } from "../../src/auth/crypto
 import { MemoryKv } from "../../src/auth/kv";
 import { createLockout } from "../../src/auth/lockout";
 import type { AuthEventType, AuthRepo, EmailCodeRow, UserRow } from "../../src/auth/repo";
-import { createSessions, type Session } from "../../src/auth/sessions";
+import { createSessions, type Factors, type Session } from "../../src/auth/sessions";
 import { devProvider } from "../../src/auth/verify/dev";
 import { MemoryMailer } from "../../src/mail/memory";
 
@@ -31,10 +31,17 @@ export interface RecordedDevice {
   revokedAt: Date | null;
 }
 
+/** A passkey of a user, as the lockdown removes it: only what its rule reads, the owner and the creation time. */
+export interface RecordedPasskey {
+  id: string;
+  userId: string;
+  createdAt: Date;
+}
+
 /**
- * The auth flows without a database: users, email codes, sessions and devices live in memory, and the
- * repository fake holds only the methods the email-change (with its undo link), badge and deletion
- * flows call (and the lookups the sign-in starts make), checked against the real signatures. The key-value store and the
+ * The auth flows without a database: users, email codes, sessions, devices and passkeys live in memory, and the
+ * repository fake holds only the methods the email-change (with its undo link), badge, deletion, not-me and
+ * lockdown flows call (and the lookups the sign-in starts make), checked against the real signatures. The key-value store and the
  * mailer are the in-memory ones; the clock moves only when a test says so, so expiries and timestamps
  * compare exactly; and events are kept as the server would write them to auth_events. The integration
  * harness (test/integration/flow-harness.ts) runs flows against the real repository instead.
@@ -47,6 +54,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   const events: RecordedEvent[] = [];
   const sessions: RecordedSession[] = [];
   const devices: RecordedDevice[] = [];
+  const passkeys: RecordedPasskey[] = [];
   /** The handle of each account's profile, which the deletion flow compares the typed handle with. */
   const handles = new Map<string, string>();
   /** Repository methods told to fail: "takeDown" fails its transaction midway, after staging its writes and before any lands. */
@@ -119,6 +127,19 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       const row = users.get(userId);
       if (row) Object.assign(row, { totpSecretEnc: null, totpEnabledAt: null, totpLastStep: null, recoveryCodesHash: [] });
     },
+    async deletePasskeys(userId: string, input: { since: Date; ids: readonly string[] }): Promise<string[]> {
+      // As the real statement: the user's passkeys created at or after `since`, plus any of theirs the caller names.
+      const removed: string[] = [];
+      for (let i = passkeys.length - 1; i >= 0; i--) {
+        const passkey = passkeys[i]!;
+        if (passkey.userId !== userId) continue;
+        if (passkey.createdAt.getTime() >= input.since.getTime() || input.ids.includes(passkey.id)) {
+          removed.push(passkey.id);
+          passkeys.splice(i, 1);
+        }
+      }
+      return removed;
+    },
     async setPhoneHash(userId: string, phoneHash: string | null): Promise<void> {
       // As the real partial unique index on phone_hash, deleted rows included: the driver error that the flow recognises through isUniqueViolation.
       if (phoneHash !== null) {
@@ -188,6 +209,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     | "setPasswordHash"
     | "revokeDevices"
     | "disableTotp"
+    | "deletePasskeys"
     | "setPhoneHash"
     | "appendEvent"
     | "revokeAllSessions"
@@ -242,9 +264,23 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     now,
   };
   const ctx: RequestContext = { ipHash: randomToken(), userAgent: undefined };
-  /** A live session on a device of its own, both recorded as the deletion flow will find them; its reauth time is now, as behind requireFreshAuth. */
-  const session = (userId: string): Session => {
-    const s: Session = { sessionId: sha256Hex(randomToken()), userId, deviceId: randomUUID(), role: "user", onboarded: true, mfaEnabled: false, reauthAt: now() };
+  /**
+   * A live session on a device of its own, both recorded as the deletion flow will find them. It proved an email code
+   * just now unless given other factors, as a session behind requireFreshAuth has, and started from no passkey unless told so.
+   */
+  const session = (userId: string, options: { factors?: Factors; passkeyId?: string | null } = {}): Session => {
+    const s: Session = {
+      sessionId: sha256Hex(randomToken()),
+      userId,
+      deviceId: randomUUID(),
+      role: "user",
+      onboarded: true,
+      mfaEnabled: false,
+      reauthAt: now(),
+      handle: randomUUID(),
+      factors: options.factors ?? { email: t },
+      passkeyId: options.passkeyId ?? null,
+    };
     sessions.push({ id: s.sessionId, userId, revokedAt: null });
     devices.push({ id: s.deviceId, userId, revokedAt: null });
     return s;
@@ -259,6 +295,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     events,
     sessions,
     devices,
+    passkeys,
     verified,
     faults,
     now,
@@ -267,6 +304,12 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     },
     /** Another session of an existing account, on another device. */
     session,
+    /** A passkey of an existing account, created at `createdAt` (now unless given); answers its id. */
+    passkey(userId: string, createdAt: Date = now()): string {
+      const id = randomUUID();
+      passkeys.push({ id, userId, createdAt });
+      return id;
+    },
     /**
      * An onboarded account holding a verified address, with a session that just proved a credential, as a route
      * behind requireFreshAuth passes it on. Its profile's handle is the address's local part unless given.

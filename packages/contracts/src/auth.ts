@@ -165,6 +165,13 @@ export type TotpSetupResponse = z.infer<typeof TotpSetupResponse>;
 export const TotpCodeRequest = z.object({ code: TotpCode });
 export type TotpCodeRequest = z.infer<typeof TotpCodeRequest>;
 
+/**
+ * Turning TOTP off takes no code (1c design, section 2): the route needs a level-2 re-authentication, which already spent
+ * the current step. A code a client sends anyway is dropped.
+ */
+export const TotpDisableRequest = z.object({});
+export type TotpDisableRequest = z.infer<typeof TotpDisableRequest>;
+
 export const RecoveryCodesResponse = z.object({ recoveryCodes: z.array(RecoveryCode).length(10) });
 export type RecoveryCodesResponse = z.infer<typeof RecoveryCodesResponse>;
 
@@ -184,8 +191,22 @@ export const ReauthRequest = z.discriminatedUnion("method", [
   z.object({ method: z.literal("password"), password: PasswordInput }),
   z.object({ method: z.literal("totp"), code: TotpCode }),
   z.object({ method: z.literal("email"), flowId: OpaqueId, code: EmailCode }),
+  // A recovery code (1c design, section 7.2): only an account with TOTP holds any, and each works once.
+  z.object({ method: z.literal("recovery"), recoveryCode: RecoveryCode }),
 ]);
 export type ReauthRequest = z.infer<typeof ReauthRequest>;
+
+/**
+ * What a re-authentication answers (1c design, section 7.2): the level the session holds now (2 when a second factor
+ * stands beside a first within the window, or a user-verified passkey does), the rotated token for native clients (web
+ * clients get fresh cookies instead), and, after a recovery code, that two-factor authentication should be set up again.
+ */
+export const ReauthResponse = z.object({
+  level: z.union([z.literal(1), z.literal(2)]),
+  token: RotatedToken,
+  mustReenrollMfa: z.boolean().optional(),
+});
+export type ReauthResponse = z.infer<typeof ReauthResponse>;
 
 // ---------------------------------------------------------------- sessions and account
 

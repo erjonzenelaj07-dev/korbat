@@ -14,7 +14,7 @@ import { confirmDeletion, finishPurge, startDeletion } from "./flows/deletion";
 import { exportAccount, type AccountExport } from "./flows/export";
 import { redisKv, type KeyValueStore } from "./kv";
 import { createLockout } from "./lockout";
-import { requireFreshAuth, requireOnboarding, requireSession, requireStaffMfa, resolveSession } from "./middleware";
+import { requireFreshAuth, requireOnboarding, requireSession, requireStaffMfa, requireStrongFreshAuth, resolveSession } from "./middleware";
 import type { JobLock } from "../lib/jobs";
 import { createJanitor } from "./janitor";
 import { hibpChecker, type BreachChecker } from "./passwords";
@@ -140,6 +140,8 @@ export function createAuth(options: CreateAuthOptions) {
     requireSession,
     requireOnboarding,
     requireFreshAuth: (maxAgeSeconds?: number) => requireFreshAuth(deps, maxAgeSeconds),
+    /** Level 2 within the window on an account with TOTP, level 1 otherwise: for the routes of the 1c design's section 10. */
+    requireStrongFreshAuth: (maxAgeSeconds?: number) => requireStrongFreshAuth(deps, maxAgeSeconds),
     requireStaffMfa,
     /** Starts the retention pass (dead codes, old sessions, device address hashes, old events) and returns the function that stops it. */
     startJanitor: (lock: JobLock) => createJanitor(deps, lock).start(),

@@ -75,10 +75,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
     expect(res.status).toBe(200);
     return ProfileView.parse(((await res.json()) as { profile: unknown }).profile);
   };
-  /** Puts the session's last proof of a credential ten minutes back, so the freshness check fails. */
+  /** The session's only factor is the sign-up's email code; moved ten minutes back, nothing within the window is left, so the freshness check fails. */
   async function makeStale(b: Browser) {
     const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
-    await auth.deps.repo.setReauth(sessionId, new Date(Date.now() - 10 * 60_000));
+    await auth.deps.repo.writeFactor(sessionId, "email", new Date(Date.now() - 10 * 60_000));
     await auth.deps.kv.del(`sess:${sessionId}`);
   }
   const eventTypes = async (userId: string) => (await auth.deps.repo.recentEvents(userId)).map((e) => e.type);

@@ -45,6 +45,7 @@ describe("mail templates", () => {
       "passkey_added",
       "passkey_removed",
       "passkey_suspect",
+      "recovery_code_used",
     ] as const) {
       const r = renderTemplate(template, data);
       expect(r.subject.length, template).toBeGreaterThan(5);
@@ -60,6 +61,38 @@ describe("mail templates", () => {
     expect(emailChanged.text).toContain("new<address>@example.com");
     expect(emailChanged.text).toContain("http://localhost:8081/email-revert/def");
   });
+  test("the mails that carry a lockdown link, and the note after one ran, say what the lockdown does (1c design, section 7.6)", () => {
+    // The link's page says the same before the owner opens it (Task 7); the mail is where they first read it.
+    const lockdownWording = (text: string) => {
+      expect(text).toMatch(/signs out every session|every session was signed out/);
+      expect(text).toMatch(/removes (your|the) password|password was removed/);
+      expect(text).toMatch(/passkey/);
+      expect(text).toMatch(/two-factor authentication/);
+      expect(text).toMatch(/the day before/);
+    };
+    const newDevice = renderTemplate("new_device", { deviceLabel: "Chrome on Windows", notMeUrl: "http://localhost:8081/not-me/abc" });
+    expect(newDevice.text).toContain("Chrome on Windows");
+    expect(newDevice.text).toContain("24 hours");
+    expect(newDevice.text).toContain("http://localhost:8081/not-me/abc");
+    lockdownWording(newDevice.text);
+    const changed = renderTemplate("email_changed", { email: "new@example.com", revertUrl: "http://localhost:8081/email-revert/abc" });
+    expect(changed.text).toContain("24 hours");
+    expect(changed.text).toMatch(/back to this address/);
+    expect(changed.text).toContain("http://localhost:8081/email-revert/abc");
+    lockdownWording(changed.text);
+    const reverted = renderTemplate("email_change_reverted", {});
+    expect(reverted.text).toMatch(/back at this address/);
+    expect(reverted.text).not.toMatch(/https?:\/\//);
+    lockdownWording(reverted.text);
+  });
+  test("a recovery code spent at re-authentication is announced, without a link", () => {
+    const used = renderTemplate("recovery_code_used", {});
+    expect(used.subject).toBe("A recovery code was used on your korbat account");
+    expect(used.text).toMatch(/recovery code/);
+    expect(used.text).toMatch(/once/);
+    expect(used.text).toMatch(/If this was not you/);
+    expect(used.text).not.toMatch(/https?:\/\//);
+  });
   test("the account lifecycle templates say what happened and what to do if it was not the owner", () => {
     const changeCode = renderTemplate("email_change_code", { code: "654321" });
     expect(changeCode.text).toContain("654321");
@@ -67,9 +100,8 @@ describe("mail templates", () => {
     const changed = renderTemplate("email_changed", { email: "new@example.com", revertUrl: "http://localhost:8081/email-revert/abc" });
     expect(changed.text).toContain("new@example.com");
     expect(changed.text).toMatch(/stays? signed in/);
-    expect(changed.text).toContain(
-      "If this was not you, open this link within 24 hours to move the account back to this address and sign out every session: http://localhost:8081/email-revert/abc",
-    );
+    expect(changed.text).toMatch(/If this was not you, open this link within 24 hours\./);
+    expect(changed.text).toMatch(/: http:\/\/localhost:8081\/email-revert\/abc$/m);
     // A change while an earlier change's link is still out sends no link of its own, and says where the one that works went.
     const again = renderTemplate("email_changed", { email: "new@example.com" });
     expect(again.text).toContain("new@example.com");

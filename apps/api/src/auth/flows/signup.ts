@@ -39,7 +39,8 @@ export async function completeSignup(deps: AuthDeps, input: SignupCompleteReques
     throw err;
   }
   await deps.repo.appendEvent({ userId: user.id, type: "signup", ipHash: ctx.ipHash });
-  return signIn(deps, user, { deviceId: pending.deviceId, platform: pending.platform }, ctx, { alertNewDevice: false });
+  // The sign-up code proved the address: the first session's email factor, at the flows' clock.
+  return signIn(deps, user, { deviceId: pending.deviceId, platform: pending.platform }, ctx, { alertNewDevice: false, factors: { email: deps.now().getTime() }, method: "email" });
 }
 
 /** Onboarding: claims a handle, marks the account onboarded and swaps the onboarding session for a full one. */

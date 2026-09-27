@@ -242,7 +242,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth end to end (Postgre
     const second = await enrol();
     expect(second.recoveryCodes).not.toEqual(first.recoveryCodes);
     advance(30_000);
-    expect((await b.fetch("/api/auth/mfa/totp/disable", { json: { code: totpNow(second.secret) } })).status).toBe(204);
+    // No code: the sign-in's password and TOTP code, minutes ago, are the level-2 proof the route asks for (1c design, section 2).
+    expect((await b.fetch("/api/auth/mfa/totp/disable", { json: {} })).status).toBe(204);
     expect(MeResponse.parse(await (await b.fetch("/api/me")).json()).user.mfaEnabled).toBe(false);
   });
 
@@ -271,7 +272,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth end to end (Postgre
     const stale = await laptop.fetch("/api/auth/sessions/revoke-all", { method: "POST" });
     expect(stale.status).toBe(403);
     expect(await stale.json()).toMatchObject({ error: { code: "reauth_required" } });
-    expect((await laptop.fetch("/api/auth/reauth", { json: { method: "password", password: PASSWORD } })).status).toBe(204);
+    const reauth = await laptop.fetch("/api/auth/reauth", { json: { method: "password", password: PASSWORD } });
+    expect(reauth.status).toBe(200);
+    expect(await reauth.json()).toEqual({ level: 1 });
     expect((await laptop.fetch("/api/auth/sessions/revoke-all", { method: "POST" })).status).toBe(204);
     expect((await laptop.fetch("/api/me")).status).toBe(401);
     expect((await phone.fetch("/api/me")).status).toBe(401);

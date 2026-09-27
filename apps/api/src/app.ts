@@ -63,7 +63,7 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   app.onError((err, c) => {
     if (err instanceof AuthError) {
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
-      return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+      return c.json(errorBody(err.code, err.message, c.get("requestId"), err.details), err.status);
     }
     if (err instanceof HTTPException) return c.json(errorBody("invalid_request", err.message, c.get("requestId")), err.status);
     if (err instanceof MediaError) return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);

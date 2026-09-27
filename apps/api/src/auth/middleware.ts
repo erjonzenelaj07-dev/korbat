@@ -1,9 +1,10 @@
+import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
 import { authErrorMessage, type AuthDeps } from "./context";
 import { bearerToken, checkCsrf, readSessionCookie, refreshSessionCookies } from "./cookies";
-import { SESSION_IDLE_MS } from "./sessions";
+import { SESSION_IDLE_MS, type ReauthNeeded } from "./sessions";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -53,15 +54,32 @@ export const requireSession = createMiddleware<AppEnv>(async (c, next) => {
   await next();
 });
 
-/** The session proved a credential within the last `maxAgeSeconds` (300, five minutes, by default). */
+/** The refusal both freshness guards answer: the level the route asks for and the factors proven in time, so the app can ask for what is missing. */
+const reauthRequired = (c: Context<AppEnv>, needed: ReauthNeeded) => c.json(errorBody("reauth_required", authErrorMessage("reauth_required"), c.get("requestId"), needed), 403);
+
+/** The session proved a factor within the last `maxAgeSeconds` (300, five minutes, by default): level 1. */
 export function requireFreshAuth(deps: AuthDeps, maxAgeSeconds?: number) {
   const windowMs = maxAgeSeconds === undefined ? undefined : maxAgeSeconds * 1000;
   return createMiddleware<AppEnv>(async (c, next) => {
     const session = c.get("session");
     if (!session) return c.json(errorBody("unauthenticated", "Sign in required", c.get("requestId")), 401);
-    if (!deps.sessions.isFresh(session, windowMs)) {
-      return c.json(errorBody("reauth_required", authErrorMessage("reauth_required"), c.get("requestId")), 403);
-    }
+    const needed = deps.sessions.reauthNeeded(session, 1, windowMs);
+    if (needed) return reauthRequired(c, needed);
+    await next();
+  });
+}
+
+/**
+ * Level 2 within the window when the account has TOTP (a second factor beside a first, or a user-verified passkey), and
+ * level 1 otherwise: what the routes of the 1c design's section 10 ask for.
+ */
+export function requireStrongFreshAuth(deps: AuthDeps, maxAgeSeconds?: number) {
+  const windowMs = maxAgeSeconds === undefined ? undefined : maxAgeSeconds * 1000;
+  return createMiddleware<AppEnv>(async (c, next) => {
+    const session = c.get("session");
+    if (!session) return c.json(errorBody("unauthenticated", "Sign in required", c.get("requestId")), 401);
+    const needed = deps.sessions.reauthNeeded(session, deps.sessions.requiredLevel(session), windowMs);
+    if (needed) return reauthRequired(c, needed);
     await next();
   });
 }

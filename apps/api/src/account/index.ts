@@ -24,8 +24,10 @@ export interface CreateAccountOptions {
   media: MediaForAccount;
   /** The auth module's requireSession: an onboarded account with CSRF and Origin checked. */
   requireSession: MiddlewareHandler<AppEnv>;
-  /** The auth module's requireFreshAuth: a credential proven in the last five minutes, which every account route needs. */
+  /** The auth module's requireFreshAuth: a credential proven in the last five minutes, which the export needs. */
   requireFreshAuth: MiddlewareHandler<AppEnv>;
+  /** The auth module's requireStrongFreshAuth: level 2 on an account with TOTP, which starting and confirming a deletion need (1c design, section 10). */
+  requireStrongFreshAuth: MiddlewareHandler<AppEnv>;
   /** The daily export limit shares the store the per-IP middleware uses. */
   rateLimitStore: RateLimitStore;
   logger: Logger;
@@ -43,7 +45,7 @@ export function createAccount(options: CreateAccountOptions) {
   };
   return {
     deps,
-    routes: accountRoutes(deps, options.requireSession, options.requireFreshAuth),
+    routes: accountRoutes(deps, options.requireSession, options.requireFreshAuth, options.requireStrongFreshAuth),
     /** Starts the purge job (deletions left half done, every five minutes under the shared lock) and returns the function that stops it. */
     startPurge: (lock: JobLock) => createPurgeJob(deps, lock).start(),
   };

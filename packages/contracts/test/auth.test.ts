@@ -20,8 +20,10 @@ import {
   OpaqueId,
   Phone,
   ReauthRequest,
+  ReauthResponse,
   RecoveryCode,
   SignupCompleteRequest,
+  TotpDisableRequest,
 } from "../src/index";
 
 const flow = "a".repeat(43);
@@ -77,11 +79,28 @@ describe("auth requests and responses", () => {
     expect(MfaVerifyRequest.safeParse({ mfaTicket: flow, code: "123456", recoveryCode: "abcd-ef23-gh45" }).success).toBe(false);
     expect(MfaVerifyRequest.safeParse({ mfaTicket: flow }).success).toBe(false);
   });
-  test("reauth accepts password, totp and email methods only", () => {
+  test("reauth accepts password, totp, email and recovery methods only", () => {
     expect(ReauthRequest.safeParse({ method: "password", password: "x" }).success).toBe(true);
     expect(ReauthRequest.safeParse({ method: "totp", code: "000000" }).success).toBe(true);
     expect(ReauthRequest.safeParse({ method: "email", flowId: flow, code: "000000" }).success).toBe(true);
+    // A recovery code (1c design, section 7.2), normalised as the MFA step normalises it.
+    expect(ReauthRequest.parse({ method: "recovery", recoveryCode: " ABCD-EF23-GH45 " })).toEqual({ method: "recovery", recoveryCode: "abcd-ef23-gh45" });
+    expect(ReauthRequest.safeParse({ method: "recovery", recoveryCode: "abcd-ef01-gh45" }).success).toBe(false);
+    expect(ReauthRequest.safeParse({ method: "recovery", code: "000000" }).success).toBe(false);
     expect(ReauthRequest.safeParse({ method: "sms", code: "000000" }).success).toBe(false);
+  });
+  test("the reauth answer carries the level reached, the rotated token for native clients and, after a recovery code, the re-enrolment flag", () => {
+    expect(ReauthResponse.parse({ level: 1 })).toEqual({ level: 1 });
+    expect(ReauthResponse.parse({ level: 2, token: "kb1_x", mustReenrollMfa: true })).toEqual({ level: 2, token: "kb1_x", mustReenrollMfa: true });
+    expect(ReauthResponse.safeParse({ level: 3 }).success).toBe(false);
+    expect(ReauthResponse.safeParse({ level: "2" }).success).toBe(false);
+    expect(ReauthResponse.safeParse({ token: "kb1_x" }).success).toBe(false);
+  });
+  test("turning TOTP off takes an empty body: the re-authentication already spent the code, and a code sent anyway is dropped", () => {
+    expect(TotpDisableRequest.parse({})).toEqual({});
+    expect(TotpDisableRequest.parse({ code: "123456" })).toEqual({});
+    expect(TotpDisableRequest.safeParse(null).success).toBe(false);
+    expect(TotpDisableRequest.safeParse("code").success).toBe(false);
   });
   test("signup completion needs an ISO calendar date", () => {
     expect(SignupCompleteRequest.safeParse({ flowId: flow, dateOfBirth: "2008-02-29", termsVersion: "draft" }).success).toBe(true);

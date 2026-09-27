@@ -116,8 +116,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     const owner = await account();
     const userId = owner.user.id;
     // A second live session on the same device, and a third one revoked: only the two live ones are listed.
-    const second = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false });
-    const revoked = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false });
+    const second = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
+    const revoked = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
     await h.deps.sessions.revoke(revoked.issued.session.sessionId, userId);
     // The handle left behind is reserved in handle_history; the export lists both.
     const renamed = newHandle();

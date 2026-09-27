@@ -112,7 +112,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     // The handle left behind stays reserved, and so does the current one.
     const renamed = newHandle();
     expect((await s.repo.changeHandle(userId, renamed, s.clock.next())).ok).toBe(true);
-    const other = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false });
+    const other = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
     await authRepo.createEmailCode({ flowId: randomBytes(16).toString("hex"), email: owner.email, userId, purpose: "reauth", codeHash: "h", expiresAt: new Date(Date.now() + 600_000), ipHash: "x" });
     await authRepo.setPhoneHash(userId, randomBytes(16).toString("hex"));
     await h.deps.profiles.setVerified(userId, new Date());

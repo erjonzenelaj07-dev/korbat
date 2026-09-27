@@ -72,6 +72,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
       media: media.forAccount,
       requireSession: auth.requireSession,
       requireFreshAuth: auth.requireFreshAuth(),
+      requireStrongFreshAuth: auth.requireStrongFreshAuth(),
       rateLimitStore,
       logger,
     });
@@ -100,9 +101,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
   const error = async (res: Response) => ErrorEnvelope.parse(await res.json()).error;
   const startOf = (b: Browser) => b.fetch("/api/account/delete/start", { method: "POST" });
   const sessionIdOf = (b: Browser) => sha256Hex(b.cookie("__Host-korbat_session")!);
-  /** Puts the session's last proof of a credential ten minutes back, so the freshness check fails. */
+  /** The session's only factor is the sign-up's email code; moved ten minutes back, nothing within the window is left, so the freshness check fails. */
   async function makeStale(b: Browser) {
-    await auth.deps.repo.setReauth(sessionIdOf(b), new Date(Date.now() - 10 * 60_000));
+    await auth.deps.repo.writeFactor(sessionIdOf(b), "email", new Date(Date.now() - 10 * 60_000));
     await auth.deps.kv.del(`sess:${sessionIdOf(b)}`);
   }
 
