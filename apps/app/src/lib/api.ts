@@ -33,6 +33,8 @@ export class ApiError extends Error {
     message: string,
     /** Seconds until the request may be repeated, from Retry-After: a rate limit or the handle cooldown. */
     readonly retryAfter?: number,
+    /** What the server sent beside the code (1c design, section 7.1): for reauth_required the level and the factors held, for passkey_limit the bound and its wait. */
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -68,6 +70,13 @@ const MESSAGES: Partial<Record<AuthErrorCode | "unauthenticated" | "invalid_requ
   phone_in_use: "That phone number is already verified on another account.",
   badge_unavailable: "Verification is not available on this korbat.",
   verify_unavailable: "We could not reach the verification service. Try again in a moment.",
+  // Passkeys (1c design, section 9). The cap's sentence; the daily bound's wait is worded by messageFor from the details.
+  passkey_invalid: "That passkey did not work. Try again or use your email.",
+  passkey_unsupported: "This passkey provider is not supported. Try another one.",
+  passkey_limit: "You have 10 passkeys. Remove one to add another.",
+  passkey_suspended: "This passkey was switched off because a copy of it may exist. Remove it and add a new one.",
+  passkey_not_found: "That passkey is gone.",
+  challenge_expired: "That took too long. Try again.",
   unauthenticated: "Sign in to continue.",
   invalid_request: "Some details are missing or invalid.",
   not_found: "That no longer exists.",
@@ -75,7 +84,19 @@ const MESSAGES: Partial<Record<AuthErrorCode | "unauthenticated" | "invalid_requ
   network: "Cannot reach korbat. Check your connection.",
 };
 
-export function messageFor(code: string, fallback?: string): string {
+/** The daily passkey bound as the API details it: 5 added in a day, and the seconds until the day has a slot again. */
+function dailyPasskeyBound(details: unknown): number | null {
+  const bound = details as { reason?: unknown; retryAfter?: unknown } | null;
+  return bound && typeof bound === "object" && bound.reason === "daily" && typeof bound.retryAfter === "number" && bound.retryAfter > 0 ? bound.retryAfter : null;
+}
+
+/** The message for a code; `details` is what the server sent beside it, which turns the daily passkey bound into its wait in hours. */
+export function messageFor(code: string, fallback?: string, details?: unknown): string {
+  const wait = code === "passkey_limit" ? dailyPasskeyBound(details) : null;
+  if (wait !== null) {
+    const hours = Math.max(1, Math.ceil(wait / 3600));
+    return `You added 5 passkeys today. You can add another in about ${hours === 1 ? "1 hour" : `${hours} hours`}.`;
+  }
   return MESSAGES[code as keyof typeof MESSAGES] ?? fallback ?? "Something went wrong. Try again.";
 }
 
@@ -162,13 +183,15 @@ export async function apiResponse(path: string, options: Omit<RequestOptions<unk
     if (res.status === 401 && !path.startsWith("/api/auth/") && path !== "/api/me") onUnauthenticated?.();
     const parsed = ErrorEnvelope.safeParse(await res.json().catch(() => null));
     const code = parsed.success ? parsed.data.error.code : "internal";
+    const details = parsed.success ? parsed.data.error.details : undefined;
     // The server's message is written for people and can be more specific than the generic text for
     // its code ("Two-factor setup expired. Start again."). Only validation and internal errors use
-    // the local wording, because their server messages are technical.
-    const generic = code === "invalid_request" || code === "internal" || !parsed.success;
+    // the local wording, because their server messages are technical, and the passkey bounds do, so
+    // the daily bound's wait is worded here from the details.
+    const local = code === "invalid_request" || code === "internal" || code === "passkey_limit" || !parsed.success;
     // Retry-After is whole seconds: on a rate limit, and on the handle cooldown, where it says when the next change is allowed.
     const retryAfter = Number(res.headers.get("retry-after"));
-    throw new ApiError(res.status, code, generic ? messageFor(code) : parsed.data.error.message, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
+    throw new ApiError(res.status, code, local ? messageFor(code, undefined, details) : parsed.data.error.message, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined, details);
   }
   return res;
 }

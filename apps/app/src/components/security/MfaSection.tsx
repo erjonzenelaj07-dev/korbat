@@ -59,10 +59,10 @@ export function MfaSection({
       setStage({ kind: "codes", recoveryCodes });
     });
 
+  // No code of its own (1c design, section 2): the route needs a level-2 re-authentication, which the panel provides, and the authenticator code given there already spent the current step.
   const disable = () =>
     act(async () => {
-      await api("/api/auth/mfa/totp/disable", { json: { code: code.trim() } });
-      setCode("");
+      await api("/api/auth/mfa/totp/disable", { json: {} });
       setStage({ kind: "idle" });
       await refresh();
     });
@@ -118,10 +118,9 @@ export function MfaSection({
   if (stage.kind === "disable") {
     return (
       <View>
-        <Body>Enter a code from your authenticator app to turn two-factor off.</Body>
-        <Field label="Authentication code" autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={disable} />
+        <Body>Two-factor authentication will be turned off, and your recovery codes stop working. You will be asked to confirm it's you first.</Body>
         <ErrorText message={error} />
-        <Button label="Turn off two-factor" onPress={disable} busy={busy} disabled={!/^\d{6}$/.test(code.trim())} tone="danger" />
+        <Button label="Turn off two-factor" onPress={disable} busy={busy} tone="danger" />
         <Button label="Cancel" onPress={() => setStage({ kind: "idle" })} tone="secondary" />
       </View>
     );
@@ -131,7 +130,7 @@ export function MfaSection({
     <View>
       {reenroll && me.user.mfaEnabled ? (
         <Text className="mt-3 rounded-lg bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-          You signed in with a recovery code. Set up two-factor again to get a fresh set of codes.
+          You used a recovery code. Set up two-factor again to get a fresh set of codes.
         </Text>
       ) : null}
       <Body>

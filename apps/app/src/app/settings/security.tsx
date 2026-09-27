@@ -2,6 +2,7 @@ import { ScrollView, Text } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { AppShell } from "@/components/AppShell";
 import { MfaSection } from "@/components/security/MfaSection";
+import { PasskeysSection } from "@/components/security/PasskeysSection";
 import { PasswordSection } from "@/components/security/PasswordSection";
 import { ReauthPanel, useReauth } from "@/components/security/ReauthPanel";
 import { SessionsSection } from "@/components/security/SessionsSection";
@@ -12,7 +13,8 @@ import { useSession } from "@/lib/session";
 
 export default function SecuritySettings() {
   const { state, refresh } = useSession();
-  const { reenroll } = useLocalSearchParams<{ reenroll?: string }>();
+  // reenroll=1 after a recovery code was used; add=1 from the home screen's passkey card, which opens the Add dialog at once.
+  const { reenroll, add } = useLocalSearchParams<{ reenroll?: string; add?: string }>();
   const reauth = useReauth();
 
   if (state.status !== "signed-in") return <Loading />;
@@ -42,6 +44,9 @@ export default function SecuritySettings() {
         </Section>
         <Section title="Password">
           <PasswordSection me={me} run={reauth.run} refresh={refresh} />
+        </Section>
+        <Section title="Passkeys">
+          <PasskeysSection me={me} run={reauth.run} refresh={refresh} openAdd={add === "1"} />
         </Section>
         <Section title="Where you're signed in">
           <SessionsSection run={reauth.run} refresh={refresh} />

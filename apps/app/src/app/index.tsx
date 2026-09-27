@@ -1,15 +1,61 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Redirect, router } from "expo-router";
+import type { MeResponse } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { ComposeButton, ComposeSheet } from "@/components/social/ComposeSheet";
 import { Composer } from "@/components/social/Composer";
 import { TimelineList } from "@/components/social/PagedList";
 import { Button, Loading } from "@/components/ui";
+import { dismissSuggestion, platformPasskeyAvailable, suggestionDismissedAt, suggestPasskey } from "@/lib/passkeys";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
 
 type Tab = "following" | "latest";
+
+/**
+ * The nudge towards a passkey (1c design, section 9): for an account without one, on a device with a built-in
+ * authenticator to add one with, until Not now, which holds for 30 days on this device.
+ */
+function PasskeySuggestion({ me }: { me: MeResponse }) {
+  const [platform, setPlatform] = useState(false);
+  const [dismissedAt, setDismissedAt] = useState(suggestionDismissedAt);
+  useEffect(() => {
+    let cancelled = false;
+    void platformPasskeyAvailable().then((available) => {
+      if (!cancelled) setPlatform(available);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!suggestPasskey({ passkeys: me.user.passkeys, platformAuthenticator: platform, dismissedAt, now: Date.now() })) return null;
+  return (
+    <View className="mx-4 mt-3 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
+      <Text accessibilityRole="header" aria-level={2} className="text-base font-semibold text-zinc-50">
+        Sign in faster with a passkey
+      </Text>
+      <Text className="mt-1 text-sm text-zinc-300">A passkey signs you in with your fingerprint, face or PIN, and cannot be phished. Adding one takes a moment.</Text>
+      <View className="mt-3 flex-row gap-2">
+        <Pressable accessibilityRole="button" onPress={() => router.push("/settings/security?add=1")} className="rounded-lg bg-zinc-50 px-4 py-2">
+          <Text className="text-sm font-semibold text-zinc-950">Add a passkey</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            const now = Date.now();
+            dismissSuggestion(now);
+            setDismissedAt(now);
+          }}
+          className="rounded-lg border border-zinc-700 px-4 py-2"
+        >
+          <Text className="text-sm text-zinc-200">Not now</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
 
 /** Home: Following and Latest for a signed-in account, Latest with a sign-in prompt for everyone else. */
 export default function Home() {
@@ -56,6 +102,7 @@ export default function Home() {
           </View>
         )}
       </View>
+      {state.status === "signed-in" ? <PasskeySuggestion me={state.me} /> : null}
       {inlineComposer ? (
         <View className="border-b border-zinc-800">
           <Composer onPosted={posted} />
