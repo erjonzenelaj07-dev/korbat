@@ -517,6 +517,49 @@ export function createAuthRepo(db: Db) {
       return row;
     },
 
+    /**
+     * The passkey a sign-in's credential id names, whichever account it belongs to (1c design, section 7.4): the assertion
+     * says nothing about the account, so the flow finds the owner from here. Undefined for an unknown credential; the flow
+     * then reads the owner and refuses a deleted one, so a gone account never signs in.
+     */
+    async findPasskeyByCredentialId(credentialId: string): Promise<PasskeyRow | undefined> {
+      const [row] = await db.select().from(passkeys).where(eq(passkeys.credentialId, credentialId)).limit(1);
+      return row;
+    },
+
+    /**
+     * A passkey the session's account holds, by credential id (1c design, section 7.2): the re-authentication looks it up
+     * with the session's user, so another account's passkey and an unknown one are alike undefined and never re-authenticate.
+     */
+    async findPasskeyByCredential(credentialId: string, userId: string): Promise<PasskeyRow | undefined> {
+      const [row] = await db
+        .select()
+        .from(passkeys)
+        .where(and(eq(passkeys.credentialId, credentialId), eq(passkeys.userId, userId)))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * Writes a verified passkey's use in one conditional update (1c design, section 2), in the pattern of claimTotpStep: the
+     * new counter, the use time and the current backup state, only for a passkey that is not suspect and whose counter moved
+     * forward (two zeros, as synced passkeys always send, pass repeatedly). False when it matched no row, which the flow
+     * reads, after a verified signature, as a counter regression or a race lost to one.
+     */
+    async claimPasskeyUse(id: string, newCounter: number, backedUp: boolean, now: Date): Promise<boolean> {
+      const rows = await db
+        .update(passkeys)
+        .set({ counter: newCounter, lastUsedAt: now, backedUp })
+        .where(and(eq(passkeys.id, id), isNull(passkeys.suspectAt), sql`((${newCounter} = 0 and ${passkeys.counter} = 0) or ${newCounter} > ${passkeys.counter})`))
+        .returning({ id: passkeys.id });
+      return rows.length === 1;
+    },
+
+    /** Marks a passkey suspect once (1c design, section 2), so a later sign-in with it is refused; a second call changes nothing. */
+    async suspectPasskey(id: string, now: Date): Promise<void> {
+      await db.update(passkeys).set({ suspectAt: now }).where(and(eq(passkeys.id, id), isNull(passkeys.suspectAt)));
+    },
+
     /** The daily bound's reading for the options step; the registration's transaction reads it again. */
     async recentPasskeyAdditions(userId: string, withinMs: number, limit: number): Promise<{ count: number; retryAfterSeconds: number }> {
       return recentPasskeyAdditions(db, userId, withinMs, limit);

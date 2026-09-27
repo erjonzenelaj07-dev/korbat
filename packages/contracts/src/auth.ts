@@ -187,14 +187,8 @@ export type MfaVerifyRequest = z.infer<typeof MfaVerifyRequest>;
 
 // ---------------------------------------------------------------- re-authentication
 
-export const ReauthRequest = z.discriminatedUnion("method", [
-  z.object({ method: z.literal("password"), password: PasswordInput }),
-  z.object({ method: z.literal("totp"), code: TotpCode }),
-  z.object({ method: z.literal("email"), flowId: OpaqueId, code: EmailCode }),
-  // A recovery code (1c design, section 7.2): only an account with TOTP holds any, and each works once.
-  z.object({ method: z.literal("recovery"), recoveryCode: RecoveryCode }),
-]);
-export type ReauthRequest = z.infer<typeof ReauthRequest>;
+// ReauthRequest lives in passkeys.ts: its `passkey` variant needs AuthenticationResponseJSON, and having auth.ts import
+// that would form a cycle (passkeys.ts already imports this file). ReauthResponse stays here, as it names no passkey type.
 
 /**
  * What a re-authentication answers (1c design, section 7.2): the level the session holds now (2 when a second factor

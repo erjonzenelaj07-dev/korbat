@@ -5,8 +5,8 @@ import type { AuthConfig, AuthDeps, RequestContext } from "../../src/auth/contex
 import { parseVersionedKey, randomToken, sha256Hex } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
 import { createLockout } from "../../src/auth/lockout";
-import type { AddPasskeyOutcome, AuthEventType, AuthRepo, DeviceRow, EmailCodeRow, NewPasskey, PasskeyLimits, PasskeyListRow, PasskeyRow, UserRow } from "../../src/auth/repo";
-import { createSessions, type Factors, type Session } from "../../src/auth/sessions";
+import type { ActiveSessionRow, AddPasskeyOutcome, AuthEventType, AuthRepo, DeviceRow, EmailCodeRow, NewPasskey, PasskeyLimits, PasskeyListRow, PasskeyRow, UserRow } from "../../src/auth/repo";
+import { createSessions, SESSION_ABSOLUTE_MS, SESSION_IDLE_MS, type Factors, type Session } from "../../src/auth/sessions";
 import { devProvider } from "../../src/auth/verify/dev";
 import { MemoryMailer } from "../../src/mail/memory";
 
@@ -19,11 +19,24 @@ export interface RecordedEvent {
 
 export const TEST_TERMS = "draft-test";
 
-/** A session or a device of a user, as the deletion flow revokes and removes them. */
+/**
+ * A session of a user, as the deletion and lockdown flows revoke it and, since Task 5, as the sign-in and re-authentication
+ * flows issue, resolve and rotate it. The first three fields are all those older flows read; the rest let findActiveSession
+ * answer a full row.
+ */
 export interface RecordedSession {
   id: string;
   userId: string;
   revokedAt: Date | null;
+  deviceId: string;
+  handle: string;
+  factors: Record<string, number>;
+  passkeyId: string | null;
+  reauthAt: Date;
+  createdAt: Date;
+  lastUsedAt: Date;
+  expiresAt: Date;
+  absoluteExpiresAt: Date;
 }
 
 export interface RecordedDevice {
@@ -33,6 +46,8 @@ export interface RecordedDevice {
   /** What the passkey flows read of the row: the platform for a passkey's default name and the label for the Security list. */
   platform: Platform;
   label: string | null;
+  /** The keyed hash a sign-in looks a device up by; absent on the devices h.session and h.user seed, which no lookup finds. */
+  deviceHash?: string;
 }
 
 /** A passkey of a user, as the registration writes it and the lockdown and the management flows read it. */
@@ -72,7 +87,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   const deviceRow = (device: RecordedDevice): DeviceRow => ({
     id: device.id,
     userId: device.userId,
-    deviceHash: `hash-${device.id}`,
+    deviceHash: device.deviceHash ?? `hash-${device.id}`,
     label: device.label,
     platform: device.platform,
     firstSeenAt: now(),
@@ -248,6 +263,114 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       const [removed] = passkeys.splice(index, 1);
       return { name: removed!.name };
     },
+    async findPasskeyByCredentialId(credentialId: string): Promise<PasskeyRow | undefined> {
+      // As the real lookup: any account's, and the flow refuses a deleted owner through findUserById.
+      const passkey = passkeys.find((p) => p.credentialId === credentialId);
+      return passkey ? { ...passkey } : undefined;
+    },
+    async findPasskeyByCredential(credentialId: string, userId: string): Promise<PasskeyRow | undefined> {
+      const passkey = passkeys.find((p) => p.credentialId === credentialId && p.userId === userId);
+      return passkey ? { ...passkey } : undefined;
+    },
+    async claimPasskeyUse(id: string, newCounter: number, backedUp: boolean, at: Date): Promise<boolean> {
+      // As the real conditional update: a suspect passkey never matches, and the counter must move forward unless both are zero.
+      const passkey = passkeys.find((p) => p.id === id);
+      if (!passkey || passkey.suspectAt !== null) return false;
+      if (!((newCounter === 0 && passkey.counter === 0) || newCounter > passkey.counter)) return false;
+      passkey.counter = newCounter;
+      passkey.lastUsedAt = at;
+      passkey.backedUp = backedUp;
+      return true;
+    },
+    async suspectPasskey(id: string, at: Date): Promise<void> {
+      const passkey = passkeys.find((p) => p.id === id);
+      if (passkey && passkey.suspectAt === null) passkey.suspectAt = at;
+    },
+    async findDevice(userId: string, deviceHashValue: string): Promise<DeviceRow | undefined> {
+      const device = devices.find((d) => d.userId === userId && d.deviceHash === deviceHashValue && d.revokedAt === null);
+      return device ? deviceRow(device) : undefined;
+    },
+    async createDevice(input: { userId: string; deviceHash: string; label: string; platform: string; ipHash: string | null }): Promise<DeviceRow> {
+      const device: RecordedDevice = { id: randomUUID(), userId: input.userId, revokedAt: null, platform: input.platform as Platform, label: input.label, deviceHash: input.deviceHash };
+      devices.push(device);
+      return deviceRow(device);
+    },
+    async touchDevice(): Promise<void> {
+      // The row's last-seen and ip are placeholders no flow reads here, so touching it changes nothing observable.
+    },
+    async createSession(input: {
+      id: string;
+      userId: string;
+      deviceId: string;
+      now: Date;
+      expiresAt: Date;
+      absoluteExpiresAt: Date;
+      factors?: Record<string, number>;
+      passkeyId?: string | null;
+    }): Promise<void> {
+      // As the real insert: the reauth time is the latest of the factors, and a fresh handle stands in for the column's default.
+      const factors = input.factors ?? {};
+      const times = Object.values(factors);
+      sessions.push({
+        id: input.id,
+        userId: input.userId,
+        revokedAt: null,
+        deviceId: input.deviceId,
+        handle: randomUUID(),
+        factors,
+        passkeyId: input.passkeyId ?? null,
+        reauthAt: times.length > 0 ? new Date(Math.max(...times)) : input.now,
+        createdAt: input.now,
+        lastUsedAt: input.now,
+        expiresAt: input.expiresAt,
+        absoluteExpiresAt: input.absoluteExpiresAt,
+      });
+    },
+    async findActiveSession(id: string, at: Date): Promise<ActiveSessionRow | undefined> {
+      // As the real joins: the session, its account and its device must all be live.
+      const row = sessions.find((s) => s.id === id && s.revokedAt === null && s.expiresAt > at && s.absoluteExpiresAt > at);
+      if (!row) return undefined;
+      const user = users.get(row.userId);
+      if (!user || user.deletedAt !== null) return undefined;
+      const device = devices.find((d) => d.id === row.deviceId && d.revokedAt === null);
+      if (!device) return undefined;
+      return {
+        id: row.id,
+        userId: row.userId,
+        deviceId: row.deviceId,
+        role: user.role,
+        onboardedAt: user.onboardedAt,
+        totpEnabledAt: user.totpEnabledAt,
+        reauthAt: row.reauthAt,
+        lastUsedAt: row.lastUsedAt,
+        expiresAt: row.expiresAt,
+        absoluteExpiresAt: row.absoluteExpiresAt,
+        handle: row.handle,
+        factors: row.factors,
+        passkeyId: row.passkeyId,
+      };
+    },
+    async rotateSession(id: string, newId: string): Promise<boolean> {
+      // As the real statement: the primary key changes in place for a live row, and everything else stays.
+      const row = sessions.find((s) => s.id === id && s.revokedAt === null);
+      if (!row) return false;
+      row.id = newId;
+      return true;
+    },
+    async writeFactor(id: string, kind: string, at: Date): Promise<void> {
+      // As the real statement: the kind's time is set or replaced and the reauth time follows it.
+      const row = sessions.find((s) => s.id === id);
+      if (!row) return;
+      row.factors = { ...row.factors, [kind]: at.getTime() };
+      row.reauthAt = at;
+    },
+    async claimTotpStep(userId: string, step: number): Promise<boolean> {
+      // As the real conditional update: a step no later than the last accepted one is refused, so a code cannot be reused.
+      const row = users.get(userId);
+      if (!row || (row.totpLastStep !== null && row.totpLastStep >= step)) return false;
+      row.totpLastStep = step;
+      return true;
+    },
     async revokeAllSessions(userId: string, at: Date): Promise<string[]> {
       const live = sessions.filter((s) => s.userId === userId && s.revokedAt === null);
       for (const s of live) s.revokedAt = at;
@@ -314,6 +437,18 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     | "addPasskey"
     | "renamePasskey"
     | "deletePasskey"
+    | "findPasskeyByCredentialId"
+    | "findPasskeyByCredential"
+    | "claimPasskeyUse"
+    | "suspectPasskey"
+    | "findDevice"
+    | "createDevice"
+    | "touchDevice"
+    | "createSession"
+    | "findActiveSession"
+    | "rotateSession"
+    | "writeFactor"
+    | "claimTotpStep"
     | "revokeAllSessions"
     | "markDeleted"
     | "takeDown"
@@ -384,7 +519,20 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       factors: options.factors ?? { email: t },
       passkeyId: options.passkeyId ?? null,
     };
-    sessions.push({ id: s.sessionId, userId, revokedAt: null });
+    sessions.push({
+      id: s.sessionId,
+      userId,
+      revokedAt: null,
+      deviceId: s.deviceId,
+      handle: s.handle,
+      factors: s.factors,
+      passkeyId: s.passkeyId,
+      reauthAt: s.reauthAt,
+      createdAt: now(),
+      lastUsedAt: now(),
+      expiresAt: new Date(t + SESSION_IDLE_MS),
+      absoluteExpiresAt: new Date(t + SESSION_ABSOLUTE_MS),
+    });
     devices.push({ id: s.deviceId, userId, revokedAt: null, platform: options.platform ?? "web", label: options.label === undefined ? "Chrome on Windows" : options.label });
     return s;
   };

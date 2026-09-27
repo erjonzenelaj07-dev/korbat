@@ -1,15 +1,34 @@
 import { randomBytes } from "node:crypto";
-import type { PasskeyListResponse, PasskeyRegisterOptionsRequest, PasskeyRegisterVerifyRequest, PasskeyRemoveLinkRequest, PasskeyRenameRequest, PasskeyView } from "@korbat/contracts";
+import type {
+  AuthenticationResponseJSON,
+  PasskeyListResponse,
+  PasskeyRegisterOptionsRequest,
+  PasskeyRegisterVerifyRequest,
+  PasskeyRemoveLinkRequest,
+  PasskeyRenameRequest,
+  PasskeySignInVerifyRequest,
+  PasskeyView,
+} from "@korbat/contracts";
 import { AuthError, isUniqueViolation, type AuthDeps, type RequestContext } from "../context";
 import { randomToken, sha256Hex } from "../crypto";
+import { MFA_TICKET_TTL_MS, mfaTicketKey, signIn, type DeviceInput, type MfaPending, type MfaTicket, type SignedIn } from "../flows/signin";
 import { lockdown } from "../flows/lockdown";
 import { notifyAccount } from "../flows/notify";
-import { emailHash } from "../identifiers";
-import { HOUR, enforceLimit } from "../limits";
-import type { AddPasskeyOutcome, PasskeyLimits, PasskeyRow } from "../repo";
-import type { Session } from "../sessions";
+import { deviceHash, emailHash } from "../identifiers";
+import { HOUR, MINUTE, enforceLimit } from "../limits";
+import type { AddPasskeyOutcome, PasskeyLimits, PasskeyRow, UserRow } from "../repo";
+import type { FactorKind, Session } from "../sessions";
 import { challengeKey, issueChallenge, readChallenge, spendChallenge } from "./challenge";
-import { readResponseChallenge, registrationOptions, verifyRegistration, type PublicKeyCredentialCreationOptionsJSON } from "./webauthn";
+import {
+  authenticationOptions,
+  readResponseChallenge,
+  registrationOptions,
+  verifyAuthentication,
+  verifyRegistration,
+  type PublicKeyCredentialCreationOptionsJSON,
+  type PublicKeyCredentialRequestOptionsJSON,
+  type VerifiedAuthentication,
+} from "./webauthn";
 
 const DAY = 24 * HOUR;
 
@@ -27,6 +46,13 @@ export const RENAMES_PER_HOUR = 30;
 export const REMOVALS_PER_HOUR = 10;
 export const NOT_MINE_PER_DAY = 5;
 export const REMOVE_LINKS_PER_IP_PER_HOUR = 10;
+/** The window the two unauthenticated sign-in limits count over. */
+export const SIGNIN_WINDOW_MS = 15 * MINUTE;
+export const SIGNIN_OPTIONS_PER_IP = 30;
+export const SIGNIN_VERIFY_PER_IP = 20;
+/** A passkey sign-in from a device the account has not used: bounded per account, since the assertion carries no session to key by. */
+export const SIGNIN_NEW_DEVICE_PER_HOUR = 5;
+export const SIGNIN_NEW_DEVICE_PER_DAY = 20;
 
 const LIMITS: PasskeyLimits = { passkeys: PASSKEY_CAP, additions: PASSKEY_ADDITIONS_PER_DAY, windowMs: PASSKEY_ADDITIONS_WINDOW_MS };
 const LINK_GONE = "This link has expired or was already used.";
@@ -264,4 +290,133 @@ export async function removeByLink(deps: AuthDeps, input: PasskeyRemoveLinkReque
     caller: { type: "passkey_removed", metadata: { passkeyId: link.passkeyId, via: "link" } },
     ctx,
   });
+}
+
+/**
+ * Records a verified passkey's use (1c design, sections 2, 7.2 and 7.4): the counter, the use time and the current backup
+ * state in one conditional update. When it matches no row after a signature has checked, the counter did not move forward,
+ * or a concurrent use took the same step: the passkey is marked suspect, the regression recorded, the owner told best
+ * effort, and the attempt refused. A passkey already suspect is caught by the caller before this runs, so this only ever
+ * suspends a fresh regression.
+ */
+async function recordPasskeyUse(deps: AuthDeps, passkey: Pick<PasskeyRow, "id" | "userId" | "name">, email: string, verified: VerifiedAuthentication, now: Date): Promise<void> {
+  if (await deps.repo.claimPasskeyUse(passkey.id, verified.newCounter, verified.backedUp, now)) return;
+  await deps.repo.suspectPasskey(passkey.id, now);
+  await deps.repo.appendEvent({ userId: passkey.userId, type: "passkey_counter_regression", metadata: { passkeyId: passkey.id } });
+  await notifyAccount(deps, email, "passkey_suspect", { name: passkey.name });
+  throw new AuthError("passkey_invalid", 401);
+}
+
+/** The factor a verified assertion proves: two factors only when the authenticator verified the user and the passkey was registered with UV. */
+function passkeyFactor(verified: VerifiedAuthentication, passkey: Pick<PasskeyRow, "uvInitialized">): FactorKind {
+  return verified.userVerified && passkey.uvInitialized ? "passkey_uv" : "passkey";
+}
+
+/**
+ * Options for a passkey sign-in (1c design, section 7.4): an empty allow list, so the options name no account and the
+ * browser offers every passkey it holds for the relying party, and a sign-in challenge with no session binding. Handing
+ * them out stores nothing beyond the per-IP counter, so it cannot fill the key-value store. Thirty per IP per 15 minutes.
+ */
+export async function signInOptions(deps: AuthDeps, ctx: RequestContext): Promise<{ options: PublicKeyCredentialRequestOptionsJSON }> {
+  await enforceLimit(deps.kv, `passkey-signin-options:ip:${ctx.ipHash}`, SIGNIN_OPTIONS_PER_IP, SIGNIN_WINDOW_MS);
+  const challenge = issueChallenge(challengeKey(deps.config.authHmacKey), "signin", deps.now());
+  const options = await authenticationOptions({ rpId: deps.config.webauthn.rpId, allow: [], challenge });
+  return { options };
+}
+
+/**
+ * Verifies a passkey sign-in (1c design, section 7.4). The challenge is read from the response, checked with no session
+ * binding and spent before anything else runs, so a forged, foreign or spent one never reaches the library. The passkey is
+ * found by its credential id and its account read: an unknown credential, and a deleted or purged account, are alike
+ * passkey_invalid, as is a user handle the response carries that is not this account's. Only after the signature checks is
+ * a suspect passkey passkey_suspended, and only then does the counter write run (a counter that did not move forward
+ * suspends the passkey and refuses); the factor is passkey_uv only when the authenticator verified the user and the passkey
+ * was registered with UV. A sign-in from a device the account has not used is counted, and only after a verified signature,
+ * so nobody but the passkey's holder can spend the new-device allowance. Then, on an account with TOTP, a one-factor
+ * passkey (and every staff sign-in) goes to the TOTP step with an MFA ticket; otherwise a session is issued directly, with
+ * the new-device alert whose not-me link names the passkey. There is no account lockout.
+ */
+export async function signInVerify(deps: AuthDeps, input: PasskeySignInVerifyRequest, ctx: RequestContext): Promise<SignedIn | MfaPending> {
+  await enforceLimit(deps.kv, `passkey-signin:ip:${ctx.ipHash}`, SIGNIN_VERIFY_PER_IP, SIGNIN_WINDOW_MS);
+  const now = deps.now();
+  const challenge = readResponseChallenge(input.response);
+  readChallenge(challengeKey(deps.config.authHmacKey), challenge, "signin", now);
+  await spendChallenge(deps.kv, challenge, now);
+
+  const passkey = await deps.repo.findPasskeyByCredentialId(input.response.id);
+  if (!passkey) throw new AuthError("passkey_invalid", 401);
+  const user = await deps.repo.findUserById(passkey.userId);
+  // A deleted or purged account's row is gone from findUserById: its passkey signs nobody in.
+  if (!user) throw new AuthError("passkey_invalid", 401);
+  // A discoverable passkey returns the account's handle; when present it must be this account's, or the response is another's.
+  const userHandle = input.response.response.userHandle;
+  if (userHandle !== undefined && !(user.webauthnUserId !== null && Buffer.from(userHandle, "base64url").equals(user.webauthnUserId))) {
+    throw new AuthError("passkey_invalid", 401);
+  }
+
+  const verified = await verifyAuthentication({
+    response: input.response,
+    expectedChallenge: challenge,
+    origins: deps.config.webauthn.origins,
+    rpId: deps.config.webauthn.rpId,
+    credential: { id: passkey.credentialId, publicKey: passkey.publicKey, transports: passkey.transports },
+  });
+  // After the signature only: an unsigned response can never switch a passkey off or tell one from another.
+  if (passkey.suspectAt !== null) throw new AuthError("passkey_suspended", 403);
+  await recordPasskeyUse(deps, passkey, user.email, verified, now);
+
+  const factor = passkeyFactor(verified, passkey);
+  const device: DeviceInput = { deviceId: input.deviceId, platform: input.platform };
+  if (!(await deps.repo.findDevice(user.id, deviceHash(deps.config.authHmacKey, device.deviceId)))) {
+    await enforceLimit(deps.kv, `passkey-signin-new-device:hour:${user.id}`, SIGNIN_NEW_DEVICE_PER_HOUR, HOUR);
+    await enforceLimit(deps.kv, `passkey-signin-new-device:day:${user.id}`, SIGNIN_NEW_DEVICE_PER_DAY, DAY);
+  }
+
+  const proof = { factors: { [factor]: now.getTime() }, method: "passkey" as const, passkeyId: passkey.id };
+  // On an account with TOTP, a one-factor passkey still needs the second factor, and staff always do (1c design, section 2).
+  if (user.totpEnabledAt && (factor === "passkey" || user.role !== "user")) {
+    const mfaTicket = randomToken();
+    const ticket: MfaTicket = { userId: user.id, deviceId: device.deviceId, platform: device.platform, ...proof };
+    await deps.kv.set(mfaTicketKey(mfaTicket), JSON.stringify(ticket), MFA_TICKET_TTL_MS);
+    return { kind: "mfa", mfaTicket };
+  }
+  return signIn(deps, user, device, ctx, { alertNewDevice: true, ...proof });
+}
+
+/**
+ * Options for re-authenticating with a passkey (1c design, section 7.2): the account's passkeys that are not suspect in the
+ * allow list, so the browser offers only ones that still work, and a re-authentication challenge bound to this session's
+ * handle, which no other session of the account can answer.
+ */
+export async function reauthOptions(deps: AuthDeps, session: Session): Promise<{ options: PublicKeyCredentialRequestOptionsJSON }> {
+  const held = await deps.repo.listPasskeys(session.userId);
+  const allow = held.filter((p) => p.suspectAt === null).map((p) => ({ id: p.credentialId, transports: p.transports }));
+  const challenge = issueChallenge(challengeKey(deps.config.authHmacKey), "reauth", deps.now(), session.handle);
+  const options = await authenticationOptions({ rpId: deps.config.webauthn.rpId, allow, challenge });
+  return { options };
+}
+
+/**
+ * The passkey method of the re-authentication flow (1c design, section 7.2), run from flows/reauth.ts so the buckets,
+ * reauth_at, the rotation and the answer stay that flow's. The challenge is read from the response, checked against this
+ * session's handle and spent first; the passkey is looked up with the session's user, so another account's and an unknown
+ * one are alike passkey_invalid and neither touches a passkey's counter; after the signature checks, a suspect passkey is
+ * passkey_suspended, and the counter write applies. Answers the factor proven, passkey_uv or passkey.
+ */
+export async function reauthenticatePasskey(deps: AuthDeps, session: Session, user: UserRow, response: AuthenticationResponseJSON, now: Date): Promise<FactorKind> {
+  const challenge = readResponseChallenge(response);
+  readChallenge(challengeKey(deps.config.authHmacKey), challenge, "reauth", now, session.handle);
+  await spendChallenge(deps.kv, challenge, now);
+  const passkey = await deps.repo.findPasskeyByCredential(response.id, session.userId);
+  if (!passkey) throw new AuthError("passkey_invalid", 401);
+  const verified = await verifyAuthentication({
+    response,
+    expectedChallenge: challenge,
+    origins: deps.config.webauthn.origins,
+    rpId: deps.config.webauthn.rpId,
+    credential: { id: passkey.credentialId, publicKey: passkey.publicKey, transports: passkey.transports },
+  });
+  if (passkey.suspectAt !== null) throw new AuthError("passkey_suspended", 403);
+  await recordPasskeyUse(deps, passkey, user.email, verified, now);
+  return passkeyFactor(verified, passkey);
 }

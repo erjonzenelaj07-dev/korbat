@@ -29,6 +29,15 @@ import {
 const flow = "a".repeat(43);
 const userId = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
 
+/** A minimal well-formed authentication assertion, for the passkey re-authentication variant. */
+const reauthAssertion = {
+  id: "q2Xx0w8bRk6nV8yQ0f2mUg",
+  rawId: "q2Xx0w8bRk6nV8yQ0f2mUg",
+  type: "public-key",
+  response: { clientDataJSON: "A".repeat(200), authenticatorData: "A".repeat(50), signature: "A".repeat(96) },
+  clientExtensionResults: {},
+};
+
 describe("auth primitives", () => {
   test("email is trimmed and lowercased, invalid rejected", () => {
     expect(Email.parse("  Alice@Example.COM ")).toBe("alice@example.com");
@@ -79,7 +88,7 @@ describe("auth requests and responses", () => {
     expect(MfaVerifyRequest.safeParse({ mfaTicket: flow, code: "123456", recoveryCode: "abcd-ef23-gh45" }).success).toBe(false);
     expect(MfaVerifyRequest.safeParse({ mfaTicket: flow }).success).toBe(false);
   });
-  test("reauth accepts password, totp, email and recovery methods only", () => {
+  test("reauth accepts password, totp, email, recovery and passkey methods only", () => {
     expect(ReauthRequest.safeParse({ method: "password", password: "x" }).success).toBe(true);
     expect(ReauthRequest.safeParse({ method: "totp", code: "000000" }).success).toBe(true);
     expect(ReauthRequest.safeParse({ method: "email", flowId: flow, code: "000000" }).success).toBe(true);
@@ -87,6 +96,10 @@ describe("auth requests and responses", () => {
     expect(ReauthRequest.parse({ method: "recovery", recoveryCode: " ABCD-EF23-GH45 " })).toEqual({ method: "recovery", recoveryCode: "abcd-ef23-gh45" });
     expect(ReauthRequest.safeParse({ method: "recovery", recoveryCode: "abcd-ef01-gh45" }).success).toBe(false);
     expect(ReauthRequest.safeParse({ method: "recovery", code: "000000" }).success).toBe(false);
+    // A passkey re-authentication carries an assertion (1c design, section 7.2); a registration is not one.
+    expect(ReauthRequest.safeParse({ method: "passkey", response: reauthAssertion }).success).toBe(true);
+    expect(ReauthRequest.safeParse({ method: "passkey" }).success).toBe(false);
+    expect(ReauthRequest.safeParse({ method: "passkey", response: { ...reauthAssertion, response: {} } }).success).toBe(false);
     expect(ReauthRequest.safeParse({ method: "sms", code: "000000" }).success).toBe(false);
   });
   test("the reauth answer carries the level reached, the rotated token for native clients and, after a recovery code, the re-enrolment flag", () => {

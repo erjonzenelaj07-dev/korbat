@@ -2,6 +2,7 @@ import type { ReauthRequest } from "@korbat/contracts";
 import { AuthError, type AuthDeps, type RequestContext } from "../context";
 import { randomToken } from "../crypto";
 import { HOUR, MINUTE, enforceLimit } from "../limits";
+import { reauthenticatePasskey } from "../passkeys/flows";
 import { verifyPassword } from "../passwords";
 import { hashRecoveryCode } from "../recovery-codes";
 import type { FactorKind, IssuedSession, Session } from "../sessions";
@@ -93,6 +94,12 @@ export async function reauthenticate(deps: AuthDeps, session: Session, input: Re
       await notifyAccount(deps, user.email, "recovery_code_used");
       mustReenrollMfa = true;
       kind = "recovery";
+      break;
+    }
+    case "passkey": {
+      // The challenge, the lookup with the session's user, the signature, the suspect check and the counter write live
+      // next to the sign-in flow (1c design, section 7.2); the buckets, the factor write, the rotation and the answer are ours.
+      kind = await reauthenticatePasskey(deps, session, user, input.response, deps.now());
       break;
     }
   }

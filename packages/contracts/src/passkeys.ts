@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DisplayName, OpaqueId, PasswordSigninRequest } from "./auth";
+import { DisplayName, EmailCode, OpaqueId, PasswordInput, PasswordSigninRequest, RecoveryCode, TotpCode } from "./auth";
 
 /** base64url without padding, as the browser library encodes every binary member of a WebAuthn response. */
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
@@ -115,3 +115,18 @@ export type PasskeyRenameRequest = z.infer<typeof PasskeyRenameRequest>;
 /** The token of the remove link that the passkey_added email carries. It is the only credential the removal needs. */
 export const PasskeyRemoveLinkRequest = z.object({ token: OpaqueId });
 export type PasskeyRemoveLinkRequest = z.infer<typeof PasskeyRemoveLinkRequest>;
+
+/**
+ * Re-authentication (1c design, section 7.2). It lives here rather than in auth.ts because its `passkey` variant carries an
+ * AuthenticationResponseJSON; the password, TOTP, email and recovery variants read their fields from auth.ts. The `passkey`
+ * response follows POST /api/auth/reauth/passkey/options, whose challenge is bound to the session's handle.
+ */
+export const ReauthRequest = z.discriminatedUnion("method", [
+  z.object({ method: z.literal("password"), password: PasswordInput }),
+  z.object({ method: z.literal("totp"), code: TotpCode }),
+  z.object({ method: z.literal("email"), flowId: OpaqueId, code: EmailCode }),
+  // A recovery code: only an account with TOTP holds any, and each works once.
+  z.object({ method: z.literal("recovery"), recoveryCode: RecoveryCode }),
+  z.object({ method: z.literal("passkey"), response: AuthenticationResponseJSON }),
+]);
+export type ReauthRequest = z.infer<typeof ReauthRequest>;

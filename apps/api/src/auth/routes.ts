@@ -13,6 +13,7 @@ import {
   PasskeyRegisterVerifyRequest,
   PasskeyRemoveLinkRequest,
   PasskeyRenameRequest,
+  PasskeySignInVerifyRequest,
   PasswordSetRequest,
   PasswordSigninRequest,
   ReauthRequest,
@@ -40,7 +41,7 @@ import { reauthenticate, startReauthEmail } from "./flows/reauth";
 import type { MfaPending, SignedIn } from "./flows/signin";
 import { chooseHandle, completeSignup } from "./flows/signup";
 import { requireFreshAuth, requireOnboarding, requireSession, requireStrongFreshAuth } from "./middleware";
-import { listPasskeys, notMine, registerOptions, registerVerify, removeByLink, removePasskey, renamePasskey } from "./passkeys/flows";
+import { listPasskeys, notMine, reauthOptions, registerOptions, registerVerify, removeByLink, removePasskey, renamePasskey, signInOptions, signInVerify } from "./passkeys/flows";
 import type { IssuedSession, Session } from "./sessions";
 
 /** Every `/api/auth/*` endpoint. Handlers only validate, call a flow and shape the response. */
@@ -145,6 +146,14 @@ export function authRoutes(deps: AuthDeps) {
     firstFactor(c, await passwordSignIn(deps, asWeb(c, c.req.valid("json")), requestContext(c))),
   );
 
+  // Passkey sign-in (1c design, section 7.4), unauthenticated like /password/signin: the options carry an empty allow list,
+  // and verify handles web and native exactly as /password/signin does (asWeb, then a session or the TOTP step).
+  r.post("/passkey/signin/options", async (c) => c.json(await signInOptions(deps, requestContext(c))));
+
+  r.post("/passkey/signin/verify", validate("json", PasskeySignInVerifyRequest), async (c) =>
+    firstFactor(c, await signInVerify(deps, asWeb(c, c.req.valid("json")), requestContext(c))),
+  );
+
   r.post("/password/set", requireSession, strong, validate("json", PasswordSetRequest), async (c) =>
     c.json(rotated(c, await setPassword(deps, currentSession(c), c.req.valid("json")))),
   );
@@ -173,6 +182,9 @@ export function authRoutes(deps: AuthDeps) {
     const { level, issued, mustReenrollMfa } = await reauthenticate(deps, currentSession(c), c.req.valid("json"), requestContext(c));
     return c.json({ level, ...(mustReenrollMfa ? { mustReenrollMfa } : {}), ...rotated(c, issued) });
   });
+
+  // Options for a passkey re-authentication (1c design, section 7.2): the account's usable passkeys and a challenge bound to this session.
+  r.post("/reauth/passkey/options", requireOnboarding, async (c) => c.json(await reauthOptions(deps, currentSession(c))));
 
   r.get("/sessions", requireSession, async (c) => c.json(await listSessions(deps, currentSession(c))));
 
