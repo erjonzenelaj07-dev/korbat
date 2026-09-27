@@ -111,12 +111,18 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     const oldest = recent.at(-1);
     return { count: recent.length, retryAfterSeconds: oldest === undefined ? 0 : Math.ceil((oldest + withinMs - t) / 1000) };
   };
-  /** Step 1's rows for a user, as the real repository's takeDownRows writes them: live sessions revoked (their ids returned), devices and codes gone. */
+  /**
+   * Step 1's rows for a user, as the real repository's takeDownRows writes them: live sessions revoked (their ids
+   * returned), devices, codes and passkeys gone, and the WebAuthn user handle cleared (1c design, section 7.7).
+   */
   const takeDownRows = (userId: string, at: Date): string[] => {
     const live = sessions.filter((s) => s.userId === userId && s.revokedAt === null);
     for (const s of live) s.revokedAt = at;
     for (let i = devices.length - 1; i >= 0; i--) if (devices[i]!.userId === userId) devices.splice(i, 1);
     for (let i = codes.length - 1; i >= 0; i--) if (codes[i]!.userId === userId) codes.splice(i, 1);
+    for (let i = passkeys.length - 1; i >= 0; i--) if (passkeys[i]!.userId === userId) passkeys.splice(i, 1);
+    const row = users.get(userId);
+    if (row) row.webauthnUserId = null;
     return live.map((s) => s.id);
   };
   const repo = {

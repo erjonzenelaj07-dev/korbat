@@ -13,7 +13,10 @@ import { AuthError } from "../../src/auth/context";
 import { randomToken, sha256Hex } from "../../src/auth/crypto";
 import { exportAccount } from "../../src/auth/flows/export";
 import { signIn } from "../../src/auth/flows/signin";
+import { MINUTE } from "../../src/auth/limits";
+import { registerOptions, registerVerify } from "../../src/auth/passkeys/flows";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
+import type { Session } from "../../src/auth/sessions";
 import { loadConfig } from "../../src/config";
 import { mediaForAccount } from "../../src/media";
 import { status } from "../../src/media/flows/status";
@@ -23,12 +26,16 @@ import { createProfileStore } from "../../src/profiles/store";
 import { SocialError } from "../../src/social/context";
 import { exportProfile } from "../../src/social/flows/export";
 import { createPost, deletePost } from "../../src/social/flows/posts";
+import { SoftAuthenticator, type SoftFlags } from "../auth/soft-authenticator";
 import { TEST_TERMS, flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
 import { newPost } from "./social-fixtures";
 import { socialHarness, type SocialHarness } from "./social-harness";
 
 const newHandle = () => `x_${randomBytes(5).toString("hex")}`;
+const ORIGIN = "http://localhost:8081";
+const ALL: SoftFlags = { up: true, uv: true, be: true, bs: true };
+const BARE: SoftFlags = { up: true, uv: false, be: false, bs: false };
 
 /** Collects the archive in memory, copying each chunk as the sink of a response would consume it. */
 function memorySink() {
@@ -112,13 +119,28 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     return { ...owner, handle };
   }
 
-  test("an account with real uploads exports an archive whose images are the store's large.webp byte for byte, and whose JSON holds its rows", async () => {
+  /** A whole passkey registration through the 1c flow: the options, the software authenticator's answer and the verification; answers the stored view. */
+  async function register(session: Session, auth: SoftAuthenticator, name: string | undefined, flags: SoftFlags) {
+    const { options } = await registerOptions(h.deps, session, { label: "Owner" });
+    const response = auth.create({ rpId: options.rp.id!, challenge: options.challenge, origin: ORIGIN, userHandle: Buffer.from(options.user.id, "base64url"), flags });
+    return (await registerVerify(h.deps, session, { name, response })).passkey;
+  }
+
+  test("an account with real uploads exports an archive whose images are the store's large.webp byte for byte, and whose JSON holds its rows and its passkeys without their keys", { timeout: 30_000 }, async () => {
     const owner = await account();
     const userId = owner.user.id;
     // A second live session on the same device, and a third one revoked: only the two live ones are listed.
     const second = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
     const revoked = await signIn(h.deps, owner.user, owner.device, h.ctx, { alertNewDevice: false, factors: { email: h.clock.ms() }, method: "email" });
     await h.deps.sessions.revoke(revoked.issued.session.sessionId, userId);
+    // Two passkeys a minute apart on the harness clock, both from the signed-in device: a synced one, used once since, and a plain one never used.
+    const laptopAt = h.clock.now();
+    const laptop = await register(owner.session, new SoftAuthenticator(), "Laptop", ALL);
+    h.clock.advance(MINUTE);
+    const plainAt = h.clock.now();
+    await register(owner.session, new SoftAuthenticator(), undefined, BARE);
+    const usedAt = new Date();
+    expect(await authRepo.claimPasskeyUse(laptop.id, 1, true, usedAt)).toBe(true);
     // The handle left behind is reserved in handle_history; the export lists both.
     const renamed = newHandle();
     expect((await s.repo.changeHandle(userId, renamed, s.clock.next())).ok).toBe(true);
@@ -158,11 +180,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     for (const id of [imageA, imageB, loose]) {
       expect(Buffer.compare(Buffer.from(files[`media/${id}.webp`]!), readFileSync(m.files.store.image(id, "large"))), id).toBe(0);
     }
-    const json = ExportFormat.parse(JSON.parse(strFromU8(files["export.json"]!)));
+    const text = strFromU8(files["export.json"]!);
+    const json = ExportFormat.parse(JSON.parse(text));
     expect(json.missingMedia).toEqual([]);
 
     expect(json.account).toMatchObject({ id: userId, email: owner.email, role: "user", mfaEnabled: false, hasPassword: true, verified: false, termsVersion: TEST_TERMS });
     expect(json.account.termsAcceptedAt).not.toBeNull();
+    // Newest first, the times from the flows' clock and the use as it was written, and the device that added each by its label.
+    expect(json.account.passkeys).toEqual([
+      { name: "Passkey on the web", createdAt: plainAt.toISOString(), lastUsedAt: null, synced: false, createdOn: "Chrome on Windows" },
+      { name: "Laptop", createdAt: laptopAt.toISOString(), lastUsedAt: usedAt.toISOString(), synced: true, createdOn: "Chrome on Windows" },
+    ]);
+    // In the archive's own text: exactly those five members, and nothing that identifies a key, not the passkey ids, the credential ids or the public keys.
+    const raw = JSON.parse(text) as { account: { passkeys: Record<string, unknown>[] } };
+    expect(raw.account.passkeys.map((passkey) => Object.keys(passkey))).toEqual(Array.from({ length: 2 }, () => ["name", "createdAt", "lastUsedAt", "synced", "createdOn"]));
+    for (const row of await authRepo.listPasskeys(userId)) {
+      for (const secret of [row.id, row.credentialId, row.publicKey]) expect(text, secret).not.toContain(secret);
+    }
+    // The archive's JSON is the document exactly as JSON.stringify writes it, the passkeys in their place inside the account.
+    expect(text).toBe(JSON.stringify(raw, null, 2));
     expect(json.sessions.map((session) => session.id).sort()).toEqual([owner.session.sessionId, second.issued.session.sessionId].sort());
     expect(json.sessions.find((session) => session.id === owner.session.sessionId)!.current).toBe(true);
     expect(json.sessions.find((session) => session.id === second.issued.session.sessionId)!.current).toBe(false);
@@ -194,12 +230,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     expect(json.mutes).toEqual([{ handle: carol.handle, since: expect.any(String) }]);
   });
 
-  test("the badge and two-factor are reported as held; an unknown account or profile is refused", async () => {
+  test("the badge and two-factor are reported as held, an account without passkeys lists none; an unknown account or profile is refused", async () => {
     const owner = await account();
     await authRepo.setPhoneHash(owner.user.id, sha256Hex(randomToken()));
     await authRepo.enableTotp(owner.user.id, { secretEnc: "v1:test", recoveryCodesHash: ["a"], now: new Date() });
     const exported = await exportAccount(h.deps, owner.user.id);
     expect(exported.account).toMatchObject({ verified: true, mfaEnabled: true, hasPassword: true });
+    // An account that never registered a passkey exports an empty list, not a missing one.
+    expect(exported.passkeys).toEqual([]);
 
     const unknown = await exportAccount(h.deps, randomUUID()).catch((err: unknown) => err);
     expect(unknown).toBeInstanceOf(AuthError);

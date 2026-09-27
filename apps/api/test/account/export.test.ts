@@ -232,6 +232,11 @@ function harness() {
   };
   const account: AccountExport = {
     account: { id: userId, email: "ada@korbat.local", createdAt: new Date(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: new Date(T0 - 3 * DAY_MS) },
+    // Newest first, as the auth module lists them: a plain key never used, added from a device since gone, and a synced one used yesterday.
+    passkeys: [
+      { name: "Security key", createdAt: new Date(T0 - DAY_MS), lastUsedAt: null, synced: false, createdOn: null },
+      { name: "Laptop", createdAt: new Date(T0 - 2 * DAY_MS), lastUsedAt: new Date(T0 - DAY_MS), synced: true, createdOn: "Chrome on Windows" },
+    ],
     sessions: [
       { id: otherSession, createdAt: new Date(T0 - 2 * DAY_MS), lastUsedAt: new Date(T0 - DAY_MS) },
       { id: currentSession, createdAt: new Date(T0 - DAY_MS), lastUsedAt: new Date(T0) },
@@ -346,7 +351,21 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
   return {
     format: "korbat-export-1",
     exportedAt: iso(T0),
-    account: { id: h.userId, email: "ada@korbat.local", createdAt: iso(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: iso(T0 - 3 * DAY_MS) },
+    account: {
+      id: h.userId,
+      email: "ada@korbat.local",
+      createdAt: iso(T0 - 3 * DAY_MS),
+      role: "user",
+      mfaEnabled: true,
+      hasPassword: false,
+      verified: true,
+      termsVersion: "draft-test",
+      termsAcceptedAt: iso(T0 - 3 * DAY_MS),
+      passkeys: [
+        { name: "Security key", createdAt: iso(T0 - DAY_MS), lastUsedAt: null, synced: false, createdOn: null },
+        { name: "Laptop", createdAt: iso(T0 - 2 * DAY_MS), lastUsedAt: iso(T0 - DAY_MS), synced: true, createdOn: "Chrome on Windows" },
+      ],
+    },
     profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"] },
     posts: h.lists.posts.map((post) => ({
       id: post.id,
@@ -406,13 +425,28 @@ function addManyRows(h: Harness): void {
 const readsFor = (rows: number, size: number) => Math.floor(rows / size) + 1;
 
 describe("building the export", () => {
-  test("the JSON follows the contract, marks the current session, and keeps a deleted post with its empty body and deletion time", async () => {
+  test("the JSON follows the contract, marks the current session, lists the passkeys with nothing of their keys, and keeps a deleted post with its empty body and deletion time", async () => {
     const h = harness();
     const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
     const json = ExportFormat.parse(JSON.parse((await collect(exportJson(plan))).join("")));
     expect(json.format).toBe("korbat-export-1");
     expect(json.exportedAt).toBe(iso(T0));
-    expect(json.account).toEqual({ id: h.userId, email: "ada@korbat.local", createdAt: iso(T0 - 3 * DAY_MS), role: "user", mfaEnabled: true, hasPassword: false, verified: true, termsVersion: "draft-test", termsAcceptedAt: iso(T0 - 3 * DAY_MS) });
+    expect(json.account).toEqual({
+      id: h.userId,
+      email: "ada@korbat.local",
+      createdAt: iso(T0 - 3 * DAY_MS),
+      role: "user",
+      mfaEnabled: true,
+      hasPassword: false,
+      verified: true,
+      termsVersion: "draft-test",
+      termsAcceptedAt: iso(T0 - 3 * DAY_MS),
+      // Inside the account, in the auth module's order (newest first), each as the five facts with the times as ISO text.
+      passkeys: [
+        { name: "Security key", createdAt: iso(T0 - DAY_MS), lastUsedAt: null, synced: false, createdOn: null },
+        { name: "Laptop", createdAt: iso(T0 - 2 * DAY_MS), lastUsedAt: iso(T0 - DAY_MS), synced: true, createdOn: "Chrome on Windows" },
+      ],
+    });
     expect(json.sessions).toEqual([
       { id: h.otherSession, createdAt: iso(T0 - 2 * DAY_MS), lastUsedAt: iso(T0 - DAY_MS), current: false },
       { id: h.currentSession, createdAt: iso(T0 - DAY_MS), lastUsedAt: iso(T0), current: true },

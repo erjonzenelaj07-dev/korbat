@@ -24,6 +24,17 @@ const ExportedPost = z.object({
   media: z.array(ExportedMedia),
 });
 
+/** A passkey of the account as the export lists it (1c design, section 7.7): what the Security screen shows, and nothing that identifies the key, its id or its authenticator. */
+const ExportedPasskey = z.object({
+  name: z.string(),
+  createdAt: at,
+  lastUsedAt: at.nullable(),
+  /** Backed up, so the password manager syncs it to the owner's other devices. */
+  synced: z.boolean(),
+  /** The label of the device that added it; null once that device is gone. */
+  createdOn: z.string().nullable(),
+});
+
 /**
  * export.json inside the data export archive (1b design, section 7.5): everything the account owns, and
  * nothing about other people beyond the handle they had at export time.
@@ -41,6 +52,8 @@ export const ExportFormat = z.object({
     verified: z.boolean(),
     termsVersion: z.string().nullable(),
     termsAcceptedAt: at.nullable(),
+    /** The account's passkeys, newest first. Added to korbat-export-1 without a new format name: a reader that does not know the member loses nothing by skipping it. */
+    passkeys: z.array(ExportedPasskey),
   }),
   profile: z.object({
     handle: z.string(),

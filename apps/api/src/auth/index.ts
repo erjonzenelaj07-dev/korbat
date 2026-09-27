@@ -55,7 +55,7 @@ export interface AuthForAccount {
   pendingPurges(): Promise<string[]>;
   /** Finishes step 1's rows if a take-down stopped after the mark, then anonymises the auth row and marks it purged; a no-op when it already is. */
   finishPurge(userId: string): Promise<void>;
-  /** The account's facts, its live sessions, its devices and its own events. */
+  /** The account's facts, its passkeys (without their keys), its live sessions, its devices and its own events. */
   exportAccount(userId: string): Promise<AccountExport>;
   appendEvent(userId: string, type: AuthEventType, metadata?: Record<string, unknown>): Promise<void>;
 }

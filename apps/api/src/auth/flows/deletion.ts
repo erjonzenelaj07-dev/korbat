@@ -57,10 +57,11 @@ async function tombstoneQuietly(deps: AuthDeps, userId: string, sessionIds: read
  * The auth side of a deletion, step 1 of section 7.6: the typed handle must be the account's own,
  * then the code must be right; then, in one transaction, the account is marked deleted (every lookup
  * treats the row as absent from here, so no request can succeed against it while the purge runs),
- * every session revoked, its devices and codes deleted and the event recorded; then the revoked
- * sessions get their tombstones, so the cache cannot revive one, and the account is told. Nothing
- * after the transaction can fail the request: the account is gone once it commits. The row itself is
- * anonymised by finishPurge, once the account module has purged the other schemas.
+ * every session revoked, its devices, codes and passkeys deleted, its WebAuthn user handle cleared and
+ * the event recorded; then the revoked sessions get their tombstones, so the cache cannot revive one,
+ * and the account is told. Nothing after the transaction can fail the request: the account is gone
+ * once it commits. The row itself is anonymised by finishPurge, once the account module has purged the
+ * other schemas.
  */
 export async function confirmDeletion(deps: AuthDeps, session: Session, input: DeleteConfirmRequest): Promise<void> {
   const user = await deps.repo.findUserById(session.userId);
@@ -84,9 +85,10 @@ export async function confirmDeletion(deps: AuthDeps, session: Session, input: D
 
 /**
  * Step 4 of section 7.6, which the purge job runs for every account left half deleted: the rows of
- * step 1 again (sessions still live revoked with their tombstones, devices and codes deleted), for an
- * account marked deleted without the rest, then the row anonymised and marked purged. Both parts change
- * nothing for an account that is live or already purged, so the job can repeat it after any failure.
+ * step 1 again (sessions still live revoked with their tombstones, devices, codes and passkeys deleted,
+ * the WebAuthn user handle cleared), for an account marked deleted without the rest, then the row
+ * anonymised and marked purged. Both parts change nothing for an account that is live or already
+ * purged, so the job can repeat it after any failure.
  */
 export async function finishPurge(deps: AuthDeps, userId: string): Promise<void> {
   const revoked = await deps.repo.finishTakeDown(userId, deps.now());

@@ -103,11 +103,16 @@ describe("account deletion: the confirmation", () => {
     expect(h.events).toEqual([]);
   });
 
-  test("tells the address, marks the account deleted, revokes every session with a tombstone, deletes devices and codes, records the event, and spends the code", async () => {
+  test("tells the address, marks the account deleted, revokes every session with a tombstone, deletes devices, codes and passkeys with the WebAuthn user handle, records the event, and spends the code", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
     const other = h.session(ada.user.id);
     const bob = h.user("bob@korbat.local");
+    // A passkey each, on accounts that both hold a WebAuthn user handle: ada's passkey and handle go with the take-down, bob's stay.
+    h.passkey(ada.user.id);
+    const bobs = h.passkey(bob.user.id);
+    h.users.get(ada.user.id)!.webauthnUserId = Buffer.alloc(32, 7);
+    h.users.get(bob.user.id)!.webauthnUserId = Buffer.alloc(32, 8);
     // A sign-in code out for ada, and one for bob: the account's codes go, nobody else's.
     for (const user of [ada, bob]) {
       await h.deps.repo.createEmailCode({ flowId: randomToken(), email: user.user.email, userId: user.user.id, purpose: "login", codeHash: "h", expiresAt: new Date(h.now().getTime() + CODE_TTL_MS), ipHash: h.ctx.ipHash });
@@ -130,6 +135,9 @@ describe("account deletion: the confirmation", () => {
     expect(await h.kv.get(`sess:${bob.session.sessionId}`)).toBeNull();
     expect(h.devices.map((d) => d.userId)).toEqual([bob.user.id]);
     expect(h.codes.map((c) => [c.userId, c.purpose])).toEqual([[bob.user.id, "login"]]);
+    expect(h.passkeys.map((p) => p.id)).toEqual([bobs]);
+    expect(stored.webauthnUserId).toBeNull();
+    expect(h.users.get(bob.user.id)!.webauthnUserId).toEqual(Buffer.alloc(32, 8));
     expect(h.events).toEqual([{ userId: ada.user.id, type: "account_deleted", deviceId: ada.session.deviceId, metadata: {} }]);
     expect(await h.kv.get(flowKey(flowId))).toBeNull();
     // The account is gone for every purpose: the same session cannot confirm again, whatever it sends.
@@ -195,11 +203,12 @@ describe("account deletion: the confirmation", () => {
 });
 
 describe("account deletion: the purge's last step", () => {
-  test("repeats step 1's rows for an account marked deleted by hand, with tombstones, then anonymises the row; a repeat changes nothing", async () => {
+  test("repeats step 1's rows for an account marked deleted by hand, with tombstones, the passkey and the WebAuthn user handle included, then anonymises the row; a repeat changes nothing", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");
     const other = h.session(ada.user.id);
-    Object.assign(h.users.get(ada.user.id)!, { passwordHash: "hash", phoneHash: "phone", totpSecretEnc: "v1:secret", totpEnabledAt: h.now(), recoveryCodesHash: ["r"] });
+    Object.assign(h.users.get(ada.user.id)!, { passwordHash: "hash", phoneHash: "phone", totpSecretEnc: "v1:secret", totpEnabledAt: h.now(), recoveryCodesHash: ["r"], webauthnUserId: Buffer.alloc(32, 7) });
+    h.passkey(ada.user.id);
     await h.deps.repo.createEmailCode({ flowId: randomToken(), email: "ada@korbat.local", userId: ada.user.id, purpose: "login", codeHash: "h", expiresAt: new Date(h.now().getTime() + CODE_TTL_MS), ipHash: h.ctx.ipHash });
     const bob = h.user("bob@korbat.local");
     // Marked deleted and nothing else, as a take-down that stopped after the mark would leave it.
@@ -211,8 +220,10 @@ describe("account deletion: the purge's last step", () => {
     for (const id of [ada.session.sessionId, other.sessionId]) expect(await h.kv.get(`sess:${id}`), id).toBe("revoked");
     expect(h.devices.map((d) => d.userId)).toEqual([bob.user.id]);
     expect(h.codes).toEqual([]);
+    expect(h.passkeys).toEqual([]);
     expect(h.users.get(ada.user.id)).toMatchObject({
       email: `deleted:${ada.user.id}`,
+      webauthnUserId: null,
       passwordHash: null,
       phoneHash: null,
       totpSecretEnc: null,

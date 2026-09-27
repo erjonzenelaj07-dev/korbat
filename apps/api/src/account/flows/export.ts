@@ -141,6 +141,8 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         verified: account.account.verified,
         termsVersion: account.account.termsVersion,
         termsAcceptedAt: isoOrNull(account.account.termsAcceptedAt),
+        // Inside the account, where the format places them; at most the cap of ten, so they are written with the account's other facts rather than paged.
+        passkeys: account.passkeys.map((passkey) => ({ name: passkey.name, createdAt: iso(passkey.createdAt), lastUsedAt: isoOrNull(passkey.lastUsedAt), synced: passkey.synced, createdOn: passkey.createdOn })),
       },
     ],
     [

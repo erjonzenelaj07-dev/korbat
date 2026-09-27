@@ -195,10 +195,11 @@ export function createAuthRepo(db: Db) {
 
     /**
      * Step 1 of a deletion (1b design, section 7.6) in one transaction: the row is marked deleted, every live
-     * session revoked, every device and code deleted and the account_deleted event appended. Either all of it
-     * lands or none of it does, so a failure leaves a live account with its sessions, never a deleted one with
-     * sessions and devices that nothing would remove. Answers the ids of the sessions it revoked, for the cache
-     * tombstones, which are not the database's to write.
+     * session revoked, every device, code and passkey deleted, the WebAuthn user handle cleared, and the
+     * account_deleted event appended. Either all of it lands or none of it does, so a failure leaves a live
+     * account with its sessions, never a deleted one with sessions, devices and passkeys that nothing would
+     * remove. Answers the ids of the sessions it revoked, for the cache tombstones, which are not the database's
+     * to write.
      */
     async takeDown(userId: string, now: Date, deviceId: string | null): Promise<string[]> {
       return db.transaction(async (tx) => {
@@ -210,9 +211,10 @@ export function createAuthRepo(db: Db) {
     },
 
     /**
-     * The rows of step 1 again, for a row marked deleted and not purged yet: a take-down that stopped after the
-     * mark, or a session that a sign-in already past its lookup created after it. Nothing for a live or a purged
-     * row. The event is not appended again: the confirmation that recorded it is the only one there was.
+     * The rows of step 1 again (the sessions, devices, codes and passkeys, and the WebAuthn user handle), for a row
+     * marked deleted and not purged yet: a take-down that stopped after the mark, or a session that a sign-in already
+     * past its lookup created after it. Nothing for a live or a purged row. The event is not appended again: the
+     * confirmation that recorded it is the only one there was.
      */
     async finishTakeDown(userId: string, now: Date): Promise<string[]> {
       return db.transaction(async (tx) => {
@@ -732,8 +734,10 @@ async function recentPasskeyAdditions(q: Querier, userId: string, withinMs: numb
 /**
  * The rows step 1 of a deletion takes down, inside the caller's transaction: every live session is revoked
  * (its id answered, for the cache tombstones), every device is deleted, and with it by cascade every session
- * row, and every code out for the user goes, whatever its purpose, so none can complete a flow for an
- * account that is gone.
+ * row, every code out for the user goes, whatever its purpose, so none can complete a flow for an account
+ * that is gone, and every passkey goes with the WebAuthn user handle (1c design, section 7.7), so a deleted
+ * account keeps no credential of any kind and no assertion can name it again. Run again by finishTakeDown,
+ * each statement finds nothing more to do.
  */
 async function takeDownRows(tx: Tx, userId: string, now: Date): Promise<string[]> {
   const revoked = await tx
@@ -743,6 +747,9 @@ async function takeDownRows(tx: Tx, userId: string, now: Date): Promise<string[]
     .returning({ id: sessions.id });
   await tx.delete(devices).where(eq(devices.userId, userId));
   await tx.delete(emailCodes).where(eq(emailCodes.userId, userId));
+  await tx.delete(passkeys).where(eq(passkeys.userId, userId));
+  // The handle only ever named the account to its passkeys; cleared here rather than by finishPurge, so the take-down leaves nothing of the ceremony behind.
+  await tx.update(users).set({ webauthnUserId: null }).where(eq(users.id, userId));
   return revoked.map((row) => row.id);
 }
 
