@@ -29,6 +29,7 @@ export type Pagination = z.infer<typeof Pagination>;
 
 export * from "./account";
 export * from "./auth";
+export * from "./explore";
 export * from "./media";
 export * from "./passkeys";
 export * from "./social";

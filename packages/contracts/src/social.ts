@@ -3,8 +3,11 @@ import { DisplayName, HandleInput } from "./auth";
 import { MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
 import { FORBIDDEN_FORMAT, visibleLength } from "./text";
 
-/** Every code the social endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
-export const SocialErrorCode = z.enum(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new"]);
+/**
+ * Every code the social endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited).
+ * explore_refreshed (409) refuses a page of an Explore ranking that is no longer kept.
+ */
+export const SocialErrorCode = z.enum(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed"]);
 export type SocialErrorCode = z.infer<typeof SocialErrorCode>;
 
 /** Postgres returns lowercase ids; the canonical form, so a lookup by any spelling finds the row. */

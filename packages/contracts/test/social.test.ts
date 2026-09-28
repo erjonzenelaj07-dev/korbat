@@ -124,8 +124,8 @@ describe("profiles", () => {
     expect(ProfileView.safeParse({ ...base, counts: { posts: -1, followers: 0, following: 0 } }).success).toBe(false);
     expect(ProfileListItem.safeParse({ ...author, bio: "hi", viewerFollows: true }).success).toBe(true);
   });
-  test("the error codes are exactly the five social ones", () => {
-    expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new"]);
+  test("the error codes are exactly the six social ones", () => {
+    expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed"]);
   });
 });
 

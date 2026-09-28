@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, integer, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, integer, pgTable, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { apiRole, fullAccess, ts } from "./helpers";
 
 export const profiles = pgTable(
@@ -22,6 +22,11 @@ export const profiles = pgTable(
     deletedAt: ts("deleted_at"),
     /** When the handle was last changed after onboarding; the next change is allowed 30 days later. Null until the first change. */
     handleChangedAt: ts("handle_changed_at"),
+    /**
+     * "Show my posts in Explore", the author's own switch. Off keeps the account's posts out of Explore from the next
+     * read; on again lets them back in at the next refresh. It belongs to the author: the public profile never shows it.
+     */
+    showInExplore: boolean("show_in_explore").notNull().default(true),
   },
   (t) => [
     uniqueIndex("profiles_handle_lower_idx").on(sql`lower(${t.handle})`),

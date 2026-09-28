@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { is } from "drizzle-orm";
 import { PgTable, getTableConfig, pgTable } from "drizzle-orm/pg-core";
-import { bytea } from "../src/schema/helpers";
+import { apiRole, bytea } from "../src/schema/helpers";
 import * as schema from "../src/schema/index";
 
 const tables = Object.values(schema).filter((v) => is(v, PgTable)) as PgTable[];
@@ -46,8 +46,8 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 22 tables in total", () => {
-    expect(tables.length).toBe(22);
+  test("there are 24 tables in total", () => {
+    expect(tables.length).toBe(24);
   });
   test("transparency_log carries no user identifiers", () => {
     const cols = byName.get("transparency_log")!.columns.map((c) => c.name);
@@ -243,5 +243,91 @@ describe("passkeys 1c", () => {
   test("adding, removing and a counter regression of a passkey are security events", () => {
     const values = schema.authEventType.enumValues;
     expect(values.slice(values.indexOf("account_deleted"))).toEqual(["account_deleted", "passkey_added", "passkey_removed", "passkey_counter_regression"]);
+  });
+});
+
+describe("explore 2c", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** Name, SQL type and not-null of every column, in order. */
+  const shape = (table: string) => byName.get(table)!.columns.map((c) => [c.name, c.getSQLType(), c.notNull]);
+  /** Every foreign key of a table by its local column: the table and columns it points at and what a delete there does. */
+  const foreignKeys = (table: string) =>
+    Object.fromEntries(
+      byName.get(table)!.foreignKeys.map((k) => {
+        const ref = k.reference();
+        return [ref.columns.map((c) => c.name).join(","), { table: getTableConfig(ref.foreignTable).name, columns: ref.foreignColumns.map((c) => c.name), onDelete: k.onDelete }];
+      }),
+    );
+  const indexColumns = (config: { columns: unknown[] }) => config.columns.map((c) => (c as { name?: string }).name);
+
+  test("profiles carry the author's Explore switch, on by default", () => {
+    const flag = column("profiles", "show_in_explore");
+    expect(flag?.getSQLType()).toBe("boolean");
+    expect(flag?.notNull).toBe(true);
+    expect(flag?.default).toBe(true);
+  });
+
+  test("explore_runs numbers each ranking with an identity and records its time, formula, counts and duration", () => {
+    const cfg = byName.get("explore_runs")!;
+    expect(cfg.schema).toBeUndefined(); // public
+    expect(shape("explore_runs")).toEqual([
+      ["generation", "integer", true],
+      ["as_of", "timestamp with time zone", true],
+      ["formula", "smallint", true],
+      ["candidates", "integer", true],
+      ["items", "integer", true],
+      ["took_ms", "integer", true],
+    ]);
+    const generation = column("explore_runs", "generation");
+    expect(generation?.primary).toBe(true);
+    // Always generated: an insert cannot choose its generation, so the numbers come from the sequence alone.
+    expect(generation?.generatedIdentity?.type).toBe("always");
+    // The refresh writes every other value itself, the refresh time included, which tests move.
+    expect(cfg.columns.filter((c) => c.hasDefault).map((c) => c.name)).toEqual(["generation"]);
+    expect(cfg.foreignKeys).toEqual([]);
+  });
+
+  test("explore_items holds a ranking's posts by position, each post once, and goes with its ranking, its post or its author", () => {
+    const cfg = byName.get("explore_items")!;
+    expect(cfg.schema).toBeUndefined(); // public
+    // No score or count is stored: the position is the order.
+    expect(shape("explore_items")).toEqual([
+      ["generation", "integer", true],
+      ["position", "integer", true],
+      ["post_id", "uuid", true],
+      ["author_id", "uuid", true],
+    ]);
+    expect(cfg.primaryKeys.map((k) => k.columns.map((c) => c.name))).toEqual([["generation", "position"]]);
+    expect(cfg.indexes.map((i) => [i.config.name, indexColumns(i.config), i.config.unique])).toEqual([["explore_items_generation_post_idx", ["generation", "post_id"], true]]);
+    expect(foreignKeys("explore_items")).toEqual({
+      generation: { table: "explore_runs", columns: ["generation"], onDelete: "cascade" },
+      post_id: { table: "posts", columns: ["id"], onDelete: "cascade" },
+      author_id: { table: "profiles", columns: ["id"], onDelete: "cascade" },
+    });
+  });
+
+  test("both tables have row level security and one full-access policy for the API role", () => {
+    // The loop under "row level security" covers them too; this pins the policy each one has.
+    for (const name of ["explore_runs", "explore_items"]) {
+      const cfg = byName.get(name)!;
+      expect(cfg.enableRLS, name).toBe(true);
+      expect(cfg.policies.map((p) => [p.name, p.for, p.to]), name).toEqual([[`${name}_api_all`, "all", apiRole]]);
+    }
+  });
+
+  test("likes and reposts have a BRIN index on created_at for the refresh's window; bookmarks, which Explore never reads, has none", () => {
+    for (const name of ["likes", "reposts"]) {
+      const brin = byName.get(name)!.indexes.filter((i) => i.config.method === "brin");
+      expect(brin.map((i) => [i.config.name, indexColumns(i.config), i.config.unique, i.config.where]), name).toEqual([[`${name}_created_brin`, ["created_at"], false, undefined]]);
+    }
+    expect(byName.get("bookmarks")!.indexes.filter((i) => i.config.method === "brin")).toEqual([]);
+    // The factory's other indexes stay the same on all three tables.
+    for (const name of ["likes", "reposts", "bookmarks"]) {
+      const others = byName.get(name)!.indexes.filter((i) => i.config.method !== "brin");
+      expect(others.map((i) => [i.config.name, i.config.method]).sort(), name).toEqual([
+        [`${name}_post_idx`, "btree"],
+        [`${name}_user_created_idx`, "btree"],
+      ]);
+    }
   });
 });

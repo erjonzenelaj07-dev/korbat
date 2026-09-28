@@ -18,6 +18,8 @@ const MESSAGES: Record<SocialErrorKind, string> = {
   blocked: "You blocked this account. Unblock it in your privacy settings first.",
   self_target: "You cannot do that to your own account.",
   account_too_new: "New accounts can repost and quote after 48 hours.",
+  // The page asked for belongs to an Explore ranking that is no longer kept; the app starts again from the current one.
+  explore_refreshed: "Explore was refreshed.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   rate_limited: "Too many requests. Wait a moment and try again.",

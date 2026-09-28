@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, pgEnum, pgTable, primaryKey, real, text, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { check, index, integer, pgEnum, pgTable, primaryKey, real, smallint, text, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { apiRole, fullAccess, ts } from "./helpers";
 import { profiles } from "./identity";
 
@@ -38,6 +38,52 @@ export const posts = pgTable(
     check("posts_body_len", sql`char_length(${t.body}) <= 1000`),
     check("posts_counts_nonnegative", sql`${t.likeCount} >= 0 and ${t.repostCount} >= 0 and ${t.replyCount} >= 0 and ${t.quoteCount} >= 0`),
     fullAccess("posts_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * One Explore ranking (a "generation"), written by the refresh job (2c design, sections 6 and 7). The current ranking
+ * is the highest generation; the job also keeps the one before it, so a reader paging through a ranking is not cut
+ * off by the next round.
+ */
+export const exploreRuns = pgTable(
+  "explore_runs",
+  {
+    /** Numbered by the database. One ranking every 5 minutes lasts 20,000 years in an integer. */
+    generation: integer("generation").primaryKey().generatedAlwaysAsIdentity(),
+    /** The refresh time the round was given; the ranking is computed as of this time. */
+    asOf: ts("as_of").notNull(),
+    /** The version of the formula the round ranked with (EXPLORE_V1.version in @korbat/contracts). */
+    formula: smallint("formula").notNull(),
+    /** Posts that passed the candidate predicate at as_of. */
+    candidates: integer("candidates").notNull(),
+    /** Posts the ranking holds; their positions run from 1 to this. */
+    items: integer("items").notNull(),
+    /** How long the round took. */
+    tookMs: integer("took_ms").notNull(),
+  },
+  () => [fullAccess("explore_runs_api_all", apiRole)],
+).enableRLS();
+
+/**
+ * The posts of one Explore ranking, in order. No score or count is stored: nothing reads them after the insert, and
+ * the position is the order. A row goes with its ranking, its post or its author.
+ */
+export const exploreItems = pgTable(
+  "explore_items",
+  {
+    generation: integer("generation").notNull().references(() => exploreRuns.generation, { onDelete: "cascade" }),
+    /** 1 to the ranking's item count, without gaps. */
+    position: integer("position").notNull(),
+    postId: uuid("post_id").notNull().references(() => posts.id, { onDelete: "cascade" }),
+    /** The post's author, so an author's places in a ranking are counted without reading the posts. */
+    authorId: uuid("author_id").notNull().references(() => profiles.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.generation, t.position] }),
+    /** A post has one place in a ranking. */
+    uniqueIndex("explore_items_generation_post_idx").on(t.generation, t.postId),
+    fullAccess("explore_items_api_all", apiRole),
   ],
 ).enableRLS();
 
@@ -100,8 +146,11 @@ function userPairTable(name: string, from: string, to: string) {
   ).enableRLS();
 }
 
-/** user -> post relation table (likes, reposts, bookmarks). */
-function userPostTable(name: string) {
+/**
+ * user -> post relation table (likes, reposts, bookmarks). `createdBrin` adds `<name>_created_brin`, a BRIN index on
+ * created_at, for the tables whose recent rows the Explore refresh reads (2c design, section 6).
+ */
+function userPostTable(name: string, options: { createdBrin?: boolean } = {}) {
   return pgTable(
     name,
     {
@@ -114,6 +163,9 @@ function userPostTable(name: string) {
       index(`${name}_post_idx`).on(t.postId),
       /** Per-account lists (your likes, your bookmarks) and the reposts half of the Following timeline. */
       index(`${name}_user_created_idx`).on(t.userId, t.createdAt),
+      // Rows arrive roughly in time order, so a BRIN index of a few kilobytes finds the refresh's window as fast as a
+      // btree of many megabytes. Unlikes, blocks and purges let later rows fill old pages and erode that order slowly.
+      ...(options.createdBrin ? [index(`${name}_created_brin`).using("brin", t.createdAt)] : []),
       fullAccess(`${name}_api_all`, apiRole),
     ],
   ).enableRLS();
@@ -122,6 +174,7 @@ function userPostTable(name: string) {
 export const follows = userPairTable("follows", "follower_id", "followee_id");
 export const blocks = userPairTable("blocks", "blocker_id", "blocked_id");
 export const mutes = userPairTable("mutes", "muter_id", "muted_id");
-export const likes = userPostTable("likes");
-export const reposts = userPostTable("reposts");
+export const likes = userPostTable("likes", { createdBrin: true });
+export const reposts = userPostTable("reposts", { createdBrin: true });
+/** Bookmarks are private and never count towards Explore, so they need no index by time. */
 export const bookmarks = userPostTable("bookmarks");
