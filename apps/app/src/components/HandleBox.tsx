@@ -2,7 +2,10 @@ import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 
-/** Opens a profile by handle. The only discovery tool until explore (2c) arrives. */
+/**
+ * Opens a profile by handle, for an account whose handle is already known. It sits under Popular now, Explore's first
+ * posts, in the context column; Explore (2c) is the way to come across posts and accounts.
+ */
 export function HandleBox() {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);

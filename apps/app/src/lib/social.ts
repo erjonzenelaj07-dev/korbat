@@ -1,6 +1,9 @@
 import {
   BlockResponse,
   EngagementResponse,
+  ExplorePage,
+  ExploreSettingResponse,
+  ExploreStatus,
   FollowResponse,
   MediaStatusResponse,
   MuteResponse,
@@ -35,6 +38,8 @@ export const social = {
   deletePost: (id: string) => api(postPath(id), { method: "DELETE" }),
   thread: (id: string, cursor?: string) => api(`${postPath(id)}/thread${query(cursor)}`, { schema: ThreadResponse }),
   engage: (id: string, kind: EngagementKind, on: boolean) => api(`${postPath(id)}/${kind}`, { method: on ? "POST" : "DELETE", schema: EngagementResponse }),
+  /** Why the author's own post is in Explore or not, with no count (2c design, section 8); anyone else gets not_found. */
+  exploreStatus: (id: string) => api(`${postPath(id)}/explore`, { schema: ExploreStatus }),
 
   /** Sends one image file as the request body. The answer is an id to ask about, not a finished image. */
   uploadMedia: (file: Blob) => api("/api/media", { raw: { type: file.type, body: file }, schema: UploadResponse }),
@@ -43,6 +48,13 @@ export const social = {
 
   following: (cursor?: string) => api(`/api/timeline/following${query(cursor)}`, { schema: TimelinePage }),
   latest: (cursor?: string) => api(`/api/timeline/latest${query(cursor)}`, { schema: TimelinePage }),
+  /**
+   * A page of Explore (2c design, section 8). Its cursor names the ranking it came from, which a refresh can prune
+   * (explore_refreshed); signed out, the first page is all there is, and signInForMore says whether more exist.
+   */
+  explore: (cursor?: string) => api(`/api/timeline/explore${query(cursor)}`, { schema: ExplorePage }),
+  /** The first three posts of Explore, for the context column's Popular now. */
+  popular: () => api("/api/timeline/explore?limit=3", { schema: ExplorePage }),
 
   profile: (handle: string) => api(handlePath(handle), { schema: ProfileView }),
   profilePosts: (handle: string, cursor?: string) => api(`${handlePath(handle)}/posts${query(cursor)}`, { schema: TimelinePage }),
@@ -62,6 +74,8 @@ export const social = {
   editProfile: (edit: ProfileEditRequest) => api("/api/me/profile", { method: "PATCH", json: edit, schema: OwnProfileResponse }),
   /** Needs fresh authentication: the caller runs it through useReauth. */
   changeHandle: (handle: string) => api("/api/me/handle", { json: { handle }, schema: OwnProfileResponse }),
+  /** "Show my posts in Explore", on or off, with no body as the other switches; the caller refreshes the session, whose /api/me carries it. */
+  setShowInExplore: (on: boolean) => api("/api/me/explore", { method: on ? "POST" : "DELETE", schema: ExploreSettingResponse }),
 };
 
 /** "just now", "5m", "3h", "2d", or a date for anything older than a week. */

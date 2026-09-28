@@ -1,12 +1,75 @@
-import { useCallback, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { Pressable, Switch, Text, View } from "react-native";
+import { Link } from "expo-router";
 import { AppShell } from "@/components/AppShell";
 import { SettingsNav } from "@/components/SettingsNav";
 import { ProfileList } from "@/components/social/ProfileList";
+import { ErrorText, Section } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
+import { exploreSwitchText } from "@/lib/explore";
+import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
 
 type Tab = "blocked" | "muted";
+
+/**
+ * react-native-web paints the thumb of a switch that is on in its own teal unless `activeThumbColor` names another colour,
+ * a prop React Native's types do not know; the light thumb keeps its contrast on the dark track in both states.
+ */
+const ACTIVE_THUMB = { activeThumbColor: "#fafafa" } as object;
+
+/**
+ * "Show my posts in Explore" (2c design, section 11), on by default. Its state is /api/me's. A change shows at once while
+ * it is saved (POST turns it on, DELETE off, as the app's other switches), the switch is disabled until the save and the
+ * session's refresh are done, and a failed save puts it back with the error.
+ */
+export function ExploreSwitch() {
+  const { state, refresh } = useSession();
+  // The settings layout lets in only an account with a profile; the type still allows none.
+  const stored = state.status === "signed-in" ? (state.me.profile?.showInExplore ?? true) : true;
+  const [on, setOn] = useState(stored);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Follows the session when it changes: after a save here, or a refresh from elsewhere.
+  useEffect(() => setOn(stored), [stored]);
+
+  async function change(next: boolean) {
+    if (busy) return;
+    const before = on;
+    setBusy(true);
+    setError(null);
+    setOn(next);
+    try {
+      const answer = await social.setShowInExplore(next);
+      setOn(answer.showInExplore);
+      // /api/me carries the switch, so the session follows the saved state. A failed refresh shows its own screen, so what
+      // the catch below sees is a failed save.
+      await refresh();
+    } catch (err) {
+      setOn(before);
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section title="Explore">
+      <View className="mt-3 flex-row items-center justify-between gap-4">
+        <Text className="flex-1 text-base text-zinc-50">Show my posts in Explore</Text>
+        {/* react-native-web renders a checkbox with the switch role, named by this label and checked while it is on. */}
+        <Switch accessibilityLabel="Show my posts in Explore" value={on} disabled={busy} onValueChange={(next) => void change(next)} trackColor={{ false: "#71717a", true: "#059669" }} thumbColor="#fafafa" {...ACTIVE_THUMB} />
+      </View>
+      <Text className="mt-2 text-sm leading-5 text-zinc-400">{exploreSwitchText()}</Text>
+      <ErrorText message={error} />
+      <Link href="/explore/about" asChild>
+        <Pressable className="mt-3 self-start">
+          <Text className="text-sm text-zinc-400 underline">How Explore works</Text>
+        </Pressable>
+      </Link>
+    </Section>
+  );
+}
 
 function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
@@ -37,7 +100,7 @@ function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<
   );
 }
 
-/** Blocked and muted accounts, with one-tap undo. This is the only place a block can be lifted. */
+/** Whether your posts show in Explore, then blocked and muted accounts with one-tap undo. This is the only place a block can be lifted. */
 export default function Privacy() {
   const [tab, setTab] = useState<Tab>("blocked");
   const fetchBlocks = useCallback((cursor?: string) => social.myBlocks(cursor), []);
@@ -55,7 +118,8 @@ export default function Privacy() {
               Privacy
             </Text>
             <SettingsNav current="privacy" />
-            <Text className="mt-2 text-sm leading-5 text-zinc-400">
+            <ExploreSwitch />
+            <Text className="mt-6 text-sm leading-5 text-zinc-400">
               A block hides you and the other account from each other while signed in and refuses their interactions. Posts on korbat are public, so anyone who signs out can
               still read them. A mute only hides an account from your timelines, and they are never told.
             </Text>

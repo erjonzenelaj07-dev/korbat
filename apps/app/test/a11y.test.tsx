@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Switch, Text, View } from "react-native";
 import { describe, expect, test } from "vitest";
 
 /**
@@ -113,6 +113,23 @@ describe("screen-reader states", () => {
     const out = html(<Pressable accessibilityRole="button" aria-busy disabled />);
     expect(out).toContain('aria-busy="true"');
     expect(out).toContain('aria-disabled="true"');
+  });
+
+  test("a switch is a checkbox with the switch role, named by its label, that says whether it is on and whether it can be used", () => {
+    const input = (element: ReactElement): string => /<input[^>]*>/.exec(html(element))?.[0] ?? "";
+    const on = input(<Switch accessibilityLabel="Show my posts in Explore" value />);
+    expect(on).toContain('type="checkbox"');
+    expect(on).toContain('role="switch"');
+    expect(on).toContain('aria-label="Show my posts in Explore"');
+    expect(on).toContain('checked=""');
+    const off = input(<Switch accessibilityLabel="Show my posts in Explore" value={false} disabled />);
+    expect(off).not.toContain("checked");
+    expect(off).toContain('disabled=""');
+  });
+
+  test("every switch in the app names itself, since its markup carries no text of its own", () => {
+    expect(findInSource(/<Switch\b/).length).toBeGreaterThan(0);
+    expect(findInSource(/<Switch\b(?![^>]*accessibilityLabel=)/)).toEqual([]);
   });
 
   test("the delete question takes the focus and hands it back, since the Delete control leaves the tree meanwhile", () => {

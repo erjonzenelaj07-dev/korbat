@@ -9,6 +9,7 @@ import { PostList } from "@/components/social/PagedList";
 import { PostCard } from "@/components/social/PostCard";
 import { Loading } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
+import { exploreStatusText } from "@/lib/explore";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
 
@@ -23,11 +24,55 @@ function AncestorRow({ item }: { item: PostView | Tombstone }) {
   return <PostCard post={item} />;
 }
 
+/**
+ * The author's line under their own post (2c design, section 11): whether it is in Explore and, if not, which rule keeps
+ * it out, in the formula's words and without any count, with the way to the rules and to the switch. Until the answer
+ * comes, and if it fails, there is no line: the post is the screen, and the line only explains.
+ */
+function ExploreStatusLine({ id }: { id: string }) {
+  const [text, setText] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setText(null);
+    social
+      .exploreStatus(id)
+      .then((answer) => {
+        if (!cancelled) setText(exploreStatusText(answer.status));
+      })
+      .catch(() => {
+        if (!cancelled) setText(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (!text) return null;
+  return (
+    <View className="px-4 pb-2">
+      <Text className="text-sm leading-5 text-zinc-300">{text}</Text>
+      <View className="mt-1 flex-row flex-wrap gap-x-4">
+        <Link href="/explore/about" asChild>
+          <Pressable>
+            <Text className="text-sm text-zinc-400 underline">How Explore works</Text>
+          </Pressable>
+        </Link>
+        <Link href="/settings/privacy" asChild>
+          <Pressable>
+            <Text className="text-sm text-zinc-400 underline">Your Explore setting</Text>
+          </Pressable>
+        </Link>
+      </View>
+    </View>
+  );
+}
+
 /** A post with the chain it replies to above it and its direct replies below, oldest first. */
 export default function Thread() {
   const { id, quote } = useLocalSearchParams<{ id: string; quote?: string }>();
   const { state } = useSession();
-  const signedIn = state.status === "signed-in" && state.me.user.onboarded;
+  const viewer = state.status === "signed-in" && state.me.user.onboarded ? state.me.user.id : null;
+  const signedIn = viewer !== null;
   const [thread, setThread] = useState<ThreadResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
@@ -82,6 +127,7 @@ export default function Thread() {
     );
   }
 
+  const mine = viewer !== null && thread.post.author.id === viewer;
   const header = (
     <View>
       {thread.ancestors.map((item) => (
@@ -89,6 +135,8 @@ export default function Thread() {
       ))}
       <View className="border-b-2 border-zinc-700">
         <PostCard post={thread.post} onDeleted={() => router.replace("/")} />
+        {/* Replies and quotes never enter Explore, so they get no line and no request. */}
+        {mine && thread.post.replyTo === null && thread.post.quoteOf === null ? <ExploreStatusLine id={thread.post.id} /> : null}
         {signedIn ? (
           <View className="flex-row justify-end px-4 pb-2">
             <Pressable accessibilityRole="button" onPress={() => setQuoting(true)}>

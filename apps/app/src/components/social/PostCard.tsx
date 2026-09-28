@@ -57,6 +57,20 @@ function StateChip({ state }: { state: PostView["state"] }) {
 }
 
 /**
+ * The author's own post while it is in the current Explore ranking (2c design, section 8): a link to the post, whose
+ * status line under it says more and leads to the switch.
+ */
+function ExploreChip({ id }: { id: string }) {
+  return (
+    <Link href={`/post/${id}`} asChild>
+      <Pressable className="self-start rounded-full bg-emerald-500/15 px-2 py-0.5">
+        <Text className="text-xs font-medium text-emerald-300">In Explore</Text>
+      </Pressable>
+    </Link>
+  );
+}
+
+/**
  * `active` colours the action. `pressed` tells a screen reader that a toggle is on, and is for
  * toggles whose label stays the same (Like, Repost); Save changes its label instead, which
  * already says so. While one action's request is in flight, every action waits.
@@ -151,6 +165,8 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
       {repostedBy ? <Text className="mb-1 text-xs text-zinc-400">↻ {repostedBy.displayName} reposted</Text> : null}
       <AuthorLine author={post.author} createdAt={post.createdAt} />
       {post.author.id === me ? <StateChip state={post.state} /> : null}
+      {/* The API sets inExplore only on the viewer's own posts; the check keeps the chip on them whatever a view carries. */}
+      {post.author.id === me && post.inExplore ? <ExploreChip id={post.id} /> : null}
       {post.replyTo ? (
         <Text className="text-xs text-zinc-400">
           {post.replyTo.authorHandle ? "Replying to " : "Replying to a post you can't see"}

@@ -3,20 +3,22 @@
  * Smoke test of the auth and social modules in a running Compose stack, through Caddy.
  *
  * 1. The web page's CSP allows the Turnstile widget.
- * 2. Password sign-in for an unknown email returns invalid_credentials (argon2 runs inside the image).
- * 3. A throwaway native-app account signs up with an emailed code read from Mailpit and onboards.
- * 4. /api/me answers for it.
- * 5. It posts, the post appears in the public Latest timeline, and its profile counts one post.
- * 6. It uploads a JPEG carrying a GPS position, waits until it is ready, and posts it without text. The
+ * 2. Signed out, Explore answers a page that parses; its ranking is computed within a minute (the refresh
+ *    job runs a round at start), and by the answer's own Date header it is less than 11 minutes old.
+ * 3. Password sign-in for an unknown email returns invalid_credentials (argon2 runs inside the image).
+ * 4. A throwaway native-app account signs up with an emailed code read from Mailpit and onboards.
+ * 5. /api/me answers for it.
+ * 6. It posts, the post appears in the public Latest timeline, and its profile counts one post.
+ * 7. It uploads a JPEG carrying a GPS position, waits until it is ready, and posts it without text. The
  *    original upload is gone, and large.webp is served to anyone as a fresh WebP without metadata.
- * 7. A symlink to /proc/self/environ, planted in the store from inside the worker, is refused with 404.
- * 8. Deleting the post stops the image being served, and its folder leaves the store.
- * 9. The worker has only a loopback interface and a 768 MiB memory limit, and has never restarted.
- * 10. With --worst-case, flat-colour files at the pixel caps (48 MP 16-bit interlaced PNG, 48 MP
+ * 8. A symlink to /proc/self/environ, planted in the store from inside the worker, is refused with 404.
+ * 9. Deleting the post stops the image being served, and its folder leaves the store.
+ * 10. The worker has only a loopback interface and a 768 MiB memory limit, and has never restarted.
+ * 11. With --worst-case, flat-colour files at the pixel caps (48 MP 16-bit interlaced PNG, 48 MP
  *     progressive JPEG, 48 MP GIF, 16 MP AVIF) all become ready without the worker being OOM-killed or
  *     restarted, and its memory peak is printed. Run it after every sharp upgrade.
- * 11. The grant-role CLI makes it a moderator, and its session stops working.
- * 12. A second throwaway account (the first one's session is gone by now, and a deleted account could not
+ * 12. The grant-role CLI makes it a moderator, and its session stops working.
+ * 13. A second throwaway account (the first one's session is gone by now, and a deleted account could not
  *     be granted a role) edits its bio, changes its handle, downloads its export as a ZIP, posts, and
  *     deletes itself with a code read from Mailpit and its handle typed; afterwards its profile is not
  *     found, its session is gone, and its post has left the Latest timeline.
@@ -236,6 +238,42 @@ async function worstCaseImages(token) {
   console.log(`info worst case: the worker's memory peak is ${Math.round(peak / 1048576)} MiB of ${Math.round(worker.memory / 1048576)} MiB`);
 }
 
+/**
+ * Explore signed out (2c design, section 13). The page's fields are checked by hand: post items only, at most the
+ * signed-out page of 20, no cursor, a boolean signInForMore and computedAt null or a time. The refresh job runs a round
+ * as the API starts, so computedAt is polled for up to a minute. Its age is measured against the answer's Date header,
+ * the server's clock rather than this machine's, and stays under 11 minutes: a round at most every 5 minutes, one that
+ * skips because the last ranking is under 4.5 minutes old, and a minute and a half to spare.
+ */
+async function explore() {
+  const deadline = Date.now() + 60_000;
+  let answer;
+  let page = null;
+  for (;;) {
+    answer = await send("/api/timeline/explore");
+    try {
+      page = JSON.parse(answer.bytes.toString("utf8"));
+    } catch {
+      page = null;
+    }
+    if (answer.status !== 200 || typeof page?.computedAt === "string" || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  const items = Array.isArray(page?.items) ? page.items : null;
+  const posts = items !== null && items.every((item) => item?.kind === "post" && typeof item.post?.id === "string" && typeof item.post?.author?.handle === "string");
+  const parses =
+    answer.status === 200 &&
+    posts &&
+    items.length <= 20 &&
+    page.nextCursor === null &&
+    typeof page.signInForMore === "boolean" &&
+    (page.computedAt === null || (typeof page.computedAt === "string" && !Number.isNaN(Date.parse(page.computedAt))));
+  check("signed out, Explore answers a page that parses", parses, `HTTP ${answer.status}, ${items === null ? "no" : items.length} posts`);
+  if (!check("Explore has a ranking within a minute", typeof page?.computedAt === "string", page?.computedAt ?? "computedAt is null")) return;
+  const age = Date.parse(answer.headers.get("date") ?? "") - Date.parse(page.computedAt);
+  check("by the answer's Date header, the ranking is less than 11 minutes old", Number.isFinite(age) && age < 11 * 60 * 1000, `${Math.round(age / 1000)} s`);
+}
+
 /** The first 6-digit code in the newest message to `to`, or in the newest one with `subject` when an older code email is already in the box. */
 async function emailCode(to, subject) {
   const query = encodeURIComponent(`to:"${to}"`);
@@ -299,6 +337,8 @@ async function main() {
   const page = await fetch(`${base}/`);
   const csp = page.headers.get("content-security-policy") ?? "";
   check("web CSP allows the Turnstile widget", csp.includes("script-src 'self' https://challenges.cloudflare.com") && csp.includes("frame-src https://challenges.cloudflare.com"));
+
+  await explore();
 
   const unknown = await withTurnstile("/api/auth/password/signin", { email: `nobody-${randomUUID()}@korbat.local`, password: "not a real password", turnstileToken: TURNSTILE_TOKEN, deviceId, platform: "ios" });
   check("password sign-in for an unknown email", unknown.body?.error?.code === "invalid_credentials", unknown.summary);

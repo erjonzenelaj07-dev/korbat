@@ -3,6 +3,7 @@ import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Link, usePathname } from "expo-router";
 import { useSession } from "@/lib/session";
 import { HandleBox } from "./HandleBox";
+import { PopularNow } from "./PopularNow";
 
 interface NavItem {
   label: string;
@@ -17,7 +18,8 @@ const MEDIUM = 768;
 /**
  * The layout from the design brief: navigation, timeline and context columns on wide screens, the
  * context column dropped on tablets, and a single column with a bottom tab bar on phones. Screens
- * render their own scrolling content inside it.
+ * render their own scrolling content inside it. The context column holds Explore's Popular now above
+ * the handle box (2c design, section 11).
  */
 export function AppShell({ children, floating }: { children: ReactNode; floating?: ReactNode }) {
   const { width } = useWindowDimensions();
@@ -56,6 +58,7 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
         <View className="w-full max-w-2xl border-r border-zinc-800">{children}</View>
         {width >= WIDE ? (
           <View className="w-72 px-4 py-6">
+            <PopularNow />
             <HandleBox />
           </View>
         ) : null}
