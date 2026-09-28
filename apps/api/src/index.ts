@@ -62,6 +62,8 @@ const social = createSocial({
   // Profile and handle changes are security events; the social module hands them to the auth module, which owns the table.
   events: { append: auth.appendEvent },
 });
+// Explore's ranking: a round at once, so Explore is filled on a new database or after downtime, then one every five minutes.
+const stopExplore = social.startExplore(jobLock);
 
 // The account module owns no table: it reaches the three modules above only through the interfaces their index files export.
 const account = createAccount({
@@ -101,6 +103,7 @@ async function shutdown(signal: string) {
   logger.info({ signal }, "shutting down");
   stopSweeper();
   stopJanitor();
+  stopExplore();
   stopPurge();
   server.close();
   await Promise.allSettled([closeDb(apiDb), closeDb(authDb), redis.quit()]);

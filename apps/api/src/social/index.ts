@@ -6,9 +6,11 @@ import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import type { Db, DbTx } from "@korbat/db";
 import type { AppEnv } from "../env";
+import type { JobLock } from "../lib/jobs";
 import type { MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import { WITHOUT_MEDIA, type SocialDeps, type SocialEvents } from "./context";
+import { startExplore } from "./explore";
 import { exportProfile, type ProfileExport } from "./flows/export";
 import { createSocialRepo } from "./repo";
 import { socialRoutes } from "./routes";
@@ -68,6 +70,11 @@ export function createSocial(options: CreateSocialOptions) {
     /** The interface the account module uses. */
     forAccount,
     routes: socialRoutes(deps, options.requireSession, options.requireFreshAuth),
+    /**
+     * Starts the Explore refresh under the shared job lock: a round at once, then one every five minutes. Returns the
+     * function that stops the timer.
+     */
+    startExplore: (lock: JobLock) => startExplore(deps, lock),
   };
 }
 

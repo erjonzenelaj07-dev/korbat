@@ -1,4 +1,5 @@
 import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import { isUniqueViolation } from "../auth";
 import { SocialError } from "./context";
@@ -134,6 +135,13 @@ export interface ProfileListRow {
   profileId: string;
   sortAt: Date;
 }
+
+/**
+ * What a round of the Explore refresh did: nothing, because the newest ranking is younger than the formula's minimum
+ * gap, or a new ranking under `generation` with the posts that passed the candidate predicate, the posts it holds and
+ * the milliseconds it took.
+ */
+export type ExploreRefresh = { skipped: true } | { skipped: false; generation: number; candidates: number; items: number; tookMs: number };
 
 export const MAX_ANCESTORS = 50;
 const NO_REPOSTER = "00000000-0000-0000-0000-000000000000";
@@ -649,6 +657,82 @@ export function createSocialRepo(db: Db) {
         where b.user_id = ${viewer}::uuid and ${visibleTo(viewer)} and ${authorNotBlocked(viewer)} and ${before(cursor, sql`b.created_at`, sql`p.id`)}
         order by b.created_at desc, p.id desc limit ${limit}`);
       return raw.map(toListRow);
+    },
+
+    // ------------------------------------------------------------ explore
+
+    /**
+     * One round of the Explore refresh (2c design, section 7): a new ranking as of `asOf`, written by one statement that
+     * takes every number of the formula as a parameter, in a transaction that gives up after 30 seconds of work or 5 of
+     * waiting on a lock. The round writes nothing while the newest ranking is younger than the formula's minimum gap, so
+     * at most one ranking lands per interval however many instances run the job or restart. The newest `kept` rankings
+     * stay, so a reader paging through the one before the current one can finish; older ones go with their items.
+     *
+     * The statement's CTEs: `c` the candidates (visible top-level posts that are not quotes, by live authors who have not
+     * switched Explore off, created in the window up to `asOf`), the one candidate predicate, where later rules about
+     * imports, suspension and restoration belong; `e` the engagement that counts (likes and reposts in the window that
+     * have stood long enough, by live accounts other than the author that were old enough when they engaged); `ap` the
+     * approving accounts per post, each counted once however it engaged, keeping the posts that reach the threshold; `s`
+     * the score, approvers over (hours since posted, never negative, + offset) ^ gravity; `r` each author's posts
+     * numbered by score, a level of its own because a window cannot order by an alias of its own select; `k` the posts
+     * within the per-author cap, numbered by score from 1 and cut at the list length, a tie going to the higher post id;
+     * `ins` the items. Nothing about a post but its place is stored, and nothing about any post is answered or logged.
+     */
+    async refreshExplore(asOf: Date, formula: ExploreFormula = EXPLORE_V1): Promise<ExploreRefresh> {
+      const started = performance.now();
+      const at = sql`${asOf.toISOString()}::timestamptz`;
+      // Durations built in SQL from the formula's numbers, so each number travels as a parameter.
+      const hours = (n: number): SQL => sql`(${n}::float8 * interval '1 hour')`;
+      const minutes = (n: number): SQL => sql`(${n}::float8 * interval '1 minute')`;
+      const since = sql`${at} - ${hours(formula.windowHours)}`;
+      const settled = sql`${at} - ${minutes(formula.standingMinutes)}`;
+      return db.transaction(async (tx): Promise<ExploreRefresh> => {
+        // Settings of this transaction only: every statement below runs on the connection the transaction holds.
+        await tx.execute(sql`set local statement_timeout = '30s'`);
+        await tx.execute(sql`set local lock_timeout = '5s'`);
+        // A ranking later than the minimum gap before `asOf` (one from an instance whose clock runs ahead included) is fresh: the round ends having written nothing.
+        const [recent] = (await tx.execute(sql`select exists (select 1 from explore_runs where as_of > ${at} - ${minutes(formula.minGapMinutes)}) as fresh`)) as unknown as { fresh: boolean }[];
+        if (recent!.fresh) return { skipped: true };
+        // The counts are written once the statement below has them; until the commit nobody sees this row.
+        const [run] = (await tx.execute(sql`
+          insert into explore_runs (as_of, formula, candidates, items, took_ms) values (${at}, ${formula.version}, 0, 0, 0) returning generation`)) as unknown as { generation: number }[];
+        const generation = run!.generation;
+        const [counts] = (await tx.execute(sql`
+          with c as (
+            select p.id, p.author_id, p.created_at from posts p join profiles a on a.id = p.author_id
+            where p.reply_to_id is null and p.quote_of_id is null and p.state = 'visible' and p.created_at > ${since} and p.created_at <= ${at}
+              and a.deleted_at is null and a.show_in_explore
+          ),
+          e as (
+            select x.post_id, x.user_id from (
+              select post_id, user_id, created_at from likes where created_at > ${since} and created_at <= ${settled}
+              union all
+              select post_id, user_id, created_at from reposts where created_at > ${since} and created_at <= ${settled}
+            ) x
+            join c on c.id = x.post_id
+            join profiles u on u.id = x.user_id
+            where x.user_id <> c.author_id and u.deleted_at is null and u.created_at <= x.created_at - ${hours(formula.engagerMinAgeHours)}
+          ),
+          ap as (select post_id, count(distinct user_id)::int as approvers from e group by post_id having count(distinct user_id) >= ${formula.threshold}),
+          s as (
+            select c.id as post_id, c.author_id,
+              ap.approvers / power(greatest(0, extract(epoch from (${at} - c.created_at))::float8 / 3600) + ${formula.offsetHours}::float8, ${formula.gravity}::float8) as score
+            from ap join c on c.id = ap.post_id
+          ),
+          r as (select s.post_id, s.author_id, s.score, row_number() over (partition by s.author_id order by s.score desc, s.post_id desc) as author_rank from s),
+          k as (
+            select r.post_id, r.author_id, row_number() over (order by r.score desc, r.post_id desc) as position
+            from r where r.author_rank <= ${formula.perAuthor} order by position limit ${formula.listLength}
+          ),
+          ins as (insert into explore_items (generation, position, post_id, author_id) select ${generation}::int, k.position, k.post_id, k.author_id from k returning 1)
+          select (select count(*) from c)::int as candidates, (select count(*) from ins)::int as items`)) as unknown as { candidates: number; items: number }[];
+        // From the start of the round to the end of the ranking statement, the part that grows with the data.
+        const tookMs = Math.round(performance.now() - started);
+        await tx.execute(sql`update explore_runs set candidates = ${counts!.candidates}, items = ${counts!.items}, took_ms = ${tookMs} where generation = ${generation}`);
+        // The newest `kept` rankings stay, this one among them; the cascade takes the items of the others.
+        await tx.execute(sql`delete from explore_runs where generation < (select min(generation) from (select generation from explore_runs order by generation desc limit ${formula.kept}) g)`);
+        return { skipped: false, generation, candidates: counts!.candidates, items: counts!.items, tookMs };
+      });
     },
 
     // ------------------------------------------------------------ profiles
