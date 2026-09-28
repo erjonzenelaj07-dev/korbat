@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { Link, router, useLocalSearchParams } from "expo-router";
+import { Link, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { PostId, type PostView, type ThreadResponse, type Tombstone } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { ComposeSheet } from "@/components/social/ComposeSheet";
@@ -27,26 +27,31 @@ function AncestorRow({ item }: { item: PostView | Tombstone }) {
 /**
  * The author's line under their own post (2c design, section 11): whether it is in Explore and, if not, which rule keeps
  * it out, in the formula's words and without any count, with the way to the rules and to the switch. Until the answer
- * comes, and if it fails, there is no line: the post is the screen, and the line only explains.
+ * comes, and if it fails, there is no line: the post is the screen, and the line only explains. It is asked again every
+ * time the screen gains focus: the web keeps this screen mounted under the ones it links to, and Back shows it again as
+ * it was, so after the switch is turned through the line's own link the line would otherwise still give the old reason.
  */
 function ExploreStatusLine({ id }: { id: string }) {
-  const [text, setText] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setText(null);
-    social
-      .exploreStatus(id)
-      .then((answer) => {
-        if (!cancelled) setText(exploreStatusText(answer.status));
-      })
-      .catch(() => {
-        if (!cancelled) setText(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+  // The line with the post it was read for: the same post's line stays while it is asked again, and another post's never shows.
+  const [line, setLine] = useState<{ id: string; text: string | null } | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      social
+        .exploreStatus(id)
+        .then((answer) => {
+          if (!cancelled) setLine({ id, text: exploreStatusText(answer.status) });
+        })
+        .catch(() => {
+          if (!cancelled) setLine(null);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [id]),
+  );
 
+  const text = line?.id === id ? line.text : null;
   if (!text) return null;
   return (
     <View className="px-4 pb-2">
@@ -99,6 +104,32 @@ export default function Thread() {
       cancelled = true;
     };
   }, [id, version]);
+
+  // The screen stays mounted under the ones it links to, and Back shows it again as it was: on every focus after the
+  // first, the post is read again into the thread on screen, without clearing it, so its card (the In Explore chip
+  // included) follows a change made there. An id's first focus comes with the read above.
+  const focusedFor = useRef<string | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      if (focusedFor.current !== id) {
+        focusedFor.current = id;
+        return undefined;
+      }
+      // An address that is not a post has its error on screen already, and no request may be built from it.
+      if (!PostId.safeParse(id).success) return undefined;
+      let cancelled = false;
+      social
+        .getPost(id)
+        .then((post) => {
+          if (!cancelled) setThread((current) => (current && current.post.id === post.id ? { ...current, post } : current));
+        })
+        // What is on screen stays: the next focus asks again.
+        .catch(() => undefined);
+      return () => {
+        cancelled = true;
+      };
+    }, [id]),
+  );
 
   const fetchReplies = useCallback((cursor?: string) => social.thread(id, cursor).then((t) => t.replies), [id]);
 

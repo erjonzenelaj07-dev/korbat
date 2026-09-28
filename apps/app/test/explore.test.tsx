@@ -5,8 +5,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
 import { EXPLORE_V1, ExploreStatusKind, type ExploreFormula, type ExplorePage, type MeResponse, type PostView, type TimelineItem } from "@korbat/contracts";
 import ExploreAbout, { ExploreRules } from "../src/app/explore/about";
-import Home, { homeTab, homeTabs } from "../src/app/index";
-import { ExploreSwitch } from "../src/app/settings/privacy";
+import Home, { homeListKey, homeTab, homeTabs } from "../src/app/index";
+import { ExploreSwitch, useExploreSwitch } from "../src/app/settings/privacy";
 import { PopularPosts } from "../src/components/PopularNow";
 import { ExploreEmpty, ExploreFooter, ExploreHeader } from "../src/components/social/ExploreList";
 import { PostCard } from "../src/components/social/PostCard";
@@ -15,21 +15,24 @@ import {
   appendUnseen,
   EXPLORE_REFRESHED_NOTICE,
   exploreEmptyText,
+  exploreReader,
   exploreRules,
   exploreStatusText,
   exploreSwitchText,
   rankingAge,
   readPages,
   STALE_AFTER_MS,
+  type RankingRead,
 } from "../src/lib/explore";
+import type { ExploreAnswer } from "../src/lib/social";
 import { TERMS_SECTIONS, TERMS_VERSION } from "../src/lib/terms";
 
 /**
  * Explore in the web app (2c design, section 11): the tabs, the list, the formula page, the switch, the status line, the
- * chip, the context column and the terms. The helpers that decide (the tab an address names, the ranking's age, what a
- * page of a new ranking adds, every sentence and its numbers) are called; the screens and components are server-rendered
- * as lifecycle.test.tsx renders its pages; what a static render cannot show (requests, focus, the order of a save) is read
- * from the source, as a11y.test.tsx does.
+ * chip, the context column and the terms. The helpers that decide (the tab an address names, the lists' keys, the
+ * ranking's age, what a page of a new ranking adds, the list's reads, every sentence and its numbers) are called, the
+ * reads with fake answers; the screens and components are server-rendered as lifecycle.test.tsx renders its pages; what a
+ * static render cannot show (requests, focus, the order of a save) is read from the source, as a11y.test.tsx does.
  */
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 
@@ -132,6 +135,17 @@ function post(n: number, extra: Partial<PostView> = {}): PostView {
 const item = (n: number): ExplorePage["items"][number] => ({ kind: "post", post: post(n) });
 const explorePage = (posts: number[], nextCursor: string | null): ExplorePage => ({ items: posts.map(item), nextCursor, computedAt: AT, signInForMore: false });
 const ids = (items: TimelineItem[]): string[] => items.map((entry) => entry.post.id);
+/** The Date header of an answer carrying the ranking of AT: two and a half minutes after it, by the server's clock. */
+const DATE = new Date(Date.parse(AT) + 150_000).toUTCString();
+/** When that answer arrived, by the device's clock. */
+const RECEIVED = Date.parse(AT) + 151_000;
+/** A page of Explore as the app's client answers it: with the answer's Date header and the time it arrived. */
+const answer = (posts: number[], nextCursor: string | null, extra: Partial<ExploreAnswer> = {}): ExploreAnswer => ({
+  ...explorePage(posts, nextCursor),
+  date: DATE,
+  receivedAt: RECEIVED,
+  ...extra,
+});
 
 const ME: MeResponse = {
   user: { id: AUTHOR, email: "ada@example.org", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 1 },
@@ -192,11 +206,29 @@ describe("Home's tabs and their addresses", () => {
       { label: "Latest", selected: false },
       { label: "Explore", selected: true },
     ]);
-    expect(explore).toContain("You are reading recent posts that other accounts like and repost. Sign in to see more of Explore, follow people and post.");
-    expect(explore).not.toContain("You are reading the latest public posts.");
+    expect(explore).toContain("Explore lists recent posts that other accounts like and repost. Sign in to follow people and post.");
+    // True whatever the list holds: it neither promises more of Explore, which may not exist, nor says posts are being read
+    // over a list that may be empty. Only the list's own footer, shown when more posts exist, offers more of it.
+    expect(explore).not.toContain("see more of Explore");
+    expect(explore).not.toContain("You are reading");
     route.params = { tab: "following" };
     expect(tabsOf(html(<Home />)).filter((tab) => tab.selected).map((tab) => tab.label)).toEqual(["Latest"]);
     route.params = {};
+  });
+
+  test("each list is keyed by its tab, the posts written on Home and its reader, so signing in or out, or another account, reads it again", () => {
+    // A list read signed out has no cursor and a sign-in link and was read without any block or mute, and the web keeps a
+    // Home mounted under the sign-in screen, which Back shows again once signed in.
+    const readers = [homeListKey("explore", 0, null), homeListKey("explore", 0, AUTHOR), homeListKey("explore", 0, OTHER)];
+    expect(new Set(readers).size).toBe(3);
+    expect(homeListKey("latest", 0, null)).not.toBe(homeListKey("latest", 0, AUTHOR));
+    // Another tab and a new post still make a new list.
+    expect(homeListKey("latest", 0, AUTHOR)).not.toBe(homeListKey("explore", 0, AUTHOR));
+    expect(homeListKey("explore", 1, AUTHOR)).not.toBe(homeListKey("explore", 0, AUTHOR));
+    // Both lists take their key from it, with the session's account as the reader.
+    const home = block(read("app", "index.tsx"), "Home");
+    expect(home).toContain('const viewer = state.status === "signed-in" ? state.me.user.id : null;');
+    expect(home.match(/key=\{homeListKey\(current, version, viewer\)\}/g)).toHaveLength(2);
   });
 
   test("a tab is chosen through the address, every link to a tab names one Home has, and Following's empty text points to Latest and Explore", () => {
@@ -212,38 +244,86 @@ describe("Home's tabs and their addresses", () => {
 });
 
 describe("the Explore list", () => {
-  test("its header says how long ago the ranking was computed, or since when it has not been, and links to How Explore works", () => {
-    const fresh = html(<ExploreHeader computedAt={new Date(Date.now() - 3 * 60_000 - 5_000).toISOString()} />);
+  test("its header says how long ago the ranking was computed, or since when it had not been when read, offers Refresh once a newer one is due, and links to How Explore works", () => {
+    /** A ranking of the given age, read just now: the answer's Date header and the device's clock agree. */
+    const readNow = (age: number): RankingRead => {
+      const now = Date.now();
+      return { computedAt: new Date(now - age).toISOString(), date: new Date(now).toUTCString(), receivedAt: now };
+    };
+    // Five seconds past the minute: the Date header counts whole seconds.
+    const fresh = html(<ExploreHeader ranking={readNow(3 * 60_000 + 5_000)} onRefresh={() => undefined} />);
     expect(fresh).toContain("Updated 3 minutes ago");
+    expect(buttonTag(fresh, "Refresh")).toBe("");
     expect(linkTexts(fresh, "/explore/about")).toEqual(["How Explore works"]);
-    const stale = html(<ExploreHeader computedAt={new Date(Date.now() - 20 * 60_000).toISOString()} />);
+    const due = html(<ExploreHeader ranking={readNow(6 * 60_000 + 5_000)} onRefresh={() => undefined} />);
+    expect(due).toContain("Updated 6 minutes ago");
+    expect(buttonTag(due, "Refresh")).not.toBe("");
+    const stale = html(<ExploreHeader ranking={readNow(20 * 60_000)} onRefresh={() => undefined} />);
     expect(stale).toContain("Explore has not been updated since ");
     expect(stale).not.toContain("Updated ");
-    // Before the first round there is no ranking and no time to show.
-    const none = html(<ExploreHeader computedAt={null} />);
-    expect(none).not.toMatch(/Updated|updated since/);
+    expect(buttonTag(stale, "Refresh")).not.toBe("");
+    // Before the first round there is no ranking, no time to show and nothing to read again.
+    const none = html(<ExploreHeader ranking={null} onRefresh={() => undefined} />);
+    expect(none).not.toMatch(/Updated|updated since|Refresh/);
     expect(linkTexts(none, "/explore/about")).toEqual(["How Explore works"]);
   });
 
-  test("the ranking's age: in minutes up to 15, then since when Explore has not been updated", () => {
-    const now = Date.parse("2026-09-28T12:00:00.000Z");
-    const ago = (ms: number) => new Date(now - ms).toISOString();
+  test("the ranking's age is its age when read, by the answer's Date header, plus the time on screen; only its age when read makes it stale", () => {
+    const computedAt = "2026-09-28T12:00:00.000Z";
+    const t0 = Date.parse(computedAt);
+    /** The ranking in an answer the server sent `served` ms after computing it, which arrived at the device's `receivedAt`. */
+    const ranking = (served: number, receivedAt: number): RankingRead => ({ computedAt, date: new Date(t0 + served).toUTCString(), receivedAt });
     expect(STALE_AFTER_MS).toBe(15 * 60_000);
-    expect(rankingAge(ago(30_000), now)).toEqual({ stale: false, text: "Updated just now" });
-    expect(rankingAge(ago(60_000), now)).toEqual({ stale: false, text: "Updated 1 minute ago" });
-    expect(rankingAge(ago(5 * 60_000 + 59_000), now)).toEqual({ stale: false, text: "Updated 5 minutes ago" });
-    expect(rankingAge(ago(15 * 60_000), now)).toEqual({ stale: false, text: "Updated 15 minutes ago" });
-    // A clock behind the server's never says the ranking is from the future.
-    expect(rankingAge(new Date(now + 90_000).toISOString(), now)).toEqual({ stale: false, text: "Updated just now" });
-    const late = new Date(now - 15 * 60_000 - 1000);
-    const stale = rankingAge(late.toISOString(), now);
+    // A device clock that agrees with the server's.
+    const right = t0 + 190_000;
+    expect(rankingAge(ranking(30_000, t0 + 30_000), t0 + 30_000)).toMatchObject({ stale: false, text: "Updated just now" });
+    expect(rankingAge(ranking(60_000, t0 + 60_000), t0 + 60_000)).toMatchObject({ stale: false, text: "Updated 1 minute ago" });
+    expect(rankingAge(ranking(190_000, right), right)).toMatchObject({ stale: false, text: "Updated 3 minutes ago" });
+    // A device clock 20 minutes fast, then one 20 minutes slow: the age at the read is the server's and the time on screen
+    // the device's alone, so neither error counts, and neither warns nor calls the ranking new.
+    const fast = right + 20 * 60_000;
+    expect(rankingAge(ranking(190_000, fast), fast)).toMatchObject({ stale: false, text: "Updated 3 minutes ago" });
+    expect(rankingAge(ranking(190_000, fast), fast + 60_000)).toMatchObject({ stale: false, text: "Updated 4 minutes ago" });
+    const slow = right - 20 * 60_000;
+    expect(rankingAge(ranking(190_000, slow), slow)).toMatchObject({ stale: false, text: "Updated 3 minutes ago" });
+    // A page left open counts on, and never turns into the warning: the job has written newer rankings meanwhile.
+    expect(rankingAge(ranking(190_000, right), right + 20 * 60_000)).toMatchObject({ stale: false, text: "Updated 23 minutes ago" });
+    // Over 15 minutes old when the server answered: by then several rounds have failed or been skipped.
+    expect(rankingAge(ranking(15 * 60_000, right), right)).toMatchObject({ stale: false, text: "Updated 15 minutes ago" });
+    const stale = rankingAge(ranking(15 * 60_000 + 1000, fast), fast);
     expect(stale.stale).toBe(true);
     expect(stale.text).toMatch(/^Explore has not been updated since .+\.$/);
-    expect(stale.text).toContain(late.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    expect(stale.text).toContain(new Date(t0).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    // Without a Date header the device's clock is all there is.
+    expect(rankingAge({ computedAt, date: null, receivedAt: t0 + 60_000 }, t0 + 60_000)).toMatchObject({ stale: false, text: "Updated 1 minute ago" });
+    expect(rankingAge({ computedAt, date: null, receivedAt: t0 + 20 * 60_000 }, t0 + 20 * 60_000)).toMatchObject({ stale: true });
+    // The header counts whole seconds, so a ranking of the same second is not in the future; and a minute clock that last
+    // ticked before the answer arrived adds no time on screen.
+    expect(rankingAge({ computedAt: "2026-09-28T12:00:00.800Z", date: new Date(t0).toUTCString(), receivedAt: right }, right - 30_000)).toMatchObject({
+      stale: false,
+      text: "Updated just now",
+    });
     // Days later the date is named too, so the time cannot be read as today's.
-    const old = new Date(now - 3 * 24 * 3600_000);
-    expect(rankingAge(old.toISOString(), now)).toMatchObject({ stale: true });
-    expect(rankingAge(old.toISOString(), now).text).toContain(old.toLocaleDateString());
+    const old = new Date(t0 - 3 * 24 * 3600_000);
+    const days = rankingAge({ computedAt: old.toISOString(), date: new Date(t0).toUTCString(), receivedAt: t0 }, t0);
+    expect(days.stale).toBe(true);
+    expect(days.text).toContain(old.toLocaleDateString());
+  });
+
+  test("Refresh is offered once the ranking on screen is as old as EXPLORE_V1's refresh interval, when a newer one should exist", () => {
+    const computedAt = "2026-09-28T12:00:00.000Z";
+    const t0 = Date.parse(computedAt);
+    // Read a minute after it was computed, then left on screen.
+    const read: RankingRead = { computedAt, date: new Date(t0 + 60_000).toUTCString(), receivedAt: t0 + 60_000 };
+    expect(EXPLORE_V1.refreshMinutes).toBe(5);
+    expect(rankingAge(read, read.receivedAt + 4 * 60_000 - 1000).offerRefresh).toBe(false);
+    expect(rankingAge(read, read.receivedAt + 4 * 60_000).offerRefresh).toBe(true);
+    // A ranking that was stale when read is offered at once.
+    expect(rankingAge({ ...read, date: new Date(t0 + 16 * 60_000).toUTCString() }, read.receivedAt)).toMatchObject({ stale: true, offerRefresh: true });
+    // The interval is the formula's.
+    const slower: ExploreFormula = { ...EXPLORE_V1, refreshMinutes: 10 };
+    expect(rankingAge(read, read.receivedAt + 9 * 60_000 - 1000, slower).offerRefresh).toBe(false);
+    expect(rankingAge(read, read.receivedAt + 9 * 60_000, slower).offerRefresh).toBe(true);
   });
 
   test("a page adds only the posts not on screen; another page is read only while one adds nothing and more follow", () => {
@@ -328,16 +408,137 @@ describe("the Explore list", () => {
     expect(linkTexts(signedOut, "/signin")).toEqual(["Sign in to see more of Explore"]);
   });
 
-  test("the list keeps one request in flight, keeps the posts on screen through a refresh, says so and keeps the focus at its footer", () => {
-    const list = read("components", "social", "ExploreList.tsx");
-    expect(list).toContain("if (inFlight.current) return;");
-    expect(list).toContain("await readPages(social.explore, after, after === undefined ? new Set<string>() : shown.current);");
-    expect(list).toContain("setItems((current) => (after === undefined ? result.added : [...current, ...result.added]));");
-    expect(list).toContain("setNotice(EXPLORE_REFRESHED_NOTICE);");
-    expect(list).toContain("if (refreshes > 0 && cursor === null) (footer.current as unknown as { focus?: () => void } | null)?.focus?.();");
-    expect(list).toContain("statusRef={footer}");
-    // The empty state is an element, with its own links, not a line of text.
-    expect(list).toContain("<ExploreEmpty onShowLatest={onShowLatest} />");
+  /** A fake Explore answering its requests in order from `script`, each a page or a failure, and recording each cursor. */
+  function scripted(script: (ExploreAnswer | Error)[]) {
+    const calls: (string | undefined)[] = [];
+    const fetchPage = async (cursor?: string): Promise<ExploreAnswer> => {
+      calls.push(cursor);
+      const next = script.shift();
+      if (!next) throw new Error(`no answer left for ${cursor ?? "first"}`);
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    return { fetchPage, calls };
+  }
+
+  test("the list's reader lets one read run at a time: a load meanwhile fetches nothing and answers null, and each read answers what the list shows", async () => {
+    const calls: (string | undefined)[] = [];
+    const held: ((page: ExploreAnswer) => void)[] = [];
+    const reader = exploreReader((cursor) => {
+      calls.push(cursor);
+      return new Promise<ExploreAnswer>((resolve) => held.push(resolve));
+    });
+    const first = reader.load();
+    // Pull to refresh, Refresh or Load more while the first read runs: nothing is fetched and nothing changes on screen.
+    expect(await reader.load()).toBeNull();
+    expect(await reader.load("c0")).toBeNull();
+    expect(calls).toEqual([undefined]);
+    held[0]!(answer([1, 2], "c1"));
+    const shown = await first;
+    expect(ids(shown!.items)).toEqual([id(1), id(2)]);
+    expect(shown).toMatchObject({ cursor: "c1", signInForMore: false, refreshed: false });
+    // The ranking's time with the Date header and the arrival of the answer that carried it, which the header ages it by.
+    expect(shown!.ranking).toEqual({ computedAt: AT, date: DATE, receivedAt: RECEIVED });
+    // Once it has answered the next read runs, and a double press of Load more appends its page once.
+    const more = reader.load("c1");
+    expect(await reader.load("c1")).toBeNull();
+    expect(calls).toEqual([undefined, "c1"]);
+    held[1]!(answer([3], null));
+    expect(await more).toMatchObject({ cursor: null, refreshed: false });
+    expect(ids((await more)!.items)).toEqual([id(1), id(2), id(3)]);
+  });
+
+  test("after explore_refreshed the reader appends from the current ranking only the posts not already on screen, and goes on from there", async () => {
+    const fake = scripted([answer([1, 2], "c1"), refreshed(), answer([2, 1, 5], "n1"), answer([5, 6], null)]);
+    const reader = exploreReader(fake.fetchPage);
+    await reader.load();
+    const after = await reader.load("c1");
+    expect(fake.calls).toEqual([undefined, "c1", undefined]);
+    // The posts read stay where they are, once each; the new ranking adds what was not on screen, and the list says so.
+    expect(ids(after!.items)).toEqual([id(1), id(2), id(5)]);
+    expect(after).toMatchObject({ cursor: "n1", refreshed: true });
+    // What it added is on screen now as well: a page holding it again adds only the rest.
+    const next = await reader.load("n1");
+    expect(ids(next!.items)).toEqual([id(1), id(2), id(5), id(6)]);
+    expect(next).toMatchObject({ cursor: null, refreshed: false });
+  });
+
+  test("a failed read throws, leaves what the list shows as it was and lets the next load run", async () => {
+    const offline = () => new ApiError(0, "network", "Cannot reach korbat. Check your connection.");
+    const fake = scripted([offline(), answer([1, 2], "c1"), offline(), answer([3], null)]);
+    const reader = exploreReader(fake.fetchPage);
+    await expect(reader.load()).rejects.toMatchObject({ code: "network" });
+    expect(ids((await reader.load())!.items)).toEqual([id(1), id(2)]);
+    await expect(reader.load("c1")).rejects.toMatchObject({ code: "network" });
+    // Load more again: its page comes below the posts that stayed.
+    expect(ids((await reader.load("c1"))!.items)).toEqual([id(1), id(2), id(3)]);
+    expect(fake.calls).toEqual([undefined, undefined, "c1", "c1"]);
+  });
+
+  test("a load without a cursor starts over: the first page in place of everything on screen, from which Load more goes on", async () => {
+    const later = "2026-09-28T12:10:00.000Z";
+    const fake = scripted([answer([1, 2], "c1"), answer([3, 4], "c2"), answer([5, 1], "d1", { computedAt: later }), answer([2, 3], null)]);
+    const reader = exploreReader(fake.fetchPage);
+    await reader.load();
+    expect(ids((await reader.load("c1"))!.items)).toEqual([id(1), id(2), id(3), id(4)]);
+    const again = await reader.load();
+    expect(ids(again!.items)).toEqual([id(5), id(1)]);
+    expect(again).toMatchObject({ cursor: "d1", refreshed: false });
+    expect(again!.ranking?.computedAt).toBe(later);
+    // The posts shown before it are no longer on screen, so a page holding them adds them like any other.
+    expect(ids((await reader.load("d1"))!.items)).toEqual([id(5), id(1), id(2), id(3)]);
+  });
+
+  test("a post deleted from the list leaves the reader's list too, even while a read is in flight", async () => {
+    let release: ((page: ExploreAnswer) => void) | undefined;
+    const reader = exploreReader((cursor) => (cursor === undefined ? Promise.resolve(answer([1, 2], "c1")) : new Promise<ExploreAnswer>((resolve) => (release = resolve))));
+    await reader.load();
+    const more = reader.load("c1");
+    expect(ids(reader.remove(id(2)).items)).toEqual([id(1)]);
+    release!(answer([3], null));
+    expect(ids((await more)!.items)).toEqual([id(1), id(3)]);
+  });
+
+  test("the sign-in flag comes from the last page read, and before the first round there is no ranking to age", async () => {
+    const fake = scripted([answer([], null, { computedAt: null }), answer([1], null, { signInForMore: true })]);
+    const reader = exploreReader(fake.fetchPage);
+    expect(await reader.load()).toMatchObject({ items: [], cursor: null, ranking: null, signInForMore: false });
+    expect(await reader.load()).toMatchObject({ cursor: null, ranking: { computedAt: AT }, signInForMore: true });
+  });
+
+  test("the list shows what one reader of its own answers, reads the first page again from pull to refresh and Refresh, announces a refresh and keeps the focus", () => {
+    const list = block(read("components", "social", "ExploreList.tsx"), "ExploreList");
+    const at = (code: string): number => {
+      const index = list.indexOf(code);
+      expect(index, code).toBeGreaterThan(0);
+      return index;
+    };
+    // Made once with the list, so its state lives and ends with it.
+    expect(list).toContain("const [reader] = useState(() => exploreReader(social.explore));");
+    // An answer is what the list shows; null, while another read runs, changes nothing.
+    expect(at("const answer = await reader.load(after);")).toBeLessThan(at("if (!answer) return;"));
+    expect(at("if (!answer) return;")).toBeLessThan(at("setShown(answer);"));
+    expect(at("setShown(answer);")).toBeLessThan(at("if (answer.refreshed) {"));
+    expect(at("if (answer.refreshed) {")).toBeLessThan(at("setNotice(EXPLORE_REFRESHED_NOTICE);"));
+    expect(list).toContain("const remove = (id: string) => setShown(reader.remove(id));");
+    // Its posts, Load more's cursor, the ranking's time and the sign-in link all come from the answer.
+    for (const wire of [
+      "data={shown.items}",
+      "<ExploreHeader ranking={shown.ranking} onRefresh={() => refresh(true)} lineRef={line} />",
+      "onRefresh={() => refresh(false)}",
+      "cursor={shown.cursor}",
+      "signInForMore={shown.signInForMore}",
+      "if (shown.cursor) void load(shown.cursor);",
+      "statusRef={footer}",
+      // The empty state is an element, with its own links, not a line of text.
+      "<ExploreEmpty onShowLatest={onShowLatest} />",
+    ]) {
+      expect(list, wire).toContain(wire);
+    }
+    // After a refresh the focus stays at the footer; after the header's Refresh it goes to the line saying how old the
+    // ranking now is, since the button leaves the tree once the ranking is fresh.
+    expect(list).toContain("if (refreshes > 0 && shown.cursor === null) (footer.current as unknown as { focus?: () => void } | null)?.focus?.();");
+    expect(list).toContain("if (lineFocus > 0) (line.current as unknown as { focus?: () => void } | null)?.focus?.();");
   });
 
   test("the empty state is worded from EXPLORE_V1, links to How Explore works and offers Show Latest", () => {
@@ -439,18 +640,32 @@ describe("How Explore works", () => {
 
 describe("Settings > Privacy: Show my posts in Explore", () => {
   const switchTag = (markup: string): string => /<input[^>]*role="switch"[^>]*>/.exec(markup)?.[0] ?? "";
+  /** The switch as Privacy shows it: its state from the hook, which reads the session. */
+  function SessionSwitch() {
+    return <ExploreSwitch {...useExploreSwitch()} />;
+  }
 
   test("is a switch named Show my posts in Explore, whose state is /api/me's", () => {
     session.state = signedIn(true);
-    const on = switchTag(html(<ExploreSwitch />));
+    const on = switchTag(html(<SessionSwitch />));
     expect(on).toContain('type="checkbox"');
     expect(on).toContain('aria-label="Show my posts in Explore"');
     expect(on).toContain('checked=""');
     expect(on).not.toContain("disabled");
     session.state = signedIn(false);
-    const off = switchTag(html(<ExploreSwitch />));
+    const off = switchTag(html(<SessionSwitch />));
     expect(off).toContain('aria-label="Show my posts in Explore"');
     expect(off).not.toContain("checked");
+  });
+
+  test("shows what it is given: the value being saved, disabled while the save runs, and a failed save's error", () => {
+    const saving = switchTag(html(<ExploreSwitch on={false} busy error={null} change={async () => undefined} />));
+    expect(saving).not.toContain("checked");
+    expect(saving).toContain('disabled=""');
+    const failed = html(<ExploreSwitch on busy={false} error="Cannot reach korbat. Check your connection." change={async () => undefined} />);
+    expect(switchTag(failed)).toContain('checked=""');
+    expect(switchTag(failed)).not.toContain("disabled");
+    expect(textOf(failed)).toContain("Cannot reach korbat. Check your connection.");
   });
 
   test("its one sentence says turning it off takes effect at once and turning it back on at the next refresh", () => {
@@ -459,17 +674,27 @@ describe("Settings > Privacy: Show my posts in Explore", () => {
     );
     expect(exploreSwitchText({ ...EXPLORE_V1, refreshMinutes: 10 })).toContain("at the next refresh, which comes every 10 minutes.");
     session.state = signedIn(true);
-    const out = html(<ExploreSwitch />);
+    const out = html(<SessionSwitch />);
     expect(out).toContain(exploreSwitchText());
     expect(linkTexts(out, "/explore/about")).toEqual(["How Explore works"]);
+  });
+
+  test("its state and its save live in Privacy, above the list that the Blocked and Muted tabs remount, so a tab change during a save loses neither", () => {
+    const privacy = read("app", "settings", "privacy.tsx");
+    const screen = block(privacy, "Privacy");
+    expect(screen).toContain("const explore = useExploreSwitch();");
+    expect(screen).toContain("<ExploreSwitch {...explore} />");
+    // The list stays keyed by the tab, so the old tab's rows never show with the new tab's Unblock or Unmute.
+    expect(screen).toContain("key={tab}");
+    // The switch in the list's header only shows what it is given: it has no state a remount could reset.
+    expect(block(privacy, "ExploreSwitch")).not.toMatch(/useState|useEffect|useSession/);
   });
 
   test("saves with POST or DELETE /api/me/explore while disabled, puts the switch back with the error on failure, and then refreshes the session", () => {
     expect(read("lib", "social.ts")).toContain('setShowInExplore: (on: boolean) => api("/api/me/explore", { method: on ? "POST" : "DELETE", schema: ExploreSettingResponse }),');
     const privacy = read("app", "settings", "privacy.tsx");
-    expect(privacy).toContain("<ExploreSwitch />");
     expect(privacy).toContain('<Switch accessibilityLabel="Show my posts in Explore" value={on} disabled={busy} onValueChange={(next) => void change(next)}');
-    const change = block(privacy, "ExploreSwitch");
+    const change = block(privacy, "useExploreSwitch");
     const at = (code: string): number => {
       const index = change.indexOf(code);
       expect(index, code).toBeGreaterThan(0);
@@ -524,6 +749,32 @@ describe("the author's status line", () => {
     expect(line).toContain('<Link href="/explore/about" asChild>');
     expect(line).toContain('<Link href="/settings/privacy" asChild>');
     expect(read("lib", "social.ts")).toContain("exploreStatus: (id: string) => api(`${postPath(id)}/explore`, { schema: ExploreStatus }),");
+  });
+
+  test("the line and the post are read again whenever the screen gains focus, so both follow a change of the switch made through the line's own link", () => {
+    // The web keeps the post's screen mounted under Settings > Privacy, and Back shows that same screen again.
+    const thread = read("app", "post", "[id].tsx");
+    expect(thread).toContain('import { Link, router, useFocusEffect, useLocalSearchParams } from "expo-router";');
+    // The line asks on every focus, as the sign-in screen's autofill starts on every focus, not once per post.
+    const line = block(thread, "ExploreStatusLine");
+    expect(line).toMatch(/useFocusEffect\(\s+useCallback\(\(\) => \{[\s\S]*?\.exploreStatus\(id\)[\s\S]*?\}, \[id\]\),\s+\);/);
+    expect(line).not.toContain("useEffect(");
+    // Another post's line never shows under this one while this one's is read.
+    expect(line).toContain("const text = line?.id === id ? line.text : null;");
+    // The screen reads its post again on every focus after the first, into the thread on screen and without clearing it,
+    // so the card's In Explore chip follows; the first focus is the mount, whose read is the thread's own.
+    const screen = block(thread, "Thread");
+    const focus = screen.slice(screen.indexOf("useFocusEffect("), screen.indexOf("}, [id]),", screen.indexOf("useFocusEffect(")));
+    const at = (code: string): number => {
+      const index = focus.indexOf(code);
+      expect(index, code).toBeGreaterThan(0);
+      return index;
+    };
+    expect(at("if (focusedFor.current !== id) {")).toBeLessThan(at("focusedFor.current = id;"));
+    expect(at("focusedFor.current = id;")).toBeLessThan(at(".getPost(id)"));
+    expect(at(".getPost(id)")).toBeLessThan(at("setThread((current) => (current && current.post.id === post.id ? { ...current, post } : current));"));
+    expect(focus).not.toContain("setThread(null)");
+    expect(focus).not.toContain("setError(");
   });
 });
 

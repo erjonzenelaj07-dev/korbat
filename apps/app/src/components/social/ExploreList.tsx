@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
-import { EXPLORE_V1, type ExploreFormula, type TimelineItem } from "@korbat/contracts";
+import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
 import { errorMessage } from "@/lib/api";
-import { EXPLORE_REFRESHED_NOTICE, exploreEmptyText, rankingAge, readPages } from "@/lib/explore";
+import { EXPLORE_REFRESHED_NOTICE, exploreEmptyText, exploreReader, NOTHING_SHOWN, rankingAge, type ExploreShown, type RankingRead } from "@/lib/explore";
 import { social } from "@/lib/social";
 import { PostCard } from "./PostCard";
 
@@ -27,15 +27,28 @@ function AboutLink() {
   );
 }
 
-/** Under the tabs: how long ago the ranking was computed, or since when it has not been, and the link to its rules. */
-export function ExploreHeader({ computedAt }: { computedAt: string | null }) {
+/**
+ * Under the tabs: how long ago the ranking on screen was computed, or since when it had not been when it was read; once it
+ * is as old as the refresh interval, Refresh, which reads the first page again (pull to refresh does so on a phone, but
+ * nothing does on the web); and the link to its rules. The line can take the focus, which the list gives it after Refresh.
+ */
+export function ExploreHeader({ ranking, onRefresh, lineRef }: { ranking: RankingRead | null; onRefresh: () => void; lineRef?: Ref<View> }) {
   const now = useMinuteClock();
-  // Before the first round there is no ranking, and no time to show.
-  const age = computedAt ? rankingAge(computedAt, now) : null;
+  // Before the first round there is no ranking, no time to show and nothing to read again.
+  const age = ranking ? rankingAge(ranking, now) : null;
   return (
     <View className="flex-row flex-wrap items-center justify-between gap-x-4 border-b border-zinc-800 px-4 py-2">
-      {age ? <Text className={`text-sm ${age.stale ? "text-amber-300" : "text-zinc-400"}`}>{age.text}</Text> : <View />}
-      <AboutLink />
+      <View ref={lineRef} tabIndex={-1}>
+        {age ? <Text className={`text-sm ${age.stale ? "text-amber-300" : "text-zinc-400"}`}>{age.text}</Text> : null}
+      </View>
+      <View className="flex-row items-center gap-x-4">
+        {age?.offerRefresh ? (
+          <Pressable accessibilityRole="button" onPress={onRefresh} className="rounded-lg border border-zinc-700 px-3 py-1">
+            <Text className="text-sm text-zinc-200">Refresh</Text>
+          </Pressable>
+        ) : null}
+        <AboutLink />
+      </View>
     </View>
   );
 }
@@ -100,83 +113,80 @@ export function ExploreFooter({
 }
 
 /**
- * Explore under Home's tabs (2c design, section 11), on PagedList's pattern: one read in flight at a time, so a double
- * press on Load more cannot append a page twice and a pull to refresh cannot land between the pages of a read. A cursor
- * names the ranking it came from; when a refresh has pruned that ranking, readPages reads the current one from its first
- * page and adds only the posts not on screen, so the posts already read stay where they are, the focus stays at the
- * footer and the status line says what happened. Home remounts the list for another tab or a new post. The answers live
- * in this component's state alone: nothing keeps them once it unmounts.
+ * Explore under Home's tabs (2c design, section 11), on PagedList's pattern. Its reads go through one exploreReader made
+ * with the list, which lets one read run at a time and answers what the list shows; the component only puts that on
+ * screen. A cursor names the ranking it came from; when a refresh has pruned that ranking, the reader reads the current
+ * one from its first page and adds only the posts not on screen, so the posts already read stay where they are, the focus
+ * stays at the footer and the status line says what happened. Home remounts the list for another tab, a new post or
+ * another reader. The answers live in this component and its reader alone: nothing keeps them once it unmounts.
  */
 export function ExploreList({ onShowLatest }: { onShowLatest: () => void }) {
-  const [items, setItems] = useState<TimelineItem[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [computedAt, setComputedAt] = useState<string | null>(null);
-  const [signInForMore, setSignInForMore] = useState(false);
+  const [reader] = useState(() => exploreReader(social.explore));
+  const [shown, setShown] = useState<ExploreShown>(NOTHING_SHOWN);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [refreshes, setRefreshes] = useState(0);
-  const inFlight = useRef(false);
-  // The ids of the posts on screen, which a page of a new ranking must not add again.
-  const shown = useRef(new Set<string>());
+  const [lineFocus, setLineFocus] = useState(0);
   const footer = useRef<View>(null);
+  const line = useRef<View>(null);
 
   const load = useCallback(
-    async (after?: string) => {
-      if (inFlight.current) return;
-      inFlight.current = true;
+    async (after?: string, focusLine = false) => {
       setNotice(null);
       try {
-        // Without a cursor the list starts over (first load, pull to refresh), so nothing on screen is kept.
-        const result = await readPages(social.explore, after, after === undefined ? new Set<string>() : shown.current);
-        const added = result.added.map((item) => item.post.id);
-        shown.current = new Set(after === undefined ? added : [...shown.current, ...added]);
-        setItems((current) => (after === undefined ? result.added : [...current, ...result.added]));
-        setCursor(result.nextCursor);
-        if (result.last) {
-          setComputedAt(result.last.computedAt);
-          setSignInForMore(result.last.signInForMore);
-        }
+        const answer = await reader.load(after);
+        // Another read is in flight: its answer, still to come, is what the list shows, and it ends the refresh.
+        if (!answer) return;
+        setShown(answer);
         setError(null);
-        if (result.refreshed) {
+        if (answer.refreshed) {
           setNotice(EXPLORE_REFRESHED_NOTICE);
           setRefreshes((count) => count + 1);
         }
+        if (focusLine) setLineFocus((count) => count + 1);
       } catch (err) {
         setError(errorMessage(err));
-      } finally {
-        inFlight.current = false;
-        setLoading(false);
-        setRefreshing(false);
       }
+      setLoading(false);
+      setRefreshing(false);
     },
-    [],
+    [reader],
   );
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  // Pull to refresh and the header's Refresh read the first page again, in place of the posts on screen.
+  const refresh = (focusLine: boolean) => {
+    setRefreshing(true);
+    void load(undefined, focusLine);
+  };
+
   // After a refresh the focus stays at the footer: Load more keeps it while the new ranking has more, and when the ranking
   // ended, Load more has left the tree with the focus, so the status line takes it.
   useEffect(() => {
-    if (refreshes > 0 && cursor === null) (footer.current as unknown as { focus?: () => void } | null)?.focus?.();
+    if (refreshes > 0 && shown.cursor === null) (footer.current as unknown as { focus?: () => void } | null)?.focus?.();
   }, [refreshes]);
 
-  const remove = (id: string) => setItems((current) => current.filter((item) => item.post.id !== id));
+  // After the header's Refresh the line saying how old the ranking now is takes the focus: the button leaves the tree
+  // once the ranking it read is fresh.
+  useEffect(() => {
+    if (lineFocus > 0) (line.current as unknown as { focus?: () => void } | null)?.focus?.();
+  }, [lineFocus]);
+
+  const remove = (id: string) => setShown(reader.remove(id));
 
   return (
     <FlatList
-      data={items}
+      data={shown.items}
       keyExtractor={(item) => item.post.id}
       renderItem={({ item }) => <PostCard post={item.post} onDeleted={remove} />}
-      ListHeaderComponent={<ExploreHeader computedAt={computedAt} />}
+      ListHeaderComponent={<ExploreHeader ranking={shown.ranking} onRefresh={() => refresh(true)} lineRef={line} />}
       refreshing={refreshing}
-      onRefresh={() => {
-        setRefreshing(true);
-        void load();
-      }}
+      onRefresh={() => refresh(false)}
       ListEmptyComponent={
         loading ? null : error ? (
           <View className="items-center px-4 py-10">
@@ -193,12 +203,12 @@ export function ExploreList({ onShowLatest }: { onShowLatest: () => void }) {
       }
       ListFooterComponent={
         <ExploreFooter
-          cursor={cursor}
-          signInForMore={signInForMore}
+          cursor={shown.cursor}
+          signInForMore={shown.signInForMore}
           notice={notice}
-          error={items.length > 0 ? error : null}
+          error={shown.items.length > 0 ? error : null}
           onLoadMore={() => {
-            if (cursor) void load(cursor);
+            if (shown.cursor) void load(shown.cursor);
           }}
           statusRef={footer}
         />

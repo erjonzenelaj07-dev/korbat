@@ -44,7 +44,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
   /** Sets a moderation state as sub-project 3 will; nothing in 2c writes one. */
   const setState = (postId: string, state: "withheld" | "removed") => db.execute(sql`update posts set state = ${state}::post_state where id = ${postId}::uuid`);
 
-  test("before the first round the page is empty, with no cursor, no time and no sign-in prompt, and the author's status is no_ranking", async () => {
+  test("before the first round the page is empty, with no cursor, no time and no sign-in prompt, a cursor is not valid, and the author's status is no_ranking", async () => {
     const asOf = nextAsOf();
     const [author, reader, ...fans] = await accounts(db, asOf, 5);
     // A post that would rank, so only the missing ranking keeps the page empty.
@@ -53,6 +53,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
     const empty = { items: [], nextCursor: null, computedAt: null, signInForMore: false };
     expect(ExplorePage.parse(await read(null))).toEqual(empty);
     expect(await read(reader!.id)).toEqual(empty);
+    // No ranking has been written, so no cursor this server made can name one: whatever ranking and post a cursor names,
+    // it is not valid (400), never a ranking since pruned (409), which would send the reader to a current one that does not exist.
+    for (const cursor of [{ g: 1, id: randomUUID() }, { g: 1, id }, { g: 2_147_483_647, id: randomUUID() }]) {
+      const err = await read(reader!.id, { cursor: encodeExploreCursor(cursor) }).catch((caught: unknown) => caught);
+      expect(err, JSON.stringify(cursor)).toBeInstanceOf(SocialError);
+      expect(err, JSON.stringify(cursor)).toMatchObject({ code: "invalid_request", status: 400 });
+    }
     expect(await status(author!.id, id)).toEqual({ status: "no_ranking", computedAt: null });
   });
 
@@ -75,12 +82,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
     await repo.block(reader!.id, blocked!.id, deps.now());
     await repo.block(blocker!.id, reader!.id, deps.now());
     await repo.mute(reader!.id, muted!.id, deps.now());
+    // A mute whose muter has a post in the ranking: d mutes muted too, which must leave d1 in muted's Explore.
+    await repo.mute(d!.id, muted!.id, deps.now());
     // Two posts are left for the reader, and a page of two holds both: the filters come before the limit.
     const first = await read(reader!.id, { limit: 2 });
     expect(pageIds(first)).toEqual(order.slice(3));
     expect(first.nextCursor).not.toBeNull();
     expect(await read(reader!.id, { limit: 2, cursor: first.nextCursor! })).toEqual({ items: [], nextCursor: null, computedAt: asOf.toISOString(), signInForMore: false });
-    // Only the reader's own relations count: signed out, and for the accounts on the other side, the ranking is whole.
+    // Only the reader's own relations count: signed out, and for the accounts on the other side, the ranking is whole. A
+    // mute is its muter's alone, so the muted account still reads the posts of the accounts that mute it, d1 among them,
+    // and cannot tell from Explore that it was muted.
     expect(pageIds(await read(null))).toEqual(order);
     expect(pageIds(await read(blocked!.id))).toEqual(order);
     expect(pageIds(await read(blocker!.id))).toEqual(order);

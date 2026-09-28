@@ -1,12 +1,13 @@
 import { EXPLORE_V1, type ExploreFormula, type ExplorePage, type ExploreStatusKind, type TimelineItem } from "@korbat/contracts";
 import { ApiError } from "./api";
+import type { ExploreAnswer } from "./social";
 
 /**
  * Explore's texts and the list's decisions (2c design, section 11). Every number in a sentence comes from the formula it
  * is given, EXPLORE_V1 unless a test passes another, so the app says what the refresh does.
  */
 
-/** A ranking older than this is stale: rounds run every 5 minutes, so by then several have failed or been skipped. */
+/** A ranking older than this when it is read is stale: rounds run every 5 minutes, so by then several have failed or been skipped. */
 export const STALE_AFTER_MS = 15 * 60 * 1000;
 
 /** What the list's status line says once the ranking being paged is gone and the posts below it come from the current one. */
@@ -39,16 +40,40 @@ function since(at: Date, now: Date): string {
 }
 
 /**
- * The line under the tabs: how many minutes ago the ranking was computed, or, once that is more than 15 minutes, since
- * when Explore has not been updated, which the header shows as a warning.
+ * The ranking on screen as the list read it: when it was computed, the Date header of the answer that carried it (the
+ * server's clock then, or null when the answer had none) and the device's clock when that answer arrived.
  */
-export function rankingAge(computedAt: string, now: number): { stale: boolean; text: string } {
-  const at = new Date(computedAt);
-  // A device clock behind the server's would put the ranking in the future: it reads as just now.
-  const age = Math.max(0, now - at.getTime());
-  if (age > STALE_AFTER_MS) return { stale: true, text: `Explore has not been updated since ${since(at, new Date(now))}.` };
+export interface RankingRead {
+  computedAt: string;
+  date: string | null;
+  receivedAt: number;
+}
+
+/**
+ * How old the ranking was when it was read: by the answer's Date header, the server's own clock, as the smoke test
+ * measures it, so a device clock that is fast or slow changes nothing; by the device's clock only when the header is
+ * missing. Never below zero: the header counts whole seconds, so a ranking of the same second would seem to be from the future.
+ */
+function ageAtRead(ranking: RankingRead): number {
+  const served = ranking.date === null ? Number.NaN : Date.parse(ranking.date);
+  return Math.max(0, (Number.isNaN(served) ? ranking.receivedAt : served) - Date.parse(ranking.computedAt));
+}
+
+/**
+ * The line under the tabs, and whether to offer Refresh. Whether the ranking is stale is decided by its age when it was
+ * read: past 15 minutes the line says since when Explore has not been updated, which the header shows as a warning. A page
+ * left open never turns stale, since the job has written newer rankings meanwhile; its minutes go on from the age when
+ * read by the time on screen, which the device's clock measures alone. Refresh is offered once the ranking on screen is
+ * as old as the refresh interval, when a newer one should exist.
+ */
+export function rankingAge(ranking: RankingRead, now: number, formula: ExploreFormula = EXPLORE_V1): { stale: boolean; text: string; offerRefresh: boolean } {
+  const atRead = ageAtRead(ranking);
+  // The minute clock may last have ticked before the answer arrived: then there has been no time on screen yet.
+  const age = atRead + Math.max(0, now - ranking.receivedAt);
+  const offerRefresh = age >= formula.refreshMinutes * 60_000;
+  if (atRead > STALE_AFTER_MS) return { stale: true, text: `Explore has not been updated since ${since(new Date(ranking.computedAt), new Date(now))}.`, offerRefresh };
   const minutes = Math.floor(age / 60_000);
-  return { stale: false, text: minutes === 0 ? "Updated just now" : `Updated ${plural(minutes, "minute")} ago` };
+  return { stale: false, text: minutes === 0 ? "Updated just now" : `Updated ${plural(minutes, "minute")} ago`, offerRefresh };
 }
 
 /**
@@ -67,13 +92,13 @@ export function appendUnseen(shown: ReadonlySet<string>, page: Pick<ExplorePage,
   return { added, nextCursor: page.nextCursor, fetchNext: added.length === 0 && page.nextCursor !== null };
 }
 
-export interface PagesRead {
+export interface PagesRead<P extends ExplorePage = ExplorePage> {
   /** The posts to show below those on screen (or in their place, for a read from the first page), in the ranking's order. */
   added: TimelineItem[];
   /** Load more's cursor, null once the ranking has ended. */
   nextCursor: string | null;
   /** The last page read, whose computedAt and signInForMore the list shows; null only when no page came back. */
-  last: ExplorePage | null;
+  last: P | null;
   /** The ranking being paged was gone (explore_refreshed), and what was added comes from the current one. */
   refreshed: boolean;
 }
@@ -82,21 +107,22 @@ export interface PagesRead {
  * One load of the list: pages from `after` on (the first page when it is undefined), as appendUnseen decides. A cursor
  * names the ranking it came from; when that ranking is no longer kept, the API refuses it with explore_refreshed and the
  * read starts again at the current ranking's first page, still skipping every post on screen, as section 11 of the design
- * says. Any other failure is the caller's to show, and one read never goes through more than `maxPages` pages.
+ * says. Any other failure is the caller's to show, and one read never goes through more than `maxPages` pages. The pages
+ * come back as `fetchPage` answers them, so the last one keeps whatever the client read with it.
  */
-export async function readPages(
-  fetchPage: (cursor?: string) => Promise<ExplorePage>,
+export async function readPages<P extends ExplorePage>(
+  fetchPage: (cursor?: string) => Promise<P>,
   after: string | undefined,
   shown: ReadonlySet<string>,
   maxPages: number = MAX_PAGES,
-): Promise<PagesRead> {
+): Promise<PagesRead<P>> {
   const seen = new Set(shown);
   const added: TimelineItem[] = [];
   let cursor = after;
-  let last: ExplorePage | null = null;
+  let last: P | null = null;
   let refreshed = false;
   for (let pages = 0; pages < maxPages; pages++) {
-    let page: ExplorePage;
+    let page: P;
     try {
       page = await fetchPage(cursor);
     } catch (err) {
@@ -117,6 +143,59 @@ export async function readPages(
   }
   // The bound was reached with more to read: Load more carries on from here.
   return { added, nextCursor: cursor ?? null, last, refreshed };
+}
+
+/** What the Explore list shows: its posts in order, Load more's cursor, the ranking on screen and, signed out, whether more exist. */
+export interface ExploreShown {
+  items: TimelineItem[];
+  /** Load more's cursor: null once the ranking has ended, and always for a signed-out reader. */
+  cursor: string | null;
+  /** The ranking on screen as it was read, which the header ages; null before the first round. */
+  ranking: RankingRead | null;
+  /** Signed out, whether posts follow the page shown, which the list's footer then offers after a sign-in. */
+  signInForMore: boolean;
+}
+
+/** A list that has read nothing yet. */
+export const NOTHING_SHOWN: ExploreShown = { items: [], cursor: null, ranking: null, signInForMore: false };
+
+/**
+ * The Explore list's reads (2c design, section 11), made once per list and gone with it: it holds what the list shows and
+ * lets one read run at a time, so a double press on Load more cannot append a page twice and a refresh cannot land between
+ * the pages of a read. `load()` reads from the first page, in place of everything on screen (the first read, pull to
+ * refresh, Refresh); `load(cursor)` reads after that cursor, below the posts on screen, which a page of a new ranking
+ * cannot add again (readPages). Either answers what the list shows then, with whether the ranking being paged was gone,
+ * or null, having fetched nothing, while another read runs; a failed read throws and leaves what the list shows as it was.
+ */
+export function exploreReader(fetchPage: (cursor?: string) => Promise<ExploreAnswer>, maxPages: number = MAX_PAGES) {
+  let shown = NOTHING_SHOWN;
+  let inFlight = false;
+  return {
+    async load(after?: string): Promise<(ExploreShown & { refreshed: boolean }) | null> {
+      if (inFlight) return null;
+      inFlight = true;
+      try {
+        const fromStart = after === undefined;
+        const result = await readPages(fetchPage, after, new Set(fromStart ? [] : shown.items.map((item) => item.post.id)), maxPages);
+        const last = result.last;
+        // From the posts on screen now, not when the read began: one may have been deleted from the list meanwhile.
+        shown = {
+          items: fromStart ? result.added : [...shown.items, ...result.added],
+          cursor: result.nextCursor,
+          ranking: last === null ? shown.ranking : last.computedAt === null ? null : { computedAt: last.computedAt, date: last.date, receivedAt: last.receivedAt },
+          signInForMore: last === null ? shown.signInForMore : last.signInForMore,
+        };
+        return { ...shown, refreshed: result.refreshed };
+      } finally {
+        inFlight = false;
+      }
+    },
+    /** Takes a post its author deleted off the list; a read in flight answers without it too. */
+    remove(id: string): ExploreShown {
+      shown = { ...shown, items: shown.items.filter((item) => item.post.id !== id) };
+      return shown;
+    },
+  };
 }
 
 /** The empty list's sentence (2c design, section 11): when a post appears in Explore, and how often it is refreshed. */

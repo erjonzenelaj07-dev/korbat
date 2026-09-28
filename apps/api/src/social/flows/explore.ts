@@ -18,7 +18,8 @@ export async function explorePage(deps: SocialDeps, viewer: ViewerId, query: Pag
   const read = await deps.repo.explorePage(viewer, cursor, viewer ? limit : limit + 1);
   if (cursor) {
     // In this order: every answer comes from one statement, so a round landing in between cannot change which applies.
-    if (read.current !== null && cursor.g > read.current) throw new SocialError("invalid_request", 400, "That page cursor is not valid.");
+    // Before the first round there is no current generation, and every generation (they start at 1) is one not yet written.
+    if (cursor.g > (read.current ?? 0)) throw new SocialError("invalid_request", 400, "That page cursor is not valid.");
     if (!read.ranking) throw new SocialError("explore_refreshed", 409);
     if (read.after === null) throw new SocialError("invalid_request", 400, "That page cursor is not valid.");
   }

@@ -18,12 +18,22 @@ type Tab = "blocked" | "muted";
  */
 const ACTIVE_THUMB = { activeThumbColor: "#fafafa" } as object;
 
+/** "Show my posts in Explore" as useExploreSwitch holds it and ExploreSwitch shows it. */
+export interface ExploreSwitchState {
+  on: boolean;
+  busy: boolean;
+  error: string | null;
+  change: (next: boolean) => Promise<void>;
+}
+
 /**
- * "Show my posts in Explore" (2c design, section 11), on by default. Its state is /api/me's. A change shows at once while
- * it is saved (POST turns it on, DELETE off, as the app's other switches), the switch is disabled until the save and the
- * session's refresh are done, and a failed save puts it back with the error.
+ * "Show my posts in Explore" (2c design, section 11), on by default: its state and its save. Its state is /api/me's. A
+ * change shows at once while it is saved (POST turns it on, DELETE off, as the app's other switches), the switch is
+ * disabled until the save and the session's refresh are done, and a failed save puts it back with the error. Privacy
+ * calls it, above the list whose header shows the switch: the Blocked and Muted tabs remount that list, and a remount
+ * must not lose a save in progress or its error.
  */
-export function ExploreSwitch() {
+export function useExploreSwitch(): ExploreSwitchState {
   const { state, refresh } = useSession();
   // The settings layout lets in only an account with a profile; the type still allows none.
   const stored = state.status === "signed-in" ? (state.me.profile?.showInExplore ?? true) : true;
@@ -53,6 +63,11 @@ export function ExploreSwitch() {
     }
   }
 
+  return { on, busy, error, change };
+}
+
+/** The switch, its sentence, a failed save's error and the way to the rules, showing what useExploreSwitch holds. */
+export function ExploreSwitch({ on, busy, error, change }: ExploreSwitchState) {
   return (
     <Section title="Explore">
       <View className="mt-3 flex-row items-center justify-between gap-4">
@@ -103,6 +118,8 @@ function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<
 /** Whether your posts show in Explore, then blocked and muted accounts with one-tap undo. This is the only place a block can be lifted. */
 export default function Privacy() {
   const [tab, setTab] = useState<Tab>("blocked");
+  // Here, not in the list's header, which the tab's key remounts: a save in progress and its error outlive a tab change.
+  const explore = useExploreSwitch();
   const fetchBlocks = useCallback((cursor?: string) => social.myBlocks(cursor), []);
   const fetchMutes = useCallback((cursor?: string) => social.myMutes(cursor), []);
 
@@ -118,7 +135,7 @@ export default function Privacy() {
               Privacy
             </Text>
             <SettingsNav current="privacy" />
-            <ExploreSwitch />
+            <ExploreSwitch {...explore} />
             <Text className="mt-6 text-sm leading-5 text-zinc-400">
               A block hides you and the other account from each other while signed in and refuses their interactions. Posts on korbat are public, so anyone who signs out can
               still read them. A mute only hides an account from your timelines, and they are never told.

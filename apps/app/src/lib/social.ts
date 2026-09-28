@@ -18,10 +18,17 @@ import {
   UploadResponse,
 } from "@korbat/contracts";
 import { z } from "zod";
-import { api } from "./api";
+import { api, apiResponse } from "./api";
 
 export type EngagementKind = "like" | "repost" | "bookmark";
 export type Page<T> = { items: T[]; nextCursor: string | null };
+
+/**
+ * A page of Explore as it arrived: with the answer's Date header, the server's clock when it answered (null when the
+ * answer has none), and the device's clock on arrival. The list ages the ranking by the first and counts the time on
+ * screen from the second, so the device's clock is never compared with the server's.
+ */
+export type ExploreAnswer = ExplorePage & { date: string | null; receivedAt: number };
 
 const query = (cursor?: string) => (cursor ? `?cursor=${encodeURIComponent(cursor)}` : "");
 /** Ids come from route params; only a UUID may become part of a path. */
@@ -50,9 +57,15 @@ export const social = {
   latest: (cursor?: string) => api(`/api/timeline/latest${query(cursor)}`, { schema: TimelinePage }),
   /**
    * A page of Explore (2c design, section 8). Its cursor names the ranking it came from, which a refresh can prune
-   * (explore_refreshed); signed out, the first page is all there is, and signInForMore says whether more exist.
+   * (explore_refreshed); signed out, the first page is all there is, and signInForMore says whether more exist. The web
+   * app is served from the API's origin, so the answer's Date header can be read, and it is kept with the page; an API on
+   * another origin would hide it from the browser, and the list then ages the ranking by the device's clock.
    */
-  explore: (cursor?: string) => api(`/api/timeline/explore${query(cursor)}`, { schema: ExplorePage }),
+  explore: async (cursor?: string): Promise<ExploreAnswer> => {
+    const res = await apiResponse(`/api/timeline/explore${query(cursor)}`);
+    const page = ExplorePage.parse(await res.json());
+    return { ...page, date: res.headers.get("date"), receivedAt: Date.now() };
+  },
   /** The first three posts of Explore, for the context column's Popular now. */
   popular: () => api("/api/timeline/explore?limit=3", { schema: ExplorePage }),
 

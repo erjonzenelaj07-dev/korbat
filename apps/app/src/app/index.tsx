@@ -16,10 +16,14 @@ export type Tab = "following" | "latest" | "explore";
 
 const LABELS: Record<Tab, string> = { following: "Following", latest: "Latest", explore: "Explore" };
 
-/** What a signed-out reader is told under the tabs: both lists are public, and an account adds the rest. */
+/**
+ * What a signed-out reader is told under the tabs: both lists are public, and an account adds the rest. Explore's prompt
+ * must be true whatever the list turns out to hold, nothing or all there is, so it promises no more of Explore: the
+ * list's own footer offers that, and only when the page says more posts exist.
+ */
 const SIGNED_OUT_PROMPTS: Record<Exclude<Tab, "following">, string> = {
   latest: "You are reading the latest public posts. Sign in to follow people and post.",
-  explore: "You are reading recent posts that other accounts like and repost. Sign in to see more of Explore, follow people and post.",
+  explore: "Explore lists recent posts that other accounts like and repost. Sign in to follow people and post.",
 };
 
 /** Home's tabs in their order (2c design, section 11): Following first for an account, and Latest first for everyone else, who has no Following. */
@@ -35,6 +39,16 @@ export function homeTab(param: string | string[] | undefined, signedIn: boolean)
   const tabs = homeTabs(signedIn);
   const named = Array.isArray(param) ? param[0] : param;
   return tabs.find((tab) => tab === named) ?? tabs[0]!;
+}
+
+/**
+ * The key of Home's list: another tab, a post written here or another reader (an account's id, or none signed out) mounts
+ * a new list, which reads its first page again. The reader is in it because a list read signed out has no cursor, offers
+ * a sign-in and was read without any block or mute, and the web keeps a Home mounted under the sign-in screen, which Back
+ * shows again once signed in.
+ */
+export function homeListKey(tab: Tab, version: number, viewer: string | null): string {
+  return `${tab}:${version}:${viewer ?? "signed-out"}`;
 }
 
 /**
@@ -101,6 +115,7 @@ export default function Home() {
   if (state.status === "signed-in" && !state.me.user.onboarded) return <Redirect href="/handle" />;
 
   const signedIn = state.status === "signed-in";
+  const viewer = state.status === "signed-in" ? state.me.user.id : null;
   const current = homeTab(param, signedIn);
   // The tab lives in the address, so a reload keeps it and other pages can link to one; setParams changes it in place.
   const select = (tab: Tab) => router.setParams({ tab });
@@ -134,10 +149,10 @@ export default function Home() {
         </View>
       ) : null}
       {current === "explore" ? (
-        <ExploreList key={`${current}:${version}`} onShowLatest={() => select("latest")} />
+        <ExploreList key={homeListKey(current, version, viewer)} onShowLatest={() => select("latest")} />
       ) : (
         <TimelineList
-          key={`${current}:${version}`}
+          key={homeListKey(current, version, viewer)}
           fetchPage={current === "following" ? fetchFollowing : fetchLatest}
           empty={current === "following" ? "Nothing here yet. Follow someone, or switch to Latest or Explore." : "No posts yet."}
         />
