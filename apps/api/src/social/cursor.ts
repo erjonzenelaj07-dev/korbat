@@ -16,19 +16,49 @@ const Cursor = z.strictObject({
 });
 export type Cursor = z.infer<typeof Cursor>;
 
-export function encodeCursor(cursor: Cursor): string {
-  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+/** The largest generation explore_runs can number (an integer column), so a forged one can never overflow the query. */
+export const MAX_GENERATION = 2_147_483_647;
+
+/**
+ * Explore's own cursor (2c design, section 8): the ranking a reader is paging through and the last post they read, never a
+ * position, so it tells nothing about a post's place beyond the order already shown. A ranking cannot be paged by time,
+ * so the timeline cursor cannot carry it, and neither cursor is accepted for the other.
+ */
+const ExploreCursor = z.strictObject({
+  g: z.number().int().min(1).max(MAX_GENERATION),
+  id: z.uuid(),
+});
+export type ExploreCursor = z.infer<typeof ExploreCursor>;
+
+function encode(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
 /** Opaque to clients; anything that is not a cursor this module produced is `invalid_request`. */
-export function decodeCursor(raw: string): Cursor {
+function decode<T>(raw: string, schema: z.ZodType<T>): T {
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
   } catch {
     throw new SocialError("invalid_request", 400, "That page cursor is not valid.");
   }
-  const result = Cursor.safeParse(parsed);
+  const result = schema.safeParse(parsed);
   if (!result.success) throw new SocialError("invalid_request", 400, "That page cursor is not valid.");
   return result.data;
+}
+
+export function encodeCursor(cursor: Cursor): string {
+  return encode(cursor);
+}
+
+export function decodeCursor(raw: string): Cursor {
+  return decode(raw, Cursor);
+}
+
+export function encodeExploreCursor(cursor: ExploreCursor): string {
+  return encode(cursor);
+}
+
+export function decodeExploreCursor(raw: string): ExploreCursor {
+  return decode(raw, ExploreCursor);
 }

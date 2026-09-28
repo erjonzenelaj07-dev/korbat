@@ -305,7 +305,8 @@ function harness() {
     social: {
       purgeProfile: notHere,
       exportProfile: async (_id, pageSize = 1000) => ({
-        profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: new Date(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"] },
+        // The Explore switch is off, not the column's default, so the export is seen to carry what the profile holds.
+        profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: new Date(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false },
         posts: paged("posts", lists.posts, pageSize),
         likes: paged("likes", lists.likes, pageSize),
         reposts: paged("reposts", lists.reposts, pageSize),
@@ -367,7 +368,7 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
         { name: "Laptop", createdAt: iso(T0 - 2 * DAY_MS), lastUsedAt: iso(T0 - DAY_MS), synced: true, createdOn: "Chrome on Windows" },
       ],
     },
-    profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"] },
+    profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false },
     posts: h.lists.posts.map((post) => ({
       id: post.id,
       body: post.body,
@@ -457,7 +458,8 @@ describe("building the export", () => {
       { type: "signin_success", at: iso(T0 - DAY_MS) },
       { type: "signup", at: iso(T0 - 3 * DAY_MS) },
     ]);
-    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"] });
+    // With the author's Explore switch as the profile holds it (off here); the byte-for-byte tests below place it after the handle history.
+    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false });
     expect(json.posts).toHaveLength(2);
     expect(json.posts[0]).toEqual({
       id: h.postId,

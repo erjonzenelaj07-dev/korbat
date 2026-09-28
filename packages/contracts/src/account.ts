@@ -62,6 +62,11 @@ export const ExportFormat = z.object({
     createdAt: at,
     /** Every handle the account ever had, the current one included. */
     handleHistory: z.array(z.string()),
+    /**
+     * "Show my posts in Explore" as it stands (2c design, section 8). Added to korbat-export-1 without a new format name: a
+     * reader that does not know the member loses nothing by skipping it.
+     */
+    showInExplore: z.boolean(),
   }),
   posts: z.array(ExportedPost),
   likes: z.array(PostRef),

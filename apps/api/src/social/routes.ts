@@ -7,6 +7,7 @@ import { validate } from "../lib/validate";
 import { MediaError } from "../media";
 import { SocialError, type SocialDeps, type ViewerId } from "./context";
 import { setEngagement, type EngagementKind } from "./flows/engagement";
+import { explorePage, exploreStatus, setShowInExplore } from "./flows/explore";
 import { blockedList, mutedList, setBlock, setFollow, setMute } from "./flows/graph";
 import { createPost, deletePost, getPost, thread } from "./flows/posts";
 import { changeHandle, editProfile } from "./flows/profile-edit";
@@ -15,6 +16,9 @@ import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profile
 
 const PostParam = z.object({ id: PostId });
 const ProfileParam = z.object({ handle: HandleParam });
+
+/** Signed out, Explore is its first page only (2c design, section 8): a cursor asks for more, which needs an account. */
+const EXPLORE_SIGN_IN = "Sign in to see more of Explore.";
 
 /**
  * Every social endpoint, mounted at `/api`. Handlers only validate, call a flow and shape the
@@ -49,6 +53,8 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
   r.get("/posts/:id/thread", validate("param", PostParam), validate("query", Pagination), async (c) =>
     c.json(await thread(deps, viewer(c), c.req.valid("param").id, c.req.valid("query"))),
   );
+  // Why the author's own post is in Explore or not; anyone else gets not_found from the flow.
+  r.get("/posts/:id/explore", guard, validate("param", PostParam), async (c) => c.json(await exploreStatus(deps, me(c), c.req.valid("param").id)));
 
   for (const kind of ["like", "repost", "bookmark"] as EngagementKind[]) {
     r.post(`/posts/:id/${kind}`, guard, validate("param", PostParam), async (c) => c.json(await setEngagement(deps, me(c), c.req.valid("param").id, kind, true)));
@@ -59,6 +65,12 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
 
   r.get("/timeline/following", guard, validate("query", Pagination), async (c) => c.json(await followingTimeline(deps, me(c), c.req.valid("query"))));
   r.get("/timeline/latest", validate("query", Pagination), async (c) => c.json(await latestTimeline(deps, viewer(c), c.req.valid("query"))));
+  r.get("/timeline/explore", validate("query", Pagination), async (c) => {
+    const query = c.req.valid("query");
+    // Refused here, before the flow reads anything: whatever the cursor holds, a signed-out reader gets the first page only.
+    if (!viewer(c) && query.cursor) return c.json(errorBody("unauthenticated", EXPLORE_SIGN_IN, c.get("requestId")), 401);
+    return c.json(await explorePage(deps, viewer(c), query));
+  });
 
   // ---------------------------------------------------------------- profiles and graph
 
@@ -94,6 +106,9 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
 
   r.patch("/me/profile", guard, validate("json", ProfileEditRequest), async (c) => c.json({ profile: await editProfile(deps, me(c), c.req.valid("json")) }));
   r.post("/me/handle", guard, fresh, validate("json", HandleChangeRequest), async (c) => c.json({ profile: await changeHandle(deps, me(c), c.req.valid("json")) }));
+  // "Show my posts in Explore": on and off, with no body, as the app's other switches.
+  r.post("/me/explore", guard, async (c) => c.json(await setShowInExplore(deps, me(c), true)));
+  r.delete("/me/explore", guard, async (c) => c.json(await setShowInExplore(deps, me(c), false)));
 
   return r;
 }

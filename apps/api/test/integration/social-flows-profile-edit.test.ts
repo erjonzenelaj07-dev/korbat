@@ -60,8 +60,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
     expect(await rejection(profile(h.deps, null, ada.handle))).toBe("not_found");
     expect((await profile(h.deps, bob.id, to)).id).toBe(ada.id);
     expect(h.events).toContainEqual({ userId: ada.id, type: "handle_changed", metadata: { from: ada.handle, to } });
-    // What /me reads from the profile store follows the change too.
-    expect(await createProfileStore(db).find(ada.id)).toEqual({ id: ada.id, handle: to, displayName: `Profile ${ada.handle}`, handleChangedAt: row.handleChangedAt!.toISOString(), verified: false });
+    // What /me reads from the profile store follows the change too, beside the facts the change leaves alone.
+    expect(await createProfileStore(db).find(ada.id)).toEqual({
+      id: ada.id,
+      handle: to,
+      displayName: `Profile ${ada.handle}`,
+      handleChangedAt: row.handleChangedAt!.toISOString(),
+      verified: false,
+      showInExplore: true,
+    });
+    // The Explore switch is read from the row as it stands, like the handle.
+    await db.update(profiles).set({ showInExplore: false }).where(eq(profiles.id, ada.id));
+    expect((await createProfileStore(db).find(ada.id))!.showInExplore).toBe(false);
   });
 
   test("a handle another profile holds, in any case, or ever held is handle_taken; the profile itself may go back after the cooldown", async () => {

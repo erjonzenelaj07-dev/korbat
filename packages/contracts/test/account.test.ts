@@ -23,7 +23,7 @@ const full = {
       { name: "Security key", createdAt: at, lastUsedAt: null, synced: false, createdOn: null },
     ],
   },
-  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"] },
+  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false },
   posts: [
     { id: id(2), body: "first", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [{ id: id(3), file: `media/${id(3)}.webp`, altText: "a cat", width: 2048, height: 1536 }] },
     { id: id(4), body: "", createdAt: at, replyToId: id(2), quoteOfId: null, state: "deleted_by_author", deletedAt: at, media: [] },
@@ -59,6 +59,14 @@ describe("export format", () => {
     expect(ExportFormat.safeParse({ ...full, account: { ...full.account, role: "owner" } }).success).toBe(false);
     expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, handleHistory: undefined } }).success).toBe(false);
     expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, handleHistory: [1] } }).success).toBe(false);
+  });
+
+  test("the profile carries the author's Explore switch, always, as it stands", () => {
+    // Part of the format since 2c, beside the handle history: on as well as off, never left out.
+    expect(ExportFormat.parse({ ...full, profile: { ...full.profile, showInExplore: true } }).profile.showInExplore).toBe(true);
+    expect(ExportFormat.parse(full).profile.showInExplore).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, showInExplore: undefined } }).success).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, showInExplore: "off" } }).success).toBe(false);
   });
 
   test("the account's passkeys carry a name, their times, whether they are synced and where they were added, and nothing that identifies the key", () => {

@@ -14,14 +14,17 @@ import { devProvider } from "../../src/auth/verify/dev";
 import { MemoryMailer } from "../../src/mail/memory";
 import { fakeClock } from "./auth-fixtures";
 
-/** Handles unique per store, like the real public.profiles index. A new profile has never changed its handle and holds no badge. */
+/**
+ * Handles unique per store, like the real public.profiles index. A new profile has never changed its handle, holds no
+ * badge and shows its posts in Explore, as the column's default has it.
+ */
 export function memoryProfiles(): ProfileStore {
   const byHandle = new Map<string, MeProfile>();
   const byId = new Map<string, MeProfile>();
   return {
     async create({ id, handle, displayName }) {
       if (byHandle.has(handle) || byId.has(id)) return { ok: false, reason: "handle_taken" };
-      const profile = { id, handle, displayName, handleChangedAt: null, verified: false };
+      const profile = { id, handle, displayName, handleChangedAt: null, verified: false, showInExplore: true };
       byHandle.set(handle, profile);
       byId.set(id, profile);
       return { ok: true, profile: { id, handle, displayName } };

@@ -17,6 +17,7 @@ import {
   ThreadResponse,
   TimelineItem,
   TimelinePage,
+  ViewerPostState,
   normalizePostBody,
   postLength,
   visibleLength,
@@ -108,6 +109,17 @@ describe("post views", () => {
     expect(PostView.safeParse(post(1, { state: "deleted_by_author" })).success).toBe(false);
     expect(ThreadResponse.safeParse({ ancestors: [{ id: id(9), deleted: true }, post(2)], post: post(1), replies: { items: [], nextCursor: null } }).success).toBe(true);
   });
+  test("the author's Explore chip is set or absent, never false, and an embedded quote does not carry it", () => {
+    expect(PostView.parse(post(1, { inExplore: true })).inExplore).toBe(true);
+    expect(PostView.parse(post(1))).not.toHaveProperty("inExplore");
+    expect(PostView.safeParse(post(1, { inExplore: false })).success).toBe(false);
+    expect(PostView.safeParse(post(1, { inExplore: "yes" })).success).toBe(false);
+    // The chip is on the post card, not in the viewer's like, repost and bookmark state that an engagement answer replaces.
+    expect(Object.keys(ViewerPostState.shape).sort()).toEqual(["bookmarked", "liked", "reposted"]);
+    // An embed is not a card of its own: its fields are the quoted post's, without the chip.
+    expect(PostView.parse(post(1, { quoteOf: post(2, { inExplore: true }) })).quoteOf).not.toHaveProperty("inExplore");
+    expect(TimelineItem.parse({ kind: "post", post: post(1, { inExplore: true }) }).post.inExplore).toBe(true);
+  });
   test("timeline items are posts or reposts with the reposter", () => {
     expect(TimelineItem.safeParse({ kind: "post", post: post(1) }).success).toBe(true);
     expect(TimelineItem.safeParse({ kind: "repost", post: post(1), repostedBy: author, repostedAt: "2026-09-17T11:00:00.000Z" }).success).toBe(true);
@@ -123,6 +135,9 @@ describe("profiles", () => {
     expect(ProfileView.safeParse({ ...base, viewer: { following: true, followedBy: false, blocked: false, muted: false } }).success).toBe(true);
     expect(ProfileView.safeParse({ ...base, counts: { posts: -1, followers: 0, following: 0 } }).success).toBe(false);
     expect(ProfileListItem.safeParse({ ...author, bio: "hi", viewerFollows: true }).success).toBe(true);
+    // The author's Explore switch is theirs (2c design, section 6): the public profile never carries it.
+    expect(Object.keys(ProfileView.shape)).not.toContain("showInExplore");
+    expect(ProfileView.parse({ ...base, showInExplore: false })).not.toHaveProperty("showInExplore");
   });
   test("the error codes are exactly the six social ones", () => {
     expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed"]);

@@ -58,7 +58,7 @@ export function authConfigFrom(config: Config): AuthConfig {
 /** Public profiles live in the public schema, which the auth module cannot reach; the API supplies this. */
 export interface ProfileStore {
   create(input: { id: string; handle: string; displayName: string }): Promise<{ ok: true; profile: Profile } | { ok: false; reason: "handle_taken" }>;
-  /** The owner's view of their profile, which /me returns: the public facts plus the handle-change date and the badge. */
+  /** The owner's view of their profile, which /me returns: the public facts plus the handle-change date, the badge and the Explore switch. */
   find(id: string): Promise<MeProfile | null>;
   /** Sets or clears the badge (profiles.verified_at), which the auth module decides but cannot write itself. */
   setVerified(id: string, at: Date | null): Promise<void>;

@@ -14,16 +14,16 @@ export type ExportedPost = ExportedPostRow & { media: ExportedMedia[] };
 
 /**
  * The social module's part of the data export (1b design, section 7.5): the profile with every handle
- * it ever had, every post it wrote whatever its state, with its images, what it liked, reposted and
- * bookmarked, and the accounts it follows, blocks and mutes by the handle they have now. Times are
- * Dates here; the account module writes them as ISO text.
+ * it ever had and its Explore switch (2c design, section 8), every post it wrote whatever its state,
+ * with its images, what it liked, reposted and bookmarked, and the accounts it follows, blocks and
+ * mutes by the handle they have now. Times are Dates here; the account module writes them as ISO text.
  *
  * The profile is read at once; each list is read page by page while the account module writes it, so
  * an account with many rows never has them all in memory. A list can be iterated more than once; each
  * iteration reads it again from the start.
  */
 export interface ProfileExport {
-  profile: { handle: string; displayName: string; bio: string; createdAt: Date; handleHistory: string[] };
+  profile: { handle: string; displayName: string; bio: string; createdAt: Date; handleHistory: string[]; showInExplore: boolean };
   posts: AsyncIterable<ExportedPost[]>;
   likes: AsyncIterable<PostRefRow[]>;
   reposts: AsyncIterable<PostRefRow[]>;
@@ -80,7 +80,14 @@ export async function exportProfile(deps: SocialDeps, userId: string, pageSize: 
   if (!handleHistory.includes(current)) handleHistory.push(current);
 
   return {
-    profile: { handle: head.profile.handle, displayName: head.profile.displayName, bio: head.profile.bio, createdAt: head.profile.createdAt, handleHistory },
+    profile: {
+      handle: head.profile.handle,
+      displayName: head.profile.displayName,
+      bio: head.profile.bio,
+      createdAt: head.profile.createdAt,
+      handleHistory,
+      showInExplore: head.showInExplore,
+    },
     posts: withMedia(
       deps,
       paged((after) => deps.repo.exportPosts(userId, after, pageSize)),

@@ -529,14 +529,15 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     turnstile: { verify: async () => true },
     breachChecker: { isBreached: async () => false },
     // The flows this harness runs create no profile; the badge flows only set and clear verified_at, kept above by
-    // account, and the deletion flow reads the handle, kept by account as `user` registers it.
+    // account, and the deletion flow reads the handle, kept by account as `user` registers it. No flow here changes the
+    // Explore switch, which reads as the column's default.
     profiles: {
       create: async () => {
         throw new Error("the memory harness has no profile store");
       },
       find: async (id) => {
         const handle = handles.get(id);
-        return handle === undefined ? null : { id, handle, displayName: handle, handleChangedAt: null, verified: (verified.get(id) ?? null) !== null };
+        return handle === undefined ? null : { id, handle, displayName: handle, handleChangedAt: null, verified: (verified.get(id) ?? null) !== null, showInExplore: true };
       },
       setVerified: async (id, at) => {
         verified.set(id, at);

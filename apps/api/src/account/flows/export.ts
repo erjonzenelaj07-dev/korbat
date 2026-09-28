@@ -155,6 +155,8 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         bio: profile.profile.bio,
         createdAt: iso(profile.profile.createdAt),
         handleHistory: [...profile.profile.handleHistory],
+        // Last in the profile, where the format added it (2c); the member order is part of the bytes.
+        showInExplore: profile.profile.showInExplore,
       },
     ],
     [

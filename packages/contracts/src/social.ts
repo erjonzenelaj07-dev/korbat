@@ -112,7 +112,16 @@ const postFields = {
 export const QuotedPost = z.object({ ...postFields, quoteOf: z.null() });
 export type QuotedPost = z.infer<typeof QuotedPost>;
 
-export const PostView = z.object({ ...postFields, quoteOf: z.union([QuotedPost, Tombstone]).nullable() });
+export const PostView = z.object({
+  ...postFields,
+  /**
+   * The author's "In Explore" chip (2c design, section 8): present, and true, only on the viewer's own post while it is in
+   * the current Explore ranking with their switch on. Nobody else's view carries it, nor does a quoted embed. It sits here
+   * rather than in `viewer`, which the like, repost and bookmark answers replace.
+   */
+  inExplore: z.literal(true).optional(),
+  quoteOf: z.union([QuotedPost, Tombstone]).nullable(),
+});
 export type PostView = z.infer<typeof PostView>;
 
 /** An item of a timeline or a profile's Posts tab. */

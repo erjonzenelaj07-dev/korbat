@@ -22,7 +22,9 @@ export function authorOf(profile: ProfileRow): Author {
  * Turns post ids into views for one viewer: loads the rows and, one level deep, the posts they
  * quote; decides access for every row with the visibility rule and the viewer's blocks; attaches
  * the viewer's like, repost and bookmark state, and every post's images. Ids that resolve to nothing
- * become tombstones, and tombstones carry no images.
+ * become tombstones, and tombstones carry no images. The viewer's own visible posts that the current
+ * Explore ranking holds, while their switch is on, carry the author's chip (2c design, section 8):
+ * asked in one query, and only when the viewer wrote some of the posts; a quoted embed never carries it.
  */
 export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
   const unique = [...new Set(ids)];
@@ -34,6 +36,9 @@ export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerI
   const blocked = viewer ? await repo.blockedEitherWay(viewer, authorIds) : new Set<string>();
   const states = viewer ? await repo.viewerPostStates(viewer, [...all.keys()]) : null;
   const images = await media.forPosts([...all.keys()]);
+  // A withheld or removed post is never in Explore for anyone, its author included, so only visible ones are asked about.
+  const own = viewer ? [...primary.values()].filter((row) => row.authorId === viewer && row.state === "visible").map((row) => row.id) : [];
+  const inExplore = viewer && own.length > 0 ? await repo.listedInExplore(viewer, own) : new Set<string>();
 
   const access = (row: PostRow) => postAccess(viewer, row, blocked.has(row.authorId));
   /** The parent's handle only when the viewer could open the parent; a block either way, or a hidden or deleted parent, gives null. */
@@ -68,7 +73,7 @@ export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerI
       continue;
     }
     const a = access(row);
-    out.set(id, a === "shown" ? { ...base(row), quoteOf: quoteOf(row.quoteOfId) } : tombstone(id, a));
+    out.set(id, a === "shown" ? { ...base(row), ...(inExplore.has(id) ? { inExplore: true as const } : {}), quoteOf: quoteOf(row.quoteOfId) } : tombstone(id, a));
   }
   return out;
 }

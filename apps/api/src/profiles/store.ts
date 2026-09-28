@@ -26,14 +26,15 @@ export function createProfileStore(apiDb: Db): ProfileStore {
     },
     async find(id) {
       const [profile] = await apiDb
-        .select({ ...columns, handleChangedAt: profiles.handleChangedAt, verifiedAt: profiles.verifiedAt })
+        .select({ ...columns, handleChangedAt: profiles.handleChangedAt, verifiedAt: profiles.verifiedAt, showInExplore: profiles.showInExplore })
         .from(profiles)
         .where(eq(profiles.id, id))
         .limit(1);
       if (!profile) return null;
-      const { handleChangedAt, verifiedAt, ...pub } = profile;
-      // The badge is a fact of the profile row (verified_at), read here so the account screen sees it on /me.
-      return { ...pub, handleChangedAt: handleChangedAt?.toISOString() ?? null, verified: verifiedAt !== null };
+      const { handleChangedAt, verifiedAt, showInExplore, ...pub } = profile;
+      // The badge is a fact of the profile row (verified_at), read here so the account screen sees it on /me; so is the
+      // author's Explore switch, which the privacy screen shows and the public profile never carries.
+      return { ...pub, handleChangedAt: handleChangedAt?.toISOString() ?? null, verified: verifiedAt !== null, showInExplore };
     },
     async setVerified(id, at) {
       await apiDb.update(profiles).set({ verifiedAt: at }).where(eq(profiles.id, id));

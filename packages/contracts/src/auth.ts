@@ -227,10 +227,11 @@ export type NotMeRequest = z.infer<typeof NotMeRequest>;
 
 /**
  * The signed-in account's own profile as /me returns it (the profile-editing routes answer the public ProfileView): the public facts
- * plus when the handle last changed (the app shows when the next change is allowed) and whether the
- * verified badge is held.
+ * plus when the handle last changed (the app shows when the next change is allowed), whether the
+ * verified badge is held, and whether the account's posts show in Explore (2c design, section 8), a
+ * switch that is the author's own and never part of the public profile.
  */
-export const MeProfile = Profile.extend({ handleChangedAt: z.iso.datetime().nullable(), verified: z.boolean() });
+export const MeProfile = Profile.extend({ handleChangedAt: z.iso.datetime().nullable(), verified: z.boolean(), showInExplore: z.boolean() });
 export type MeProfile = z.infer<typeof MeProfile>;
 
 export const MeResponse = z.object({
