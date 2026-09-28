@@ -89,3 +89,21 @@ python docs/superpowers/prompts/explore-2c/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-09-28)
+
+The six prompts were replayed into this repository by the scratch tooling's `replay.py`. It ran each prompt's steps with no model session, through the same gated runner as the dry run. Every red step failed as recorded, every gate passed, and both stack rebuilds, in Tasks 4 and 5, ended with the smoke test passing, its Explore step included.
+
+| Task | Commit |
+|---|---|
+| 1 | `4e297f5` |
+| 2 | `9d970f7` |
+| 3 | `67b7490` |
+| 4 | `50fb797` |
+| 5 | `7f292a0` |
+| 6 | `62ac77b` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and every one of its 72 files is byte-identical; the rest of the tree matches too. `verify_prompts.py` reproduces all 60 files. The generated migration files carry their final newline in the prompt, so this replay did not show 1b's and 1c's drizzle difference, and the lockfile did not change.
+- **Two false starts, both in Task 1's integration gate, neither in the code.** In the first, 70 tests of the auth side failed with 500 answers after `account-deletion.test.ts` took 7 seconds; every failing file then passed on its own, and the whole suite passed at once (38 files, 247 tests) on the same tree. In the second, `http-badge.test.ts` took 783 seconds and three of its tests hit their 5-second limit: the machine had paused, as it once did during the dry run of Task 3. Each time the tree was restored to the plan's commit and the replay started again; the third run kept the machine awake and passed.
+- **The review that shaped Task 5.** After Task 4, an adversarial review read the range with four finders (the ranking, the reads, the web app, the tests against the design), and three refuters with different lenses (the code, the tests, whether a user can reach it) judged each finding. Of 12 findings, 8 were upheld, all of low severity, and Task 5 fixes them; the 4 rejected were test gaps that only a future rewrite could turn into a defect.
+- **The browser walk-through.** Explore ran in Chromium against the scratch stack on the build of Task 4 (102 checks, the empty state included) and again on the final build of Task 5 (106 checks, adding the status line's round trip to the switch and the new signed-out prompt). Throwaway accounts were signed up through the API and their ages and likes moved back in the scratch database so a ranking could form. It found no defect beyond those the review upheld. It stays in the scratch tooling (`pw-explore.mjs`), because it writes to the database it runs against.
