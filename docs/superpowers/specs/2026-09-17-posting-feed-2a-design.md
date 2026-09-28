@@ -341,3 +341,7 @@ Applied by `docs/superpowers/specs/2026-09-23-audit-fixes-design.md` (Task 6 of 
 - **A failing limit store is `service_unavailable` (503) with `Retry-After: 30`**, for writes and for the global limiter alike; the write is not made.
 - **Cursors and ids.** A cursor's time is bounded by what a date can hold (anything else is `invalid_request`), and post ids are lowercased on input.
 - **Indexes (section 3).** `posts (reply_to_id, created_at, id)`, a partial `posts (created_at, id) where reply_to_id is null and state = 'visible'` for Latest, and `(to, created_at, from)` plus `(from, created_at, to)` on follows, blocks and mutes. The Following timeline applies the cursor, the filters and the limit inside each branch of its union.
+
+## 15. Changed by 2c (2026-09-28)
+
+`docs/superpowers/specs/2026-09-28-explore-2c-design.md` delivers the explore this document left to 2c (section 1): the ranked list, its refresh job and its tab. Search and hashtags, listed beside it, did not go into 2c: each is a sub-project of its own if wanted, and keyword search is a ready tool for finding a target's posts. Home's tabs now have addresses (`/?tab=following`, `latest` or `explore`), signed-out readers get Latest and Explore, Following's empty text points to both, and the context column of section 9's `AppShell` shows Explore's Popular now above the handle box.
