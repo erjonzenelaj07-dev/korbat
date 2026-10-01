@@ -50,6 +50,24 @@ function isLocalhost(name: string): boolean {
   return name === "localhost" || name.endsWith(".localhost");
 }
 
+/** Whether two values name the same origin, so `http://a.test/` and `http://a.test` count as one. An unparsable value is compared as written. */
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return a === b;
+  }
+}
+
+/**
+ * The staff console's origin (3a design, section 8), written exactly as a browser sends it in the Origin header: http or
+ * https, a host and a port only when it is not the default, lowercase, with no path, not even a final slash. The staff gate
+ * compares the Origin header with it as a string, so any other spelling would refuse every write the console makes.
+ */
+const consoleOrigin = z
+  .url({ protocol: /^https?$/ })
+  .refine((value) => URL.canParse(value) && new URL(value).origin === value, "must be an origin as browsers send it, such as https://console.example: scheme, lowercase host and port only, with no path or final slash");
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -127,9 +145,27 @@ const schema = z.object({
   WEBAUTHN_RP_ID: blankAsUnset.pipe(z.string().toLowerCase().regex(RP_ID, "must be a bare domain name such as korbat.example: no scheme, port or path").optional()),
   /** The site name password managers show next to a korbat passkey. */
   WEBAUTHN_RP_NAME: blankAsUnset.pipe(z.string().max(64).regex(PRINTABLE, "must be printable: no control or invisible characters").default("korbat")),
+  /**
+   * The staff console's own origin (3a design, section 8). Unset, the console is off: no staff route is mounted and the
+   * command line issues no enrolment. A blank value, as compose passes it, counts as unset.
+   */
+  CONSOLE_ORIGIN: blankAsUnset.pipe(consoleOrigin.optional()),
+  /**
+   * The relying party ID staff keys are bound to: the console's hostname when unset. Production requires exactly that
+   * hostname, so staff keys work on the console and nowhere else; a parent domain was declined (3a design, section 2).
+   */
+  CONSOLE_RP_ID: blankAsUnset.pipe(z.string().toLowerCase().regex(RP_ID, "must be a bare domain name such as console.example: no scheme, port or path").optional()),
 }).superRefine((c, ctx) => {
-  if (c.NODE_ENV !== "production") return;
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+  // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS
+  // origin of the app's API and, outside production, an accepted origin for personal passkeys (3a design, section 8).
+  if (c.CONSOLE_ORIGIN !== undefined) {
+    if (sameOrigin(c.CONSOLE_ORIGIN, c.APP_ORIGIN)) refuse("CONSOLE_ORIGIN", "CONSOLE_ORIGIN must not be APP_ORIGIN: the staff console needs an origin of its own");
+    if (c.TRUSTED_ORIGINS.some((origin) => sameOrigin(origin, c.CONSOLE_ORIGIN!))) {
+      refuse("CONSOLE_ORIGIN", "CONSOLE_ORIGIN must not be listed in TRUSTED_ORIGINS: the app would accept the console's requests as its own");
+    }
+  }
+  if (c.NODE_ENV !== "production") return;
   if (TURNSTILE_TEST_SECRET.test(c.TURNSTILE_SECRET_KEY)) refuse("TURNSTILE_SECRET_KEY", "is a Turnstile test secret; production needs the secret of your own widget");
   if (!c.APP_ORIGIN.startsWith("https://")) refuse("APP_ORIGIN", "must be an https origin in production");
   for (const origin of c.TRUSTED_ORIGINS) if (!origin.startsWith("https://")) refuse("TRUSTED_ORIGINS", `${origin} is not an https origin`);
@@ -151,7 +187,26 @@ const schema = z.object({
   } else if (rpId !== host && !(host.endsWith(`.${rpId}`) && rpId.includes("."))) {
     refuse("WEBAUTHN_RP_ID", `WEBAUTHN_RP_ID must be the host of APP_ORIGIN (${host}) or a parent domain of it that has a dot`);
   }
-}).transform((c) => ({ ...c, WEBAUTHN_RP_ID: c.WEBAUTHN_RP_ID ?? hostOf(c.APP_ORIGIN) }));
+  if (c.CONSOLE_ORIGIN === undefined) return;
+  if (!c.CONSOLE_ORIGIN.startsWith("https://")) refuse("CONSOLE_ORIGIN", "CONSOLE_ORIGIN must be an https origin in production");
+  const consoleHost = hostOf(c.CONSOLE_ORIGIN);
+  // Ports separate neither sites nor cookies, so the console needs a hostname of its own. On a parent domain of the app's
+  // hostname, the app's pages could ask for staff keys, whose relying party ID would then cover the app.
+  if (consoleHost === host) refuse("CONSOLE_ORIGIN", `CONSOLE_ORIGIN must not be on the hostname of APP_ORIGIN (${host}), whatever its port`);
+  if (host.endsWith(`.${consoleHost}`)) refuse("CONSOLE_ORIGIN", `APP_ORIGIN's hostname must not be a subdomain of the console's (${consoleHost})`);
+  // The relying-party rules, like the app's above, bind staff keys to the console alone.
+  const consoleRpId = c.CONSOLE_RP_ID ?? consoleHost;
+  if (isIP(consoleHost) || isLocalhost(consoleHost)) {
+    refuse("CONSOLE_RP_ID", "CONSOLE_RP_ID cannot be an IP address or localhost in production, nor can CONSOLE_ORIGIN name one: production needs a domain name");
+  } else if (consoleRpId !== consoleHost) {
+    refuse("CONSOLE_RP_ID", `CONSOLE_RP_ID must be the hostname of CONSOLE_ORIGIN (${consoleHost}) in production`);
+  }
+  if (consoleRpId === rpId) refuse("CONSOLE_RP_ID", `CONSOLE_RP_ID must differ from the app's relying party ID (${rpId}), so staff keys never work in the app`);
+}).transform((c) => ({
+  ...c,
+  WEBAUTHN_RP_ID: c.WEBAUTHN_RP_ID ?? hostOf(c.APP_ORIGIN),
+  CONSOLE_RP_ID: c.CONSOLE_RP_ID ?? (c.CONSOLE_ORIGIN === undefined ? undefined : hostOf(c.CONSOLE_ORIGIN)),
+}));
 
 export type Config = z.infer<typeof schema>;
 

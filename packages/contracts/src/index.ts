@@ -33,4 +33,5 @@ export * from "./explore";
 export * from "./media";
 export * from "./passkeys";
 export * from "./social";
+export * from "./staff";
 export * from "./text";

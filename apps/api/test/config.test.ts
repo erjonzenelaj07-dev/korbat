@@ -199,4 +199,102 @@ describe("loadConfig", () => {
       });
     });
   });
+  describe("the staff console (3a design, section 8)", () => {
+    const consoleOrigin = "http://localhost:8090";
+    test("is off unless CONSOLE_ORIGIN is set; a blank value, as compose passes it, counts as unset", () => {
+      for (const blank of [undefined, "", "   "]) {
+        const c = loadConfig({ ...good, CONSOLE_ORIGIN: blank, CONSOLE_RP_ID: blank });
+        expect(c.CONSOLE_ORIGIN, JSON.stringify(blank)).toBeUndefined();
+        expect(c.CONSOLE_RP_ID, JSON.stringify(blank)).toBeUndefined();
+      }
+    });
+    test("takes the console's origin, and its relying party ID defaults to the console's hostname", () => {
+      expect(loadConfig({ ...good, CONSOLE_ORIGIN: consoleOrigin })).toMatchObject({ CONSOLE_ORIGIN: consoleOrigin, CONSOLE_RP_ID: "localhost" });
+      expect(loadConfig({ ...good, CONSOLE_ORIGIN: " http://console.localhost:8090 ", CONSOLE_RP_ID: "" })).toMatchObject({
+        CONSOLE_ORIGIN: "http://console.localhost:8090",
+        CONSOLE_RP_ID: "console.localhost",
+      });
+      // The app's relying party is untouched by the console's.
+      expect(loadConfig({ ...good, CONSOLE_ORIGIN: "http://console.localhost:8090" }).WEBAUTHN_RP_ID).toBe("localhost");
+    });
+    test("takes an explicit relying party ID in lowercase, and only a bare domain name", () => {
+      expect(loadConfig({ ...good, CONSOLE_ORIGIN: "http://console.localhost:8090", CONSOLE_RP_ID: "Console.Localhost" }).CONSOLE_RP_ID).toBe("console.localhost");
+      for (const rpId of ["http://console.localhost", "console.localhost:8090", "console.localhost/", "-console.localhost", "console..localhost"]) {
+        expect(() => loadConfig({ ...good, CONSOLE_ORIGIN: consoleOrigin, CONSOLE_RP_ID: rpId }), rpId).toThrow(/CONSOLE_RP_ID/);
+      }
+    });
+    test("must be an origin exactly as a browser sends it: http or https, a host, a port only when it is not the default", () => {
+      // The staff gate compares the Origin header with this value as a string.
+      for (const origin of ["localhost:8090", "ftp://localhost:8090", "http://localhost:8090/", "http://localhost:8090/console", "http://localhost:8090?x=1", "http://user@localhost:8090", "https://console.example:443", "http://Console.Localhost:8090"]) {
+        expect(() => loadConfig({ ...good, CONSOLE_ORIGIN: origin }), origin).toThrow(/CONSOLE_ORIGIN/);
+      }
+    });
+    test("is refused in every environment when it is the app's origin or one of the trusted origins", () => {
+      expect(() => loadConfig({ ...good, CONSOLE_ORIGIN: good.APP_ORIGIN })).toThrow(/CONSOLE_ORIGIN must not be APP_ORIGIN/);
+      // The same origin written with a final slash is still the same origin.
+      expect(() => loadConfig({ ...good, APP_ORIGIN: "http://localhost:8090/", CONSOLE_ORIGIN: consoleOrigin })).toThrow(/CONSOLE_ORIGIN must not be APP_ORIGIN/);
+      expect(() => loadConfig({ ...good, TRUSTED_ORIGINS: `http://localhost:19006, ${consoleOrigin}`, CONSOLE_ORIGIN: consoleOrigin })).toThrow(/CONSOLE_ORIGIN must not be listed in TRUSTED_ORIGINS/);
+      expect(() => loadConfig({ ...good, TRUSTED_ORIGINS: `${consoleOrigin}/`, CONSOLE_ORIGIN: consoleOrigin })).toThrow(/CONSOLE_ORIGIN must not be listed in TRUSTED_ORIGINS/);
+      expect(loadConfig({ ...good, TRUSTED_ORIGINS: "http://localhost:19006", CONSOLE_ORIGIN: consoleOrigin }).CONSOLE_ORIGIN).toBe(consoleOrigin);
+    });
+    describe("in production", () => {
+      const prod = {
+        ...good,
+        NODE_ENV: "production",
+        APP_ORIGIN: "https://korbat.example",
+        TURNSTILE_SECRET_KEY: "0x4AAAAAAA-real-widget-secret",
+        CONSOLE_ORIGIN: "https://staff-korbat.example",
+      };
+      test("accepts a console on a domain of its own or on a subdomain of the app's, with its hostname as the relying party ID", () => {
+        expect(loadConfig(prod)).toMatchObject({ CONSOLE_ORIGIN: "https://staff-korbat.example", CONSOLE_RP_ID: "staff-korbat.example", WEBAUTHN_RP_ID: "korbat.example" });
+        expect(loadConfig({ ...prod, CONSOLE_ORIGIN: "https://console.korbat.example", CONSOLE_RP_ID: "console.korbat.example" }).CONSOLE_RP_ID).toBe("console.korbat.example");
+        // A name that merely ends like the app's is not a parent of it.
+        expect(loadConfig({ ...prod, APP_ORIGIN: "https://mykorbat.example", CONSOLE_ORIGIN: "https://korbat.example" }).CONSOLE_RP_ID).toBe("korbat.example");
+      });
+      test("the console is still off when CONSOLE_ORIGIN is unset", () => {
+        const c = loadConfig({ ...prod, CONSOLE_ORIGIN: "" });
+        expect(c.CONSOLE_ORIGIN).toBeUndefined();
+        expect(c.CONSOLE_RP_ID).toBeUndefined();
+      });
+      test("requires https", () => {
+        expect(() => loadConfig({ ...prod, CONSOLE_ORIGIN: "http://staff-korbat.example" })).toThrow(/CONSOLE_ORIGIN must be an https origin in production/);
+      });
+      test("refuses the app's origin and the trusted origins, as everywhere", () => {
+        expect(() => loadConfig({ ...prod, CONSOLE_ORIGIN: "https://korbat.example" })).toThrow(/CONSOLE_ORIGIN must not be APP_ORIGIN/);
+        expect(() => loadConfig({ ...prod, TRUSTED_ORIGINS: "https://staff-korbat.example" })).toThrow(/CONSOLE_ORIGIN must not be listed in TRUSTED_ORIGINS/);
+      });
+      test("refuses the app's hostname with another port, since ports separate neither sites nor cookies", () => {
+        expect(() => loadConfig({ ...prod, CONSOLE_ORIGIN: "https://korbat.example:8443" })).toThrow(/CONSOLE_ORIGIN must not be on the hostname of APP_ORIGIN/);
+      });
+      test("refuses a console on a parent domain of the app's hostname", () => {
+        const app = { ...prod, APP_ORIGIN: "https://app.korbat.example" };
+        expect(() => loadConfig({ ...app, CONSOLE_ORIGIN: "https://korbat.example" })).toThrow(/APP_ORIGIN's hostname must not be a subdomain of the console's/);
+        expect(() => loadConfig({ ...prod, APP_ORIGIN: "https://a.b.korbat.example", CONSOLE_ORIGIN: "https://b.korbat.example" })).toThrow(/must not be a subdomain of the console's/);
+      });
+      test("the relying party ID must be the console's hostname, never a parent domain of it", () => {
+        const sub = { ...prod, CONSOLE_ORIGIN: "https://console.korbat-staff.example" };
+        expect(loadConfig({ ...sub, CONSOLE_RP_ID: "console.korbat-staff.example" }).CONSOLE_RP_ID).toBe("console.korbat-staff.example");
+        for (const rpId of ["korbat-staff.example", "other.example", "sub.console.korbat-staff.example"]) {
+          expect(() => loadConfig({ ...sub, CONSOLE_RP_ID: rpId }), rpId).toThrow(/CONSOLE_RP_ID must be the hostname of CONSOLE_ORIGIN/);
+        }
+      });
+      test("the relying party ID must differ from the app's", () => {
+        // The app's passkeys on the parent domain korbat.example, the console on that domain itself: both rules refuse it.
+        const shared = { ...prod, APP_ORIGIN: "https://app.korbat.example", WEBAUTHN_RP_ID: "korbat.example", CONSOLE_ORIGIN: "https://korbat.example" };
+        expect(() => loadConfig(shared)).toThrow(/CONSOLE_RP_ID must differ from the app's relying party ID \(korbat\.example\)/);
+      });
+      test("never an IP address or localhost", () => {
+        for (const origin of ["https://203.0.113.9", "https://[2001:db8::2]", "https://localhost:8090", "https://console.localhost"]) {
+          expect(() => loadConfig({ ...prod, CONSOLE_ORIGIN: origin }), origin).toThrow(/CONSOLE_RP_ID cannot be an IP address or localhost in production/);
+        }
+      });
+    });
+    test("development accepts what only production refuses: http, the app's hostname, a shared or foreign relying party ID", () => {
+      // Both relying party IDs are localhost in development; only the tables keep staff keys and passkeys apart there.
+      expect(loadConfig({ ...good, CONSOLE_ORIGIN: consoleOrigin })).toMatchObject({ CONSOLE_RP_ID: "localhost", WEBAUTHN_RP_ID: "localhost" });
+      expect(loadConfig({ ...good, APP_ORIGIN: "http://app.localhost:8081", CONSOLE_ORIGIN: "http://localhost:8090" }).CONSOLE_RP_ID).toBe("localhost");
+      expect(loadConfig({ ...good, CONSOLE_ORIGIN: consoleOrigin, CONSOLE_RP_ID: "other.example" }).CONSOLE_RP_ID).toBe("other.example");
+      expect(loadConfig({ ...good, CONSOLE_ORIGIN: "http://127.0.0.1:8090" }).CONSOLE_RP_ID).toBe("127.0.0.1");
+    });
+  });
 });

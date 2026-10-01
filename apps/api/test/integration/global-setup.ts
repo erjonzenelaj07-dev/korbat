@@ -26,6 +26,9 @@ export default async function setup(): Promise<void> {
     );
     if (tables.length === 0) throw new Error("The test database has no tables. Run `node scripts/test-db.mjs`.");
     await db.execute(sql.raw(`truncate table ${tables.map((table) => table.name).join(", ")} restart identity cascade`));
+    // The truncate emptied audit_head too. The chain's trigger never creates the head (an insert without one fails), so the
+    // run starts from the head of an empty log: place 0 and 64 zeros, as migration 0012 leaves it on a database without rows.
+    await db.execute(sql`insert into public.audit_head (id, seq, hash) values (1, 0, repeat('0', 64))`);
   } finally {
     await closeDb(db);
   }

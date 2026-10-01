@@ -7,6 +7,9 @@
  * - profiles without an account behind them, which the integration suites inserted directly while they
  *   still ran against this database.
  *
+ * An account that holds a staff key is kept, whatever its email: staff keys are never deleted, because audit-verify
+ * checks old confirmations against their public keys, and the database refuses to delete an account that has one.
+ *
  * Deleting a profile removes its posts, image rows, follows, likes, reposts, bookmarks, blocks and mutes.
  * Where those rows counted towards a kept profile or post (a follow of a real account, a like of a real
  * post), that counter is recomputed from the rows, the way the app keeps it. The API's sweeper removes
@@ -81,6 +84,7 @@ create temp table doomed on commit drop as
   select u.id, 'account' as kind, u.email || coalesce(' (@' || p.handle || ')', '') as label
     from auth.users u left join public.profiles p on p.id = u.id
     where u.email ~ :'pattern'
+      and not exists (select 1 from auth.staff_keys k where k.user_id = u.id)
   union all
   select p.id, 'profile', '@' || p.handle
     from public.profiles p
@@ -103,6 +107,8 @@ create temp table touched_posts on commit drop as
     where x.by_id in (select id from doomed) and p.author_id not in (select id from doomed);
 select 'database|' || current_database();
 select 'accounts|' || count(*) from doomed where kind = 'account';
+select 'staff_kept|' || count(*) from auth.users u
+  where u.email ~ :'pattern' and exists (select 1 from auth.staff_keys k where k.user_id = u.id);
 select 'profiles|' || count(*) from doomed where kind = 'profile';
 select 'posts|' || count(*) from public.posts where author_id in (select id from doomed);
 select 'images|' || count(*) from public.post_media where owner_id in (select id from doomed);
@@ -158,6 +164,7 @@ function show(title, key, labels) {
 
 console.log(`database ${report.get("database")}`);
 show("accounts with a test email", "accounts", listed.account);
+if (count("staff_kept") > 0) console.log(`accounts with a test email kept because they hold a staff key: ${count("staff_kept")}`);
 show("profiles without an account", "profiles", listed.profile);
 if (count("accounts") + count("profiles") === 0) {
   console.log("Nothing to clean.");

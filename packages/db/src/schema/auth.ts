@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, bigserial, boolean, index, integer, jsonb, pgPolicy, pgSchema, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, check, foreignKey, index, integer, jsonb, pgPolicy, pgSchema, text, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authRole, bytea, emptyTextArray, fullAccess, ts } from "./helpers";
 
 export const auth = pgSchema("auth");
@@ -33,6 +33,14 @@ export const authEventType = auth.enum("auth_event_type", [
   "passkey_added",
   "passkey_removed",
   "passkey_counter_regression",
+  // The staff console (3a design, section 6).
+  "staff_enrollment_issued",
+  "staff_key_added",
+  "staff_key_revoked",
+  "staff_key_counter_regression",
+  "staff_sign_in",
+  "staff_signed_out",
+  "staff_session_revoked",
 ]);
 
 export const users = auth.table(
@@ -206,5 +214,108 @@ export const authEvents = auth.table(
     index("auth_events_user_created_idx").on(t.userId, t.createdAt),
     pgPolicy("auth_events_auth_insert", { for: "insert", to: authRole, withCheck: sql`true` }),
     pgPolicy("auth_events_auth_select", { for: "select", to: authRole, using: sql`true` }),
+  ],
+).enableRLS();
+
+/**
+ * Staff keys (3a design, section 6): WebAuthn credentials on the staff console's relying party, which alone open it. Only
+ * keys whose registration reported user verification and no backup eligibility exist. They are added only by the
+ * migrator-owned function auth.add_staff_key, which spends an enrolment the command line issued; migration 0012 leaves the
+ * auth role SELECT and UPDATE of counter, last_used_at, revoked_at and suspect_at, and a trigger refuses to clear or change a
+ * set revoked_at or suspect_at. A row is never deleted: audit-verify checks old confirmations against its public key,
+ * owner, origin and relying party ID, so revocation and an account's take-down only set revoked_at.
+ */
+export const staffKeys = auth.table(
+  "staff_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** On delete restrict: the development cleaner, which deletes accounts, must never take a key with them. */
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    credentialId: text("credential_id").notNull(),
+    /** base64url COSE public key */
+    publicKey: text("public_key").notNull(),
+    counter: bigint("counter", { mode: "number" }).notNull().default(0),
+    transports: text("transports").array().notNull().default(emptyTextArray),
+    /** What the key's holder called it at enrolment; blanked with the AAGUID and transports when the account is deleted. */
+    name: text("name").notNull(),
+    /** The authenticator model the registration reported; null when none was given, and after the account's deletion. */
+    aaguid: uuid("aaguid"),
+    /** The console's origin and relying party ID when the key was enrolled, copied from its enrolment. */
+    origin: text("origin").notNull(),
+    rpId: text("rp_id").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    lastUsedAt: ts("last_used_at"),
+    /** Set once and never cleared: the key opens and confirms nothing more. A key is live while this is null. */
+    revokedAt: ts("revoked_at"),
+    /** Set together with revoked_at when a signature counter went backwards: a revoked key whose record says why. */
+    suspectAt: ts("suspect_at"),
+  },
+  (t) => [
+    uniqueIndex("staff_keys_credential_idx").on(t.credentialId),
+    index("staff_keys_user_idx").on(t.userId),
+    // The pair the staff sessions' foreign key names, so a session's key always belongs to its account.
+    unique("staff_keys_id_user_id_unique").on(t.id, t.userId),
+    check("staff_keys_suspect_is_revoked", sql`${t.suspectAt} is null or ${t.revokedAt} is not null`),
+    fullAccess("staff_keys_auth_all", authRole),
+  ],
+).enableRLS();
+
+/**
+ * One-time enrolment links (3a design, section 6), issued only by `staff.js enroll` as the migrator and spent only by
+ * auth.add_staff_key. Only the sha256 of the link's token is kept. The auth role may read them and delete them (cancelling an
+ * open one, or the janitor removing a spent one), nothing else; a set used_at is never cleared.
+ */
+export const staffEnrollments = auth.table(
+  "staff_enrollments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    /** CONSOLE_ORIGIN and the console's relying party ID when the link was issued; a link for a moved console enrols nothing. */
+    origin: text("origin").notNull(),
+    rpId: text("rp_id").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    expiresAt: ts("expires_at").notNull(),
+    usedAt: ts("used_at"),
+  },
+  (t) => [
+    uniqueIndex("staff_enrollments_token_hash_idx").on(t.tokenHash),
+    index("staff_enrollments_user_idx").on(t.userId),
+    fullAccess("staff_enrollments_auth_all", authRole),
+  ],
+).enableRLS();
+
+/**
+ * Staff sessions (3a design, section 6), apart from the app's sessions: 12 hours absolute and 15 minutes idle, read from the
+ * database on every request. The database keeps a row within 12 hours of its creation whoever writes it.
+ */
+export const staffSessions = auth.table(
+  "staff_sessions",
+  {
+    /** sha256 hex of the opaque token in the staff cookie. The token itself is never stored. */
+    id: text("id").primaryKey(),
+    /** A random id for the session's whole life: the console lists and revokes sessions by it, and step-up binds to it. */
+    handle: uuid("handle").notNull().defaultRandom(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    /** The staff key that opened the session; its foreign key below also names the account. */
+    keyId: uuid("key_id").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    /** The person's last action in the console, never a request the page sent by itself. */
+    lastUsedAt: ts("last_used_at").notNull().defaultNow(),
+    idleExpiresAt: ts("idle_expires_at").notNull(),
+    absoluteExpiresAt: ts("absolute_expires_at").notNull(),
+    revokedAt: ts("revoked_at"),
+    /** The coarse label deviceLabel gives ("Firefox on Linux"); never the user agent itself, never an address. */
+    browser: text("browser").notNull(),
+  },
+  (t) => [
+    uniqueIndex("staff_sessions_handle_idx").on(t.handle),
+    index("staff_sessions_user_idx").on(t.userId),
+    foreignKey({ name: "staff_sessions_key_user_fk", columns: [t.keyId, t.userId], foreignColumns: [staffKeys.id, staffKeys.userId] }).onDelete("cascade"),
+    check(
+      "staff_sessions_lifetime",
+      sql`${t.absoluteExpiresAt} <= ${t.createdAt} + interval '12 hours' and ${t.idleExpiresAt} <= ${t.absoluteExpiresAt}`,
+    ),
+    fullAccess("staff_sessions_auth_all", authRole),
   ],
 ).enableRLS();

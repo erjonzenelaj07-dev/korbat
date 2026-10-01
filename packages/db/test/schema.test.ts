@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { is } from "drizzle-orm";
 import { PgTable, getTableConfig, pgTable } from "drizzle-orm/pg-core";
-import { apiRole, bytea } from "../src/schema/helpers";
+import { apiRole, authRole, bytea } from "../src/schema/helpers";
 import * as schema from "../src/schema/index";
 
 const tables = Object.values(schema).filter((v) => is(v, PgTable)) as PgTable[];
@@ -46,8 +46,8 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 24 tables in total", () => {
-    expect(tables.length).toBe(24);
+  test("there are 28 tables in total", () => {
+    expect(tables.length).toBe(28);
   });
   test("transparency_log carries no user identifiers", () => {
     const cols = byName.get("transparency_log")!.columns.map((c) => c.name);
@@ -242,7 +242,13 @@ describe("passkeys 1c", () => {
 
   test("adding, removing and a counter regression of a passkey are security events", () => {
     const values = schema.authEventType.enumValues;
-    expect(values.slice(values.indexOf("account_deleted"))).toEqual(["account_deleted", "passkey_added", "passkey_removed", "passkey_counter_regression"]);
+    // The slice ends at 1c's last value: 3a appends the staff events after it.
+    expect(values.slice(values.indexOf("account_deleted"), values.indexOf("passkey_counter_regression") + 1)).toEqual([
+      "account_deleted",
+      "passkey_added",
+      "passkey_removed",
+      "passkey_counter_regression",
+    ]);
   });
 });
 
@@ -329,5 +335,171 @@ describe("explore 2c", () => {
         [`${name}_user_created_idx`, "btree"],
       ]);
     }
+  });
+});
+
+describe("staff console 3a", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** Name, SQL type and not-null of every column, in order. */
+  const shape = (table: string) => byName.get(table)!.columns.map((c) => [c.name, c.getSQLType(), c.notNull]);
+  /** Every foreign key of a table by its local columns: the table and columns it points at and what a delete there does. */
+  const foreignKeys = (table: string) =>
+    Object.fromEntries(
+      byName.get(table)!.foreignKeys.map((k) => {
+        const ref = k.reference();
+        return [ref.columns.map((c) => c.name).join(","), { table: getTableConfig(ref.foreignTable).name, columns: ref.foreignColumns.map((c) => c.name), onDelete: k.onDelete }];
+      }),
+    );
+  /** Every index as its name, its columns and whether it is unique, by name. */
+  const indexes = (table: string) =>
+    byName
+      .get(table)!
+      .indexes.map((i) => [i.config.name, i.config.columns.map((c) => (c as { name?: string }).name), i.config.unique])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const uniques = (table: string) => byName.get(table)!.uniqueConstraints.map((u) => [u.getName(), u.columns.map((c) => c.name)]);
+  const checks = (table: string) => byName.get(table)!.checks.map((c) => c.name).sort();
+  const policies = (table: string) => byName.get(table)!.policies.map((p) => [p.name, p.for, p.to]);
+
+  test("the seven staff events close the auth event type, after 1c's passkey events", () => {
+    const values = schema.authEventType.enumValues;
+    expect(values.slice(values.indexOf("passkey_counter_regression") + 1)).toEqual([
+      "staff_enrollment_issued",
+      "staff_key_added",
+      "staff_key_revoked",
+      "staff_key_counter_regression",
+      "staff_sign_in",
+      "staff_signed_out",
+      "staff_session_revoked",
+    ]);
+  });
+
+  test("the three staff tables live in the auth schema, with row level security and one policy for the auth role", () => {
+    for (const name of ["staff_keys", "staff_enrollments", "staff_sessions"]) {
+      const cfg = byName.get(name)!;
+      expect(cfg.schema, name).toBe("auth");
+      expect(cfg.enableRLS, name).toBe(true);
+      expect(policies(name), name).toEqual([[`${name}_auth_all`, "all", authRole]]);
+    }
+  });
+
+  test("a staff key records its credential, its origin and relying party ID, its dates and whether it was revoked or suspect", () => {
+    expect(shape("staff_keys")).toEqual([
+      ["id", "uuid", true],
+      ["user_id", "uuid", true],
+      ["credential_id", "text", true],
+      ["public_key", "text", true],
+      ["counter", "bigint", true],
+      ["transports", "text[]", true],
+      ["name", "text", true],
+      ["aaguid", "uuid", false],
+      ["origin", "text", true],
+      ["rp_id", "text", true],
+      ["created_at", "timestamp with time zone", true],
+      ["last_used_at", "timestamp with time zone", false],
+      ["revoked_at", "timestamp with time zone", false],
+      ["suspect_at", "timestamp with time zone", false],
+    ]);
+    // No user handle of its own: staff registrations use the account's webauthn_user_id.
+    expect(column("staff_keys", "user_handle")).toBeUndefined();
+    // The development cleaner deletes accounts as the superuser; a key must stop that delete, never go with it.
+    expect(foreignKeys("staff_keys")).toEqual({ user_id: { table: "users", columns: ["id"], onDelete: "restrict" } });
+    expect(indexes("staff_keys")).toEqual([
+      ["staff_keys_credential_idx", ["credential_id"], true],
+      ["staff_keys_user_idx", ["user_id"], false],
+    ]);
+    // The pair the staff sessions' foreign key names.
+    expect(uniques("staff_keys")).toEqual([["staff_keys_id_user_id_unique", ["id", "user_id"]]]);
+    expect(checks("staff_keys")).toEqual(["staff_keys_suspect_is_revoked"]);
+  });
+
+  test("an enrolment keeps only its token's hash, the console it was issued for, its expiry and when it was used", () => {
+    expect(shape("staff_enrollments")).toEqual([
+      ["id", "uuid", true],
+      ["user_id", "uuid", true],
+      ["token_hash", "text", true],
+      ["origin", "text", true],
+      ["rp_id", "text", true],
+      ["created_at", "timestamp with time zone", true],
+      ["expires_at", "timestamp with time zone", true],
+      ["used_at", "timestamp with time zone", false],
+    ]);
+    expect(foreignKeys("staff_enrollments")).toEqual({ user_id: { table: "users", columns: ["id"], onDelete: "cascade" } });
+    expect(indexes("staff_enrollments")).toEqual([
+      ["staff_enrollments_token_hash_idx", ["token_hash"], true],
+      ["staff_enrollments_user_idx", ["user_id"], false],
+    ]);
+  });
+
+  test("a staff session keeps its token's hash, a unique handle, its key and account together, both expiries and the browser label", () => {
+    expect(shape("staff_sessions")).toEqual([
+      ["id", "text", true],
+      ["handle", "uuid", true],
+      ["user_id", "uuid", true],
+      ["key_id", "uuid", true],
+      ["created_at", "timestamp with time zone", true],
+      ["last_used_at", "timestamp with time zone", true],
+      ["idle_expires_at", "timestamp with time zone", true],
+      ["absolute_expires_at", "timestamp with time zone", true],
+      ["revoked_at", "timestamp with time zone", false],
+      ["browser", "text", true],
+    ]);
+    expect(column("staff_sessions", "id")?.primary).toBe(true);
+    expect(column("staff_sessions", "handle")?.hasDefault).toBe(true);
+    // The key's foreign key names the account as well, so a session's key always belongs to its account.
+    expect(foreignKeys("staff_sessions")).toEqual({
+      user_id: { table: "users", columns: ["id"], onDelete: "cascade" },
+      "key_id,user_id": { table: "staff_keys", columns: ["id", "user_id"], onDelete: "cascade" },
+    });
+    expect(indexes("staff_sessions")).toEqual([
+      ["staff_sessions_handle_idx", ["handle"], true],
+      ["staff_sessions_user_idx", ["user_id"], false],
+    ]);
+    expect(checks("staff_sessions")).toEqual(["staff_sessions_lifetime"]);
+  });
+
+  test("audit_log gains the staff session's handle, the key, the action's hash and the step-up, all optional", () => {
+    const added = [
+      ["staff_session", "uuid"],
+      ["key_id", "uuid"],
+      ["action_hash", "text"],
+      ["step_up", "jsonb"],
+    ] as const;
+    for (const [name, type] of added) {
+      expect(column("audit_log", name)?.getSQLType(), name).toBe(type);
+      expect(column("audit_log", name)?.notNull, name).toBe(false);
+      expect(column("audit_log", name)?.hasDefault, name).toBe(false);
+    }
+    expect(checks("audit_log")).toEqual(["audit_log_step_up_complete"]);
+  });
+
+  test("audit_log's chain columns are not null, with placeholder defaults that the trigger always overwrites", () => {
+    const chain = [
+      ["chain_version", "smallint", 0],
+      ["chain_seq", "bigint", 0],
+      ["prev_hash", "text", ""],
+      ["hash", "text", ""],
+    ] as const;
+    for (const [name, type, placeholder] of chain) {
+      expect(column("audit_log", name)?.getSQLType(), name).toBe(type);
+      expect(column("audit_log", name)?.notNull, name).toBe(true);
+      expect(column("audit_log", name)?.default, name).toBe(placeholder);
+    }
+    // One index serves the viewer and audit-verify; there is none on (created_at, id).
+    expect(indexes("audit_log")).toEqual([["audit_log_chain_seq_idx", ["chain_seq"], true]]);
+  });
+
+  test("audit_head holds one row, the newest place and hash, which the API role may only read", () => {
+    const cfg = byName.get("audit_head")!;
+    expect(cfg.schema).toBeUndefined(); // public
+    expect(shape("audit_head")).toEqual([
+      ["id", "smallint", true],
+      ["seq", "bigint", true],
+      ["hash", "text", true],
+    ]);
+    expect(column("audit_head", "id")?.primary).toBe(true);
+    expect(cfg.columns.filter((c) => c.hasDefault)).toEqual([]);
+    expect(checks("audit_head")).toEqual(["audit_head_single_row"]);
+    expect(cfg.enableRLS).toBe(true);
+    expect(policies("audit_head")).toEqual([["audit_head_api_select", "select", apiRole]]);
   });
 });
