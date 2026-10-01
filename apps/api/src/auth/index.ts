@@ -33,7 +33,7 @@ export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
 export type { VerificationProvider } from "./verify/provider";
 export { AuthError, isUniqueViolation } from "./context";
-export { grantRole } from "./admin";
+export { SYSTEM_ACTOR_ID, grantRole } from "./admin";
 /** The account module clears a web session's cookies after a deletion; the cookie names and attributes stay this module's. */
 export { clearSessionCookies } from "./cookies";
 export { checkHandle } from "./handles";

@@ -204,6 +204,43 @@ export function createAuthRepo(db: Db) {
       await db.update(users).set({ role }).where(eq(users.id, userId));
     },
 
+    /**
+     * A role change (3a design, section 7) in one transaction: the account's row is locked first, FOR NO KEY UPDATE (the
+     * lock the role's update would take, and the one every writer of staff rows takes first, so none of them can wait on
+     * another in a circle); the role is set, every session revoked, and last, through auth.append_audit, the role_granted
+     * row. The row holds the audit chain's head until the
+     * commit, so the change and its record commit together or not at all. Only the command line calls this, and it waits
+     * at most 10 seconds for a lock: an API that holds the head or the row open cannot stall it for longer, and one that
+     * times out has changed nothing. Answers the ids of the revoked sessions, for the cache tombstones, which are not the
+     * database's to write; undefined when no live account has the address.
+     */
+    async changeRole(email: string, role: UserRole, audit: { actorId: string; now: Date }): Promise<{ userId: string; previousRole: UserRole; sessionIds: string[] } | undefined> {
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '10s'`);
+        const [account] = await tx
+          .select({ id: users.id, role: users.role })
+          .from(users)
+          .where(and(sql`lower(${users.email}) = lower(${email})`, isNull(users.deletedAt)))
+          .limit(1)
+          .for("no key update");
+        if (!account) return undefined;
+        await tx.update(users).set({ role }).where(eq(users.id, account.id));
+        const revoked = await tx
+          .update(sessions)
+          .set({ revokedAt: audit.now })
+          .where(and(eq(sessions.userId, account.id), isNull(sessions.revokedAt)))
+          .returning({ id: sessions.id });
+        await appendAudit(tx, {
+          actorId: audit.actorId,
+          action: "role_granted",
+          targetType: "user",
+          targetId: account.id,
+          metadata: { from: account.role, to: role, via: "cli" },
+        });
+        return { userId: account.id, previousRole: account.role, sessionIds: revoked.map((row) => row.id) };
+      });
+    },
+
     // ------------------------------------------------------------ deletion
 
     /**
@@ -771,6 +808,47 @@ export function createAuthRepo(db: Db) {
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 /** What a read runs through: the pool, or a transaction that needs the read to see its own lock. */
 type Querier = Pick<Db, "select">;
+
+/** The auth side's actions in the audit log: the only ones auth.append_audit writes (migration 0012). */
+type AuthAuditAction =
+  | "staff_key_revoked"
+  | "staff_key_counter_regression"
+  | "staff_sign_in"
+  | "staff_signed_out"
+  | "staff_session_revoked"
+  | "staff_enrollments_cancelled"
+  | "role_granted";
+
+/** One auth-side row of the audit log. The trigger sets its id, time, place and hashes. */
+interface AuthAuditRow {
+  actorId: string;
+  action: AuthAuditAction;
+  targetType: string | null;
+  targetId: string | null;
+  metadata: Record<string, unknown>;
+  staffSession?: string | null;
+  keyId?: string | null;
+  actionHash?: string | null;
+  stepUp?: { authenticatorData: string; clientDataJSON: string; signature: string } | null;
+  requestId?: string | null;
+}
+
+/**
+ * Writes an auth-side row of the audit log in the caller's transaction, through auth.append_audit: the auth role holds
+ * nothing in the public schema, and the function, which the migrator owns, writes only the auth side's actions (3a design,
+ * section 6). It must be the transaction's last statement: the row holds the chain's head until the commit, so nothing that
+ * can wait may run after it. Answers the row's place in the chain.
+ */
+async function appendAudit(tx: Tx, row: AuthAuditRow): Promise<number> {
+  // The jsonb arguments go as text and are cast, so postgres.js sends them exactly as serialised here.
+  const stepUp = row.stepUp ? JSON.stringify(row.stepUp) : null;
+  const [written] = await tx.execute<{ place: string }>(
+    sql`select auth.append_audit(${row.actorId}::uuid, ${row.action}::text, ${row.targetType}::text, ${row.targetId}::text,
+      ${JSON.stringify(row.metadata)}::text::jsonb, ${row.staffSession ?? null}::uuid, ${row.keyId ?? null}::uuid,
+      ${row.actionHash ?? null}::text, ${stepUp}::text::jsonb, ${row.requestId ?? null}::text)::text as place`,
+  );
+  return Number(written!.place);
+}
 
 /**
  * The daily bound's reading (1c design, section 2): how many passkey_added events the account has within the window, at

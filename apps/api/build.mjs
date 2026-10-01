@@ -4,7 +4,9 @@ import { build } from "esbuild";
 
 await rm("dist", { recursive: true, force: true });
 await build({
-  entryPoints: { index: "src/index.ts", migrate: "src/migrate.ts", "grant-role": "src/cli/grant-role.ts" },
+  // Each entry is a bundle of its own. The command lines check that they were run directly by comparing import.meta.url,
+  // which in a bundle is the bundle's, so no entry may import another entry's file.
+  entryPoints: { index: "src/index.ts", migrate: "src/migrate.ts", "grant-role": "src/cli/grant-role.ts", staff: "src/cli/staff.ts" },
   outdir: "dist",
   bundle: true,
   format: "esm",

@@ -12,7 +12,7 @@ interface FetchInit {
   raw?: { type: string; body: Uint8Array };
   /** Extra request headers. */
   headers?: Record<string, string>;
-  /** Web only: send the X-CSRF-Token header (default true). */
+  /** Web only: send the CSRF header (default true). */
   csrf?: boolean;
 }
 
@@ -22,27 +22,51 @@ interface FetchInit {
  */
 export const randomIp = () => `10.${randomInt(256)}.${randomInt(256)}.${randomInt(1, 255)}`;
 
-/** A minimal browser: keeps cookies, sends Origin on state changes and echoes the CSRF cookie in X-CSRF-Token. */
+export interface BrowserOptions {
+  /**
+   * Where the requests go: each path is appended to it, and its host is sent as Host, since behind Caddy
+   * @hono/node-server builds the request's URL from the Host header and the staff gate reads it. The app's
+   * browser keeps http://localhost; the console's browser uses the console's origin (3a design, section 12).
+   */
+  base?: string;
+  /** The cookie whose value the browser echoes on its requests, and the header it echoes it in. */
+  csrfCookie?: string;
+  csrfHeader?: string;
+  ip?: string;
+}
+
+/** A minimal browser: keeps cookies, sends Origin on state changes and echoes the CSRF cookie in the CSRF header. */
 export class Browser {
   private readonly cookies = new Map<string, string>();
+  private readonly base: string;
+  private readonly host: string;
+  private readonly csrfCookie: string;
+  private readonly csrfHeader: string;
+  private readonly ip: string;
 
   constructor(
     private readonly app: RequestApp,
     private readonly origin: string,
-    private readonly ip: string = randomIp(),
-  ) {}
+    options: BrowserOptions = {},
+  ) {
+    this.base = options.base ?? "http://localhost";
+    this.host = new URL(this.base).host;
+    this.csrfCookie = options.csrfCookie ?? "__Host-korbat_csrf";
+    this.csrfHeader = options.csrfHeader ?? "x-csrf-token";
+    this.ip = options.ip ?? randomIp();
+  }
 
   async fetch(path: string, init: FetchInit = {}): Promise<Response> {
     const method = init.method ?? (init.json === undefined && init.raw === undefined ? "GET" : "POST");
-    const headers: Record<string, string> = { "cf-connecting-ip": this.ip, ...init.headers };
+    const headers: Record<string, string> = { host: this.host, "cf-connecting-ip": this.ip, ...init.headers };
     if (this.cookies.size > 0) headers.cookie = [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
     if (method !== "GET") headers.origin = this.origin;
-    const csrf = this.cookies.get("__Host-korbat_csrf");
-    if (init.csrf !== false && csrf) headers["x-csrf-token"] = csrf;
+    const csrf = this.cookies.get(this.csrfCookie);
+    if (init.csrf !== false && csrf) headers[this.csrfHeader] = csrf;
     if (init.json !== undefined) headers["content-type"] = "application/json";
     if (init.raw) headers["content-type"] = init.raw.type;
     const body = init.raw ? init.raw.body : init.json === undefined ? undefined : JSON.stringify(init.json);
-    const res = await this.app.request(path, { method, headers, body });
+    const res = await this.app.request(`${this.base}${path}`, { method, headers, body });
     for (const line of res.headers.getSetCookie()) {
       const [pair, ...attributes] = line.split("; ");
       const separator = pair!.indexOf("=");

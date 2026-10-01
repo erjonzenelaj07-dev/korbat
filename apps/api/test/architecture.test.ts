@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 /**
- * Module boundaries (1a spec section 2.2, 2a spec section 2.2). Paths are relative to apps/api/src
+ * Module boundaries (1a spec section 2.2, 2a spec section 2.2, 3a design section 5). Paths are relative to apps/api/src
  * with forward slashes. The rules are plain functions so the tests below can prove each one catches
  * a deliberate violation.
  */
@@ -19,11 +19,13 @@ const SCHEMA_ROOT = fileURLToPath(new URL("../../../packages/db/src/schema", imp
 /** Schema files that define auth-schema objects or shared helpers; every other schema file is public. */
 const NON_PUBLIC_SCHEMA_FILES = new Set(["auth.ts", "helpers.ts", "index.ts"]);
 const AUTH_SCHEMA_FILE = "auth.ts";
-const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts"]);
+// The command lines open both pools: grant-role changes a role on the auth pool, and staff.js reads there the staff keys
+// that audit-verify checks the record against.
+const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts", "cli/staff.ts"]);
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
 /** Modules that may only be entered through their index file. */
-const MODULES = ["auth", "social", "media", "account"] as const;
+const MODULES = ["auth", "social", "media", "account", "staff"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -83,6 +85,7 @@ const insideAuth = (path: string) => path.startsWith("auth/");
 const insideSocial = (path: string) => path.startsWith("social/");
 const insideMedia = (path: string) => path.startsWith("media/");
 const insideAccount = (path: string) => path.startsWith("account/");
+const insideStaff = (path: string) => path.startsWith("staff/");
 
 function findViolations(files: SourceFile[], publicNames: Set<string>, authNames: Set<string>): string[] {
   const violations: string[] = [];
@@ -112,7 +115,9 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
     if (!insideMedia(path) && /\b(postMedia|post_media)\b/.test(source)) {
       violations.push(`${path}: references post_media, which only the media module may touch`);
     }
-    if (insideSocial(path) || insideMedia(path)) {
+    // The staff module (role korbat_api) reads and writes the public audit log; staff keys, staff sessions and enrolments
+    // are credentials, the auth module's alone (3a design, section 5).
+    if (insideSocial(path) || insideMedia(path) || insideStaff(path)) {
       for (const name of dbImports(source)) {
         if (name === "*") violations.push(`${path}: namespace import of @korbat/db (import public-schema names explicitly)`);
         else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db`);
@@ -128,6 +133,14 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
         else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db (the account module holds no table access)`);
       }
     }
+    // The staff module uses the auth module's interface as the other modules do, never its repository or its session
+    // store, which would hand it the auth tables. Any mention counts, so a renamed, namespace or dynamic import is caught
+    // as surely as a named one.
+    if (insideStaff(path)) {
+      for (const name of new Set([...source.matchAll(/\b(createAuthRepo|createSessions)\b/g)].map((m) => m[1]!))) {
+        violations.push(`${path}: uses the auth module's ${name} (the staff module goes through the auth module's interface)`);
+      }
+    }
   }
   return violations;
 }
@@ -139,6 +152,8 @@ describe("module boundaries", () => {
     expect(paths).toContain("social/index.ts");
     expect(paths).toContain("media/index.ts");
     expect(paths).toContain("account/index.ts");
+    expect(paths).toContain("staff/index.ts");
+    expect(paths).toContain("cli/staff.ts");
     expect(paths).toContain("app.ts");
     expect(publicSchemaNames()).toContain("profiles");
     expect(publicSchemaNames()).not.toContain("users");
@@ -163,8 +178,11 @@ describe("module boundaries", () => {
       { path: "index.ts", source: `import { createAccount } from "./account";\nimport { createMedia } from "./media";` },
       { path: "account/routes.ts", source: `import type { AuthForAccount } from "../auth";\nimport type { SocialForAccount } from "../social";\nimport { buildExport } from "./flows/export";` },
       { path: "account/flows/deletion.ts", source: `import type { DbTx } from "@korbat/db";\nimport type { MediaForAccount } from "../../media";` },
+      { path: "cli/staff.ts", source: `import { createStaff } from "../staff";\nconst authDb = createDb(config.DATABASE_URL_AUTH);` },
+      { path: "staff/audit.ts", source: `import { auditHead, auditLog, profiles, type Db, type DbTx } from "@korbat/db";` },
+      { path: "staff/routes.ts", source: `import { AuthError, type Auth } from "../auth";\nimport { staffGate } from "./gate";` },
     ];
-    expect(findViolations(files, new Set(["profiles", "posts"]), new Set(["users", "sessions"]))).toEqual([]);
+    expect(findViolations(files, new Set(["profiles", "posts", "auditLog", "auditHead"]), new Set(["users", "sessions"]))).toEqual([]);
   });
 
   test("catches a deep import into the auth module", () => {
@@ -230,12 +248,62 @@ describe("module boundaries", () => {
       { path: "profiles/store.ts", source: `export function f(authDb: Db) {}` },
       { path: "lib/hash.ts", source: `const key = config.IP_HASH_KEY;` },
       { path: "index.ts", source: `const k = config.AUTH_HMAC_KEY;` },
+      // The staff command line may open the auth pool; another command line, or the staff module itself, may not.
+      { path: "cli/other.ts", source: `const authDb = createDb(config.DATABASE_URL_AUTH);` },
+      { path: "staff/audit.ts", source: `export function readKeys(authDb: Db) {}` },
     ];
     expect(findViolations(files, new Set(), new Set())).toEqual([
       "routes/posts.ts: references the auth database pool",
       "profiles/store.ts: references the auth database pool",
       "lib/hash.ts: references an auth key",
       "index.ts: references an auth key",
+      "cli/other.ts: references the auth database pool",
+      "staff/audit.ts: references the auth database pool",
+    ]);
+  });
+
+  test("catches a deep import into the staff module, from outside it and from the auth module", () => {
+    const files: SourceFile[] = [
+      { path: "app.ts", source: `import { staffGate } from "./staff/gate";\nimport { createStaff } from "./staff";` },
+      { path: "cli/staff.ts", source: `import { canonicalText } from "../staff/chain";` },
+      { path: "auth/staff/flows.ts", source: `import { appendAuditRow } from "../../staff/audit";` },
+      { path: "staff/routes.ts", source: `import { staffGate } from "./gate";` },
+    ];
+    expect(findViolations(files, new Set(), new Set())).toEqual([
+      "app.ts: imports ./staff/gate, which is inside the staff module (use ./staff)",
+      "cli/staff.ts: imports ../staff/chain, which is inside the staff module (use ./staff)",
+      "auth/staff/flows.ts: imports ../../staff/audit, which is inside the staff module (use ./staff)",
+    ]);
+  });
+
+  test("catches auth-schema imports inside the staff module", () => {
+    const files: SourceFile[] = [
+      { path: "staff/audit.ts", source: `import { auditLog, staffKeys, type Db } from "@korbat/db";` },
+      { path: "staff/reader.ts", source: `import type { staffSessions as s } from "@korbat/db";` },
+      { path: "staff/writer.ts", source: `import * as db from "@korbat/db";` },
+    ];
+    expect(findViolations(files, new Set(["auditLog"]), new Set(["staffKeys", "staffSessions"]))).toEqual([
+      "staff/audit.ts: imports auth-schema staffKeys from @korbat/db",
+      "staff/reader.ts: imports auth-schema staffSessions from @korbat/db",
+      "staff/writer.ts: namespace import of @korbat/db (import public-schema names explicitly)",
+    ]);
+  });
+
+  test("catches the auth module's repository or session store inside the staff module, however it is imported", () => {
+    const files: SourceFile[] = [
+      { path: "staff/audit.ts", source: `import { AuthError, createAuthRepo } from "../auth";` },
+      { path: "staff/routes.ts", source: `import { createSessions as sessionsOf } from "../auth";` },
+      { path: "staff/flows/x.ts", source: `import * as auth from "../../auth";\nconst repo = auth.createAuthRepo(db);\nconst s = auth.createSessions(deps);` },
+      { path: "staff/flows/y.ts", source: `const { createSessions } = await import("../../auth");` },
+      // Outside the staff module the rule does not apply: the command lines build the auth module's parts themselves.
+      { path: "cli/grant-role.ts", source: `import { createAuthRepo, createSessions } from "../auth";` },
+    ];
+    expect(findViolations(files, new Set(), new Set())).toEqual([
+      "staff/audit.ts: uses the auth module's createAuthRepo (the staff module goes through the auth module's interface)",
+      "staff/routes.ts: uses the auth module's createSessions (the staff module goes through the auth module's interface)",
+      "staff/flows/x.ts: uses the auth module's createAuthRepo (the staff module goes through the auth module's interface)",
+      "staff/flows/x.ts: uses the auth module's createSessions (the staff module goes through the auth module's interface)",
+      "staff/flows/y.ts: uses the auth module's createSessions (the staff module goes through the auth module's interface)",
     ]);
   });
 

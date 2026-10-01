@@ -68,12 +68,15 @@ const consoleOrigin = z
   .url({ protocol: /^https?$/ })
   .refine((value) => URL.canParse(value) && new URL(value).origin === value, "must be an origin as browsers send it, such as https://console.example: scheme, lowercase host and port only, with no path or final slash");
 
+/** A PostgreSQL connection URL. The staff command line reads the database URLs it needs with the same rule (cli/staff.ts). */
+export const databaseUrl = z.url({ protocol: /^postgres(ql)?$/ });
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
-  DATABASE_URL_API: z.url({ protocol: /^postgres(ql)?$/ }),
-  DATABASE_URL_AUTH: z.url({ protocol: /^postgres(ql)?$/ }),
+  DATABASE_URL_API: databaseUrl,
+  DATABASE_URL_AUTH: databaseUrl,
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
   TRUSTED_ORIGINS: z
     .string()

@@ -12,6 +12,7 @@ import { createMedia } from "./media";
 import { RedisStore } from "./middleware/rate-limit";
 import { createProfileStore } from "./profiles/store";
 import { createSocial, enforceWriteLimit } from "./social";
+import { createStaff } from "./staff";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL, config.NODE_ENV === "development");
@@ -79,6 +80,9 @@ const account = createAccount({
 // Deletions the process did not finish (a crash after the auth step, a failed purge) are completed within five minutes.
 const stopPurge = account.startPurge(jobLock);
 
+// The staff console's API; createApp mounts it only while CONSOLE_ORIGIN is set.
+const staff = createStaff({ apiDb });
+
 const app = createApp({
   config,
   logger,
@@ -93,6 +97,7 @@ const app = createApp({
   social,
   media,
   account,
+  staff,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {
