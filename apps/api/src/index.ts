@@ -80,8 +80,8 @@ const account = createAccount({
 // Deletions the process did not finish (a crash after the auth step, a failed purge) are completed within five minutes.
 const stopPurge = account.startPurge(jobLock);
 
-// The staff console's API; createApp mounts it only while CONSOLE_ORIGIN is set.
-const staff = createStaff({ apiDb });
+// The staff console's API; createApp mounts it only while CONSOLE_ORIGIN is set. Its credential work is the auth module's.
+const staff = createStaff({ apiDb, auth: auth.forStaff });
 
 const app = createApp({
   config,

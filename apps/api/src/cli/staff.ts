@@ -1,8 +1,15 @@
 /**
- * The staff command line (3a design, section 7). Run on the server only, like grant-role:
+ * The staff command line (3a design, section 7). Run on the server only. enroll runs in the migrate service, as the
+ * migrator, the one application role the running API never holds; the others run like grant-role:
  *
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js enroll <email>
+ *   docker compose -f infra/compose.yml run --rm api node dist/staff.js keys [<email>]
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-head
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-verify [<chain_seq>:<hash> ...]
+ *
+ * enroll prints a one-time link that registers one staff key for a live staff account with a handle; the database lets
+ * only the migrator issue one. keys lists an account's staff keys, or every staff account with its keys, for the
+ * runbook's comparison with the operator's own list.
  *
  * audit-head prints the audit log's newest place and hash, which the keeper holds off the server. audit-verify recomputes
  * the whole chain in its own code (the staff module's chain.ts), never asking the database for a text or a hash, since
@@ -11,16 +18,22 @@
  * configuration, so both run the same with the console off or moved: each reads only the database URLs it connects with
  * (staffDatabaseUrls), never the API's whole configuration.
  */
+import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import { auditHead, auditLog, closeDb, createDb, staffKeys, type Db, type DbTx } from "@korbat/db";
-import { databaseUrl } from "../config";
+import { Email } from "@korbat/contracts";
+import { auditHead, auditLog, authEvents, closeDb, createDb, profiles, staffEnrollments, staffKeys, users, type Db, type DbTx } from "@korbat/db";
+import { SYSTEM_ACTOR_ID } from "../auth";
+import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl } from "../config";
 import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 
 export const STAFF_USAGE = [
   "usage: node dist/staff.js <command>",
+  "  enroll <email>                         print a one-time link, valid 30 minutes, that registers one staff key for the account;",
+  "                                         run it in the migrate service: docker compose -f infra/compose.yml run --rm migrate node dist/staff.js enroll <email>",
+  "  keys [<email>]                         list the account's staff keys, or every staff account with its role, address, handle and keys",
   "  audit-head                             print the audit log's newest place, its hash and its time, to keep off the server",
   "  audit-verify [<chain_seq>:<hash> ...]  recompute the audit chain and check it against places kept before",
 ].join("\n");
@@ -31,14 +44,31 @@ export interface KeptPlace {
   hash: string;
 }
 
-export type StaffCommand = { command: "audit-head" } | { command: "audit-verify"; kept: KeptPlace[] };
+export type StaffCommand =
+  | { command: "enroll"; email: string }
+  | { command: "keys"; email: string | null }
+  | { command: "audit-head" }
+  | { command: "audit-verify"; kept: KeptPlace[] };
 
 /** A place as the keeper copies it: at most 15 digits, so it is always a safe integer, and a lower-case hex sha256. */
 const KEPT_PLACE = /^([1-9][0-9]{0,14}):([0-9a-f]{64})$/;
 
+/** An address as the account was registered with it: trimmed and lower-cased, as the contracts read it. */
+function emailArg(arg: string): string {
+  const email = Email.safeParse(arg);
+  if (!email.success) throw new Error(`not an email address: ${arg}\n${STAFF_USAGE}`);
+  return email.data;
+}
+
 export function parseStaffArgs(args: readonly string[]): StaffCommand {
   const [command, ...rest] = args;
   switch (command) {
+    case "enroll":
+      if (rest.length !== 1) throw new Error(STAFF_USAGE);
+      return { command, email: emailArg(rest[0]!) };
+    case "keys":
+      if (rest.length > 1) throw new Error(STAFF_USAGE);
+      return { command, email: rest.length === 1 ? emailArg(rest[0]!) : null };
     case "audit-head":
       if (rest.length > 0) throw new Error(STAFF_USAGE);
       return { command };
@@ -75,13 +105,43 @@ function readEnv<T extends z.ZodType>(schema: T, env: Record<string, string | un
   return result.data;
 }
 
-/** The database URLs a command connects with: the API role's, and the auth role's for audit-verify alone. */
-export function staffDatabaseUrls(command: StaffCommand, env: Record<string, string | undefined>): { api: string; auth: string | null } {
-  if (command.command === "audit-verify") {
+/**
+ * The database URLs a command connects with: the API role's, and the auth role's for audit-verify and keys, which read the
+ * staff keys there. enroll connects as the migrator alone and reads its settings with enrollSettings.
+ */
+export function staffDatabaseUrls(command: Exclude<StaffCommand, { command: "enroll" }>, env: Record<string, string | undefined>): { api: string; auth: string | null } {
+  if (command.command === "audit-verify" || command.command === "keys") {
     const urls = readEnv(AUDIT_VERIFY_ENV, env, command.command);
     return { api: urls.DATABASE_URL_API, auth: urls.DATABASE_URL_AUTH };
   }
   return { api: readEnv(AUDIT_HEAD_ENV, env, command.command).DATABASE_URL_API, auth: null };
+}
+
+/**
+ * What enroll reads: the migrator's URL, which only the migrate service holds, and the console's origin and relying party
+ * ID, which Compose gives that service, each by the API's own rule for it. The relying party ID defaults to the console's
+ * hostname, as the API's does. Nothing else of the API's configuration is read: the migrate service holds none of it.
+ */
+const ENROLL_ENV = z.object({ DATABASE_URL_MIGRATE: databaseUrl, CONSOLE_ORIGIN: consoleOriginSetting, CONSOLE_RP_ID: consoleRpIdSetting });
+
+export interface EnrollSettings {
+  migrate: string;
+  consoleOrigin: string;
+  consoleRpId: string;
+}
+
+/** enroll's settings, refusing while the console is off: a link to a console that does not run would enrol nothing. */
+export function enrollSettings(env: Record<string, string | undefined>): EnrollSettings {
+  // Blank counts as unset, as Compose passes an empty line of infra/.env.
+  if (!env.CONSOLE_ORIGIN?.trim()) {
+    throw new Error(
+      "CONSOLE_ORIGIN is not set: the staff console is off, so no enrolment link can be issued. " +
+        "Set API_CONSOLE_ORIGIN in infra/.env to the console's address (the migrate service reads it as CONSOLE_ORIGIN) and run the command again.",
+    );
+  }
+  const settings = readEnv(ENROLL_ENV, env, "enroll");
+  const consoleOrigin = settings.CONSOLE_ORIGIN!;
+  return { migrate: settings.DATABASE_URL_MIGRATE, consoleOrigin, consoleRpId: settings.CONSOLE_RP_ID ?? consoleHostOf(consoleOrigin) };
 }
 
 // ---------------------------------------------------------------- reading the record
@@ -359,6 +419,158 @@ export function describeReport(report: AuditReport): string[] {
   return lines;
 }
 
+// ---------------------------------------------------------------- enroll
+
+/** How long an enrolment link works (3a design, section 2). */
+const ENROLMENT_MINUTES = 30;
+/** At most this many live staff keys per account; auth.add_staff_key refuses a sixth too. */
+const LIVE_KEYS_MAX = 5;
+
+/** What enroll issued, or why it refused. */
+export type IssuedEnrolment =
+  | { ok: true; token: string; email: string; role: string; expiresAt: Date }
+  | { ok: false; problem: string };
+
+/**
+ * Issues an enrolment link as the migrator (3a design, section 7), in one transaction that first locks the account's row
+ * FOR NO KEY UPDATE, as every writer of staff rows takes it, and waits for it at most 10 seconds. It refuses, writing
+ * nothing, unless the account is live, staff and has a handle (the console names staff by their handle) and holds fewer
+ * than five live keys. It writes the enrolment with only the token's sha256 and the console's origin and relying party ID,
+ * its staff_enrollment_issued event, and last its audit row, which holds the chain's head until the commit. The token is
+ * 32 random bytes; it is printed once and kept nowhere.
+ */
+export async function issueEnrolment(db: Db, email: string, settings: Pick<EnrollSettings, "consoleOrigin" | "consoleRpId">): Promise<IssuedEnrolment> {
+  return db.transaction(async (tx): Promise<IssuedEnrolment> => {
+    await tx.execute(sql`set local lock_timeout = '10s'`);
+    const [account] = await tx
+      .select({ id: users.id, email: users.email, role: users.role, onboardedAt: users.onboardedAt })
+      .from(users)
+      .where(and(sql`lower(${users.email}) = lower(${email})`, isNull(users.deletedAt)))
+      .limit(1)
+      .for("no key update");
+    if (!account) return { ok: false, problem: `no live account for ${email}` };
+    if (account.role === "user") return { ok: false, problem: `${email} is not staff (its role is user): make it staff with grant-role first` };
+    if (account.onboardedAt === null) {
+      return { ok: false, problem: `${email} has no handle yet: the console names staff by their handle, so the account chooses one in the app first` };
+    }
+    const [held] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(staffKeys)
+      .where(and(eq(staffKeys.userId, account.id), isNull(staffKeys.revokedAt)));
+    if ((held?.count ?? 0) >= LIVE_KEYS_MAX) {
+      return { ok: false, problem: `${email} already holds ${LIVE_KEYS_MAX} live staff keys, the most an account may hold: revoke one before enrolling another` };
+    }
+    const token = randomBytes(32).toString("base64url");
+    // The database's clock, which auth.add_staff_key checks the expiry against; the creation time is the same now().
+    const [enrolment] = await tx
+      .insert(staffEnrollments)
+      .values({
+        userId: account.id,
+        tokenHash: createHash("sha256").update(token).digest("hex"),
+        origin: settings.consoleOrigin,
+        rpId: settings.consoleRpId,
+        expiresAt: sql`now() + make_interval(mins => ${ENROLMENT_MINUTES}::int)`,
+      })
+      .returning({ id: staffEnrollments.id, expiresAt: staffEnrollments.expiresAt });
+    await tx.insert(authEvents).values({ userId: account.id, type: "staff_enrollment_issued", metadata: { enrollmentId: enrolment!.id, via: "cli" } });
+    // As the migrator the row is written directly: auth.append_audit is the auth role's way, and does not take this action.
+    await tx.insert(auditLog).values({
+      actorId: SYSTEM_ACTOR_ID,
+      action: "staff_enrollment_issued",
+      targetType: "user",
+      targetId: account.id,
+      metadata: { enrollmentId: enrolment!.id, via: "cli" },
+    });
+    return { ok: true, token, email: account.email, role: account.role, expiresAt: enrolment!.expiresAt };
+  });
+}
+
+/** What enroll prints: the link on a line of its own, so it can be copied whole, and how to hand it over. */
+export function describeEnrolment(issued: Extract<IssuedEnrolment, { ok: true }>, consoleOrigin: string): string[] {
+  return [
+    `Enrolment link for ${issued.email} (${issued.role}), valid for ${ENROLMENT_MINUTES} minutes, until ${issued.expiresAt.toISOString()}, and once:`,
+    `${consoleOrigin}/enroll/${issued.token}`,
+    "Hand it over by a channel you trust: whoever holds it can register a staff key for this account. The person opens it on the device that holds the key, then signs in once with the new key.",
+  ];
+}
+
+// ---------------------------------------------------------------- keys
+
+/** One account as keys lists it, with its keys oldest first. */
+export interface StaffKeysListing {
+  id: string;
+  email: string;
+  role: string;
+  handle: string | null;
+  keys: {
+    id: string;
+    name: string;
+    aaguid: string | null;
+    createdAt: Date;
+    lastUsedAt: Date | null;
+    revokedAt: Date | null;
+    suspectAt: Date | null;
+  }[];
+}
+
+/**
+ * The staff keys of the live account at `email`, or of every live account whose role is not user; null when no live
+ * account has that address. Keys and accounts are read on the auth role, the handles on the API role, which holds the
+ * profiles. A key's public key and credential id are never read.
+ */
+export async function listStaffKeys(db: { api: Pick<Db, "select">; auth: Pick<Db, "select"> }, email: string | null): Promise<StaffKeysListing[] | null> {
+  const accounts = await db.auth
+    .select({ id: users.id, email: users.email, role: users.role })
+    .from(users)
+    .where(and(isNull(users.deletedAt), email === null ? ne(users.role, "user") : sql`lower(${users.email}) = lower(${email})`))
+    .orderBy(asc(users.email));
+  if (email !== null && accounts.length === 0) return null;
+  if (accounts.length === 0) return [];
+  const ids = accounts.map((account) => account.id);
+  const keys = await db.auth
+    .select({
+      id: staffKeys.id,
+      userId: staffKeys.userId,
+      name: staffKeys.name,
+      aaguid: staffKeys.aaguid,
+      createdAt: staffKeys.createdAt,
+      lastUsedAt: staffKeys.lastUsedAt,
+      revokedAt: staffKeys.revokedAt,
+      suspectAt: staffKeys.suspectAt,
+    })
+    .from(staffKeys)
+    .where(inArray(staffKeys.userId, ids))
+    .orderBy(asc(staffKeys.createdAt), asc(staffKeys.id));
+  const handles = new Map((await db.api.select({ id: profiles.id, handle: profiles.handle }).from(profiles).where(inArray(profiles.id, ids))).map((p) => [p.id, p.handle]));
+  return accounts.map((account) => ({
+    ...account,
+    handle: handles.get(account.id) ?? null,
+    keys: keys.filter((key) => key.userId === account.id).map(({ userId: _owner, ...key }) => key),
+  }));
+}
+
+/**
+ * How keys prints: each account on a line, its keys indented below it. A name is printed as a JSON string, so a quote or
+ * a character a terminal would act on is shown escaped, never acted on. A zero AAGUID means the browser or the
+ * authenticator withheld its model; none, that the account's deletion blanked it.
+ */
+export function describeStaffKeys(listing: StaffKeysListing[]): string[] {
+  if (listing.length === 0) return ["no staff account"];
+  const lines: string[] = [];
+  for (const account of listing) {
+    lines.push(`${account.role} ${account.email} ${account.handle === null ? "(no handle)" : `@${account.handle}`} (account ${account.id})`);
+    if (account.keys.length === 0) lines.push("  no staff keys");
+    for (const key of account.keys) {
+      const state = key.revokedAt === null ? "live" : `revoked ${key.revokedAt.toISOString()}${key.suspectAt ? `, suspect ${key.suspectAt.toISOString()}` : ""}`;
+      lines.push(
+        `  key ${key.id} ${JSON.stringify(key.name)}: AAGUID ${key.aaguid ?? "none"}, created ${key.createdAt.toISOString()}, ` +
+          `last used ${key.lastUsedAt ? key.lastUsedAt.toISOString() : "never"}, ${state}`,
+      );
+    }
+  }
+  return lines;
+}
+
 // ---------------------------------------------------------------- audit-head
 
 /**
@@ -411,6 +623,7 @@ export async function runStaffCommand(args: readonly string[], env: Record<strin
     out.error((err as Error).message);
     return 2;
   }
+  if (command.command === "enroll") return runEnroll(command.email, env, out);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -432,6 +645,15 @@ export async function runStaffCommand(args: readonly string[], env: Record<strin
       out.log(`${head.place.seq}:${head.place.hash} ${head.createdAt ? head.createdAt.toISOString() : "(the audit log is empty)"}`);
       return 0;
     }
+    if (command.command === "keys") {
+      const listing = await listStaffKeys({ api: apiDb, auth: authDb! }, command.email);
+      if (listing === null) {
+        out.error(`keys: no live account for ${command.email}`);
+        return 1;
+      }
+      for (const line of describeStaffKeys(listing)) out.log(line);
+      return 0;
+    }
     const report = await auditVerify({ api: apiDb, auth: authDb! }, command.kept);
     for (const line of describeReport(report)) {
       if (report.ok) out.log(line);
@@ -443,6 +665,32 @@ export async function runStaffCommand(args: readonly string[], env: Record<strin
     return 1;
   } finally {
     await Promise.allSettled([closeDb(apiDb), ...(authDb ? [closeDb(authDb)] : [])]);
+  }
+}
+
+/** enroll, on the migrator's own connection: its settings first, so a console that is off connects to nothing. */
+async function runEnroll(email: string, env: Record<string, string | undefined>, out: Output): Promise<number> {
+  let settings: EnrollSettings;
+  try {
+    settings = enrollSettings(env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const migrateDb = createDb(settings.migrate, { max: 1 });
+  try {
+    const issued = await issueEnrolment(migrateDb, email, settings);
+    if (!issued.ok) {
+      out.error(`enroll: ${issued.problem}; no link was issued`);
+      return 1;
+    }
+    for (const line of describeEnrolment(issued, settings.consoleOrigin)) out.log(line);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `enroll: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
   }
 }
 

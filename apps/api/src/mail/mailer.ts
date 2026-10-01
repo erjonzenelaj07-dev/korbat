@@ -19,7 +19,12 @@ export type TemplateName =
   | "passkey_added"
   | "passkey_removed"
   | "passkey_suspect"
-  | "recovery_code_used";
+  | "recovery_code_used"
+  // The staff console's mails (3a design, section 7): to the staff account's own address, and never with a link.
+  | "staff_key_added"
+  | "staff_session_started"
+  | "staff_key_suspect"
+  | "staff_keys_revoked";
 
 export interface MailMessage {
   to: string;

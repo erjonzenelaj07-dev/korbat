@@ -1,4 +1,4 @@
-import { AuthErrorCode } from "@korbat/contracts";
+import { AuthErrorCode, StaffErrorCode } from "@korbat/contracts";
 import { describe, expect, test } from "vitest";
 import { AuthError, authErrorMessage } from "../../src/auth/context";
 
@@ -15,6 +15,25 @@ describe("auth error messages", () => {
     expect(authErrorMessage("passkey_suspended")).toBe("This passkey was switched off because a copy of it may exist. Remove it and add a new one.");
     expect(authErrorMessage("passkey_not_found")).toBe("That passkey is gone.");
     expect(authErrorMessage("challenge_expired")).toBe("That took too long. Try again.");
+  });
+
+  test("every staff code has the wording of the 3a design (section 10), which the module raises as an AuthError", () => {
+    const expected: Record<StaffErrorCode, string> = {
+      staff_session_required: "Your staff session ended. Sign in with your staff key.",
+      staff_key_invalid: "This key does not open the staff console. If it should, ask the operator to check your staff keys.",
+      staff_key_suspended: "This staff key was switched off because a copy of it may exist. Ask the operator for a link to enrol a new one.",
+      staff_key_limit: "This account has 5 staff keys. Ask the operator to revoke one before enrolling another.",
+      staff_key_not_device_bound: "This key can be synced or copied, so it cannot be a staff key. Use a security key or a device-bound authenticator.",
+      staff_key_not_user_verified: "This key did not ask for a PIN or fingerprint, so it cannot be a staff key. Set a PIN on it, or use another key.",
+      staff_key_refused: "The browser's answer for this key could not be checked. Try again, or use another key; this link still works.",
+      staff_enrollment_invalid: "This enrolment link has expired or was already used. Ask the operator for a new one.",
+      staff_step_up_required: "Confirm this with your staff key.",
+      staff_step_up_invalid: "That confirmation was for another action, was already used or could not be checked. Try again.",
+    };
+    for (const code of StaffErrorCode.options) {
+      expect(authErrorMessage(code), code).toBe(expected[code]);
+      expect(new AuthError(code, 403).message, code).toBe(expected[code]);
+    }
   });
 
   test("an AuthError carries the message of its code unless the flow gives its own", () => {

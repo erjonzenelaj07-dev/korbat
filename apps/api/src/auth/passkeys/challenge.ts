@@ -4,14 +4,18 @@ import { sha256Hex } from "../crypto";
 import type { KeyValueStore } from "../kv";
 import { MINUTE } from "../limits";
 
-/** Which ceremony a challenge was issued for; a challenge answers only the ceremony it names. */
-export type ChallengePurpose = "signin" | "register" | "reauth";
+/**
+ * Which ceremony a challenge was issued for; a challenge answers only the ceremony it names. The staff console's two
+ * (3a design, section 5) share the layout, the key, the lifetime and the used-challenge markers, so an app sign-in
+ * challenge never opens the console's sign-in and a personal passkey's registration challenge never enrols a staff key.
+ */
+export type ChallengePurpose = "signin" | "register" | "reauth" | "staff_signin" | "staff_register";
 
 /** How long a challenge is valid: the top of WebAuthn L3's recommended range for a ceremony. */
 export const CHALLENGE_TTL_MS = 10 * MINUTE;
 
 const VERSION = 1;
-const PURPOSE_CODES: Record<ChallengePurpose, number> = { signin: 1, register: 2, reauth: 3 };
+const PURPOSE_CODES: Record<ChallengePurpose, number> = { signin: 1, register: 2, reauth: 3, staff_signin: 4, staff_register: 5 };
 
 // The layout: version (1 byte), purpose (1), expiry in epoch milliseconds (8, big-endian), nonce (16), binding (16), then
 // the first 16 bytes of HMAC-SHA256 over the 42 before them.
@@ -49,10 +53,13 @@ export function challengeKey(authHmacKey: Buffer): Buffer {
 const invalid = () => new AuthError("passkey_invalid", 401);
 const expired = () => new AuthError("challenge_expired", 400);
 
-/** The first 16 bytes of sha256(session handle) for a challenge tied to a session, zeros for one that is not (sign-in). */
-function binding(sessionHandle: string | undefined): Buffer {
-  if (sessionHandle === undefined) return Buffer.alloc(BINDING_BYTES);
-  return createHash("sha256").update(sessionHandle).digest().subarray(0, BINDING_BYTES);
+/**
+ * The first 16 bytes of sha256 of what the challenge is bound to (a session's handle, or a staff enrolment's id), zeros
+ * for one bound to nothing (the two sign-ins).
+ */
+function binding(boundTo: string | undefined): Buffer {
+  if (boundTo === undefined) return Buffer.alloc(BINDING_BYTES);
+  return createHash("sha256").update(boundTo).digest().subarray(0, BINDING_BYTES);
 }
 
 function seal(key: Buffer, signed: Buffer): Buffer {
@@ -72,17 +79,18 @@ function decode(challenge: string): Buffer | null {
 }
 
 /**
- * A stateless WebAuthn challenge: its purpose, its expiry (10 minutes from now), a random nonce and, for registration and
- * re-authentication, a binding to the session's handle, sealed with an HMAC. Handing one out stores nothing, so the
- * unauthenticated sign-in options cannot fill the key-value store.
+ * A stateless WebAuthn challenge: its purpose, its expiry (10 minutes from now), a random nonce and a binding, sealed with
+ * an HMAC. Registration and re-authentication bind it to the session's handle, a staff registration to its enrolment's id,
+ * and the two sign-ins to nothing. Handing one out stores nothing, so the unauthenticated sign-in options cannot fill the
+ * key-value store.
  */
-export function issueChallenge(key: Buffer, purpose: ChallengePurpose, now: Date, sessionHandle?: string): string {
+export function issueChallenge(key: Buffer, purpose: ChallengePurpose, now: Date, boundTo?: string): string {
   const bytes = Buffer.alloc(CHALLENGE_BYTES);
   bytes[0] = VERSION;
   bytes[PURPOSE_AT] = PURPOSE_CODES[purpose];
   bytes.writeBigUInt64BE(BigInt(now.getTime() + CHALLENGE_TTL_MS), EXPIRY_AT);
   randomBytes(NONCE_BYTES).copy(bytes, NONCE_AT);
-  binding(sessionHandle).copy(bytes, BINDING_AT);
+  binding(boundTo).copy(bytes, BINDING_AT);
   seal(key, bytes.subarray(0, MAC_AT)).copy(bytes, MAC_AT);
   return bytes.toString("base64url");
 }
@@ -90,15 +98,16 @@ export function issueChallenge(key: Buffer, purpose: ChallengePurpose, now: Date
 /**
  * Checks a challenge a ceremony's client data names before any WebAuthn verification runs: the seal first, in constant
  * time, so a forged challenge says nothing about which field failed; then the version, the purpose and the binding
- * (`passkey_invalid`), and only then the expiry (`challenge_expired`), which the app answers by starting over. Pass the
- * session's handle for registration and re-authentication, nothing for sign-in.
+ * (`passkey_invalid`), and only then the expiry (`challenge_expired`), which the app answers by starting over. Pass what
+ * the challenge was issued bound to: the session's handle for registration and re-authentication, the enrolment's id for
+ * a staff registration, nothing for the sign-ins. The staff flows answer this function's passkey_invalid with a staff code.
  */
-export function readChallenge(key: Buffer, challenge: string, purpose: ChallengePurpose, now: Date, sessionHandle?: string): void {
+export function readChallenge(key: Buffer, challenge: string, purpose: ChallengePurpose, now: Date, boundTo?: string): void {
   const bytes = decode(challenge);
   if (!bytes) throw invalid();
   if (!timingSafeEqual(bytes.subarray(MAC_AT), seal(key, bytes.subarray(0, MAC_AT)))) throw invalid();
   if (bytes[0] !== VERSION || bytes[PURPOSE_AT] !== PURPOSE_CODES[purpose]) throw invalid();
-  if (!bytes.subarray(BINDING_AT, MAC_AT).equals(binding(sessionHandle))) throw invalid();
+  if (!bytes.subarray(BINDING_AT, MAC_AT).equals(binding(boundTo))) throw invalid();
   if (now.getTime() >= Number(bytes.readBigUInt64BE(EXPIRY_AT))) throw expired();
 }
 

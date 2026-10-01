@@ -130,7 +130,38 @@ describe("passkey options", () => {
     expect(options.timeout).toBe(300_000);
     expect(options.attestation).toBe("none");
     expect(options.authenticatorSelection).toEqual({ residentKey: "required", requireResidentKey: true, userVerification: "preferred" });
+    // No hint unless a caller asks for one: 1c's registration names no kind of authenticator.
+    expect(options.hints).toEqual([]);
     expect(options.excludeCredentials).toEqual([{ id: "AAECAw", transports: ["internal", "hybrid"], type: "public-key" }]);
+  });
+
+  test("registration options require user verification only when asked, and carry the security-key hint only when asked", async () => {
+    const input = () => ({
+      rp: { id: "console.localhost", name: RP_NAME },
+      user: { id: USER_HANDLE, name: "Blue key", displayName: "Blue key" },
+      exclude: [],
+      challenge: issueChallenge(KEY, "staff_register", NOW, HANDLE),
+    });
+    // What every staff ceremony asks for (3a design, section 5); 1c's callers name nothing and keep "preferred".
+    const required = await registrationOptions({ ...input(), userVerification: "required" });
+    expect(required.authenticatorSelection).toEqual({ residentKey: "required", requireResidentKey: true, userVerification: "required" });
+    expect(required.hints).toEqual([]);
+    expect((await registrationOptions({ ...input(), userVerification: "preferred" })).authenticatorSelection!.userVerification).toBe("preferred");
+    expect((await registrationOptions(input())).authenticatorSelection!.userVerification).toBe("preferred");
+    // The enrolment's "Register a security key" button: the library sends the hint only with cross-platform attachment,
+    // which is why "Use Windows Hello on this computer" sends none.
+    const securityKey = await registrationOptions({ ...input(), userVerification: "required", hint: "securityKey" });
+    expect(securityKey.hints).toEqual(["security-key"]);
+    expect(securityKey.authenticatorSelection).toEqual({ residentKey: "required", requireResidentKey: true, userVerification: "required", authenticatorAttachment: "cross-platform" });
+    // The library writes the attachment into the object it is given: the next call without a hint has none.
+    expect((await registrationOptions({ ...input(), userVerification: "required" })).authenticatorSelection).toEqual({ residentKey: "required", requireResidentKey: true, userVerification: "required" });
+  });
+
+  test("authentication options require user verification only when asked", async () => {
+    const challenge = () => issueChallenge(KEY, "staff_signin", NOW);
+    expect((await authenticationOptions({ rpId: "console.localhost", allow: [], challenge: challenge(), userVerification: "required" })).userVerification).toBe("required");
+    expect((await authenticationOptions({ rpId: RP_ID, allow: [], challenge: challenge(), userVerification: "preferred" })).userVerification).toBe("preferred");
+    expect((await authenticationOptions({ rpId: RP_ID, allow: [], challenge: challenge() })).userVerification).toBe("preferred");
   });
 
   test("two calls never share an authenticatorSelection object, which the library writes into", async () => {
@@ -312,7 +343,8 @@ describe("passkey assertions", () => {
     const { passkey } = await registered(auth);
     const { challenge, response } = assertion(auth, passkey.credentialId, { up: true, uv: true, be: true, bs: false }, 7);
     const result = await verifyAuthentication({ response, expectedChallenge: challenge, origins: ORIGINS, rpId: RP_ID, credential: { id: passkey.credentialId, publicKey: passkey.publicKey, transports: passkey.transports } });
-    expect(result).toEqual({ newCounter: 7, userVerified: true, backedUp: false });
+    // BE as this assertion reported it: the staff flows refuse a key that reports it at any use (3a design, section 2).
+    expect(result).toEqual({ newCounter: 7, userVerified: true, backedUp: false, backupEligible: true });
     expect(libraryAuthentication).toHaveBeenCalledTimes(1);
     const call = libraryAuthentication.mock.calls[0]![0];
     expect(call).toMatchObject({ expectedChallenge: challenge, expectedOrigin: ORIGINS, expectedRPID: RP_ID, requireUserVerification: false });
@@ -336,7 +368,24 @@ describe("passkey assertions", () => {
     const { passkey } = await registered(auth, { flags: BARE });
     const { challenge, response } = assertion(auth, passkey.credentialId, BARE, 1);
     const result = await verifyAuthentication({ response, expectedChallenge: challenge, origins: ORIGINS, rpId: RP_ID, credential: { id: passkey.credentialId, publicKey: passkey.publicKey, transports: [] } });
-    expect(result).toEqual({ newCounter: 1, userVerified: false, backedUp: false });
+    expect(result).toEqual({ newCounter: 1, userVerified: false, backedUp: false, backupEligible: false });
+  });
+
+  test("the BE and BS flags are reported as each assertion carries them, whatever the registration said", async () => {
+    const auth = new SoftAuthenticator();
+    const { passkey } = await registered(auth, { flags: { up: true, uv: true, be: false, bs: false } });
+    const credential = { id: passkey.credentialId, publicKey: passkey.publicKey, transports: passkey.transports };
+    for (const [flags, expected] of [
+      [{ up: true, uv: true, be: false, bs: false }, { backupEligible: false, backedUp: false }],
+      [{ up: true, uv: true, be: true, bs: false }, { backupEligible: true, backedUp: false }],
+      [{ up: true, uv: true, be: true, bs: true }, { backupEligible: true, backedUp: true }],
+    ] as const) {
+      const { challenge, response } = assertion(auth, passkey.credentialId, flags, 1);
+      expect(await verifyAuthentication({ response, expectedChallenge: challenge, origins: ORIGINS, rpId: RP_ID, credential })).toMatchObject(expected);
+    }
+    // BS without BE is impossible, and the library refuses it.
+    const { challenge, response } = assertion(auth, passkey.credentialId, { up: true, uv: true, be: false, bs: true }, 1);
+    await expectInvalid(verifyAuthentication({ response, expectedChallenge: challenge, origins: ORIGINS, rpId: RP_ID, credential }));
   });
 
   test("an assertion without user presence is refused", async () => {

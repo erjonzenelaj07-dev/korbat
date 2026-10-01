@@ -288,7 +288,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
   test("granting a role signs the account out everywhere so the new role applies at once", async () => {
     const h = flowHarness(repo);
     const account = await onboardedUser(h, repo);
-    expect(await grantRole(h.deps, account.email.toUpperCase(), "moderator")).toEqual({ userId: account.user.id, previousRole: "user" });
+    // The account held no staff session, link or key, so the change ends none and mails nothing (3a design, section 7).
+    expect(await grantRole(h.deps, account.email.toUpperCase(), "moderator")).toEqual({
+      userId: account.user.id,
+      previousRole: "user",
+      staffSessionsRevoked: 0,
+      enrollmentsDeleted: 0,
+      staffKeysRevoked: 0,
+      mailError: null,
+    });
+    expect(h.mailer.sent).toEqual([]);
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();
     const again = await h.deps.sessions.issue(account.user.id, account.session.deviceId, { factors: { email: h.clock.ms() } });
     expect(again.session).toMatchObject({ role: "moderator", mfaEnabled: false });

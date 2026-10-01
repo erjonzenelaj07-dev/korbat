@@ -23,6 +23,8 @@ describe("mail templates", () => {
       name: "<i>Work</i> laptop",
       time: "2026-09-25 10:00 UTC",
       removeUrl: "http://localhost:8081/passkey-remove/ghi",
+      browser: "Firefox on Linux",
+      names: '"Blue key", "Red key"',
     };
     for (const template of [
       "sign_in_code",
@@ -46,6 +48,10 @@ describe("mail templates", () => {
       "passkey_removed",
       "passkey_suspect",
       "recovery_code_used",
+      "staff_key_added",
+      "staff_session_started",
+      "staff_key_suspect",
+      "staff_keys_revoked",
     ] as const) {
       const r = renderTemplate(template, data);
       expect(r.subject.length, template).toBeGreaterThan(5);
@@ -157,6 +163,80 @@ describe("mail templates", () => {
     expect(suspect.html).toContain("&lt;img src=x onerror=alert(1)&gt;");
     expect(suspect.html).not.toMatch(/<img|<a /);
   });
+  describe("the staff mails (3a design, section 7)", () => {
+    const LAST = "korbat never puts a link in a staff email.";
+    const name = `<img src=x onerror=alert(1)> "Blue" key`;
+
+    /** Plain paragraphs with no link of any kind, the last one saying so; and a user-written name never becomes HTML. */
+    function linkless(template: string, r: { text: string; html: string }) {
+      expect(r.text, template).not.toMatch(/https?:|www\.|:\/\//);
+      expect(r.html, template).not.toMatch(/<img|<a |href=|https?:/);
+      expect(r.text.trimEnd().split("\n\n").at(-1), template).toBe(LAST);
+    }
+
+    test("staff_key_added names the key and the time, and tells the person to go to the operator if it was not them", () => {
+      const r = renderTemplate("staff_key_added", { name, time: "2026-10-01 09:30 UTC" });
+      expect(r.subject).toBe("A staff key was added to your korbat staff account");
+      expect(r.text).toBe(
+        [
+          `A staff key named "${name}" was registered for your korbat staff account at 2026-10-01 09:30 UTC. It can open the staff console.`,
+          "If this was you, there is nothing to do. If not, tell the operator at once; they revoke the key with the staff command line.",
+          LAST,
+        ].join("\n\n") + "\n",
+      );
+      expect(r.html).toContain("&lt;img src=x onerror=alert(1)&gt; &quot;Blue&quot; key");
+      linkless("staff_key_added", r);
+    });
+
+    test("staff_session_started names the key, the browser and the time", () => {
+      const r = renderTemplate("staff_session_started", { name, browser: "Firefox on Linux", time: "2026-10-01 09:31 UTC" });
+      expect(r.subject).toBe("A staff session started on the korbat console");
+      expect(r.text).toBe(
+        [
+          `A staff session was started on the korbat console at 2026-10-01 09:31 UTC with your staff key "${name}", from Firefox on Linux.`,
+          "If this was you, there is nothing to do. If not, someone holds that key: tell the operator at once; they revoke it and every session it opened with the staff command line.",
+          LAST,
+        ].join("\n\n") + "\n",
+      );
+      linkless("staff_session_started", r);
+    });
+
+    test("staff_key_suspect says the key was switched off as a likely copy, and never sends the person to the app's Security screen", () => {
+      const r = renderTemplate("staff_key_suspect", { name });
+      expect(r.subject).toBe("A staff key on your korbat staff account was switched off");
+      expect(r.text).toBe(
+        [
+          `A use of your staff key "${name}" on the korbat console (a sign-in or a confirmation) looked like a copy of it, so korbat switched that key off and ended every staff session it opened. It can no longer open the console.`,
+          "Ask the operator for a link to register a new key. If you did not use it just now, tell them so: someone else holds a copy of the key.",
+          LAST,
+        ].join("\n\n") + "\n",
+      );
+      expect(r.text).not.toMatch(/Security/);
+      linkless("staff_key_suspect", r);
+    });
+
+    test("staff_keys_revoked lists the keys and the time", () => {
+      const r = renderTemplate("staff_keys_revoked", { names: `"${name}", "Red key"`, time: "2026-10-01 09:32 UTC" });
+      expect(r.subject).toBe("Staff keys revoked on your korbat staff account");
+      expect(r.text).toBe(
+        [
+          `These staff keys of your korbat staff account were revoked at 2026-10-01 09:32 UTC: "${name}", "Red key". They can no longer open the console, and every staff session they opened has ended.`,
+          "If you expected this, there is nothing to do. If not, ask the operator why.",
+          LAST,
+        ].join("\n\n") + "\n",
+      );
+      linkless("staff_keys_revoked", r);
+    });
+
+    test("each staff mail needs its data", () => {
+      expect(() => renderTemplate("staff_key_added", { name: "Blue key" })).toThrow(/time/);
+      expect(() => renderTemplate("staff_key_added", { time: "2026-10-01 09:30 UTC" })).toThrow(/name/);
+      expect(() => renderTemplate("staff_session_started", { name: "Blue key", time: "2026-10-01 09:31 UTC" })).toThrow(/browser/);
+      expect(() => renderTemplate("staff_key_suspect", {})).toThrow(/name/);
+      expect(() => renderTemplate("staff_keys_revoked", { time: "2026-10-01 09:32 UTC" })).toThrow(/names/);
+    });
+  });
+
   test("missing template data is a programming error", () => {
     expect(() => renderTemplate("sign_in_code", {})).toThrow(/code/);
     expect(() => renderTemplate("passkey_added", { name: "Phone", deviceLabel: "Chrome on Windows", time: "2026-09-25 10:00 UTC" })).toThrow(/removeUrl/);

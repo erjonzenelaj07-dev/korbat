@@ -46,9 +46,10 @@ export const CHROME_WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWe
  * Real auth repository (Postgres) with an in-memory key-value store, mailer and profile store, a fake
  * clock shared by all of them, Turnstile that fails only for the token "fail", and a breach checker
  * that flags passwords containing "breached". A suite whose profiles live in the public schema (the
- * deletion flow compares the typed handle with the profile's) passes the real profile store instead.
+ * deletion flow compares the typed handle with the profile's) passes the real profile store instead. The staff
+ * console is off unless a suite names its origin and relying party ID, as the staff suites do (3a design, section 12).
  */
-export function flowHarness(repo: AuthRepo, options: { profiles?: ProfileStore } = {}) {
+export function flowHarness(repo: AuthRepo, options: { profiles?: ProfileStore; console?: { origin: string; rpId: string } } = {}) {
   const clock = fakeClock();
   const kv = new MemoryKv(clock.ms);
   const mailer = new MemoryMailer();
@@ -63,6 +64,7 @@ export function flowHarness(repo: AuthRepo, options: { profiles?: ProfileStore }
     trustProxy: "none",
     verifyProvider: "dev",
     webauthn: { rpId: "localhost", rpName: "korbat", origins: ["http://localhost:8081"] },
+    console: options.console ?? null,
   };
   const deps: AuthDeps = {
     repo,

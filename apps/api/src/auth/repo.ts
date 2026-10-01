@@ -1,5 +1,20 @@
 import { and, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
-import { authEventType, authEvents, devices, emailCodePurpose, emailCodes, passkeys, sessions, userRole, users, type Db } from "@korbat/db";
+import {
+  authEventType,
+  authEvents,
+  devices,
+  emailCodePurpose,
+  emailCodes,
+  passkeys,
+  sessions,
+  staffEnrollments,
+  staffKeys,
+  staffSessions,
+  userRole,
+  users,
+  type Db,
+} from "@korbat/db";
+import { SYSTEM_ACTOR_ID } from "./admin";
 
 /**
  * Every SQL statement the auth module runs. It receives only the korbat_auth pool and touches only
@@ -68,6 +83,53 @@ export interface ActiveSessionRow {
   /** The factors proven, kind to epoch milliseconds; empty for a session from before migration 0010. */
   factors: Record<string, number>;
   passkeyId: string | null;
+}
+
+/** A staff enrolment found by its token, with what the enrolment flow checks of its account (3a design, section 7). */
+export interface StaffEnrollmentRow {
+  id: string;
+  userId: string;
+  origin: string;
+  rpId: string;
+  expiresAt: Date;
+  usedAt: Date | null;
+  email: string;
+  role: UserRole;
+  deletedAt: Date | null;
+  onboardedAt: Date | null;
+  webauthnUserId: Buffer | null;
+}
+
+/** What the enrolment flow stores of a verified staff key; auth.add_staff_key copies the origin and relying party ID from the enrolment. */
+export interface NewStaffKey {
+  userId: string;
+  enrollmentId: string;
+  /** The link's token itself: the function hashes it, so a hash read from the table spends nothing. */
+  token: string;
+  credentialId: string;
+  publicKey: string;
+  counter: number;
+  transports: string[];
+  name: string;
+  aaguid: string;
+  requestId: string;
+}
+
+/** What addStaffKey answers: the new key's id, or which of auth.add_staff_key's re-checks refused it. */
+export type AddStaffKeyOutcome = { ok: true; keyId: string } | { ok: false; reason: "enrollment_invalid" | "limit" };
+
+/** A role change as it committed: what it revoked and deleted, for the cache tombstones, the command's report and the mail. */
+export interface RoleChange {
+  userId: string;
+  /** The account's address as stored, which the staff_keys_revoked mail goes to. */
+  email: string;
+  previousRole: UserRole;
+  /** The revoked app sessions' ids, for the cache tombstones. */
+  sessionIds: string[];
+  staffSessionsRevoked: number;
+  enrollmentsDeleted: number;
+  /** The staff keys revoked by a change to user, oldest first. */
+  keysRevoked: { id: string; name: string }[];
 }
 
 export interface SessionListRow {
@@ -207,18 +269,20 @@ export function createAuthRepo(db: Db) {
     /**
      * A role change (3a design, section 7) in one transaction: the account's row is locked first, FOR NO KEY UPDATE (the
      * lock the role's update would take, and the one every writer of staff rows takes first, so none of them can wait on
-     * another in a circle); the role is set, every session revoked, and last, through auth.append_audit, the role_granted
-     * row. The row holds the audit chain's head until the
-     * commit, so the change and its record commit together or not at all. Only the command line calls this, and it waits
-     * at most 10 seconds for a lock: an API that holds the head or the row open cannot stall it for longer, and one that
-     * times out has changed nothing. Answers the ids of the revoked sessions, for the cache tombstones, which are not the
-     * database's to write; undefined when no live account has the address.
+     * another in a circle); the role is set, every session and every staff session revoked and every unused enrolment link
+     * deleted, so the new role applies at once and no link issued before enrols anything. A change to user also revokes
+     * every staff key, with a staff_key_revoked event each: a person made staff again enrols new keys. Last, through
+     * auth.append_audit, each revocation's audit row and then the role_granted row, which hold the audit chain's head until
+     * the commit, so the change and its record commit together or not at all. Only the command line calls this, and it
+     * waits at most 10 seconds for a lock: an API that holds the head or the row open cannot stall it for longer, and one
+     * that times out has changed nothing. The cache tombstones and the mail are not the database's to write, so the caller
+     * does them after the commit with what this answers; undefined when no live account has the address.
      */
-    async changeRole(email: string, role: UserRole, audit: { actorId: string; now: Date }): Promise<{ userId: string; previousRole: UserRole; sessionIds: string[] } | undefined> {
+    async changeRole(email: string, role: UserRole, audit: { actorId: string; now: Date }): Promise<RoleChange | undefined> {
       return db.transaction(async (tx) => {
         await tx.execute(sql`set local lock_timeout = '10s'`);
         const [account] = await tx
-          .select({ id: users.id, role: users.role })
+          .select({ id: users.id, email: users.email, role: users.role })
           .from(users)
           .where(and(sql`lower(${users.email}) = lower(${email})`, isNull(users.deletedAt)))
           .limit(1)
@@ -230,14 +294,25 @@ export function createAuthRepo(db: Db) {
           .set({ revokedAt: audit.now })
           .where(and(eq(sessions.userId, account.id), isNull(sessions.revokedAt)))
           .returning({ id: sessions.id });
+        const staff = await revokeStaffAccess(tx, account.id, audit.now, { keys: role === "user", enrollments: "unused", via: "role_change" });
+        await appendKeyRevocations(tx, audit.actorId, staff, "role_change");
         await appendAudit(tx, {
           actorId: audit.actorId,
           action: "role_granted",
           targetType: "user",
           targetId: account.id,
-          metadata: { from: account.role, to: role, via: "cli" },
+          // A role change deletes open links only, so every link it deleted was one it cancelled.
+          metadata: { from: account.role, to: role, via: "cli", staffSessionsRevoked: staff.staffSessionsRevoked, enrollmentsDeleted: staff.enrollmentsCancelled },
         });
-        return { userId: account.id, previousRole: account.role, sessionIds: revoked.map((row) => row.id) };
+        return {
+          userId: account.id,
+          email: account.email,
+          previousRole: account.role,
+          sessionIds: revoked.map((row) => row.id),
+          staffSessionsRevoked: staff.staffSessionsRevoked,
+          enrollmentsDeleted: staff.enrollmentsCancelled,
+          keysRevoked: staff.keys.map(({ id, name }) => ({ id, name })),
+        };
       });
     },
 
@@ -254,34 +329,42 @@ export function createAuthRepo(db: Db) {
 
     /**
      * Step 1 of a deletion (1b design, section 7.6) in one transaction: the row is marked deleted, every live
-     * session revoked, every device, code and passkey deleted, the WebAuthn user handle cleared, and the
-     * account_deleted event appended. Either all of it lands or none of it does, so a failure leaves a live
-     * account with its sessions, never a deleted one with sessions, devices and passkeys that nothing would
-     * remove. Answers the ids of the sessions it revoked, for the cache tombstones, which are not the database's
-     * to write.
+     * session revoked, every device, code and passkey deleted, the WebAuthn user handle cleared, the account's staff
+     * keys and staff sessions revoked, its enrolment links deleted and its keys blanked (3a design, section 7), and the
+     * account_deleted event appended; last, the audit rows of the staff side, with the account as their actor, since its
+     * owner asked for the deletion. Either all of it lands or none of it does, so a failure leaves a live account with its
+     * sessions, never a deleted one with sessions, devices, passkeys or staff keys that nothing would remove. Answers the
+     * ids of the sessions it revoked, for the cache tombstones, which are not the database's to write.
      */
     async takeDown(userId: string, now: Date, deviceId: string | null): Promise<string[]> {
       return db.transaction(async (tx) => {
         await tx.update(users).set({ deletedAt: now }).where(and(eq(users.id, userId), isNull(users.deletedAt)));
-        const revoked = await takeDownRows(tx, userId, now);
+        const taken = await takeDownRows(tx, userId, now);
         await tx.insert(authEvents).values({ userId, type: "account_deleted", deviceId, metadata: {} });
-        return revoked;
+        await appendTakeDownAudit(tx, userId, userId, taken.staff);
+        return taken.sessionIds;
       });
     },
 
     /**
-     * The rows of step 1 again (the sessions, devices, codes and passkeys, and the WebAuthn user handle), for a row
-     * marked deleted and not purged yet: a take-down that stopped after the mark, or a session that a sign-in already
-     * past its lookup created after it. Nothing for a live or a purged row. The event is not appended again: the
-     * confirmation that recorded it is the only one there was.
+     * The rows of step 1 again (the sessions, devices, codes and passkeys, the WebAuthn user handle and the staff rows), for
+     * a row marked deleted and not purged yet: a take-down that stopped after the mark, or a session that a sign-in already
+     * past its lookup created after it. Nothing for a live or a purged row. The account_deleted event is not appended
+     * again: the confirmation that recorded it is the only one there was. The staff side's audit rows are written, last,
+     * for what this run revoked, with the server as their actor: the purge job finishes the take-down, no person.
      */
     async finishTakeDown(userId: string, now: Date): Promise<string[]> {
       return db.transaction(async (tx) => {
+        // The account's row first, as every writer of staff rows takes it (3a design, section 7).
         const [row] = await tx
           .select({ id: users.id })
           .from(users)
-          .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt)));
-        return row ? takeDownRows(tx, userId, now) : [];
+          .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt)))
+          .for("no key update");
+        if (!row) return [];
+        const taken = await takeDownRows(tx, userId, now);
+        await appendTakeDownAudit(tx, SYSTEM_ACTOR_ID, userId, taken.staff);
+        return taken.sessionIds;
       });
     },
 
@@ -728,6 +811,89 @@ export function createAuthRepo(db: Db) {
       return row;
     },
 
+    // ------------------------------------------------------------ staff keys and enrolments (3a design, section 7)
+
+    /**
+     * The enrolment whose token hashes to `tokenHash`, used or not, expired or not, with what the enrolment flow checks of
+     * its account: whether it is live, staff and has a handle, and its WebAuthn user handle. Undefined for an unknown
+     * token. The flow decides; auth.add_staff_key decides again under the account's lock.
+     */
+    async findStaffEnrollment(tokenHash: string): Promise<StaffEnrollmentRow | undefined> {
+      const [row] = await db
+        .select({
+          id: staffEnrollments.id,
+          userId: staffEnrollments.userId,
+          origin: staffEnrollments.origin,
+          rpId: staffEnrollments.rpId,
+          expiresAt: staffEnrollments.expiresAt,
+          usedAt: staffEnrollments.usedAt,
+          email: users.email,
+          role: users.role,
+          deletedAt: users.deletedAt,
+          onboardedAt: users.onboardedAt,
+          webauthnUserId: users.webauthnUserId,
+        })
+        .from(staffEnrollments)
+        .innerJoin(users, eq(users.id, staffEnrollments.userId))
+        .where(eq(staffEnrollments.tokenHash, tokenHash))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * The account's live staff keys as an options list excludes them: an authenticator keeps one discoverable credential
+     * per relying party and user handle, so a revoked key is left out and the same security key can be enrolled again.
+     */
+    async listLiveStaffKeys(userId: string): Promise<{ credentialId: string; transports: string[] }[]> {
+      return db
+        .select({ credentialId: staffKeys.credentialId, transports: staffKeys.transports })
+        .from(staffKeys)
+        .where(and(eq(staffKeys.userId, userId), isNull(staffKeys.revokedAt)))
+        .orderBy(staffKeys.createdAt, staffKeys.id);
+    },
+
+    /** One staff key as the console shows it: never its public key, credential id or AAGUID. */
+    async findStaffKey(id: string): Promise<{ id: string; name: string; createdAt: Date; lastUsedAt: Date | null } | undefined> {
+      const [row] = await db
+        .select({ id: staffKeys.id, name: staffKeys.name, createdAt: staffKeys.createdAt, lastUsedAt: staffKeys.lastUsedAt })
+        .from(staffKeys)
+        .where(eq(staffKeys.id, id))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * The enrolment's write, in one transaction on the auth role (3a design, section 7): the account's row locked first,
+     * FOR NO KEY UPDATE, so a role change or take-down that holds it either committed before (and deleted the link, which
+     * the function then does not find) or waits until this commits; the staff_key_added event; and last
+     * auth.add_staff_key, which re-checks under that lock that the link is unused and unexpired and the account live,
+     * staff, with a handle and fewer than five live keys, then spends the link, stores the key with the origin and relying
+     * party ID the link recorded and writes its audit row, which holds the chain's head until the commit. A refusal by the
+     * function rolls the event back with it. A credential id already held raises the driver's unique violation, which the
+     * flow reports.
+     */
+    async addStaffKey(input: NewStaffKey): Promise<AddStaffKeyOutcome> {
+      try {
+        return await db.transaction(async (tx) => {
+          await tx.select({ id: users.id }).from(users).where(eq(users.id, input.userId)).for("no key update");
+          await tx.insert(authEvents).values({ userId: input.userId, type: "staff_key_added", metadata: { enrollmentId: input.enrollmentId } });
+          // Each transport as its own parameter: an empty list is an empty array.
+          const transports = sql`array[${sql.join(input.transports.map((t) => sql`${t}`), sql`, `)}]::text[]`;
+          const [row] = await tx.execute<{ id: string }>(
+            sql`select auth.add_staff_key(${input.token}::text, ${input.credentialId}::text, ${input.publicKey}::text, ${input.counter}::bigint,
+              ${transports}, ${input.name}::text, ${input.aaguid}::uuid, ${input.requestId}::text) as id`,
+          );
+          return { ok: true as const, keyId: row!.id };
+        });
+      } catch (err) {
+        // The function raises its refusal's staff code as the message.
+        const refusal = raisedMessage(err);
+        if (refusal === "staff_enrollment_invalid") return { ok: false, reason: "enrollment_invalid" };
+        if (refusal === "staff_key_limit") return { ok: false, reason: "limit" };
+        throw err;
+      }
+    },
+
     // ------------------------------------------------------------ events
 
     async appendEvent(input: {
@@ -873,15 +1039,117 @@ async function recentPasskeyAdditions(q: Querier, userId: string, withinMs: numb
   return { count: row?.count ?? 0, retryAfterSeconds: row?.retryAfterSeconds ?? 0 };
 }
 
+/** The message of an exception a PL/pgSQL function raised (SQLSTATE P0001), however deeply the driver wrapped it; null for anything else. */
+function raisedMessage(err: unknown): string | null {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "P0001") {
+      const message = (current as { message?: unknown }).message;
+      return typeof message === "string" ? message : null;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** What revoking an account's staff access did, for the auth events already written, the audit rows and the mail. */
+interface StaffRevocation {
+  /** Each key revoked now, oldest first, with how many of its staff sessions were revoked now. */
+  keys: { id: string; name: string; sessionsRevoked: number }[];
+  staffSessionsRevoked: number;
+  /**
+   * The open enrolment links (never used) deleted now: the deletions that end something, and the count the record carries.
+   * A spent link deleted with them at a take-down is not counted, since it could enrol nothing more and nothing was cancelled.
+   */
+  enrollmentsCancelled: number;
+}
+
+/**
+ * Ends an account's staff access inside the caller's transaction, which has locked the account's row first (3a design,
+ * section 7): every staff session not yet revoked is revoked, the enrolment links deleted (the unused ones, or every one
+ * at a take-down), and when `keys` is set every live staff key revoked, with a staff_key_revoked event each. A revocation
+ * sets revoked_at only where it is still null, since a set one is never changed. Writes no audit row: the caller writes
+ * those last, after its own statements.
+ */
+async function revokeStaffAccess(
+  tx: Tx,
+  userId: string,
+  now: Date,
+  options: { keys: boolean; enrollments: "unused" | "all"; via: "role_change" | "take_down" },
+): Promise<StaffRevocation> {
+  const ended = await tx
+    .update(staffSessions)
+    .set({ revokedAt: now })
+    .where(and(eq(staffSessions.userId, userId), isNull(staffSessions.revokedAt)))
+    .returning({ keyId: staffSessions.keyId });
+  const deleted = await tx
+    .delete(staffEnrollments)
+    .where(and(eq(staffEnrollments.userId, userId), options.enrollments === "unused" ? isNull(staffEnrollments.usedAt) : undefined))
+    .returning({ usedAt: staffEnrollments.usedAt });
+  const keys: StaffRevocation["keys"] = [];
+  if (options.keys) {
+    const revoked = await tx
+      .update(staffKeys)
+      .set({ revokedAt: now })
+      .where(and(eq(staffKeys.userId, userId), isNull(staffKeys.revokedAt)))
+      .returning({ id: staffKeys.id, name: staffKeys.name, createdAt: staffKeys.createdAt });
+    // An update answers in no set order; the events, rows and mail list the keys oldest first.
+    revoked.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+    for (const key of revoked) {
+      const sessionsRevoked = ended.filter((session) => session.keyId === key.id).length;
+      keys.push({ id: key.id, name: key.name, sessionsRevoked });
+      // The key's id and no name: the take-down blanks names, and nothing can blank them in an event.
+      await tx.insert(authEvents).values({ userId, type: "staff_key_revoked", metadata: { keyId: key.id, sessionsRevoked, via: options.via } });
+    }
+  }
+  return { keys, staffSessionsRevoked: ended.length, enrollmentsCancelled: deleted.filter((link) => link.usedAt === null).length };
+}
+
+/** The audit row of each staff key a revocation revoked, in the order of its events; among the caller's last statements. */
+async function appendKeyRevocations(tx: Tx, actorId: string, revocation: StaffRevocation, via: "role_change" | "take_down"): Promise<void> {
+  for (const key of revocation.keys) {
+    await appendAudit(tx, {
+      actorId,
+      action: "staff_key_revoked",
+      targetType: "staff_key",
+      targetId: key.id,
+      metadata: { keyId: key.id, sessionsRevoked: key.sessionsRevoked, via },
+    });
+  }
+}
+
+/**
+ * A take-down's audit rows, its transaction's last statements (3a design, section 7): each staff key's revocation and,
+ * when an open enrolment link went, one staff_enrollments_cancelled row with their count, so the take-down never ends
+ * any staff access without a row on the record. The spent links it deletes too are no cancellation, and like the
+ * janitor's deletions of them they get no row. Nothing when the account had no staff access left to take.
+ */
+async function appendTakeDownAudit(tx: Tx, actorId: string, userId: string, revocation: StaffRevocation): Promise<void> {
+  await appendKeyRevocations(tx, actorId, revocation, "take_down");
+  if (revocation.enrollmentsCancelled > 0) {
+    await appendAudit(tx, {
+      actorId,
+      action: "staff_enrollments_cancelled",
+      targetType: "user",
+      targetId: userId,
+      metadata: { count: revocation.enrollmentsCancelled, via: "take_down" },
+    });
+  }
+}
+
 /**
  * The rows step 1 of a deletion takes down, inside the caller's transaction: every live session is revoked
  * (its id answered, for the cache tombstones), every device is deleted, and with it by cascade every session
  * row, every code out for the user goes, whatever its purpose, so none can complete a flow for an account
  * that is gone, and every passkey goes with the WebAuthn user handle (1c design, section 7.7), so a deleted
- * account keeps no credential of any kind and no assertion can name it again. Run again by finishTakeDown,
- * each statement finds nothing more to do.
+ * account keeps no credential of any kind and no assertion can name it again. Its staff access ends too (3a design,
+ * section 7): its live staff keys and staff sessions are revoked, with a staff_key_revoked event per key, and its
+ * enrolment links deleted. The keys themselves are never deleted, since audit-verify checks old confirmations against
+ * them, so auth.forget_staff_keys blanks their names, AAGUIDs and transports and keeps what audit-verify needs. It writes
+ * no audit row: the caller writes those last, from what this answers. Run again by finishTakeDown, each statement finds
+ * nothing more to do.
  */
-async function takeDownRows(tx: Tx, userId: string, now: Date): Promise<string[]> {
+async function takeDownRows(tx: Tx, userId: string, now: Date): Promise<{ sessionIds: string[]; staff: StaffRevocation }> {
   const revoked = await tx
     .update(sessions)
     .set({ revokedAt: now })
@@ -890,9 +1158,13 @@ async function takeDownRows(tx: Tx, userId: string, now: Date): Promise<string[]
   await tx.delete(devices).where(eq(devices.userId, userId));
   await tx.delete(emailCodes).where(eq(emailCodes.userId, userId));
   await tx.delete(passkeys).where(eq(passkeys.userId, userId));
-  // The handle only ever named the account to its passkeys; cleared here rather than by finishPurge, so the take-down leaves nothing of the ceremony behind.
+  // The handle only ever named the account to its passkeys and staff keys; cleared here rather than by finishPurge, so the
+  // take-down leaves nothing of the ceremony behind.
   await tx.update(users).set({ webauthnUserId: null }).where(eq(users.id, userId));
-  return revoked.map((row) => row.id);
+  const staff = await revokeStaffAccess(tx, userId, now, { keys: true, enrollments: "all", via: "take_down" });
+  // The account is marked deleted by now, which the function checks: for a live account it would change nothing.
+  await tx.execute(sql`select auth.forget_staff_keys(${userId}::uuid)`);
+  return { sessionIds: revoked.map((row) => row.id), staff };
 }
 
 export type AuthRepo = ReturnType<typeof createAuthRepo>;

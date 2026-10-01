@@ -48,7 +48,7 @@ function build(consoleOrigin: string | undefined, probe = false) {
     mailer: new MemoryMailer(),
     profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null, setVerified: async () => undefined },
   });
-  const staff = createStaff({ apiDb: createDb(config.DATABASE_URL_API, { max: 1 }) });
+  const staff = createStaff({ apiDb: createDb(config.DATABASE_URL_API, { max: 1 }), auth: auth.forStaff });
   const app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   const seen: { session: unknown; method: string; path: string }[] = [];
   if (probe) {
@@ -143,6 +143,22 @@ describe("the staff module in createApp", () => {
     expect(neighbour.headers.get("access-control-allow-origin")).toBe(TRUSTED);
     const health = await app.request("/api/health", { headers: { origin: TRUSTED } });
     expect(health.headers.get("access-control-allow-origin")).toBe(TRUSTED);
+  });
+
+  test("the enrolment routes stand behind the gate and validate their bodies before any flow runs", async () => {
+    const { app } = build(CONSOLE_ORIGIN);
+    for (const path of ["/api/staff/enroll/options", "/api/staff/enroll/verify"]) {
+      const post = (headers: Record<string, string>, body: unknown) =>
+        app.request(path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+      // Another Host is the unknown route, another Origin the gate's refusal, a write without an Origin too.
+      expect((await post({ host: "localhost:8080", origin: CONSOLE_ORIGIN }, {})).status, path).toBe(404);
+      const foreign = await post({ host: CONSOLE_HOST, origin: APP_ORIGIN }, {});
+      expect([path, foreign.status, ((await foreign.json()) as ErrorBody).error.code]).toEqual([path, 403, "csrf_failed"]);
+      expect((await post({ host: CONSOLE_HOST }, {})).status, path).toBe(403);
+      // Through the gate, a body the contracts refuse is invalid_request; the pools behind the flows are never reached.
+      const invalid = await post({ host: CONSOLE_HOST, origin: CONSOLE_ORIGIN }, { token: "short", name: "", kind: "phone" });
+      expect([path, invalid.status, ((await invalid.json()) as ErrorBody).error.code]).toEqual([path, 400, "invalid_request"]);
+    }
   });
 
   test("staff paths keep the JSON body limit and the API's headers", async () => {

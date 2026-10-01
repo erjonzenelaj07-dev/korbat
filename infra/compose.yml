@@ -72,6 +72,10 @@ services:
     environment:
       DATABASE_URL_MIGRATE: postgres://korbat_migrate:${KORBAT_MIGRATE_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MIGRATIONS_DIR: /app/migrations
+      # `staff.js enroll` runs here, as the migrator, the one role the running API never holds, and records on each link
+      # the console's origin and relying party ID it is issued for. Empty, the console is off and enroll refuses.
+      CONSOLE_ORIGIN: ${API_CONSOLE_ORIGIN:-}
+      CONSOLE_RP_ID: ${API_CONSOLE_RP_ID:-}
     networks: [data]
     depends_on:
       postgres: { condition: service_healthy }

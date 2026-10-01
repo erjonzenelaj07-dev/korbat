@@ -145,12 +145,15 @@ export async function registerOptions(deps: AuthDeps, session: Session, input: P
   const userId = user.webauthnUserId ?? (await deps.repo.ensureWebauthnUserId(user.id, randomBytes(32)));
   if (!userId) throw new AuthError("invalid_credentials", 401);
   const held = await deps.repo.listPasskeys(user.id);
+  // While the staff console's relying party ID is the app's (development), an authenticator could replace a staff key with
+  // a passkey under the same user handle: its live staff keys are excluded too, and it refuses instead (3a design, section 2).
+  const staffKeys = deps.config.console?.rpId === deps.config.webauthn.rpId ? await deps.repo.listLiveStaffKeys(user.id) : [];
   const challenge = issueChallenge(challengeKey(deps.config.authHmacKey), "register", deps.now(), session.handle);
   const options = await registrationOptions({
     rp: { id: deps.config.webauthn.rpId, name: deps.config.webauthn.rpName },
     // The label goes to the password manager and nowhere else: korbat keeps nothing of it.
     user: { id: userId, name: input.label, displayName: input.label },
-    exclude: held.map((p) => ({ id: p.credentialId, transports: p.transports })),
+    exclude: [...held, ...staffKeys].map((p) => ({ id: p.credentialId, transports: p.transports })),
     challenge,
   });
   return { options };

@@ -1,4 +1,4 @@
-import type { AuthErrorCode, MeProfile, Profile } from "@korbat/contracts";
+import type { AuthErrorCode, MeProfile, Profile, StaffErrorCode } from "@korbat/contracts";
 import type { Logger } from "pino";
 import type { Config } from "../config";
 import type { Mailer } from "../mail/mailer";
@@ -32,6 +32,12 @@ export interface AuthConfig {
     /** The origins a ceremony's clientDataJSON may name. */
     origins: string[];
   };
+  /**
+   * The staff console (3a design, section 8): the only origin a staff ceremony's clientDataJSON may name and the relying
+   * party staff keys are bound to, CONSOLE_ORIGIN and CONSOLE_RP_ID. Null while CONSOLE_ORIGIN is unset: the console is
+   * off and no staff route is mounted.
+   */
+  console: { origin: string; rpId: string } | null;
 }
 
 export function authConfigFrom(config: Config): AuthConfig {
@@ -52,6 +58,8 @@ export function authConfigFrom(config: Config): AuthConfig {
       // in production the web app is served from APP_ORIGIN, and no other origin may use its passkeys.
       origins: config.NODE_ENV === "production" ? [config.APP_ORIGIN] : [config.APP_ORIGIN, ...config.TRUSTED_ORIGINS],
     },
+    // The configuration fills CONSOLE_RP_ID with the console's hostname whenever CONSOLE_ORIGIN is set.
+    console: config.CONSOLE_ORIGIN === undefined ? null : { origin: config.CONSOLE_ORIGIN, rpId: config.CONSOLE_RP_ID! },
   };
 }
 
@@ -86,10 +94,19 @@ export interface RequestContext {
   userAgent: string | undefined;
 }
 
+/** A staff request's facts: those of any request, and its id, which the audit rows it writes carry (3a design, section 6). */
+export interface StaffRequestContext extends RequestContext {
+  requestId: string;
+}
+
 export type AuthErrorStatus = 400 | 401 | 403 | 404 | 409 | 429 | 503;
 
-/** The auth codes plus the shared one the module also raises, as the social and media modules do: a well-formed request that asks for nothing, such as the current address as the new one. */
-export type AuthErrorKind = AuthErrorCode | "invalid_request";
+/**
+ * The auth codes, the staff console's (the module owns staff keys and sessions, and the staff routes raise its codes as
+ * AuthErrors, 3a design section 10), plus the shared one the module also raises, as the social and media modules do: a
+ * well-formed request that asks for nothing, such as the current address as the new one.
+ */
+export type AuthErrorKind = AuthErrorCode | StaffErrorCode | "invalid_request";
 
 const MESSAGES: Record<AuthErrorKind, string> = {
   invalid_code: "That code is not valid. Check the latest email or request a new code.",
@@ -128,6 +145,18 @@ const MESSAGES: Record<AuthErrorKind, string> = {
   passkey_not_found: "That passkey is gone.",
   challenge_expired: "That took too long. Try again.",
   invalid_request: "Some details are missing or invalid.",
+  // The staff console's (3a design, section 10). Where only the operator can help, they say so; none sends the person to
+  // a remedy the console does not have, which is why the staff flows never answer a passkey_* code.
+  staff_session_required: "Your staff session ended. Sign in with your staff key.",
+  staff_key_invalid: "This key does not open the staff console. If it should, ask the operator to check your staff keys.",
+  staff_key_suspended: "This staff key was switched off because a copy of it may exist. Ask the operator for a link to enrol a new one.",
+  staff_key_limit: "This account has 5 staff keys. Ask the operator to revoke one before enrolling another.",
+  staff_key_not_device_bound: "This key can be synced or copied, so it cannot be a staff key. Use a security key or a device-bound authenticator.",
+  staff_key_not_user_verified: "This key did not ask for a PIN or fingerprint, so it cannot be a staff key. Set a PIN on it, or use another key.",
+  staff_key_refused: "The browser's answer for this key could not be checked. Try again, or use another key; this link still works.",
+  staff_enrollment_invalid: "This enrolment link has expired or was already used. Ask the operator for a new one.",
+  staff_step_up_required: "Confirm this with your staff key.",
+  staff_step_up_invalid: "That confirmation was for another action, was already used or could not be checked. Try again.",
 };
 
 export function authErrorMessage(code: AuthErrorKind): string {

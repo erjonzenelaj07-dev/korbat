@@ -3,7 +3,9 @@
  *
  *   docker compose -f infra/compose.yml run --rm api node dist/grant-role.js <email> <user|moderator|admin>
  *
- * Every session of the account is revoked, and the change is written to public.audit_log in the same transaction.
+ * Every session and staff session of the account is revoked and every unused staff enrolment link deleted; a change to
+ * user also revokes every staff key, and the owner is mailed their names (3a design, section 7). The change is written to
+ * public.audit_log in the same transaction. A mail that fails is printed as a warning and undoes nothing.
  */
 import { pathToFileURL } from "node:url";
 import Redis from "ioredis";
@@ -11,7 +13,9 @@ import { Email, Role } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { createAuthRepo, createSessions, grantRole, redisKv, type KeyValueStore, type UserRole } from "../auth";
 import { loadConfig } from "../config";
+import type { Mailer } from "../mail/mailer";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
+import { commandLineMailer } from "./mail";
 
 /** Audit-log actor for changes made from the server console rather than by a signed-in person; the auth module writes the row. */
 export { SYSTEM_ACTOR_ID } from "../auth";
@@ -26,12 +30,15 @@ export function parseGrantRoleArgs(args: readonly string[]): { email: string; ro
   return { email: email.data, role: role.data };
 }
 
-/** The role change and its audit row in one transaction on the auth role; grant-role opens no pool on the API's role. */
-export async function runGrantRole(deps: { authDb: Db; kv: KeyValueStore }, email: string, role: UserRole) {
+/**
+ * The role change and its audit rows in one transaction on the auth role, then the tombstones and the mail; grant-role
+ * opens no pool on the API's role.
+ */
+export async function runGrantRole(deps: { authDb: Db; kv: KeyValueStore; mailer: Mailer }, email: string, role: UserRole) {
   const repo = createAuthRepo(deps.authDb);
   const sessions = createSessions({ repo, kv: deps.kv });
   try {
-    return await grantRole({ repo, sessions }, email, role);
+    return await grantRole({ repo, sessions, mailer: deps.mailer }, email, role);
   } catch (err) {
     if (isLockTimeout(err)) throw new Error(`grant-role changed nothing: ${LOCK_TIMEOUT_ADVICE}`, { cause: err });
     throw err;
@@ -50,8 +57,13 @@ async function main(): Promise<number> {
   const authDb = createDb(config.DATABASE_URL_AUTH, { max: 1 });
   const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
   try {
-    const { userId, previousRole } = await runGrantRole({ authDb, kv: redisKv(redis) }, parsed.email, parsed.role);
-    console.log(`user ${userId}: role ${previousRole} -> ${parsed.role}; every session revoked`);
+    // The same mailer as the staff command line's, built as the API builds its own.
+    const granted = await runGrantRole({ authDb, kv: redisKv(redis), mailer: commandLineMailer(process.env) }, parsed.email, parsed.role);
+    console.log(
+      `user ${granted.userId}: role ${granted.previousRole} -> ${parsed.role}; every session revoked; ` +
+        `${granted.staffSessionsRevoked} staff sessions and ${granted.staffKeysRevoked} staff keys revoked, ${granted.enrollmentsDeleted} unused enrolment links deleted`,
+    );
+    if (granted.mailError !== null) console.error(`warning: the staff_keys_revoked mail to the account could not be sent (${granted.mailError}); the change stands`);
     return 0;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

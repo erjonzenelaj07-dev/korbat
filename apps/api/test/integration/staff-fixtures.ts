@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { staffEnrollments, users, type Db, type DbTx } from "@korbat/db";
+import { staffEnrollments, staffSessions, users, type Db, type DbTx } from "@korbat/db";
 import { randomToken, sha256Hex } from "../../src/auth/crypto";
 import type { AuthRepo } from "../../src/auth/repo";
+import type { SoftFlags } from "../auth/soft-authenticator";
 import { newUserWithDevice } from "./auth-fixtures";
 
 /** The first row's prev_hash, and the hash of an empty log's head. */
@@ -11,6 +12,11 @@ export const ZERO_HASH = "0".repeat(64);
 /** The console the staff harness runs, beside the app at http://localhost:8081 (3a design, section 12). */
 export const TEST_CONSOLE_ORIGIN = "http://console.localhost:8090";
 export const TEST_CONSOLE_RP_ID = "console.localhost";
+/** The console as the flow harness takes it. */
+export const TEST_CONSOLE = { origin: TEST_CONSOLE_ORIGIN, rpId: TEST_CONSOLE_RP_ID };
+
+/** What a staff key's authenticator must report (3a design, section 2): user present and verified, neither backup eligible nor backed up. */
+export const DEVICE_BOUND: SoftFlags = { up: true, uv: true, be: false, bs: false };
 
 /** The PostgreSQL error a statement ended with (drizzle wraps it as the cause), or null when it succeeded. */
 export async function pgError(statement: PromiseLike<unknown>): Promise<{ message: string; code: string } | null> {
@@ -107,4 +113,25 @@ export async function newStaffKey(authDb: Db, migrateDb: Db, repo: AuthRepo, rol
   const enrolment = await issueEnrolment(migrateDb, account.user.id);
   const key = await addStaffKey(authDb, enrolment.token);
   return { ...account, enrolment, key };
+}
+
+/**
+ * A staff session row as Task 4's session store will write it, opened with the account's own key for 12 hours and idle
+ * after 15 minutes. Inserted as the auth role, which the running API holds and which may create staff sessions.
+ */
+export async function newStaffSession(authDb: Db, userId: string, keyId: string, now: Date = new Date()) {
+  const [row] = await authDb
+    .insert(staffSessions)
+    .values({
+      id: sha256Hex(randomToken()),
+      userId,
+      keyId,
+      createdAt: now,
+      lastUsedAt: now,
+      idleExpiresAt: new Date(now.getTime() + 15 * 60_000),
+      absoluteExpiresAt: new Date(now.getTime() + 12 * 60 * 60_000),
+      browser: "Firefox on Linux",
+    })
+    .returning({ id: staffSessions.id, handle: staffSessions.handle });
+  return row!;
 }

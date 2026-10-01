@@ -151,5 +151,36 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         "A recovery code was just used to confirm it's you on your korbat account. Each code works once; set up two-factor authentication again from Security to get a new set.",
         "If this was not you, sign in, open Security, sign out everywhere and set up two-factor authentication again.",
       ]);
+    case "staff_key_added":
+      return staffMail("A staff key was added to your korbat staff account", [
+        `A staff key named "${need(data, "name")}" was registered for your korbat staff account at ${need(data, "time")}. It can open the staff console.`,
+        "If this was you, there is nothing to do. If not, tell the operator at once; they revoke the key with the staff command line.",
+      ]);
+    case "staff_session_started":
+      return staffMail("A staff session started on the korbat console", [
+        `A staff session was started on the korbat console at ${need(data, "time")} with your staff key "${need(data, "name")}", from ${need(data, "browser")}.`,
+        "If this was you, there is nothing to do. If not, someone holds that key: tell the operator at once; they revoke it and every session it opened with the staff command line.",
+      ]);
+    case "staff_key_suspect":
+      // A counter that went backwards on a staff key (3a design, section 7): never passkey_suspect, whose remedy is the
+      // app's Security screen; only the operator can enrol a replacement.
+      return staffMail("A staff key on your korbat staff account was switched off", [
+        `A use of your staff key "${need(data, "name")}" on the korbat console (a sign-in or a confirmation) looked like a copy of it, so korbat switched that key off and ended every staff session it opened. It can no longer open the console.`,
+        "Ask the operator for a link to register a new key. If you did not use it just now, tell them so: someone else holds a copy of the key.",
+      ]);
+    case "staff_keys_revoked":
+      // `names` is the list of the revoked keys' names, each in quotes, as the sender joins them.
+      return staffMail("Staff keys revoked on your korbat staff account", [
+        `These staff keys of your korbat staff account were revoked at ${need(data, "time")}: ${need(data, "names")}. They can no longer open the console, and every staff session they opened has ended.`,
+        "If you expected this, there is nothing to do. If not, ask the operator why.",
+      ]);
   }
+}
+
+/**
+ * A staff mail: plain paragraphs as every mail, closed by the sentence that no staff mail carries a link, so a message
+ * that does carry one is known for a fake (3a design, section 7).
+ */
+function staffMail(subject: string, paragraphs: string[]): RenderedMail {
+  return build(subject, [...paragraphs, "korbat never puts a link in a staff email."]);
 }

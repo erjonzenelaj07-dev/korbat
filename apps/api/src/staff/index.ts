@@ -9,6 +9,7 @@
  */
 import type { AuditPageQuery } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
+import type { AuthForStaff } from "../auth";
 import { auditPage } from "./audit";
 import { staffRoutes } from "./routes";
 
@@ -18,12 +19,14 @@ export { appendAuditRow, type AuditPlace, type StaffAuditRow } from "./audit";
 export interface CreateStaffOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
   apiDb: Db;
+  /** The auth module's staff interface: the credential side of the routes, which only the auth module may touch. */
+  auth: AuthForStaff;
 }
 
 export function createStaff(options: CreateStaffOptions) {
   return {
     /** The routes under /api/staff, behind the staff gate for the console at `consoleOrigin`. */
-    routes: (consoleOrigin: string) => staffRoutes(consoleOrigin),
+    routes: (consoleOrigin: string) => staffRoutes(consoleOrigin, options.auth),
     /** One page of the audit log, newest first, as GET /api/staff/audit answers it. */
     readAudit: (query: AuditPageQuery) => auditPage(options.apiDb, query),
   };

@@ -2,14 +2,20 @@
  * The only file outside `src/auth/` may import. Everything else in the module is private and the
  * architecture test fails the build if another file reaches into it.
  */
-import type { DeleteConfirmRequest, DeleteStartResponse } from "@korbat/contracts";
+import type {
+  DeleteConfirmRequest,
+  DeleteStartResponse,
+  StaffEnrollOptionsRequest,
+  StaffEnrollVerifyRequest,
+  StaffEnrollVerifyResponse,
+} from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type Redis from "ioredis";
 import type { Logger } from "pino";
 import type { Config } from "../config";
 import type { Mailer } from "../mail/mailer";
 import { clientIdentity } from "./client-ip";
-import { authConfigFrom, type AuthDeps, type ProfileStore, type RequestContext } from "./context";
+import { authConfigFrom, type AuthDeps, type ProfileStore, type RequestContext, type StaffRequestContext } from "./context";
 import { confirmDeletion, finishPurge, startDeletion } from "./flows/deletion";
 import { exportAccount, type AccountExport } from "./flows/export";
 import { redisKv, type KeyValueStore } from "./kv";
@@ -21,12 +27,13 @@ import { hibpChecker, type BreachChecker } from "./passwords";
 import { createAuthRepo, type AuthEventType } from "./repo";
 import { authRoutes, meHandler } from "./routes";
 import { createSessions, type Session } from "./sessions";
+import { enrollOptions, enrollVerify, type StaffEnrollOptions } from "./staff/enroll";
 import { cloudflareTurnstile, type TurnstileVerifier } from "./turnstile";
 import { devProvider } from "./verify/dev";
 import type { VerificationProvider } from "./verify/provider";
 import { vonageProvider } from "./verify/vonage";
 
-export type { ProfileStore, RequestContext } from "./context";
+export type { ProfileStore, RequestContext, StaffRequestContext } from "./context";
 export type { AccountExport } from "./flows/export";
 export type { AuthEventType, UserRole } from "./repo";
 export type { ProxyTrust } from "./client-ip";
@@ -58,6 +65,18 @@ export interface AuthForAccount {
   /** The account's facts, its passkeys (without their keys), its live sessions, its devices and its own events. */
   exportAccount(userId: string): Promise<AccountExport>;
   appendEvent(userId: string, type: AuthEventType, metadata?: Record<string, unknown>): Promise<void>;
+}
+
+/**
+ * What the staff module needs from this one (3a design, section 5): the credential side of the staff routes, which the
+ * staff module mounts behind its gate. Staff keys, staff sessions and enrolments are credentials, so their flows and
+ * tables stay here, and the staff module reaches them only through this interface.
+ */
+export interface AuthForStaff {
+  /** Registration options for the key an enrolment link's holder is about to create. */
+  enrollOptions(input: StaffEnrollOptionsRequest): Promise<StaffEnrollOptions>;
+  /** Checks the browser's answer and stores the staff key, spending the link; the owner is mailed. */
+  enrollVerify(input: StaffEnrollVerifyRequest, ctx: StaffRequestContext): Promise<StaffEnrollVerifyResponse>;
 }
 
 export interface CreateAuthOptions {
@@ -127,6 +146,10 @@ export function createAuth(options: CreateAuthOptions) {
     exportAccount: (userId) => exportAccount(deps, userId),
     appendEvent,
   };
+  const forStaff: AuthForStaff = {
+    enrollOptions: (input) => enrollOptions(deps, input),
+    enrollVerify: (input, ctx) => enrollVerify(deps, input, ctx),
+  };
   return {
     deps,
     routes: authRoutes(deps),
@@ -134,6 +157,8 @@ export function createAuth(options: CreateAuthOptions) {
     appendEvent,
     /** The interface the account module uses. */
     forAccount,
+    /** The interface the staff module uses. */
+    forStaff,
     /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it. */
     clientIdentity: clientIdentity({ trust: deps.config.trustProxy, ipHashKey: deps.config.ipHashKey }),
     resolveSession: resolveSession(deps),

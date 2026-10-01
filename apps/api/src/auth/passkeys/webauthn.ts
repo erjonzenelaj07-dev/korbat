@@ -50,6 +50,13 @@ export interface CredentialDescriptor {
   transports: string[];
 }
 
+/**
+ * What a ceremony asks of user verification: "preferred" for 1c's passkeys, so security keys without a PIN still work,
+ * and "required" for every staff ceremony (3a design, section 5). Verification itself never requires it: the flows read
+ * the UV flag the authenticator reported, and the staff flows refuse a key without it with a code of its own.
+ */
+export type UserVerification = "preferred" | "required";
+
 /** Only these two members reach the options JSON, whatever else the caller's objects carry. */
 const descriptor = ({ id, transports }: CredentialDescriptor) => ({ id, transports });
 
@@ -65,8 +72,8 @@ function challengeBytes(challenge: string): Uint8Array<ArrayBuffer> {
 
 /**
  * Options for navigator.credentials.create: a discoverable credential (the passkey signs in without an email), user
- * verification preferred but never required, no attestation, the pinned algorithms, and the account's passkeys listed
- * so an authenticator that already holds one of them does not add another.
+ * verification as the caller asks (preferred unless told otherwise), no attestation, the pinned algorithms, and the
+ * account's credentials listed so an authenticator that already holds one of them does not add another.
  */
 export async function registrationOptions(input: {
   rp: { id: string; name: string };
@@ -74,6 +81,12 @@ export async function registrationOptions(input: {
   user: { id: Uint8Array; name: string; displayName: string };
   exclude: CredentialDescriptor[];
   challenge: string;
+  userVerification?: UserVerification;
+  /**
+   * The security-key hint, for the enrolment's "Register a security key" button only. 14.0.2 sends a hint only through
+   * preferredAuthenticatorType, which also sets cross-platform attachment and so hides Windows Hello: without it, no hint.
+   */
+  hint?: "securityKey";
 }): Promise<PublicKeyCredentialCreationOptionsJSON> {
   return generateRegistrationOptions({
     rpName: input.rp.name,
@@ -86,9 +99,10 @@ export async function registrationOptions(input: {
     timeout: CEREMONY_TIMEOUT_MS,
     attestationType: "none",
     excludeCredentials: input.exclude.map(descriptor),
-    // A new object on every call: the library writes requireResidentKey into the object it is given.
-    authenticatorSelection: { residentKey: "required", userVerification: "preferred" },
+    // A new object on every call: the library writes requireResidentKey, and with a hint the attachment, into the object it is given.
+    authenticatorSelection: { residentKey: "required", userVerification: input.userVerification ?? "preferred" },
     supportedAlgorithmIDs: [...SUPPORTED_ALGORITHMS],
+    ...(input.hint ? { preferredAuthenticatorType: input.hint } : {}),
   });
 }
 
@@ -96,13 +110,18 @@ export async function registrationOptions(input: {
  * Options for navigator.credentials.get. Sign-in passes an empty allow list, so the options say nothing about any account
  * and the browser offers every passkey it holds for the RP; re-authentication lists the account's usable passkeys.
  */
-export async function authenticationOptions(input: { rpId: string; allow: CredentialDescriptor[]; challenge: string }): Promise<PublicKeyCredentialRequestOptionsJSON> {
+export async function authenticationOptions(input: {
+  rpId: string;
+  allow: CredentialDescriptor[];
+  challenge: string;
+  userVerification?: UserVerification;
+}): Promise<PublicKeyCredentialRequestOptionsJSON> {
   return generateAuthenticationOptions({
     rpID: input.rpId,
     allowCredentials: input.allow.map(descriptor),
     challenge: challengeBytes(input.challenge),
     timeout: CEREMONY_TIMEOUT_MS,
-    userVerification: "preferred",
+    userVerification: input.userVerification ?? "preferred",
   });
 }
 
@@ -165,8 +184,8 @@ export async function verifyRegistration(input: { response: RegistrationResponse
       expectedChallenge: input.expectedChallenge,
       expectedOrigin: input.origins,
       expectedRPID: input.rpId,
-      // User verification is preferred, never required, so security keys without a PIN still work; the flows read the
-      // UV flag instead to decide what the passkey proves.
+      // User verification is never required here, so security keys without a PIN still work for passkeys; the flows read
+      // the UV flag instead to decide what the passkey proves, and the staff flows refuse a key without it by its own code.
       requireUserVerification: false,
       supportedAlgorithmIDs: [...SUPPORTED_ALGORITHMS],
     });
@@ -193,6 +212,8 @@ export interface VerifiedAuthentication {
   newCounter: number;
   userVerified: boolean;
   backedUp: boolean;
+  /** The BE flag as this assertion reported it: the staff flows refuse a key that reports it at any use (3a design, section 2). */
+  backupEligible: boolean;
 }
 
 /**
@@ -223,7 +244,7 @@ export async function verifyAuthentication(input: {
   }
   if (!result.verified) throw invalid();
   const info = result.authenticationInfo;
-  return { newCounter: info.newCounter, userVerified: info.userVerified, backedUp: info.credentialBackedUp };
+  return { newCounter: info.newCounter, userVerified: info.userVerified, backedUp: info.credentialBackedUp, backupEligible: info.credentialDeviceType === "multiDevice" };
 }
 
 /**

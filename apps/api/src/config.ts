@@ -71,6 +71,20 @@ const consoleOrigin = z
 /** A PostgreSQL connection URL. The staff command line reads the database URLs it needs with the same rule (cli/staff.ts). */
 export const databaseUrl = z.url({ protocol: /^postgres(ql)?$/ });
 
+/** The mail relay and the sender, which the command line's mailer reads with the same rules (cli/mail.ts). */
+export const smtpUrl = z.url({ protocol: /^smtps?$/ });
+export const mailFrom = z.string().min(3);
+
+/**
+ * CONSOLE_ORIGIN and CONSOLE_RP_ID as `staff.js enroll` reads them, by the API's own rules for each value (cli/staff.ts),
+ * so a link is issued only for a console the API would run.
+ */
+export const consoleOriginSetting = blankAsUnset.pipe(consoleOrigin.optional());
+export const consoleRpIdSetting = blankAsUnset.pipe(z.string().toLowerCase().regex(RP_ID, "must be a bare domain name such as console.example: no scheme, port or path").optional());
+
+/** The console's hostname, which CONSOLE_RP_ID defaults to. */
+export const consoleHostOf = (origin: string): string => hostOf(origin);
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -104,8 +118,8 @@ const schema = z.object({
     .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean))
     .pipe(z.array(versionedKey)),
   TURNSTILE_SECRET_KEY: z.string().min(1),
-  SMTP_URL: z.url({ protocol: /^smtps?$/ }),
-  MAIL_FROM: z.string().min(3),
+  SMTP_URL: smtpUrl,
+  MAIL_FROM: mailFrom,
   TERMS_VERSION: z.string().min(1).max(64),
   /** The uploads volume, which the API writes and the image worker only reads. The default suits `pnpm dev` from apps/api. */
   MEDIA_UPLOADS_DIR: z.string().min(1).default("../../.data/media/uploads"),
@@ -152,12 +166,12 @@ const schema = z.object({
    * The staff console's own origin (3a design, section 8). Unset, the console is off: no staff route is mounted and the
    * command line issues no enrolment. A blank value, as compose passes it, counts as unset.
    */
-  CONSOLE_ORIGIN: blankAsUnset.pipe(consoleOrigin.optional()),
+  CONSOLE_ORIGIN: consoleOriginSetting,
   /**
    * The relying party ID staff keys are bound to: the console's hostname when unset. Production requires exactly that
    * hostname, so staff keys work on the console and nowhere else; a parent domain was declined (3a design, section 2).
    */
-  CONSOLE_RP_ID: blankAsUnset.pipe(z.string().toLowerCase().regex(RP_ID, "must be a bare domain name such as console.example: no scheme, port or path").optional()),
+  CONSOLE_RP_ID: consoleRpIdSetting,
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS

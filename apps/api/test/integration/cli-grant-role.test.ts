@@ -6,6 +6,7 @@ import { createAuthRepo, createSessions } from "../../src/auth";
 import { MemoryKv } from "../../src/auth/kv";
 import { SYSTEM_ACTOR_ID, runGrantRole } from "../../src/cli/grant-role";
 import { loadConfig } from "../../src/config";
+import { MemoryMailer } from "../../src/mail/memory";
 import { newUserWithDevice } from "./auth-fixtures";
 
 describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
@@ -32,9 +33,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
     const issued = await sessions.issue(user.id, device.id, { factors: { email: Date.now() } });
     expect(await sessions.resolve(issued.token)).not.toBeNull();
 
-    const result = await runGrantRole({ authDb, kv }, user.email, "moderator");
+    const result = await runGrantRole({ authDb, kv, mailer: new MemoryMailer() }, user.email, "moderator");
 
-    expect(result).toEqual({ userId: user.id, previousRole: "user" });
+    // An account without staff rows: nothing of the console to end, and no staff mail.
+    expect(result).toEqual({ userId: user.id, previousRole: "user", staffSessionsRevoked: 0, enrollmentsDeleted: 0, staffKeysRevoked: 0, mailError: null });
     expect((await repo.findUserById(user.id))!.role).toBe("moderator");
     expect(await sessions.resolve(issued.token)).toBeNull();
     const entries = await apiDb
@@ -42,7 +44,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
       .from(auditLog)
       .where(and(eq(auditLog.targetId, user.id), eq(auditLog.action, "role_granted")));
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ actorId: SYSTEM_ACTOR_ID, targetType: "user", metadata: { from: "user", to: "moderator", via: "cli" }, chainVersion: 1 });
+    expect(entries[0]).toMatchObject({ actorId: SYSTEM_ACTOR_ID, targetType: "user", metadata: { from: "user", to: "moderator", via: "cli", staffSessionsRevoked: 0, enrollmentsDeleted: 0 }, chainVersion: 1 });
     expect(await readHead()).toMatchObject({ seq: entries[0]!.chainSeq, hash: entries[0]!.hash });
   });
 
@@ -53,7 +55,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
     const { user, device } = await newUserWithDevice(repo);
     await sessions.issue(user.id, device.id, { factors: { email: Date.now() } });
 
-    await runGrantRole({ authDb, kv }, user.email, "admin");
+    await runGrantRole({ authDb, kv, mailer: new MemoryMailer() }, user.email, "admin");
 
     // Every row a transaction writes carries its transaction id in xmin: one id means one transaction, which committed
     // the role, the revocation and the row together or not at all.
@@ -69,7 +71,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
 
   test("an unknown email fails without writing an audit entry", async () => {
     const before = await apiDb.$count(auditLog);
-    await expect(runGrantRole({ authDb, kv: new MemoryKv() }, `nobody-${randomUUID()}@korbat.local`, "admin")).rejects.toThrow("no account for");
+    await expect(runGrantRole({ authDb, kv: new MemoryKv(), mailer: new MemoryMailer() }, `nobody-${randomUUID()}@korbat.local`, "admin")).rejects.toThrow("no account for");
     expect(await apiDb.$count(auditLog)).toBe(before);
   });
 
@@ -99,7 +101,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
     try {
       await held;
       const started = Date.now();
-      await expect(runGrantRole({ authDb, kv }, user.email, "moderator")).rejects.toThrow(
+      await expect(runGrantRole({ authDb, kv, mailer: new MemoryMailer() }, user.email, "moderator")).rejects.toThrow(
         /changed nothing: an open transaction holds the audit head or the account's row.*stop the api service/s,
       );
       expect(Date.now() - started).toBeGreaterThanOrEqual(9_000);

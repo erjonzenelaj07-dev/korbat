@@ -519,6 +519,8 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     trustProxy: "none",
     verifyProvider: "dev",
     webauthn: { rpId: "localhost", rpName: "korbat", origins: ["http://localhost:8081"] },
+    // The staff console is off: no flow this harness runs reaches it.
+    console: null,
   };
   const deps: AuthDeps = {
     repo: authRepo,

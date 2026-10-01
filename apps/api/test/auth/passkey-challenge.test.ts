@@ -12,7 +12,12 @@ const T0 = 1_789_000_000_000;
 const at = (ms: number) => new Date(T0 + ms);
 const HANDLE = "0b7f3c4e-2a51-4c8e-9d7a-5b1e6f2c3d4a";
 const OTHER_HANDLE = "7e2d9a10-6c3b-4f5e-8a21-0d4c7b9e1f36";
-const PURPOSES: ChallengePurpose[] = ["signin", "register", "reauth"];
+/** A staff enrolment's id, which a staff registration challenge is bound to (3a design, section 5). */
+const ENROLMENT = "5d0c8e2f-9a41-4b7e-8c3d-2f6a1e9b7c05";
+const OTHER_ENROLMENT = "a83f1c62-0e5d-4f9b-b217-6d4e9c0a3b18";
+const PURPOSES: ChallengePurpose[] = ["signin", "register", "reauth", "staff_signin", "staff_register"];
+/** The purposes whose challenge binds nothing: the two sign-ins, which run before any session or enrolment is known. */
+const UNBOUND: ChallengePurpose[] = ["signin", "staff_signin"];
 const BASE64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 const bytesOf = (challenge: string) => Buffer.from(challenge, "base64url");
@@ -65,6 +70,9 @@ describe("passkey challenges: issuing and reading", () => {
       ["signin", 1, undefined],
       ["register", 2, HANDLE],
       ["reauth", 3, HANDLE],
+      // The staff console's two purposes share the layout, the key, the lifetime and the used-challenge markers.
+      ["staff_signin", 4, undefined],
+      ["staff_register", 5, ENROLMENT],
     ];
     for (const [purpose, code, bind] of cases) {
       const challenge = issueChallenge(KEY, purpose, at(0), bind);
@@ -131,7 +139,8 @@ describe("passkey challenges: issuing and reading", () => {
     const version2 = Buffer.from(first42);
     version2[0] = 2;
     expectInvalid(() => readChallenge(KEY, sealed(version2), "signin", at(0)));
-    for (const purpose of [0, 4, 255]) {
+    // 4 and 5 are the staff console's purposes, which the purpose tests below cover.
+    for (const purpose of [0, 99, 255]) {
       const unknown = Buffer.from(first42);
       unknown[1] = purpose;
       expectInvalid(() => readChallenge(KEY, sealed(unknown), "signin", at(0)));
@@ -142,7 +151,7 @@ describe("passkey challenges: issuing and reading", () => {
 
   test("refuses a challenge issued for another purpose", () => {
     for (const issued of PURPOSES) {
-      const bind = issued === "signin" ? undefined : HANDLE;
+      const bind = UNBOUND.includes(issued) ? undefined : HANDLE;
       const challenge = issueChallenge(KEY, issued, at(0), bind);
       for (const expected of PURPOSES.filter((p) => p !== issued)) expectInvalid(() => readChallenge(KEY, challenge, expected, at(0), bind));
     }
@@ -182,6 +191,50 @@ describe("passkey challenges: issuing and reading", () => {
     expectInvalid(() => readChallenge(KEY, tampered.toString("base64url"), "register", late, HANDLE));
     expectInvalid(() => readChallenge(KEY, challenge, "reauth", late, HANDLE));
     expectInvalid(() => readChallenge(KEY, challenge, "register", late, OTHER_HANDLE));
+  });
+});
+
+describe("passkey challenges: the staff console's purposes", () => {
+  test("an app sign-in challenge does not open the console's sign-in, and a console sign-in challenge does not sign into the app", () => {
+    const app = issueChallenge(KEY, "signin", at(0));
+    const staff = issueChallenge(KEY, "staff_signin", at(0));
+    expectInvalid(() => readChallenge(KEY, app, "staff_signin", at(0)));
+    expectInvalid(() => readChallenge(KEY, staff, "signin", at(0)));
+    expect(() => readChallenge(KEY, app, "signin", at(0))).not.toThrow();
+    expect(() => readChallenge(KEY, staff, "staff_signin", at(0))).not.toThrow();
+  });
+
+  test("a personal passkey's registration challenge does not enrol a staff key, nor the reverse, whatever they are bound to", () => {
+    const personal = issueChallenge(KEY, "register", at(0), ENROLMENT);
+    const staff = issueChallenge(KEY, "staff_register", at(0), HANDLE);
+    expectInvalid(() => readChallenge(KEY, personal, "staff_register", at(0), ENROLMENT));
+    expectInvalid(() => readChallenge(KEY, staff, "register", at(0), HANDLE));
+  });
+
+  test("a staff registration challenge is bound to its enrolment's id, and refused for another enrolment or none", () => {
+    const challenge = issueChallenge(KEY, "staff_register", at(0), ENROLMENT);
+    // The binding takes any string: the first 16 bytes of the sha256 of the enrolment's id, as of a session's handle.
+    expect(bytesOf(challenge).subarray(26, 42).equals(createHash("sha256").update(ENROLMENT).digest().subarray(0, 16))).toBe(true);
+    expect(() => readChallenge(KEY, challenge, "staff_register", at(0), ENROLMENT)).not.toThrow();
+    expectInvalid(() => readChallenge(KEY, challenge, "staff_register", at(0), OTHER_ENROLMENT));
+    expectInvalid(() => readChallenge(KEY, challenge, "staff_register", at(0)));
+    // An unbound one of the right purpose names no enrolment.
+    expectInvalid(() => readChallenge(KEY, issueChallenge(KEY, "staff_register", at(0)), "staff_register", at(0), ENROLMENT));
+  });
+
+  test("a staff sign-in challenge binds nothing, and is refused where a binding is expected", () => {
+    const challenge = issueChallenge(KEY, "staff_signin", at(0));
+    expect(bytesOf(challenge).subarray(26, 42).equals(Buffer.alloc(16))).toBe(true);
+    expectInvalid(() => readChallenge(KEY, challenge, "staff_signin", at(0), HANDLE));
+  });
+
+  test("the staff purposes expire after ten minutes as challenge_expired, and are spent once", async () => {
+    const challenge = issueChallenge(KEY, "staff_register", at(0), ENROLMENT);
+    expect(() => readChallenge(KEY, challenge, "staff_register", at(CHALLENGE_TTL_MS - 1), ENROLMENT)).not.toThrow();
+    expect(refusal(() => readChallenge(KEY, challenge, "staff_register", at(CHALLENGE_TTL_MS), ENROLMENT)).code).toBe("challenge_expired");
+    const kv = new MemoryKv(() => T0);
+    await spendChallenge(kv, challenge, at(0));
+    expect((await failure(spendChallenge(kv, challenge, at(0)))).code).toBe("passkey_invalid");
   });
 });
 
