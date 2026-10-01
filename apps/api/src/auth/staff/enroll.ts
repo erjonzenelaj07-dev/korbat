@@ -30,7 +30,7 @@ const enrollmentInvalid = () => new AuthError("staff_enrollment_invalid", 400);
 const keyRefused = () => new AuthError("staff_key_refused", 400);
 
 /** The console as the configuration sets it; the staff routes are mounted only while it is on, so its absence is a wiring fault. */
-function consoleOf(deps: AuthDeps): { origin: string; rpId: string } {
+export function consoleOf(deps: AuthDeps): { origin: string; rpId: string } {
   if (!deps.config.console) throw new Error("the staff console is off: CONSOLE_ORIGIN is not set");
   return deps.config.console;
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   authEventType,
   authEvents,
@@ -117,6 +117,83 @@ export interface NewStaffKey {
 
 /** What addStaffKey answers: the new key's id, or which of auth.add_staff_key's re-checks refused it. */
 export type AddStaffKeyOutcome = { ok: true; keyId: string } | { ok: false; reason: "enrollment_invalid" | "limit" };
+
+/** A staff key as the console's sign-in finds it by its credential id, with what the flow checks of its account. */
+export interface StaffKeyForSignIn {
+  id: string;
+  userId: string;
+  credentialId: string;
+  publicKey: string;
+  transports: string[];
+  name: string;
+  revokedAt: Date | null;
+  email: string;
+  role: UserRole;
+  deletedAt: Date | null;
+  webauthnUserId: Buffer | null;
+}
+
+/** What a staff sign-in's transaction writes (3a design, section 7, Sign-in): the key's use, the session, its event and its audit row. */
+export interface NewStaffSession {
+  /** sha256 of the token; the token itself is never stored. */
+  id: string;
+  userId: string;
+  keyId: string;
+  /** The counter the verified assertion reported, which the key's row takes only if it moved forward. */
+  newCounter: number;
+  now: Date;
+  idleExpiresAt: Date;
+  absoluteExpiresAt: Date;
+  browser: string;
+  ipHash: string | null;
+  requestId: string;
+}
+
+/** A live staff session as requireStaff reads it, with its account's role, in one statement joined to its key and its account. */
+export interface StaffSessionRow {
+  id: string;
+  handle: string;
+  userId: string;
+  keyId: string;
+  role: UserRole;
+  createdAt: Date;
+  lastUsedAt: Date;
+  idleExpiresAt: Date;
+  absoluteExpiresAt: Date;
+  browser: string;
+}
+
+/**
+ * A revocation of staff keys in one auth transaction (3a design, section 7): `staff.js revoke` with one key or `all`, and the
+ * counter rule's revocation of the key that went backwards, which also marks it suspect and records its own event. The
+ * account is named by its id (the counter rule knows it) or by its address (the command line).
+ */
+export interface StaffKeyRevocation {
+  account: { id: string } | { email: string };
+  key: string | "all";
+  suspect: boolean;
+  /** Where it came from, as the events and audit rows record it. The command line also waits at most 10 seconds for a lock. */
+  via: "cli" | "sign_in";
+  actorId: string;
+  now: Date;
+  requestId?: string | null;
+}
+
+/** What a revocation did, for the command line's report and the mail; or why it found nothing to act on. */
+export type StaffKeysRevoked =
+  | {
+      ok: true;
+      userId: string;
+      /** The account's address as stored, which the mail goes to. */
+      email: string;
+      /** The keys revoked now, oldest first, each with how many of its staff sessions were revoked now. */
+      keys: { id: string; name: string; sessionsRevoked: number }[];
+      staffSessionsRevoked: number;
+      enrollmentsCancelled: number;
+      /** For one key named by the command line: when it was revoked before, in which case nothing changed. */
+      alreadyRevokedAt: Date | null;
+    }
+  | { ok: false; reason: "no_account" | "no_key" };
 
 /** A role change as it committed: what it revoked and deleted, for the cache tombstones, the command's report and the mail. */
 export interface RoleChange {
@@ -894,6 +971,278 @@ export function createAuthRepo(db: Db) {
       }
     },
 
+    // ------------------------------------------------------------ staff sessions
+
+    /** A staff key by its credential id, revoked or not, with its account's address, role, deletion and user handle; the sign-in decides. */
+    async findStaffKeyForSignIn(credentialId: string): Promise<StaffKeyForSignIn | undefined> {
+      const [row] = await db
+        .select({
+          id: staffKeys.id,
+          userId: staffKeys.userId,
+          credentialId: staffKeys.credentialId,
+          publicKey: staffKeys.publicKey,
+          transports: staffKeys.transports,
+          name: staffKeys.name,
+          revokedAt: staffKeys.revokedAt,
+          email: users.email,
+          role: users.role,
+          deletedAt: users.deletedAt,
+          webauthnUserId: users.webauthnUserId,
+        })
+        .from(staffKeys)
+        .innerJoin(users, eq(users.id, staffKeys.userId))
+        .where(eq(staffKeys.credentialId, credentialId))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * A staff sign-in's write, in one transaction (3a design, section 7): first 1c's counter rule as one conditional update
+     * of the key, which records its use only while it is live and its counter moved forward (two zeros pass, as some
+     * authenticators always report 0); then the session, its staff_sign_in event and last its audit row, which holds the
+     * chain's head until the commit. Null when the update matched no row: a counter that went backwards, or a key revoked
+     * since the flow read it, which the caller tells apart. The update holds the key's row until the commit, so a
+     * revocation waiting for it then also finds the session this opened.
+     */
+    async openStaffSession(input: NewStaffSession): Promise<{ handle: string } | null> {
+      return db.transaction(async (tx) => {
+        const claimed = await tx
+          .update(staffKeys)
+          .set({ counter: input.newCounter, lastUsedAt: input.now })
+          .where(
+            and(
+              eq(staffKeys.id, input.keyId),
+              eq(staffKeys.userId, input.userId),
+              isNull(staffKeys.revokedAt),
+              sql`((${input.newCounter} = 0 and ${staffKeys.counter} = 0) or ${input.newCounter} > ${staffKeys.counter})`,
+            ),
+          )
+          .returning({ id: staffKeys.id });
+        if (claimed.length === 0) return null;
+        const [session] = await tx
+          .insert(staffSessions)
+          .values({
+            id: input.id,
+            userId: input.userId,
+            keyId: input.keyId,
+            createdAt: input.now,
+            lastUsedAt: input.now,
+            idleExpiresAt: input.idleExpiresAt,
+            absoluteExpiresAt: input.absoluteExpiresAt,
+            browser: input.browser,
+          })
+          .returning({ handle: staffSessions.handle });
+        const handle = session!.handle;
+        await tx.insert(authEvents).values({ userId: input.userId, type: "staff_sign_in", ipHash: input.ipHash, metadata: { keyId: input.keyId, handle } });
+        await appendAudit(tx, {
+          actorId: input.userId,
+          action: "staff_sign_in",
+          targetType: "staff_session",
+          targetId: handle,
+          staffSession: handle,
+          keyId: input.keyId,
+          metadata: {},
+          requestId: input.requestId,
+        });
+        return { handle };
+      });
+    },
+
+    /**
+     * A staff session by its token's hash, read from the database on every request, never cached (3a design, section 7):
+     * one indexed read joined to its key and its account. It counts only while it is unrevoked, has started (a created_at
+     * later than now is a row written behind the flows' back) and is before both its ends, its key unrevoked and its account
+     * live and still staff, so a revocation, a demotion, a deletion or a suspect key ends it at its next request with no
+     * tombstone. With `slideTo` (a request its person's action started) the same statement moves last_used_at to now and the
+     * idle end to `slideTo`, never past the absolute end; without, nothing moves.
+     */
+    async resolveStaffSession(id: string, now: Date, slideTo: Date | null): Promise<StaffSessionRow | undefined> {
+      const live = and(
+        eq(staffSessions.id, id),
+        isNull(staffSessions.revokedAt),
+        lte(staffSessions.createdAt, now),
+        gt(staffSessions.idleExpiresAt, now),
+        gt(staffSessions.absoluteExpiresAt, now),
+        isNull(staffKeys.revokedAt),
+        isNull(users.deletedAt),
+        ne(users.role, "user"),
+      );
+      const columns = {
+        id: staffSessions.id,
+        handle: staffSessions.handle,
+        userId: staffSessions.userId,
+        keyId: staffSessions.keyId,
+        role: users.role,
+        createdAt: staffSessions.createdAt,
+        lastUsedAt: staffSessions.lastUsedAt,
+        idleExpiresAt: staffSessions.idleExpiresAt,
+        absoluteExpiresAt: staffSessions.absoluteExpiresAt,
+        browser: staffSessions.browser,
+      };
+      if (slideTo === null) {
+        const [row] = await db
+          .select(columns)
+          .from(staffSessions)
+          .innerJoin(staffKeys, eq(staffKeys.id, staffSessions.keyId))
+          .innerJoin(users, eq(users.id, staffSessions.userId))
+          .where(live)
+          .limit(1);
+        return row;
+      }
+      const [row] = await db
+        .update(staffSessions)
+        // least() on the row's own absolute end, so the idle end never passes it, as the table's check also requires.
+        .set({ lastUsedAt: now, idleExpiresAt: sql`least(${slideTo.toISOString()}::timestamptz, ${staffSessions.absoluteExpiresAt})` })
+        .from(staffKeys)
+        // A join in UPDATE ... FROM cannot name the updated table, so the account is reached through the key, whose owner
+        // the sessions' foreign key on (key_id, user_id) makes the session's account.
+        .innerJoin(users, eq(users.id, staffKeys.userId))
+        .where(and(eq(staffKeys.id, staffSessions.keyId), live))
+        .returning(columns);
+      return row;
+    },
+
+    /** The account's live staff sessions, the same tests as resolveStaffSession's, most recently used first. */
+    async listStaffSessions(userId: string, now: Date): Promise<{ handle: string; browser: string; createdAt: Date; lastUsedAt: Date }[]> {
+      return db
+        .select({ handle: staffSessions.handle, browser: staffSessions.browser, createdAt: staffSessions.createdAt, lastUsedAt: staffSessions.lastUsedAt })
+        .from(staffSessions)
+        .innerJoin(staffKeys, eq(staffKeys.id, staffSessions.keyId))
+        .where(
+          and(
+            eq(staffSessions.userId, userId),
+            isNull(staffSessions.revokedAt),
+            lte(staffSessions.createdAt, now),
+            gt(staffSessions.idleExpiresAt, now),
+            gt(staffSessions.absoluteExpiresAt, now),
+            isNull(staffKeys.revokedAt),
+          ),
+        )
+        .orderBy(desc(staffSessions.lastUsedAt), desc(staffSessions.createdAt));
+    },
+
+    /** The account's live staff keys as the console lists them, oldest first: never a public key, a credential id or an AAGUID. */
+    async listStaffKeyViews(userId: string): Promise<{ id: string; name: string; createdAt: Date; lastUsedAt: Date | null }[]> {
+      return db
+        .select({ id: staffKeys.id, name: staffKeys.name, createdAt: staffKeys.createdAt, lastUsedAt: staffKeys.lastUsedAt })
+        .from(staffKeys)
+        .where(and(eq(staffKeys.userId, userId), isNull(staffKeys.revokedAt)))
+        .orderBy(asc(staffKeys.createdAt), asc(staffKeys.id));
+    },
+
+    /**
+     * A sign-out (3a design, section 7) in one transaction: the session revoked, if it still is live, then its
+     * staff_signed_out event and last its audit row. False when another request ended it first, which writes nothing.
+     */
+    async endStaffSession(input: { id: string; userId: string; keyId: string; now: Date; ipHash: string | null; requestId: string }): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const [ended] = await tx
+          .update(staffSessions)
+          .set({ revokedAt: input.now })
+          .where(and(eq(staffSessions.id, input.id), eq(staffSessions.userId, input.userId), isNull(staffSessions.revokedAt)))
+          .returning({ handle: staffSessions.handle });
+        if (!ended) return false;
+        await tx.insert(authEvents).values({ userId: input.userId, type: "staff_signed_out", ipHash: input.ipHash, metadata: { handle: ended.handle } });
+        await appendAudit(tx, {
+          actorId: input.userId,
+          action: "staff_signed_out",
+          targetType: "staff_session",
+          targetId: ended.handle,
+          staffSession: ended.handle,
+          keyId: input.keyId,
+          metadata: {},
+          requestId: input.requestId,
+        });
+        return true;
+      });
+    },
+
+    /**
+     * Revokes staff keys in one transaction on the auth role (3a design, section 7): `staff.js revoke <email> <key id>` and
+     * `revoke <email> all`, and the counter rule's revocation, which is the same routine with suspect_at set as well and the
+     * regression's own event. The account's row is locked first, FOR NO KEY UPDATE, as every writer of staff rows takes it.
+     * Then the keys (one, or every live one), each only where revoked_at is still null, since a set one is never changed;
+     * then every staff session they opened (for `all`, every staff session of the account), after the keys, so a session a
+     * sign-in opened while this waited for a key's row is found too; for `all`, the unused enrolment links; an event per key;
+     * and last the audit rows, a key's revocation each and, when a link went, one staff_enrollments_cancelled row, so it
+     * never changes the database without a row. The command line waits at most 10 seconds for a lock.
+     */
+    async revokeStaffKeys(input: StaffKeyRevocation): Promise<StaffKeysRevoked> {
+      return db.transaction(async (tx): Promise<StaffKeysRevoked> => {
+        if (input.via === "cli") await tx.execute(sql`set local lock_timeout = '10s'`);
+        const [account] = await tx
+          .select({ id: users.id, email: users.email })
+          .from(users)
+          .where(and("id" in input.account ? eq(users.id, input.account.id) : sql`lower(${users.email}) = lower(${input.account.email})`, isNull(users.deletedAt)))
+          .limit(1)
+          .for("no key update");
+        if (!account) return { ok: false, reason: "no_account" };
+        let alreadyRevokedAt: Date | null = null;
+        if (input.key !== "all") {
+          // Another account's key and an unknown one are alike: neither is this account's to revoke.
+          const [key] = await tx
+            .select({ revokedAt: staffKeys.revokedAt })
+            .from(staffKeys)
+            .where(and(eq(staffKeys.id, input.key), eq(staffKeys.userId, account.id)));
+          if (!key) return { ok: false, reason: "no_key" };
+          alreadyRevokedAt = key.revokedAt;
+        }
+        const revoked = await tx
+          .update(staffKeys)
+          .set(input.suspect ? { revokedAt: input.now, suspectAt: input.now } : { revokedAt: input.now })
+          .where(and(eq(staffKeys.userId, account.id), input.key === "all" ? undefined : eq(staffKeys.id, input.key), isNull(staffKeys.revokedAt)))
+          .returning({ id: staffKeys.id, name: staffKeys.name, createdAt: staffKeys.createdAt });
+        // An update answers in no set order; the events, rows and mail list the keys oldest first.
+        revoked.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+        const keyIds = revoked.map((key) => key.id);
+        const sessionsOf = input.key === "all" ? eq(staffSessions.userId, account.id) : keyIds.length > 0 ? inArray(staffSessions.keyId, keyIds) : null;
+        const ended =
+          sessionsOf === null
+            ? []
+            : await tx
+                .update(staffSessions)
+                .set({ revokedAt: input.now })
+                .where(and(sessionsOf, isNull(staffSessions.revokedAt)))
+                .returning({ keyId: staffSessions.keyId });
+        const enrollmentsCancelled =
+          input.key === "all"
+            ? (
+                await tx
+                  .delete(staffEnrollments)
+                  .where(and(eq(staffEnrollments.userId, account.id), isNull(staffEnrollments.usedAt)))
+                  .returning({ id: staffEnrollments.id })
+              ).length
+            : 0;
+        const action = input.suspect ? "staff_key_counter_regression" : "staff_key_revoked";
+        const keys = revoked.map((key) => ({ id: key.id, name: key.name, sessionsRevoked: ended.filter((session) => session.keyId === key.id).length }));
+        for (const key of keys) {
+          // The key's id and no name: the take-down blanks names, and nothing can blank them in an event.
+          await tx.insert(authEvents).values({ userId: account.id, type: action, metadata: { keyId: key.id, sessionsRevoked: key.sessionsRevoked, via: input.via } });
+        }
+        for (const key of keys) {
+          await appendAudit(tx, {
+            actorId: input.actorId,
+            action,
+            targetType: "staff_key",
+            targetId: key.id,
+            metadata: { keyId: key.id, sessionsRevoked: key.sessionsRevoked, via: input.via },
+            requestId: input.requestId ?? null,
+          });
+        }
+        if (enrollmentsCancelled > 0) {
+          await appendAudit(tx, {
+            actorId: input.actorId,
+            action: "staff_enrollments_cancelled",
+            targetType: "user",
+            targetId: account.id,
+            metadata: { count: enrollmentsCancelled, via: input.via },
+            requestId: input.requestId ?? null,
+          });
+        }
+        return { ok: true, userId: account.id, email: account.email, keys, staffSessionsRevoked: ended.length, enrollmentsCancelled, alreadyRevokedAt };
+      });
+    },
+
     // ------------------------------------------------------------ events
 
     async appendEvent(input: {
@@ -929,6 +1278,33 @@ export function createAuthRepo(db: Db) {
         .delete(sessions)
         .where(or(and(sql`${sessions.revokedAt} is not null`, lt(sessions.revokedAt, before)), lt(sessions.expiresAt, before), lt(sessions.absoluteExpiresAt, before)))
         .returning({ id: sessions.id });
+      return rows.length;
+    },
+
+    /**
+     * Staff sessions revoked or expired before `before` (3a design, section 7). A live one is never touched: both its ends
+     * lie ahead. The audit rows that name a session keep its handle, which needs no row.
+     */
+    async purgeStaffSessions(before: Date): Promise<number> {
+      const rows = await db
+        .delete(staffSessions)
+        .where(
+          or(
+            and(isNotNull(staffSessions.revokedAt), lt(staffSessions.revokedAt, before)),
+            lt(staffSessions.idleExpiresAt, before),
+            lt(staffSessions.absoluteExpiresAt, before),
+          ),
+        )
+        .returning({ id: staffSessions.id });
+      return rows.length;
+    },
+
+    /** Enrolment links used or expired before `before`, which can enrol nothing more; one that still can is cancelled only by name. */
+    async purgeStaffEnrollments(before: Date): Promise<number> {
+      const rows = await db
+        .delete(staffEnrollments)
+        .where(or(and(isNotNull(staffEnrollments.usedAt), lt(staffEnrollments.usedAt, before)), lt(staffEnrollments.expiresAt, before)))
+        .returning({ id: staffEnrollments.id });
       return rows.length;
     },
 

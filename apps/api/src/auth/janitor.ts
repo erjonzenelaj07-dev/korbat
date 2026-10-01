@@ -13,10 +13,16 @@ export const SESSION_RETENTION_MS = 30 * DAY;
 export const DEVICE_IP_RETENTION_DAYS = 30;
 /** The security log is kept for 90 days. */
 export const EVENT_RETENTION_DAYS = 90;
+/** Staff sessions go as the app's sessions do, a month after they were revoked or expired (3a design, section 7). */
+export const STAFF_SESSION_RETENTION_MS = 30 * DAY;
+/** Enrolment links go as email codes do, a day after they were used or expired; one that can still enrol is never the janitor's. */
+export const STAFF_ENROLLMENT_RETENTION_MS = 24 * HOUR;
 
 export interface JanitorReport {
   emailCodes: number;
   sessions: number;
+  staffSessions: number;
+  staffEnrollments: number;
   deviceIpHashes: number;
   events: number;
 }
@@ -26,6 +32,9 @@ export async function janitor(deps: AuthDeps, now: Date): Promise<JanitorReport>
   const report: JanitorReport = {
     emailCodes: await deps.repo.purgeEmailCodes(new Date(now.getTime() - EMAIL_CODE_RETENTION_MS)),
     sessions: await deps.repo.purgeSessions(new Date(now.getTime() - SESSION_RETENTION_MS)),
+    // Staff keys are never deleted: audit-verify checks old confirmations against them, and audit rows name them.
+    staffSessions: await deps.repo.purgeStaffSessions(new Date(now.getTime() - STAFF_SESSION_RETENTION_MS)),
+    staffEnrollments: await deps.repo.purgeStaffEnrollments(new Date(now.getTime() - STAFF_ENROLLMENT_RETENTION_MS)),
     deviceIpHashes: await deps.repo.purgeDeviceIpHashes(new Date(now.getTime() - DEVICE_IP_RETENTION_DAYS * DAY)),
     events: await deps.repo.purgeEvents(EVENT_RETENTION_DAYS),
   };

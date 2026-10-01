@@ -116,8 +116,9 @@ export async function newStaffKey(authDb: Db, migrateDb: Db, repo: AuthRepo, rol
 }
 
 /**
- * A staff session row as Task 4's session store will write it, opened with the account's own key for 12 hours and idle
- * after 15 minutes. Inserted as the auth role, which the running API holds and which may create staff sessions.
+ * A staff session row as the session store writes it at sign-in, opened with the account's own key for 12 hours and idle
+ * after 15 minutes, written directly for suites that need a session without a sign-in. Inserted as the auth role, which
+ * the running API holds and which may create staff sessions.
  */
 export async function newStaffSession(authDb: Db, userId: string, keyId: string, now: Date = new Date()) {
   const [row] = await authDb

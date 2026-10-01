@@ -13,7 +13,7 @@ const STEP_UP = { authenticatorData: "AAAA", clientDataJSON: "BBBB", signature: 
 
 /**
  * The staff module's side of the record (3a design, sections 5 and 7): the writer for actions on public tables, which 3c's
- * decisions will use, and the audit reader behind Task 4's GET /api/staff/audit. The rows that only a test needs are
+ * decisions will use, and the audit reader behind GET /api/staff/audit. The rows that only a test needs are
  * written in transactions that end in a rollback.
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: the staff module's audit writer and reader", () => {

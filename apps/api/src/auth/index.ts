@@ -8,11 +8,17 @@ import type {
   StaffEnrollOptionsRequest,
   StaffEnrollVerifyRequest,
   StaffEnrollVerifyResponse,
+  StaffKeysResponse,
+  StaffMe,
+  StaffSessionsResponse,
+  StaffSignInVerifyRequest,
 } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
+import type { MiddlewareHandler } from "hono";
 import type Redis from "ioredis";
 import type { Logger } from "pino";
 import type { Config } from "../config";
+import type { AppEnv } from "../env";
 import type { Mailer } from "../mail/mailer";
 import { clientIdentity } from "./client-ip";
 import { authConfigFrom, type AuthDeps, type ProfileStore, type RequestContext, type StaffRequestContext } from "./context";
@@ -20,14 +26,18 @@ import { confirmDeletion, finishPurge, startDeletion } from "./flows/deletion";
 import { exportAccount, type AccountExport } from "./flows/export";
 import { redisKv, type KeyValueStore } from "./kv";
 import { createLockout } from "./lockout";
-import { requireFreshAuth, requireOnboarding, requireSession, requireStaffMfa, requireStrongFreshAuth, resolveSession } from "./middleware";
+import { requireFreshAuth, requireOnboarding, requireSession, requireStrongFreshAuth, resolveSession } from "./middleware";
 import type { JobLock } from "../lib/jobs";
 import { createJanitor } from "./janitor";
 import { hibpChecker, type BreachChecker } from "./passwords";
 import { createAuthRepo, type AuthEventType } from "./repo";
 import { authRoutes, meHandler } from "./routes";
 import { createSessions, type Session } from "./sessions";
+import type { PublicKeyCredentialRequestOptionsJSON } from "./passkeys/webauthn";
 import { enrollOptions, enrollVerify, type StaffEnrollOptions } from "./staff/enroll";
+import { requireStaff } from "./staff/middleware";
+import { listStaffKeys, listStaffSessions, signOutStaff, staffMe, type ActiveStaffSession } from "./staff/sessions";
+import { signInOptions, signInVerify, type StaffSignedIn } from "./staff/signin";
 import { cloudflareTurnstile, type TurnstileVerifier } from "./turnstile";
 import { devProvider } from "./verify/dev";
 import type { VerificationProvider } from "./verify/provider";
@@ -38,11 +48,21 @@ export type { AccountExport } from "./flows/export";
 export type { AuthEventType, UserRole } from "./repo";
 export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
+export type { ActiveStaffSession } from "./staff/sessions";
+export type { StaffSignedIn } from "./staff/signin";
+export type { StaffKeysRevokedReport } from "./staff/revoke";
 export type { VerificationProvider } from "./verify/provider";
 export { AuthError, isUniqueViolation } from "./context";
 export { SYSTEM_ACTOR_ID, grantRole } from "./admin";
 /** The account module clears a web session's cookies after a deletion; the cookie names and attributes stay this module's. */
 export { clearSessionCookies } from "./cookies";
+/**
+ * The staff module's sign-in and sign-out routes set and clear the staff cookies (3a design, section 5); their names and
+ * attributes stay this module's, and requireStaff is their only reader.
+ */
+export { clearStaffCookies, setStaffCookies } from "./staff/cookies";
+/** `staff.js revoke`, from the server's command line only, as grant-role's grantRole is. */
+export { revokeStaffKeys } from "./staff/revoke";
 export { checkHandle } from "./handles";
 export { redisKv, type KeyValueStore } from "./kv";
 export { createAuthRepo } from "./repo";
@@ -77,6 +97,20 @@ export interface AuthForStaff {
   enrollOptions(input: StaffEnrollOptionsRequest): Promise<StaffEnrollOptions>;
   /** Checks the browser's answer and stores the staff key, spending the link; the owner is mailed. */
   enrollVerify(input: StaffEnrollVerifyRequest, ctx: StaffRequestContext): Promise<StaffEnrollVerifyResponse>;
+  /** Discoverable-credential options for a staff sign-in. */
+  signInOptions(): Promise<{ options: PublicKeyCredentialRequestOptionsJSON }>;
+  /** Checks a staff key's assertion and opens a staff session; the route sets its cookies with setStaffCookies. */
+  signInVerify(input: StaffSignInVerifyRequest, ctx: StaffRequestContext): Promise<StaffSignedIn>;
+  /** Stands before every staff route that needs a session: reads it and sets `staffSession` on the context. */
+  requireStaff: MiddlewareHandler<AppEnv>;
+  /** The session's account and both its ends, with the seconds left. */
+  me(session: ActiveStaffSession): Promise<StaffMe>;
+  /** The person's own live staff sessions. */
+  sessions(session: ActiveStaffSession): Promise<StaffSessionsResponse>;
+  /** The person's own live staff keys. */
+  keys(session: ActiveStaffSession): Promise<StaffKeysResponse>;
+  /** Ends the session, on the record; the route clears its cookies with clearStaffCookies. */
+  signOut(session: ActiveStaffSession, ctx: StaffRequestContext): Promise<void>;
 }
 
 export interface CreateAuthOptions {
@@ -146,9 +180,17 @@ export function createAuth(options: CreateAuthOptions) {
     exportAccount: (userId) => exportAccount(deps, userId),
     appendEvent,
   };
+  const staffGuard = requireStaff(deps);
   const forStaff: AuthForStaff = {
     enrollOptions: (input) => enrollOptions(deps, input),
     enrollVerify: (input, ctx) => enrollVerify(deps, input, ctx),
+    signInOptions: () => signInOptions(deps),
+    signInVerify: (input, ctx) => signInVerify(deps, input, ctx),
+    requireStaff: staffGuard,
+    me: (session) => staffMe(deps, session),
+    sessions: (session) => listStaffSessions(deps, session),
+    keys: (session) => listStaffKeys(deps, session),
+    signOut: (session, ctx) => signOutStaff(deps, session, ctx),
   };
   return {
     deps,
@@ -167,8 +209,9 @@ export function createAuth(options: CreateAuthOptions) {
     requireFreshAuth: (maxAgeSeconds?: number) => requireFreshAuth(deps, maxAgeSeconds),
     /** Level 2 within the window on an account with TOTP, level 1 otherwise: for the routes of the 1c design's section 10. */
     requireStrongFreshAuth: (maxAgeSeconds?: number) => requireStrongFreshAuth(deps, maxAgeSeconds),
-    requireStaffMfa,
-    /** Starts the retention pass (dead codes, old sessions, device address hashes, old events) and returns the function that stops it. */
+    /** A staff session from the staff cookie, read from the database at every request (3a design, section 7). */
+    requireStaff: staffGuard,
+    /** Starts the retention pass (dead codes, old sessions and staff sessions, spent enrolment links, device address hashes, old events) and returns the function that stops it. */
     startJanitor: (lock: JobLock) => createJanitor(deps, lock).start(),
   };
 }

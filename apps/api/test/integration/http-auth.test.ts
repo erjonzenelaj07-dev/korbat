@@ -41,8 +41,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
       breachChecker: { isBreached: async (password) => password.includes("breached") },
     });
     app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth });
-    // Routes must be registered before the first request builds the router.
-    app.get("/api/test/staff-only", auth.requireSession, auth.requireStaffMfa, (c) => c.text("ok"));
   });
   afterAll(async () => {
     await Promise.all([closeDb(authDb), closeDb(apiDb)]);
@@ -294,27 +292,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     const used = await stranger.fetch("/api/auth/email/revert", { json: { token } });
     expect(used.status).toBe(400);
     expect(await used.json()).toMatchObject({ error: { code: "invalid_code" } });
-  });
-
-  test("staff-only routes require a staff role and MFA", async () => {
-    const b = new Browser(app, config.APP_ORIGIN);
-    const { email } = await signUp(b);
-    await b.fetch("/api/auth/onboarding/handle", { json: { handle: newHandle(), displayName: "Staff" } });
-    const regular = await b.fetch("/api/test/staff-only");
-    expect(regular.status).toBe(403);
-    expect(await regular.json()).toMatchObject({ error: { code: "forbidden" } });
-
-    const user = (await auth.deps.repo.findUserByEmail(email))!;
-    const sessionId = sha256Hex(b.cookie("__Host-korbat_session")!);
-    await auth.deps.repo.setRole(user.id, "moderator");
-    await auth.deps.kv.del(`sess:2:${sessionId}`);
-    const withoutMfa = await b.fetch("/api/test/staff-only");
-    expect(withoutMfa.status).toBe(403);
-    expect(await withoutMfa.json()).toMatchObject({ error: { code: "staff_mfa_required" } });
-
-    await auth.deps.repo.enableTotp(user.id, { secretEnc: "v1:unused", recoveryCodesHash: [], now: new Date() });
-    await auth.deps.kv.del(`sess:2:${sessionId}`);
-    expect((await b.fetch("/api/test/staff-only")).status).toBe(200);
   });
 
   test("signing out clears both cookies and ends the session", async () => {

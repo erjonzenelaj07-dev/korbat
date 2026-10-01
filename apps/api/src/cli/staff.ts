@@ -4,12 +4,15 @@
  *
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js enroll <email>
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js keys [<email>]
+ *   docker compose -f infra/compose.yml run --rm api node dist/staff.js revoke <email> <key id>|all
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-head
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-verify [<chain_seq>:<hash> ...]
  *
  * enroll prints a one-time link that registers one staff key for a live staff account with a handle; the database lets
  * only the migrator issue one. keys lists an account's staff keys, or every staff account with its keys, for the
- * runbook's comparison with the operator's own list.
+ * runbook's comparison with the operator's own list. revoke revokes one key and every staff session it opened, or with
+ * `all` every key and staff session of the account and its unused enrolment links, and mails the owner; it is the only way
+ * to revoke a key by hand, since no console route does.
  *
  * audit-head prints the audit log's newest place and hash, which the keeper holds off the server. audit-verify recomputes
  * the whole chain in its own code (the staff module's chain.ts), never asking the database for a text or a hash, since
@@ -24,10 +27,11 @@ import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-o
 import { z } from "zod";
 import { Email } from "@korbat/contracts";
 import { auditHead, auditLog, authEvents, closeDb, createDb, profiles, staffEnrollments, staffKeys, users, type Db, type DbTx } from "@korbat/db";
-import { SYSTEM_ACTOR_ID } from "../auth";
-import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl } from "../config";
+import { SYSTEM_ACTOR_ID, createAuthRepo, revokeStaffKeys, type StaffKeysRevokedReport } from "../auth";
+import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl, mailFrom, smtpUrl } from "../config";
 import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
+import { mailerFor, type CommandLineMailSettings } from "./mail";
 
 export const STAFF_USAGE = [
   "usage: node dist/staff.js <command>",
@@ -36,6 +40,9 @@ export const STAFF_USAGE = [
   "  keys [<email>]                         list the account's staff keys, or every staff account with its role, address, handle and keys",
   "  audit-head                             print the audit log's newest place, its hash and its time, to keep off the server",
   "  audit-verify [<chain_seq>:<hash> ...]  recompute the audit chain and check it against places kept before",
+  "  revoke <email> <key id>                revoke that staff key and every staff session it opened, and mail its owner",
+  "  revoke <email> all                     revoke every staff key and staff session of the account, delete its unused",
+  "                                         enrolment links, and mail its owner",
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -48,10 +55,13 @@ export type StaffCommand =
   | { command: "enroll"; email: string }
   | { command: "keys"; email: string | null }
   | { command: "audit-head" }
-  | { command: "audit-verify"; kept: KeptPlace[] };
+  | { command: "audit-verify"; kept: KeptPlace[] }
+  | { command: "revoke"; email: string; key: string | "all" };
 
 /** A place as the keeper copies it: at most 15 digits, so it is always a safe integer, and a lower-case hex sha256. */
 const KEPT_PLACE = /^([1-9][0-9]{0,14}):([0-9a-f]{64})$/;
+/** A staff key's id as `keys` prints it: a uuid, read in any case and kept in PostgreSQL's lower-case form. */
+const KEY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** An address as the account was registered with it: trimmed and lower-cased, as the contracts read it. */
 function emailArg(arg: string): string {
@@ -72,6 +82,15 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
     case "audit-head":
       if (rest.length > 0) throw new Error(STAFF_USAGE);
       return { command };
+    case "revoke": {
+      if (rest.length !== 2) throw new Error(STAFF_USAGE);
+      const email = emailArg(rest[0]!);
+      // Exactly "all"; anything else must be a key's id, so a typo never revokes every key.
+      if (rest[1] === "all") return { command, email, key: "all" };
+      const key = rest[1]!.toLowerCase();
+      if (!KEY_ID.test(key)) throw new Error(`not a key id or all: ${rest[1]} (staff.js keys prints each key's id)\n${STAFF_USAGE}`);
+      return { command, email, key };
+    }
     case "audit-verify":
       return {
         command,
@@ -109,7 +128,7 @@ function readEnv<T extends z.ZodType>(schema: T, env: Record<string, string | un
  * The database URLs a command connects with: the API role's, and the auth role's for audit-verify and keys, which read the
  * staff keys there. enroll connects as the migrator alone and reads its settings with enrollSettings.
  */
-export function staffDatabaseUrls(command: Exclude<StaffCommand, { command: "enroll" }>, env: Record<string, string | undefined>): { api: string; auth: string | null } {
+export function staffDatabaseUrls(command: Exclude<StaffCommand, { command: "enroll" | "revoke" }>, env: Record<string, string | undefined>): { api: string; auth: string | null } {
   if (command.command === "audit-verify" || command.command === "keys") {
     const urls = readEnv(AUDIT_VERIFY_ENV, env, command.command);
     return { api: urls.DATABASE_URL_API, auth: urls.DATABASE_URL_AUTH };
@@ -142,6 +161,23 @@ export function enrollSettings(env: Record<string, string | undefined>): EnrollS
   const settings = readEnv(ENROLL_ENV, env, "enroll");
   const consoleOrigin = settings.CONSOLE_ORIGIN!;
   return { migrate: settings.DATABASE_URL_MIGRATE, consoleOrigin, consoleRpId: settings.CONSOLE_RP_ID ?? consoleHostOf(consoleOrigin) };
+}
+
+/**
+ * What revoke reads: the auth role's URL, on which it revokes, and the mail settings, with which it tells the key's owner,
+ * each by the API's own rule for it. The API role's URL and the API's secrets are not read: revoke needs neither.
+ */
+const REVOKE_ENV = z.object({ DATABASE_URL_AUTH: databaseUrl, SMTP_URL: smtpUrl, MAIL_FROM: mailFrom, NODE_ENV: z.string().optional() });
+
+export interface RevokeSettings {
+  auth: string;
+  mail: CommandLineMailSettings;
+}
+
+/** revoke's settings; production refuses a plain relay that does not upgrade with STARTTLS, as the API does. */
+export function revokeSettings(env: Record<string, string | undefined>): RevokeSettings {
+  const settings = readEnv(REVOKE_ENV, env, "revoke");
+  return { auth: settings.DATABASE_URL_AUTH, mail: { smtpUrl: settings.SMTP_URL, mailFrom: settings.MAIL_FROM, requireTls: settings.NODE_ENV === "production" } };
 }
 
 // ---------------------------------------------------------------- reading the record
@@ -624,6 +660,7 @@ export async function runStaffCommand(args: readonly string[], env: Record<strin
     return 2;
   }
   if (command.command === "enroll") return runEnroll(command.email, env, out);
+  if (command.command === "revoke") return runRevoke(command.email, command.key, env, out);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -691,6 +728,54 @@ async function runEnroll(email: string, env: Record<string, string | undefined>,
     return 1;
   } finally {
     await closeDb(migrateDb);
+  }
+}
+
+// ---------------------------------------------------------------- revoke
+
+/** What revoke prints of what it did. */
+export function describeRevocation(report: Extract<StaffKeysRevokedReport, { ok: true }>, email: string, key: string | "all"): string[] {
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  if (key !== "all" && report.alreadyRevokedAt !== null) {
+    return [`revoke: staff key ${key} of ${email} was already revoked at ${report.alreadyRevokedAt.toISOString()}; nothing changed`];
+  }
+  if (report.keys.length === 0 && report.staffSessionsRevoked === 0 && report.enrollmentsCancelled === 0) {
+    return [`revoke: ${email} has nothing to revoke: no live staff key, staff session or unused enrolment link; nothing changed`];
+  }
+  const lines = [
+    `revoke: ${email}: ${count(report.keys.length, "staff key", "staff keys")} revoked, ${count(report.staffSessionsRevoked, "staff session", "staff sessions")} revoked` +
+      (key === "all" ? `, ${count(report.enrollmentsCancelled, "unused enrolment link", "unused enrolment links")} deleted` : ""),
+  ];
+  // A name is printed as a JSON string, as keys prints it, so a character a terminal would act on is shown escaped.
+  for (const revoked of report.keys) lines.push(`  key ${revoked.id} ${JSON.stringify(revoked.name)}: ${count(revoked.sessionsRevoked, "staff session", "staff sessions")} revoked`);
+  return lines;
+}
+
+/** revoke, on the command line's own connection on the auth role: its settings first, so a missing one connects to nothing. */
+async function runRevoke(email: string, key: string | "all", env: Record<string, string | undefined>, out: Output): Promise<number> {
+  let settings: RevokeSettings;
+  try {
+    settings = revokeSettings(env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const authDb = createDb(settings.auth, { max: 1 });
+  try {
+    const report = await revokeStaffKeys({ repo: createAuthRepo(authDb), mailer: mailerFor(settings.mail) }, email, key);
+    if (!report.ok) {
+      out.error(report.reason === "no_account" ? `revoke: no live account for ${email}; nothing changed` : `revoke: no staff key ${key} on ${email}; nothing changed`);
+      return 1;
+    }
+    for (const line of describeRevocation(report, email, key)) out.log(line);
+    // The revocation stands whatever the mail does; the operator tells the person another way.
+    if (report.mailError !== null) out.error(`warning: the staff_keys_revoked mail to the account could not be sent (${report.mailError}); the revocation stands`);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `revoke: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(authDb);
   }
 }
 

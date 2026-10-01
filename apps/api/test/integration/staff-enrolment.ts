@@ -8,6 +8,9 @@ import { DEVICE_BOUND } from "./staff-fixtures";
 // Kept apart from staff-fixtures.ts, which the suites of the audit record and the schema share: only the suites of the
 // enrolment flow need the flow itself.
 
+/** What the staff flows need of a harness: the auth module's dependencies and a request's facts. The HTTP suites pass createAuth's. */
+export type StaffFlowHarness = Pick<FlowHarness, "deps" | "ctx">;
+
 export interface EnrolOptions {
   name?: string;
   kind?: StaffKeyKind;
@@ -21,7 +24,7 @@ export interface EnrolOptions {
  * the link's token, the software authenticator's answer from the console's origin, and the verification. A device-bound,
  * user-verified security key unless told otherwise.
  */
-export async function enrolKey(h: FlowHarness, auth: SoftAuthenticator, token: string, options: EnrolOptions = {}) {
+export async function enrolKey(h: StaffFlowHarness, auth: SoftAuthenticator, token: string, options: EnrolOptions = {}) {
   const name = options.name ?? "Blue key";
   const { options: creation } = await enrollOptions(h.deps, { token, name, kind: options.kind ?? "security_key" });
   const response = auth.create({

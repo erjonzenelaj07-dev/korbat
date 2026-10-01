@@ -10,7 +10,7 @@ const CONSOLE_HOST = "console.localhost:8090";
 
 /**
  * The staff gate (3a design, section 7) as a unit: a Hono app with one stub route behind it, answering an unknown route
- * and an AuthError as createApp does. No staff route exists before Task 4, whose HTTP tests take the gate through the app.
+ * and an AuthError as createApp does. The HTTP tests (http-staff-sessions.test.ts) take the gate through the app and its routes.
  */
 function gated() {
   const app = new Hono<AppEnv>();

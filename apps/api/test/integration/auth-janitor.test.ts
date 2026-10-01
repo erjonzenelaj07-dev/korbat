@@ -1,12 +1,13 @@
-import { sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { closeDb, createDb, type Db } from "@korbat/db";
-import { randomToken } from "../../src/auth/crypto";
-import { EMAIL_CODE_RETENTION_MS, SESSION_RETENTION_MS, janitor } from "../../src/auth/janitor";
+import { closeDb, createDb, staffEnrollments, staffSessions, type Db } from "@korbat/db";
+import { randomToken, sha256Hex } from "../../src/auth/crypto";
+import { EMAIL_CODE_RETENTION_MS, SESSION_RETENTION_MS, STAFF_ENROLLMENT_RETENTION_MS, STAFF_SESSION_RETENTION_MS, janitor } from "../../src/auth/janitor";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { newUserWithDevice } from "./auth-fixtures";
 import { flowHarness } from "./flow-harness";
+import { TEST_CONSOLE_ORIGIN, TEST_CONSOLE_RP_ID, newStaffKey, newStaffSession } from "./staff-fixtures";
 
 const DAY = 24 * 60 * 60_000;
 
@@ -68,5 +69,48 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the auth janitor", () =>
     const report = await janitor(h.deps, h.clock.now());
     expect(report.events).toBeGreaterThanOrEqual(1);
     expect((await repo.recentEvents(user.id)).map((e) => e.type)).toEqual(["signin_failure"]);
+  });
+
+  test("staff sessions go 30 days after they were revoked or expired and enrolment links a day after use or expiry; live ones stay", async () => {
+    expect(STAFF_SESSION_RETENTION_MS).toBe(30 * DAY);
+    expect(STAFF_ENROLLMENT_RETENTION_MS).toBe(DAY);
+    const h = flowHarness(repo);
+    const now = h.clock.now();
+    const ago = (ms: number) => new Date(now.getTime() - ms);
+    const { user, key } = await newStaffKey(db, migrateDb, repo);
+
+    // A session ended 30 days ago and more: it expired 15 minutes after it started, 31 days ago.
+    const old = await newStaffSession(db, user.id, key.id, ago(31 * DAY));
+    // One that expired 29 days ago, never revoked; one revoked an hour ago; and a live one.
+    const expired = await newStaffSession(db, user.id, key.id, ago(29 * DAY));
+    const revoked = await newStaffSession(db, user.id, key.id, ago(2 * 60 * 60_000));
+    await db.update(staffSessions).set({ revokedAt: ago(60 * 60_000) }).where(eq(staffSessions.id, revoked.id));
+    const live = await newStaffSession(db, user.id, key.id, ago(60_000));
+
+    // Enrolments are written by the migrator alone, so it backdates them: a spent one's used_at is set as it is inserted.
+    const link = (values: { usedAt?: Date; expiresAt: Date }) =>
+      migrateDb
+        .insert(staffEnrollments)
+        .values({ userId: user.id, tokenHash: sha256Hex(randomToken()), origin: TEST_CONSOLE_ORIGIN, rpId: TEST_CONSOLE_RP_ID, ...values })
+        .returning({ id: staffEnrollments.id })
+        .then(([row]) => row!.id);
+    const usedLongAgo = await link({ usedAt: ago(25 * 60 * 60_000), expiresAt: ago(24 * 60 * 60_000) });
+    const expiredLongAgo = await link({ expiresAt: ago(25 * 60 * 60_000) });
+    const usedRecently = await link({ usedAt: ago(23 * 60 * 60_000), expiresAt: new Date(now.getTime() + 60_000) });
+    const expiredRecently = await link({ expiresAt: ago(23 * 60 * 60_000) });
+    const open = await link({ expiresAt: new Date(now.getTime() + 30 * 60_000) });
+
+    const report = await janitor(h.deps, now);
+    expect(report.staffSessions).toBeGreaterThanOrEqual(1);
+    expect(report.staffEnrollments).toBeGreaterThanOrEqual(2);
+    const sessionsLeft = (await migrateDb.select({ id: staffSessions.id }).from(staffSessions).where(eq(staffSessions.userId, user.id))).map((s) => s.id);
+    expect(sessionsLeft.sort()).toEqual([expired.id, revoked.id, live.id].sort());
+    expect(sessionsLeft).not.toContain(old.id);
+    const ids = [usedLongAgo, expiredLongAgo, usedRecently, expiredRecently, open];
+    const linksLeft = (await migrateDb.select({ id: staffEnrollments.id }).from(staffEnrollments).where(inArray(staffEnrollments.id, ids))).map((e) => e.id);
+    expect(linksLeft.sort()).toEqual([usedRecently, expiredRecently, open].sort());
+    // The staff key itself is never the janitor's: audit rows name it.
+    const [kept] = (await db.execute(sql`select id from auth.staff_keys where id = ${key.id}::uuid`)) as unknown as { id: string }[];
+    expect(kept?.id).toBe(key.id);
   });
 });

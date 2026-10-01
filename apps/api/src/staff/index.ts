@@ -26,7 +26,7 @@ export interface CreateStaffOptions {
 export function createStaff(options: CreateStaffOptions) {
   return {
     /** The routes under /api/staff, behind the staff gate for the console at `consoleOrigin`. */
-    routes: (consoleOrigin: string) => staffRoutes(consoleOrigin, options.auth),
+    routes: (consoleOrigin: string) => staffRoutes(consoleOrigin, options.auth, (query) => auditPage(options.apiDb, query)),
     /** One page of the audit log, newest first, as GET /api/staff/audit answers it. */
     readAudit: (query: AuditPageQuery) => auditPage(options.apiDb, query),
   };

@@ -27,6 +27,10 @@ export function commandLineMailSettings(env: Record<string, string | undefined>)
 
 /** The mailer itself. A send that fails throws MailUnavailable; the commands report it as a warning that undoes nothing. */
 export function commandLineMailer(env: Record<string, string | undefined>): Mailer {
-  const settings = commandLineMailSettings(env);
+  return mailerFor(commandLineMailSettings(env));
+}
+
+/** The same mailer from settings a command read with its own schema, as staff.js revoke reads them beside its database URL. */
+export function mailerFor(settings: CommandLineMailSettings): Mailer {
   return smtpMailer(settings.smtpUrl, settings.mailFrom, { requireTls: settings.requireTls });
 }

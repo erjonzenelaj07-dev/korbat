@@ -138,7 +138,7 @@ export function MfaSection({
           ? "Two-factor authentication is on. Signing in needs a code from your authenticator app."
           : me.user.role === "user"
             ? "Two-factor authentication is off. Turn it on so a leaked password or email alone can't open your account."
-            : "Staff accounts must turn on two-factor authentication before using staff tools."}
+            : "Two-factor authentication is off. Turn it on so a leaked password or email alone can't open your account; on a staff account it then stays on. Staff tools are on the staff console and open only with a staff key."}
       </Body>
       <ErrorText message={error} />
       {me.user.mfaEnabled ? (

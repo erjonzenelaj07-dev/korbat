@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { STAFF_USAGE, enrollSettings, parseStaffArgs, runStaffCommand, staffDatabaseUrls } from "../src/cli/staff";
+import { STAFF_USAGE, enrollSettings, parseStaffArgs, revokeSettings, runStaffCommand, staffDatabaseUrls } from "../src/cli/staff";
 
 const HASH_A = "ab".repeat(32);
 const HASH_B = "0123456789abcdef".repeat(4);
@@ -19,10 +19,22 @@ describe("staff.js arguments", () => {
     expect(STAFF_USAGE).toContain("keys [<email>]");
     expect(STAFF_USAGE).toContain("audit-head");
     expect(STAFF_USAGE).toContain("audit-verify [<chain_seq>:<hash> ...]");
+    expect(STAFF_USAGE).toContain("revoke <email> <key id>");
+    expect(STAFF_USAGE).toContain("revoke <email> all");
     // enroll runs as the migrator, in the migrate service; the usage says where.
     expect(STAFF_USAGE).toMatch(/run --rm migrate node dist\/staff\.js enroll/);
-    // revoke arrives with the task that builds it.
-    expect(STAFF_USAGE).not.toMatch(/revoke/);
+  });
+
+  test("reads revoke with an email address and a key id or all, normalising both", () => {
+    const id = "0f7b3c2e-4a1d-4c6b-9e8f-1a2b3c4d5e6f";
+    expect(parseStaffArgs(["revoke", " Mod@Korbat.Local ", "all"])).toEqual({ command: "revoke", email: "mod@korbat.local", key: "all" });
+    expect(parseStaffArgs(["revoke", "mod@korbat.local", id.toUpperCase()])).toEqual({ command: "revoke", email: "mod@korbat.local", key: id });
+    expect(() => parseStaffArgs(["revoke", "mod@korbat.local"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["revoke", "mod@korbat.local", id, "all"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["revoke", "moderator", "all"])).toThrow(`not an email address: moderator\n${STAFF_USAGE}`);
+    for (const key of ["ALL", "every", "12", `${id}0`, id.replace(/-/g, "")]) {
+      expect(() => parseStaffArgs(["revoke", "mod@korbat.local", key]), key).toThrow(`not a key id or all: ${key}`);
+    }
   });
 
   test("reads enroll with one email address and keys with one or none, normalising the address", () => {
@@ -52,7 +64,6 @@ describe("staff.js arguments", () => {
   test("prints the usage for no command, an unknown one or extra arguments", () => {
     expect(() => parseStaffArgs([])).toThrow(STAFF_USAGE);
     expect(() => parseStaffArgs(["audit-tail"])).toThrow(`unknown command: audit-tail\n${STAFF_USAGE}`);
-    expect(() => parseStaffArgs(["revoke", "a@b.io", "all"])).toThrow("unknown command: revoke");
     expect(() => parseStaffArgs(["audit-head", `1:${HASH_A}`])).toThrow(STAFF_USAGE);
   });
 
@@ -210,5 +221,52 @@ describe("what staff.js enroll reads of the environment", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^err .*CONSOLE_ORIGIN is not set/);
+  });
+});
+
+// revoke runs like grant-role, in the api service (3a design, section 7): it revokes on the auth role and mails the key's
+// owner, so it reads the auth role's URL and the mail settings, and nothing else of the API's configuration.
+describe("what staff.js revoke reads of the environment", () => {
+  const MAIL = { SMTP_URL: "smtp://localhost:1025", MAIL_FROM: "korbat <no-reply@korbat.local>" };
+
+  test("DATABASE_URL_AUTH, SMTP_URL and MAIL_FROM, with TLS required from a plain relay in production as the API requires it", () => {
+    expect(revokeSettings({ DATABASE_URL_AUTH: AUTH_URL, ...MAIL })).toEqual({ auth: AUTH_URL, mail: { smtpUrl: MAIL.SMTP_URL, mailFrom: MAIL.MAIL_FROM, requireTls: false } });
+    expect(revokeSettings({ DATABASE_URL_AUTH: AUTH_URL, ...MAIL, NODE_ENV: "production" }).mail.requireTls).toBe(true);
+  });
+
+  test("a setting only the API reads, or one the API's configuration would refuse, changes nothing", () => {
+    const env = { DATABASE_URL_AUTH: AUTH_URL, ...MAIL, CONSOLE_ORIGIN: "https://console.example/", APP_ORIGIN: "not a url", AUTH_HMAC_KEY: "c2hvcnQ=", DATABASE_URL_API: "nope" };
+    expect(revokeSettings(env).auth).toBe(AUTH_URL);
+  });
+
+  test("names the setting that is missing or wrong, and no other", () => {
+    const cases: [Record<string, string>, RegExp][] = [
+      [{ ...MAIL }, /DATABASE_URL_AUTH/],
+      [{ DATABASE_URL_AUTH: "mysql://x@localhost/k", ...MAIL }, /DATABASE_URL_AUTH/],
+      [{ DATABASE_URL_AUTH: AUTH_URL, MAIL_FROM: MAIL.MAIL_FROM }, /SMTP_URL/],
+      [{ DATABASE_URL_AUTH: AUTH_URL, SMTP_URL: "http://localhost:1025", MAIL_FROM: MAIL.MAIL_FROM }, /SMTP_URL/],
+      [{ DATABASE_URL_AUTH: AUTH_URL, SMTP_URL: MAIL.SMTP_URL }, /MAIL_FROM/],
+    ];
+    for (const [env, named] of cases) {
+      let message = "";
+      try {
+        revokeSettings(env);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message, JSON.stringify(env)).toMatch(named);
+      expect(message).toMatch(/^Invalid environment for revoke:/);
+      expect(message).not.toMatch(/APP_ORIGIN|REDIS_URL|AUTH_HMAC_KEY|CONSOLE_ORIGIN|DATABASE_URL_API|DATABASE_URL_MIGRATE/);
+    }
+  });
+
+  test("run with a setting missing, it names it, answers 1 and connects to nothing", async () => {
+    const { lines, out } = capture();
+    const started = Date.now();
+    expect(await runStaffCommand(["revoke", "mod@korbat.local", "all"], { DATABASE_URL_AUTH: "postgres://korbat_auth:x@127.0.0.1:1/korbat", ...MAIL, SMTP_URL: "" }, out)).toBe(1);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^err Invalid environment for revoke:/);
+    expect(lines[0]).toContain("SMTP_URL");
   });
 });

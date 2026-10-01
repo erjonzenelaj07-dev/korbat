@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import pino from "pino";
 import { describe, expect, test } from "vitest";
 import { createDb } from "@korbat/db";
@@ -20,7 +23,7 @@ const PROBE_PATHS = ["/api/staff", "/api/staff/", "/api/staff/probe"];
 /**
  * createApp with the staff module (3a design, section 5), the console on or off. The pools are created but never connect:
  * nothing here reaches a flow. `probe` adds a stub route at each of PROBE_PATHS before the first request builds the router,
- * standing in for Task 4's routes, so a request that passes the gate can be told from one that does not: without a route
+ * standing in for a route that needs no session, so a request that passes the gate can be told from one that does not: without a route
  * there, a wrong Host and a missing route both end in the same unknown-route 404, gate or no gate.
  */
 function build(consoleOrigin: string | undefined, probe = false) {
@@ -57,7 +60,7 @@ function build(consoleOrigin: string | undefined, probe = false) {
       return c.json({ ok: true });
     });
   }
-  return { app, seen };
+  return { app, seen, auth };
 }
 
 type ErrorBody = { error: { code: string; message: string; requestId?: string } };
@@ -159,6 +162,69 @@ describe("the staff module in createApp", () => {
       const invalid = await post({ host: CONSOLE_HOST, origin: CONSOLE_ORIGIN }, { token: "short", name: "", kind: "phone" });
       expect([path, invalid.status, ((await invalid.json()) as ErrorBody).error.code]).toEqual([path, 400, "invalid_request"]);
     }
+  });
+
+  test("the session routes stand behind the gate and requireStaff: without a staff cookie each is staff_session_required with both staff cookies cleared, before any database read", async () => {
+    // The pools point at a port nothing listens on: a route that read the database would fail with another answer.
+    const { app } = build(CONSOLE_ORIGIN);
+    const routes = [
+      ["GET", "/api/staff/me"],
+      ["GET", "/api/staff/sessions"],
+      ["GET", "/api/staff/keys"],
+      ["GET", "/api/staff/audit"],
+      ["POST", "/api/staff/signout"],
+    ] as const;
+    for (const [method, path] of routes) {
+      // Another Host is still the unknown route, before any session is looked for.
+      expect((await app.request(path, { method, headers: { host: "localhost:8080", origin: CONSOLE_ORIGIN } })).status, path).toBe(404);
+      // The app's session cookie and a bearer token are not staff sessions.
+      const res = await app.request(path, {
+        method,
+        headers: { host: CONSOLE_HOST, origin: CONSOLE_ORIGIN, cookie: "__Host-korbat_session=kb1_x; __Host-korbat_csrf=c", "x-csrf-token": "c", authorization: `Bearer kb1_${"A".repeat(43)}` },
+      });
+      expect([path, res.status, ((await res.json()) as ErrorBody).error.code]).toEqual([path, 401, "staff_session_required"]);
+      const cleared = res.headers.getSetCookie();
+      expect(cleared.map((line) => line.slice(0, line.indexOf("="))).sort(), path).toEqual(["__Host-korbat_staff", "__Host-korbat_staff_csrf"]);
+      for (const line of cleared) expect(line, path).toContain("Max-Age=0");
+      expect(accessControlHeaders(res), path).toEqual([]);
+    }
+  });
+
+  test("a staff write with the staff cookie but without the staff CSRF header is csrf_failed, before any database read", async () => {
+    const { app } = build(CONSOLE_ORIGIN);
+    const res = await app.request("/api/staff/signout", { method: "POST", headers: { host: CONSOLE_HOST, origin: CONSOLE_ORIGIN, cookie: "__Host-korbat_staff=x; __Host-korbat_staff_csrf=y" } });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as ErrorBody).error.code).toBe("csrf_failed");
+    // A refused write ends nothing: the cookies stay.
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
+
+  test("the sign-in options need no session and read no database: a staff sign-in challenge for discoverable, user-verified credentials of the console", async () => {
+    const { app } = build(CONSOLE_ORIGIN);
+    const res = await app.request("/api/staff/signin/options", { method: "POST", headers: { host: CONSOLE_HOST, origin: CONSOLE_ORIGIN } });
+    expect(res.status).toBe(200);
+    const { options } = (await res.json()) as { options: { rpId: string; challenge: string; allowCredentials?: unknown[]; userVerification: string } };
+    expect(options.rpId).toBe("console.localhost");
+    expect(options.allowCredentials ?? []).toEqual([]);
+    expect(options.userVerification).toBe("required");
+    expect(Buffer.from(options.challenge, "base64url")).toHaveLength(58);
+    expect(res.headers.getSetCookie()).toEqual([]);
+    // The verification validates its body before any flow runs.
+    const invalid = await app.request("/api/staff/signin/verify", {
+      method: "POST",
+      headers: { host: CONSOLE_HOST, origin: CONSOLE_ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ response: { id: "x" } }),
+    });
+    expect([invalid.status, ((await invalid.json()) as ErrorBody).error.code]).toEqual([400, "invalid_request"]);
+  });
+
+  test("no staff power remains in the app: the auth module offers no requireStaffMfa, and no source names it", () => {
+    const { auth } = build(CONSOLE_ORIGIN);
+    expect(Object.keys(auth)).not.toContain("requireStaffMfa");
+    expect(Object.keys(auth)).toContain("requireStaff");
+    const src = fileURLToPath(new URL("../../src", import.meta.url));
+    const mentions = readdirSync(src, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".ts") && readFileSync(join(src, file), "utf8").includes("requireStaffMfa"));
+    expect(mentions).toEqual([]);
   });
 
   test("staff paths keep the JSON body limit and the API's headers", async () => {

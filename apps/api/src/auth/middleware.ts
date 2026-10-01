@@ -83,12 +83,3 @@ export function requireStrongFreshAuth(deps: AuthDeps, maxAgeSeconds?: number) {
     await next();
   });
 }
-
-/** Moderator or admin, with MFA on. Guards every staff route from sub-project 3 onward. */
-export const requireStaffMfa = createMiddleware<AppEnv>(async (c, next) => {
-  const session = c.get("session");
-  if (!session) return c.json(errorBody("unauthenticated", "Sign in required", c.get("requestId")), 401);
-  if (session.role === "user") return c.json(errorBody("forbidden", "Staff only", c.get("requestId")), 403);
-  if (!session.mfaEnabled) return c.json(errorBody("staff_mfa_required", authErrorMessage("staff_mfa_required"), c.get("requestId")), 403);
-  await next();
-});

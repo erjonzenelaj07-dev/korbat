@@ -329,6 +329,15 @@ describe("the Security screen's passkeys", () => {
     expect(home).toContain("<PasskeySuggestion");
     expect(home).toContain('router.push("/settings/security?add=1")');
   });
+
+  test("a staff account without two-factor is told what it protects in the app, and that staff tools open only on the console with a staff key", () => {
+    // 3a design, section 13, Task 4: two-factor in the app gives no staff power, so the sentence promises none.
+    const mfa = read("components", "security", "MfaSection.tsx");
+    expect(mfa).toContain(
+      "Two-factor authentication is off. Turn it on so a leaked password or email alone can't open your account; on a staff account it then stays on. Staff tools are on the staff console and open only with a staff key.",
+    );
+    expect(mfa).not.toContain("before using staff tools");
+  });
 });
 
 describe("the re-authentication panel", () => {
