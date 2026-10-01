@@ -12,7 +12,7 @@ Tasks 1 to 5 built the whole API side of the staff console: the record, enrolmen
 - Windows 11. Node v24.12.0, pnpm 10.30.0.
 - **Docker Desktop must be running** with the data services up. Start them with `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis mailpit` and wait until `docker compose -f infra/compose.yml -f infra/compose.dev.yml ps` shows them `healthy` or `running`.
 - Never touch Docker containers that are not part of the `korbat` compose project (for example `alita-db` or `dazzling_moore`).
-- The workspace refuses package versions younger than 7 days. This task adds no dependencies: do not run `pnpm add`, and never edit `pnpm-workspace.yaml` or `.npmrc`.
+- The workspace refuses package versions younger than 7 days. The `install` step runs `pnpm install` with that floor in force, and the `lockfile-age` step then proves that every newly locked version is at least 7 days old. `pnpm-lock.yaml` is written by the install, never by hand. Never edit `pnpm-workspace.yaml` or `.npmrc`, and never add a package this task does not name.
 
 ## Preconditions
 
@@ -5188,7 +5188,27 @@ WEBAUTHN_RP_NAME=
 CONSOLE_ORIGIN=http://localhost:8090
 ```
 
-## Step 4: verify: frozen-install
+## Step 4: verify: install
+
+```bash
+pnpm install --config.package-import-method=copy
+```
+
+Expected output contains:
+
+- `Done in`
+
+Must not contain:
+
+- `ERR_PNPM`
+
+Observed on the dry run:
+
+```text
+Done in 10.2s using pnpm v10.30.0
+```
+
+## Step 5: verify: frozen-install
 
 ```bash
 pnpm install --frozen-lockfile
@@ -5208,7 +5228,7 @@ Observed on the dry run:
 Done in 1.9s using pnpm v10.30.0
 ```
 
-## Step 5: verify: lockfile-age
+## Step 6: verify: lockfile-age
 
 ```bash
 node scripts/check-lockfile-age.mjs --base HEAD
@@ -5224,7 +5244,7 @@ Observed on the dry run:
 0 new package versions since HEAD; all at least 7 days old
 ```
 
-## Step 6: verify: typecheck
+## Step 7: verify: typecheck
 
 ```bash
 pnpm typecheck
@@ -5243,7 +5263,7 @@ Observed on the dry run:
 (no output)
 ```
 
-## Step 7: verify: test
+## Step 8: verify: test
 
 ```bash
 pnpm test
@@ -5271,7 +5291,7 @@ apps/worker test:       Tests  45 passed (45)
 apps/api test:       Tests  548 passed | 438 skipped (986)
 ```
 
-## Step 8: verify: admin-test
+## Step 9: verify: admin-test
 
 ```bash
 pnpm --filter @korbat/admin test
@@ -5292,7 +5312,7 @@ Observed on the dry run:
 Tests  167 passed (167)
 ```
 
-## Step 9: verify: admin-build
+## Step 10: verify: admin-build
 
 ```bash
 pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}\./-HASH./'
@@ -5316,7 +5336,7 @@ main-HASH.js
 main-HASH.css
 ```
 
-## Step 10: verify: integration
+## Step 11: verify: integration
 
 ```bash
 cd apps/api && set -a && . ./.env && set +a && pnpm test:integration
@@ -5337,7 +5357,7 @@ Observed on the dry run:
 Tests  436 passed (436)
 ```
 
-## Step 11: check the change set
+## Step 12: check the change set
 
 ```bash
 git status --porcelain --untracked-files=all
@@ -5400,7 +5420,7 @@ Expected: exactly these paths, and nothing else (no `.env` file, no `dist/`):
 - `apps/api/.env.example`
 - `pnpm-lock.yaml`
 
-## Step 12: commit
+## Step 13: commit
 
 ```bash
 git add -A
@@ -5416,6 +5436,7 @@ Expected: one line ending in `feat(admin,ci): the staff console: apps/admin is a
 TASK 6 REPORT
 Files written: <count, expected 53>
 Failing-test step (the error line): <paste>
+Verify "install": <paste the expected lines as printed>
 Verify "frozen-install": <paste the expected lines as printed>
 Verify "lockfile-age": <paste the expected lines as printed>
 Verify "typecheck": <paste the expected lines as printed>

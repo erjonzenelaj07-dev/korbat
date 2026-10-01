@@ -14,7 +14,7 @@ Tasks 1 to 6 built the staff console's API side and the console app. This task s
 - Ports 3000, 8080 and 8090 on localhost must be free. Stop any korbat API, worker, web or console process started from this repository first; never stop other Node processes on the machine, and never touch Docker containers, volumes or images that do not belong to the `korbat` compose project.
 - `infra/.env` (gitignored) must hold the line `API_CONSOLE_ORIGIN=http://localhost:8090` before the stack is rebuilt: the stack gates start the console site and the smoke test checks it there. If `grep -c '^API_CONSOLE_ORIGIN=' infra/.env` prints `0`, add it with `echo >> infra/.env && echo API_CONSOLE_ORIGIN=http://localhost:8090 >> infra/.env` (the line holds no secret). The dry run used port 8390 in its scratch clone.
 - Never touch Docker containers that are not part of the `korbat` compose project (for example `alita-db` or `dazzling_moore`).
-- The workspace refuses package versions younger than 7 days. This task adds no dependencies: do not run `pnpm add`, and never edit `pnpm-workspace.yaml` or `.npmrc`.
+- The workspace refuses package versions younger than 7 days. The `install` step runs `pnpm install` with that floor in force, and the `lockfile-age` step then proves that every newly locked version is at least 7 days old. `pnpm-lock.yaml` is written by the install, never by hand. Never edit `pnpm-workspace.yaml` or `.npmrc`, and never add a package this task does not name.
 
 ## Preconditions
 
@@ -3118,7 +3118,27 @@ console.log(failures === 0 ? "smoke test passed" : `smoke test FAILED: ${failure
 process.exit(failures === 0 ? 0 : 1);
 ```
 
-## Step 4: verify: frozen-install
+## Step 4: verify: install
+
+```bash
+pnpm install --config.package-import-method=copy
+```
+
+Expected output contains:
+
+- `Done in`
+
+Must not contain:
+
+- `ERR_PNPM`
+
+Observed on the dry run:
+
+```text
+Done in 7.3s using pnpm v10.30.0
+```
+
+## Step 5: verify: frozen-install
 
 ```bash
 pnpm install --frozen-lockfile
@@ -3138,7 +3158,7 @@ Observed on the dry run:
 Done in 4.9s using pnpm v10.30.0
 ```
 
-## Step 5: verify: lockfile-age
+## Step 6: verify: lockfile-age
 
 ```bash
 node scripts/check-lockfile-age.mjs --base HEAD
@@ -3154,7 +3174,7 @@ Observed on the dry run:
 1 new package versions since HEAD; all at least 7 days old
 ```
 
-## Step 6: verify: typecheck
+## Step 7: verify: typecheck
 
 ```bash
 pnpm typecheck
@@ -3173,7 +3193,7 @@ Observed on the dry run:
 (no output)
 ```
 
-## Step 7: verify: test
+## Step 8: verify: test
 
 ```bash
 pnpm test
@@ -3201,7 +3221,7 @@ apps/worker test:       Tests  45 passed (45)
 apps/api test:       Tests  548 passed | 438 skipped (986)
 ```
 
-## Step 8: verify: admin-test
+## Step 9: verify: admin-test
 
 ```bash
 pnpm --filter @korbat/admin test
@@ -3222,7 +3242,7 @@ Observed on the dry run:
 Tests  193 passed (193)
 ```
 
-## Step 9: verify: admin-browser
+## Step 10: verify: admin-browser
 
 ```bash
 pnpm --filter @korbat/admin test:browser
@@ -3243,7 +3263,7 @@ Observed on the dry run:
 Tests  12 passed (12)
 ```
 
-## Step 10: verify: compose-config
+## Step 11: verify: compose-config
 
 ```bash
 docker compose --env-file infra/.env.example -f infra/compose.yml config -q && echo config-ok
@@ -3259,7 +3279,7 @@ Observed on the dry run:
 config-ok
 ```
 
-## Step 11: verify: compose-dev-config
+## Step 12: verify: compose-dev-config
 
 ```bash
 docker compose --env-file infra/.env.example -f infra/compose.yml -f infra/compose.dev.yml config -q && echo dev-config-ok
@@ -3275,7 +3295,7 @@ Observed on the dry run:
 dev-config-ok
 ```
 
-## Step 12: verify: stack-down
+## Step 13: verify: stack-down
 
 ```bash
 docker compose -f infra/compose.yml -f infra/compose.dev.yml down && echo down-ok
@@ -3291,7 +3311,7 @@ Observed on the dry run:
 down-ok
 ```
 
-## Step 13: verify: build
+## Step 14: verify: build
 
 ```bash
 docker compose -f infra/compose.yml -f infra/compose.dev.yml build > .data/stack-build.log 2>&1; echo build-exit=$?; tail -3 .data/stack-build.log
@@ -3307,7 +3327,7 @@ Observed on the dry run:
 build-exit=0
 ```
 
-## Step 14: verify: stack-up
+## Step 15: verify: stack-up
 
 ```bash
 docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait && echo up-ok
@@ -3323,7 +3343,7 @@ Observed on the dry run:
 up-ok
 ```
 
-## Step 15: verify: test-database
+## Step 16: verify: test-database
 
 ```bash
 node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
@@ -3341,7 +3361,7 @@ migrations applied
 test database ready: korbat_test
 ```
 
-## Step 16: verify: smoke
+## Step 17: verify: smoke
 
 ```bash
 node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --console http://localhost:$CONSOLE_PORT --mailpit http://localhost:58025 --terms draft-2026-09 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
@@ -3357,7 +3377,7 @@ Observed on the dry run:
 smoke test passed
 ```
 
-## Step 17: verify: stack-stop
+## Step 18: verify: stack-stop
 
 ```bash
 docker compose -f infra/compose.yml -f infra/compose.dev.yml stop caddy api worker cloudflared 2>/dev/null; docker compose -f infra/compose.yml -f infra/compose.dev.yml ps --format '{{.Name}} {{.Status}}'
@@ -3373,7 +3393,7 @@ Observed on the dry run:
 korbat-postgres-1 Up 54 seconds (healthy)
 ```
 
-## Step 18: check the change set
+## Step 19: check the change set
 
 ```bash
 git status --porcelain --untracked-files=all
@@ -3401,7 +3421,7 @@ Expected: exactly these paths, and nothing else (no `.env` file, no `dist/`):
 - `pnpm-lock.yaml`
 - `scripts/smoke-auth-stack.mjs`
 
-## Step 19: commit
+## Step 20: commit
 
 ```bash
 git add -A
@@ -3417,6 +3437,7 @@ Expected: one line ending in `feat(infra,admin,ci): the staff console's site: Ca
 TASK 7 REPORT
 Files written: <count, expected 18>
 Failing-test step (the error line): <paste>
+Verify "install": <paste the expected lines as printed>
 Verify "frozen-install": <paste the expected lines as printed>
 Verify "lockfile-age": <paste the expected lines as printed>
 Verify "typecheck": <paste the expected lines as printed>

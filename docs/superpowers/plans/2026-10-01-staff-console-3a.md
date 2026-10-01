@@ -317,14 +317,15 @@
 - [ ] **Step 1: Write the failing tests: `apps/admin/test/api.test.ts`, `apps/admin/test/audit-log.test.ts`, `apps/admin/test/build.test.ts`, `apps/admin/test/dev-server.test.ts`, `apps/admin/test/enroll.test.ts`, `apps/admin/test/fixtures.ts`, `apps/admin/test/idle.test.ts`, `apps/admin/test/router.test.ts`, `apps/admin/test/screens.test.tsx`, `apps/admin/test/signins.test.ts`, `apps/admin/test/source.test.ts`, `apps/admin/test/step-up.test.ts`, `apps/admin/test/store.test.ts`, `apps/admin/test/webauthn.test.ts`, `apps/admin/vitest.config.ts`**
 - [ ] **Step 2: Run them and confirm they fail: `cd apps/admin && node ../../node_modules/vitest/vitest.mjs run`, expecting `Tests  `, `failed`**
 - [ ] **Step 3: Write the implementation: `apps/admin/build.d.mts`, `apps/admin/build.mjs`, `apps/admin/dev-server.d.mts`, `apps/admin/dev-server.mjs`, `apps/admin/dev.mjs`, `apps/admin/public/favicon.svg`, `apps/admin/site-headers.d.mts`, `apps/admin/site-headers.mjs`, `apps/admin/src/App.tsx`, `apps/admin/src/Layout.tsx`, `apps/admin/src/api.ts`, `apps/admin/src/app.css`, `apps/admin/src/audit-log.ts`, `apps/admin/src/css.d.ts`, `apps/admin/src/enroll.ts`, `apps/admin/src/idle.ts`, `apps/admin/src/main.tsx`, `apps/admin/src/messages.ts`, `apps/admin/src/nav.tsx`, `apps/admin/src/react-dom.d.ts`, `apps/admin/src/router.ts`, `apps/admin/src/screens/Audit.tsx`, `apps/admin/src/screens/Enroll.tsx`, `apps/admin/src/screens/Home.tsx`, `apps/admin/src/screens/SignIn.tsx`, `apps/admin/src/screens/Unavailable.tsx`, `apps/admin/src/signins.ts`, `apps/admin/src/step-up.ts`, `apps/admin/src/store.ts`, `apps/admin/src/ui.tsx`, `apps/admin/src/webauthn.ts`, `apps/admin/src/zod-jitless.ts`, `apps/admin/tsconfig.json`, `.github/workflows/ci.yml`, `README.md`, `apps/admin/README.md`, `apps/admin/package.json`, `apps/api/.env.example`**
-- [ ] **Step 4: frozen-install: run `pnpm install --frozen-lockfile`, expecting `Done in`**
-- [ ] **Step 5: lockfile-age: run `node scripts/check-lockfile-age.mjs --base HEAD`, expecting `all at least 7 days old`**
-- [ ] **Step 6: typecheck: run `pnpm typecheck`**
-- [ ] **Step 7: test: run `pnpm test`, expecting `Tests  `**
-- [ ] **Step 8: admin-test: run `pnpm --filter @korbat/admin test`, expecting `Tests  `**
-- [ ] **Step 9: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}\./-HASH./'`, expecting `Build success`, `index.html`, `favicon.svg`, `main-HASH.js`, `main-HASH.css`**
-- [ ] **Step 10: integration: run `cd apps/api && set -a && . ./.env && set +a && pnpm test:integration`, expecting `Tests  `**
-- [ ] **Step 11: Commit: `feat(admin,ci): the staff console: apps/admin is a React page bundled by esbuild into one hashed script and stylesheet with jitless zod, no HTML sinks and every user-written string rendered as text, under the console site's strict policy; it signs in with a staff key, enrols a key from a link with guidance on which keys work and words for every refusal, lists the staff sign-ins of the last 7 days, the person's sessions and keys, and the audit log with Load older and Go to place; before it asks for the key it recomputes the step-up challenge's binding from the session and the action it means to confirm; its idle timer counts only the person's own actions, warns two minutes before the end and never past the 12-hour end; pnpm --filter @korbat/admin dev serves it on 127.0.0.1:8090 beside the API with the same headers; CI builds it`**
+- [ ] **Step 4: install: run `pnpm install --config.package-import-method=copy`, expecting `Done in`**
+- [ ] **Step 5: frozen-install: run `pnpm install --frozen-lockfile`, expecting `Done in`**
+- [ ] **Step 6: lockfile-age: run `node scripts/check-lockfile-age.mjs --base HEAD`, expecting `all at least 7 days old`**
+- [ ] **Step 7: typecheck: run `pnpm typecheck`**
+- [ ] **Step 8: test: run `pnpm test`, expecting `Tests  `**
+- [ ] **Step 9: admin-test: run `pnpm --filter @korbat/admin test`, expecting `Tests  `**
+- [ ] **Step 10: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}\./-HASH./'`, expecting `Build success`, `index.html`, `favicon.svg`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 11: integration: run `cd apps/api && set -a && . ./.env && set +a && pnpm test:integration`, expecting `Tests  `**
+- [ ] **Step 12: Commit: `feat(admin,ci): the staff console: apps/admin is a React page bundled by esbuild into one hashed script and stylesheet with jitless zod, no HTML sinks and every user-written string rendered as text, under the console site's strict policy; it signs in with a staff key, enrols a key from a link with guidance on which keys work and words for every refusal, lists the staff sign-ins of the last 7 days, the person's sessions and keys, and the audit log with Load older and Go to place; before it asks for the key it recomputes the step-up challenge's binding from the session and the action it means to confirm; its idle timer counts only the person's own actions, warns two minutes before the end and never past the 12-hour end; pnpm --filter @korbat/admin dev serves it on 127.0.0.1:8090 beside the API with the same headers; CI builds it`**
 
 ### Task 7: Infrastructure for the staff console: Caddy's console site on 8090 with the console's headers, the app's site refusing /api/staff, the image's console stage, Compose and the development port, the environment template, the smoke test's console checks, and the committed browser check run in CI
 
@@ -354,21 +355,22 @@
 - [ ] **Step 1: Write the failing tests: `apps/admin/test/browser/console.browser.ts`, `apps/admin/test/browser/fixture-api.ts`, `apps/admin/test/browser/server.ts`, `apps/admin/test/browser/watch.ts`, `apps/admin/test/caddyfile.ts`, `apps/admin/test/console-site.test.ts`, `apps/admin/vitest.browser.config.ts`**
 - [ ] **Step 2: Run them and confirm they fail: `cd apps/admin && node ../../node_modules/vitest/vitest.mjs run test/console-site.test.ts`, expecting `Tests  `, `failed`**
 - [ ] **Step 3: Write the implementation: `.github/workflows/ci.yml`, `README.md`, `apps/admin/README.md`, `apps/admin/package.json`, `apps/admin/tsconfig.json`, `infra/.env.example`, `infra/caddy/Caddyfile`, `infra/caddy/Dockerfile`, `infra/compose.dev.yml`, `infra/compose.yml`, `scripts/smoke-auth-stack.mjs`**
-- [ ] **Step 4: frozen-install: run `pnpm install --frozen-lockfile`, expecting `Done in`**
-- [ ] **Step 5: lockfile-age: run `node scripts/check-lockfile-age.mjs --base HEAD`, expecting `all at least 7 days old`**
-- [ ] **Step 6: typecheck: run `pnpm typecheck`**
-- [ ] **Step 7: test: run `pnpm test`, expecting `Tests  `**
-- [ ] **Step 8: admin-test: run `pnpm --filter @korbat/admin test`, expecting `Tests  `**
-- [ ] **Step 9: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  12 passed (12)`**
-- [ ] **Step 10: compose-config: run `docker compose --env-file infra/.env.example -f infra/compose.yml config -q && echo config-ok`, expecting `config-ok`**
-- [ ] **Step 11: compose-dev-config: run `docker compose --env-file infra/.env.example -f infra/compose.yml -f infra/compose.dev.yml config -q && echo dev-config-ok`, expecting `dev-config-ok`**
-- [ ] **Step 12: stack-down: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml down && echo down-ok`, expecting `down-ok`**
-- [ ] **Step 13: build: run the `build` command in the prompt, expecting `build-exit=0`**
-- [ ] **Step 14: stack-up: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait && echo up-ok`, expecting `up-ok`**
-- [ ] **Step 15: test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
-- [ ] **Step 16: smoke: run the `smoke` command in the prompt, expecting `smoke test passed`**
-- [ ] **Step 17: stack-stop: run the `stack-stop` command in the prompt, expecting `postgres-1 Up`**
-- [ ] **Step 18: Commit: `feat(infra,admin,ci): the staff console's site: Caddy serves the console from /console on port 8090 under the strict policy and the headers of apps/admin/site-headers.mjs, with no-store, no-transform on the page and immutable only on real hashed files, proxies only /api/staff to the API with the app's body limit and Cloudflare header rule, and answers every other /api path 404; the app's site refuses /api/staff before its API proxy; the image builds the console in a stage of its own; Compose passes CONSOLE_ORIGIN and CONSOLE_RP_ID to the API and publishes the console on DEV_CONSOLE_PORT in development; the smoke test requires --console and checks the console's policy and both sites' staff answers; a committed browser check drives Chromium with a virtual authenticator over every screen against hostile fixtures and fails on any policy or Trusted Types report, and CI runs it with the runner's Chrome`**
+- [ ] **Step 4: install: run `pnpm install --config.package-import-method=copy`, expecting `Done in`**
+- [ ] **Step 5: frozen-install: run `pnpm install --frozen-lockfile`, expecting `Done in`**
+- [ ] **Step 6: lockfile-age: run `node scripts/check-lockfile-age.mjs --base HEAD`, expecting `all at least 7 days old`**
+- [ ] **Step 7: typecheck: run `pnpm typecheck`**
+- [ ] **Step 8: test: run `pnpm test`, expecting `Tests  `**
+- [ ] **Step 9: admin-test: run `pnpm --filter @korbat/admin test`, expecting `Tests  `**
+- [ ] **Step 10: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  12 passed (12)`**
+- [ ] **Step 11: compose-config: run `docker compose --env-file infra/.env.example -f infra/compose.yml config -q && echo config-ok`, expecting `config-ok`**
+- [ ] **Step 12: compose-dev-config: run `docker compose --env-file infra/.env.example -f infra/compose.yml -f infra/compose.dev.yml config -q && echo dev-config-ok`, expecting `dev-config-ok`**
+- [ ] **Step 13: stack-down: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml down && echo down-ok`, expecting `down-ok`**
+- [ ] **Step 14: build: run the `build` command in the prompt, expecting `build-exit=0`**
+- [ ] **Step 15: stack-up: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait && echo up-ok`, expecting `up-ok`**
+- [ ] **Step 16: test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 17: smoke: run the `smoke` command in the prompt, expecting `smoke test passed`**
+- [ ] **Step 18: stack-stop: run the `stack-stop` command in the prompt, expecting `postgres-1 Up`**
+- [ ] **Step 19: Commit: `feat(infra,admin,ci): the staff console's site: Caddy serves the console from /console on port 8090 under the strict policy and the headers of apps/admin/site-headers.mjs, with no-store, no-transform on the page and immutable only on real hashed files, proxies only /api/staff to the API with the app's body limit and Cloudflare header rule, and answers every other /api path 404; the app's site refuses /api/staff before its API proxy; the image builds the console in a stage of its own; Compose passes CONSOLE_ORIGIN and CONSOLE_RP_ID to the API and publishes the console on DEV_CONSOLE_PORT in development; the smoke test requires --console and checks the console's policy and both sites' staff answers; a committed browser check drives Chromium with a virtual authenticator over every screen against hostile fixtures and fails on any policy or Trusted Types report, and CI runs it with the runner's Chrome`**
 
 ### Task 8: What the review of 3a upheld, fixed: the console checks every ceremony's challenge before it asks for a key, audit-verify reads every row whatever its place, keys are judged by the origin and relying party they were enrolled for, the enrolment page's sign-in check uses the new key, and fifteen smaller fixes and tests
 
