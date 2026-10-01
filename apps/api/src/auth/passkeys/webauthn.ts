@@ -39,7 +39,7 @@ const MAX_TRANSPORTS = 5;
 
 /** The contracts' bound on clientDataJSON, applied again here for callers that did not come through them. */
 const MAX_CLIENT_DATA_CHARS = 4 * 1024;
-/** Well above the 78 characters of a korbat challenge; anything longer is not one, and is not worth hashing. */
+/** Well above the 78 characters of a korbat challenge and the 99 of a staff step-up's; anything longer is not one, and is not worth hashing. */
 const MAX_CHALLENGE_CHARS = 128;
 
 const invalid = () => new AuthError("passkey_invalid", 401);
@@ -245,6 +245,43 @@ export async function verifyAuthentication(input: {
   if (!result.verified) throw invalid();
   const info = result.authenticationInfo;
   return { newCounter: info.newCounter, userVerified: info.userVerified, backedUp: info.credentialBackedUp, backupEligible: info.credentialDeviceType === "multiDevice" };
+}
+
+/** The three members of an assertion an audit row stores in `step_up`, base64url exactly as the browser sent them. */
+export interface RecordedAssertion {
+  authenticatorData: string;
+  clientDataJSON: string;
+  signature: string;
+}
+
+/**
+ * Checks a step-up assertion the audit log recorded (3a design, section 7, Command line), for audit-verify, which holds no
+ * server secret: the client data is a webauthn.get from `origin`, the authenticator data names `rpId` with user presence
+ * and verification, and the signature verifies with the key's public key. The challenge is not compared here: without the
+ * sealing key, audit-verify reads its binding and expiry from the step-up layout itself. The counter is never judged (0 is
+ * given to the library, as above). True when the library verifies it; false for anything else, a malformed member included.
+ */
+export async function verifyRecordedAssertion(input: { assertion: RecordedAssertion; credential: { id: string; publicKey: string }; origin: string; rpId: string }): Promise<boolean> {
+  try {
+    const result = await verifyAuthenticationResponse({
+      // The response's id is the key's own: the row names its key, and the library only checks that id and rawId agree.
+      response: {
+        id: input.credential.id,
+        rawId: input.credential.id,
+        type: "public-key",
+        response: { authenticatorData: input.assertion.authenticatorData, clientDataJSON: input.assertion.clientDataJSON, signature: input.assertion.signature },
+        clientExtensionResults: {},
+      },
+      expectedChallenge: () => true,
+      expectedOrigin: input.origin,
+      expectedRPID: input.rpId,
+      credential: { id: input.credential.id, publicKey: isoBase64URL.toBuffer(input.credential.publicKey), counter: 0 },
+      requireUserVerification: true,
+    });
+    return result.verified;
+  } catch {
+    return false;
+  }
 }
 
 /**

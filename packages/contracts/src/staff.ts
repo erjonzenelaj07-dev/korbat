@@ -139,13 +139,21 @@ export type StaffSignInVerifyResponse = z.infer<typeof StaffSignInVerifyResponse
 // ---------------------------------------------------------------- step-up
 
 /**
+ * A uuid in the one spelling PostgreSQL writes, lower-case hex. A step-up target's id is hashed exactly as sent, but the
+ * database finds a uuid by value whatever its case and the audit row records the id as the database returns it: an
+ * upper-case spelling would act on the row and leave a record whose target no longer hashes to the confirmed action, which
+ * audit-verify would refuse for good. So any other spelling is refused, never changed.
+ */
+const LowerCaseUuid = z.uuid().regex(/^[0-9a-f-]+$/, { message: "a uuid in lower case" });
+
+/**
  * Every action a staff key confirms, one at a time (3a design, section 7): the type of its target, the schema of the
  * target's id and the schema of its params. The step-up options, requireStaffStepUp, audit-verify and the console read it.
  * The params are hashed exactly as sent, so their schemas are strict: a member they do not know is refused, never dropped.
  */
 export const STAFF_STEP_UP_ACTIONS = {
   /** DELETE /api/staff/sessions/:handle: one of the person's own staff sessions, by its handle. */
-  staff_session_revoked: { targetType: "staff_session", targetId: z.uuid(), params: z.strictObject({}) },
+  staff_session_revoked: { targetType: "staff_session", targetId: LowerCaseUuid, params: z.strictObject({}) },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -172,6 +180,101 @@ export type StaffStepUpOptionsResponse = z.infer<typeof StaffStepUpOptionsRespon
 /** DELETE /api/staff/sessions/:handle: the action's params (none) with the step-up assertion added as `stepUp`. */
 export const StaffSessionRevokeRequest = STAFF_STEP_UP_ACTIONS.staff_session_revoked.params.extend({ stepUp: AuthenticationResponseJSON });
 export type StaffSessionRevokeRequest = z.infer<typeof StaffSessionRevokeRequest>;
+
+/**
+ * The step-up challenge's layout (3a design, section 5), which the API's codec writes, audit-verify reads back from a
+ * stored assertion without the sealing key, and the console checks before it asks for the key: version, purpose, expiry
+ * (epoch milliseconds, big-endian), nonce, the full 32-byte binding, then the first 16 bytes of an HMAC over the 58 bytes
+ * before it, 74 bytes sent as unpadded base64url. The other ceremonies' challenges are 58 bytes with purposes 1 to 5 and a
+ * 16-byte binding, so neither layout is ever read as the other.
+ */
+export const STAFF_STEP_UP_CHALLENGE = {
+  bytes: 74,
+  encodedLength: 99,
+  version: 1,
+  purpose: 6,
+  versionAt: 0,
+  purposeAt: 1,
+  expiryAt: 2,
+  expiryBytes: 8,
+  nonceAt: 10,
+  nonceBytes: 16,
+  bindingAt: 26,
+  bindingBytes: 32,
+  sealAt: 58,
+  sealBytes: 16,
+} as const;
+
+/** What a step-up confirms: an action, its target and its params, as the route will execute them, or as an audit row records them. */
+export interface StaffStepUpActionInput {
+  action: string;
+  target: { type: string; id: string };
+  params: Record<string, unknown>;
+}
+
+/**
+ * JSON with every object's keys sorted and no whitespace. Keys are sorted by UTF-16 code units (Array.prototype.sort's
+ * order), and strings and numbers are written as JSON.stringify writes them, so the API, audit-verify and the console write
+ * the same text. Anything JSON cannot carry is refused rather than dropped or changed, as JSON.stringify would.
+ */
+function sortedJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("a step-up action's params hold only JSON values: a number must be finite");
+    return JSON.stringify(value);
+  }
+  // Array.from visits holes too, so a sparse array is refused as undefined.
+  if (Array.isArray(value)) return `[${Array.from(value, sortedJson).join(",")}]`;
+  if (typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${sortedJson(record[key])}`)
+      .join(",")}}`;
+  }
+  throw new TypeError(`a step-up action's params hold only JSON values, not ${value instanceof Object ? value.constructor.name : typeof value}`);
+}
+
+/**
+ * The text an action's hash is taken over (3a design, section 7, Step-up): the sorted JSON of `{ action, target: { type,
+ * id }, params }`. The step-up options take it from what the console sent, requireStaffStepUp from what the route is about
+ * to do, audit-verify from the row's action, target and `metadata.params`, and the console from what it chose.
+ */
+export function stepUpActionText(input: StaffStepUpActionInput): string {
+  return sortedJson({ action: input.action, target: { type: input.target.type, id: input.target.id }, params: input.params });
+}
+
+/**
+ * The text a step-up challenge's binding is the sha256 of: the staff session's handle, a newline and the action's hash. A
+ * confirmation made in one session, or for one action, therefore binds nothing else.
+ */
+export function stepUpBindingText(sessionHandle: string, actionHash: string): string {
+  return `${sessionHandle}\n${actionHash}`;
+}
+
+/**
+ * The parts of the Web Crypto and Encoding APIs the hashes below use. Browsers and Node (from 19) both have them as
+ * globals; the contracts are compiled without the DOM's or Node's types, so only these members are declared.
+ */
+interface WebPlatform {
+  crypto: { subtle: { digest(algorithm: "SHA-256", data: Uint8Array): Promise<ArrayBuffer> } };
+  TextEncoder: new () => { encode(text: string): Uint8Array };
+}
+
+async function sha256(text: string): Promise<Uint8Array> {
+  const platform = globalThis as unknown as WebPlatform;
+  return new Uint8Array(await platform.crypto.subtle.digest("SHA-256", new platform.TextEncoder().encode(text)));
+}
+
+/** The action's hash: the lower-case hex sha256 of stepUpActionText's UTF-8 bytes. */
+export async function stepUpActionHash(input: StaffStepUpActionInput): Promise<string> {
+  return Array.from(await sha256(stepUpActionText(input)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** The step-up challenge's binding: all 32 bytes of the sha256 of stepUpBindingText's UTF-8 bytes. */
+export async function stepUpBinding(sessionHandle: string, actionHash: string): Promise<Uint8Array> {
+  return sha256(stepUpBindingText(sessionHandle, actionHash));
+}
 
 /**
  * A step-up assertion as the audit row stores it in `step_up`: the three members `audit-verify` checks, base64url exactly

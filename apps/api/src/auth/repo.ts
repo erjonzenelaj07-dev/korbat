@@ -172,8 +172,11 @@ export interface StaffKeyRevocation {
   account: { id: string } | { email: string };
   key: string | "all";
   suspect: boolean;
-  /** Where it came from, as the events and audit rows record it. The command line also waits at most 10 seconds for a lock. */
-  via: "cli" | "sign_in";
+  /**
+   * Where it came from, as the events and audit rows record it: the command line, or the counter rule at a sign-in or a
+   * step-up. The command line also waits at most 10 seconds for a lock.
+   */
+  via: "cli" | "sign_in" | "step_up";
   actorId: string;
   now: Date;
   requestId?: string | null;
@@ -194,6 +197,36 @@ export type StaffKeysRevoked =
       alreadyRevokedAt: Date | null;
     }
   | { ok: false; reason: "no_account" | "no_key" };
+
+/** The staff key a staff session was opened with, as its step-up reads it: the credential to verify against and its name for a suspect key's mail. */
+export interface StaffKeyCredential {
+  id: string;
+  userId: string;
+  credentialId: string;
+  publicKey: string;
+  transports: string[];
+  name: string;
+  revokedAt: Date | null;
+}
+
+/**
+ * A staff session's revocation confirmed by a step-up (3a design, section 7, Sessions and keys): who confirms it (the
+ * account, its session and the key that signed) and what the audit row stores of the confirmation.
+ */
+export interface ConfirmedStaffSessionRevocation {
+  userId: string;
+  /** The confirming session's handle, which the step-up's challenge was bound to. */
+  staffSession: string;
+  keyId: string;
+  /** The handle of the session to revoke. */
+  handle: string;
+  actionHash: string;
+  params: Record<string, unknown>;
+  stepUp: { authenticatorData: string; clientDataJSON: string; signature: string };
+  now: Date;
+  ipHash: string | null;
+  requestId: string;
+}
 
 /** A role change as it committed: what it revoked and deleted, for the cache tombstones, the command's report and the mail. */
 export interface RoleChange {
@@ -1006,19 +1039,7 @@ export function createAuthRepo(db: Db) {
      */
     async openStaffSession(input: NewStaffSession): Promise<{ handle: string } | null> {
       return db.transaction(async (tx) => {
-        const claimed = await tx
-          .update(staffKeys)
-          .set({ counter: input.newCounter, lastUsedAt: input.now })
-          .where(
-            and(
-              eq(staffKeys.id, input.keyId),
-              eq(staffKeys.userId, input.userId),
-              isNull(staffKeys.revokedAt),
-              sql`((${input.newCounter} = 0 and ${staffKeys.counter} = 0) or ${input.newCounter} > ${staffKeys.counter})`,
-            ),
-          )
-          .returning({ id: staffKeys.id });
-        if (claimed.length === 0) return null;
+        if (!(await recordStaffKeyUse(tx, input))) return null;
         const [session] = await tx
           .insert(staffSessions)
           .values({
@@ -1154,6 +1175,89 @@ export function createAuthRepo(db: Db) {
           requestId: input.requestId,
         });
         return true;
+      });
+    },
+
+    /** The staff key a step-up confirms with, revoked or not, by its id; the step-up decides. */
+    async findStaffKeyCredential(id: string): Promise<StaffKeyCredential | undefined> {
+      const [row] = await db
+        .select({
+          id: staffKeys.id,
+          userId: staffKeys.userId,
+          credentialId: staffKeys.credentialId,
+          publicKey: staffKeys.publicKey,
+          transports: staffKeys.transports,
+          name: staffKeys.name,
+          revokedAt: staffKeys.revokedAt,
+        })
+        .from(staffKeys)
+        .where(eq(staffKeys.id, id))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * The counter rule at a step-up (3a design, section 7), as at sign-in: the key's use is recorded only while it is live
+     * and its counter moved forward. False when the update matched no row: a counter that went backwards, or a key
+     * revoked since the step-up read it, which the caller hands to the counter rule's revocation.
+     */
+    async recordStaffKeyUse(input: { keyId: string; userId: string; newCounter: number; now: Date }): Promise<boolean> {
+      return recordStaffKeyUse(db, input);
+    },
+
+    /**
+     * Revokes one of the account's own live staff sessions, confirmed by a step-up, in one transaction on the auth role
+     * (3a design, section 7). The account's row is locked first, FOR NO KEY UPDATE, as every revocation takes it, so a
+     * revocation of the confirming key, a demotion or a take-down either committed before (and this refuses: the session
+     * that confirmed has ended) or waits until this commits. Then the session, only where revoked_at is still null and
+     * before both its ends, and only if it is the account's own; its staff_session_revoked event; and last its audit row,
+     * through auth.append_audit, with the action's hash, its params in the metadata, the key and the assertion, which
+     * audit-verify checks. "ended" when the confirming key or account no longer opens anything, "not_found" when the
+     * handle names no live session of the account; neither writes anything.
+     */
+    async revokeConfirmedStaffSession(input: ConfirmedStaffSessionRevocation): Promise<"revoked" | "ended" | "not_found"> {
+      return db.transaction(async (tx) => {
+        const [account] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.id, input.userId), isNull(users.deletedAt), ne(users.role, "user")))
+          .limit(1)
+          .for("no key update");
+        if (!account) return "ended";
+        const [key] = await tx
+          .select({ id: staffKeys.id })
+          .from(staffKeys)
+          .where(and(eq(staffKeys.id, input.keyId), eq(staffKeys.userId, input.userId), isNull(staffKeys.revokedAt)));
+        if (!key) return "ended";
+        const [revoked] = await tx
+          .update(staffSessions)
+          .set({ revokedAt: input.now })
+          .where(
+            and(
+              eq(staffSessions.handle, input.handle),
+              eq(staffSessions.userId, input.userId),
+              isNull(staffSessions.revokedAt),
+              gt(staffSessions.idleExpiresAt, input.now),
+              gt(staffSessions.absoluteExpiresAt, input.now),
+            ),
+          )
+          .returning({ handle: staffSessions.handle });
+        if (!revoked) return "not_found";
+        // The account's own log names the session that ended and the one that ended it.
+        await tx.insert(authEvents).values({ userId: input.userId, type: "staff_session_revoked", ipHash: input.ipHash, metadata: { handle: revoked.handle, by: input.staffSession } });
+        await appendAudit(tx, {
+          actorId: input.userId,
+          action: "staff_session_revoked",
+          targetType: "staff_session",
+          targetId: revoked.handle,
+          staffSession: input.staffSession,
+          keyId: input.keyId,
+          actionHash: input.actionHash,
+          stepUp: input.stepUp,
+          metadata: { params: input.params },
+          requestId: input.requestId,
+        });
+        return "revoked";
       });
     },
 
@@ -1390,6 +1494,28 @@ async function appendAudit(tx: Tx, row: AuthAuditRow): Promise<number> {
       ${row.actionHash ?? null}::text, ${stepUp}::text::jsonb, ${row.requestId ?? null}::text)::text as place`,
   );
   return Number(written!.place);
+}
+
+/**
+ * 1c's counter rule as one conditional update of a staff key (3a design, section 7), at a sign-in in the session's
+ * transaction and at a step-up on its own: the key's use and counter are recorded only while it is the account's, live, and
+ * its counter moved forward (two zeros pass, as some authenticators always report 0). False when no row matched. The
+ * update holds the key's row until the commit, so a revocation waiting for it then also finds what this transaction did.
+ */
+async function recordStaffKeyUse(q: Pick<Db, "update">, input: { keyId: string; userId: string; newCounter: number; now: Date }): Promise<boolean> {
+  const claimed = await q
+    .update(staffKeys)
+    .set({ counter: input.newCounter, lastUsedAt: input.now })
+    .where(
+      and(
+        eq(staffKeys.id, input.keyId),
+        eq(staffKeys.userId, input.userId),
+        isNull(staffKeys.revokedAt),
+        sql`((${input.newCounter} = 0 and ${staffKeys.counter} = 0) or ${input.newCounter} > ${staffKeys.counter})`,
+      ),
+    )
+    .returning({ id: staffKeys.id });
+  return claimed.length > 0;
 }
 
 /**

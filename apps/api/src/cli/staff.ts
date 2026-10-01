@@ -17,7 +17,9 @@
  * audit-head prints the audit log's newest place and hash, which the keeper holds off the server. audit-verify recomputes
  * the whole chain in its own code (the staff module's chain.ts), never asking the database for a text or a hash, since
  * whoever owns the database can replace its functions, and checks it against the places kept before: a rewrite that
- * recomputed every later hash still fails against a place kept before it. Neither needs a server secret or the console's
+ * recomputed every later hash still fails against a place kept before it. It also checks every step-up a row stores
+ * against the public key, owner, origin and relying party ID of the key it names, so a confirmed action is in the record
+ * only with an assertion its actor's key made for exactly that action. Neither needs a server secret or the console's
  * configuration, so both run the same with the console off or moved: each reads only the database URLs it connects with
  * (staffDatabaseUrls), never the API's whole configuration.
  */
@@ -25,9 +27,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import { Email } from "@korbat/contracts";
+import { Email, STAFF_STEP_UP_ACTIONS, STAFF_STEP_UP_CHALLENGE, StaffStoredAssertion, stepUpActionHash, stepUpBindingText } from "@korbat/contracts";
 import { auditHead, auditLog, authEvents, closeDb, createDb, profiles, staffEnrollments, staffKeys, users, type Db, type DbTx } from "@korbat/db";
-import { SYSTEM_ACTOR_ID, createAuthRepo, revokeStaffKeys, type StaffKeysRevokedReport } from "../auth";
+import { SYSTEM_ACTOR_ID, createAuthRepo, revokeStaffKeys, verifyRecordedAssertion, type StaffKeysRevokedReport } from "../auth";
 import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl, mailFrom, smtpUrl } from "../config";
 import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
@@ -257,6 +259,121 @@ export interface AuditReport {
 /** How many problems a report keeps: enough to name the first rows at fault. */
 const PROBLEMS_KEPT = 100;
 
+// ---------------------------------------------------------------- step-ups
+
+/**
+ * A staff key as audit-verify checks a step-up against it (3a design, section 7, Command line): its owner, its credential
+ * and public key, and the origin and relying party ID recorded on it at enrolment, never the console's configuration now.
+ */
+interface RecordedKey {
+  id: string;
+  userId: string;
+  credentialId: string;
+  publicKey: string;
+  origin: string;
+  rpId: string;
+}
+
+/** A row as the step-up checks read it: the chain's columns, with the metadata and the step-up as PostgreSQL printed them. */
+type StepUpRow = Awaited<ReturnType<typeof chainRows>>[number];
+
+// The authenticator data's flags byte follows the 32-byte hash of the relying party ID: UP and UV (WebAuthn L3, section 6.1).
+const AUTH_DATA_FLAGS_AT = 32;
+const FLAG_UP = 0x01;
+const FLAG_UV = 0x04;
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest();
+
+/** The members of a JSON object, or null for anything else. */
+function objectOf(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+/** The client data a stored assertion carries, as JSON, or null when it cannot be read. */
+function clientDataOf(assertion: StaffStoredAssertion): { type: unknown; origin: unknown; challenge: unknown } | null {
+  try {
+    const data = objectOf(JSON.parse(Buffer.from(assertion.clientDataJSON, "base64url").toString("utf8")));
+    return data ? { type: data.type, origin: data.origin, challenge: data.challenge } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A step-up challenge's binding and expiry, read at the contracts' offsets without the sealing key, or null for anything else. */
+function stepUpChallengeOf(challenge: unknown): { binding: Buffer; expiresAt: number } | null {
+  const L = STAFF_STEP_UP_CHALLENGE;
+  if (typeof challenge !== "string" || challenge.length !== L.encodedLength) return null;
+  const bytes = Buffer.from(challenge, "base64url");
+  // Only the canonical encoding, as the API's codec reads it.
+  if (bytes.length !== L.bytes || bytes.toString("base64url") !== challenge) return null;
+  if (bytes[L.versionAt] !== L.version || bytes[L.purposeAt] !== L.purpose) return null;
+  return { binding: bytes.subarray(L.bindingAt, L.bindingAt + L.bindingBytes), expiresAt: Number(bytes.readBigUInt64BE(L.expiryAt)) };
+}
+
+/**
+ * One row's step-up (3a design, section 7, Command line), checked in audit-verify's own code with no server secret: a row
+ * of a step-up action must carry one, whatever its actor; and a step-up must hold an assertion that the key the row names,
+ * a key of the row's actor, made over a step-up challenge bound to the row's session and to the hash of the row's action,
+ * target and `metadata.params`, unexpired when the row joined the chain, as a webauthn.get from the origin recorded on the
+ * key, naming the relying party ID recorded on it, with user presence and verification. Answers the first check that fails,
+ * or null, and the challenge the client data names, which no other row may carry.
+ */
+async function checkStepUp(row: StepUpRow, keys: ReadonlyMap<string, RecordedKey>): Promise<{ problem: string | null; challenge: string | null }> {
+  const fail = (problem: string, challenge: string | null = null) => ({ problem, challenge });
+  if (row.stepUpText === null) {
+    return Object.hasOwn(STAFF_STEP_UP_ACTIONS, row.action) ? fail(`its action, ${row.action}, needs a step-up, and it carries none`) : { problem: null, challenge: null };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.stepUpText);
+  } catch {
+    parsed = null;
+  }
+  const stored = StaffStoredAssertion.safeParse(parsed);
+  if (!stored.success) return fail("its step-up is not a stored assertion");
+  const assertion = stored.data;
+  const clientData = clientDataOf(assertion);
+  const challenge = typeof clientData?.challenge === "string" ? clientData.challenge : null;
+
+  if (row.staffSession === null) return fail("its step-up names no staff session", challenge);
+  if (row.keyId === null) return fail("its step-up names no staff key", challenge);
+  // The action's hash from the row itself, never from its action_hash column, which the next check compares with it. The
+  // metadata is PostgreSQL's print of a jsonb value, so it always parses.
+  const params = objectOf(objectOf(JSON.parse(row.metadataText) as unknown)?.params);
+  if (row.targetType === null || row.targetId === null || params === null) {
+    return fail("its step-up's action cannot be recomputed: it needs a target and metadata.params", challenge);
+  }
+  let actionHash: string;
+  try {
+    actionHash = await stepUpActionHash({ action: row.action, target: { type: row.targetType, id: row.targetId }, params });
+  } catch {
+    return fail("its step-up's action cannot be recomputed: its params are not JSON", challenge);
+  }
+  if (row.actionHash !== actionHash) return fail("its step-up's action hash is not the hash of its action, target and params", challenge);
+  const key = keys.get(row.keyId);
+  if (!key) return fail(`its step-up names key ${row.keyId}, which is not a staff key`, challenge);
+  if (key.userId !== row.actorId) return fail(`its step-up's key ${key.id} belongs to another account than its actor`, challenge);
+  if (clientData === null || clientData.type !== "webauthn.get" || clientData.origin !== key.origin) {
+    return fail("its step-up's client data is not a webauthn.get from the origin recorded on its key", challenge);
+  }
+  const issued = stepUpChallengeOf(challenge);
+  if (!issued) return fail("its step-up's challenge is not a step-up challenge", challenge);
+  if (!issued.binding.equals(sha256(stepUpBindingText(row.staffSession, actionHash)))) {
+    return fail("its step-up's challenge was not issued for this action in this session", challenge);
+  }
+  if (row.createdAt.getTime() >= issued.expiresAt) return fail("its step-up's challenge had expired when the row was written", challenge);
+  const authData = Buffer.from(assertion.authenticatorData, "base64url");
+  if (authData.length <= AUTH_DATA_FLAGS_AT || !authData.subarray(0, AUTH_DATA_FLAGS_AT).equals(sha256(key.rpId))) {
+    return fail("its step-up's authenticator data does not name the relying party ID recorded on its key", challenge);
+  }
+  const flags = authData[AUTH_DATA_FLAGS_AT]!;
+  if ((flags & FLAG_UP) === 0 || (flags & FLAG_UV) === 0) return fail("its step-up's authenticator data does not report user presence and verification", challenge);
+  // The library checks all of the above again, and the signature over the authenticator data and the client data's hash.
+  const verified = await verifyRecordedAssertion({ assertion, credential: { id: key.credentialId, publicKey: key.publicKey }, origin: key.origin, rpId: key.rpId });
+  if (!verified) return fail(`its step-up's signature does not verify with the public key of key ${key.id}`, challenge);
+  return { problem: null, challenge };
+}
+
 /** What one snapshot of the record showed, before the keys missing from it are looked up again. */
 interface Walk {
   head: KeptPlace | null;
@@ -275,7 +392,7 @@ interface Walk {
  * Everything audit-verify checks inside one view of the record: the head, then every row up to the head's place in chain
  * order, a page at a time. Run in a REPEATABLE READ transaction, a row written meanwhile is neither read nor missed. The
  * staff keys are read from `keysFrom` after the head, so each key listed either has its staff_key_added row among the
- * rows read or was added after the head.
+ * rows read or was added after the head, and every key a row read names is among them, since no key is ever deleted.
  */
 async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<Db, "select">): Promise<Walk> {
   const problems: AuditProblem[] = [];
@@ -289,7 +406,14 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
   const [headRow] = await q.select({ seq: auditHead.seq, hash: auditHead.hash }).from(auditHead).where(eq(auditHead.id, 1));
   const head = headRow ?? null;
   if (!head) problem(null, "the audit head is missing");
-  const keys = (await keysFrom.select({ id: staffKeys.id }).from(staffKeys)).map((key) => key.id);
+  // What the step-up checks need of each key, and nothing more: never its name, counter or transports.
+  const recordedKeys = await keysFrom
+    .select({ id: staffKeys.id, userId: staffKeys.userId, credentialId: staffKeys.credentialId, publicKey: staffKeys.publicKey, origin: staffKeys.origin, rpId: staffKeys.rpId })
+    .from(staffKeys);
+  const keys = recordedKeys.map((key) => key.id);
+  const keysById = new Map(recordedKeys.map((key) => [key.id, key]));
+  // Every step-up challenge read so far, by the place of the row that carried it: a challenge confirms one row only.
+  const challenges = new Map<string, number>();
 
   const keptAt = new Map<number, string[]>();
   for (const place of kept) keptAt.set(place.seq, [...(keptAt.get(place.seq) ?? []), place.hash]);
@@ -324,6 +448,13 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
         if (hash !== row.hash) problem(row.chainSeq, `the kept place ${row.chainSeq}:${hash} no longer matches: the row there has the hash ${row.hash}`);
       }
       if (row.action === "staff_key_added" && row.keyId !== null) keyRows.set(row.keyId, [...(keyRows.get(row.keyId) ?? []), row.chainSeq]);
+      const stepUp = await checkStepUp(row, keysById);
+      if (stepUp.problem !== null) problem(row.chainSeq, stepUp.problem);
+      if (stepUp.challenge !== null) {
+        const first = challenges.get(stepUp.challenge);
+        if (first !== undefined) problem(row.chainSeq, `its step-up's challenge was already used at place ${first}`);
+        else challenges.set(stepUp.challenge, row.chainSeq);
+      }
       previous = { seq: row.chainSeq, hash: row.hash };
     }
     if (page.length < PAGE_SIZE) break;

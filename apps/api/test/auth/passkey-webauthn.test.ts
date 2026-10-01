@@ -17,6 +17,7 @@ import {
   readResponseChallenge,
   registrationOptions,
   verifyAuthentication,
+  verifyRecordedAssertion,
   verifyRegistration,
 } from "../../src/auth/passkeys/webauthn";
 import { SoftAuthenticator, type CborValue, type SoftCreateInput, type SoftFlags } from "./soft-authenticator";
@@ -431,6 +432,52 @@ describe("passkey assertions", () => {
     const { passkey } = await registered(auth);
     const { challenge, response } = assertion(auth, passkey.credentialId, ALL, 1);
     await expectInvalid(verifyAuthentication({ response, expectedChallenge: challenge, origins: ORIGINS, rpId: RP_ID, credential: { id: passkey.credentialId, publicKey: "AAAA", transports: [] } }));
+  });
+});
+
+describe("an assertion the audit log recorded, as audit-verify checks it", () => {
+  const DEVICE_BOUND: SoftFlags = { up: true, uv: true, be: false, bs: false };
+  /** A registered key, and the three members an audit row stores of one of its assertions. */
+  async function recorded(flags: SoftFlags = DEVICE_BOUND, at: { rpId?: string; origin?: string } = {}) {
+    const auth = new SoftAuthenticator();
+    const { passkey } = await registered(auth, { flags: DEVICE_BOUND });
+    const { response } = assertion(auth, passkey.credentialId, flags, 3, at);
+    const { authenticatorData, clientDataJSON, signature } = response.response;
+    return { auth, credential: { id: passkey.credentialId, publicKey: passkey.publicKey }, stored: { authenticatorData, clientDataJSON, signature } };
+  }
+
+  test("verifies the stored members against the key's public key, the origin and relying party recorded on it, with presence and verification", async () => {
+    const { credential, stored } = await recorded();
+    expect(await verifyRecordedAssertion({ assertion: stored, credential, origin: ORIGIN, rpId: RP_ID })).toBe(true);
+    // The library is told to require user verification, and given no challenge to compare: audit-verify, which holds no
+    // sealing key, reads the challenge's binding and expiry itself.
+    const call = libraryAuthentication.mock.calls.at(-1)![0];
+    expect(call).toMatchObject({ expectedOrigin: ORIGIN, expectedRPID: RP_ID, requireUserVerification: true });
+    expect(typeof call.expectedChallenge).toBe("function");
+    expect(call.credential.counter).toBe(0);
+  });
+
+  test("answers false, never throws, for another origin or relying party, no verification or presence, another key, changed data and a malformed key or member", async () => {
+    const { auth, credential, stored } = await recorded();
+    const check = (assertion: typeof stored, against = credential, origin = ORIGIN, rpId = RP_ID) => verifyRecordedAssertion({ assertion, credential: against, origin, rpId });
+    expect(await check(stored, credential, "http://console.localhost:8090")).toBe(false);
+    expect(await check(stored, credential, ORIGIN, "console.localhost")).toBe(false);
+    const unverified = await recorded({ up: true, uv: false, be: false, bs: false });
+    expect(await check(unverified.stored, unverified.credential)).toBe(false);
+    const absent = await recorded({ up: false, uv: true, be: false, bs: false });
+    expect(await check(absent.stored, absent.credential)).toBe(false);
+    // Signed for another relying party, or from another origin, by the right key.
+    const elsewhere = assertion(auth, credential.id, DEVICE_BOUND, 4, { rpId: "example.net" }).response.response;
+    expect(await check({ authenticatorData: elsewhere.authenticatorData, clientDataJSON: elsewhere.clientDataJSON, signature: elsewhere.signature })).toBe(false);
+    // Another key's public key.
+    expect(await check(stored, (await recorded()).credential)).toBe(false);
+    // The counter changed after signing.
+    const authData = Buffer.from(stored.authenticatorData, "base64url");
+    authData[36] = authData[36]! ^ 0x01;
+    expect(await check({ ...stored, authenticatorData: authData.toString("base64url") })).toBe(false);
+    expect(await check({ ...stored, signature: "AAAA" })).toBe(false);
+    expect(await check({ ...stored, clientDataJSON: "not-json" })).toBe(false);
+    expect(await check(stored, { ...credential, publicKey: "AAAA" })).toBe(false);
   });
 });
 

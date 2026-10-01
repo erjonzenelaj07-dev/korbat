@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { auditHead, auditLog, closeDb, createDb, staffKeys, type Db, type DbTx } from "@korbat/db";
+import { stepUpActionHash } from "@korbat/contracts";
+import { auditHead, auditLog, closeDb, createDb, staffKeys, users, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { auditVerify, checkAuditRecord, runStaffCommand, type AuditReport } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
+import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { CHAIN_VECTORS } from "../staff/chain-vectors";
-import { TEST_CONSOLE_ORIGIN, newStaffAccount, newStaffKey, rolledBack, withLockTimeout } from "./staff-fixtures";
+import { flowHarness } from "./flow-harness";
+import { enrolKey } from "./staff-enrolment";
+import { TEST_CONSOLE, TEST_CONSOLE_ORIGIN, issueEnrolment, newStaffAccount, newStaffKey, rolledBack, withLockTimeout } from "./staff-fixtures";
+import { revokeConfirmed, signedIn } from "./staff-step-up";
 
 /**
  * audit-verify (3a design, sections 7 and 12) against the real database: the canonical text in Node against the trigger's
@@ -27,6 +32,24 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
 
   const readHead = async (db: Db | DbTx = apiDb) => (await db.select().from(auditHead))[0]!;
   const hashAt = async (seq: number) => (await apiDb.select({ hash: auditLog.hash }).from(auditLog).where(eq(auditLog.chainSeq, seq)))[0]!.hash;
+
+  /**
+   * What the owner can do: chain every row from place `from` again with the database's own text function, as migration
+   * 0012's back-fill does, and move the head, so a plain recompute of the chain passes over the changed rows.
+   */
+  const rechainFrom = (tx: DbTx, from: number) =>
+    tx.execute(
+      sql.raw(`DO $$
+        DECLARE r public.audit_log; prev text;
+        BEGIN
+          SELECT hash INTO prev FROM public.audit_log WHERE chain_seq = ${from - 1};
+          FOR r IN SELECT * FROM public.audit_log WHERE chain_seq >= ${from} ORDER BY chain_seq LOOP
+            prev := encode(sha256(convert_to(prev || public.audit_chain_text(r), 'UTF8')), 'hex');
+            UPDATE public.audit_log SET prev_hash = (SELECT hash FROM public.audit_log WHERE chain_seq = r.chain_seq - 1), hash = prev WHERE id = r.id;
+          END LOOP;
+          UPDATE public.audit_head SET hash = prev WHERE id = 1;
+        END $$`),
+    );
 
   /** The verifier's own connections, as the command line opens them: one on each role. */
   const ownConnections = () => ({ api: createDb(loadConfig().DATABASE_URL_API, { max: 1 }), auth: createDb(loadConfig().DATABASE_URL_AUTH, { max: 1 }) });
@@ -97,8 +120,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
           expect(texts.map((t) => [t.metadata, t.stepUp])).toEqual(CHAIN_VECTORS.map((v) => [v.metadataText, v.stepUpText]));
 
           // The API role cannot read the staff keys: they come from the auth role's pool, as the command line reads them.
+          // Every hash recomputes; the one problem is the step-up vector's, whose assertion no stored key made, and which
+          // is the last vector.
           const report = await checkAuditRecord(tx, [], authDb);
-          expect(report.problems).toEqual([]);
+          expect(CHAIN_VECTORS.at(-1)!.insert.stepUp).not.toBeNull();
+          expect(CHAIN_VECTORS.filter((vector) => vector.insert.stepUp !== null)).toHaveLength(1);
+          expect(report.problems).toEqual([{ place: before.seq + CHAIN_VECTORS.length, message: expect.stringMatching(/^its step-up/) }]);
           expect(report.rows).toBe(before.seq + CHAIN_VECTORS.length);
         });
       } finally {
@@ -184,20 +211,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
       const keptAfter = { seq: head.seq, hash: head.hash };
       await rolledBack(migrateDb, async (tx) => {
         await tx.update(auditLog).set({ action: "rewritten" }).where(eq(auditLog.chainSeq, target));
-        // What the owner can do: chain every row from the changed one again with the database's own text function, as
-        // migration 0012's back-fill does, and move the head.
-        await tx.execute(
-          sql.raw(`DO $$
-            DECLARE r public.audit_log; prev text;
-            BEGIN
-              SELECT hash INTO prev FROM public.audit_log WHERE chain_seq = ${target - 1};
-              FOR r IN SELECT * FROM public.audit_log WHERE chain_seq >= ${target} ORDER BY chain_seq LOOP
-                prev := encode(sha256(convert_to(prev || public.audit_chain_text(r), 'UTF8')), 'hex');
-                UPDATE public.audit_log SET prev_hash = (SELECT hash FROM public.audit_log WHERE chain_seq = r.chain_seq - 1), hash = prev WHERE id = r.id;
-              END LOOP;
-              UPDATE public.audit_head SET hash = prev WHERE id = 1;
-            END $$`),
-        );
+        await rechainFrom(tx, target);
         expect((await readHead(tx)).hash).not.toBe(head.hash);
 
         const plain = await checkAuditRecord(tx, []);
@@ -207,6 +221,150 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
         const anchored = await checkAuditRecord(tx, [keptBefore, keptAfter]);
         expect(anchored.ok).toBe(false);
         expect(anchored.problems).toEqual([{ place: head.seq, message: expect.stringMatching(new RegExp(`^the kept place ${head.seq}:${head.hash} no longer matches`)) }]);
+      });
+    });
+  });
+
+  describe("step-up confirmations", () => {
+    const harness = () => flowHarness(repo, { console: TEST_CONSOLE });
+
+    /**
+     * A staff account with a key enrolled through the flow and three sessions; from the first it revokes the other two,
+     * each confirmed with the key through the step-up flow: two genuine step-up rows, committed, as only the flow writes them.
+     */
+    async function confirmedRevocations() {
+      const h = harness();
+      const { user } = await newStaffAccount(authDb, repo);
+      const soft = new SoftAuthenticator();
+      const enrolled = await enrolKey(h, soft, (await issueEnrolment(migrateDb, user.id)).token);
+      const [a, b, c] = [await signedIn(h, soft, enrolled.credentialId, 1), await signedIn(h, soft, enrolled.credentialId, 2), await signedIn(h, soft, enrolled.credentialId, 3)];
+      expect((await revokeConfirmed(h, soft, enrolled.credentialId, a.session, b.session.handle, 4)).revoked).toBe(true);
+      expect((await revokeConfirmed(h, soft, enrolled.credentialId, a.session, c.session.handle, 5)).revoked).toBe(true);
+      const rowOf = async (handle: string) => (await apiDb.select().from(auditLog).where(and(eq(auditLog.action, "staff_session_revoked"), eq(auditLog.targetId, handle))))[0]!;
+      return { user, keyId: enrolled.key.id, a: a.session, b: b.session, c: c.session, first: await rowOf(b.session.handle), second: await rowOf(c.session.handle) };
+    }
+
+    /** The problems a check found, as place and message, each expected to name the step-up check. */
+    const stepUpProblems = (report: AuditReport) => report.problems.map((p) => ({ place: p.place, stepUp: /step-up/.test(p.message) }));
+
+    test("genuine confirmations pass: on the command line's own connections, with the console off, and with nothing but the database URLs", { timeout: 60_000 }, async () => {
+      const s = await confirmedRevocations();
+      expect(s.first).toMatchObject({ staffSession: s.a.handle, keyId: s.keyId, actorId: s.user.id });
+      expect(s.first.stepUp).not.toBeNull();
+      const connections = ownConnections();
+      try {
+        const report = await auditVerify(connections, []);
+        expect(report.problems).toEqual([]);
+        expect(report.ok).toBe(true);
+      } finally {
+        await Promise.all([closeDb(connections.api), closeDb(connections.auth)]);
+      }
+      const off = await cli(["audit-verify"], { CONSOLE_ORIGIN: "", CONSOLE_RP_ID: "" });
+      expect(off.code, off.text).toBe(0);
+      const bare = await cli(["audit-verify"], { DATABASE_URL_API: process.env.DATABASE_URL_API!, DATABASE_URL_AUTH: process.env.DATABASE_URL_AUTH! }, false);
+      expect(bare.code, bare.text).toBe(0);
+    });
+
+    test("a confirmed row changed by the owner with the chain and the head recomputed fails on its step-up alone: its params, its target, its session, its hash with its params, or its time past the challenge's expiry", { timeout: 60_000 }, async () => {
+      const s = await confirmedRevocations();
+      const otherParams = { params: { all: true } };
+      const changes: [string, Record<string, unknown>, RegExp][] = [
+        ["its params", { metadata: otherParams }, /^its step-up's action hash is not the hash of its action, target and params$/],
+        ["its target", { targetId: s.c.handle }, /^its step-up's action hash is not the hash of its action, target and params$/],
+        ["its session", { staffSession: s.b.handle }, /^its step-up's challenge was not issued for this action in this session$/],
+        [
+          "its params and its action hash together",
+          { metadata: otherParams, actionHash: await stepUpActionHash({ action: "staff_session_revoked", target: { type: "staff_session", id: s.b.handle }, params: otherParams.params }) },
+          /^its step-up's challenge was not issued for this action in this session$/,
+        ],
+        ["its time, past the challenge's expiry", { createdAt: new Date(s.first.createdAt.getTime() + 11 * 60_000) }, /^its step-up's challenge had expired when the row was written$/],
+      ];
+      for (const [label, change, message] of changes) {
+        await rolledBack(migrateDb, async (tx) => {
+          await tx.update(auditLog).set(change).where(eq(auditLog.id, s.first.id));
+          await rechainFrom(tx, s.first.chainSeq);
+          const report = await checkAuditRecord(tx, []);
+          expect(report.problems, label).toEqual([{ place: s.first.chainSeq, message: expect.stringMatching(message) }]);
+        });
+      }
+      // Nothing of it outlives the rollbacks.
+      const connections = ownConnections();
+      try {
+        expect((await auditVerify(connections, [])).problems).toEqual([]);
+      } finally {
+        await Promise.all([closeDb(connections.api), closeDb(connections.auth)]);
+      }
+    });
+
+    test("an assertion moved to another row fails there, on its binding and as a challenge used twice", { timeout: 60_000 }, async () => {
+      const s = await confirmedRevocations();
+      await rolledBack(migrateDb, async (tx) => {
+        // The first row's assertion, signed by the same key in the same session, on the second row: only the binding of
+        // its target, and the challenge's second use, give it away.
+        await tx.update(auditLog).set({ stepUp: s.first.stepUp }).where(eq(auditLog.id, s.second.id));
+        await rechainFrom(tx, s.second.chainSeq);
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems).toEqual([
+          { place: s.second.chainSeq, message: "its step-up's challenge was not issued for this action in this session" },
+          { place: s.second.chainSeq, message: `its step-up's challenge was already used at place ${s.first.chainSeq}` },
+        ]);
+      });
+    });
+
+    test("a row of a step-up action without a confirmation fails, whatever its actor: a staff account, a demoted one, the system", { timeout: 60_000 }, async () => {
+      const s = await confirmedRevocations();
+      const { user: demoted } = await newStaffAccount(authDb, repo);
+      await authDb.update(users).set({ role: "user" }).where(eq(users.id, demoted.id));
+      await rolledBack(migrateDb, async (tx) => {
+        const places: number[] = [];
+        for (const actor of [s.user.id, demoted.id, actorId]) {
+          const [row] = await tx
+            .insert(auditLog)
+            .values({ actorId: actor, action: "staff_session_revoked", targetType: "staff_session", targetId: randomUUID(), staffSession: randomUUID(), metadata: { params: {} } })
+            .returning({ chainSeq: auditLog.chainSeq });
+          places.push(row!.chainSeq);
+        }
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems).toEqual(places.map((place) => ({ place, message: "its action, staff_session_revoked, needs a step-up, and it carries none" })));
+      });
+    });
+
+    test("a confirmation whose key belongs to another account than the row's actor fails, as one whose key records another origin or relying party ID", { timeout: 60_000 }, async () => {
+      const s = await confirmedRevocations();
+      const { user: other } = await newStaffAccount(authDb, repo);
+      await rolledBack(migrateDb, async (tx) => {
+        await tx.update(auditLog).set({ actorId: other.id }).where(eq(auditLog.id, s.first.id));
+        await rechainFrom(tx, s.first.chainSeq);
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems).toEqual([{ place: s.first.chainSeq, message: `its step-up's key ${s.keyId} belongs to another account than its actor` }]);
+      });
+      // The key's recorded origin and relying party ID, which the owner can change too: the confirmation was made for
+      // the ones the key was enrolled with, never checked against the console's configuration.
+      for (const [label, change, message] of [
+        ["origin", { origin: "http://console.example:8090" }, "its step-up's client data is not a webauthn.get from the origin recorded on its key"],
+        ["relying party ID", { rpId: "console.example" }, "its step-up's authenticator data does not name the relying party ID recorded on its key"],
+      ] as const) {
+        await rolledBack(migrateDb, async (tx) => {
+          await tx.update(staffKeys).set(change).where(eq(staffKeys.id, s.keyId));
+          const report = await checkAuditRecord(tx, []);
+          expect(report.problems, label).toEqual([
+            { place: s.first.chainSeq, message },
+            { place: s.second.chainSeq, message },
+          ]);
+        });
+      }
+    });
+
+    test("a signature that does not verify with the key's public key fails", { timeout: 60_000 }, async () => {
+      const s = await confirmedRevocations();
+      await rolledBack(migrateDb, async (tx) => {
+        const stepUp = s.first.stepUp as { authenticatorData: string; clientDataJSON: string; signature: string };
+        const signature = Buffer.from(stepUp.signature, "base64url");
+        signature[signature.length - 1] = signature[signature.length - 1]! ^ 0xff;
+        await tx.update(auditLog).set({ stepUp: { ...stepUp, signature: signature.toString("base64url") } }).where(eq(auditLog.id, s.first.id));
+        await rechainFrom(tx, s.first.chainSeq);
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems).toEqual([{ place: s.first.chainSeq, message: `its step-up's signature does not verify with the public key of key ${s.keyId}` }]);
       });
     });
   });

@@ -12,24 +12,30 @@ import type { AuthRepo, StaffKeysRevoked } from "../repo";
  */
 
 /**
- * A staff key's counter went backwards after its signature verified: the key is revoked and marked suspect, every live
- * staff session it opened revoked, staff_key_counter_regression recorded with its audit row, then its owner is mailed
- * staff_key_suspect (never 1c's passkey_suspect, whose remedy names the app's Security screen) and the attempt refused with
- * staff_key_suspended. A key that another revocation reached first, or whose account went meanwhile, is refused as any
- * revoked key is, with staff_key_invalid.
+ * A staff key's counter went backwards after its signature verified, at a sign-in or at a step-up (`via` names which): the
+ * key is revoked and marked suspect, every live staff session it opened revoked (at a step-up, the confirming one
+ * included), staff_key_counter_regression recorded with its audit row, then its owner is mailed staff_key_suspect (never
+ * 1c's passkey_suspect, whose remedy names the app's Security screen) and the attempt refused with staff_key_suspended. A
+ * key that another revocation reached first, or whose account went meanwhile, is refused as any revoked key is at that
+ * ceremony: staff_key_invalid at a sign-in, staff_step_up_invalid at a step-up.
  */
-export async function revokeForCounterRegression(deps: AuthDeps, key: { id: string; userId: string; name: string }, ctx: StaffRequestContext): Promise<never> {
+export async function revokeForCounterRegression(
+  deps: AuthDeps,
+  key: { id: string; userId: string; name: string },
+  ctx: StaffRequestContext,
+  via: "sign_in" | "step_up",
+): Promise<never> {
   const revoked = await deps.repo.revokeStaffKeys({
     account: { id: key.userId },
     key: key.id,
     suspect: true,
-    via: "sign_in",
+    via,
     // The key's holder presented it, so the row is the account's; the request's id ties it to the access log.
     actorId: key.userId,
     now: deps.now(),
     requestId: ctx.requestId,
   });
-  if (!revoked.ok || revoked.keys.length === 0) throw new AuthError("staff_key_invalid", 401);
+  if (!revoked.ok || revoked.keys.length === 0) throw via === "sign_in" ? new AuthError("staff_key_invalid", 401) : new AuthError("staff_step_up_invalid", 403);
   // After the commit, and best effort as every notice is: a failed mail never undoes the revocation.
   await notifyAccount(deps, revoked.email, "staff_key_suspect", { name: key.name });
   throw new AuthError("staff_key_suspended", 403);

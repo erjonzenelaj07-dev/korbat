@@ -1,10 +1,21 @@
 import { createHash, createHmac, hkdfSync } from "node:crypto";
 import { describe, expect, test } from "vitest";
+import { STAFF_STEP_UP_CHALLENGE, stepUpActionHash, stepUpBinding } from "@korbat/contracts";
 import { AuthError } from "../../src/auth/context";
 import { sha256Hex } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
 import { HOUR, MINUTE } from "../../src/auth/limits";
-import { CHALLENGE_TTL_MS, challengeKey, issueChallenge, readChallenge, spendChallenge, type ChallengePurpose } from "../../src/auth/passkeys/challenge";
+import {
+  CHALLENGE_TTL_MS,
+  STEP_UP_READ_MARGIN_MS,
+  challengeKey,
+  issueChallenge,
+  issueStepUpChallenge,
+  readChallenge,
+  readStepUpChallenge,
+  spendChallenge,
+  type ChallengePurpose,
+} from "../../src/auth/passkeys/challenge";
 
 const AUTH_HMAC_KEY = Buffer.alloc(32, 3);
 const KEY = challengeKey(AUTH_HMAC_KEY);
@@ -235,6 +246,142 @@ describe("passkey challenges: the staff console's purposes", () => {
     const kv = new MemoryKv(() => T0);
     await spendChallenge(kv, challenge, at(0));
     expect((await failure(spendChallenge(kv, challenge, at(0)))).code).toBe("passkey_invalid");
+  });
+});
+
+describe("passkey challenges: the step-up layout", () => {
+  const LF = String.fromCharCode(10);
+  /** 3a's one step-up action on a staff session, and variations of each part it binds. */
+  const revoke = { action: "staff_session_revoked", target: { type: "staff_session", id: OTHER_HANDLE }, params: {} };
+  const L = STAFF_STEP_UP_CHALLENGE;
+  /** Seals 58 bytes as the codec does for a step-up challenge. */
+  const sealedStepUp = (first58: Buffer) => Buffer.concat([first58, mac(first58)]).toString("base64url");
+
+  test("lays out 74 bytes at the contracts' offsets: version, the step-up purpose, expiry, nonce, the full 32-byte binding and an HMAC over the first 58", async () => {
+    const actionHash = await stepUpActionHash(revoke);
+    const challenge = issueStepUpChallenge(KEY, at(0), HANDLE, actionHash);
+    expect(challenge).toMatch(/^[A-Za-z0-9_-]{99}$/);
+    expect(challenge).toHaveLength(L.encodedLength);
+    const bytes = bytesOf(challenge);
+    expect(bytes).toHaveLength(74);
+    expect(bytes[L.versionAt]).toBe(1);
+    expect(bytes[L.purposeAt]).toBe(6);
+    expect(Number(bytes.readBigUInt64BE(L.expiryAt))).toBe(T0 + 10 * MINUTE);
+    // The binding is every byte of the sha256 of the session's handle, a newline and the action's hash, not a prefix.
+    const binding = createHash("sha256").update(`${HANDLE}${LF}${actionHash}`).digest();
+    expect(bytes.subarray(L.bindingAt, L.sealAt).equals(binding)).toBe(true);
+    expect(bytes.subarray(L.bindingAt, L.sealAt).equals(Buffer.from(await stepUpBinding(HANDLE, actionHash)))).toBe(true);
+    expect(bytes.subarray(L.sealAt).equals(mac(bytes.subarray(0, L.sealAt)))).toBe(true);
+    expect(() => readStepUpChallenge(KEY, challenge, at(0), HANDLE, actionHash)).not.toThrow();
+  });
+
+  test("draws a fresh nonce for every challenge", async () => {
+    const actionHash = await stepUpActionHash(revoke);
+    const a = bytesOf(issueStepUpChallenge(KEY, at(0), HANDLE, actionHash));
+    const b = bytesOf(issueStepUpChallenge(KEY, at(0), HANDLE, actionHash));
+    expect(a.subarray(L.nonceAt, L.bindingAt).equals(b.subarray(L.nonceAt, L.bindingAt))).toBe(false);
+    expect(a.subarray(L.bindingAt, L.sealAt).equals(b.subarray(L.bindingAt, L.sealAt))).toBe(true);
+  });
+
+  test("is refused for another session, another action, another target or other params", async () => {
+    const actionHash = await stepUpActionHash(revoke);
+    const challenge = issueStepUpChallenge(KEY, at(0), HANDLE, actionHash);
+    expectInvalid(() => readStepUpChallenge(KEY, challenge, at(0), OTHER_HANDLE, actionHash));
+    const others = [
+      { ...revoke, action: "staff_key_revoked" },
+      { ...revoke, target: { type: "staff_session", id: HANDLE } },
+      { ...revoke, target: { type: "staff_key", id: OTHER_HANDLE } },
+      // 3a's one action has empty params, so other params never reach the binding over HTTP: they are tested here.
+      { ...revoke, params: { all: true } },
+      { ...revoke, params: { reason: "R2", items: [1, 2] } },
+    ];
+    for (const other of others) {
+      const otherHash = await stepUpActionHash(other);
+      expect(otherHash).not.toBe(actionHash);
+      expectInvalid(() => readStepUpChallenge(KEY, challenge, at(0), HANDLE, otherHash));
+    }
+  });
+
+  test("is refused by every other ceremony, and no other ceremony's challenge is read as a step-up", async () => {
+    const actionHash = await stepUpActionHash(revoke);
+    const stepUp = issueStepUpChallenge(KEY, at(0), HANDLE, actionHash);
+    for (const purpose of PURPOSES) {
+      expectInvalid(() => readChallenge(KEY, stepUp, purpose, at(0), UNBOUND.includes(purpose) ? undefined : HANDLE));
+      const other = issueChallenge(KEY, purpose, at(0), UNBOUND.includes(purpose) ? undefined : HANDLE);
+      expectInvalid(() => readStepUpChallenge(KEY, other, at(0), HANDLE, actionHash));
+    }
+  });
+
+  test("refuses every tampered byte, a challenge sealed with another key, and one of another version or purpose", async () => {
+    const actionHash = await stepUpActionHash(revoke);
+    const challenge = issueStepUpChallenge(KEY, at(0), HANDLE, actionHash);
+    for (let i = 0; i < L.bytes; i++) {
+      const bytes = bytesOf(challenge);
+      bytes[i] = bytes[i]! ^ 0x01;
+      expectInvalid(() => readStepUpChallenge(KEY, bytes.toString("base64url"), at(0), HANDLE, actionHash));
+    }
+    expectInvalid(() => readStepUpChallenge(KEY, issueStepUpChallenge(challengeKey(Buffer.alloc(32, 4)), at(0), HANDLE, actionHash), at(0), HANDLE, actionHash));
+    const first58 = bytesOf(challenge).subarray(0, L.sealAt);
+    for (const [at_, value] of [
+      [L.versionAt, 2],
+      [L.purposeAt, 1],
+      [L.purposeAt, 5],
+      [L.purposeAt, 7],
+    ] as const) {
+      const changed = Buffer.from(first58);
+      changed[at_] = value;
+      expectInvalid(() => readStepUpChallenge(KEY, sealedStepUp(changed), at(0), HANDLE, actionHash));
+    }
+    // The helper seals exactly as the codec does: with the right fields its output reads.
+    expect(() => readStepUpChallenge(KEY, sealedStepUp(Buffer.from(first58)), at(0), HANDLE, actionHash)).not.toThrow();
+  });
+
+  test("refuses anything that is not exactly 74 bytes of canonical, unpadded base64url", async () => {
+    const actionHash = await stepUpActionHash(revoke);
+    const challenge = issueStepUpChallenge(KEY, at(0), HANDLE, actionHash);
+    const bytes = bytesOf(challenge);
+    // 74 bytes leave 4 spare bits in the last character, which Node's decoder ignores.
+    const last = BASE64URL_ALPHABET.indexOf(challenge.at(-1)!);
+    const nonCanonical = challenge.slice(0, -1) + BASE64URL_ALPHABET[last | 1];
+    expect(bytesOf(nonCanonical).equals(bytes)).toBe(true);
+    for (const candidate of [
+      "",
+      bytes.subarray(0, 73).toString("base64url"),
+      Buffer.concat([bytes, Buffer.from([0])]).toString("base64url"),
+      `${challenge}=`,
+      bytes.toString("base64"),
+      nonCanonical,
+      "A".repeat(10_000),
+    ]) {
+      expectInvalid(() => readStepUpChallenge(KEY, candidate, at(0), HANDLE, actionHash));
+    }
+  });
+
+  test("carries an expiry ten minutes after it was issued, but is read only while a minute of that is left: challenge_expired, checked after the seal and the binding", async () => {
+    const actionHash = await stepUpActionHash(revoke);
+    const challenge = issueStepUpChallenge(KEY, at(0), HANDLE, actionHash);
+    // The expiry it carries, which audit-verify compares with the row's time, is the full ten minutes.
+    expect(Number(bytesOf(challenge).readBigUInt64BE(L.expiryAt))).toBe(T0 + CHALLENGE_TTL_MS);
+    expect(STEP_UP_READ_MARGIN_MS).toBe(MINUTE);
+    expect(() => readStepUpChallenge(KEY, challenge, at(CHALLENGE_TTL_MS - STEP_UP_READ_MARGIN_MS - 1), HANDLE, actionHash)).not.toThrow();
+    for (const late of [CHALLENGE_TTL_MS - STEP_UP_READ_MARGIN_MS, CHALLENGE_TTL_MS - 1, CHALLENGE_TTL_MS]) {
+      const err = refusal(() => readStepUpChallenge(KEY, challenge, at(late), HANDLE, actionHash));
+      expect([late, err.code, err.status]).toEqual([late, "challenge_expired", 400]);
+    }
+    // An expired challenge for another session is still passkey_invalid: nothing tells which field failed first.
+    expectInvalid(() => readStepUpChallenge(KEY, challenge, at(HOUR), OTHER_HANDLE, actionHash));
+  });
+
+  test("is spent once through the same used-challenge markers, for the rest of its life", async () => {
+    let clock = T0;
+    const kv = new MemoryKv(() => clock);
+    const challenge = issueStepUpChallenge(KEY, at(0), HANDLE, await stepUpActionHash(revoke));
+    await spendChallenge(kv, challenge, at(0));
+    expect(await kv.get(spentKey(challenge))).toBe("1");
+    expect((await failure(spendChallenge(kv, challenge, at(0)))).code).toBe("passkey_invalid");
+    clock = T0 + CHALLENGE_TTL_MS;
+    expect(await kv.get(spentKey(challenge))).toBeNull();
+    expect((await failure(spendChallenge(kv, challenge, at(CHALLENGE_TTL_MS)))).code).toBe("challenge_expired");
   });
 });
 

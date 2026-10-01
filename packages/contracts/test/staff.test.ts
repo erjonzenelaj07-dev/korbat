@@ -8,6 +8,7 @@ import {
   PasskeyOptionsResponse,
   STAFF_AUDIT_PAGE_SIZE,
   STAFF_STEP_UP_ACTIONS,
+  STAFF_STEP_UP_CHALLENGE,
   StaffEnrollOptionsRequest,
   StaffEnrollOptionsResponse,
   StaffEnrollVerifyRequest,
@@ -29,6 +30,10 @@ import {
   StaffStepUpOptionsRequest,
   StaffStepUpOptionsResponse,
   StaffStoredAssertion,
+  stepUpActionHash,
+  stepUpActionText,
+  stepUpBinding,
+  stepUpBindingText,
 } from "../src/index";
 
 const BELL = String.fromCharCode(7);
@@ -226,6 +231,9 @@ describe("step-up actions", () => {
     expect(spec.targetType).toBe("staff_session");
     expect(spec.targetId.safeParse(uuid).success).toBe(true);
     expect(spec.targetId.safeParse("abc").success).toBe(false);
+    // Only the lower-case spelling PostgreSQL writes: the id is hashed as sent, and the audit row records the database's.
+    expect(spec.targetId.safeParse(uuid.toUpperCase()).success).toBe(false);
+    expect(spec.targetId.safeParse(uuid.slice(0, 9) + uuid.slice(9).toUpperCase()).success).toBe(false);
     expect(spec.params.parse({})).toEqual({});
     // Params are hashed as they are sent, so a member the schema does not know is refused, never dropped.
     expect(spec.params.safeParse({ all: true }).success).toBe(false);
@@ -238,6 +246,7 @@ describe("step-up actions", () => {
     expect(StaffStepUpOptionsRequest.safeParse({ ...request, action: "role_granted" }).success).toBe(false);
     expect(StaffStepUpOptionsRequest.safeParse({ ...request, target: { type: "staff_key", id: uuid } }).success).toBe(false);
     expect(StaffStepUpOptionsRequest.safeParse({ ...request, target: { type: "staff_session", id: "abc" } }).success).toBe(false);
+    expect(StaffStepUpOptionsRequest.safeParse({ ...request, target: { type: "staff_session", id: uuid.toUpperCase() } }).success).toBe(false);
     expect(StaffStepUpOptionsRequest.safeParse({ ...request, target: { type: "staff_session", id: uuid, extra: 1 } }).success).toBe(false);
     expect(StaffStepUpOptionsRequest.safeParse({ ...request, params: { all: true } }).success).toBe(false);
     expect(StaffStepUpOptionsRequest.safeParse({ ...request, stepUp: assertion }).success).toBe(false);
@@ -263,6 +272,112 @@ describe("step-up actions", () => {
     expect(StaffStoredAssertion.safeParse({ ...stored, signature: b64(1025) }).success).toBe(false);
     expect(StaffStoredAssertion.safeParse({ ...stored, clientDataJSON: "ab/cd" }).success).toBe(false);
     expect(StaffStoredAssertion.safeParse({ ...stored, userHandle: b64(43) }).success).toBe(false);
+  });
+});
+
+describe("the step-up action's hash and binding", () => {
+  const BS = String.fromCharCode(92);
+  const LF = String.fromCharCode(10);
+  const revoke = { action: "staff_session_revoked", target: { type: "staff_session", id: uuid }, params: {} };
+  // The 3a action's sorted JSON, and the sha256 values below, were checked with Python's hashlib when they were written.
+  const REVOKE_TEXT = `{"action":"staff_session_revoked","params":{},"target":{"id":"${uuid}","type":"staff_session"}}`;
+  const REVOKE_HASH = "dad06ce5248ff75b3aa9b1faec9bab38bfa70f6dd2568d231b02e282207385c5";
+  const SESSION = "8a3c7f0e-1111-4222-8333-944445555666";
+  const BINDING = "9b70fa1ab475e7958d1265150cd04c7953483fe6145f52b12b2fd89d0c598dca";
+  const hexOf = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+
+  test("the action's text is the sorted JSON of its action, target and params: object keys sorted, no whitespace", () => {
+    expect(stepUpActionText(revoke)).toBe(REVOKE_TEXT);
+    // The order the members were written in changes nothing.
+    expect(stepUpActionText({ params: {}, target: { id: uuid, type: "staff_session" }, action: "staff_session_revoked" })).toBe(REVOKE_TEXT);
+    // The options request is hashed as it was sent: its schemas change nothing in it.
+    expect(stepUpActionText(StaffStepUpOptionsRequest.parse(revoke))).toBe(REVOKE_TEXT);
+  });
+
+  test("params are sorted at every depth, arrays keep their order, and strings and numbers are written as JSON.stringify writes them", () => {
+    const params = { b: [3, { z: 1, a: null }, "x"], a: `q"${BS}`, c: true, d: 0.5, e: -0, "": -1, B: { y: [], x: {} } };
+    expect(stepUpActionText({ action: "case_decided", target: { type: "post", id: "p1" }, params })).toBe(
+      `{"action":"case_decided","params":{"":-1,"B":{"x":{},"y":[]},"a":"q${BS}"${BS}${BS}","b":[3,{"a":null,"z":1},"x"],"c":true,"d":0.5,"e":0},"target":{"id":"p1","type":"post"}}`,
+    );
+  });
+
+  test("keys are sorted by UTF-16 code units, as Array.prototype.sort sorts them in the API, audit-verify and the console alike", () => {
+    const eAcute = String.fromCharCode(0xe9);
+    const fullwidthA = String.fromCharCode(0xff21);
+    // An astral character's first code unit (0xd83d) sorts before 0xff21, though its code point (0x1f600) is higher.
+    const grinning = String.fromCodePoint(0x1f600);
+    const params = { [fullwidthA]: 1, [grinning]: 2, [eAcute]: 3, z: 4 };
+    expect(stepUpActionText({ action: "a", target: { type: "t", id: "i" }, params })).toBe(
+      `{"action":"a","params":{"z":4,"${eAcute}":3,"${grinning}":2,"${fullwidthA}":1},"target":{"id":"i","type":"t"}}`,
+    );
+  });
+
+  test("a value that is not JSON is refused rather than hashed", () => {
+    for (const value of [undefined, Number.NaN, Number.POSITIVE_INFINITY, () => 1, BigInt(1), new Date(0), [undefined], Symbol("x")]) {
+      expect(() => stepUpActionText({ action: "a", target: { type: "t", id: "i" }, params: { value } }), String(typeof value)).toThrow(TypeError);
+    }
+  });
+
+  test("the action's hash is the lower-case hex sha256 of the text's UTF-8 bytes", async () => {
+    expect(await stepUpActionHash(revoke)).toBe(REVOKE_HASH);
+    const reason = String.fromCharCode(0xe9, 0x4e2d) + String.fromCodePoint(0x1f600);
+    expect(await stepUpActionHash({ action: "case_decided", target: { type: "post", id: "p1" }, params: { reason } })).toBe(
+      "8f41483850c87296607ff1c3fd5e501574bcc3f564a09d935a7063efab414720",
+    );
+  });
+
+  test("another action, target or params gives another hash: params are bound too, though 3a's one action has none", async () => {
+    const hashes = await Promise.all([
+      stepUpActionHash(revoke),
+      stepUpActionHash({ ...revoke, action: "staff_key_revoked" }),
+      stepUpActionHash({ ...revoke, target: { type: "staff_session", id: "4f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a" } }),
+      stepUpActionHash({ ...revoke, target: { type: "staff_key", id: uuid } }),
+      stepUpActionHash({ ...revoke, params: { all: true } }),
+      stepUpActionHash({ ...revoke, params: { all: false } }),
+      stepUpActionHash({ ...revoke, params: { items: [1, 2] } }),
+      stepUpActionHash({ ...revoke, params: { items: [2, 1] } }),
+    ]);
+    expect(new Set(hashes).size).toBe(hashes.length);
+  });
+
+  test("the binding is the full 32-byte sha256 of the session's handle, a newline and the action's hash", async () => {
+    expect(stepUpBindingText(SESSION, REVOKE_HASH)).toBe(`${SESSION}${LF}${REVOKE_HASH}`);
+    const binding = await stepUpBinding(SESSION, REVOKE_HASH);
+    expect(binding).toBeInstanceOf(Uint8Array);
+    expect(binding).toHaveLength(32);
+    expect(hexOf(binding)).toBe(BINDING);
+    // Another session, or another action, binds something else.
+    expect(hexOf(await stepUpBinding("7e2d9a10-6c3b-4f5e-8a21-0d4c7b9e1f36", REVOKE_HASH))).not.toBe(BINDING);
+    expect(hexOf(await stepUpBinding(SESSION, "0".repeat(64)))).not.toBe(BINDING);
+  });
+
+  test("the step-up challenge's layout: 74 bytes of version, purpose, expiry, nonce, the full binding and the seal", () => {
+    expect(STAFF_STEP_UP_CHALLENGE).toEqual({
+      bytes: 74,
+      encodedLength: 99,
+      version: 1,
+      purpose: 6,
+      versionAt: 0,
+      purposeAt: 1,
+      expiryAt: 2,
+      expiryBytes: 8,
+      nonceAt: 10,
+      nonceBytes: 16,
+      bindingAt: 26,
+      bindingBytes: 32,
+      sealAt: 58,
+      sealBytes: 16,
+    });
+    // The fields follow one another with no gap, and the encoded length is the bytes' unpadded base64url length.
+    const c = STAFF_STEP_UP_CHALLENGE;
+    expect([c.purposeAt + 1, c.expiryAt + c.expiryBytes, c.nonceAt + c.nonceBytes, c.bindingAt + c.bindingBytes, c.sealAt + c.sealBytes]).toEqual([
+      c.expiryAt,
+      c.nonceAt,
+      c.bindingAt,
+      c.sealAt,
+      c.bytes,
+    ]);
+    expect(c.encodedLength).toBe(Math.ceil((c.bytes * 8) / 6));
   });
 });
 

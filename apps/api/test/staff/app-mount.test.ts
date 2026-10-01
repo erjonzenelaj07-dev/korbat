@@ -173,6 +173,9 @@ describe("the staff module in createApp", () => {
       ["GET", "/api/staff/keys"],
       ["GET", "/api/staff/audit"],
       ["POST", "/api/staff/signout"],
+      // Step-up and the revocation it confirms: no session, no confirmation is even read.
+      ["POST", "/api/staff/step-up/options"],
+      ["DELETE", "/api/staff/sessions/3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a"],
     ] as const;
     for (const [method, path] of routes) {
       // Another Host is still the unknown route, before any session is looked for.
@@ -192,11 +195,17 @@ describe("the staff module in createApp", () => {
 
   test("a staff write with the staff cookie but without the staff CSRF header is csrf_failed, before any database read", async () => {
     const { app } = build(CONSOLE_ORIGIN);
-    const res = await app.request("/api/staff/signout", { method: "POST", headers: { host: CONSOLE_HOST, origin: CONSOLE_ORIGIN, cookie: "__Host-korbat_staff=x; __Host-korbat_staff_csrf=y" } });
-    expect(res.status).toBe(403);
-    expect(((await res.json()) as ErrorBody).error.code).toBe("csrf_failed");
-    // A refused write ends nothing: the cookies stay.
-    expect(res.headers.getSetCookie()).toEqual([]);
+    for (const [method, path] of [
+      ["POST", "/api/staff/signout"],
+      ["POST", "/api/staff/step-up/options"],
+      ["DELETE", "/api/staff/sessions/3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a"],
+    ] as const) {
+      const res = await app.request(path, { method, headers: { host: CONSOLE_HOST, origin: CONSOLE_ORIGIN, cookie: "__Host-korbat_staff=x; __Host-korbat_staff_csrf=y" } });
+      expect([path, res.status]).toEqual([path, 403]);
+      expect(((await res.json()) as ErrorBody).error.code).toBe("csrf_failed");
+      // A refused write ends nothing: the cookies stay.
+      expect(res.headers.getSetCookie()).toEqual([]);
+    }
   });
 
   test("the sign-in options need no session and read no database: a staff sign-in challenge for discoverable, user-verified credentials of the console", async () => {

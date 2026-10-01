@@ -96,7 +96,7 @@ export async function signInVerify(deps: AuthDeps, input: StaffSignInVerifyReque
   const role = key.role as StaffRole;
   const opened = await openStaffSession(deps, { userId: key.userId, keyId: key.id, role, newCounter: verified.newCounter, browser }, ctx);
   // Null when the key's counter did not move forward (or another revocation reached the key first): it is revoked now.
-  if (!opened) return revokeForCounterRegression(deps, key, ctx);
+  if (!opened) return revokeForCounterRegression(deps, key, ctx, "sign_in");
   const { token, session } = opened;
   // After the commit, and best effort as every notice is: a failed mail never undoes a sign-in.
   await notifyAccount(deps, key.email, "staff_session_started", { name: key.name, browser, time: noticeTime(session.createdAt) });

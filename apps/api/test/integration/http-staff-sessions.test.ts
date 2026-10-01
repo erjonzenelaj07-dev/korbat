@@ -1,15 +1,19 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, asc, eq, gt } from "drizzle-orm";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   AuditPage,
   ErrorEnvelope,
+  STAFF_STEP_UP_CHALLENGE,
   StaffKeysResponse,
   StaffMe,
   StaffSessionsResponse,
   StaffSignInOptionsResponse,
   StaffSignInVerifyResponse,
+  StaffStepUpOptionsResponse,
+  stepUpActionHash,
+  stepUpBinding,
   type AuthenticationResponseJSON,
 } from "@korbat/contracts";
 import { auditHead, auditLog, authEvents, closeDb, createDb, profiles, staffKeys, staffSessions, users, type Db } from "@korbat/db";
@@ -18,7 +22,7 @@ import { createAuth, revokeStaffKeys, type Auth } from "../../src/auth";
 import { decodeKey, randomToken, sha256Hex } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
 import { HOUR, MINUTE } from "../../src/auth/limits";
-import { challengeKey, issueChallenge } from "../../src/auth/passkeys/challenge";
+import { challengeKey, issueChallenge, issueStepUpChallenge } from "../../src/auth/passkeys/challenge";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { runGrantRole } from "../../src/cli/grant-role";
 import { loadConfig, type Config } from "../../src/config";
@@ -31,6 +35,7 @@ import { fakeClock } from "./auth-fixtures";
 import { Browser, randomIp } from "./http-client";
 import { DEVICE_BOUND, TEST_CONSOLE_ORIGIN, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 import { enrolKey } from "./staff-enrolment";
+import { revokeRequest } from "./staff-step-up";
 
 const CONSOLE_HOST = new URL(TEST_CONSOLE_ORIGIN).host;
 const STAFF_COOKIE = "__Host-korbat_staff";
@@ -135,6 +140,22 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
     expect(first.res.status, await first.res.clone().text()).toBe(200);
     return { user, device, handle, soft, keyId: enrolled.key.id, credentialId: enrolled.credentialId, b, token: b.cookie(STAFF_COOKIE)!, signIn, first };
   }
+
+  /**
+   * The key's answer to step-up options for revoking the staff session `handle`, asked for from `s`'s browser as the
+   * console asks for them, or over a challenge of the test's own.
+   */
+  async function confirmation(s: Awaited<ReturnType<typeof staffBrowser>>, handle: string, options: { counter: number; challenge?: string }) {
+    let challenge = options.challenge;
+    if (challenge === undefined) {
+      const res = await s.b.fetch("/api/staff/step-up/options", { json: revokeRequest(handle), headers: MARKED });
+      expect(res.status, await res.clone().text()).toBe(200);
+      challenge = StaffStepUpOptionsResponse.parse(await res.json()).options.challenge;
+    }
+    return s.soft.get({ credentialId: s.credentialId, rpId: TEST_CONSOLE_RP_ID, challenge, origin: TEST_CONSOLE_ORIGIN, flags: DEVICE_BOUND, counter: options.counter });
+  }
+  const revokeSession = (b: Browser, handle: string, stepUp?: AuthenticationResponseJSON) =>
+    b.fetch(`/api/staff/sessions/${handle}`, { method: "DELETE", ...(stepUp ? { json: { stepUp } } : {}), headers: MARKED });
 
   describe("signing in", () => {
     test("sets both staff cookies, __Host-, Secure, Path=/, SameSite=Strict and 12 hours long, the session's HttpOnly; answers /me's body with no CORS header and no-store", { timeout: 30_000 }, async () => {
@@ -318,6 +339,24 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
       ["the account's role set to user in the database alone", async (s) => void (await authDb.update(users).set({ role: "user" }).where(eq(users.id, s.user.id)))],
       ["the account marked deleted in the database alone", async (s) => void (await authDb.update(users).set({ deletedAt: clock.now() }).where(eq(users.id, s.user.id)))],
       ["the session revoked in the database", async (s) => void (await authDb.update(staffSessions).set({ revokedAt: clock.now() }).where(eq(staffSessions.id, sha256Hex(s.token))))],
+      [
+        "a revocation confirmed with the key in another browser",
+        async (s) => {
+          const other = consoleBrowser();
+          expect((await s.signIn(other)).res.status).toBe(200);
+          const handle = (await sessionRow(s.token)).handle;
+          const stepUp = await confirmation({ ...s, b: other }, handle, { counter: 3 });
+          expect((await revokeSession(other, handle, stepUp)).status).toBe(204);
+        },
+      ],
+      [
+        "a counter that went backwards at a step-up",
+        async (s) => {
+          const handle = (await sessionRow(s.token)).handle;
+          const res = await revokeSession(s.b, handle, await confirmation(s, handle, { counter: 1 }));
+          expect([res.status, (await error(res)).code]).toEqual([403, "staff_key_suspended"]);
+        },
+      ],
     ];
     for (const [label, end] of enders) {
       test(label, { timeout: 30_000 }, async () => {
@@ -356,6 +395,219 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
       await expectEnded(await raw("/api/staff/me", { headers: { cookie: `${STAFF_COOKIE}=${s.token}` } }), "after signing out");
       // Signing out again is a session that has ended.
       await expectEnded(await raw("/api/staff/signout", { method: "POST", headers: { origin: TEST_CONSOLE_ORIGIN, cookie: `${STAFF_COOKIE}=${s.token}; ${STAFF_CSRF_COOKIE}=x`, "x-staff-csrf": "x" } }), "signing out twice");
+    });
+  });
+
+  describe("revoking a session, confirmed with the staff key", () => {
+    test("the options name the session's key alone over a challenge the console can check; DELETE with the confirmation answers 204, the session ends at its next request, and the row carries the request's id and the confirmation", { timeout: 30_000 }, async () => {
+      const s = await staffBrowser();
+      const other = consoleBrowser();
+      expect((await s.signIn(other)).res.status).toBe(200);
+      const mine = await sessionRow(s.token);
+      const target = await sessionRow(other.cookie(STAFF_COOKIE)!);
+      const request = revokeRequest(target.handle);
+
+      const optionsRes = await s.b.fetch("/api/staff/step-up/options", { json: request, headers: MARKED });
+      expect(optionsRes.status).toBe(200);
+      expect(accessControlHeaders(optionsRes)).toEqual([]);
+      expect(optionsRes.headers.getSetCookie()).toEqual([]);
+      const { options } = StaffStepUpOptionsResponse.parse(await optionsRes.json());
+      expect(options.rpId).toBe(TEST_CONSOLE_RP_ID);
+      expect(options.allowCredentials).toEqual([{ id: s.credentialId, type: "public-key", transports: ["usb", "nfc"] }]);
+      expect(options.userVerification).toBe("required");
+      // What the console checks before it asks for the key: the layout, the purpose, and the binding of its own session's
+      // handle and the hash of what it sent.
+      const actionHash = await stepUpActionHash(request);
+      const challenge = Buffer.from(options.challenge, "base64url");
+      const L = STAFF_STEP_UP_CHALLENGE;
+      expect(challenge).toHaveLength(L.bytes);
+      expect(challenge[L.purposeAt]).toBe(L.purpose);
+      expect(challenge.subarray(L.bindingAt, L.sealAt).equals(Buffer.from(await stepUpBinding(mine.handle, actionHash)))).toBe(true);
+
+      const stepUp = await confirmation(s, target.handle, { counter: 3, challenge: options.challenge });
+      const before = await head();
+      clock.advance(MINUTE);
+      const res = await revokeSession(s.b, target.handle, stepUp);
+      expect(res.status, await res.clone().text()).toBe(204);
+      expect(res.headers.getSetCookie()).toEqual([]);
+      expect(accessControlHeaders(res)).toEqual([]);
+      expect((await sessionRow(other.cookie(STAFF_COOKIE)!)).revokedAt).toEqual(clock.now());
+      const written = await migrateDb.select().from(auditLog).where(gt(auditLog.chainSeq, before.seq)).orderBy(asc(auditLog.chainSeq));
+      expect(written.map((r) => [r.action, r.actorId, r.targetType, r.targetId, r.staffSession, r.keyId, r.actionHash, r.stepUp, r.metadata, r.requestId])).toEqual([
+        [
+          "staff_session_revoked",
+          s.user.id,
+          "staff_session",
+          target.handle,
+          mine.handle,
+          s.keyId,
+          actionHash,
+          { authenticatorData: stepUp.response.authenticatorData, clientDataJSON: stepUp.response.clientDataJSON, signature: stepUp.response.signature },
+          { params: {} },
+          res.headers.get("x-request-id"),
+        ],
+      ]);
+      await expectEnded(await other.fetch("/api/staff/me"), "the revoked session");
+      expect((await s.b.fetch("/api/staff/me")).status).toBe(200);
+      // The person may end the session they ask from as well; it ends at its next request.
+      expect((await revokeSession(s.b, mine.handle, await confirmation(s, mine.handle, { counter: 4 }))).status).toBe(204);
+      await expectEnded(await s.b.fetch("/api/staff/me"), "the session that revoked itself");
+    });
+
+    test("without a confirmation the answer is staff_step_up_required; a body, target or options request the schemas refuse is invalid_request; without the staff CSRF header, csrf_failed; nothing changes", { timeout: 30_000 }, async () => {
+      const s = await staffBrowser();
+      const other = consoleBrowser();
+      expect((await s.signIn(other)).res.status).toBe(200);
+      const target = await sessionRow(other.cookie(STAFF_COOKIE)!);
+      const before = await head();
+      for (const [label, init] of [
+        ["no body", { method: "DELETE" }],
+        ["an empty body", { method: "DELETE", json: {} }],
+      ] as const) {
+        const res = await s.b.fetch(`/api/staff/sessions/${target.handle}`, init);
+        expect([label, res.status, (await error(res)).code]).toEqual([label, 403, "staff_step_up_required"]);
+      }
+      // Any assertion's shape will do for the schemas: the sign-in's is one.
+      const shaped = s.first.response;
+      for (const [label, path, body] of [
+        ["a member the action's params do not take", `/api/staff/sessions/${target.handle}`, { all: true, stepUp: shaped }],
+        ["a stepUp that is not an assertion", `/api/staff/sessions/${target.handle}`, { stepUp: { id: "x" } }],
+        ["a handle that is not a uuid", "/api/staff/sessions/not-a-handle", { stepUp: shaped }],
+      ] as const) {
+        const res = await s.b.fetch(path, { method: "DELETE", json: body });
+        expect([label, res.status, (await error(res)).code]).toEqual([label, 400, "invalid_request"]);
+      }
+      for (const [label, body] of [
+        ["an action no step-up confirms", { ...revokeRequest(target.handle), action: "role_granted" }],
+        ["another target type", { ...revokeRequest(target.handle), target: { type: "user", id: target.handle } }],
+        ["params the action does not take", { ...revokeRequest(target.handle), params: { all: true } }],
+        ["a target that is not a uuid", revokeRequest("not-a-handle")],
+      ] as const) {
+        const res = await s.b.fetch("/api/staff/step-up/options", { json: body });
+        expect([label, res.status, (await error(res)).code]).toEqual([label, 400, "invalid_request"]);
+      }
+      // A write without the staff CSRF header is refused before the session is read, the options included.
+      const stepUp = await confirmation(s, target.handle, { counter: 3 });
+      expect((await s.b.fetch(`/api/staff/sessions/${target.handle}`, { method: "DELETE", json: { stepUp }, csrf: false })).status).toBe(403);
+      expect((await s.b.fetch("/api/staff/step-up/options", { json: revokeRequest(target.handle), csrf: false })).status).toBe(403);
+      expect((await sessionRow(other.cookie(STAFF_COOKIE)!)).revokedAt).toBeNull();
+      expect(await head()).toEqual(before);
+      // The confirmation the refused write carried was never read, so it still confirms what it was given for.
+      expect((await revokeSession(s.b, target.handle, stepUp)).status).toBe(204);
+    });
+
+    test("a spent challenge, one of another purpose, one with another binding and a bad signature are staff_step_up_invalid, never a passkey code; an expired one is challenge_expired", { timeout: 60_000 }, async () => {
+      const s = await staffBrowser();
+      const other = consoleBrowser();
+      expect((await s.signIn(other)).res.status).toBe(200);
+      const mine = await sessionRow(s.token);
+      const target = await sessionRow(other.cookie(STAFF_COOKIE)!);
+      const key = challengeKey(decodeKey(config.AUTH_HMAC_KEY));
+      const actionHash = await stepUpActionHash(revokeRequest(target.handle));
+      const fresh = await confirmation(s, target.handle, { counter: 3 });
+      const freshChallenge = JSON.parse(Buffer.from(fresh.response.clientDataJSON, "base64url").toString()).challenge as string;
+      const signInChallenge = JSON.parse(Buffer.from(s.first.response.response.clientDataJSON, "base64url").toString()).challenge as string;
+      const cases: [string, () => Promise<AuthenticationResponseJSON>][] = [
+        // The library refuses it, after the challenge was spent: the same challenge signed well is then a spent one.
+        ["a bad signature", async () => badSignature(fresh)],
+        ["a spent step-up challenge", () => confirmation(s, target.handle, { counter: 4, challenge: freshChallenge })],
+        ["the sign-in's challenge", () => confirmation(s, target.handle, { counter: 5, challenge: signInChallenge })],
+        ["a staff sign-in challenge", () => confirmation(s, target.handle, { counter: 6, challenge: issueChallenge(key, "staff_signin", clock.now()) })],
+        ["a re-authentication challenge for this session", () => confirmation(s, target.handle, { counter: 7, challenge: issueChallenge(key, "reauth", clock.now(), mine.handle) })],
+        ["a step-up challenge for another session", () => confirmation(s, target.handle, { counter: 8, challenge: issueStepUpChallenge(key, clock.now(), target.handle, actionHash) })],
+        [
+          "a step-up challenge for another target",
+          async () => confirmation(s, target.handle, { counter: 9, challenge: issueStepUpChallenge(key, clock.now(), mine.handle, await stepUpActionHash(revokeRequest(mine.handle))) }),
+        ],
+      ];
+      for (const [label, make] of cases) {
+        const res = await revokeSession(s.b, target.handle, await make());
+        const { code } = await error(res);
+        expect([label, res.status, code]).toEqual([label, 403, "staff_step_up_invalid"]);
+        expect(code, label).not.toMatch(/^passkey_/);
+      }
+      const late = await confirmation(s, target.handle, { counter: 10 });
+      clock.advance(10 * MINUTE);
+      const expired = await revokeSession(s.b, target.handle, late);
+      expect([expired.status, (await error(expired)).code]).toEqual([400, "challenge_expired"]);
+      expect((await sessionRow(other.cookie(STAFF_COOKIE)!)).revokedAt).toBeNull();
+    });
+
+    test("another account's session is no session of the person's: 404, it lives on, and the confirmation is spent", { timeout: 30_000 }, async () => {
+      const s = await staffBrowser();
+      const t = await staffBrowser();
+      const theirs = await sessionRow(t.token);
+      const before = await head();
+      const stepUp = await confirmation(s, theirs.handle, { counter: 3 });
+      const res = await revokeSession(s.b, theirs.handle, stepUp);
+      expect([res.status, (await error(res)).code]).toEqual([404, "not_found"]);
+      expect((await sessionRow(t.token)).revokedAt).toBeNull();
+      expect((await t.b.fetch("/api/staff/me")).status).toBe(200);
+      expect(await head()).toEqual(before);
+      const again = await revokeSession(s.b, theirs.handle, stepUp);
+      expect([again.status, (await error(again)).code]).toEqual([403, "staff_step_up_invalid"]);
+    });
+
+    test("a handle in upper case is invalid_request, for the options and for the revocation even with a confirmation bound to that spelling: the id is hashed as sent but recorded as the database writes it, so only that spelling is taken", { timeout: 30_000 }, async () => {
+      const s = await staffBrowser();
+      const other = consoleBrowser();
+      expect((await s.signIn(other)).res.status).toBe(200);
+      const mine = await sessionRow(s.token);
+      const target = await sessionRow(other.cookie(STAFF_COOKIE)!);
+      const upper = target.handle.toUpperCase();
+      expect(upper).not.toBe(target.handle);
+      const before = await head();
+      const options = await s.b.fetch("/api/staff/step-up/options", { json: revokeRequest(upper), headers: MARKED });
+      expect(options.status, await options.clone().text()).toBe(400);
+      expect((await error(options)).code).toBe("invalid_request");
+      // The challenge such options would have carried, bound to the upper-case spelling and signed by the session's key.
+      const key = challengeKey(decodeKey(config.AUTH_HMAC_KEY));
+      const bound = issueStepUpChallenge(key, clock.now(), mine.handle, await stepUpActionHash(revokeRequest(upper)));
+      const res = await revokeSession(s.b, upper, await confirmation(s, upper, { counter: 3, challenge: bound }));
+      expect(res.status, await res.clone().text()).toBe(400);
+      expect((await error(res)).code).toBe("invalid_request");
+      expect((await sessionRow(other.cookie(STAFF_COOKIE)!)).revokedAt).toBeNull();
+      expect(await head()).toEqual(before);
+      // The spelling the console reads from /sessions revokes it.
+      expect((await revokeSession(s.b, target.handle, await confirmation(s, target.handle, { counter: 4 }))).status).toBe(204);
+    });
+
+    test("a session that ends inside the step-up is answered as requireStaff answers it, staff_session_required with both cookies cleared: its key revoked just before the options, or its key revoked or its account demoted between the confirmation and the action", { timeout: 60_000 }, async () => {
+      type Staff = Awaited<ReturnType<typeof staffBrowser>>;
+      const revokeKey = (s: Staff) => authDb.update(staffKeys).set({ revokedAt: clock.now() }).where(eq(staffKeys.id, s.keyId));
+      const demote = (s: Staff) => authDb.update(users).set({ role: "user" }).where(eq(users.id, s.user.id));
+      // Each change is made inside the request, after requireStaff read the session live: just before the options read
+      // the session's key, or just before the revocation's transaction.
+      const cases: [string, "findStaffKeyCredential" | "revokeConfirmedStaffSession", (s: Staff) => Promise<unknown>][] = [
+        ["the key revoked before the options", "findStaffKeyCredential", revokeKey],
+        ["the key revoked after the confirmation", "revokeConfirmedStaffSession", revokeKey],
+        ["the account demoted after the confirmation", "revokeConfirmedStaffSession", demote],
+      ];
+      for (const [label, method, end] of cases) {
+        const s = await staffBrowser();
+        const other = consoleBrowser();
+        expect((await s.signIn(other)).res.status, label).toBe(200);
+        const target = await sessionRow(other.cookie(STAFF_COOKIE)!);
+        const stepUp = method === "revokeConfirmedStaffSession" ? await confirmation(s, target.handle, { counter: 3 }) : undefined;
+        const flows = auth.deps.repo;
+        const original = flows[method].bind(flows) as (...args: unknown[]) => Promise<unknown>;
+        const spy = vi.spyOn(flows, method).mockImplementationOnce((async (...args: unknown[]) => {
+          await end(s);
+          return original(...args);
+        }) as never);
+        try {
+          const res = stepUp
+            ? await revokeSession(s.b, target.handle, stepUp)
+            : await s.b.fetch("/api/staff/step-up/options", { json: revokeRequest(target.handle), headers: MARKED });
+          expect(spy, label).toHaveBeenCalledOnce();
+          await expectEnded(res, label);
+        } finally {
+          spy.mockRestore();
+        }
+        expect(s.b.cookie(STAFF_COOKIE), label).toBeUndefined();
+        expect(s.b.cookie(STAFF_CSRF_COOKIE), label).toBeUndefined();
+        expect((await sessionRow(other.cookie(STAFF_COOKIE)!)).revokedAt, label).toBeNull();
+      }
     });
   });
 

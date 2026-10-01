@@ -12,9 +12,11 @@ import type {
   StaffMe,
   StaffSessionsResponse,
   StaffSignInVerifyRequest,
+  StaffStepUpAction,
+  StaffStepUpOptionsRequest,
 } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import type Redis from "ioredis";
 import type { Logger } from "pino";
 import type { Config } from "../config";
@@ -38,6 +40,7 @@ import { enrollOptions, enrollVerify, type StaffEnrollOptions } from "./staff/en
 import { requireStaff } from "./staff/middleware";
 import { listStaffKeys, listStaffSessions, signOutStaff, staffMe, type ActiveStaffSession } from "./staff/sessions";
 import { signInOptions, signInVerify, type StaffSignedIn } from "./staff/signin";
+import { requireStaffStepUp, revokeStaffSession, stepUpOptions, type StaffStepUpConfirmed } from "./staff/step-up";
 import { cloudflareTurnstile, type TurnstileVerifier } from "./turnstile";
 import { devProvider } from "./verify/dev";
 import type { VerificationProvider } from "./verify/provider";
@@ -50,6 +53,7 @@ export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
 export type { ActiveStaffSession } from "./staff/sessions";
 export type { StaffSignedIn } from "./staff/signin";
+export type { StaffStepUpConfirmed } from "./staff/step-up";
 export type { StaffKeysRevokedReport } from "./staff/revoke";
 export type { VerificationProvider } from "./verify/provider";
 export { AuthError, isUniqueViolation } from "./context";
@@ -63,6 +67,12 @@ export { clearSessionCookies } from "./cookies";
 export { clearStaffCookies, setStaffCookies } from "./staff/cookies";
 /** `staff.js revoke`, from the server's command line only, as grant-role's grantRole is. */
 export { revokeStaffKeys } from "./staff/revoke";
+/**
+ * audit-verify's check of a step-up assertion an audit row stored, against the public key, origin and relying party ID
+ * recorded on its key (3a design, section 7, Command line): the WebAuthn library stays behind the wrapper, and the check
+ * needs no server secret.
+ */
+export { verifyRecordedAssertion, type RecordedAssertion } from "./passkeys/webauthn";
 export { checkHandle } from "./handles";
 export { redisKv, type KeyValueStore } from "./kv";
 export { createAuthRepo } from "./repo";
@@ -111,6 +121,15 @@ export interface AuthForStaff {
   keys(session: ActiveStaffSession): Promise<StaffKeysResponse>;
   /** Ends the session, on the record; the route clears its cookies with clearStaffCookies. */
   signOut(session: ActiveStaffSession, ctx: StaffRequestContext): Promise<void>;
+  /** Options for confirming one action with the session's key: a challenge bound to the session and to exactly that action. */
+  stepUpOptions(session: ActiveStaffSession, request: StaffStepUpOptionsRequest): Promise<{ options: PublicKeyCredentialRequestOptionsJSON }>;
+  /**
+   * Stands before every staff route that changes something, behind requireStaff: verifies the body's `stepUp` against the
+   * action, the target `target` reads from the request and the body's params, and sets `staffStepUp` on the context.
+   */
+  requireStaffStepUp(action: StaffStepUpAction, target: (c: Context<AppEnv>) => string | undefined): MiddlewareHandler<AppEnv>;
+  /** Revokes one of the person's own live staff sessions, on the record with its confirmation; false when the handle names none. */
+  revokeSession(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: StaffRequestContext): Promise<boolean>;
 }
 
 export interface CreateAuthOptions {
@@ -191,6 +210,9 @@ export function createAuth(options: CreateAuthOptions) {
     sessions: (session) => listStaffSessions(deps, session),
     keys: (session) => listStaffKeys(deps, session),
     signOut: (session, ctx) => signOutStaff(deps, session, ctx),
+    stepUpOptions: (session, request) => stepUpOptions(deps, session, request),
+    requireStaffStepUp: (action, target) => requireStaffStepUp(deps, action, target),
+    revokeSession: (session, confirmed, ctx) => revokeStaffSession(deps, session, confirmed, ctx),
   };
   return {
     deps,
@@ -211,6 +233,8 @@ export function createAuth(options: CreateAuthOptions) {
     requireStrongFreshAuth: (maxAgeSeconds?: number) => requireStrongFreshAuth(deps, maxAgeSeconds),
     /** A staff session from the staff cookie, read from the database at every request (3a design, section 7). */
     requireStaff: staffGuard,
+    /** A fresh confirmation by the staff session's key, bound to the action a route is about to execute (3a design, section 7). */
+    requireStaffStepUp: forStaff.requireStaffStepUp,
     /** Starts the retention pass (dead codes, old sessions and staff sessions, spent enrolment links, device address hashes, old events) and returns the function that stops it. */
     startJanitor: (lock: JobLock) => createJanitor(deps, lock).start(),
   };

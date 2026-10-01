@@ -1,7 +1,9 @@
-import { AuditPageQuery, StaffEnrollOptionsRequest, StaffEnrollVerifyRequest, StaffSignInVerifyRequest, type AuditPage } from "@korbat/contracts";
+import { AuditPageQuery, StaffEnrollOptionsRequest, StaffEnrollVerifyRequest, StaffSignInVerifyRequest, StaffStepUpOptionsRequest, type AuditPage } from "@korbat/contracts";
 import { Hono, type Context } from "hono";
-import { clearStaffCookies, setStaffCookies, type ActiveStaffSession, type AuthForStaff, type StaffRequestContext } from "../auth";
+import { z } from "zod";
+import { clearStaffCookies, setStaffCookies, type ActiveStaffSession, type AuthForStaff, type StaffRequestContext, type StaffStepUpConfirmed } from "../auth";
 import type { AppEnv } from "../env";
+import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
 import { staffGate } from "./gate";
 
@@ -9,8 +11,9 @@ import { staffGate } from "./gate";
  * The staff routes (3a design, section 7), which createApp mounts at /api/staff only while CONSOLE_ORIGIN is set. The gate
  * stands in front of every path under it, /api/staff itself and the paths no route answers included, so a wrong Host is
  * the 404 of an unknown route there too. Behind it, every route but enrolment and sign-in stands behind requireStaff.
- * Handlers only validate, call the auth module's staff interface or the audit reader, and shape the answer; step-up and
- * the session revocation it confirms join them with their flow.
+ * Handlers only validate, call the auth module's staff interface or the audit reader, and shape the answer. A route that
+ * changes something stands behind requireStaffStepUp as well, which verifies the key's confirmation of exactly what the
+ * route is about to do; sign-out alone needs none.
  */
 export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, readAudit: (query: AuditPageQuery) => Promise<AuditPage>) {
   const routes = new Hono<AppEnv>();
@@ -28,6 +31,13 @@ export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, readAudit
     const session = c.get("staffSession");
     if (!session) throw new Error("a staff route ran without requireStaff");
     return session;
+  };
+
+  /** The confirmation requireStaffStepUp verified; a route without it in front is a wiring fault, not a refusal. */
+  const confirmedStepUp = (c: Context<AppEnv>): StaffStepUpConfirmed => {
+    const confirmed = c.get("staffStepUp");
+    if (!confirmed) throw new Error("a staff route that changes something ran without requireStaffStepUp");
+    return confirmed;
   };
 
   // Enrolment needs no session: the link's one-time token is the credential, until a key is stored with it.
@@ -53,6 +63,25 @@ export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, readAudit
     clearStaffCookies(c);
     return c.body(null, 204);
   });
+
+  // Step-up (3a design, section 7): options for confirming one action, bound to this session and to exactly the
+  // { action, target, params } the console sent, which the action's own route then recomputes from what it executes.
+  routes.post("/step-up/options", auth.requireStaff, validate("json", StaffStepUpOptionsRequest), async (c) =>
+    c.json(await auth.stepUpOptions(staffSession(c), c.req.valid("json"))),
+  );
+  // One of the person's own staff sessions, revoked with a confirmation by the session's key: the path's handle is the
+  // action's target, and the body is the action's params (none) with the assertion as `stepUp`. A handle that names no live
+  // session of the person's is the 404 the app's own session revocation answers.
+  routes.delete(
+    "/sessions/:handle",
+    auth.requireStaff,
+    validate("param", z.object({ handle: z.uuid() })),
+    auth.requireStaffStepUp("staff_session_revoked", (c) => c.req.param("handle")),
+    async (c) => {
+      const revoked = await auth.revokeSession(staffSession(c), confirmedStepUp(c), requestContext(c));
+      return revoked ? c.body(null, 204) : c.json(errorBody("not_found", "No such session", c.get("requestId")), 404);
+    },
+  );
 
   return routes;
 }
