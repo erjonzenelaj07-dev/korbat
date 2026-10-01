@@ -12,6 +12,7 @@ Tasks 1 to 6 built the staff console's API side and the console app. This task s
 - Windows 11. Node v24.12.0, pnpm 10.30.0.
 - **Docker Desktop must be running** with the data services up. Start them with `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis mailpit` and wait until `docker compose -f infra/compose.yml -f infra/compose.dev.yml ps` shows them `healthy` or `running`.
 - Ports 3000, 8080 and 8090 on localhost must be free. Stop any korbat API, worker, web or console process started from this repository first; never stop other Node processes on the machine, and never touch Docker containers, volumes or images that do not belong to the `korbat` compose project.
+- `infra/.env` (gitignored) must hold the line `API_CONSOLE_ORIGIN=http://localhost:8090` before the stack is rebuilt: the stack gates start the console site and the smoke test checks it there. If `grep -c '^API_CONSOLE_ORIGIN=' infra/.env` prints `0`, add it with `echo >> infra/.env && echo API_CONSOLE_ORIGIN=http://localhost:8090 >> infra/.env` (the line holds no secret). The dry run used port 8390 in its scratch clone.
 - Never touch Docker containers that are not part of the `korbat` compose project (for example `alita-db` or `dazzling_moore`).
 - The workspace refuses package versions younger than 7 days. This task adds no dependencies: do not run `pnpm add`, and never edit `pnpm-workspace.yaml` or `.npmrc`.
 
