@@ -15,6 +15,7 @@ docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redi
 pnpm --filter @korbat/api dev               # http://localhost:3000/api/health; reads apps/api/.env
 pnpm --filter @korbat/worker dev            # the image worker; reads apps/worker/.env and works on .data/media
 pnpm --filter @korbat/app web               # http://localhost:8081
+pnpm --filter @korbat/admin dev             # the staff console at http://localhost:8090 (never 127.0.0.1); forwards /api/staff/* to the API above
 ```
 
 Emails sent in development (sign-in codes, new-device alerts, lockout notices) land in Mailpit at http://localhost:58025. Locally the web app uses Cloudflare's always-pass Turnstile test key, so the human check never blocks you.
