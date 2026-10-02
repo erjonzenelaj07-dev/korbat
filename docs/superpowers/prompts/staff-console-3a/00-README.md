@@ -56,7 +56,7 @@ Every session ends with a `TASK N REPORT` block. Check three lines before starti
 
 If a report shows a STOP that is not an environment problem, paste the report back to the planning session. Do not let the executing session improvise.
 
-The design is `docs/superpowers/specs/2026-09-28-staff-console-3a-design.md`, including its amendments from the dry run. The task map is `docs/superpowers/plans/{PLAN_DATE}-staff-console-3a.md`. Where the plan and a prompt differ, the prompt is the verified version.
+The design is `docs/superpowers/specs/2026-09-28-staff-console-3a-design.md`, including its amendments from the dry run. The task map is `docs/superpowers/plans/2026-10-01-staff-console-3a.md`. Where the plan and a prompt differ, the prompt is the verified version.
 
 ## Verify the prompts against the repository
 
@@ -67,3 +67,27 @@ python docs/superpowers/prompts/staff-console-3a/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-02)
+
+The nine prompts were replayed into this repository by the scratch tooling's `replay.py`. It ran each prompt's steps with no model session, through the same gated runner as the dry run. Every red step failed as recorded and every gate passed; both stack rebuilds, in Tasks 7 and 8, ended with the smoke test passing on the app site and the console site. It took three attempts; neither stop was in the code.
+
+| Task | Commit |
+|---|---|
+| 1 | `c394351` |
+| 2 | `c0e076c` |
+| 3 | `c9925ea` |
+| 4 | `7b470e8` |
+| 5 | `91105ab` |
+| 6 | `ec65a68` |
+| 7 | `e9b8429` |
+| 8 | `8583904` |
+| 9 | `2e1f7f9` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree is byte-identical to the dry run's except four drizzle files (migration 0012's SQL, the 0012 and 0013 snapshots and the journal). Those end with a newline here and with none in the dry run, because drizzle writes none and the prompts' file blocks end every file with one; drizzle orders migrations by the journal's entries, so the newline changes nothing it does. `verify_prompts.py` reproduces all 160 files. The lockfiles that Tasks 6 and 7 write are byte-identical to the dry run's. The integration suite ends at 54 files and 453 tests.
+- **First stop: Task 6's frozen install** (`ERR_PNPM_OUTDATED_LOCKFILE`). Tasks 6 and 7 add dependencies (the console's, then `playwright-core`), but their prompts had no `install` step: in the dry run the implementer had already written the lockfile, so the frozen install passed, while the replay writes every file except the lockfile. The install was run again in the scratch clone on each task's parent with the task's `package.json`; with the 7-day release-age floor in force, each wrote a lockfile byte-identical to the dry run's. It became each task's first step (`5f7bc7f`), and the replay went on from Task 6.
+- **Second stop: the image build in Task 7.** Package downloads inside the build slowed to about 40 KiB/s with connection resets, BuildKit lost its connection, and Docker Desktop then failed to start again (it could not unmount its WSL data disk). Once Docker Desktop was started again, the same steps passed.
+- **Two prompt fixes sit in the history between tasks.** `d33e5f2` (the line `infra/.env` needs for Tasks 7 and 8: `API_CONSOLE_ORIGIN`, found while checking this machine before the replay) comes before Task 1, and `5f7bc7f` between Tasks 5 and 6. A session following Task 1 or Task 6 by hand at that point would have stopped at its second precondition (`git log --oneline -1` names the previous task's commit); `replay.py` does not run that check. Anyone running these prompts again from the plan's commit should expect it.
+- **This README's plan path was not filled in.** The generator wrote the task map's path as `{PLAN_DATE}` literally; it is corrected above, in "Reading a report", and in the generator.
+- **The review that shaped Task 8.** After Task 7, six finders read everything from the design's commit `10463d1` to Task 7 (credentials and ceremonies; sessions and the gate; the record and its SQL; the command line, infrastructure and operations; the console app and its browser check; the tests), a deduplication pass merged their 22 findings into 20, and refuters judged each one (three lenses for high and medium findings, one for low). 19 held: one high (the console signed whatever challenge the API sent at sign-in), three medium (audit-verify's paging, keys judged without their recorded origin and relying party, the enrolment page's sign-in check), fifteen low. The one rejected asked for a rollback test after `auth.append_audit`; its refuter showed that every such call sits in one plain transaction and that the existing tests would already catch the regression it described. Task 8 fixes the 19, with migration 0013.
+- **The scratch runner wrote its records to the dry run's folder** whatever it was told, so the first attempt overwrote the dry-run records of Tasks 1 to 5; they were restored from a copy and the runner fixed. Nothing in this repository was affected.
