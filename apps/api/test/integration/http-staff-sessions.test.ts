@@ -315,6 +315,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
       expect([me.idleSecondsLeft, me.absoluteSecondsLeft]).toEqual([6 * 60, 6 * 60]);
       expect(me.idleExpiresAt).toBe(me.absoluteExpiresAt);
       clock.advance(6 * MINUTE);
+      await expectEnded(await raw("/api/staff/me", { headers: { cookie: `${STAFF_COOKIE}=${s.token}` } }), "unmarked, at the absolute end");
       await expectEnded(await s.b.fetch("/api/staff/me", { headers: MARKED }), "at the absolute end");
     });
   });
@@ -363,6 +364,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
         const s = await staffBrowser();
         expect((await s.b.fetch("/api/staff/me")).status).toBe(200);
         await end(s);
+        // Both of requireStaff's reads refuse it: the plain read (no mark, as the console's idle timer and 3c's refreshes
+        // read) and the marked one, which slides the idle end in the same statement. Each is sent with the token by hand,
+        // since the first 401 clears the browser's cookies; then the browser's own request.
+        await expectEnded(await raw("/api/staff/me", { headers: { cookie: `${STAFF_COOKIE}=${s.token}` } }), `${label}, unmarked`);
+        await expectEnded(await raw("/api/staff/me", { headers: { cookie: `${STAFF_COOKIE}=${s.token}`, ...MARKED } }), `${label}, marked`);
         await expectEnded(await s.b.fetch("/api/staff/me", { headers: MARKED }), label);
         expect(s.b.cookie(STAFF_COOKIE)).toBeUndefined();
         expect(s.b.cookie(STAFF_CSRF_COOKIE)).toBeUndefined();

@@ -83,7 +83,7 @@ describe("sign-in", () => {
 });
 
 describe("enrolment", () => {
-  const base = { tokenValid: true, name: "", nameError: null, busy: null, result: null, onName: noop, onRegister: noop } as const;
+  const base = { tokenValid: true, name: "", nameError: null, busy: null, result: null, check: { state: "none" }, onName: noop, onRegister: noop, onCheck: noop } as const;
 
   test("its guidance: which keys work, which are refused, the PIN, the name, and the two buttons", () => {
     const out = html(<EnrollView {...base} />);
@@ -138,14 +138,33 @@ describe("enrolment", () => {
     }
   });
 
-  test("a registered key's name is text, and the page says to sign in with it once", () => {
+  const registered = (name: string) => ({ ok: true as const, key: { id: "5b0e4a52-3c1d-4f6e-9a8b-7c6d5e4f3a2b", name, createdAt: "2026-10-01T09:00:00.000Z", lastUsedAt: null }, credentialId: "bmV3LWtleQ" });
+
+  test("a registered key's name is text, and the page signs in with that key itself, never through the sign-in page", () => {
     for (const name of [HOSTILE.script, HOSTILE.img, HOSTILE.bidi]) {
-      const out = html(<EnrollView {...base} result={{ ok: true, key: { id: "5b0e4a52-3c1d-4f6e-9a8b-7c6d5e4f3a2b", name, createdAt: "2026-10-01T09:00:00.000Z", lastUsedAt: null } }} />);
+      const out = html(<EnrollView {...base} result={registered(name)} />);
       expect(out).toMatch(/Sign in with it once/);
-      expect(out).toContain('href="/signin"');
+      expect(out).toContain(">Sign in with this key</button>");
+      // The sign-in page would show home to a browser that already holds a staff session, and ask no key.
+      expect(out).not.toContain('href="/signin"');
       expect(out).not.toMatch(/<(script|img)\b/);
       expect(out).toContain(`<bdi>`);
     }
+  });
+
+  test("the check after the enrolment: under way, opened the console, or failed with the operator to tell", () => {
+    const busy = html(<EnrollView {...base} result={registered("Blue key")} check={{ state: "busy" }} />);
+    expect(busy).toMatch(/<button[^>]*disabled=""[^>]*aria-busy="true"|<button[^>]*aria-busy="true"[^>]*disabled=""/);
+    const opened = html(<EnrollView {...base} result={registered(HOSTILE.script)} check={{ state: "opened" }} />);
+    expect(opened).toMatch(/opened the console/);
+    expect(opened).toContain(HOSTILE_ESCAPED.script);
+    expect(hrefs(opened)).toEqual(["/"]);
+    expect(opened).not.toContain(">Sign in with this key</button>");
+    const failed = html(<EnrollView {...base} result={registered("Blue key")} check={{ state: "failed", message: "This key does not open the staff console." }} />);
+    expect(failed).toContain("This key does not open the staff console.");
+    expect(failed).toMatch(/tell the operator at once/);
+    // The person may try again: a closed prompt is no verdict on the key.
+    expect(failed).toContain(">Sign in with this key</button>");
   });
 });
 
@@ -278,9 +297,36 @@ describe("the audit log", () => {
   });
 
   test("a page opened at a place offers the newest again, and a place the rules refuse is said", () => {
-    const out = html(<AuditView {...props} at={7} place="7" />);
+    const out = html(<AuditView {...props} at={120} place="120" />);
     expect(out).toContain(">Newest</button>");
+    expect(out).toContain("From place 120, newest first.");
     expect(html(<AuditView {...props} place="abc" placeError="Enter a place: a whole number from 1." />)).toContain("Enter a place: a whole number from 1.");
+  });
+});
+
+describe("a place that names no row", () => {
+  const props = { hasOlder: false, loadingOlder: false, place: "", placeError: null, error: null, onLoadOlder: noop, onPlace: noop, onGoToPlace: noop, onNewest: noop };
+  const row = (seq: number): AuditEntry => ({ seq, hash: "c".repeat(64), createdAt: "2026-10-01T09:00:05.000Z", actorHandle: null, action: "staff_sign_in", targetType: null, targetId: null, actionHash: null });
+
+  test("a place beyond the newest row: the page says there is no row there, and never that it starts there", () => {
+    // The reader answers a place beyond the head with the newest page: after a restore, or the newest rows deleted.
+    const out = html(<AuditView {...props} at={5000} page={{ state: "ready", value: [row(4800), row(4799)] }} />);
+    expect(out).toContain("There is no row at place 5000");
+    expect(out).toContain("4800");
+    expect(out).toMatch(/tell the operator/);
+    expect(out).toMatch(/role="alert"/);
+    expect(out).not.toContain("From place 5000");
+  });
+
+  test("an empty log, opened at a place", () => {
+    const out = html(<AuditView {...props} at={7} page={{ state: "ready", value: [] }} />);
+    expect(out).toContain("There is no row at place 7");
+    expect(out).not.toContain("From place 7");
+  });
+
+  test("while the page loads, nothing is said about the place", () => {
+    const out = html(<AuditView {...props} at={7} page={{ state: "loading" }} />);
+    expect(out).not.toContain("There is no row");
   });
 });
 

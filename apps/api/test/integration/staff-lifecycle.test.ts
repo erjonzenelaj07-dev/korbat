@@ -6,6 +6,7 @@ import { AuthError } from "../../src/auth/context";
 import { confirmDeletion, startDeletion } from "../../src/auth/flows/deletion";
 import { MemoryKv } from "../../src/auth/kv";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
+import { createSessions } from "../../src/auth/sessions";
 import { enrollOptions, enrollVerify } from "../../src/auth/staff/enroll";
 import { SYSTEM_ACTOR_ID, runGrantRole } from "../../src/cli/grant-role";
 import { loadConfig } from "../../src/config";
@@ -13,7 +14,8 @@ import { MemoryMailer } from "../../src/mail/memory";
 import { createProfileStore } from "../../src/profiles/store";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
-import { DEVICE_BOUND, TEST_CONSOLE, TEST_CONSOLE_ORIGIN, addStaffKey, issueEnrolment, newStaffAccount, newStaffSession } from "./staff-fixtures";
+import { randomToken, sha256Hex } from "../../src/auth/crypto";
+import { DEVICE_BOUND, TEST_CONSOLE, TEST_CONSOLE_ORIGIN, addStaffKey, issueEnrolment, newStaffAccount, newStaffSession, withLockTimeout } from "./staff-fixtures";
 
 /** A time as the staff mails print it, as 1c's mails do: the date and the minute in UTC. */
 const mailTime = (at: Date) => `${at.toISOString().slice(0, 10)} ${at.toISOString().slice(11, 16)} UTC`;
@@ -102,7 +104,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff rows through role 
       const before = await head();
 
       const result = await runGrantRole({ authDb, kv: new MemoryKv(), mailer }, user.email, "user");
-      expect(result).toEqual({ userId: user.id, previousRole: "moderator", staffSessionsRevoked: 3, enrollmentsDeleted: 1, staffKeysRevoked: 2, mailError: null });
+      expect(result).toEqual({ userId: user.id, previousRole: "moderator", staffSessionsRevoked: 3, enrollmentsDeleted: 1, staffKeysRevoked: 2, mailError: null, tombstoneError: null });
 
       // The two live keys are revoked at the change's time, never suspect; the old one keeps the time it was revoked at.
       const keys = await keysOf(user.id);
@@ -152,7 +154,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff rows through role 
       const rows = await staffWithRows(user.id);
       const before = await head();
       const result = await runGrantRole({ authDb, kv: new MemoryKv(), mailer }, user.email, "moderator");
-      expect(result).toEqual({ userId: user.id, previousRole: "admin", staffSessionsRevoked: 3, enrollmentsDeleted: 1, staffKeysRevoked: 0, mailError: null });
+      expect(result).toEqual({ userId: user.id, previousRole: "admin", staffSessionsRevoked: 3, enrollmentsDeleted: 1, staffKeysRevoked: 0, mailError: null, tombstoneError: null });
       const keys = await keysOf(user.id);
       expect(keys.map((k) => [k.name, k.revokedAt])).toEqual([
         ["Blue key", null],
@@ -172,6 +174,68 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff rows through role 
       await runGrantRole({ authDb, kv: new MemoryKv(), mailer }, user.email, "moderator");
       expect((await keysOf(user.id)).every((k) => k.revokedAt !== null)).toBe(true);
       expect(mailer.sent.map((m) => m.template)).toEqual(["staff_keys_revoked"]);
+    });
+
+    test("a sign-in that holds its key while a demotion waits for it: the session it opens is found and revoked by the demotion, and counted on the record", { timeout: 30_000 }, async () => {
+      // A sign-in's transaction records the key's use (holding the key's row) and inserts its session, which needs only a
+      // FOR KEY SHARE lock on the account's row, so the demotion's FOR NO KEY UPDATE does not wait for it. The demotion then
+      // waits for the key's row; once the sign-in commits, its session must be among those the demotion revokes.
+      const { user } = await newStaffAccount(authDb, repo, "moderator");
+      const key = await addStaffKey(authDb, (await issueEnrolment(migrateDb, user.id)).token, { name: "Blue key" });
+      const before = await head();
+      let demotion: Promise<Awaited<ReturnType<typeof runGrantRole>>> | undefined;
+      let opened: { id: string; handle: string } | undefined;
+      await withLockTimeout(authDb, async (tx) => {
+        await tx.update(staffKeys).set({ counter: 1, lastUsedAt: new Date() }).where(eq(staffKeys.id, key.id));
+        const now = new Date();
+        [opened] = await tx
+          .insert(staffSessions)
+          .values({
+            id: sha256Hex(randomToken()),
+            userId: user.id,
+            keyId: key.id,
+            createdAt: now,
+            lastUsedAt: now,
+            idleExpiresAt: new Date(now.getTime() + 15 * 60_000),
+            absoluteExpiresAt: new Date(now.getTime() + 12 * 60 * 60_000),
+            browser: "Firefox on Linux",
+          })
+          .returning({ id: staffSessions.id, handle: staffSessions.handle });
+        demotion = runGrantRole({ authDb, kv: new MemoryKv(), mailer: new MemoryMailer() }, user.email, "user");
+        // Commit only once the demotion waits for a lock: the key's row this transaction holds. Read on a connection of
+        // its own, outside this transaction, whose view of the server's activity would not move.
+        for (let tries = 0; ; tries++) {
+          const [waiting] = await authDb.execute<{ n: number }>(sql`select count(*)::int as n from pg_stat_activity where usename = current_user and wait_event_type = 'Lock'`);
+          if (waiting!.n > 0) break;
+          if (tries > 200) throw new Error("the demotion never waited for the key's row");
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      });
+      const result = await demotion!;
+      expect(result).toMatchObject({ staffSessionsRevoked: 1, staffKeysRevoked: 1 });
+      expect((await sessionsOf(user.id)).map((s) => [s.handle, s.revokedAt !== null])).toEqual([[opened!.handle, true]]);
+      const written = await rowsAfter(before.seq);
+      expect(written.map((r) => [r.action, r.metadata])).toEqual([
+        ["staff_key_revoked", { keyId: key.id, sessionsRevoked: 1, via: "role_change" }],
+        ["role_granted", { from: "moderator", to: "user", via: "cli", staffSessionsRevoked: 1, enrollmentsDeleted: 0 }],
+      ]);
+    });
+
+    test("Valkey unreachable after the commit: the tombstones fail, the owner is still mailed, both steps are reported, and the change stands", { timeout: 30_000 }, async () => {
+      const { user, device } = await newStaffAccount(authDb, repo, "moderator");
+      await staffWithRows(user.id);
+      // An app session for the demotion to revoke, so its tombstone is due.
+      await createSessions({ repo, kv: new MemoryKv() }).issue(user.id, device.id, { factors: { email: Date.now() } });
+      const kv = new MemoryKv();
+      kv.set = async () => {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:6379");
+      };
+      const mailer = new MemoryMailer();
+      const result = await runGrantRole({ authDb, kv, mailer }, user.email, "user");
+      expect(result).toMatchObject({ staffKeysRevoked: 2, mailError: null, tombstoneError: expect.stringMatching(/ECONNREFUSED/) });
+      expect(mailer.sent.map((m) => [m.to, m.template])).toEqual([[user.email, "staff_keys_revoked"]]);
+      expect((await repo.findUserById(user.id))!.role).toBe("user");
+      expect((await keysOf(user.id)).every((k) => k.revokedAt !== null)).toBe(true);
     });
 
     test("a mail that fails is reported and undoes nothing", { timeout: 30_000 }, async () => {

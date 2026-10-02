@@ -19,10 +19,12 @@ import { inspect, userTexts, watch, type Watcher } from "./watch";
  * of Caddy's console site read from infra/caddy/Caddyfile, answers /api/staff/* from fixtures whose user-written strings
  * are hostile (markup, javascript: URLs, a direction override, the longest names allowed), and drives Chromium through
  * playwright-core with a CDP virtual authenticator over every screen: the console switched off, enrolment (a synced
- * passkey refused, then a device-bound key that verifies its user), sign-in, home, a session revoked with the key, step-up
- * options that bind another action refused before the key is asked, the audit log, an address the console does not have,
- * the ended session and sign-out. Each step fails on any policy report through any channel console-lab.md names, any page
- * error and any dialog. It needs no database and writes nothing but a temporary build.
+ * passkey refused, then a device-bound key that verifies its user, whose success page signs in with that key), home, a
+ * session revoked with the key, step-up options that bind another action refused before the key is asked, the audit log,
+ * an address the console does not have, the ended session, a second key enrolled while signed in, whose success page
+ * asks that key and no other, sign-out, and sign-in options that carry a step-up challenge refused before the key is
+ * asked. Each step fails on any policy report through any channel console-lab.md names, any page error and any dialog. It
+ * needs no database and writes nothing but a temporary build.
  *
  * It never downloads a browser. By default it drives the Chromium build playwright-core 1.63.0 names (chromium-1243 under
  * ms-playwright), which must already be installed; KORBAT_BROWSER_CHANNEL=chrome drives the machine's own Chrome instead,
@@ -38,8 +40,10 @@ let page: Page;
 let watcher: Watcher;
 let fixtures: FixtureApi;
 let origin = "";
-/** The device-bound authenticator that holds the enrolled staff key. */
+/** The device-bound authenticator that holds the first staff key enrolled. */
 let staffAuthenticator = "";
+/** Every device-bound authenticator the walk enrolled a staff key on. */
+const staffAuthenticators: string[] = [];
 /** Every person-written string the walk has found shown as text. */
 const seen = new Set<string>();
 /** The headers each static file was served with, by path. */
@@ -80,10 +84,17 @@ async function addAuthenticator(kind: "device-bound security key" | "synced plat
   return authenticatorId;
 }
 
-/** How many assertions the staff key has made: the virtual authenticator counts every signature. */
-async function signatures(): Promise<number> {
-  const { credentials } = await watcher.cdp.send("WebAuthn.getCredentials", { authenticatorId: staffAuthenticator });
+/** How many times an authenticator's keys have signed: the virtual authenticator counts every signature. */
+async function signaturesOf(authenticatorId: string): Promise<number> {
+  const { credentials } = await watcher.cdp.send("WebAuthn.getCredentials", { authenticatorId });
   return credentials.reduce((sum, credential) => sum + credential.signCount, 0);
+}
+
+/** How many times every staff key of the walk has signed. */
+async function signatures(): Promise<number> {
+  let sum = 0;
+  for (const id of staffAuthenticators) sum += await signaturesOf(id);
+  return sum;
 }
 
 /** The end of every step: no report, error or dialog on any channel, nothing in the page the console never writes, and no request the fixtures refused for the page's fault. */
@@ -159,6 +170,7 @@ describe("the staff console in Chromium, under the console site's policy", () =>
 
     await watcher.cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId: synced });
     staffAuthenticator = await addAuthenticator("device-bound security key");
+    staffAuthenticators.push(staffAuthenticator);
     await page.getByRole("button", { name: "Register a security key" }).click();
     await shown(page.getByText("is registered", { exact: false }));
     expect(await texts()).toContain(TYPED_KEY_NAME);
@@ -166,18 +178,15 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await clean();
   });
 
-  test("sign-in with the new key opens the home screen", async () => {
-    await page.getByRole("link", { name: "Sign in" }).click();
-    await page.waitForURL(`${origin}/signin`);
-    await shown(page.getByRole("button", { name: "Sign in with your staff key" }));
-    // Nobody was signed in, so nothing ended.
-    expect(await page.getByText("Your staff session ended.").count()).toBe(0);
+  test("the success page signs in with the new key, which opens the console, and home follows", async () => {
     // The registration counted as one use of the key; the sign-in is the next.
     const before = await signatures();
-    await page.getByRole("button", { name: "Sign in with your staff key" }).click();
+    await page.getByRole("button", { name: "Sign in with this key" }).click();
+    await shown(page.getByText("opened the console", { exact: false }));
+    expect(await signatures()).toBe(before + 1);
+    await page.getByRole("link", { name: "Go to the home page" }).click();
     await shown(page.getByRole("heading", { name: "Home" }));
     expect(page.url()).toBe(`${origin}/`);
-    expect(await signatures()).toBe(before + 1);
     await clean();
   });
 
@@ -282,12 +291,62 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await clean();
   });
 
+  test("a second key enrolled while signed in: its success page asks that key, never the session's, and signs in with it", async () => {
+    const first = staffAuthenticator;
+    const token = fixtures.issueEnrolment();
+    // The first key holds the live session; it could answer nothing here unless the page asked it, which this would show.
+    await watcher.cdp.send("WebAuthn.setAutomaticPresenceSimulation", { authenticatorId: first, enabled: false });
+    const second = await addAuthenticator("device-bound security key");
+    staffAuthenticators.push(second);
+    await page.goto(`${origin}/enroll/${token}`);
+    await shown(page.getByRole("heading", { name: "Register a staff key" }));
+    await page.getByLabel("Name of this key").fill("Backup key");
+    await page.getByRole("button", { name: "Register a security key" }).click();
+    await shown(page.getByText("is registered", { exact: false }));
+    const newKey = fixtures.state.keys[fixtures.state.keys.length - 1]!;
+    expect(newKey.name).toBe("Backup key");
+    const [firstBefore, secondBefore] = [await signaturesOf(first), await signaturesOf(second)];
+    // The browser still holds the first key's session: the sign-in page would show home and ask no key.
+    expect((await context.cookies()).some((cookie) => cookie.name === "__Host-korbat_staff")).toBe(true);
+    await page.getByRole("button", { name: "Sign in with this key" }).click();
+    await shown(page.getByText("opened the console", { exact: false }));
+    expect(await signaturesOf(second)).toBe(secondBefore + 1);
+    expect(await signaturesOf(first)).toBe(firstBefore);
+    // The session it opened is the new key's.
+    expect([...fixtures.state.sessions.values()].filter((s) => s.credentialId === newKey.credentialId)).toHaveLength(1);
+    await watcher.cdp.send("WebAuthn.setAutomaticPresenceSimulation", { authenticatorId: first, enabled: true });
+    await page.getByRole("link", { name: "Go to the home page" }).click();
+    await shown(page.getByRole("heading", { name: "Home" }));
+    await shown(page.locator("ul.signins"));
+    await shown(page.locator("ul.keys"));
+    await shown(page.getByRole("cell", { name: "This session" }));
+    await clean();
+  });
+
   test("sign-out ends the session and shows sign-in at its own address", async () => {
+    const before = fixtures.state.sessions.size;
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page.waitForURL(`${origin}/signin`);
     await shown(page.getByRole("button", { name: "Sign in with your staff key" }));
     expect(await page.getByText("Your staff session ended.").count()).toBe(0);
-    expect(fixtures.state.sessions.size).toBe(0);
+    // The session the page held, the second key's, is gone; the first key's, which this browser no longer names, stays.
+    expect(fixtures.state.sessions.size).toBe(before - 1);
+    expect([...fixtures.state.sessions.values()].some((s) => s.credentialId === fixtures.state.keys[fixtures.state.keys.length - 1]!.credentialId)).toBe(false);
+    await clean();
+  });
+
+  test("sign-in options that carry a step-up challenge are refused before the key is asked", async () => {
+    const before = await signatures();
+    const served = fixtures.state.signInOptionsServed;
+    const verifies = fixtures.state.requests.filter((r) => r.path === "/api/staff/signin/verify").length;
+    fixtures.state.stepUpChallengeAtNextSignIn = true;
+    await page.getByRole("button", { name: "Sign in with your staff key" }).click();
+    await shown(page.getByText(messageFor("signin_mismatch")));
+    expect(fixtures.state.signInOptionsServed).toBe(served + 1);
+    // No key signed anything and nothing was sent after the options: the forged confirmation was never made.
+    expect(await signatures()).toBe(before);
+    expect(fixtures.state.requests.filter((r) => r.path === "/api/staff/signin/verify").length).toBe(verifies);
+    expect(page.url()).toBe(`${origin}/signin`);
     await clean();
   });
 

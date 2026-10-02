@@ -37,7 +37,7 @@ describe("options from the server's JSON", () => {
   test("registration: the challenge, the user handle and the excluded keys become bytes; the rest passes", () => {
     const json = enrollOptions(false).options;
     const options = creationOptionsFromJSON(json);
-    expect(bytes(options.challenge)).toEqual(Buffer.alloc(58, 3));
+    expect(bytes(options.challenge)).toEqual(Buffer.from(json.challenge, "base64url"));
     expect(bytes(options.user.id)).toEqual(Buffer.alloc(32, 9));
     expect(options.user).toMatchObject({ name: "Blue key", displayName: "Blue key" });
     expect(options.rp).toEqual({ id: "localhost", name: "korbat" });
@@ -51,6 +51,25 @@ describe("options from the server's JSON", () => {
   test("registration always asks for user verification, whatever the options said", () => {
     const json = { ...enrollOptions(false).options, authenticatorSelection: { residentKey: "required", userVerification: "discouraged" } };
     expect(creationOptionsFromJSON(json).authenticatorSelection?.userVerification).toBe("required");
+  });
+
+  test("registration asks for no attestation and no extension but credProps, whatever the options said", () => {
+    // An API under an attacker's control asking for the key's make and model, and for extensions the design never uses.
+    const json = { ...enrollOptions(false).options, attestation: "direct", extensions: { credProps: true, largeBlob: { support: "required" }, prf: {} } };
+    const options = creationOptionsFromJSON(json);
+    expect(options.attestation).toBe("none");
+    expect(options.extensions).toEqual({ credProps: true });
+    // Without credProps in the options, no extension at all.
+    const bare = creationOptionsFromJSON({ ...json, extensions: { largeBlob: { support: "required" } } });
+    expect(bare.attestation).toBe("none");
+    expect(bare.extensions).toBeUndefined();
+  });
+
+  test("an assertion passes on no extension, whatever the options said", () => {
+    const json = { ...stepUpOptions("AAAA").options, extensions: { largeBlob: { read: true }, prf: { eval: { first: "AAAA" } }, appid: "https://evil.example" } };
+    const options = requestOptionsFromJSON(json);
+    expect(options.extensions).toBeUndefined();
+    expect(Object.keys(options).sort()).toEqual(["allowCredentials", "challenge", "rpId", "timeout", "userVerification"]);
   });
 
   test("an assertion: the challenge and the allowed keys become bytes, and user verification is required", () => {

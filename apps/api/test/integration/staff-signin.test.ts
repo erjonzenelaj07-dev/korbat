@@ -427,6 +427,28 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sign-in", () => {
       expect((await stored()).counter).toBe(5);
     });
 
+    test("a key enrolled for the console at another address with the same relying party ID opens nothing at this one: staff_key_invalid before the signature, writing nothing", { timeout: 60_000 }, async () => {
+      // The console moved from port 8091 to 8090 and kept its relying party ID, so the browser still offers the key; its
+      // assertion names the new origin, which the running configuration accepts. The key records the old one, against
+      // which audit-verify would judge every confirmation it made here, and refuse each one for good.
+      const MOVED_FROM = "http://console.localhost:8091";
+      const before = flowHarness(repo, { console: { origin: MOVED_FROM, rpId: TEST_CONSOLE_RP_ID } });
+      const { user } = await newStaffAccount(authDb, repo);
+      await before.deps.profiles.create({ id: user.id, handle: `s_${randomUUID().slice(0, 8)}`, displayName: "Staff" });
+      const auth = new SoftAuthenticator();
+      const enrolled = await enrolKey(before, auth, (await issueEnrolment(migrateDb, user.id, { origin: MOVED_FROM })).token);
+      expect(await keyRow(enrolled.key.id)).toMatchObject({ origin: MOVED_FROM, rpId: TEST_CONSOLE_RP_ID });
+
+      const moved = harness();
+      const err = await failure(signInKey(moved, auth, enrolled.credentialId, { counter: 1 }));
+      expect([err.code, err.status]).toEqual(["staff_key_invalid", 401]);
+      // The same one answer as an unknown key, before the signature: nothing opened, nothing recorded.
+      expect(await sessionsOf(user.id)).toEqual([]);
+      expect(await keyRow(enrolled.key.id)).toMatchObject({ counter: 0, lastUsedAt: null, revokedAt: null });
+      // The key opens the console at the address it was enrolled for.
+      expect((await signInKey(before, auth, enrolled.credentialId, { counter: 2 })).me.role).toBe("moderator");
+    });
+
     test("with both relying party IDs localhost (development), a personal passkey offered at the console's sign-in is refused by the tables alone", { timeout: 60_000 }, async () => {
       // The development configuration: the console at http://localhost:8090, its relying party ID the app's.
       const h = flowHarness(repo, { console: { origin: "http://localhost:8090", rpId: "localhost" } });

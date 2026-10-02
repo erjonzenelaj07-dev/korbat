@@ -1,5 +1,6 @@
 import type { StaffEnrollOptionsRequest, StaffKey } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
+import { checkRegisterChallenge, CeremonyMismatch } from "./challenge";
 import { ceremonyFailure, creationOptionsFromJSON, registrationResponseToJSON, type CredentialsLike } from "./webauthn";
 
 /**
@@ -22,13 +23,17 @@ export interface SignalApi {
  */
 export type Cleanup = "none" | "signalled" | "by-hand";
 
-export type EnrollResult = { ok: true; key: StaffKey } | { ok: false; code: string; status: number; cleanup: Cleanup };
+/**
+ * `credentialId` is the new credential's id as the browser reported it (base64url): the success page's sign-in asks for
+ * that key alone.
+ */
+export type EnrollResult = { ok: true; key: StaffKey; credentialId: string } | { ok: false; code: string; status: number; cleanup: Cleanup };
 
 /** The two refusals that mean the browser made and kept a credential the console will never accept. */
 const KEPT_BUT_REFUSED = new Set(["staff_key_not_device_bound", "staff_key_not_user_verified"]);
 
 const failure = (err: unknown, cleanup: Cleanup = "none"): EnrollResult => {
-  const known = err instanceof ApiError ? err : ceremonyFailure(err);
+  const known = err instanceof ApiError || err instanceof CeremonyMismatch ? err : ceremonyFailure(err);
   return { ok: false, code: known.code, status: known.status, cleanup };
 };
 
@@ -57,6 +62,8 @@ export async function enrollKey(deps: { api: StaffApi; credentials: CredentialsL
     const answer = await deps.api.enrollOptions(input, { activity: true });
     rpShared = answer.rpShared;
     options = answer.options;
+    // Before the key is asked: a challenge that is not a staff registration's is never handed to it.
+    checkRegisterChallenge(options);
     publicKey = creationOptionsFromJSON(options);
   } catch (err) {
     return failure(err);
@@ -71,7 +78,7 @@ export async function enrollKey(deps: { api: StaffApi; credentials: CredentialsL
 
   try {
     const { key } = await deps.api.enrollVerify({ token: input.token, name: input.name, response }, { activity: true });
-    return { ok: true, key };
+    return { ok: true, key, credentialId: response.id };
   } catch (err) {
     if (err instanceof ApiError && KEPT_BUT_REFUSED.has(err.code)) {
       const rp = options.rp as { id?: unknown } | undefined;

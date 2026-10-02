@@ -5,7 +5,7 @@ import { noticeTime, notifyAccount } from "../flows/notify";
 import { HOUR, enforceLimit } from "../limits";
 import { challengeKey, issueChallenge, readChallenge, spendChallenge } from "../passkeys/challenge";
 import { authenticationOptions, readResponseChallenge, verifyAuthentication, type PublicKeyCredentialRequestOptionsJSON } from "../passkeys/webauthn";
-import { consoleOf } from "./enroll";
+import { consoleOf, enrolledHere } from "./enroll";
 import { revokeForCounterRegression } from "./revoke";
 import { openStaffSession, staffMe } from "./sessions";
 
@@ -55,16 +55,16 @@ export async function signInOptions(deps: AuthDeps): Promise<{ options: PublicKe
 /**
  * Verifies a staff sign-in. The per-address limit is counted first. The challenge is read from the response and spent
  * before anything else runs, so a forged, foreign or spent one never reaches the library. Then the key must be a live
- * staff key of a live staff account, and the response must carry that account's user handle, since the allow list named
- * no one (as 1c's sign-in requires). Every failure so far, and a response the library refuses on its signature, its origin
- * (CONSOLE_ORIGIN alone) or its relying party (CONSOLE_RP_ID alone), is staff_key_invalid. Only after the signature are the
+ * staff key of a live staff account, enrolled for the console as it is configured now (enrolledHere), and the response
+ * must carry that account's user handle, since the allow list named no one (as 1c's sign-in requires). Every failure so
+ * far, and a response the library refuses on its signature, its origin or its relying party (those recorded on the key,
+ * which are CONSOLE_ORIGIN's and CONSOLE_RP_ID's), is staff_key_invalid. Only after the signature are the
  * flags read, each refusal with its own code; then the per-key limit is counted, so an unsigned response naming a key's
  * credential id cannot lock its owner out; then 1c's counter rule, in the session's own transaction, where a regression
  * revokes the key. The session is mailed to its owner after the commit.
  */
 export async function signInVerify(deps: AuthDeps, input: StaffSignInVerifyRequest, ctx: StaffRequestContext): Promise<StaffSignedIn> {
   await enforceLimit(deps.kv, `staff-signin:ip:${ctx.ipHash}`, STAFF_SIGNIN_PER_IP_PER_HOUR, HOUR);
-  const staffConsole = consoleOf(deps);
   const now = deps.now();
   const challenge = await invalidAsStaff(() => readResponseChallenge(input.response));
   await invalidAsStaff(() => readChallenge(challengeKey(deps.config.authHmacKey), challenge, "staff_signin", now));
@@ -74,6 +74,8 @@ export async function signInVerify(deps: AuthDeps, input: StaffSignInVerifyReque
   // An unknown or revoked key, and an account that is deleted or no longer staff, are one answer. In development, where
   // the console's relying party ID is the app's, a personal passkey the browser offers here is refused by this lookup alone.
   if (!key || key.revokedAt !== null || key.deletedAt !== null || key.role === "user") throw keyInvalid();
+  // A key enrolled for the console at another address (a move that kept the relying party ID) is one more of the same.
+  if (!enrolledHere(deps, key)) throw keyInvalid();
   const userHandle = input.response.response.userHandle;
   if (userHandle === undefined || key.webauthnUserId === null || !Buffer.from(userHandle, "base64url").equals(key.webauthnUserId)) throw keyInvalid();
 
@@ -81,8 +83,9 @@ export async function signInVerify(deps: AuthDeps, input: StaffSignInVerifyReque
     verifyAuthentication({
       response: input.response,
       expectedChallenge: challenge,
-      origins: [staffConsole.origin],
-      rpId: staffConsole.rpId,
+      // The key's own, which enrolledHere found equal to the console's: audit-verify judges by the same values.
+      origins: [key.origin],
+      rpId: key.rpId,
       credential: { id: key.credentialId, publicKey: key.publicKey, transports: key.transports },
     }),
   );

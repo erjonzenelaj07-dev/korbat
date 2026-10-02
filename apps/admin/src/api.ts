@@ -61,6 +61,11 @@ export interface ApiHooks {
    */
   onSessionRequired(carriedStaffCookie: boolean): void;
   onActivity(): void;
+  /**
+   * Every /me answer, marked or not: the session the browser's cookie names now, which the store keeps, so a page whose
+   * cookie another tab replaced (a sign-out and a sign-in there) holds the new session's handle and binds step-ups to it.
+   */
+  onMe(me: StaffMe): void;
 }
 
 /** A call's options: `activity` is true only when a person's action (a click, a form, opening a screen) started it. */
@@ -94,7 +99,7 @@ export function readCookie(cookies: string, name: string): string | undefined {
 export type StaffApi = ReturnType<typeof createStaffApi>;
 
 export function createStaffApi(deps: StaffApiDeps) {
-  const hooks: ApiHooks = { onSessionRequired: () => undefined, onActivity: () => undefined };
+  const hooks: ApiHooks = { onSessionRequired: () => undefined, onActivity: () => undefined, onMe: () => undefined };
 
   /**
    * One request. `schema` parses a 2xx answer; null means the route answers 204 with no body. A non-2xx answer becomes an
@@ -157,7 +162,11 @@ export function createStaffApi(deps: StaffApiDeps) {
 
   return {
     hooks,
-    me: (call: Call = {}) => request("GET", "/api/staff/me", StaffMe, call),
+    me: async (call: Call = {}) => {
+      const me = await request("GET", "/api/staff/me", StaffMe, call);
+      hooks.onMe(me);
+      return me;
+    },
     sessions: (call: Call = {}) => request("GET", "/api/staff/sessions", StaffSessionsResponse, call),
     keys: (call: Call = {}) => request("GET", "/api/staff/keys", StaffKeysResponse, call),
     audit: (q: AuditQuery, call: Call = {}) => request("GET", `/api/staff/audit${query(q)}`, AuditPage, call),

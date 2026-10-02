@@ -110,19 +110,37 @@ function patternOf(routePath: string): RegExp {
   return new RegExp(`^${body}$`);
 }
 
-/** Paths under /api/staff a route of another module could answer. */
-const STAFF_PROBES = ["/api/staff", "/api/staff/", "/api/staff/me", "/api/staff/sessions", "/api/staff/sessions/3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a", "/api/staff/step-up/options", "/api/staff/x/y"];
+/** A lower-case uuid, as a staff path's parameter (a session's handle) takes one. */
+const SAMPLE_PARAMETER = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+
+/**
+ * Paths under /api/staff a route of another module could answer, built from the staff module's own route table: each of
+ * its paths with every parameter filled in, and each path that leads to one (/api/staff/signin for /signin/verify), so a
+ * staff route added later is probed too; then the prefix itself, with a final slash, and a path the module does not have.
+ * A foreign route that reaches one of them answers there for any method the staff module does not define, behind the gate
+ * but with no app session, since createApp skips resolveSession on staff paths.
+ */
+function staffProbes(staffOwn: RouteEntry[]): string[] {
+  const probes = new Set(["/api/staff", "/api/staff/", "/api/staff/x/y"]);
+  for (const route of staffOwn) {
+    if (!isStaffPath(route.path) || route.path.includes("*")) continue;
+    const segments = route.path.split("/").map((segment) => (segment.startsWith(":") ? SAMPLE_PARAMETER : segment));
+    for (let end = 3; end <= segments.length; end++) probes.add(segments.slice(0, end).join("/"));
+  }
+  return [...probes];
+}
 
 /**
  * The routes of the app that answer under /api/staff without being the staff module's own: every route not among those
  * the staff module mounts there (as many times as it mounts each) whose path lies under /api/staff or whose pattern
- * reaches a path there. The app's own chain,
+ * reaches a path there (staffProbes). The app's own chain,
  * registered on every path ("ALL /*"), is the one exception: request id, access log, client identity, headers and limits
  * apply to staff paths too (3a design, section 5).
  */
 function foreignStaffRoutes(appRoutes: RouteEntry[], staffOwn: RouteEntry[]): string[] {
   const own = new Map<string, number>();
   for (const route of staffOwn) own.set(keyOf(route), (own.get(keyOf(route)) ?? 0) + 1);
+  const probes = staffProbes(staffOwn);
   const foreign: string[] = [];
   for (const route of appRoutes) {
     const k = keyOf(route);
@@ -133,7 +151,7 @@ function foreignStaffRoutes(appRoutes: RouteEntry[], staffOwn: RouteEntry[]): st
       continue;
     }
     const pattern = patternOf(route.path);
-    if (isStaffPath(route.path) || STAFF_PROBES.some((probe) => pattern.test(probe))) foreign.push(k);
+    if (isStaffPath(route.path) || probes.some((probe) => pattern.test(probe))) foreign.push(k);
   }
   return foreign;
 }
@@ -188,6 +206,11 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
   test("hold no route of another module under /api/staff", () => {
     const { app, staffOwn } = build();
     expect(staffOwn.length).toBeGreaterThan(0);
+    // Every staff path is probed, the ones the old fixed list left out among them.
+    const probes = staffProbes(staffOwn);
+    for (const p of ["/api/staff/audit", "/api/staff/keys", "/api/staff/signout", "/api/staff/signin/options", "/api/staff/signin/verify", "/api/staff/enroll/options", "/api/staff/enroll/verify", `/api/staff/sessions/${SAMPLE_PARAMETER}`]) {
+      expect(probes, p).toContain(p);
+    }
     expect(foreignStaffRoutes(app.routes, staffOwn)).toEqual([]);
   });
 
@@ -195,19 +218,43 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
     const staffSub = new Hono();
     staffSub.use("*", async (_c, next) => next());
     staffSub.get("/me", (c) => c.text("staff"));
+    staffSub.get("/audit", (c) => c.text("staff"));
+    staffSub.get("/keys", (c) => c.text("staff"));
+    staffSub.post("/signout", (c) => c.text("staff"));
+    staffSub.post("/signin/verify", (c) => c.text("staff"));
+    staffSub.post("/enroll/options", (c) => c.text("staff"));
+    staffSub.delete("/sessions/:handle", (c) => c.text("staff"));
     const app = new Hono();
     app.use(async (_c, next) => next());
     app.route("/api/staff", staffSub);
-    // As the social module is mounted at /api: a route of its own under /api/staff, one whose parameter reaches it, and a
-    // copy of a staff route.
+    // As the social module is mounted at /api: a route of its own under /api/staff, ones whose parameter reaches a staff
+    // path (with a method the staff module does not answer there, which would fall through to it), and a copy of a staff
+    // route.
     const other = new Hono();
     other.get("/staff/extra", (c) => c.text("other"));
     other.get("/:section/me", (c) => c.text("other"));
+    other.post("/:section/audit", (c) => c.text("other"));
+    other.put("/:section/keys", (c) => c.text("other"));
+    other.get("/:section/signout", (c) => c.text("other"));
+    other.get("/:section/signin/verify", (c) => c.text("other"));
+    other.get("/:section/enroll/:step", (c) => c.text("other"));
+    other.get("/:section/sessions/:id", (c) => c.text("other"));
     other.get("/staff/me", (c) => c.text("other"));
     other.get("/profiles/:handle", (c) => c.text("other"));
+    other.get("/:section/feed", (c) => c.text("other"));
     app.route("/api", other);
     const staffOwn = staffSub.routes.map((r) => ({ method: r.method, path: `/api/staff${r.path}` }));
-    expect(foreignStaffRoutes(app.routes, staffOwn)).toEqual(["GET /api/staff/extra", "GET /api/:section/me", "GET /api/staff/me"]);
+    expect(foreignStaffRoutes(app.routes, staffOwn)).toEqual([
+      "GET /api/staff/extra",
+      "GET /api/:section/me",
+      "POST /api/:section/audit",
+      "PUT /api/:section/keys",
+      "GET /api/:section/signout",
+      "GET /api/:section/signin/verify",
+      "GET /api/:section/enroll/:step",
+      "GET /api/:section/sessions/:id",
+      "GET /api/staff/me",
+    ]);
   });
 
   test("no route changes a role: no path names one, and only grant-role's command line reaches the statements that do", () => {

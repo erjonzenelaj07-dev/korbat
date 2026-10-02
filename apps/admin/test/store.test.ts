@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { createStaffApi } from "../src/api";
 import { createConsoleStore, type ConsoleState } from "../src/store";
-import { envelope, FakeClock, fakeFetch, makeMe, settle } from "./fixtures";
+import { envelope, FakeClock, fakeFetch, makeMe, OTHER_SESSION, settle } from "./fixtures";
 
 /**
  * The console's state across screens (3a design, section 9): which session the page holds, at which path. Any
@@ -172,6 +172,14 @@ describe("the console's state", () => {
     expect(s.requests.map((r) => r.url)).toEqual(["/api/staff/me", "/api/staff/keys"]);
     await s.clock.advance(1 * MIN);
     expect(s.requests.map((r) => r.url)).toEqual(["/api/staff/me", "/api/staff/keys", "/api/staff/me"]);
+  });
+
+  test("every /me a screen reads becomes the page's session, so the step-up binds to the session the cookie names now", async () => {
+    // Another tab signed out and in again, and its new session's cookie replaced this page's: the next /me names it.
+    const s = setup("/", { "GET /api/staff/me": [{ status: 200, body: makeMe() }, { status: 200, body: makeMe({ sessionHandle: OTHER_SESSION }) }] });
+    await s.store.start();
+    await s.store.api.me({ activity: true });
+    expect(s.store.get().session).toEqual({ kind: "signed-in", me: makeMe({ sessionHandle: OTHER_SESSION }) });
   });
 
   test("going back and forward follows the address", async () => {

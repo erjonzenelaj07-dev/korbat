@@ -182,17 +182,47 @@ export const StaffSessionRevokeRequest = STAFF_STEP_UP_ACTIONS.staff_session_rev
 export type StaffSessionRevokeRequest = z.infer<typeof StaffSessionRevokeRequest>;
 
 /**
+ * Which ceremony a WebAuthn challenge was issued for: its second byte, in either layout below. A challenge answers only
+ * the ceremony it names. The API's codec writes these codes, and the console checks them before it asks for the key, so
+ * no challenge of one ceremony is ever signed in another.
+ */
+export const CHALLENGE_PURPOSES = { signin: 1, register: 2, reauth: 3, staff_signin: 4, staff_register: 5, staff_step_up: 6 } as const;
+
+/**
+ * The layout of every challenge but the step-up's (1c's codec, 3a design, section 5): version, purpose, expiry (epoch
+ * milliseconds, big-endian), nonce, a 16-byte binding (the first 16 bytes of the sha256 of the session's handle or the
+ * staff enrolment's id it is bound to, zeros for the two sign-ins), then the first 16 bytes of an HMAC over the 42 bytes
+ * before it, 58 bytes sent as unpadded base64url. The API's codec writes it, and the console checks the staff sign-in's
+ * and the staff registration's before it asks for the key.
+ */
+export const CEREMONY_CHALLENGE = {
+  bytes: 58,
+  encodedLength: 78,
+  version: 1,
+  versionAt: 0,
+  purposeAt: 1,
+  expiryAt: 2,
+  expiryBytes: 8,
+  nonceAt: 10,
+  nonceBytes: 16,
+  bindingAt: 26,
+  bindingBytes: 16,
+  sealAt: 42,
+  sealBytes: 16,
+} as const;
+
+/**
  * The step-up challenge's layout (3a design, section 5), which the API's codec writes, audit-verify reads back from a
  * stored assertion without the sealing key, and the console checks before it asks for the key: version, purpose, expiry
  * (epoch milliseconds, big-endian), nonce, the full 32-byte binding, then the first 16 bytes of an HMAC over the 58 bytes
  * before it, 74 bytes sent as unpadded base64url. The other ceremonies' challenges are 58 bytes with purposes 1 to 5 and a
- * 16-byte binding, so neither layout is ever read as the other.
+ * 16-byte binding (CEREMONY_CHALLENGE), so neither layout is ever read as the other.
  */
 export const STAFF_STEP_UP_CHALLENGE = {
   bytes: 74,
   encodedLength: 99,
   version: 1,
-  purpose: 6,
+  purpose: CHALLENGE_PURPOSES.staff_step_up,
   versionAt: 0,
   purposeAt: 1,
   expiryAt: 2,

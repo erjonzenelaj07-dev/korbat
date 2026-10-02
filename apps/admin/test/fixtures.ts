@@ -1,4 +1,4 @@
-import { STAFF_STEP_UP_CHALLENGE, stepUpActionHash, stepUpBinding, type StaffMe, type StaffStepUpOptionsRequest } from "@korbat/contracts";
+import { CEREMONY_CHALLENGE, CHALLENGE_PURPOSES, STAFF_STEP_UP_CHALLENGE, stepUpActionHash, stepUpBinding, type StaffMe, type StaffStepUpOptionsRequest } from "@korbat/contracts";
 import type { Clock } from "../src/idle";
 
 /**
@@ -163,6 +163,29 @@ export async function stepUpChallenge(
   return sized.toString("base64url");
 }
 
+/**
+ * A challenge in the other ceremonies' 58-byte layout (the contracts' CEREMONY_CHALLENGE): a staff sign-in's unless told
+ * another purpose, with a zero binding unless given one, and a seal the console cannot check. `bytes` cuts or pads it.
+ */
+export function ceremonyChallenge(options: { purpose?: number; version?: number; binding?: Buffer; bytes?: number } = {}): string {
+  const c = CEREMONY_CHALLENGE;
+  const bytes = Buffer.alloc(c.bytes, 7);
+  bytes[c.versionAt] = options.version ?? c.version;
+  bytes[c.purposeAt] = options.purpose ?? CHALLENGE_PURPOSES.staff_signin;
+  bytes.writeBigUInt64BE(BigInt(Date.parse("2026-10-01T09:10:00.000Z")), c.expiryAt);
+  (options.binding ?? Buffer.alloc(c.bindingBytes)).copy(bytes, c.bindingAt);
+  const sized = options.bytes === undefined ? bytes : Buffer.concat([bytes, Buffer.alloc(Math.max(0, options.bytes - c.bytes), 1)]).subarray(0, options.bytes);
+  return sized.toString("base64url");
+}
+
+/** A staff registration's challenge, bound (as the API binds it) to an enrolment's id the page is never told. */
+export const registerChallenge = () => ceremonyChallenge({ purpose: CHALLENGE_PURPOSES.staff_register, binding: Buffer.alloc(16, 0x5e) });
+
+/** Sign-in options as the API writes them: a staff sign-in challenge, user verification and an empty allow list. */
+export function signInOptions(challenge: string = ceremonyChallenge()) {
+  return { options: { challenge, rpId: "localhost", timeout: 300_000, userVerification: "required", allowCredentials: [] } };
+}
+
 /** Step-up options as the API writes them: the challenge, the console's relying party, user verification and an allow list. */
 export function stepUpOptions(challenge: string, allow: string[] = ["Y3JlZGVudGlhbC0x"]) {
   return {
@@ -227,11 +250,11 @@ export function fakeCredentials(answer: { create?: () => Promise<unknown>; get?:
   };
 }
 
-/** Registration options as the API writes them for an enrolment. */
-export function enrollOptions(rpShared: boolean) {
+/** Registration options as the API writes them for an enrolment; `challenge` replaces the staff registration's own. */
+export function enrollOptions(rpShared: boolean, challenge: string = registerChallenge()) {
   return {
     options: {
-      challenge: Buffer.alloc(58, 3).toString("base64url"),
+      challenge,
       rp: { id: "localhost", name: "korbat" },
       user: { id: Buffer.alloc(32, 9).toString("base64url"), name: "Blue key", displayName: "Blue key" },
       pubKeyCredParams: [

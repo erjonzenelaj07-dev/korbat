@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  CEREMONY_CHALLENGE,
+  CHALLENGE_PURPOSES,
   STAFF_AUDIT_PAGE_SIZE,
   STAFF_STEP_UP_CHALLENGE,
   StaffEnrollOptionsRequest,
@@ -14,6 +16,7 @@ import {
   type AuditPage,
   type StaffKey,
   type StaffMe,
+  type StaffErrorCode,
   type StaffSession,
   type StaffStepUpActionInput,
 } from "@korbat/contracts";
@@ -142,7 +145,7 @@ function authDataOf(attestationObject: Buffer): Buffer | null {
 const flagsOf = (authData: Buffer | null): number | null => (authData && authData.length > 32 ? authData[32]! : null);
 
 /** The staff refusal for an authenticator's flags, or null: user verified, and neither backup-eligible nor backed up. */
-function flagRefusal(flags: number | null): string | null {
+function flagRefusal(flags: number | null): "staff_key_refused" | "staff_key_not_user_verified" | "staff_key_not_device_bound" | null {
   if (flags === null) return "staff_key_refused";
   if ((flags & FLAG_UV) === 0) return "staff_key_not_user_verified";
   if ((flags & (FLAG_BE | FLAG_BS)) !== 0) return "staff_key_not_device_bound";
@@ -164,6 +167,23 @@ const SESSION_COOKIE = "__Host-korbat_staff";
 const CSRF_COOKIE = "__Host-korbat_staff_csrf";
 const CLEAR_COOKIES = [`${SESSION_COOKIE}=; ${COOKIE}; HttpOnly; Max-Age=0`, `${CSRF_COOKIE}=; ${COOKIE}; Max-Age=0`];
 
+/**
+ * The status the API answers each staff refusal with (apps/api/src/auth/staff/), so the console meets here what it meets
+ * behind Caddy; a unit test (fixture-statuses.test.ts) checks it against the API's own source.
+ */
+export const REFUSAL_STATUS = {
+  staff_enrollment_invalid: 400,
+  staff_key_refused: 400,
+  staff_key_invalid: 401,
+  staff_session_required: 401,
+  staff_key_not_user_verified: 403,
+  staff_key_not_device_bound: 403,
+  staff_key_suspended: 403,
+  staff_step_up_required: 403,
+  staff_step_up_invalid: 403,
+  staff_key_limit: 409,
+} as const satisfies Record<StaffErrorCode, number>;
+
 class Refusal extends Error {
   constructor(
     readonly status: number,
@@ -172,6 +192,23 @@ class Refusal extends Error {
   ) {
     super(code);
   }
+}
+
+/** A staff refusal with the API's own status for its code. */
+const refuse = (code: StaffErrorCode, headers: Record<string, string | string[]> = {}) => new Refusal(REFUSAL_STATUS[code], code, headers);
+
+/**
+ * A challenge in the other ceremonies' 58-byte layout (the contracts' CEREMONY_CHALLENGE), with the purpose's code, a
+ * fresh nonce, `binding` (zeros for a sign-in, bound to nothing) and a random seal, since only this server reads it back.
+ */
+function ceremonyChallenge(purpose: "staff_signin" | "staff_register", binding: Buffer = Buffer.alloc(CEREMONY_CHALLENGE.bindingBytes)): string {
+  const c = CEREMONY_CHALLENGE;
+  const bytes = randomBytes(c.bytes);
+  bytes[c.versionAt] = c.version;
+  bytes[c.purposeAt] = CHALLENGE_PURPOSES[purpose];
+  bytes.writeBigUInt64BE(BigInt(Date.now() + 10 * 60_000), c.expiryAt);
+  binding.copy(bytes, c.bindingAt);
+  return bytes.toString("base64url");
 }
 
 type Answer = { status: number; body?: unknown; headers?: Record<string, string | string[]> };
@@ -191,6 +228,12 @@ export function createFixtureApi() {
     enrolmentUsed: false,
     /** The next step-up options bind another action than the one the page asked for: the revocation of another session. */
     mismatchNextStepUp: false,
+    /**
+     * The next sign-in options carry a step-up challenge for an action of this server's choosing, as an API under an
+     * attacker's control would hand out to have the key sign it at an ordinary sign-in.
+     */
+    stepUpChallengeAtNextSignIn: false,
+    signInOptionsServed: 0,
     keys: EXISTING_KEY_NAMES.map(
       (name, i): KeyRecord => ({ id: randomUUID(), name, createdAt: iso(now - (30 + i) * 24 * HOUR), lastUsedAt: i === 0 ? iso(now - 2 * HOUR) : null, credentialId: null }),
     ),
@@ -214,18 +257,18 @@ export function createFixtureApi() {
   const problem = (text: string) => state.problems.push(text);
 
   /** A ceremony's client data: its type, a challenge this server issued for `purpose` (spent here), and the page's origin. */
-  function clientData(encoded: string, type: "webauthn.create" | "webauthn.get", purpose: "register" | "signin" | "step_up", refusal: string) {
+  function clientData(encoded: string, type: "webauthn.create" | "webauthn.get", purpose: "register" | "signin" | "step_up", refusal: StaffErrorCode) {
     let data: { type?: unknown; challenge?: unknown; origin?: unknown };
     try {
       data = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
     } catch {
       problem(`${type}: client data that is not JSON`);
-      throw new Refusal(400, refusal);
+      throw refuse(refusal);
     }
     const issued = typeof data.challenge === "string" ? state.challenges.get(data.challenge) : undefined;
     if (data.type !== type || data.origin !== state.origin || issued?.purpose !== purpose) {
       problem(`${type}: client data for ${String(data.type)} at ${String(data.origin)}, challenge ${issued ? issued.purpose : "unknown"}`);
-      throw new Refusal(400, refusal);
+      throw refuse(refusal);
     }
     state.challenges.delete(data.challenge as string);
     return issued;
@@ -236,7 +279,7 @@ export function createFixtureApi() {
     const jar = cookies(req);
     const session = [...state.sessions.values()].find((s) => s.token === jar.get(SESSION_COOKIE));
     const at = Date.now();
-    if (!session || at >= session.createdAt + ABSOLUTE_MS || at >= session.lastUsedAt + IDLE_MS) throw new Refusal(401, "staff_session_required", { "set-cookie": CLEAR_COOKIES });
+    if (!session || at >= session.createdAt + ABSOLUTE_MS || at >= session.lastUsedAt + IDLE_MS) throw refuse("staff_session_required", { "set-cookie": CLEAR_COOKIES });
     if (req.method !== "GET" && req.method !== "HEAD" && req.headers["x-staff-csrf"] !== jar.get(CSRF_COOKIE)) {
       problem(`${req.method} ${req.url}: the staff CSRF header does not echo the staff CSRF cookie`);
       throw new Refusal(403, "csrf_failed");
@@ -298,8 +341,9 @@ export function createFixtureApi() {
 
     if (key === "POST /api/staff/enroll/options") {
       const input = parse(StaffEnrollOptionsRequest, body, key);
-      if (input.token !== state.enrolmentToken || state.enrolmentUsed) throw new Refusal(400, "staff_enrollment_invalid");
-      const challenge = b64url(58);
+      if (input.token !== state.enrolmentToken || state.enrolmentUsed) throw refuse("staff_enrollment_invalid");
+      // Bound, as the API binds it, to the enrolment's id, which the page is never told: random bytes stand for its hash.
+      const challenge = ceremonyChallenge("staff_register", randomBytes(CEREMONY_CHALLENGE.bindingBytes));
       state.challenges.set(challenge, { purpose: "register" });
       const securityKey = input.kind === "security_key";
       // As @simplewebauthn/server 14.0.2 writes them for the console: the security-key hint only with cross-platform attachment.
@@ -321,11 +365,11 @@ export function createFixtureApi() {
 
     if (key === "POST /api/staff/enroll/verify") {
       const input = parse(StaffEnrollVerifyRequest, body, key);
-      if (input.token !== state.enrolmentToken || state.enrolmentUsed) throw new Refusal(400, "staff_enrollment_invalid");
+      if (input.token !== state.enrolmentToken || state.enrolmentUsed) throw refuse("staff_enrollment_invalid");
       clientData(input.response.response.clientDataJSON, "webauthn.create", "register", "staff_key_refused");
       const refusal = flagRefusal(flagsOf(authDataOf(Buffer.from(input.response.response.attestationObject, "base64url"))));
       // A refusal leaves the link usable, so the person can try another key.
-      if (refusal) throw new Refusal(400, refusal);
+      if (refusal) throw refuse(refusal);
       state.enrolmentUsed = true;
       const stored: KeyRecord = { id: randomUUID(), name: input.name, createdAt: iso(Date.now()), lastUsedAt: null, credentialId: input.response.id };
       state.keys.push(stored);
@@ -334,7 +378,16 @@ export function createFixtureApi() {
 
     if (key === "POST /api/staff/signin/options") {
       if (body !== undefined) problem(`${key}: a body, where the route takes none`);
-      const challenge = b64url(58);
+      state.signInOptionsServed += 1;
+      if (state.stepUpChallengeAtNextSignIn) {
+        state.stepUpChallengeAtNextSignIn = false;
+        // The forged case: a step-up challenge for revoking one of the person's sessions, bound to a handle of this
+        // server's choosing. Never recorded as issued, so an assertion made over it would be a problem here too.
+        const victim = [...state.sessions.values()][0]?.handle ?? randomUUID();
+        const challenge = await stepUpChallenge(randomUUID(), { action: "staff_session_revoked", target: { type: "staff_session", id: victim }, params: {} });
+        return { status: 200, body: { options: { challenge, rpId: "localhost", timeout: 300_000, userVerification: "required", allowCredentials: [] } } };
+      }
+      const challenge = ceremonyChallenge("staff_signin");
       state.challenges.set(challenge, { purpose: "signin" });
       return { status: 200, body: { options: { challenge, rpId: "localhost", timeout: 300_000, userVerification: "required", allowCredentials: [] } } };
     }
@@ -343,9 +396,10 @@ export function createFixtureApi() {
       const input = parse(StaffSignInVerifyRequest, body, key);
       clientData(input.response.response.clientDataJSON, "webauthn.get", "signin", "staff_key_invalid");
       const staffKey = state.keys.find((k) => k.credentialId !== null && k.credentialId === input.response.id);
-      if (!staffKey || input.response.response.userHandle !== userHandle) throw new Refusal(400, "staff_key_invalid");
+      if (!staffKey || input.response.response.userHandle !== userHandle) throw refuse("staff_key_invalid");
       const refusal = flagRefusal(flagsOf(Buffer.from(input.response.response.authenticatorData, "base64url")));
-      if (refusal) throw new Refusal(400, refusal);
+      // Read after the signature, as the API reads them; staff_key_refused stands for flags it cannot read at all.
+      if (refusal) throw refuse(refusal === "staff_key_refused" ? "staff_key_invalid" : refusal);
       staffKey.lastUsedAt = iso(Date.now());
       const session: SessionRecord = {
         handle: randomUUID(),
@@ -403,10 +457,10 @@ export function createFixtureApi() {
     const issued = clientData(stepUp.response.clientDataJSON, "webauthn.get", "step_up", "staff_step_up_invalid");
     if (issued.target !== handle || stepUp.id !== session.credentialId) {
       problem(`DELETE ${handle}: an assertion for ${String(issued.target)} from ${stepUp.id}`);
-      throw new Refusal(400, "staff_step_up_invalid");
+      throw refuse("staff_step_up_invalid");
     }
     const refusal = flagRefusal(flagsOf(Buffer.from(stepUp.response.authenticatorData, "base64url")));
-    if (refusal) throw new Refusal(400, refusal === "staff_key_refused" ? "staff_step_up_invalid" : refusal);
+    if (refusal) throw refuse(refusal === "staff_key_refused" ? "staff_step_up_invalid" : refusal);
     if (!state.sessions.delete(handle)) throw new Refusal(404, "not_found");
     state.revoked.push(handle);
     return { status: 204 };
@@ -467,6 +521,12 @@ export function createFixtureApi() {
     /** Every staff session ends behind the page's back, as a revocation from the command line ends them. */
     endEverySession() {
       state.sessions.clear();
+    },
+    /** A new enrolment link, as `staff.js enroll` prints one for the person's next key; its token. */
+    issueEnrolment(): string {
+      state.enrolmentToken = b64url(32);
+      state.enrolmentUsed = false;
+      return state.enrolmentToken;
     },
   };
 }

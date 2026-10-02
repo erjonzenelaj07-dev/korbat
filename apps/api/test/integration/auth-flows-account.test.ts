@@ -296,6 +296,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
       enrollmentsDeleted: 0,
       staffKeysRevoked: 0,
       mailError: null,
+      tombstoneError: null,
     });
     expect(h.mailer.sent).toEqual([]);
     expect(await h.deps.sessions.resolve(account.token)).toBeNull();

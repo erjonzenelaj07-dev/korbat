@@ -127,6 +127,9 @@ export interface StaffKeyForSignIn {
   transports: string[];
   name: string;
   revokedAt: Date | null;
+  /** The console's origin and relying party ID the key was enrolled for, which audit-verify judges its confirmations by. */
+  origin: string;
+  rpId: string;
   email: string;
   role: UserRole;
   deletedAt: Date | null;
@@ -207,6 +210,9 @@ export interface StaffKeyCredential {
   transports: string[];
   name: string;
   revokedAt: Date | null;
+  /** The console's origin and relying party ID the key was enrolled for, which audit-verify judges its confirmations by. */
+  origin: string;
+  rpId: string;
 }
 
 /**
@@ -223,6 +229,8 @@ export interface ConfirmedStaffSessionRevocation {
   actionHash: string;
   params: Record<string, unknown>;
   stepUp: { authenticatorData: string; clientDataJSON: string; signature: string };
+  /** The step-up challenge's expiry: the audit row must join the chain before it, by the database's clock. */
+  expiresAt: Date;
   now: Date;
   ipHash: string | null;
   requestId: string;
@@ -1017,6 +1025,8 @@ export function createAuthRepo(db: Db) {
           transports: staffKeys.transports,
           name: staffKeys.name,
           revokedAt: staffKeys.revokedAt,
+          origin: staffKeys.origin,
+          rpId: staffKeys.rpId,
           email: users.email,
           role: users.role,
           deletedAt: users.deletedAt,
@@ -1189,6 +1199,8 @@ export function createAuthRepo(db: Db) {
           transports: staffKeys.transports,
           name: staffKeys.name,
           revokedAt: staffKeys.revokedAt,
+          origin: staffKeys.origin,
+          rpId: staffKeys.rpId,
         })
         .from(staffKeys)
         .where(eq(staffKeys.id, id))
@@ -1214,51 +1226,23 @@ export function createAuthRepo(db: Db) {
      * through auth.append_audit, with the action's hash, its params in the metadata, the key and the assertion, which
      * audit-verify checks. "ended" when the confirming key or account no longer opens anything, "not_found" when the
      * handle names no live session of the account; neither writes anything.
+     *
+     * audit-verify refuses for good a row stamped at or after its challenge's expiry, and the trigger stamps the row only
+     * once it holds the audit head, so a head held open would otherwise let a genuine confirmation become such a row. Every
+     * lock wait here is therefore bounded by a third of the challenge's life left by the database's clock (at most 15
+     * seconds), and the statement that writes the row also checks the database's clock against the expiry: "late" when a
+     * wait gave up or the expiry came first, which rolls everything back and writes nothing.
      */
-    async revokeConfirmedStaffSession(input: ConfirmedStaffSessionRevocation): Promise<"revoked" | "ended" | "not_found"> {
-      return db.transaction(async (tx) => {
-        const [account] = await tx
-          .select({ id: users.id })
-          .from(users)
-          .where(and(eq(users.id, input.userId), isNull(users.deletedAt), ne(users.role, "user")))
-          .limit(1)
-          .for("no key update");
-        if (!account) return "ended";
-        const [key] = await tx
-          .select({ id: staffKeys.id })
-          .from(staffKeys)
-          .where(and(eq(staffKeys.id, input.keyId), eq(staffKeys.userId, input.userId), isNull(staffKeys.revokedAt)));
-        if (!key) return "ended";
-        const [revoked] = await tx
-          .update(staffSessions)
-          .set({ revokedAt: input.now })
-          .where(
-            and(
-              eq(staffSessions.handle, input.handle),
-              eq(staffSessions.userId, input.userId),
-              isNull(staffSessions.revokedAt),
-              gt(staffSessions.idleExpiresAt, input.now),
-              gt(staffSessions.absoluteExpiresAt, input.now),
-            ),
-          )
-          .returning({ handle: staffSessions.handle });
-        if (!revoked) return "not_found";
-        // The account's own log names the session that ended and the one that ended it.
-        await tx.insert(authEvents).values({ userId: input.userId, type: "staff_session_revoked", ipHash: input.ipHash, metadata: { handle: revoked.handle, by: input.staffSession } });
-        await appendAudit(tx, {
-          actorId: input.userId,
-          action: "staff_session_revoked",
-          targetType: "staff_session",
-          targetId: revoked.handle,
-          staffSession: input.staffSession,
-          keyId: input.keyId,
-          actionHash: input.actionHash,
-          stepUp: input.stepUp,
-          metadata: { params: input.params },
-          requestId: input.requestId,
+    async revokeConfirmedStaffSession(input: ConfirmedStaffSessionRevocation): Promise<"revoked" | "ended" | "not_found" | "late"> {
+      try {
+        return await db.transaction(async (tx) => {
+          if (!(await boundLockWaits(tx, input.expiresAt))) return "late";
+          return revokeConfirmedIn(tx, input);
         });
-        return "revoked";
-      });
+      } catch (err) {
+        if (err instanceof LateConfirmation || isLockNotAvailable(err)) return "late";
+        throw err;
+      }
     },
 
     /**
@@ -1497,6 +1481,117 @@ async function appendAudit(tx: Tx, row: AuthAuditRow): Promise<number> {
 }
 
 /**
+ * A confirmed action whose row could not join the chain before its step-up challenge expired; nothing was written.
+ * Exported for the step-up suite, which runs revokeConfirmedIn past its challenge's expiry and expects this.
+ */
+export class LateConfirmation extends Error {
+  constructor() {
+    super("the confirmation's row could not join the chain before its challenge expired");
+    this.name = "LateConfirmation";
+  }
+}
+
+/** True for PostgreSQL's lock_not_available (a lock_timeout ran out), however deeply the driver wrapped it. */
+function isLockNotAvailable(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "55P03") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Bounds every lock wait of a confirmed action's transaction (3a design, section 7, Step-up): lock_timeout becomes a third
+ * of what is left of the challenge's life by the database's clock, at most 15 seconds, so the three waits it may meet (the
+ * account's row, the session's row, the audit head) all end before the expiry. False when nothing is left, or less than a
+ * millisecond, which lock_timeout would read as no limit at all.
+ */
+async function boundLockWaits(tx: Tx, expiresAt: Date): Promise<boolean> {
+  const [left] = await tx.execute<{ ms: string }>(
+    sql`select floor(least(15000, (${expiresAt.getTime()}::numeric - extract(epoch from clock_timestamp()) * 1000) / 3))::bigint::text as ms`,
+  );
+  const ms = Number(left!.ms);
+  if (!(ms >= 1)) return false;
+  await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true)`);
+  return true;
+}
+
+/**
+ * appendAudit for a row a step-up confirmed, in one statement that also reads the database's clock once the row is in the
+ * chain: the trigger stamped the row no later than that, so a clock still before the challenge's expiry means the row is
+ * too, as audit-verify requires. The audit row stays the last statement of its transaction. False when the expiry came
+ * first: the caller then rolls the transaction back.
+ */
+async function appendAuditBefore(tx: Tx, expiresAt: Date, row: AuthAuditRow): Promise<boolean> {
+  const stepUp = row.stepUp ? JSON.stringify(row.stepUp) : null;
+  // A volatile function in a CTE is evaluated once, before the outer query reads its row, so the clock is read after it.
+  const [written] = await tx.execute<{ inTime: boolean }>(
+    sql`with written as (
+      select auth.append_audit(${row.actorId}::uuid, ${row.action}::text, ${row.targetType}::text, ${row.targetId}::text,
+        ${JSON.stringify(row.metadata)}::text::jsonb, ${row.staffSession ?? null}::uuid, ${row.keyId ?? null}::uuid,
+        ${row.actionHash ?? null}::text, ${stepUp}::text::jsonb, ${row.requestId ?? null}::text) as place
+    )
+    select extract(epoch from clock_timestamp()) * 1000 < ${expiresAt.getTime()}::numeric as "inTime" from written`,
+  );
+  return written!.inTime === true;
+}
+
+/**
+ * revokeConfirmedStaffSession's statements, in its transaction: the account's row first, then the key, the session, the
+ * event, and last the audit row, written only while the challenge has not expired by the database's clock.
+ *
+ * Exported for the step-up suite alone, which runs it without boundLockWaits on a challenge already expired, as if the
+ * waits had together outlasted it: that is the only way to reach the row's own clock check on cue, since the bound ends
+ * any one wait the suite could hold before then. Everything else calls revokeConfirmedStaffSession.
+ */
+export async function revokeConfirmedIn(tx: Tx, input: ConfirmedStaffSessionRevocation): Promise<"revoked" | "ended" | "not_found"> {
+  const [account] = await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, input.userId), isNull(users.deletedAt), ne(users.role, "user")))
+    .limit(1)
+    .for("no key update");
+  if (!account) return "ended";
+  const [key] = await tx
+    .select({ id: staffKeys.id })
+    .from(staffKeys)
+    .where(and(eq(staffKeys.id, input.keyId), eq(staffKeys.userId, input.userId), isNull(staffKeys.revokedAt)));
+  if (!key) return "ended";
+  const [revoked] = await tx
+    .update(staffSessions)
+    .set({ revokedAt: input.now })
+    .where(
+      and(
+        eq(staffSessions.handle, input.handle),
+        eq(staffSessions.userId, input.userId),
+        isNull(staffSessions.revokedAt),
+        gt(staffSessions.idleExpiresAt, input.now),
+        gt(staffSessions.absoluteExpiresAt, input.now),
+      ),
+    )
+    .returning({ handle: staffSessions.handle });
+  if (!revoked) return "not_found";
+  // The account's own log names the session that ended and the one that ended it.
+  await tx.insert(authEvents).values({ userId: input.userId, type: "staff_session_revoked", ipHash: input.ipHash, metadata: { handle: revoked.handle, by: input.staffSession } });
+  const inTime = await appendAuditBefore(tx, input.expiresAt, {
+    actorId: input.userId,
+    action: "staff_session_revoked",
+    targetType: "staff_session",
+    targetId: revoked.handle,
+    staffSession: input.staffSession,
+    keyId: input.keyId,
+    actionHash: input.actionHash,
+    stepUp: input.stepUp,
+    metadata: { params: input.params },
+    requestId: input.requestId,
+  });
+  // Thrown, so the transaction rolls back: the session stays live and no row is written.
+  if (!inTime) throw new LateConfirmation();
+  return "revoked";
+}
+
+/**
  * 1c's counter rule as one conditional update of a staff key (3a design, section 7), at a sign-in in the session's
  * transaction and at a step-up on its own: the key's use and counter are recorded only while it is the account's, live, and
  * its counter moved forward (two zeros pass, as some authenticators always report 0). False when no row matched. The
@@ -1568,10 +1663,13 @@ interface StaffRevocation {
 
 /**
  * Ends an account's staff access inside the caller's transaction, which has locked the account's row first (3a design,
- * section 7): every staff session not yet revoked is revoked, the enrolment links deleted (the unused ones, or every one
- * at a take-down), and when `keys` is set every live staff key revoked, with a staff_key_revoked event each. A revocation
- * sets revoked_at only where it is still null, since a set one is never changed. Writes no audit row: the caller writes
- * those last, after its own statements.
+ * section 7): when `keys` is set every live staff key is revoked, then every staff session not yet revoked, the
+ * enrolment links deleted (the unused ones, or every one at a take-down), and a staff_key_revoked event for each key. The
+ * keys go before the sessions, as in revokeStaffKeys: a sign-in holds its key's row from the moment it records the key's
+ * use until it commits the session it opens, and the session's insert does not wait for the account's lock, so a session
+ * opened while this waited for a key's row is committed by the time the sessions are revoked, and is found and counted.
+ * A revocation sets revoked_at only where it is still null, since a set one is never changed. Writes no audit row: the
+ * caller writes those last, after its own statements.
  */
 async function revokeStaffAccess(
   tx: Tx,
@@ -1579,6 +1677,13 @@ async function revokeStaffAccess(
   now: Date,
   options: { keys: boolean; enrollments: "unused" | "all"; via: "role_change" | "take_down" },
 ): Promise<StaffRevocation> {
+  const revoked = options.keys
+    ? await tx
+        .update(staffKeys)
+        .set({ revokedAt: now })
+        .where(and(eq(staffKeys.userId, userId), isNull(staffKeys.revokedAt)))
+        .returning({ id: staffKeys.id, name: staffKeys.name, createdAt: staffKeys.createdAt })
+    : [];
   const ended = await tx
     .update(staffSessions)
     .set({ revokedAt: now })
@@ -1590,11 +1695,6 @@ async function revokeStaffAccess(
     .returning({ usedAt: staffEnrollments.usedAt });
   const keys: StaffRevocation["keys"] = [];
   if (options.keys) {
-    const revoked = await tx
-      .update(staffKeys)
-      .set({ revokedAt: now })
-      .where(and(eq(staffKeys.userId, userId), isNull(staffKeys.revokedAt)))
-      .returning({ id: staffKeys.id, name: staffKeys.name, createdAt: staffKeys.createdAt });
     // An update answers in no set order; the events, rows and mail list the keys oldest first.
     revoked.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
     for (const key of revoked) {

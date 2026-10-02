@@ -55,12 +55,15 @@ export function sessionRevokeAction(handle: string): StaffStepUpOptionsRequest {
 }
 
 /**
- * "Sign out that session", confirmed by the key: options for exactly this action, asked right before the key (the API
- * reads a step-up challenge only while more than a minute of its ten is left), checked, signed, then sent with the
- * revocation. "gone" when the session had already ended. Every request is marked: the person clicked.
+ * "Sign out that session", confirmed by the key: the session's handle read from a marked /me right before, since the API
+ * binds the challenge to the session the request's cookie names, which another tab's sign-in may have replaced since the
+ * page read its session; then options for exactly this action, asked right before the key (the API reads a step-up
+ * challenge only while more than a minute of its ten is left), checked, signed, then sent with the revocation. "gone"
+ * when the session had already ended. Every request is marked: the person clicked.
  */
-export async function revokeSessionWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, sessionHandle: string, targetHandle: string): Promise<"revoked" | "gone"> {
+export async function revokeSessionWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, targetHandle: string): Promise<"revoked" | "gone"> {
   const action = sessionRevokeAction(targetHandle);
+  const { sessionHandle } = await deps.api.me({ activity: true });
   const { options } = await deps.api.stepUpOptions(action, { activity: true });
   await checkStepUpOptions(options, sessionHandle, action);
   let credential: unknown;

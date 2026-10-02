@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { createStaffApi } from "../src/api";
 import { enrollKey, type SignalApi } from "../src/enroll";
-import { enrollOptions, envelope, fakeCredentials, fakeFetch } from "./fixtures";
+import { CHALLENGE_PURPOSES } from "@korbat/contracts";
+import { ceremonyChallenge, enrollOptions, envelope, fakeCredentials, fakeFetch, revokeAction, SESSION_HANDLE, stepUpChallenge } from "./fixtures";
 
 /**
  * Enrolment (3a design, section 9): options for the key's name and kind, the browser's registration, then the verify.
@@ -37,7 +38,8 @@ describe("enrolling a staff key", () => {
   test("options for the name and kind, the browser's registration, then the verify with the same token and name", async () => {
     const { signal, calls } = recordingSignal();
     const r = run(false, { status: 200, body: { key: KEY } }, signal);
-    expect(await r.result).toEqual({ ok: true, key: KEY });
+    // The new credential's id comes back too: the success page's sign-in asks for that key alone.
+    expect(await r.result).toEqual({ ok: true, key: KEY, credentialId: "bmV3LWtleQ" });
     expect(r.requests.map((q) => `${q.method} ${q.url} ${q.headers["x-staff-activity"]}`)).toEqual(["POST /api/staff/enroll/options 1", "POST /api/staff/enroll/verify 1"]);
     expect(r.requests[0]!.body).toEqual({ token: TOKEN, name: "Blue key", kind: "security_key" });
     expect(r.requests[1]!.body).toMatchObject({ token: TOKEN, name: "Blue key", response: { id: "bmV3LWtleQ", type: "public-key" } });
@@ -95,6 +97,27 @@ describe("enrolling a staff key", () => {
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
     expect(await enrollKey({ api, credentials: fakeCredentials(), signal: undefined }, { token: TOKEN, name: "Blue key", kind: "this_device" })).toMatchObject({ ok: false, code: "not_found", status: 404 });
   });
+
+  // The page checks the challenge's layout and purpose before it asks for the key (3a design, section 9). It cannot check
+  // the binding: that is the enrolment's id, which the page is never told.
+  const mismatched: [string, () => Promise<string>][] = [
+    ["a step-up challenge", () => stepUpChallenge(SESSION_HANDLE, revokeAction(SESSION_HANDLE))],
+    ["a staff sign-in's challenge", async () => ceremonyChallenge()],
+    ["a personal passkey's registration challenge", async () => ceremonyChallenge({ purpose: CHALLENGE_PURPOSES.register, binding: Buffer.alloc(16, 2) })],
+    ["another version", async () => ceremonyChallenge({ purpose: CHALLENGE_PURPOSES.staff_register, version: 2, binding: Buffer.alloc(16, 2) })],
+    ["one byte short", async () => ceremonyChallenge({ purpose: CHALLENGE_PURPOSES.staff_register, bytes: 57 })],
+  ];
+  for (const [name, make] of mismatched) {
+    test(`options whose challenge is not a staff registration's are refused before the key is asked: ${name}`, async () => {
+      const fake = fakeFetch({ "POST /api/staff/enroll/options": { status: 200, body: enrollOptions(false, await make()) } });
+      const credentials = fakeCredentials();
+      const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
+      const result = await enrollKey({ api, credentials, signal: undefined }, { token: TOKEN, name: "Blue key", kind: "security_key" });
+      expect(result).toEqual({ ok: false, code: "enroll_mismatch", status: 0, cleanup: "none" });
+      expect(credentials.calls).toEqual([]);
+      expect(fake.requests.map((q) => q.url)).toEqual(["/api/staff/enroll/options"]);
+    });
+  }
 
   test("a prompt the person closed sends nothing to the API", async () => {
     const fake = fakeFetch({ "POST /api/staff/enroll/options": { status: 200, body: enrollOptions(false) } });

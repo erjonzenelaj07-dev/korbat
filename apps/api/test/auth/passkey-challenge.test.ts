@@ -1,6 +1,6 @@
 import { createHash, createHmac, hkdfSync } from "node:crypto";
 import { describe, expect, test } from "vitest";
-import { STAFF_STEP_UP_CHALLENGE, stepUpActionHash, stepUpBinding } from "@korbat/contracts";
+import { CEREMONY_CHALLENGE, CHALLENGE_PURPOSES, STAFF_STEP_UP_CHALLENGE, stepUpActionHash, stepUpBinding } from "@korbat/contracts";
 import { AuthError } from "../../src/auth/context";
 import { sha256Hex } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
@@ -99,6 +99,21 @@ describe("passkey challenges: issuing and reading", () => {
       expect(() => readChallenge(KEY, challenge, purpose, at(0), bind)).not.toThrow();
     }
     expect(CHALLENGE_TTL_MS).toBe(10 * MINUTE);
+  });
+
+  test("writes the contracts' layout and purpose codes, which the console checks before it asks for the key", () => {
+    const c = CEREMONY_CHALLENGE;
+    for (const purpose of PURPOSES) {
+      const bind = UNBOUND.includes(purpose) ? undefined : ENROLMENT;
+      const challenge = issueChallenge(KEY, purpose, at(0), bind);
+      expect(challenge).toHaveLength(c.encodedLength);
+      const bytes = bytesOf(challenge);
+      expect(bytes).toHaveLength(c.bytes);
+      expect([bytes[c.versionAt], bytes[c.purposeAt]]).toEqual([c.version, CHALLENGE_PURPOSES[purpose]]);
+      const binding = bind === undefined ? Buffer.alloc(c.bindingBytes) : createHash("sha256").update(bind).digest().subarray(0, c.bindingBytes);
+      expect(bytes.subarray(c.bindingAt, c.bindingAt + c.bindingBytes).equals(binding)).toBe(true);
+      expect(bytes.subarray(c.sealAt).equals(mac(bytes.subarray(0, c.sealAt)))).toBe(true);
+    }
   });
 
   test("draws a fresh 16-byte nonce for every challenge", () => {

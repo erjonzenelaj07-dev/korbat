@@ -2,7 +2,8 @@ import type { StaffMe } from "@korbat/contracts";
 import { useState } from "react";
 import { ApiError, type StaffApi } from "../api";
 import { describeError } from "../messages";
-import { authenticationResponseToJSON, ceremonyFailure, requestOptionsFromJSON, type CredentialsLike } from "../webauthn";
+import { signInWithKey } from "../sign-in";
+import type { CredentialsLike } from "../webauthn";
 
 /**
  * Sign-in (3a design, section 9): "Sign in with your staff key", the browser's prompt, and errors in the console's words.
@@ -49,15 +50,8 @@ export function SignIn({
     setBusy(true);
     setError(null);
     try {
-      // The person pressed the button: both requests are marked, though no session exists yet to move.
-      const { options } = await api.signInOptions({ activity: true });
-      let credential: unknown;
-      try {
-        credential = await credentials.get({ publicKey: requestOptionsFromJSON(options) });
-      } catch (err) {
-        throw ceremonyFailure(err);
-      }
-      const me = await api.signInVerify({ response: authenticationResponseToJSON(credential) }, { activity: true });
+      // The options' challenge is checked before the key is asked; any key the browser holds for the console may answer.
+      const me = await signInWithKey({ api, credentials });
       setBusy(false);
       onSignedIn(me);
     } catch (err) {

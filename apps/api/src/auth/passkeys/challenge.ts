@@ -1,5 +1,5 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { STAFF_STEP_UP_CHALLENGE, stepUpBindingText } from "@korbat/contracts";
+import { CEREMONY_CHALLENGE, CHALLENGE_PURPOSES, STAFF_STEP_UP_CHALLENGE, stepUpBindingText } from "@korbat/contracts";
 import { AuthError } from "../context";
 import { sha256Hex } from "../crypto";
 import type { KeyValueStore } from "../kv";
@@ -24,22 +24,24 @@ export const CHALLENGE_TTL_MS = 10 * MINUTE;
  */
 export const STEP_UP_READ_MARGIN_MS = MINUTE;
 
-const VERSION = 1;
-const PURPOSE_CODES: Record<ChallengePurpose, number> = { signin: 1, register: 2, reauth: 3, staff_signin: 4, staff_register: 5 };
+// The purpose codes and the layout are the contracts', which the console reads too: it checks a staff sign-in's and a
+// staff registration's challenge against them before it asks for the key.
+const VERSION = CEREMONY_CHALLENGE.version;
+const PURPOSE_CODES: Record<ChallengePurpose, number> = CHALLENGE_PURPOSES;
 
 // The layout: version (1 byte), purpose (1), expiry in epoch milliseconds (8, big-endian), nonce (16), binding (16), then
 // the first 16 bytes of HMAC-SHA256 over the 42 before them.
-const PURPOSE_AT = 1;
-const EXPIRY_AT = 2;
-const NONCE_AT = 10;
-const BINDING_AT = 26;
-const MAC_AT = 42;
-const NONCE_BYTES = 16;
-const BINDING_BYTES = 16;
-const MAC_BYTES = 16;
-const CHALLENGE_BYTES = 58;
+const PURPOSE_AT = CEREMONY_CHALLENGE.purposeAt;
+const EXPIRY_AT = CEREMONY_CHALLENGE.expiryAt;
+const NONCE_AT = CEREMONY_CHALLENGE.nonceAt;
+const BINDING_AT = CEREMONY_CHALLENGE.bindingAt;
+const MAC_AT = CEREMONY_CHALLENGE.sealAt;
+const NONCE_BYTES = CEREMONY_CHALLENGE.nonceBytes;
+const BINDING_BYTES = CEREMONY_CHALLENGE.bindingBytes;
+const MAC_BYTES = CEREMONY_CHALLENGE.sealBytes;
+const CHALLENGE_BYTES = CEREMONY_CHALLENGE.bytes;
 /** 58 bytes as unpadded base64url. */
-const ENCODED_LENGTH = 78;
+const ENCODED_LENGTH = CEREMONY_CHALLENGE.encodedLength;
 // The step-up layout, at the contracts' offsets, which audit-verify and the console read too: version (1 byte), purpose
 // (1), expiry (8), nonce (16), the full 32-byte binding, then the first 16 bytes of HMAC-SHA256 over the 58 before them.
 const STEP_UP = STAFF_STEP_UP_CHALLENGE;
@@ -159,15 +161,17 @@ export function issueStepUpChallenge(key: Buffer, now: Date, sessionHandle: stri
  * purpose and the binding of this session and this action (`passkey_invalid`); and only then the expiry
  * (`challenge_expired`), which here comes a minute early (STEP_UP_READ_MARGIN_MS), so the action's row is written before
  * it. A challenge of the other layout is refused by its length. The step-up flow answers this function's passkey_invalid
- * with staff_step_up_invalid.
+ * with staff_step_up_invalid. Returns the challenge's expiry, by which the confirmed action's row must be in the chain.
  */
-export function readStepUpChallenge(key: Buffer, challenge: string, now: Date, sessionHandle: string, actionHash: string): void {
+export function readStepUpChallenge(key: Buffer, challenge: string, now: Date, sessionHandle: string, actionHash: string): Date {
   const bytes = decodeAs(challenge, STEP_UP.bytes, STEP_UP.encodedLength);
   if (!bytes) throw invalid();
   if (!timingSafeEqual(bytes.subarray(STEP_UP.sealAt), seal(key, bytes.subarray(0, STEP_UP.sealAt)))) throw invalid();
   if (bytes[STEP_UP.versionAt] !== STEP_UP.version || bytes[STEP_UP.purposeAt] !== STEP_UP.purpose) throw invalid();
   if (!bytes.subarray(STEP_UP.bindingAt, STEP_UP.sealAt).equals(stepUpBinding(sessionHandle, actionHash))) throw invalid();
-  if (now.getTime() + STEP_UP_READ_MARGIN_MS >= Number(bytes.readBigUInt64BE(STEP_UP.expiryAt))) throw expired();
+  const expiry = Number(bytes.readBigUInt64BE(STEP_UP.expiryAt));
+  if (now.getTime() + STEP_UP_READ_MARGIN_MS >= expiry) throw expired();
+  return new Date(expiry);
 }
 
 /**

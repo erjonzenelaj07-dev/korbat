@@ -83,6 +83,10 @@ export function createConsoleStore(deps: ConsoleStoreDeps) {
   api.hooks.onActivity = () => {
     if (state.session.kind === "signed-in") idle.restart();
   };
+  // Any screen's /me read, the step-up's included, keeps the page's session as the cookie names it now.
+  api.hooks.onMe = (me) => {
+    if (state.session.kind === "signed-in") set({ session: { kind: "signed-in", me } });
+  };
 
   const signedIn = (me: StaffMe) => {
     set({ session: { kind: "signed-in", me }, warning: null });

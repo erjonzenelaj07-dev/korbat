@@ -22,7 +22,8 @@ export const STAFF_MESSAGES: Record<StaffErrorCode, string> = {
 
 /**
  * The shared codes a staff route may also answer, and the console's own: a network failure, an answer its schemas refuse,
- * a browser prompt that did not finish, and step-up options that bind something other than the action the person chose.
+ * a browser prompt that did not finish, step-up options that bind something other than the action the person chose, and
+ * sign-in or enrolment options whose challenge is not one of that ceremony's.
  */
 const OTHER_MESSAGES: Record<string, string> = {
   challenge_expired: "That took too long. Try again.",
@@ -38,6 +39,10 @@ const OTHER_MESSAGES: Record<string, string> = {
   ceremony_refused: "The browser refused to use a key here. Open the console at exactly the address in CONSOLE_ORIGIN, never at 127.0.0.1, and try again.",
   step_up_mismatch:
     "The confirmation could not be checked: the server asked your key to sign something other than this action, so your key was not asked. Reload the page and try again; if it happens again, tell the operator.",
+  signin_mismatch:
+    "The sign-in could not be checked: the server asked your key to sign something other than a sign-in, so your key was not asked. Reload the page and try again; if it happens again, tell the operator.",
+  enroll_mismatch:
+    "The registration could not be checked: the server asked your key for something other than a staff key's registration, so your key was not asked. Reload the page and try again; if it happens again, tell the operator.",
 };
 
 const FALLBACK = "Something went wrong. Try again.";

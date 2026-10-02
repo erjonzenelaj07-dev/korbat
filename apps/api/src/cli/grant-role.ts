@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import Redis from "ioredis";
 import { Email, Role } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
-import { createAuthRepo, createSessions, grantRole, redisKv, type KeyValueStore, type UserRole } from "../auth";
+import { createAuthRepo, createSessions, grantRole, redisKv, type KeyValueStore, type RoleGranted, type UserRole } from "../auth";
 import { loadConfig } from "../config";
 import type { Mailer } from "../mail/mailer";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
@@ -45,6 +45,26 @@ export async function runGrantRole(deps: { authDb: Db; kv: KeyValueStore; mailer
   }
 }
 
+/**
+ * What the command prints once the change has committed: the summary always, on stdout, and a warning on stderr for each
+ * step after the commit that failed. None of them undoes the change, so the command exits 0 whatever they say.
+ */
+export function grantRoleReport(granted: RoleGranted, role: UserRole): { out: string[]; warnings: string[] } {
+  const out = [
+    `user ${granted.userId}: role ${granted.previousRole} -> ${role}; every session revoked; ` +
+      `${granted.staffSessionsRevoked} staff sessions and ${granted.staffKeysRevoked} staff keys revoked, ${granted.enrollmentsDeleted} unused enrolment links deleted`,
+  ];
+  const warnings: string[] = [];
+  if (granted.tombstoneError !== null) {
+    warnings.push(
+      `warning: the revoked app sessions could not be marked in Valkey (${granted.tombstoneError}); they are revoked in the database, ` +
+        "a cached copy may still answer for up to a minute; the change stands",
+    );
+  }
+  if (granted.mailError !== null) warnings.push(`warning: the staff_keys_revoked mail to the account could not be sent (${granted.mailError}); the change stands`);
+  return { out, warnings };
+}
+
 async function main(): Promise<number> {
   let parsed: { email: string; role: UserRole };
   try {
@@ -59,11 +79,9 @@ async function main(): Promise<number> {
   try {
     // The same mailer as the staff command line's, built as the API builds its own.
     const granted = await runGrantRole({ authDb, kv: redisKv(redis), mailer: commandLineMailer(process.env) }, parsed.email, parsed.role);
-    console.log(
-      `user ${granted.userId}: role ${granted.previousRole} -> ${parsed.role}; every session revoked; ` +
-        `${granted.staffSessionsRevoked} staff sessions and ${granted.staffKeysRevoked} staff keys revoked, ${granted.enrollmentsDeleted} unused enrolment links deleted`,
-    );
-    if (granted.mailError !== null) console.error(`warning: the staff_keys_revoked mail to the account could not be sent (${granted.mailError}); the change stands`);
+    const report = grantRoleReport(granted, parsed.role);
+    for (const line of report.out) console.log(line);
+    for (const line of report.warnings) console.error(line);
     return 0;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

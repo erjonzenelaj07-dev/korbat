@@ -36,7 +36,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
     const result = await runGrantRole({ authDb, kv, mailer: new MemoryMailer() }, user.email, "moderator");
 
     // An account without staff rows: nothing of the console to end, and no staff mail.
-    expect(result).toEqual({ userId: user.id, previousRole: "user", staffSessionsRevoked: 0, enrollmentsDeleted: 0, staffKeysRevoked: 0, mailError: null });
+    expect(result).toEqual({ userId: user.id, previousRole: "user", staffSessionsRevoked: 0, enrollmentsDeleted: 0, staffKeysRevoked: 0, mailError: null, tombstoneError: null });
     expect((await repo.findUserById(user.id))!.role).toBe("moderator");
     expect(await sessions.resolve(issued.token)).toBeNull();
     const entries = await apiDb

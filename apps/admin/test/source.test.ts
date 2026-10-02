@@ -78,6 +78,30 @@ describe("no HTML or script sink in apps/admin", () => {
   });
 });
 
+describe("the key is asked only after the console checked what it is asked to sign", () => {
+  test("navigator.credentials is called only by the three ceremonies, each of which checks its challenge first", () => {
+    // A fourth call site would need a check of its own (3a design, section 9): this list makes adding one a decision.
+    expect(findInSource(/credentials\.(get|create)\(/).map((found) => found.split(":")[0])).toEqual(["src/enroll.ts", "src/sign-in.ts", "src/step-up.ts"]);
+    const checks: [string, RegExp][] = [
+      ["enroll.ts", /checkRegisterChallenge\(/],
+      ["sign-in.ts", /checkSignInChallenge\(/],
+      ["step-up.ts", /checkStepUpOptions\(/],
+    ];
+    for (const [file, check] of checks) {
+      const source = readFileSync(path.join(SRC, file), "utf8");
+      const call = source.search(/credentials\.(get|create)\(/);
+      // The check is called in the function that makes the call, before it, as it runs before it. Only that function's
+      // text up to the call is searched: a check declared in the same file (step-up.ts declares checkStepUpOptions) is
+      // another top-level function, so its name there never stands in for the call.
+      const declarations = [...source.matchAll(/^(export )?(async )?function \w+/gm)].map((found) => found.index ?? -1);
+      const enclosing = Math.max(...declarations.filter((at) => at < call));
+      expect(call, file).toBeGreaterThan(-1);
+      expect(enclosing, file).toBeGreaterThan(-1);
+      expect(source.slice(enclosing, call).search(check), file).toBeGreaterThan(-1);
+    }
+  });
+});
+
 describe("zod is jitless before the first schema is built", () => {
   test("the entry's first import is the module that sets it", () => {
     const main = readFileSync(path.join(SRC, "main.tsx"), "utf8");

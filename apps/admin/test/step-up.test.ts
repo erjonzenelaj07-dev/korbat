@@ -2,7 +2,7 @@ import { STAFF_STEP_UP_CHALLENGE } from "@korbat/contracts";
 import { describe, expect, test } from "vitest";
 import { createStaffApi } from "../src/api";
 import { checkStepUpOptions, revokeSessionWithKey, sessionRevokeAction, StepUpMismatch } from "../src/step-up";
-import { envelope, fakeCredentials, fakeFetch, OTHER_SESSION, revokeAction, SESSION_HANDLE, stepUpChallenge, stepUpOptions } from "./fixtures";
+import { envelope, fakeCredentials, fakeFetch, makeMe, OTHER_SESSION, revokeAction, SESSION_HANDLE, stepUpChallenge, stepUpOptions } from "./fixtures";
 
 /**
  * The check of step-up options before the key is asked (3a design, section 9): the challenge must be the 74 bytes of the
@@ -13,15 +13,19 @@ const TARGET = "4f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
 const THIRD = "0d4c7b9e-1f36-4e2d-9a10-6c3b4f5e8a21";
 const action = revokeAction(TARGET);
 
-/** The whole confirmation as the home screen runs it, over a fake API that answers the step-up options with `options`. */
-async function revokeWith(options: unknown) {
+/**
+ * The whole confirmation as the home screen runs it, over a fake API whose /me names the session `current` (this page's,
+ * unless another tab has since signed in again) and that answers the step-up options with `options`.
+ */
+async function revokeWith(options: unknown, current = SESSION_HANDLE) {
   const fake = fakeFetch({
+    "GET /api/staff/me": { status: 200, body: makeMe({ sessionHandle: current }) },
     "POST /api/staff/step-up/options": { status: 200, body: options },
     [`DELETE /api/staff/sessions/${TARGET}`]: { status: 204 },
   });
   const credentials = fakeCredentials();
   const api = createStaffApi({ fetch: fake.fetch, cookie: () => "__Host-korbat_staff_csrf=t" });
-  const outcome = await revokeSessionWithKey({ api, credentials }, SESSION_HANDLE, TARGET).catch((err: unknown) => err);
+  const outcome = await revokeSessionWithKey({ api, credentials }, TARGET).catch((err: unknown) => err);
   return { outcome, credentials, requests: fake.requests };
 }
 
@@ -53,8 +57,8 @@ describe("the check of step-up options", () => {
       const run = await revokeWith(options);
       expect(run.outcome).toBeInstanceOf(StepUpMismatch);
       expect(run.credentials.calls).toEqual([]);
-      // The options were asked for, and nothing was sent after them.
-      expect(run.requests.map((r) => r.method)).toEqual(["POST"]);
+      // The session was read and the options were asked for, and nothing was sent after them.
+      expect(run.requests.map((r) => `${r.method} ${r.url}`)).toEqual(["GET /api/staff/me", "POST /api/staff/step-up/options"]);
     });
   }
 });
@@ -69,29 +73,44 @@ describe("revoking another session with the key", () => {
     expect(run.outcome).toBe("revoked");
     expect(run.credentials.calls.map((c) => c.kind)).toEqual(["get"]);
     expect(run.requests.map((r) => `${r.method} ${r.url} ${r.headers["x-staff-activity"]}`)).toEqual([
+      "GET /api/staff/me 1",
       "POST /api/staff/step-up/options 1",
       `DELETE /api/staff/sessions/${TARGET} 1`,
     ]);
-    expect(run.requests[0]!.body).toEqual(action);
-    expect(run.requests[1]!.body).toMatchObject({ stepUp: { id: "Y3JlZGVudGlhbC0x", type: "public-key" } });
-    expect(Object.keys(run.requests[1]!.body as object)).toEqual(["stepUp"]);
+    expect(run.requests[1]!.body).toEqual(action);
+    expect(run.requests[2]!.body).toMatchObject({ stepUp: { id: "Y3JlZGVudGlhbC0x", type: "public-key" } });
+    expect(Object.keys(run.requests[2]!.body as object)).toEqual(["stepUp"]);
+  });
+
+  test("the binding is checked against the session the browser's cookie names now, read right before the options", async () => {
+    // Another tab signed out and in again: the cookie now names another session, and the API binds the options to it. The
+    // page reads /me first, so an honest API's options pass and the key is asked; the tamper message stays for tampering.
+    const run = await revokeWith(stepUpOptions(await stepUpChallenge(OTHER_SESSION, action)), OTHER_SESSION);
+    expect(run.outcome).toBe("revoked");
+    expect(run.credentials.calls.map((c) => c.kind)).toEqual(["get"]);
+    // Options bound to the session the page opened with, which the cookie no longer names, are refused.
+    const stale = await revokeWith(stepUpOptions(await stepUpChallenge(SESSION_HANDLE, action)), OTHER_SESSION);
+    expect(stale.outcome).toBeInstanceOf(StepUpMismatch);
+    expect(stale.credentials.calls).toEqual([]);
   });
 
   test("a session already gone is no error", async () => {
     const fake = fakeFetch({
+      "GET /api/staff/me": { status: 200, body: makeMe() },
       "POST /api/staff/step-up/options": { status: 200, body: stepUpOptions(await stepUpChallenge(SESSION_HANDLE, action)) },
       [`DELETE /api/staff/sessions/${TARGET}`]: { status: 404, body: envelope("not_found") },
     });
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
-    await expect(revokeSessionWithKey({ api, credentials: fakeCredentials() }, SESSION_HANDLE, TARGET)).resolves.toBe("gone");
+    await expect(revokeSessionWithKey({ api, credentials: fakeCredentials() }, TARGET)).resolves.toBe("gone");
   });
 
   test("a confirmation the API refuses is its error", async () => {
     const fake = fakeFetch({
+      "GET /api/staff/me": { status: 200, body: makeMe() },
       "POST /api/staff/step-up/options": { status: 200, body: stepUpOptions(await stepUpChallenge(SESSION_HANDLE, action)) },
       [`DELETE /api/staff/sessions/${TARGET}`]: { status: 403, body: envelope("staff_step_up_invalid") },
     });
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
-    await expect(revokeSessionWithKey({ api, credentials: fakeCredentials() }, SESSION_HANDLE, TARGET)).rejects.toMatchObject({ code: "staff_step_up_invalid" });
+    await expect(revokeSessionWithKey({ api, credentials: fakeCredentials() }, TARGET)).rejects.toMatchObject({ code: "staff_step_up_invalid" });
   });
 });

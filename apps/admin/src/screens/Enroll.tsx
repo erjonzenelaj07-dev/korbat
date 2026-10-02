@@ -2,7 +2,8 @@ import { OpaqueId, StaffKeyName, type StaffKeyKind } from "@korbat/contracts";
 import { useState } from "react";
 import type { StaffApi } from "../api";
 import { enrollKey, type EnrollResult, type SignalApi } from "../enroll";
-import { messageFor } from "../messages";
+import { describeError, messageFor } from "../messages";
+import { signInWithKey } from "../sign-in";
 import { UserText } from "../ui";
 import type { CredentialsLike } from "../webauthn";
 
@@ -25,6 +26,13 @@ const DEAD = new Set(["staff_enrollment_invalid", "staff_key_limit"]);
 
 const NAME_RULE = "Give the key a name of 1 to 50 characters, without invisible characters.";
 
+/**
+ * The sign-in the success page runs with the key just registered (3a design, section 2: "after each enrolment the person
+ * signs in once with the new key, which fails when the key stored is not theirs"): not yet asked, under way, the key
+ * opened the console, or it did not, with the console's words for why.
+ */
+export type KeyCheck = { state: "none" } | { state: "busy" } | { state: "opened" } | { state: "failed"; message: string };
+
 export interface EnrollViewProps {
   /** Whether the link's token has the shape of one: a malformed link asks nothing of the API. */
   tokenValid: boolean;
@@ -33,8 +41,10 @@ export interface EnrollViewProps {
   /** The button whose ceremony is under way. */
   busy: StaffKeyKind | null;
   result: EnrollResult | null;
+  check: KeyCheck;
   onName(name: string): void;
   onRegister(kind: StaffKeyKind): void;
+  onCheck(): void;
 }
 
 function Refusal({ result }: { result: Extract<EnrollResult, { ok: false }> }) {
@@ -50,7 +60,7 @@ function Refusal({ result }: { result: Extract<EnrollResult, { ok: false }> }) {
   );
 }
 
-export function EnrollView({ tokenValid, name, nameError, busy, result, onName, onRegister }: EnrollViewProps) {
+export function EnrollView({ tokenValid, name, nameError, busy, result, check, onName, onRegister, onCheck }: EnrollViewProps) {
   const heading = <h2 id="enroll-title">Register a staff key</h2>;
 
   if (!tokenValid || (result && !result.ok && DEAD.has(result.code))) {
@@ -65,6 +75,21 @@ export function EnrollView({ tokenValid, name, nameError, busy, result, onName, 
   }
 
   if (result?.ok) {
+    // The check runs here, with this key alone, rather than on the sign-in page: that page shows home to a browser that
+    // already holds a staff session (the usual case for a second key) and asks no key at all.
+    if (check.state === "opened") {
+      return (
+        <section className="panel" aria-labelledby="enroll-title">
+          {heading}
+          <p role="status">
+            The staff key <UserText>{result.key.name}</UserText> opened the console: you are signed in with it.
+          </p>
+          <p>
+            <a href="/">Go to the home page</a>
+          </p>
+        </section>
+      );
+    }
     return (
       <section className="panel" aria-labelledby="enroll-title">
         {heading}
@@ -72,9 +97,15 @@ export function EnrollView({ tokenValid, name, nameError, busy, result, onName, 
           The staff key <UserText>{result.key.name}</UserText> is registered.
         </p>
         <p>Sign in with it once now, so you know that it opens the console. If it does not, tell the operator at once.</p>
-        <p>
-          <a href="/signin">Sign in</a>
-        </p>
+        <button type="button" className="primary" onClick={onCheck} disabled={check.state === "busy"} aria-busy={check.state === "busy"}>
+          Sign in with this key
+        </button>
+        {check.state === "failed" ? (
+          <div role="alert" className="error">
+            <p>{check.message}</p>
+            <p>If this key does not open the console, tell the operator at once: the key stored for you may not be this one.</p>
+          </div>
+        ) : null}
       </section>
     );
   }
@@ -157,6 +188,7 @@ export function Enroll({
   const [nameError, setNameError] = useState<string | null>(null);
   const [busy, setBusy] = useState<StaffKeyKind | null>(null);
   const [result, setResult] = useState<EnrollResult | null>(null);
+  const [check, setCheck] = useState<KeyCheck>({ state: "none" });
 
   const register = async (kind: StaffKeyKind) => {
     // The name is checked by the contracts' own rule before anything is asked of the API or the browser.
@@ -175,5 +207,32 @@ export function Enroll({
     setResult(outcome);
   };
 
-  return <EnrollView tokenValid={tokenValid} name={name} nameError={nameError} busy={busy} result={result} onName={setName} onRegister={(kind) => void register(kind)} />;
+  /**
+   * Signs in with the key just registered and with no other: the prompt's allow list is narrowed to its credential, and the
+   * sign-in runs whatever staff session the browser already holds, which the new session's cookies replace.
+   */
+  const checkKey = async () => {
+    if (!result?.ok) return;
+    setCheck({ state: "busy" });
+    try {
+      await signInWithKey({ api, credentials }, result.credentialId);
+      setCheck({ state: "opened" });
+    } catch (err) {
+      setCheck({ state: "failed", message: describeError(err) });
+    }
+  };
+
+  return (
+    <EnrollView
+      tokenValid={tokenValid}
+      name={name}
+      nameError={nameError}
+      busy={busy}
+      result={result}
+      check={check}
+      onName={setName}
+      onRegister={(kind) => void register(kind)}
+      onCheck={() => void checkKey()}
+    />
+  );
 }

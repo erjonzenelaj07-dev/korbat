@@ -35,6 +35,19 @@ export function consoleOf(deps: AuthDeps): { origin: string; rpId: string } {
   return deps.config.console;
 }
 
+/**
+ * Whether a staff key was enrolled for the console as it is configured now. A browser binds a credential to the relying
+ * party ID, not the origin, so after the console moves to another port or scheme with the same relying party ID it still
+ * offers the keys enrolled before; but audit-verify judges every confirmation against the origin and relying party ID
+ * recorded on its key, and would refuse for good each one made at the new address. So such a key opens and confirms
+ * nothing (the console's move means enrolling every key again), and the API and audit-verify judge every assertion by
+ * the same values.
+ */
+export function enrolledHere(deps: AuthDeps, key: { origin: string; rpId: string }): boolean {
+  const staffConsole = consoleOf(deps);
+  return key.origin === staffConsole.origin && key.rpId === staffConsole.rpId;
+}
+
 /** Whether staff keys and personal passkeys share a relying party ID, as both are localhost in development (3a design, section 2). */
 function sharedRelyingParty(deps: AuthDeps): boolean {
   return deps.config.console !== null && deps.config.console.rpId === deps.config.webauthn.rpId;

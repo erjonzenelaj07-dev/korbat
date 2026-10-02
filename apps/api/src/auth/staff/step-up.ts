@@ -15,7 +15,7 @@ import { validate } from "../../lib/validate";
 import { AuthError, type AuthDeps, type StaffRequestContext } from "../context";
 import { challengeKey, issueStepUpChallenge, readStepUpChallenge, spendChallenge } from "../passkeys/challenge";
 import { authenticationOptions, readResponseChallenge, verifyAuthentication, type PublicKeyCredentialRequestOptionsJSON } from "../passkeys/webauthn";
-import { consoleOf } from "./enroll";
+import { consoleOf, enrolledHere } from "./enroll";
 import { revokeForCounterRegression } from "./revoke";
 import type { ActiveStaffSession } from "./sessions";
 
@@ -41,6 +41,11 @@ export interface StaffStepUpConfirmed extends StaffStepUpRequest {
   actionHash: string;
   keyId: string;
   assertion: StaffStoredAssertion;
+  /**
+   * The challenge's expiry. audit-verify refuses a row stamped at or after it, so the action's transaction gives up rather
+   * than write its row later than that by the database's clock.
+   */
+  expiresAt: Date;
 }
 
 /** Every refusal of a confirmation before or at its signature, a confirmation made for anything else included. */
@@ -68,6 +73,9 @@ export async function stepUpOptions(deps: AuthDeps, session: ActiveStaffSession,
   // requireStaff read the session with its key live; a key revoked since then ends the session as requireStaff would, and
   // requireStaff clears both cookies on this answer as on its own.
   if (!key || key.revokedAt !== null) throw new AuthError("staff_session_required", 401);
+  // A session opened before the console moved (its relying party ID kept) holds a key that confirms nothing here: no
+  // options, so the key is never asked for a confirmation audit-verify would refuse for good.
+  if (!enrolledHere(deps, key)) throw stepUpInvalid();
   const actionHash = await stepUpActionHash(request);
   const challenge = issueStepUpChallenge(challengeKey(deps.config.authHmacKey), deps.now(), session.handle, actionHash);
   const options = await authenticationOptions({
@@ -82,9 +90,11 @@ export async function stepUpOptions(deps: AuthDeps, session: ActiveStaffSession,
 /**
  * Verifies a confirmation of `request` in `session`. The action's hash is recomputed from what the route is about to do,
  * and the challenge read from the assertion is checked against the session's handle and that hash, then spent, before
- * anything else runs. The assertion must come from the session's own key, verified against CONSOLE_ORIGIN and
- * CONSOLE_RP_ID alone. A challenge the codec refuses (forged, of another purpose, bound to another session, action,
- * target or params, or spent), an assertion from another key and one the library refuses are all staff_step_up_invalid.
+ * anything else runs. The assertion must come from the session's own key, enrolled for the console as it is configured
+ * now, and is verified against the origin and relying party ID recorded on the key, which are then CONSOLE_ORIGIN's and
+ * CONSOLE_RP_ID's, as audit-verify judges it. A challenge the codec refuses (forged, of another purpose, bound to another
+ * session, action, target or params, or spent), an assertion from another key, a key enrolled at another address and one
+ * the library refuses are all staff_step_up_invalid.
  * Only after the signature are the flags read, each refusal with its own code, as at sign-in; then 1c's counter rule, where
  * a regression revokes the key and every staff session it opened.
  */
@@ -95,24 +105,26 @@ export async function verifyStepUp(
   stepUp: AuthenticationResponseJSON,
   ctx: StaffRequestContext,
 ): Promise<StaffStepUpConfirmed> {
-  const staffConsole = consoleOf(deps);
   const now = deps.now();
   const actionHash = await stepUpActionHash(request);
   const challenge = await invalidAsStepUp(() => readResponseChallenge(stepUp));
-  // Read with a minute of its life to spare, so the audit row written after the steps below is never later than its expiry.
-  await invalidAsStepUp(() => readStepUpChallenge(challengeKey(deps.config.authHmacKey), challenge, now, session.handle, actionHash));
+  // Read with a minute of its life to spare, so the audit row written after the steps below is normally well before its
+  // expiry; the action's transaction makes sure of it by the database's clock.
+  const expiresAt = await invalidAsStepUp(() => readStepUpChallenge(challengeKey(deps.config.authHmacKey), challenge, now, session.handle, actionHash));
   await invalidAsStepUp(() => spendChallenge(deps.kv, challenge, now));
 
   const key = await deps.repo.findStaffKeyCredential(session.keyId);
   // Only the session's own key confirms, as the options' allow list said; a key revoked since requireStaff read the
   // session confirms nothing either.
   if (!key || key.revokedAt !== null || key.userId !== session.userId || stepUp.id !== key.credentialId) throw stepUpInvalid();
+  if (!enrolledHere(deps, key)) throw stepUpInvalid();
   const verified = await invalidAsStepUp(() =>
     verifyAuthentication({
       response: stepUp,
       expectedChallenge: challenge,
-      origins: [staffConsole.origin],
-      rpId: staffConsole.rpId,
+      // The key's own, which enrolledHere found equal to the console's: audit-verify judges by the same values.
+      origins: [key.origin],
+      rpId: key.rpId,
       credential: { id: key.credentialId, publicKey: key.publicKey, transports: key.transports },
     }),
   );
@@ -131,6 +143,7 @@ export async function verifyStepUp(
     keyId: key.id,
     // Exactly as the browser sent them: audit-verify checks the signature over these bytes.
     assertion: { authenticatorData: stepUp.response.authenticatorData, clientDataJSON: stepUp.response.clientDataJSON, signature: stepUp.response.signature },
+    expiresAt,
   };
 }
 
@@ -168,8 +181,9 @@ export function requireStaffStepUp(deps: AuthDeps, action: StaffStepUpAction, ta
  * DELETE /api/staff/sessions/:handle, once its step-up verified: revokes one of the person's own live staff sessions with
  * its staff_session_revoked event and its audit row, which carries the confirmation, in one transaction. False when the
  * handle names no live session of the person's, which writes nothing. When the confirming key or the account no longer
- * opens anything by then, the session that confirmed has ended: staff_session_required, and nothing is revoked. No mail:
- * the person did it themselves, with their key.
+ * opens anything by then, the session that confirmed has ended: staff_session_required, and nothing is revoked. When the
+ * row could not join the chain before the challenge's expiry (a lock held too long), nothing is revoked either:
+ * challenge_expired, and the console asks again. No mail: the person did it themselves, with their key.
  */
 export async function revokeStaffSession(deps: AuthDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: StaffRequestContext): Promise<boolean> {
   // A confirmation of anything else never revokes a session: that would be a wiring fault, not a refusal.
@@ -184,11 +198,13 @@ export async function revokeStaffSession(deps: AuthDeps, session: ActiveStaffSes
     actionHash: confirmed.actionHash,
     params: confirmed.params,
     stepUp: confirmed.assertion,
+    expiresAt: confirmed.expiresAt,
     now: deps.now(),
     ipHash: ctx.ipHash,
     requestId: ctx.requestId,
   });
   // requireStaff clears both cookies on this answer, as on its own.
   if (outcome === "ended") throw new AuthError("staff_session_required", 401);
+  if (outcome === "late") throw new AuthError("challenge_expired", 400);
   return outcome === "revoked";
 }

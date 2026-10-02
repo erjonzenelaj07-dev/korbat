@@ -1,8 +1,7 @@
-import type { AuditEntry, AuditPage } from "@korbat/contracts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { AuditEntry } from "@korbat/contracts";
+import { useEffect, useMemo, useState } from "react";
 import type { StaffApi } from "../api";
-import { createAuditReader, parsePlace } from "../audit-log";
-import { describeError } from "../messages";
+import { AUDIT_PAGE_LOADING, createAuditPager, createAuditReader, parsePlace, type AuditPageView } from "../audit-log";
 import { dateTimeSeconds, Loaded, UserText, type Loadable } from "../ui";
 
 /**
@@ -27,6 +26,24 @@ export interface AuditViewProps {
 }
 
 const PLACE_RULE = "Enter a place: a whole number from 1.";
+
+/**
+ * What the page says about the place it was opened at, once its rows have arrived. The reader answers a place with the
+ * page whose newest row is at or before it, and a place beyond the newest row with the newest page, so a first row at
+ * another place means there is no row at the place asked for: the clearest sign that rows were removed or the server
+ * restored, which the page says rather than naming the page after a place it does not hold.
+ */
+function placeNotice(at: number | null, page: Loadable<AuditEntry[]>) {
+  if (at === null || page.state !== "ready") return null;
+  const first = page.value[0]?.seq;
+  if (first === at) return <p className="quiet">{`From place ${at}, newest first.`}</p>;
+  const nearest = first === undefined ? "The audit log holds no rows." : `The nearest row before it is at place ${first}.`;
+  return (
+    <p role="alert" className="error">
+      {`There is no row at place ${at}. ${nearest} If you kept place ${at}, tell the operator: rows may have been removed, or the server restored from a backup.`}
+    </p>
+  );
+}
 
 export function AuditView({ page, hasOlder, loadingOlder, at, place, placeError, error, onLoadOlder, onPlace, onGoToPlace, onNewest }: AuditViewProps) {
   return (
@@ -67,7 +84,7 @@ export function AuditView({ page, hasOlder, loadingOlder, at, place, placeError,
           {placeError}
         </p>
       ) : null}
-      {at !== null ? <p className="quiet">{`From place ${at}, newest first.`}</p> : null}
+      {placeNotice(at, page)}
       {error ? (
         <p role="alert" className="error">
           {error}
@@ -135,53 +152,16 @@ export function AuditView({ page, hasOlder, loadingOlder, at, place, placeError,
 
 export function Audit({ api }: { api: StaffApi }) {
   const reader = useMemo(() => createAuditReader(api), [api]);
-  const [page, setPage] = useState<Loadable<AuditEntry[]>>({ state: "loading" });
-  const [cursor, setCursor] = useState<number | null>(null);
-  const [at, setAt] = useState<number | null>(null);
-  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [view, setView] = useState<AuditPageView>(AUDIT_PAGE_LOADING);
+  // Each answer is shown only on the page it was asked for (createAuditPager).
+  const pager = useMemo(() => createAuditPager(reader, setView), [reader]);
   const [place, setPlace] = useState("");
   const [placeError, setPlaceError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const alive = useRef(true);
-
-  /** Shows one page from its start: the newest rows, or those from a place. */
-  const open = async (read: () => Promise<AuditPage>, opened: number | null) => {
-    setPage({ state: "loading" });
-    setError(null);
-    try {
-      const answer = await read();
-      if (!alive.current) return;
-      setPage({ state: "ready", value: answer.entries });
-      setCursor(answer.nextCursor);
-      setAt(opened);
-    } catch (err) {
-      if (alive.current) setPage({ state: "failed", message: describeError(err) });
-    }
-  };
 
   useEffect(() => {
-    alive.current = true;
-    void open(reader.newest, null);
-    return () => {
-      alive.current = false;
-    };
-  }, [reader]);
-
-  const loadOlder = async () => {
-    if (cursor === null) return;
-    setLoadingOlder(true);
-    setError(null);
-    try {
-      const answer = await reader.older(cursor);
-      if (!alive.current) return;
-      setPage((current) => ({ state: "ready", value: [...(current.state === "ready" ? current.value : []), ...answer.entries] }));
-      setCursor(answer.nextCursor);
-    } catch (err) {
-      if (alive.current) setError(describeError(err));
-    } finally {
-      if (alive.current) setLoadingOlder(false);
-    }
-  };
+    void pager.newest();
+    return () => pager.stop();
+  }, [pager]);
 
   const goToPlace = () => {
     const target = parsePlace(place);
@@ -190,22 +170,22 @@ export function Audit({ api }: { api: StaffApi }) {
       return;
     }
     setPlaceError(null);
-    void open(() => reader.at(target), target);
+    void pager.at(target);
   };
 
   return (
     <AuditView
-      page={page}
-      hasOlder={cursor !== null}
-      loadingOlder={loadingOlder}
-      at={at}
+      page={view.page}
+      hasOlder={view.cursor !== null}
+      loadingOlder={view.loadingOlder}
+      at={view.at}
       place={place}
       placeError={placeError}
-      error={error}
-      onLoadOlder={() => void loadOlder()}
+      error={view.error}
+      onLoadOlder={() => void pager.older()}
       onPlace={setPlace}
       onGoToPlace={goToPlace}
-      onNewest={() => void open(reader.newest, null)}
+      onNewest={() => void pager.newest()}
     />
   );
 }

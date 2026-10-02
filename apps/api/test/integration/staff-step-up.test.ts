@@ -6,13 +6,13 @@ import { auditHead, auditLog, authEvents, closeDb, createDb, staffKeys, staffSes
 import { AuthError } from "../../src/auth/context";
 import { MINUTE } from "../../src/auth/limits";
 import { challengeKey, issueChallenge, issueStepUpChallenge, readChallenge, readStepUpChallenge } from "../../src/auth/passkeys/challenge";
-import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
+import { LateConfirmation, createAuthRepo, revokeConfirmedIn, type AuthRepo } from "../../src/auth/repo";
 import { revokeStaffSession, stepUpOptions, verifyStepUp } from "../../src/auth/staff/step-up";
 import { loadConfig } from "../../src/config";
 import { SoftAuthenticator, type SoftFlags } from "../auth/soft-authenticator";
 import { flowHarness, type FlowHarness } from "./flow-harness";
 import { enrolKey } from "./staff-enrolment";
-import { TEST_CONSOLE, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount } from "./staff-fixtures";
+import { TEST_CONSOLE, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount, rolledBack } from "./staff-fixtures";
 import { revokeConfirmed, revokeRequest, signedIn, stepUpAssertion } from "./staff-step-up";
 
 const APP_ORIGIN = "http://localhost:8081";
@@ -130,6 +130,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff step-up", () => {
       actionHash,
       keyId: s.keyId,
       assertion: stored(stepUp),
+      // The challenge's own expiry, by which the row must be in the chain.
+      expiresAt: new Date(now.getTime() + 10 * MINUTE),
     });
     expect((await sessionRow(s.b.handle)).revokedAt).toEqual(now);
     expect((await sessionRow(s.a.handle)).revokedAt).toBeNull();
@@ -207,6 +209,101 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff step-up", () => {
     expect((await sessionRow(s.b.handle)).revokedAt).toBeNull();
   });
 
+  test("a confirmation whose challenge has expired by the database's clock when its transaction opens is challenge_expired before any statement runs, and nothing is revoked or written", { timeout: 30_000 }, async () => {
+    // The API's clock is ten minutes behind, so the challenge is read with all its life left, but by the database's clock,
+    // which stamps the row, it expired two seconds ago: the lock bound finds nothing left, and the transaction stops there.
+    // audit-verify would refuse a row written now for good.
+    const h = harness();
+    const s = await twoSessions(h);
+    const request = revokeRequest(s.b.handle);
+    h.clock.advance(-(10 * MINUTE + 2_000));
+    const at = (await head()).seq;
+    const stepUp = await stepUpAssertion(h, s.auth, s.credentialId, s.a, request, { counter: 3 });
+    const confirmed = await verifyStepUp(h.deps, s.a, request, stepUp, ctxOf(h));
+    const err = await failure(revokeStaffSession(h.deps, s.a, confirmed, ctxOf(h)));
+    expect([err.code, err.status]).toEqual(["challenge_expired", 400]);
+    expect((await sessionRow(s.b.handle)).revokedAt).toBeNull();
+    expect(await eventsOf(s.user.id, "staff_session_revoked")).toEqual([]);
+    expect(await rowsAfter(at)).toEqual([]);
+  });
+
+  test("the statement that writes a confirmed row checks the database's clock: a row that joined the chain at or after its challenge's expiry is undone with everything before it", { timeout: 30_000 }, async () => {
+    // The revocation's statements without the lock bound that opens their transaction, as if each wait had ended just
+    // inside it and the waits together had outlasted the challenge, which expired two seconds ago by the database's clock.
+    // Only the check in the audit row's own statement is left to stop the row. Each run is a savepoint, as
+    // revokeConfirmedStaffSession's transaction is, inside a transaction that ends in a rollback, so a row audit-verify
+    // would refuse is never committed, whatever the outcome.
+    const h = harness();
+    const s = await twoSessions(h);
+    const request = revokeRequest(s.b.handle);
+    h.clock.advance(-(10 * MINUTE + 2_000));
+    const at = (await head()).seq;
+    const stepUp = await stepUpAssertion(h, s.auth, s.credentialId, s.a, request, { counter: 3 });
+    const confirmed = await verifyStepUp(h.deps, s.a, request, stepUp, ctxOf(h));
+    const input = {
+      userId: s.user.id,
+      staffSession: s.a.handle,
+      keyId: confirmed.keyId,
+      handle: s.b.handle,
+      actionHash: confirmed.actionHash,
+      params: confirmed.params,
+      stepUp: confirmed.assertion,
+      now: h.clock.now(),
+      ipHash: h.ctx.ipHash,
+      requestId: `req-${randomUUID()}`,
+    };
+    let late: unknown;
+    let afterLate: { revokedAt: Date | null; events: number } | undefined;
+    let inTime: unknown;
+    await rolledBack(authDb, async (tx) => {
+      late = await tx.transaction((sp) => revokeConfirmedIn(sp, { ...input, expiresAt: confirmed.expiresAt })).then(
+        (outcome) => outcome,
+        (err: unknown) => err,
+      );
+      // What the late run did before its row (the session revoked, the event) went with it.
+      const [session] = await tx.select({ revokedAt: staffSessions.revokedAt }).from(staffSessions).where(eq(staffSessions.handle, s.b.handle));
+      const events = await tx.select({ id: authEvents.id }).from(authEvents).where(and(eq(authEvents.userId, s.user.id), eq(authEvents.type, "staff_session_revoked")));
+      afterLate = { revokedAt: session!.revokedAt, events: events.length };
+      // The same statements with the challenge's life still ahead write: the late row was refused for its time alone.
+      inTime = await tx.transaction((sp) => revokeConfirmedIn(sp, { ...input, expiresAt: new Date(Date.now() + 10 * MINUTE) }));
+    });
+    expect(late).toBeInstanceOf(LateConfirmation);
+    expect(afterLate).toEqual({ revokedAt: null, events: 0 });
+    expect(inTime).toBe("revoked");
+    expect((await sessionRow(s.b.handle)).revokedAt).toBeNull();
+    expect(await eventsOf(s.user.id, "staff_session_revoked")).toEqual([]);
+    expect(await rowsAfter(at)).toEqual([]);
+  });
+
+  test("a confirmation stalled by a held audit head gives up before its challenge's expiry: challenge_expired, and nothing is revoked or written", { timeout: 30_000 }, async () => {
+    // Four seconds of the challenge's life left by the database's clock, while another transaction holds the head, as one
+    // left open after its audit insert would: the write waits for the head only a share of what is left, never past it.
+    const h = harness();
+    const s = await twoSessions(h);
+    const request = revokeRequest(s.b.handle);
+    h.clock.advance(-(10 * MINUTE - 4_000));
+    const at = (await head()).seq;
+    const stepUp = await stepUpAssertion(h, s.auth, s.credentialId, s.a, request, { counter: 3 });
+    const confirmed = await verifyStepUp(h.deps, s.a, request, stepUp, ctxOf(h));
+    let outcome: Promise<unknown> = Promise.resolve();
+    let gaveUpWhileHeld = false;
+    await rolledBack(migrateDb, async (tx) => {
+      await tx.execute(sql`select seq from public.audit_head for update`);
+      outcome = revokeStaffSession(h.deps, s.a, confirmed, ctxOf(h)).then(
+        () => "written",
+        (err: unknown) => err,
+      );
+      // Released after eight seconds at most, so a write that waits on would still end (and be caught below).
+      gaveUpWhileHeld = await Promise.race([outcome.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8_000))]);
+    });
+    const err = await outcome;
+    expect(gaveUpWhileHeld).toBe(true);
+    expect(err).toBeInstanceOf(AuthError);
+    expect([(err as AuthError).code, (err as AuthError).status]).toEqual(["challenge_expired", 400]);
+    expect((await sessionRow(s.b.handle)).revokedAt).toBeNull();
+    expect(await rowsAfter(at)).toEqual([]);
+  });
+
   test("only the session's own key confirms: the person's other key, another account's key, and the right key for the app's origin or relying party are staff_step_up_invalid", { timeout: 60_000 }, async () => {
     const h = harness();
     const s = await twoSessions(h);
@@ -231,6 +328,33 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff step-up", () => {
     expect((await keyRow(red.key.id)).counter).toBe(0);
     expect((await keyRow(other.keyId)).counter).toBe(2);
     expect((await sessionRow(s.b.handle)).revokedAt).toBeNull();
+  });
+
+  test("a session opened before the console moved to another address with the same relying party ID confirms nothing there: staff_step_up_invalid at the options and at the confirmation, writing nothing", { timeout: 60_000 }, async () => {
+    // Opened at port 8091 with a key enrolled there; the console then moved to 8090 and kept its relying party ID, and the
+    // browser's staff cookies, which no port separates, still name the session. A confirmation made at the new address
+    // would be a row audit-verify refuses for good, since it judges it against the origin recorded on the key.
+    const MOVED_FROM = "http://console.localhost:8091";
+    const before = flowHarness(repo, { console: { origin: MOVED_FROM, rpId: TEST_CONSOLE_RP_ID } });
+    const { user } = await newStaffAccount(authDb, repo);
+    const auth = new SoftAuthenticator();
+    const enrolled = await enrolKey(before, auth, (await issueEnrolment(migrateDb, user.id, { origin: MOVED_FROM })).token);
+    const a = (await signedIn(before, auth, enrolled.credentialId, 1)).session;
+    const b = (await signedIn(before, auth, enrolled.credentialId, 2)).session;
+    const request = revokeRequest(b.handle);
+    const moved = harness();
+    const at = (await head()).seq;
+
+    const asked = await failure(stepUpOptions(moved.deps, a, request));
+    expect([asked.code, asked.status]).toEqual(["staff_step_up_invalid", 403]);
+    // Options from before the move (the sealing key is the same), signed by the key at the new address.
+    const challenge = (await stepUpOptions(before.deps, a, request)).options.challenge;
+    const stepUp = await stepUpAssertion(moved, auth, enrolled.credentialId, a, request, { counter: 3, challenge });
+    const err = await failure(verifyStepUp(moved.deps, a, request, stepUp, ctxOf(moved)));
+    expect([err.code, err.status]).toEqual(["staff_step_up_invalid", 403]);
+    expect((await keyRow(enrolled.key.id)).counter).toBe(2);
+    expect((await sessionRow(b.handle)).revokedAt).toBeNull();
+    expect(await rowsAfter(at)).toEqual([]);
   });
 
   test("whatever the codec or the library refuses is staff_step_up_invalid, never a passkey code", { timeout: 60_000 }, async () => {

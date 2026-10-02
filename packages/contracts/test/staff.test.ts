@@ -4,6 +4,8 @@ import {
   AuditPage,
   AuditPageQuery,
   AuthenticationResponseJSON,
+  CEREMONY_CHALLENGE,
+  CHALLENGE_PURPOSES,
   DisplayName,
   PasskeyOptionsResponse,
   STAFF_AUDIT_PAGE_SIZE,
@@ -378,6 +380,49 @@ describe("the step-up action's hash and binding", () => {
       c.bytes,
     ]);
     expect(c.encodedLength).toBe(Math.ceil((c.bytes * 8) / 6));
+  });
+
+  test("the other ceremonies' layout: 58 bytes of version, purpose, expiry, nonce, a 16-byte binding and the seal", () => {
+    expect(CEREMONY_CHALLENGE).toEqual({
+      bytes: 58,
+      encodedLength: 78,
+      version: 1,
+      versionAt: 0,
+      purposeAt: 1,
+      expiryAt: 2,
+      expiryBytes: 8,
+      nonceAt: 10,
+      nonceBytes: 16,
+      bindingAt: 26,
+      bindingBytes: 16,
+      sealAt: 42,
+      sealBytes: 16,
+    });
+    const c = CEREMONY_CHALLENGE;
+    expect([c.purposeAt + 1, c.expiryAt + c.expiryBytes, c.nonceAt + c.nonceBytes, c.bindingAt + c.bindingBytes, c.sealAt + c.sealBytes]).toEqual([
+      c.expiryAt,
+      c.nonceAt,
+      c.bindingAt,
+      c.sealAt,
+      c.bytes,
+    ]);
+    expect(c.encodedLength).toBe(Math.ceil((c.bytes * 8) / 6));
+    // The two layouts share their first fields, and their lengths keep either from being read as the other.
+    expect([c.versionAt, c.purposeAt, c.expiryAt, c.nonceAt, c.bindingAt, c.version]).toEqual([
+      STAFF_STEP_UP_CHALLENGE.versionAt,
+      STAFF_STEP_UP_CHALLENGE.purposeAt,
+      STAFF_STEP_UP_CHALLENGE.expiryAt,
+      STAFF_STEP_UP_CHALLENGE.nonceAt,
+      STAFF_STEP_UP_CHALLENGE.bindingAt,
+      STAFF_STEP_UP_CHALLENGE.version,
+    ]);
+    expect(c.bytes).not.toBe(STAFF_STEP_UP_CHALLENGE.bytes);
+  });
+
+  test("each ceremony's purpose code, the step-up's among them, and no two alike", () => {
+    expect(CHALLENGE_PURPOSES).toEqual({ signin: 1, register: 2, reauth: 3, staff_signin: 4, staff_register: 5, staff_step_up: 6 });
+    expect(STAFF_STEP_UP_CHALLENGE.purpose).toBe(CHALLENGE_PURPOSES.staff_step_up);
+    expect(new Set(Object.values(CHALLENGE_PURPOSES)).size).toBe(Object.keys(CHALLENGE_PURPOSES).length);
   });
 });
 

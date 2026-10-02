@@ -106,7 +106,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the staff tables and fun
     test("refuses an unknown token, a token hash given in place of the token, a spent token and an expired one", async () => {
       const { user } = await newStaffAccount(authDb, repo);
       const live = await issueEnrolment(migrateDb, user.id);
-      const expired = await issueEnrolment(migrateDb, user.id, { expiresAt: new Date(Date.now() - 1000) });
+      // Expired ten minutes ago by Node's clock, so no gap between Node's clock and the database's, which the function
+      // reads, can make it live again.
+      const expired = await issueEnrolment(migrateDb, user.id, { expiresAt: new Date(Date.now() - 10 * 60_000) });
       const spent = await issueEnrolment(migrateDb, user.id);
       await addStaffKey(authDb, spent.token);
       const before = { keys: await keysOf(user.id), head: await head() };
@@ -299,14 +301,33 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the staff tables and fun
       expect(await keyRow(key.id)).toEqual(before);
     });
 
-    test("blanks a deleted account's key names, AAGUIDs and transports, keeping what audit-verify needs", async () => {
+    test("blanks a deleted account's revoked key names, AAGUIDs and transports, keeping what audit-verify needs", async () => {
       const { user, key } = await newStaffKey(authDb, migrateDb, repo);
       await addStaffKey(authDb, (await issueEnrolment(migrateDb, user.id)).token);
+      // As the take-down leaves them before it calls the function: the account marked deleted, every key revoked.
+      const revokedAt = new Date();
+      await authDb.update(staffKeys).set({ revokedAt }).where(eq(staffKeys.userId, user.id));
       const before = await keyRow(key.id);
       await authDb.update(users).set({ deletedAt: new Date() }).where(eq(users.id, user.id));
       const [result] = await authDb.execute<{ n: number }>(sql`select auth.forget_staff_keys(${user.id}::uuid) as n`);
       expect(result!.n).toBe(2);
       expect(await keyRow(key.id)).toEqual({ ...before, name: "", aaguid: null, transports: [] });
+    });
+
+    test("never blanks a live key, even when the auth role marks the account deleted around the call", async () => {
+      // The auth role may set and clear deleted_at, so the account's mark alone cannot guard the keys the column grants
+      // keep it from changing; a key it has not revoked (which it can never undo) is never blanked.
+      const { user, key } = await newStaffKey(authDb, migrateDb, repo);
+      const before = await keyRow(key.id);
+      const forgotten = await withLockTimeout(authDb, async (tx) => {
+        await tx.update(users).set({ deletedAt: new Date() }).where(eq(users.id, user.id));
+        const [result] = await tx.execute<{ n: number }>(sql`select auth.forget_staff_keys(${user.id}::uuid) as n`);
+        await tx.update(users).set({ deletedAt: null }).where(eq(users.id, user.id));
+        return result!.n;
+      });
+      expect(forgotten).toBe(0);
+      expect(await keyRow(key.id)).toEqual(before);
+      expect((await repo.findUserById(user.id))!.deletedAt).toBeNull();
     });
   });
 

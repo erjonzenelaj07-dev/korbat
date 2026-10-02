@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { stepUpActionHash } from "@korbat/contracts";
 import { auditHead, auditLog, closeDb, createDb, staffKeys, users, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
-import { auditVerify, checkAuditRecord, runStaffCommand, type AuditReport } from "../../src/cli/staff";
+import { AUDIT_VERIFY_PAGE_SIZE, auditVerify, checkAuditRecord, runStaffCommand, type AuditReport } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { CHAIN_VECTORS } from "../staff/chain-vectors";
@@ -225,6 +225,141 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
     });
   });
 
+  describe("rewrites by the owner that each check of the chain catches", () => {
+    /** Three new rows, as a writer inserts them, in the transaction `tx`; the newest is the head. */
+    const threeRows = async (tx: DbTx) => {
+      const first = (await insertRow(tx, "probe-a"))[0]!;
+      const middle = (await insertRow(tx, "probe-b"))[0]!;
+      const last = (await insertRow(tx, "probe-c"))[0]!;
+      return [first, middle, last] as const;
+    };
+
+    test("a row changed with only its own hash recomputed breaks its link to the next row, which a later kept place does not see", async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const [, middle, last] = await threeRows(tx);
+        await tx.update(auditLog).set({ metadata: { via: "edited" } }).where(eq(auditLog.id, middle.id));
+        // The owner recomputes the changed row's own hash over its stored prev_hash, with the database's own text.
+        await tx.execute(sql`update public.audit_log a set hash = encode(sha256(convert_to(a.prev_hash || public.audit_chain_text(a), 'UTF8')), 'hex') where a.id = ${middle.id}`);
+        const link = { place: last.chainSeq, message: `its prev_hash is not the hash of place ${middle.chainSeq}` };
+        expect((await checkAuditRecord(tx, [])).problems).toEqual([link]);
+        // The place kept after it still holds its hash: only the link check catches the change.
+        expect((await checkAuditRecord(tx, [{ seq: last.chainSeq, hash: last.hash }])).problems).toEqual([link]);
+      });
+    });
+
+    test("a row deleted from the middle leaves its place missing and the next row's link broken", async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const [first, middle, last] = await threeRows(tx);
+        await tx.delete(auditLog).where(eq(auditLog.id, middle.id));
+        expect((await checkAuditRecord(tx, [])).problems).toEqual([
+          { place: middle.chainSeq, message: `place ${middle.chainSeq} is missing` },
+          { place: last.chainSeq, message: `its prev_hash is not the hash of place ${first.chainSeq}` },
+        ]);
+      });
+    });
+
+    test("the newest rows deleted and the head moved back pass a plain run, and fail against a place kept before", async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const [first, , last] = await threeRows(tx);
+        const kept = { seq: last.chainSeq, hash: last.hash };
+        await tx.delete(auditLog).where(gt(auditLog.chainSeq, first.chainSeq));
+        await tx.update(auditHead).set({ seq: first.chainSeq, hash: first.hash }).where(eq(auditHead.id, 1));
+        expect((await checkAuditRecord(tx, [])).problems).toEqual([]);
+        expect((await checkAuditRecord(tx, [kept])).problems).toEqual([{ place: kept.seq, message: `the kept place ${kept.seq}:${kept.hash} no longer matches: no row is at that place` }]);
+      });
+    });
+
+    test("the head: missing, behind the newest row, beyond it, or with another hash", async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        await threeRows(tx);
+        await tx.delete(auditHead);
+        expect((await checkAuditRecord(tx, [])).problems).toEqual([{ place: null, message: "the audit head is missing" }]);
+      });
+      await rolledBack(migrateDb, async (tx) => {
+        const [first, middle] = await threeRows(tx);
+        await tx.update(auditHead).set({ seq: first.chainSeq, hash: first.hash }).where(eq(auditHead.id, 1));
+        expect((await checkAuditRecord(tx, [])).problems).toEqual([{ place: middle.chainSeq, message: `rows lie beyond the head's place ${first.chainSeq}, from place ${middle.chainSeq}` }]);
+      });
+      await rolledBack(migrateDb, async (tx) => {
+        const [, , last] = await threeRows(tx);
+        await tx.update(auditHead).set({ seq: last.chainSeq + 5 }).where(eq(auditHead.id, 1));
+        expect((await checkAuditRecord(tx, [])).problems).toEqual([{ place: null, message: `the head names place ${last.chainSeq + 5}, but the newest row up to it is at place ${last.chainSeq}` }]);
+      });
+      await rolledBack(migrateDb, async (tx) => {
+        const [, , last] = await threeRows(tx);
+        await tx.update(auditHead).set({ hash: "e".repeat(64) }).where(eq(auditHead.id, 1));
+        expect((await checkAuditRecord(tx, [])).problems).toEqual([{ place: last.chainSeq, message: "the head's hash is not the hash of the row at its place" }]);
+      });
+    });
+
+    test("a row moved to place 0, or beyond the head, is named", async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const [, middle] = await threeRows(tx);
+        await tx.update(auditLog).set({ chainSeq: 0 }).where(eq(auditLog.id, middle.id));
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems).toContainEqual({ place: 0, message: "its place is not in the chain, which runs from place 1" });
+        expect(report.problems).toContainEqual({ place: middle.chainSeq, message: `place ${middle.chainSeq} is missing` });
+      });
+      await rolledBack(migrateDb, async (tx) => {
+        const [, middle, last] = await threeRows(tx);
+        await tx.update(auditLog).set({ chainSeq: last.chainSeq + 10 }).where(eq(auditLog.id, middle.id));
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems).toContainEqual({ place: last.chainSeq + 10, message: `rows lie beyond the head's place ${last.chainSeq}, from place ${last.chainSeq + 10}` });
+        expect(report.problems).toContainEqual({ place: middle.chainSeq, message: `place ${middle.chainSeq} is missing` });
+      });
+    });
+
+    /**
+     * What the owner can do to plant a row the walk by place never reaches: turn the trigger off and drop the unique index
+     * on chain_seq (or its NOT NULL), then insert. The planted row is a step-up action's with no confirmation, which a walk
+     * that read it would refuse; it repeats the genuine row's prev_hash and hash, so no other row or the head changes.
+     */
+    const plant = (tx: DbTx, place: number | null, copy: { prevHash: string; hash: string }) =>
+      tx.execute(sql`insert into public.audit_log (actor_id, action, target_type, target_id, metadata, chain_version, chain_seq, prev_hash, hash)
+        values (${actorId}::uuid, 'staff_session_revoked', 'staff_session', ${randomUUID()}, '{"params": {}}'::jsonb, 1, ${place}::bigint, ${copy.prevHash}, ${copy.hash})`);
+
+    test("a second row at a place that ends a page of the walk is read and refused", { timeout: 60_000 }, async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        // Enough rows that a page of the walk ends at a place, with rows after it.
+        const page = AUDIT_VERIFY_PAGE_SIZE;
+        const short = page + 5 - (await readHead(tx)).seq;
+        if (short > 0) {
+          await tx.execute(sql`insert into public.audit_log (actor_id, action, target_type, target_id, metadata)
+            select ${actorId}::uuid, 'probe-page', 'user', gen_random_uuid()::text, '{"via": "test"}'::jsonb from generate_series(1, ${short})`);
+        }
+        const [genuine] = await tx.select().from(auditLog).where(eq(auditLog.chainSeq, page));
+        await tx.execute(sql`alter table public.audit_log disable trigger audit_chain`);
+        await tx.execute(sql`drop index public.audit_log_chain_seq_idx`);
+        // A plain index in its place, as the owner might leave it: equal places come back oldest row first, so a walk by
+        // place alone reads the genuine row and never the second.
+        await tx.execute(sql`create index audit_log_chain_seq_plain on public.audit_log (chain_seq)`);
+        await plant(tx, page, genuine!);
+        const report = await checkAuditRecord(tx, []);
+        expect(report.ok).toBe(false);
+        expect(report.problems).toContainEqual({ place: page, message: "another row is already at this place" });
+        expect(report.problems).toContainEqual({ place: page, message: "its action, staff_session_revoked, needs a step-up, and it carries none" });
+        expect(report.problems).toContainEqual({ place: null, message: "1 row is at a place another row already holds" });
+      });
+    });
+
+    test("a row with no place at all is counted and refused", { timeout: 30_000 }, async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const head = await readHead(tx);
+        const [newest] = await tx.select().from(auditLog).where(eq(auditLog.chainSeq, head.seq));
+        await tx.execute(sql`alter table public.audit_log disable trigger audit_chain`);
+        await tx.execute(sql`alter table public.audit_log alter column chain_seq drop not null`);
+        await plant(tx, null, newest!);
+        const total = (await tx.select({ n: sql<string>`count(*)::text` }).from(auditLog))[0]!.n;
+        const report = await checkAuditRecord(tx, []);
+        expect(report.ok).toBe(false);
+        expect(report.problems).toEqual([
+          { place: null, message: "1 row of the audit log has no place in the chain" },
+          { place: null, message: `the audit log holds ${total} rows, but ${head.seq} were read up to the head and 0 lie beyond it` },
+        ]);
+      });
+    });
+  });
+
   describe("step-up confirmations", () => {
     const harness = () => flowHarness(repo, { console: TEST_CONSOLE });
 
@@ -381,6 +516,37 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
         const report = await checkAuditRecord(tx, []);
         expect(report.problems).toEqual([{ place: null, message: `staff key ${key!.id} has no staff_key_added row` }]);
       });
+    });
+
+    test("a key enrolled after the head a run read, before it read the keys, is left to the next run, which checks it", { timeout: 30_000 }, async () => {
+      const connections = ownConnections();
+      try {
+        // The keys are read on the auth role right after the head; a key enrolled between the two has its staff_key_added
+        // row beyond the head this run read, so the run leaves it to the next instead of calling it a problem.
+        let enrolled: string | undefined;
+        const between = {
+          select: (fields: Parameters<Db["select"]>[0]) => ({
+            from: (table: typeof staffKeys) => ({
+              then: (resolve: (rows: unknown) => unknown, reject: (err: unknown) => unknown) =>
+                newStaffKey(authDb, migrateDb, repo)
+                  .then((added) => {
+                    enrolled = added.key.id;
+                    return connections.auth.select(fields!).from(table);
+                  })
+                  .then(resolve, reject),
+            }),
+          }),
+        } as unknown as Db;
+        const report = await auditVerify({ api: connections.api, auth: between }, []);
+        expect(enrolled).toBeDefined();
+        expect(report).toMatchObject({ ok: true, keysLeftToNextRun: 1, problems: [] });
+        // The next run reads a head beyond the key's row, and checks the key.
+        const next = await auditVerify(connections, []);
+        expect(next).toMatchObject({ ok: true, keysLeftToNextRun: 0, problems: [] });
+        expect(next.keysChecked).toBe(report.keysChecked);
+      } finally {
+        await Promise.all([closeDb(connections.api), closeDb(connections.auth)]);
+      }
     });
 
     test("a key with a second staff_key_added row fails, naming both places", async () => {

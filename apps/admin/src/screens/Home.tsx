@@ -179,7 +179,7 @@ export function Home({ me, api, credentials }: { me: StaffMe; api: StaffApi; cre
     setNotice(null);
     setError(null);
     try {
-      const outcome = await revokeSessionWithKey({ api, credentials }, me.sessionHandle, handle);
+      const outcome = await revokeSessionWithKey({ api, credentials }, handle);
       if (!alive.current) return;
       setNotice(outcome === "revoked" ? "That session is signed out." : "That session had already ended.");
       readSessions(api, alive, setSessions);

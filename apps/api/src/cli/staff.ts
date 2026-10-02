@@ -188,7 +188,8 @@ export function revokeSettings(env: Record<string, string | undefined>): RevokeS
 type Reader = Pick<Db, "select" | "execute">;
 
 /** How many rows audit-verify reads at a time. */
-const PAGE_SIZE = 1000;
+export const AUDIT_VERIFY_PAGE_SIZE = 1000;
+const PAGE_SIZE = AUDIT_VERIFY_PAGE_SIZE;
 
 /**
  * Sets the transaction up to read the record as the canonical text needs it. Times come as ISO text in UTC, which is what
@@ -202,10 +203,13 @@ async function readingSettings(q: Reader): Promise<void> {
 }
 
 /**
- * The next page of rows after place `after` (from the lowest place when null) up to place `upto` (to the end when null),
- * in chain order. The jsonb columns come as PostgreSQL prints them, which the canonical text embeds as it is.
+ * The next page of rows after the row `after` (from the lowest place when null) up to place `upto` (to the end when null),
+ * in chain order, and by id among rows that share a place. Paging on the place and the id, never the place alone, reads a
+ * second row at the place that ends a page, which the walk then refuses; on the place alone the next page would start
+ * after that place and never read it. The jsonb columns come as PostgreSQL prints them, which the canonical text embeds
+ * as it is.
  */
-function chainRows(q: Reader, after: number | null, upto: number | null) {
+function chainRows(q: Reader, after: { seq: number; id: number } | null, upto: number | null) {
   return q
     .select({
       id: auditLog.id,
@@ -226,8 +230,13 @@ function chainRows(q: Reader, after: number | null, upto: number | null) {
       hash: auditLog.hash,
     })
     .from(auditLog)
-    .where(and(after === null ? undefined : gt(auditLog.chainSeq, after), upto === null ? undefined : lte(auditLog.chainSeq, upto)))
-    .orderBy(asc(auditLog.chainSeq))
+    .where(
+      and(
+        after === null ? undefined : sql`(${auditLog.chainSeq}, ${auditLog.id}) > (${after.seq}::bigint, ${after.id}::bigint)`,
+        upto === null ? undefined : lte(auditLog.chainSeq, upto),
+      ),
+    )
+    .orderBy(asc(auditLog.chainSeq), asc(auditLog.id))
     .limit(PAGE_SIZE);
 }
 
@@ -241,7 +250,7 @@ export interface AuditProblem {
 
 export interface AuditReport {
   ok: boolean;
-  /** The rows read: every row up to the head's place, and any other row the table holds at or below it. */
+  /** The rows read: every row up to the head's place, a second row at a place included; a row with no place is counted apart. */
   rows: number;
   /** The head as audit_head held it, or null when the row is missing. */
   head: KeptPlace | null;
@@ -422,12 +431,14 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
   let rows = 0;
   let previous: KeptPlace | null = null;
   // Without a head the whole table is read, so the other problems are still named.
-  for (let after: number | null = null; ; ) {
+  for (let after: { seq: number; id: number } | null = null; ; ) {
     const page = await chainRows(q, after, head ? head.seq : null);
     for (const row of page) {
       rows++;
       const expected = previous ? previous.seq + 1 : 1;
-      if (row.chainSeq < expected) {
+      if (previous && row.chainSeq === previous.seq) {
+        problem(row.chainSeq, "another row is already at this place");
+      } else if (row.chainSeq < expected) {
         problem(row.chainSeq, "its place is not in the chain, which runs from place 1");
       } else if (row.chainSeq > expected) {
         problem(expected, row.chainSeq - expected === 1 ? `place ${expected} is missing` : `places ${expected} to ${row.chainSeq - 1} are missing`);
@@ -458,8 +469,29 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
       previous = { seq: row.chainSeq, hash: row.hash };
     }
     if (page.length < PAGE_SIZE) break;
-    after = page[page.length - 1]!.chainSeq;
+    const last = page[page.length - 1]!;
+    after = { seq: last.chainSeq, id: last.id };
   }
+
+  // Every row of the table, counted in the same view: a row the walk by place cannot reach, one with no place at all,
+  // is never read above, so the rows read and the rows beyond the head must make up the whole table, with no place
+  // held twice. The counts are compared with the walk's own, never trusted to the database's constraints, which the
+  // owner can drop.
+  const [counts] = await q
+    .select({
+      total: sql<string>`count(*)::text`,
+      placed: sql<string>`count(${auditLog.chainSeq})::text`,
+      places: sql<string>`count(distinct ${auditLog.chainSeq})::text`,
+      beyond: head ? sql<string>`(count(*) filter (where ${auditLog.chainSeq} > ${head.seq}::bigint))::text` : sql<string>`'0'`,
+    })
+    .from(auditLog);
+  const total = Number(counts!.total);
+  const unplaced = total - Number(counts!.placed);
+  const shared = Number(counts!.placed) - Number(counts!.places);
+  const beyondCount = Number(counts!.beyond);
+  if (unplaced > 0) problem(null, `${plural(unplaced, "row of the audit log has", "rows of the audit log have")} no place in the chain`);
+  if (shared > 0) problem(null, `${plural(shared, "row is", "rows are")} at a place another row already holds`);
+  if (rows + beyondCount !== total) problem(null, `the audit log holds ${total} rows, but ${rows} were read up to the head and ${beyondCount} lie beyond it`);
 
   if (head) {
     const [beyond] = await q
@@ -681,34 +713,57 @@ export interface StaffKeysListing {
 }
 
 /**
+ * Runs `read` in a read-only transaction that waits at most 10 seconds for a lock, as every staff command waits: the API's
+ * roles may lock any table they can update and hold it, and a command that gave up says so (LOCK_TIMEOUT_ADVICE).
+ */
+function readOnly<T>(db: Pick<Db, "transaction">, read: (tx: Pick<Db, "select">) => Promise<T>): Promise<T> {
+  return db.transaction(
+    async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '10s'`);
+      return read(tx);
+    },
+    { accessMode: "read only" },
+  );
+}
+
+/**
  * The staff keys of the live account at `email`, or of every live account whose role is not user; null when no live
  * account has that address. Keys and accounts are read on the auth role, the handles on the API role, which holds the
- * profiles. A key's public key and credential id are never read.
+ * profiles, each in a read-only transaction of its own that waits at most 10 seconds for a lock: keys is the runbook's
+ * check against an API under an attacker's control, which must not be able to hang it. A key's public key and
+ * credential id are never read.
  */
-export async function listStaffKeys(db: { api: Pick<Db, "select">; auth: Pick<Db, "select"> }, email: string | null): Promise<StaffKeysListing[] | null> {
-  const accounts = await db.auth
-    .select({ id: users.id, email: users.email, role: users.role })
-    .from(users)
-    .where(and(isNull(users.deletedAt), email === null ? ne(users.role, "user") : sql`lower(${users.email}) = lower(${email})`))
-    .orderBy(asc(users.email));
-  if (email !== null && accounts.length === 0) return null;
-  if (accounts.length === 0) return [];
-  const ids = accounts.map((account) => account.id);
-  const keys = await db.auth
-    .select({
+export async function listStaffKeys(db: { api: Pick<Db, "transaction">; auth: Pick<Db, "transaction"> }, email: string | null): Promise<StaffKeysListing[] | null> {
+  const read = await readOnly(db.auth, async (auth) => {
+    const accounts = await auth
+      .select({ id: users.id, email: users.email, role: users.role })
+      .from(users)
+      .where(and(isNull(users.deletedAt), email === null ? ne(users.role, "user") : sql`lower(${users.email}) = lower(${email})`))
+      .orderBy(asc(users.email));
+    if (accounts.length === 0) return { accounts, keys: [] };
+    const keys = await auth
+      .select({
       id: staffKeys.id,
       userId: staffKeys.userId,
       name: staffKeys.name,
       aaguid: staffKeys.aaguid,
       createdAt: staffKeys.createdAt,
       lastUsedAt: staffKeys.lastUsedAt,
-      revokedAt: staffKeys.revokedAt,
-      suspectAt: staffKeys.suspectAt,
-    })
-    .from(staffKeys)
-    .where(inArray(staffKeys.userId, ids))
-    .orderBy(asc(staffKeys.createdAt), asc(staffKeys.id));
-  const handles = new Map((await db.api.select({ id: profiles.id, handle: profiles.handle }).from(profiles).where(inArray(profiles.id, ids))).map((p) => [p.id, p.handle]));
+        revokedAt: staffKeys.revokedAt,
+        suspectAt: staffKeys.suspectAt,
+      })
+      .from(staffKeys)
+      .where(inArray(staffKeys.userId, accounts.map((account) => account.id)))
+      .orderBy(asc(staffKeys.createdAt), asc(staffKeys.id));
+    return { accounts, keys };
+  });
+  const { accounts, keys } = read;
+  if (email !== null && accounts.length === 0) return null;
+  if (accounts.length === 0) return [];
+  const ids = accounts.map((account) => account.id);
+  const handles = new Map(
+    (await readOnly(db.api, (api) => api.select({ id: profiles.id, handle: profiles.handle }).from(profiles).where(inArray(profiles.id, ids)))).map((p) => [p.id, p.handle]),
+  );
   return accounts.map((account) => ({
     ...account,
     handle: handles.get(account.id) ?? null,

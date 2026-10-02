@@ -247,6 +247,37 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js enroll and keys
       expect(run.lines[bare + 1]).toBe("out   no staff keys");
     });
 
+    test("while an open transaction holds a table it reads, it gives up after 10 seconds and says why, on either role", { timeout: 60_000 }, async () => {
+      // What an API under an attacker's control could do: its roles may lock any table they can update, and keys is the
+      // runbook's own check against such an API, so it must never wait without limit.
+      const { user } = await staffWithHandle();
+      for (const [db, table] of [
+        [authDb, sql`auth.users`],
+        [apiDb, sql`public.profiles`],
+      ] as const) {
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => (release = resolve));
+        let holding!: () => void;
+        const held = new Promise<void>((resolve) => (holding = resolve));
+        const stall = withLockTimeout(db, async (tx) => {
+          await tx.execute(sql`lock table ${table} in access exclusive mode`);
+          holding();
+          await released;
+        });
+        try {
+          await held;
+          const started = Date.now();
+          const run = await cli(["keys", user.email], keysEnv());
+          expect(run.code, run.text).toBe(1);
+          expect(run.text).toMatch(/keys: an open transaction holds .*stop the api service/s);
+          expect(Date.now() - started).toBeGreaterThanOrEqual(9_000);
+        } finally {
+          release();
+          await stall;
+        }
+      }
+    });
+
     test("an unknown address is an error, and keys needs both roles' URLs and nothing else", async () => {
       const run = await cli(["keys", `nobody-${randomUUID()}@korbat.local`], keysEnv());
       expect(run.code).toBe(1);
