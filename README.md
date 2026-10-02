@@ -44,15 +44,15 @@ It only matches emails of the tests' shape, `<word>-<uuid>@korbat.local`, recomp
 
 ## Full stack
 ```bash
-docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --build   # http://localhost:8080
-node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --mailpit http://localhost:58025 --terms draft-2026-09 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
+docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --build   # http://localhost:8080, and the staff console at http://localhost:8090
+node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --console http://localhost:8090 --mailpit http://localhost:58025 --terms draft-2026-09 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
 ```
 
-The smoke test signs up a throwaway account through Caddy, reads its code from Mailpit, posts and reads the post back from the public Latest timeline. It uploads a JPEG carrying a GPS position, posts it, and checks that the served file is a fresh WebP without metadata, that a symlink planted in the store from inside the worker gets a 404, and that deleting the post removes the image from disk. It checks the worker's isolation, then grants the account a staff role with the CLI and checks that its session was revoked.
+The smoke test first checks the staff console's site: its page carries the console's own policy and is never stored, and the staff API answers there (401 without a session) and nowhere else (Caddy's own 404 on the app's site). It then signs up a throwaway account through Caddy, reads its code from Mailpit, posts and reads the post back from the public Latest timeline. It uploads a JPEG carrying a GPS position, posts it, and checks that the served file is a fresh WebP without metadata, that a symlink planted in the store from inside the worker gets a 404, and that deleting the post removes the image from disk. It checks the worker's isolation, then grants the account a staff role with the CLI and checks that its session was revoked.
 
 After every sharp upgrade, add `--worst-case`: it also uploads flat-colour files at the pixel caps (48 MP 16-bit interlaced PNG, 48 MP progressive JPEG, 48 MP GIF, 16 MP AVIF), expects each to be ready without the worker being OOM-killed or restarted, and prints the worker's memory peak.
 
-Caddy listens on 8080 inside its container as its own user, proxies `/api` to the API and serves the web app with the page's security headers; `index.html` is revalidated on every load and the hashed bundles are cached for a year. The compose file keeps cloudflared, Caddy, the API and the data services on separate networks, so cloudflared reaches only Caddy and Caddy only the API.
+Caddy listens on 8080 inside its container as its own user, proxies `/api` to the API and serves the web app with the page's security headers; `index.html` is revalidated on every load and the hashed bundles are cached for a year. On 8090 it serves the staff console under the console's own policy and proxies only `/api/staff/*`, which the app's site refuses. The compose file keeps cloudflared, Caddy, the API and the data services on separate networks, so cloudflared reaches only Caddy and Caddy only the API.
 
 ## Upgrading PostgreSQL
 

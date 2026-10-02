@@ -3,7 +3,26 @@
   admin off
 }
 
+# Caddy's own 404 for an API path a site does not serve, in the API's error envelope, so the page's parser reads it as it
+# reads the API's own 404. Nothing behind it is asked.
+(api_not_found) {
+  header -Server
+  header Content-Type application/json
+  header Cache-Control no-store
+  respond `{"error":{"code":"not_found","message":"No such route"}}` 404
+}
+
 :8080 {
+  # The staff API belongs to the console's site below, on an origin of its own: the app's site never forwards it. Each of
+  # these handles matches one path, longer than /api/*, and Caddy puts such handles most specific first, so they come
+  # ahead of the API proxy below wherever they are written.
+  handle /api/staff {
+    import api_not_found
+  }
+  handle /api/staff/* {
+    import api_not_found
+  }
+
   # The API. Its own headers pass through untouched: its CSP is the strict one for JSON and images.
   handle /api/* {
     # Image uploads. The API counts bytes itself and stops at 20 MiB; this is the second line behind it.
@@ -47,6 +66,73 @@
       not path /_expo/* /assets/*
     }
     header @page Cache-Control "no-cache"
+    try_files {path} /index.html
+    file_server
+  }
+}
+
+# The staff console (3a design, section 8): a site of its own for the console's own origin, CONSOLE_ORIGIN. It serves the
+# console's page and proxies the staff API and nothing else. It is always built and always serves the page; the API alone
+# switches the console on, and while CONSOLE_ORIGIN is unset every staff path answers 404, which the page explains. Its
+# handles each match two paths or none, so Caddy keeps them in the order written: the staff API, the rest of the API, the
+# console's files.
+:8090 {
+  # The staff API, proxied as the app's site proxies /api/*. No header_up Host: the API's staff gate compares the Host the
+  # browser sent with CONSOLE_ORIGIN. Caddy still replaces whatever X-Forwarded-* headers a client sent with its own.
+  @staff path /api/staff /api/staff/*
+  handle @staff {
+    # Staff requests are small JSON. The API caps them at 64 KiB too.
+    request_body {
+      max_size 64KB
+    }
+    header -Server
+    reverse_proxy api:3000 {
+      # As on the app's site: the per-IP sign-in limits key on CF-Connecting-IP, which only cloudflared may set.
+      import /etc/caddy/cf-header.caddy
+    }
+  }
+
+  # The rest of the API is the app's, never the console's.
+  @api path /api /api/*
+  handle @api {
+    import api_not_found
+  }
+
+  # The console's page, from /console, a folder outside the app's /srv, so the app's site can never serve it. Its policy
+  # is the strict one of section 3: everything from this origin only, no inline script or style, and Trusted Types with no
+  # policy, so no HTML or script sink can be used. apps/admin/site-headers.mjs holds the same headers for the development
+  # server, and apps/admin/test/console-site.test.ts keeps the two equal.
+  handle {
+    root * /console
+    encode gzip
+    header {
+      Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types 'none'"
+      Strict-Transport-Security "max-age=31536000; includeSubDomains"
+      X-Content-Type-Options "nosniff"
+      X-Frame-Options "DENY"
+      Referrer-Policy "no-referrer"
+      Cross-Origin-Opener-Policy "same-origin"
+      Cross-Origin-Resource-Policy "same-origin"
+      # WebAuthn for the console itself only; no camera, microphone or position for anyone.
+      Permissions-Policy "camera=(), microphone=(), geolocation=(), publickey-credentials-get=(self), publickey-credentials-create=(self)"
+      -Server
+    }
+    # The hashed script and stylesheet never change under their names. Everything else, the page above all, is neither
+    # stored nor transformed: no-transform stops Cloudflare injecting scripts the policy would block on every page view.
+    # `file` holds only when the path names a file of the build, so the page answered for a missing /assets/ name (the
+    # fallback below) is never kept for a year under that name.
+    @immutable {
+      path /assets/*
+      file
+    }
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+    @page {
+      not {
+        path /assets/*
+        file
+      }
+    }
+    header @page Cache-Control "no-store, no-transform"
     try_files {path} /index.html
     file_server
   }

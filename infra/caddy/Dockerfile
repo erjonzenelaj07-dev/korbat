@@ -20,16 +20,33 @@ ARG EXPO_PUBLIC_BADGE=off
 RUN case "$EXPO_PUBLIC_BADGE" in on|off) ;; *) echo "EXPO_PUBLIC_BADGE must be on or off" >&2; exit 1;; esac
 RUN cd apps/app && EXPO_PUBLIC_TURNSTILE_SITE_KEY="$EXPO_PUBLIC_TURNSTILE_SITE_KEY" EXPO_PUBLIC_BADGE="$EXPO_PUBLIC_BADGE" npx expo export --platform web
 
+# The staff console (apps/admin), in a stage of its own: its page takes no build argument and holds no secret, and its
+# packages never meet the app's. esbuild writes dist/: index.html, favicon.svg and the hashed script and stylesheet.
+FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS console
+WORKDIR /repo
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+# pnpm verifies the repository patches named in package.json at every install, hashed into the lockfile.
+COPY patches ./patches
+# pnpm at the version and hash the root package.json names; corepack verifies the download against the hash.
+RUN corepack enable && corepack install
+COPY packages ./packages
+COPY apps/admin ./apps/admin
+RUN pnpm install --frozen-lockfile --filter @korbat/admin...
+RUN pnpm --filter @korbat/admin build
+
 FROM caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
 ARG TUNNEL=off
 COPY infra/caddy/Caddyfile /etc/caddy/Caddyfile
 # Behind the tunnel cloudflared sets CF-Connecting-IP and the API needs it; anywhere else a client could set it.
 RUN if [ "$TUNNEL" = "on" ]; then : > /etc/caddy/cf-header.caddy; else echo "header_up -CF-Connecting-IP" > /etc/caddy/cf-header.caddy; fi
 COPY --from=web /repo/apps/app/dist /srv
+# The console's site serves /console, a folder outside the app's /srv, so the app's site can never serve the console.
+COPY --from=console /repo/apps/admin/dist /console
 # The image's binary carries cap_net_bind_service as a file capability; with every capability dropped, the
-# kernel refuses to run it ("operation not permitted"). Port 8080 needs no capability, so it is removed.
+# kernel refuses to run it ("operation not permitted"). Ports 8080 and 8090 need no capability, so it is removed.
 RUN setcap -r /usr/bin/caddy
-# Caddy runs as its own user on a port it may bind without privileges; its state directories are its own.
+# Caddy runs as its own user on ports it may bind without privileges; its state directories are its own.
 RUN adduser -D -u 10001 caddy && mkdir -p /data /config && chown -R caddy:caddy /data /config
 USER caddy
-EXPOSE 8080
+# The app's site and the staff console's.
+EXPOSE 8080 8090

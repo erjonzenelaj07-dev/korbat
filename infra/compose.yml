@@ -120,6 +120,11 @@ services:
       # Passkeys. Empty values leave the API's defaults: the host of APP_ORIGIN as the RP ID and korbat as the name.
       WEBAUTHN_RP_ID: ${API_WEBAUTHN_RP_ID:-}
       WEBAUTHN_RP_NAME: ${API_WEBAUTHN_RP_NAME:-}
+      # The staff console, served by Caddy's second site: the origin staff open it at, and the RP ID staff keys are bound
+      # to (empty means the console's hostname). An empty origin switches the console off: every /api/staff path then
+      # answers 404. The migrate service gets the same two values for `staff.js enroll`.
+      CONSOLE_ORIGIN: ${API_CONSOLE_ORIGIN:-}
+      CONSOLE_RP_ID: ${API_CONSOLE_RP_ID:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store
@@ -169,8 +174,8 @@ services:
       timeout: 5s
       retries: 4
 
-  # Caddy serves the web app and proxies /api. It runs as its own user on port 8080, sees only the
-  # API, and is the only thing cloudflared can reach.
+  # Caddy serves the web app on port 8080, proxying /api, and the staff console on port 8090, proxying only
+  # /api/staff. It runs as its own user, sees only the API, and is the only thing cloudflared can reach.
   caddy:
     restart: unless-stopped
     read_only: true

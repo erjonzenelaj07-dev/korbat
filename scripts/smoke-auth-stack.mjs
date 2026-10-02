@@ -3,37 +3,42 @@
  * Smoke test of the auth and social modules in a running Compose stack, through Caddy.
  *
  * 1. The web page's CSP allows the Turnstile widget.
- * 2. Signed out, Explore answers a page that parses; its ranking is computed within a minute (the refresh
+ * 2. The staff console's site (--console): its page answers with the console's CSP, exactly, and
+ *    Cache-Control: no-store, no-transform. /api/staff/me answers 404 on the app's site, from Caddy itself,
+ *    and, signed out, 401 staff_session_required on the console's, so the API has the console on there.
+ * 3. Signed out, Explore answers a page that parses; its ranking is computed within a minute (the refresh
  *    job runs a round at start), and by the answer's own Date header it is less than 11 minutes old.
- * 3. Password sign-in for an unknown email returns invalid_credentials (argon2 runs inside the image).
- * 4. A throwaway native-app account signs up with an emailed code read from Mailpit and onboards.
- * 5. /api/me answers for it.
- * 6. It posts, the post appears in the public Latest timeline, and its profile counts one post.
- * 7. It uploads a JPEG carrying a GPS position, waits until it is ready, and posts it without text. The
+ * 4. Password sign-in for an unknown email returns invalid_credentials (argon2 runs inside the image).
+ * 5. A throwaway native-app account signs up with an emailed code read from Mailpit and onboards.
+ * 6. /api/me answers for it.
+ * 7. It posts, the post appears in the public Latest timeline, and its profile counts one post.
+ * 8. It uploads a JPEG carrying a GPS position, waits until it is ready, and posts it without text. The
  *    original upload is gone, and large.webp is served to anyone as a fresh WebP without metadata.
- * 8. A symlink to /proc/self/environ, planted in the store from inside the worker, is refused with 404.
- * 9. Deleting the post stops the image being served, and its folder leaves the store.
- * 10. The worker has only a loopback interface and a 768 MiB memory limit, and has never restarted.
- * 11. With --worst-case, flat-colour files at the pixel caps (48 MP 16-bit interlaced PNG, 48 MP
+ * 9. A symlink to /proc/self/environ, planted in the store from inside the worker, is refused with 404.
+ * 10. Deleting the post stops the image being served, and its folder leaves the store.
+ * 11. The worker has only a loopback interface and a 768 MiB memory limit, and has never restarted.
+ * 12. With --worst-case, flat-colour files at the pixel caps (48 MP 16-bit interlaced PNG, 48 MP
  *     progressive JPEG, 48 MP GIF, 16 MP AVIF) all become ready without the worker being OOM-killed or
  *     restarted, and its memory peak is printed. Run it after every sharp upgrade.
- * 12. The grant-role CLI makes it a moderator, and its session stops working.
- * 13. A second throwaway account (the first one's session is gone by now, and a deleted account could not
+ * 13. The grant-role CLI makes it a moderator, and its session stops working.
+ * 14. A second throwaway account (the first one's session is gone by now, and a deleted account could not
  *     be granted a role) edits its bio, changes its handle, downloads its export as a ZIP, posts, and
  *     deletes itself with a code read from Mailpit and its handle typed; afterwards its profile is not
  *     found, its session is gone, and its post has left the Latest timeline.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
- * at Mailpit. Makes its images with the sharp the worker uses. Tries a Turnstile refusal again for up to a
- * minute, since outbound calls can stall. Prints no codes or tokens.
+ * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
+ * Tries a Turnstile refusal again for up to a minute, since outbound calls can stall. Prints no codes or tokens.
  *
  * Usage, from the repo root:
- *   node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --mailpit http://localhost:58025 \
- *     --terms draft-2026-09 [--worst-case] -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
+ *   node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --console http://localhost:8090 \
+ *     --mailpit http://localhost:58025 --terms draft-2026-09 [--worst-case] \
+ *     -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { CONSOLE_CSP } from "../apps/admin/site-headers.mjs";
 
 const argv = process.argv.slice(2);
 const separator = argv.indexOf("--");
@@ -44,11 +49,13 @@ const option = (name) => {
   return index === -1 ? undefined : options[index + 1];
 };
 const base = option("base");
+// The staff console's site: Caddy's second site, at exactly the address API_CONSOLE_ORIGIN names, never 127.0.0.1.
+const consoleBase = option("console");
 const mailpit = option("mailpit");
 const terms = option("terms");
 const worstCase = options.includes("--worst-case");
-if (!base || !mailpit || !terms || compose.length === 0) {
-  console.error("usage: node scripts/smoke-auth-stack.mjs --base <url> --mailpit <url> --terms <version> [--worst-case] -- <docker compose command>");
+if (!base || !consoleBase || !mailpit || !terms || compose.length === 0) {
+  console.error("usage: node scripts/smoke-auth-stack.mjs --base <url> --console <url> --mailpit <url> --terms <version> [--worst-case] -- <docker compose command>");
   process.exit(2);
 }
 function stop(message) {
@@ -238,6 +245,41 @@ async function worstCaseImages(token) {
   console.log(`info worst case: the worker's memory peak is ${Math.round(peak / 1048576)} MiB of ${Math.round(worker.memory / 1048576)} MiB`);
 }
 
+/** A GET of a full URL: the status, the headers, and the body when it is JSON. */
+async function getJson(url) {
+  const res = await fetch(url);
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  return { status: res.status, headers: res.headers, body, summary: `HTTP ${res.status}${body?.error?.code ? ` ${body.error.code}` : ""}` };
+}
+
+/**
+ * The staff console's site (3a design, sections 8 and 12). Its page carries the console's own policy, the one
+ * apps/admin/site-headers.mjs defines and the Caddyfile's console site sends, and is neither stored nor transformed. The
+ * staff API answers only there: the app's site refuses it itself, with a 404 that carries no request id (the API puts one
+ * in every error it answers, so none means Caddy answered ahead of its API proxy), and the console's site hands it to the
+ * API, whose staff gate accepts the console's Host and, without a session, answers 401. A 404 there means the API has the
+ * console off (API_CONSOLE_ORIGIN empty) or API_CONSOLE_ORIGIN names another address than --console.
+ */
+async function consoleSite() {
+  const page = await fetch(`${consoleBase}/`);
+  const csp = page.headers.get("content-security-policy");
+  check("the console's page answers with the console's CSP, exactly", page.status === 200 && csp === CONSOLE_CSP, `HTTP ${page.status}, ${csp ?? "no CSP"}`);
+  const cache = page.headers.get("cache-control");
+  check("the console's page is neither stored nor transformed", cache === "no-store, no-transform", cache ?? "no Cache-Control");
+
+  const onApp = await getJson(`${base}/api/staff/me`);
+  check("the app's site answers /api/staff/me with 404", onApp.status === 404 && onApp.body?.error?.code === "not_found", onApp.summary);
+  check("the app's site refuses the staff API itself, ahead of its API proxy", onApp.status === 404 && onApp.body?.error?.requestId === undefined, onApp.body?.error?.requestId ? "the API answered" : onApp.summary);
+
+  const onConsole = await getJson(`${consoleBase}/api/staff/me`);
+  check("signed out, the console's site answers /api/staff/me with 401 staff_session_required", onConsole.status === 401 && onConsole.body?.error?.code === "staff_session_required", onConsole.summary);
+}
+
 /**
  * Explore signed out (2c design, section 13). The page's fields are checked by hand: post items only, at most the
  * signed-out page of 20, no cursor, a boolean signInForMore and computedAt null or a time. The refresh job runs a round
@@ -338,6 +380,7 @@ async function main() {
   const csp = page.headers.get("content-security-policy") ?? "";
   check("web CSP allows the Turnstile widget", csp.includes("script-src 'self' https://challenges.cloudflare.com") && csp.includes("frame-src https://challenges.cloudflare.com"));
 
+  await consoleSite();
   await explore();
 
   const unknown = await withTurnstile("/api/auth/password/signin", { email: `nobody-${randomUUID()}@korbat.local`, password: "not a real password", turnstileToken: TURNSTILE_TOKEN, deviceId, platform: "ios" });

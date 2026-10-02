@@ -31,6 +31,12 @@ jobs:
       - run: pnpm test
       - run: pnpm audit --audit-level high
       - run: pnpm --filter @korbat/api build && pnpm --filter @korbat/worker build && pnpm --filter @korbat/admin build
+      # The staff console over every screen under the console site's policy, read from the Caddyfile, in the runner's own
+      # Chrome: no browser is downloaded, and no database or API is needed.
+      - name: the console's browser check
+        run: pnpm --filter @korbat/admin test:browser
+        env:
+          KORBAT_BROWSER_CHANNEL: chrome
       - run: pnpm --filter @korbat/app exec expo export --platform web
         env:
           EXPO_PUBLIC_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
