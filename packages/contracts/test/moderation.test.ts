@@ -285,7 +285,7 @@ describe("the reasons for revealing a source", () => {
 });
 
 describe("moderation error codes", () => {
-  test("are the codes the notice routes, the intake and the decision raise", () => {
+  test("are the codes the notice routes, the intake, the decision and the console's case routes raise", () => {
     expect(ModerationErrorCode.options).toEqual([
       "notice_link_invalid",
       "notice_link_offsite",
@@ -304,6 +304,10 @@ describe("moderation error codes", () => {
       "snapshot_erased",
       "text_not_found",
       "invalid_decision",
+      "text_invalid",
+      "text_quotes_user",
+      "image_refused",
+      "reveal_refused",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

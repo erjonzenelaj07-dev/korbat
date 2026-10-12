@@ -30,6 +30,10 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   snapshot_erased: 409,
   text_not_found: 409,
   invalid_decision: 422,
+  text_invalid: 422,
+  text_quotes_user: 422,
+  image_refused: 404,
+  reveal_refused: 422,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -38,7 +42,8 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
 };
 
 // Those of the notice routes, and the first three after them, are written for the person reporting; the rest for staff,
-// whose console words them again for the screen. The human check's names no contact address: the API holds none, and the
+// whose console words them again for the screen. A recusal's words never say whether the conflict concerns the case's
+// subject or someone who reported. The human check's names no contact address: the API holds none, and the
 // app words that code itself.
 const MESSAGES: Record<ModerationErrorKind, string> = {
   notice_link_invalid: "That link does not name a post or a profile on korbat.",
@@ -58,6 +63,11 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   snapshot_erased: "The snapshot was erased. Take a fresh one and decide again.",
   text_not_found: "A text of this decision is not saved, or was used already. Save it again.",
   invalid_decision: "This decision cannot stand as it is.",
+  text_invalid: "This text cannot be saved as it is: it is too long, holds a character that cannot be kept, or does not match its digest.",
+  text_quotes_user: "This text quotes what someone wrote about this case. Describe it in your own words.",
+  // One answer for every image that is not shown, whatever the reason: sealed, frozen, erased, or not of this case.
+  image_refused: "That image is not shown.",
+  reveal_refused: "Nobody can be revealed for this item.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.

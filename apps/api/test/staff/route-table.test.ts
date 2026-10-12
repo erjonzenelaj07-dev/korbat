@@ -5,11 +5,30 @@ import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import pino from "pino";
 import { describe, expect, test } from "vitest";
-import { AuditEntry, AuditPage, CaseDecisionResponse, StaffEnrollVerifyResponse, StaffKey, StaffKeysResponse, StaffMe, StaffSession, StaffSessionsResponse } from "@korbat/contracts";
+import { z } from "zod";
+import {
+  AuditEntry,
+  AuditPage,
+  CaseDecisionResponse,
+  CaseView,
+  FindingResponse,
+  QueuePage,
+  RevealResponse,
+  StaffEnrollVerifyResponse,
+  StaffKey,
+  StaffKeysResponse,
+  StaffMe,
+  StaffOverview,
+  StaffSession,
+  StaffSessionsResponse,
+  StaffSnapshotTaken,
+  StaffTextSaved,
+  StaffTextsResponse,
+} from "@korbat/contracts";
 import { createDb } from "@korbat/db";
 import { createAccount } from "../../src/account";
 import { createApp } from "../../src/app";
-import { createAuth } from "../../src/auth";
+import { createAuth, type AuthForStaff } from "../../src/auth";
 import { MemoryKv } from "../../src/auth/kv";
 import { loadConfig } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
@@ -83,11 +102,37 @@ function build() {
     logger,
   });
   const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, rateLimitStore, config, logger });
-  const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
+  // The staff module gets the auth module's two guards with a mark on each, so the table can be read for which route
+  // stands behind which: the session guard, and the step-up of one action.
+  const guards = new Map<unknown, string>();
+  const marked = <T>(guard: T, mark: string): T => {
+    guards.set(guard, mark);
+    return guard;
+  };
+  // The session guard also counts its runs, so a test can tell a request that reached it from one answered before it.
+  const runs = { session: 0 };
+  const countedRequireStaff: AuthForStaff["requireStaff"] = async (c, next) => {
+    runs.session++;
+    return auth.forStaff.requireStaff(c, next);
+  };
+  const forStaff: AuthForStaff = {
+    ...auth.forStaff,
+    requireStaff: marked(countedRequireStaff, "session"),
+    requireStaffStepUp: (action, target) => marked(auth.forStaff.requireStaffStepUp(action, target), `step-up:${action}`),
+  };
+  const staff = createStaff({ apiDb, auth: forStaff, moderation: moderation.forStaff });
   const app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, staff, moderation });
   // What the staff module mounts at /api/staff, as createApp mounts it.
-  const staffOwn = staff.routes(CONSOLE_ORIGIN).routes.map((r) => ({ method: r.method, path: `/api/staff${r.path}` }));
-  return { app, staffOwn };
+  const mounted = staff.routes(CONSOLE_ORIGIN).routes;
+  const staffOwn = mounted.map((r) => ({ method: r.method, path: `/api/staff${r.path}` }));
+  // Each staff route with the guards in its chain: Hono lists a route once for every handler it chains.
+  const guarded = new Map<string, string[]>();
+  for (const r of mounted) {
+    const route = `${r.method} /api/staff${r.path}`;
+    const mark = guards.get(r.handler);
+    guarded.set(route, [...(guarded.get(route) ?? []), ...(mark === undefined ? [] : [mark])]);
+  }
+  return { app, staffOwn, guarded, runs };
 }
 
 const isStaffPath = (p: string) => p === "/api/staff" || p.startsWith("/api/staff/");
@@ -185,8 +230,45 @@ const roleWriterViolations = (files: { path: string; source: string }[]) => file
 /** A member of a staff answer that would name a person beyond their public handle: an address, a device, a phone or an account. */
 const PERSONAL = /email|^ip|ipHash|address|device|phone|userId|accountId|actorId|userAgent|webauthn/i;
 
+/** What memberNames writes in place of the members of a schema whose kind it cannot read. */
+const UNREAD = "a member of a kind this check cannot read";
+
+/**
+ * Every member of an answer's schema by its path, through objects, lists, unions and nullable or optional members, so a
+ * member inside a case's items or a seal's list is read as one at the top is. A kind of schema this walk does not know
+ * is listed as such (UNREAD), and the test below refuses any: whatever such a member holds would otherwise go unread.
+ *
+ * The walk reads the contracts, not the answers. That an answer holds nothing but what its contract names is held by the
+ * HTTP suites, which compare each raw answer with what its schema reads from it (http-staff-cases.test.ts).
+ */
+function memberNames(schema: unknown, path = ""): string[] {
+  const def = (schema as { _zod: { def: Record<string, unknown> } })._zod.def;
+  switch (def.type) {
+    case "object":
+      return Object.entries(def.shape as Record<string, unknown>).flatMap(([key, member]) => {
+        const name = path === "" ? key : `${path}.${key}`;
+        return [name, ...memberNames(member, name)];
+      });
+    case "array":
+      return memberNames(def.element, path);
+    case "union":
+      return [...new Set((def.options as unknown[]).flatMap((option) => memberNames(option, path)))];
+    case "nullable":
+    case "optional":
+      return memberNames(def.innerType, path);
+    case "string":
+    case "number":
+    case "boolean":
+    case "enum":
+    case "literal":
+      return [];
+    default:
+      return [`${path}: ${UNREAD} (${String(def.type)})`];
+  }
+}
+
 describe("the staff routes in the route table (3a design, section 11)", () => {
-  test("are exactly the staff module's: the gate, sign-in, enrolment, the person's own reads, sign-out, step-up, the confirmed revocation and the confirmed decision", () => {
+  test("are exactly the staff module's: the gate, sign-in, enrolment, the person's own reads, sign-out, step-up, the confirmed revocation, the confirmed decision, and the console's reads and writes on cases", () => {
     const { app } = build();
     expect(distinct(app.routes.filter((r) => isStaffPath(r.path)))).toEqual(
       [
@@ -203,8 +285,78 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/step-up/options",
         "DELETE /api/staff/sessions/:handle",
         "POST /api/staff/cases/:case/decisions",
+        "GET /api/staff/overview",
+        "GET /api/staff/queue",
+        "GET /api/staff/cases/:case",
+        "GET /api/staff/cases/:case/media/:media/:size",
+        "POST /api/staff/cases/:case/snapshots",
+        "POST /api/staff/findings",
+        "POST /api/staff/cases/:case/texts",
+        "GET /api/staff/cases/:case/texts",
+        "POST /api/staff/items/:item/reveal",
       ].sort(),
     );
+  });
+
+  test("every staff route that changes something asks for the key, but the named exceptions: enrolment, sign-in, the step-up's own options, sign-out, and saving a text, taking a snapshot and opening a finding", () => {
+    const { guarded } = build();
+    const changing = [...guarded].filter(([route]) => !route.startsWith("GET ") && !route.startsWith("ALL "));
+    const stepUps = Object.fromEntries(changing.flatMap(([route, marks]) => marks.filter((mark) => mark.startsWith("step-up:")).map((mark) => [route, mark.slice("step-up:".length)])));
+    // Each confirmed route, with the one action its key confirms.
+    expect(stepUps).toEqual({
+      "DELETE /api/staff/sessions/:handle": "staff_session_revoked",
+      "POST /api/staff/cases/:case/decisions": "case_decided",
+      "POST /api/staff/items/:item/reveal": "identity_revealed",
+    });
+    // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
+    // none of which changes anything a user sees (3c design, section 2, Free text under the step-up).
+    const unconfirmed = changing.filter(([route]) => !(route in stepUps)).map(([route]) => route);
+    expect(unconfirmed.sort()).toEqual(
+      [
+        "POST /api/staff/enroll/options",
+        "POST /api/staff/enroll/verify",
+        "POST /api/staff/signin/options",
+        "POST /api/staff/signin/verify",
+        "POST /api/staff/step-up/options",
+        "POST /api/staff/signout",
+        "POST /api/staff/cases/:case/texts",
+        "POST /api/staff/cases/:case/snapshots",
+        "POST /api/staff/findings",
+      ].sort(),
+    );
+    // Every route stands behind the staff session but enrolment and sign-in, whose credential is the link or the key.
+    const open = [...guarded].filter(([route, marks]) => !route.startsWith("ALL ") && !marks.includes("session")).map(([route]) => route);
+    expect(open.sort()).toEqual(["POST /api/staff/enroll/options", "POST /api/staff/enroll/verify", "POST /api/staff/signin/options", "POST /api/staff/signin/verify"]);
+    // And a step-up always follows the session guard, once.
+    for (const [route, marks] of guarded) if (route in stepUps) expect(marks, route).toEqual(["session", `step-up:${stepUps[route]}`]);
+  });
+
+  test("no staff route answers HEAD: on every path of the staff module a HEAD from the console's own host is the unknown route, with no body, and no session guard runs for it", async () => {
+    const { app, staffOwn, runs } = build();
+    const host = new URL(CONSOLE_ORIGIN).host;
+    // Every GET route of the module with its parameters filled in: an id, and for the image route a size it takes.
+    const fill = (routePath: string) => routePath.split("/").map((segment) => (segment === ":size" ? "small" : segment.startsWith(":") ? SAMPLE_PARAMETER : segment)).join("/");
+    const reads = [...new Set(staffOwn.filter((r) => r.method === "GET").map((r) => fill(r.path)))];
+    expect(reads).toEqual(expect.arrayContaining(["/api/staff/me", "/api/staff/sessions", "/api/staff/audit", "/api/staff/overview", "/api/staff/queue", `/api/staff/cases/${SAMPLE_PARAMETER}`, `/api/staff/cases/${SAMPLE_PARAMETER}/media/${SAMPLE_PARAMETER}/small`]));
+    // Hono would answer a HEAD with the GET route's handlers and drop the body: none of them may run.
+    const others = ["/api/staff", "/api/staff/signout", "/api/staff/findings", `/api/staff/cases/${SAMPLE_PARAMETER}/snapshots`, "/api/staff/no/such/path"];
+    for (const p of [...reads, ...others]) {
+      const res = await app.request(`${CONSOLE_ORIGIN}${p}`, { method: "HEAD", headers: { host } });
+      expect(res.status, p).toBe(404);
+      expect(await res.text(), p).toBe("");
+    }
+    expect(runs.session).toBe(0);
+    // The same paths with GET do reach the session guard, which refuses a request that carries no staff cookie.
+    for (const p of reads) {
+      const res = await app.request(`${CONSOLE_ORIGIN}${p}`, { headers: { host } });
+      expect(res.status, p).toBe(401);
+    }
+    expect(runs.session).toBe(reads.length);
+    // A HEAD that fails the gate gets the gate's own answer, as every method does: the gate still stands first.
+    expect((await app.request(`${CONSOLE_ORIGIN}/api/staff/overview`, { method: "HEAD", headers: { host: "localhost:8081" } })).status).toBe(404);
+    expect((await app.request(`${CONSOLE_ORIGIN}/api/staff/overview`, { method: "HEAD", headers: { host, origin: "http://localhost:8081" } })).status).toBe(403);
+    expect((await app.request(`${CONSOLE_ORIGIN}/api/staff/overview`, { method: "HEAD", headers: { host, "sec-fetch-site": "cross-site" } })).status).toBe(403);
+    expect(runs.session).toBe(reads.length);
   });
 
   test("hold no route of another module under /api/staff", () => {
@@ -224,6 +376,16 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "/api/staff/cases",
       `/api/staff/cases/${SAMPLE_PARAMETER}`,
       `/api/staff/cases/${SAMPLE_PARAMETER}/decisions`,
+      "/api/staff/overview",
+      "/api/staff/queue",
+      "/api/staff/findings",
+      `/api/staff/cases/${SAMPLE_PARAMETER}/texts`,
+      `/api/staff/cases/${SAMPLE_PARAMETER}/snapshots`,
+      `/api/staff/cases/${SAMPLE_PARAMETER}/media`,
+      `/api/staff/cases/${SAMPLE_PARAMETER}/media/${SAMPLE_PARAMETER}`,
+      `/api/staff/cases/${SAMPLE_PARAMETER}/media/${SAMPLE_PARAMETER}/${SAMPLE_PARAMETER}`,
+      "/api/staff/items",
+      `/api/staff/items/${SAMPLE_PARAMETER}/reveal`,
     ]) {
       expect(probes, p).toContain(p);
     }
@@ -293,13 +455,57 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
   test("no route acts as another user or reads another user's sessions, email, IP, device or phone: no staff path names an account, and no staff answer has a member that would", () => {
     const { app } = build();
     // The path parameters under /api/staff are a staff session's handle, which the revocation takes only from the
-    // person's own sessions (the step-up suites show another account's is not found), and a case's id: a case, never an
-    // account.
+    // person's own sessions (the step-up suites show another account's is not found), a case's id, an image's id with its
+    // size, and an item's id: a case, an image of its post and an item of a notice, never an account.
     const parameters = distinct(app.routes.filter((r) => isStaffPath(r.path) && r.path.includes(":")));
-    expect(parameters).toEqual(["DELETE /api/staff/sessions/:handle", "POST /api/staff/cases/:case/decisions"]);
-    const answers = { StaffMe, StaffSession, StaffKey, AuditEntry, StaffSessionsResponse, StaffKeysResponse, AuditPage, StaffEnrollVerifyResponse, CaseDecisionResponse };
-    const members = Object.entries(answers).flatMap(([name, schema]) => Object.keys(schema.shape).map((member) => `${name}.${member}`));
-    expect(members.filter((member) => PERSONAL.test(member.split(".")[1]!))).toEqual([]);
+    expect(parameters).toEqual([
+      "DELETE /api/staff/sessions/:handle",
+      "GET /api/staff/cases/:case",
+      "GET /api/staff/cases/:case/media/:media/:size",
+      "GET /api/staff/cases/:case/texts",
+      "POST /api/staff/cases/:case/decisions",
+      "POST /api/staff/cases/:case/snapshots",
+      "POST /api/staff/cases/:case/texts",
+      "POST /api/staff/items/:item/reveal",
+    ]);
+    const answers = {
+      StaffMe,
+      StaffSession,
+      StaffKey,
+      AuditEntry,
+      StaffSessionsResponse,
+      StaffKeysResponse,
+      AuditPage,
+      StaffEnrollVerifyResponse,
+      CaseDecisionResponse,
+      StaffOverview,
+      QueuePage,
+      CaseView,
+      StaffTextSaved,
+      StaffTextsResponse,
+      StaffSnapshotTaken,
+      FindingResponse,
+      RevealResponse,
+    };
+    const members = Object.entries(answers).flatMap(([name, schema]) => memberNames(schema).map((member) => `${name}.${member}`));
+    // The walk read every member of every answer: none is of a kind it has not been taught, behind which a name could hide.
+    expect(members.filter((member) => member.includes(UNREAD))).toEqual([]);
+    expect(members.filter((member) => PERSONAL.test(member.split(".").at(-1)!))).toEqual([]);
+    // Both checks catch a deliberate violation: a member of an unread kind is listed as one, at the top or inside a list,
+    // and a personal member inside one is then not seen, which is why none may be left.
+    const unread = memberNames(z.object({ when: z.date(), rows: z.array(z.object({ byId: z.record(z.string(), z.object({ email: z.string() })) })) }));
+    expect(unread).toEqual(["when", `when: ${UNREAD} (date)`, "rows", "rows.byId", `rows.byId: ${UNREAD} (record)`]);
+    expect(unread.filter((member) => member.includes(UNREAD))).toHaveLength(2);
+    expect(unread.filter((member) => PERSONAL.test(member.split(".").at(-1)!))).toEqual([]);
+    // The walk reaches the members inside lists, unions and nullable members: a source's summary, a seal's list, a snapshot.
+    expect(members).toContain("CaseView.items.source.contactLost");
+    expect(members).toContain("CaseView.decisions.actions.sealed.list.postId");
+    expect(members).toContain("CaseView.snapshots.authorHandle");
+    expect(members).toContain("CaseView.target.displayName");
+    expect(members).toContain("StaffOverview.reveals.items.handle");
+    // People are handles and a source is a summary: no answer has a member for a reporter, a notifier or a contact.
+    expect(members.filter((member) => /[.](reporter|notifier|contact)(Id)?$/i.test(member))).toEqual([]);
+    expect(memberNames(z.object({ list: z.array(z.object({ inner: z.object({ email: z.string() }).nullable() })) }))).toEqual(["list", "list.inner", "list.inner.email"]);
     // The browser's coarse label and the actor's public handle are what the console shows of a session and a row.
     expect(members).toContain("StaffSession.browser");
     expect(members).toContain("AuditEntry.actorHandle");

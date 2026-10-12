@@ -264,11 +264,6 @@ bdi {
   padding-left: 1.25rem;
 }
 
-.later {
-  margin-top: 2.5rem;
-  color: var(--muted);
-}
-
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -279,4 +274,135 @@ bdi {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+/* Moderation cases (3c design, section 8). */
+
+select,
+textarea {
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  margin: 0.25rem 0 0.75rem;
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+h4 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.lanes,
+.reveals,
+.today,
+.history,
+.seal-list {
+  padding-left: 1.25rem;
+}
+
+.plain {
+  padding-left: 0;
+  list-style: none;
+}
+
+.item,
+.decision,
+.snapshot {
+  margin: 0.75rem 0;
+}
+
+/* A banner stands above the evidence and is read before it. */
+.banner {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
+.banner p {
+  margin: 0.4rem 0;
+}
+
+/*
+ * Text someone else wrote, inside a frame that says who wrote it: the label is the console's, the text is theirs, and
+ * the border keeps the two apart.
+ */
+.frame {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid var(--line);
+  background: var(--panel);
+}
+
+.frame-label {
+  margin: 0 0 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.frame-text {
+  margin: 0 0 0.25rem;
+  white-space: pre-wrap;
+}
+
+.quiet-button {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding-left: 0;
+  list-style: none;
+}
+
+.images li {
+  width: 16rem;
+}
+
+/* Every image of a case starts as this grey box of one size, whatever the image's own size, until its person asks for it. */
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16rem;
+  height: 12rem;
+  overflow: hidden;
+  color: var(--muted);
+  background: var(--line);
+  border-radius: 6px;
+}
+
+.evidence {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* The first look at an image: blurred and grey, so its person sees what kind of image it is before they see it. */
+.evidence.blurred {
+  filter: blur(14px) grayscale(1);
+}
+
+.dialog {
+  margin: 0.75rem 0;
+  padding: 1rem;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
 }

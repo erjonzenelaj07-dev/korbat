@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   CEREMONY_CHALLENGE,
   CHALLENGE_PURPOSES,
+  FindingRequest,
+  IdentityRevealRequest,
   STAFF_AUDIT_PAGE_SIZE,
   STAFF_STEP_UP_CHALLENGE,
   StaffEnrollOptionsRequest,
@@ -10,10 +12,14 @@ import {
   StaffSessionRevokeRequest,
   StaffSignInVerifyRequest,
   StaffStepUpOptionsRequest,
+  StaffTextSaveRequest,
   stepUpActionHash,
   stepUpBinding,
+  textDigest,
   type AuditEntry,
   type AuditPage,
+  type CaseView,
+  type QueuePage,
   type StaffKey,
   type StaffMe,
   type StaffErrorCode,
@@ -21,6 +27,7 @@ import {
   type StaffStepUpActionInput,
 } from "@korbat/contracts";
 import type { z } from "zod";
+import { accountCase, CASE_ACCOUNT, CASE_FROZEN, CASE_POST, CASE_QUOTED, frozenCase, LONGEST_EXPLANATION, LONGEST_NOTE, LOOKALIKE, overview, postCase, QUEUE_ROWS } from "../case-fixtures";
 import { HOSTILE } from "../fixtures";
 
 /**
@@ -47,10 +54,42 @@ export const EXISTING_KEY_NAMES = [HOSTILE.long, HOSTILE.quote] as const;
 /** The handles the audit log's rows name, in turn; null is the system actor. */
 export const ACTOR_HANDLES = [HOSTILE.script, HOSTILE.img, HOSTILE.url, HOSTILE.quote, HOSTILE.bidi, LONGEST_HANDLE, null] as const;
 
-/** Every user-written string the console must show as text, exactly as written. */
+/** The handle the fixtures reveal for a reporter (hostile, and found nowhere else on a page), and the note the walk types on a case. */
+export const REVEALED_HANDLE = '"><a href="javascript:alert(5)">a_reporter</a>';
+export const TYPED_NOTE = `Art. 18 check: no suspicion ${HOSTILE.img}`;
+/** A link the finding form is given that names nothing live. */
+export const DEAD_LINK = "http://localhost:8081/post/00000000-0000-4000-8000-000000000000";
+/** The reason a forged save answer stands for: one the person never wrote. */
+export const FORGED_REASON = "A reason this server wrote in the person's name.";
+
+/**
+ * Every user-written string the console must show as text, exactly as written: 3a's handles, names and labels, and of the
+ * cases a text made to look like the console's own line, the longest explanation and the longest note.
+ */
 export const HOSTILE_TEXTS = [
-  ...new Set([PERSON_HANDLE, CURRENT_BROWSER, ...OTHER_BROWSERS, ...EXISTING_KEY_NAMES, TYPED_KEY_NAME, ...ACTOR_HANDLES.filter((h) => h !== null)]),
+  ...new Set([
+    PERSON_HANDLE,
+    CURRENT_BROWSER,
+    ...OTHER_BROWSERS,
+    ...EXISTING_KEY_NAMES,
+    TYPED_KEY_NAME,
+    ...ACTOR_HANDLES.filter((h) => h !== null),
+    LOOKALIKE.label,
+    LONGEST_EXPLANATION,
+    LONGEST_NOTE,
+    TYPED_NOTE,
+    REVEALED_HANDLE,
+  ]),
 ];
+
+/**
+ * A WebP of 2 by 2 pixels (lossless, 38 bytes), which the fixtures answer for every image of a case: a real image, so the
+ * browser decodes it under the console's policy as it would a stored one.
+ */
+export const FIXTURE_WEBP = Buffer.from("UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAdQvOIVr/+BiOh/AAA=", "base64");
+
+/** An image request of a case, as the console's one image site builds it. */
+export const IMAGE_PATH = /^\/api\/staff\/cases\/([0-9a-f-]{36})\/media\/([0-9a-f-]{36})\/(small|large)$/;
 
 const HOUR = 60 * 60_000;
 const IDLE_MS = 15 * 60_000;
@@ -211,7 +250,14 @@ function ceremonyChallenge(purpose: "staff_signin" | "staff_register", binding: 
   return bytes.toString("base64url");
 }
 
-type Answer = { status: number; body?: unknown; headers?: Record<string, string | string[]> };
+/**
+ * The status the API answers each moderation refusal the fixtures use with (apps/api/src/moderation/context.ts); the
+ * unit test that holds the staff statuses to the API's source holds these too.
+ */
+export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, image_refused: 404, staff_recused: 403 } as const;
+
+/** `raw` answers bytes of this type in place of JSON: an image. */
+type Answer = { status: number; body?: unknown; raw?: { type: string; bytes: Buffer }; headers?: Record<string, string | string[]> };
 
 export type FixtureApi = ReturnType<typeof createFixtureApi>;
 
@@ -243,6 +289,39 @@ export function createFixtureApi() {
     challenges: new Map<string, { purpose: "register" | "signin" | "step_up"; target?: string }>(),
     /** The handles the page revoked with its key. */
     revoked: [] as string[],
+    /** The cases the console can open: a post's, a frozen post's, an account's, and the one a quoting post links to. */
+    cases: new Map<string, CaseView>([
+      [CASE_POST, postCase()],
+      [CASE_FROZEN, frozenCase()],
+      [CASE_ACCOUNT, accountCase()],
+      [CASE_QUOTED, postCase({ id: CASE_QUOTED, items: [], decisions: [], notes: [] })],
+    ]),
+    /** Every image the page asked for, by its path, in order. */
+    imageRequests: [] as string[],
+    /**
+     * The next image is refused though the page was right to ask for it: what the API answers when a report froze the
+     * post between the page's read of the case and the browser's request for the image.
+     */
+    refuseNextImage: false,
+    /**
+     * The next read of a case is refused as a recusal: what the API answers when an account linked to the person came
+     * to take part in the case since the page read it.
+     */
+    recuseNextCaseRead: false,
+    /** Every text the page saved, with the digest it sent and the server recomputed. */
+    texts: [] as { caseId: string; kind: string; text: string; digest: string }[],
+    /**
+     * The next save is answered with the digest of another text, one of this server's own choosing which it stores as
+     * the person's: what an API under an attacker's control would answer to have the key confirm a reason nobody wrote.
+     */
+    hostileNextSave: false,
+    /** The digests such answers carried. An action the page then builds from one of them is its fault. */
+    forgedDigests: [] as string[],
+    /** Every reveal the key confirmed: the item and the digest of its saved reason. */
+    reveals: [] as { itemId: string; reasonDigest: string }[],
+    /** Every finding the page opened. */
+    findings: [] as FindingRequest[],
+    snapshotsTaken: 0,
     stepUpOptionsServed: 0,
     requests: [] as RequestRecord[],
     problems: [] as string[],
@@ -416,10 +495,117 @@ export function createFixtureApi() {
     }
 
     // Everything below needs a staff session.
-    const routes = new Set(["GET /api/staff/me", "GET /api/staff/sessions", "GET /api/staff/keys", "GET /api/staff/audit", "POST /api/staff/signout", "POST /api/staff/step-up/options"]);
+    const routes = new Set([
+      "GET /api/staff/me",
+      "GET /api/staff/sessions",
+      "GET /api/staff/keys",
+      "GET /api/staff/audit",
+      "POST /api/staff/signout",
+      "POST /api/staff/step-up/options",
+      "GET /api/staff/overview",
+      "GET /api/staff/queue",
+      "POST /api/staff/findings",
+    ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
-    if (!routes.has(key) && !revoke) throw new Refusal(404, "not_found");
+    const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts))?$/.exec(url.pathname);
+    const image = req.method === "GET" ? IMAGE_PATH.exec(url.pathname) : null;
+    const reveal = req.method === "POST" ? /^\/api\/staff\/items\/([0-9a-f-]{36})\/reveal$/.exec(url.pathname) : null;
+    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
+
+    // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
+    if (key === "GET /api/staff/overview") return { status: 200, body: overview({ reveals: { total: 1 + state.reveals.length, items: [{ at: iso(now - 26 * HOUR), handle: HOSTILE.script, caseId: CASE_POST }] } }) };
+    if (key === "GET /api/staff/queue") {
+      // Two pages: the two urgent cases, then the rest behind a cursor.
+      const cursor = url.searchParams.get("cursor");
+      if (cursor !== null && cursor !== "second-page") throw new Refusal(400, "invalid_request");
+      const page: QueuePage = cursor === null ? { cases: QUEUE_ROWS.slice(0, 2), nextCursor: "second-page" } : { cases: QUEUE_ROWS.slice(2), nextCursor: null };
+      return { status: 200, body: page };
+    }
+    if (key === "POST /api/staff/findings") {
+      const finding = parse(FindingRequest, body, key);
+      if (finding.target.kind === "link" && finding.target.url === DEAD_LINK) throw new Refusal(404, "not_found");
+      state.findings.push(finding);
+      return { status: 201, body: { caseId: CASE_POST } };
+    }
+    if (image) {
+      const found = state.cases.get(image[1]!);
+      state.imageRequests.push(url.pathname);
+      if (state.refuseNextImage) {
+        state.refuseNextImage = false;
+        throw new Refusal(MODERATION_REFUSAL_STATUS.image_refused, "image_refused");
+      }
+      // As gate V and the image route answer: only an image of the case's own post, and none while it is frozen.
+      const listed = found?.snapshots.some((snapshot) => !snapshot.withheld && snapshot.media?.some((media) => media.id === image[2]));
+      if (!found || !found.imagesAllowed || !listed) {
+        problem(`${key}: an image the console must not ask for`);
+        throw new Refusal(MODERATION_REFUSAL_STATUS.image_refused, "image_refused");
+      }
+      return { status: 200, raw: { type: "image/webp", bytes: FIXTURE_WEBP }, headers: { "cache-control": "private, no-store", "x-content-type-options": "nosniff" } };
+    }
+    if (ofCase) {
+      const found = state.cases.get(ofCase[1]!);
+      if (!found) throw new Refusal(404, "not_found");
+      if (ofCase[2] === undefined && req.method === "GET") {
+        if (state.recuseNextCaseRead) {
+          state.recuseNextCaseRead = false;
+          throw new Refusal(MODERATION_REFUSAL_STATUS.staff_recused, "staff_recused");
+        }
+        return { status: 200, body: found };
+      }
+      if (ofCase[2] === "snapshots" && req.method === "POST") {
+        state.snapshotsTaken += 1;
+        // The fresh snapshot holds the account's fields as they read now; the case then carries it first.
+        const [newest] = found.snapshots;
+        if (found.target.type === "account" && newest && !newest.withheld) {
+          found.snapshots = [{ ...newest, id: randomUUID(), takenAt: iso(Date.now()), handle: found.target.handle, displayName: found.target.displayName, bio: found.target.bio }, ...found.snapshots];
+        }
+        return { status: 200, body: { id: found.snapshots[0]!.id, digest: found.snapshots[0]!.digest } };
+      }
+      if (ofCase[2] === "texts" && req.method === "GET") return { status: 200, body: { texts: [] } };
+      if (ofCase[2] === "texts" && req.method === "POST") {
+        const saved = parse(StaffTextSaveRequest, body, key);
+        // No text is saved empty: the page's own buttons and its save never send one.
+        if (saved.text.trim() === "") {
+          problem(`${key}: an empty text`);
+          throw new Refusal(400, "invalid_request");
+        }
+        // The server recomputes the digest: the console must have sent the digest of exactly the text it sent.
+        if ((await textDigest(saved.salt, saved.text)) !== saved.digest) {
+          problem(`${key}: a digest that is not the text's`);
+          throw new Refusal(MODERATION_REFUSAL_STATUS.text_invalid, "text_invalid");
+        }
+        const id = randomUUID();
+        if (state.hostileNextSave) {
+          state.hostileNextSave = false;
+          // The forged case: a text of this server's own is stored in the person's name, and its digest answered. A
+          // reveal confirmed under that digest would go through here, so only the page's own check stops it.
+          const digest = await textDigest(saved.salt, FORGED_REASON);
+          state.texts.push({ caseId: found.id, kind: saved.kind, text: FORGED_REASON, digest });
+          state.forgedDigests.push(digest);
+          return { status: 201, body: { id, digest } };
+        }
+        state.texts.push({ caseId: found.id, kind: saved.kind, text: saved.text, digest: saved.digest });
+        if (saved.kind === "note") found.notes = [...found.notes, { id, staffHandle: PERSON_HANDLE, createdAt: iso(Date.now()), text: saved.text }];
+        return { status: 201, body: { id, digest: saved.digest } };
+      }
+      throw new Refusal(404, "not_found");
+    }
+    if (reveal) {
+      const itemId = reveal[1]!;
+      const input = parse(IdentityRevealRequest, body, "POST /api/staff/items/:item/reveal");
+      const issued = clientData(input.stepUp.response.clientDataJSON, "webauthn.get", "step_up", "staff_step_up_invalid");
+      if (issued.target !== itemId || input.stepUp.id !== session.credentialId) {
+        problem(`reveal ${itemId}: an assertion for ${String(issued.target)} from ${input.stepUp.id}`);
+        throw refuse("staff_step_up_invalid");
+      }
+      const owner = [...state.cases.values()].find((view) => view.items.some((item) => item.id === itemId));
+      // The reason must be one the page saved on the item's case, and used once.
+      const reason = state.texts.find((text) => text.kind === "reveal_reason" && text.digest === input.reasonDigest && text.caseId === owner?.id);
+      if (!owner || !reason || state.reveals.some((done) => done.reasonDigest === input.reasonDigest)) throw new Refusal(MODERATION_REFUSAL_STATUS.text_not_found, "text_not_found");
+      state.reveals.push({ itemId, reasonDigest: input.reasonDigest });
+      return { status: 200, body: { handle: REVEALED_HANDLE, name: null } };
+    }
 
     if (key === "GET /api/staff/me") return { status: 200, body: me(session) };
     if (key === "GET /api/staff/sessions") {
@@ -440,10 +626,16 @@ export function createFixtureApi() {
     }
     if (key === "POST /api/staff/step-up/options") {
       const action = parse(StaffStepUpOptionsRequest, body, key);
-      if (!state.sessions.has(action.target.id)) throw new Refusal(404, "not_found");
+      const known = action.action === "identity_revealed" ? [...state.cases.values()].some((view) => view.items.some((item) => item.id === action.target.id)) : state.sessions.has(action.target.id);
+      if (!known) throw new Refusal(404, "not_found");
+      // The page builds a reveal's params from the digest it computed itself: one a save's answer carried never gets here.
+      const underDigest = action.action === "identity_revealed" ? action.params.reasonDigest : null;
+      if (typeof underDigest === "string" && state.forgedDigests.includes(underDigest)) problem(`${key}: a reveal under a digest the page did not compute`);
       state.stepUpOptionsServed += 1;
-      // The mismatched case: an API that asks the key to confirm the revocation of this very session instead of the one chosen.
-      const bound = state.mismatchNextStepUp ? { ...action, target: { ...action.target, id: session.handle } } : action;
+      // The mismatched case: an API that asks the key to confirm the revocation of this very session instead of the one
+      // chosen, or, for a reveal, the reveal of another item than the one chosen.
+      const other = action.action === "identity_revealed" ? randomUUID() : session.handle;
+      const bound = state.mismatchNextStepUp ? { ...action, target: { ...action.target, id: other } } : action;
       state.mismatchNextStepUp = false;
       const challenge = await stepUpChallenge(session.handle, bound);
       state.challenges.set(challenge, { purpose: "step_up", target: bound.target.id });
@@ -506,6 +698,11 @@ export function createFixtureApi() {
     }
     state.requests.push({ method: req.method ?? "", path: `${url.pathname}${url.search}`, status: answer.status, activity: req.headers["x-staff-activity"] === "1" });
     const headers: Record<string, string | string[]> = { "cache-control": "no-store", ...answer.headers };
+    if (answer.raw) {
+      res.writeHead(answer.status, { ...headers, "content-type": answer.raw.type, "content-length": String(answer.raw.bytes.length) });
+      res.end(answer.raw.bytes);
+      return;
+    }
     if (answer.body === undefined) {
       res.writeHead(answer.status, headers);
       res.end();

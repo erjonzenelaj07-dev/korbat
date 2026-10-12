@@ -1,4 +1,4 @@
-import { STAFF_STEP_UP_CHALLENGE, StaffStepUpOptionsRequest, stepUpActionHash, stepUpBinding } from "@korbat/contracts";
+import { STAFF_STEP_UP_CHALLENGE, StaffStepUpOptionsRequest, stepUpActionHash, stepUpBinding, type AuthenticationResponseJSON, type IdentityRevealedParams } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
 import { messageFor } from "./messages";
 import { authenticationResponseToJSON, ceremonyFailure, fromBase64url, requestOptionsFromJSON, type CredentialsLike } from "./webauthn";
@@ -55,14 +55,24 @@ export function sessionRevokeAction(handle: string): StaffStepUpOptionsRequest {
 }
 
 /**
- * "Sign out that session", confirmed by the key: the session's handle read from a marked /me right before, since the API
- * binds the challenge to the session the request's cookie names, which another tab's sign-in may have replaced since the
- * page read its session; then options for exactly this action, asked right before the key (the API reads a step-up
- * challenge only while more than a minute of its ten is left), checked, signed, then sent with the revocation. "gone"
- * when the session had already ended. Every request is marked: the person clicked.
+ * The action that reveals who sent an item: the item's id as the target and, as params, the reason's category and the
+ * digest of the reason the person saved. The console builds it from what it shows, with the contracts' schema, so the
+ * binding it checks before it asks the key is its own.
  */
-export async function revokeSessionWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, targetHandle: string): Promise<"revoked" | "gone"> {
-  const action = sessionRevokeAction(targetHandle);
+export function revealAction(itemId: string, params: IdentityRevealedParams): StaffStepUpOptionsRequest {
+  return StaffStepUpOptionsRequest.parse({ action: "identity_revealed", target: { type: "intake_item", id: itemId }, params });
+}
+
+/**
+ * One action confirmed by the key (3c design, section 8): the session's handle read from a marked /me right before,
+ * since the API binds the challenge to the session the request's cookie names, which another tab's sign-in may have
+ * replaced since the page read its session; then options for exactly this action, asked right before the key (the API
+ * reads a step-up challenge only while more than a minute of its ten is left), checked against what the page chose,
+ * signed, and handed to `send`, which sends the action's own request with the assertion. The only place the console asks
+ * a key to confirm anything: the revocation of a session, a decision, a review and a reveal all go through it. Every
+ * request is marked: the person clicked.
+ */
+export async function confirmWithKey<T>(deps: { api: StaffApi; credentials: CredentialsLike }, action: StaffStepUpOptionsRequest, send: (stepUp: AuthenticationResponseJSON) => Promise<T>): Promise<T> {
   const { sessionHandle } = await deps.api.me({ activity: true });
   const { options } = await deps.api.stepUpOptions(action, { activity: true });
   await checkStepUpOptions(options, sessionHandle, action);
@@ -72,13 +82,29 @@ export async function revokeSessionWithKey(deps: { api: StaffApi; credentials: C
   } catch (err) {
     throw ceremonyFailure(err);
   }
-  const stepUp = authenticationResponseToJSON(credential);
-  try {
-    await deps.api.revokeSession(action.target.id, { stepUp }, { activity: true });
-    return "revoked";
-  } catch (err) {
-    // The API answers a handle that names no live session of the person's as the app does: 404.
-    if (err instanceof ApiError && err.status === 404 && err.code === "not_found") return "gone";
-    throw err;
-  }
+  return send(authenticationResponseToJSON(credential));
+}
+
+/** "Sign out that session", confirmed by the key. "gone" when the session had already ended. */
+export async function revokeSessionWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, targetHandle: string): Promise<"revoked" | "gone"> {
+  const action = sessionRevokeAction(targetHandle);
+  return confirmWithKey(deps, action, async (stepUp): Promise<"revoked" | "gone"> => {
+    try {
+      await deps.api.revokeSession(action.target.id, { stepUp }, { activity: true });
+      return "revoked";
+    } catch (err) {
+      // The API answers a handle that names no live session of the person's as the app does: 404.
+      if (err instanceof ApiError && err.status === 404 && err.code === "not_found") return "gone";
+      throw err;
+    }
+  });
+}
+
+/**
+ * "Reveal who sent this", confirmed by the key: the reveal of the item with the category and the digest of the saved
+ * reason. Answers the reporter's handle or the notifier's given name; both are null when the name was forgotten.
+ */
+export function revealWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, itemId: string, params: IdentityRevealedParams) {
+  const action = revealAction(itemId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.reveal(action.target.id, { ...params, stepUp }, { activity: true }));
 }

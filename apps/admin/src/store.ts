@@ -2,7 +2,7 @@ import type { StaffMe } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
 import { createIdleTimer, type Clock, type IdleWarning } from "./idle";
 import { messageFor } from "./messages";
-import { parseRoute, type ConsolePath, type Route } from "./router";
+import { caseHref, parseRoute, type CaseId, type ConsolePath, type Route } from "./router";
 
 /**
  * The console's state across its screens (3a design, section 9): the address, the session the page holds, and the idle
@@ -64,7 +64,7 @@ export function createConsoleStore(deps: ConsoleStoreDeps) {
     },
   });
 
-  const go = (path: ConsolePath, how: "push" | "replace") => {
+  const go = (path: string, how: "push" | "replace") => {
     if (how === "push") deps.history.pushState(null, "", path);
     else deps.history.replaceState(null, "", path);
     set({ path, route: parseRoute(path) });
@@ -129,6 +129,9 @@ export function createConsoleStore(deps: ConsoleStoreDeps) {
 
     /** A link inside the console: a new history entry, and the page for it. */
     navigate: (path: ConsolePath) => go(path, "push"),
+
+    /** A link to a case: its address is built from a checked id, and from nothing else. */
+    openCase: (id: CaseId) => go(caseHref(id), "push"),
 
     /** The browser went back or forward. Back to the sign-in page with a live session is home. */
     popped(path: string) {

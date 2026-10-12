@@ -15,11 +15,19 @@ import { staffGate } from "./gate";
  * the 404 of an unknown route there too. Behind it, every route but enrolment and sign-in stands behind requireStaff.
  * Handlers only validate, call the auth module's staff interface or the audit reader, and shape the answer. A route that
  * changes something stands behind requireStaffStepUp as well, which verifies the key's confirmation of exactly what the
- * route is about to do; sign-out alone needs none.
+ * route is about to do; sign-out alone needs none. No route answers a HEAD request (below).
  */
 export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, moderation: ModerationForStaff, readAudit: (query: AuditPageQuery) => Promise<AuditPage>) {
   const routes = new Hono<AppEnv>();
   routes.use("*", staffGate(consoleOrigin));
+
+  // No staff route answers HEAD. Hono answers a HEAD request with the handlers of the path's GET route and drops the
+  // body, so the whole read would run with nothing shown to anyone: a session read and, on a marked request, its idle
+  // end moved; a case's read written to the access log and counted against the day's limit; an image's file opened and
+  // logged as viewed. The console never sends HEAD. So behind the gate, which every request passes first, and before any
+  // route, a HEAD on every path is the unknown route, as any method is on a path that does not take it: no session is
+  // read, no row written, no limit counted and no file opened.
+  routes.use("*", async (c, next) => (c.req.method === "HEAD" ? c.notFound() : next()));
 
   // The client's address is hashed before any flow sees it, and the request's id goes to the audit rows it writes.
   const requestContext = (c: Context<AppEnv>): StaffRequestContext => ({

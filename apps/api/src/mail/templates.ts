@@ -196,6 +196,26 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only alert.",
       ]);
     }
+    case "moderation_reads": {
+      // A staff account opened as many different cases today as one account may (3c design, section 7.3): every staff
+      // account is told, the account itself included, since a stolen key reads at the speed of requests.
+      const who = `@${need(data, "handle")}`;
+      return staffMail("korbat: a staff account reached its daily case limit", [
+        `The staff account ${who} opened ${need(data, "limit")} different cases today and cannot open others until midnight UTC.`,
+        `Every staff account gets this email. If ${who} is your account and you did not open them, someone else holds your key: tell the operator at once.`,
+        "If that was not expected, ask them. The operator raises the limit with staff.js limits.",
+      ]);
+    }
+    case "moderation_reveal": {
+      // Every reveal of who sent a report or a notice (3c design, section 7.3), to every staff account: a reveal cannot
+      // be undone. It names the staff account, the time and the day's count, never the case or the person revealed.
+      const who = `@${need(data, "handle")}`;
+      return staffMail("korbat: a staff account revealed who sent a report", [
+        `The staff account ${who} revealed who sent a report or notice at ${need(data, "time")}. That is ${need(data, "count")} of the ${need(data, "limit")} reveals one staff account may make today (UTC).`,
+        `Every staff account gets this email. If ${who} is your account and you did not reveal it, someone else holds your key: tell the operator at once.`,
+        "The staff console's home screen lists every reveal of the last 30 days with its case. If this one was not expected, ask them; if their key may be in someone else's hands, the operator revokes it with staff.js revoke.",
+      ]);
+    }
   }
 }
 

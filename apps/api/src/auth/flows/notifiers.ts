@@ -30,8 +30,26 @@ export interface NoticeReceivedMessage {
 export type NotifierMessage = NoticeReceivedMessage;
 export type AccountMessage = NoticeReceivedMessage;
 
-/** The staff alerts: counts and times only, never a link or content. */
-export type StaffMessage = { template: "moderation_urgent"; count: number; oldest: Date };
+/**
+ * The staff alerts: counts, times and a staff account's public handle, never a link or content. The urgent lane's alert;
+ * the staff account that reached its daily case limit; and every reveal of who sent a report, with the day's count.
+ */
+export type StaffMessage =
+  | { template: "moderation_urgent"; count: number; oldest: Date }
+  | { template: "moderation_reads"; handle: string; limit: number }
+  | { template: "moderation_reveal"; handle: string; at: Date; count: number; limit: number };
+
+/** A staff alert's template data: every member as the text the template prints. */
+function staffData(message: StaffMessage): Record<string, string> {
+  switch (message.template) {
+    case "moderation_urgent":
+      return { count: String(message.count), oldest: noticeTime(message.oldest) };
+    case "moderation_reads":
+      return { handle: message.handle, limit: String(message.limit) };
+    case "moderation_reveal":
+      return { handle: message.handle, time: noticeTime(message.at), count: String(message.count), limit: String(message.limit) };
+  }
+}
 
 export type NotifierMailResult = "sent" | "folded" | "suppressed" | "no_address" | "forgotten" | "refused";
 export type AccountMailResult = "sent" | "suppressed" | "no_address" | "refused";
@@ -147,7 +165,7 @@ export async function mailAccount(deps: AuthDeps, userId: string, message: Accou
  * applies no throttle: the moderation module keeps every throttle, as a key in the shared limit store.
  */
 export async function mailStaff(deps: AuthDeps, message: StaffMessage): Promise<number> {
-  const data = { count: String(message.count), oldest: noticeTime(message.oldest) };
+  const data = staffData(message);
   let addresses: string[];
   try {
     addresses = await deps.repo.liveStaffAddresses();

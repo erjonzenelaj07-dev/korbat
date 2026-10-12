@@ -25,9 +25,12 @@ export type TemplateName =
   | "staff_session_started"
   | "staff_key_suspect"
   | "staff_keys_revoked"
-  // Moderation (3c design, section 7.15): the receipt of a report or a notice, and the staff alert for the urgent lane.
+  // Moderation (3c design, section 7.15): the receipt of a report or a notice, and the staff alerts for the urgent lane,
+  // for a staff account that reached its daily case limit and for every reveal of who sent a report.
   | "notice_received"
-  | "moderation_urgent";
+  | "moderation_urgent"
+  | "moderation_reads"
+  | "moderation_reveal";
 
 export interface MailMessage {
   to: string;

@@ -26,8 +26,11 @@ export const HOSTILE_ESCAPED = {
   quote: "&quot;&gt;&lt;svg onload=alert(4)&gt;",
 } as const;
 
-/** The only addresses the console ever links to; none is built from data. */
-export const CONSOLE_PATHS = ["/", "/audit", "/signin"];
+/** The only addresses the console links to by name; none is built from data. A case's address is built from a checked id (CASE_PATH). */
+export const CONSOLE_PATHS = ["/", "/audit", "/signin", "/queue", "/appeals"];
+
+/** A case's address in the console: the one address built from a value, and only from a lower-case uuid. */
+export const CASE_PATH = /^\/cases\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Every href attribute in rendered HTML. */
 export function hrefs(html: string): string[] {

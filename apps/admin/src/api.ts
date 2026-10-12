@@ -1,22 +1,34 @@
 import {
   AuditPage,
+  CaseView,
   ErrorEnvelope,
+  FindingResponse,
+  QueuePage,
+  RevealResponse,
   StaffEnrollOptionsResponse,
   StaffEnrollVerifyResponse,
   StaffKeysResponse,
   StaffMe,
+  StaffOverview,
   StaffSessionsResponse,
   StaffSignInOptionsResponse,
   StaffSignInVerifyResponse,
+  StaffSnapshotTaken,
   StaffStepUpOptionsResponse,
+  StaffTextSaved,
+  StaffTextsResponse,
+  type FindingRequest,
+  type IdentityRevealRequest,
   type StaffEnrollOptionsRequest,
   type StaffEnrollVerifyRequest,
   type StaffSessionRevokeRequest,
   type StaffSignInVerifyRequest,
   type StaffStepUpOptionsRequest,
+  type StaffTextSaveRequest,
 } from "@korbat/contracts";
 import type { z } from "zod";
 import { messageFor } from "./messages";
+import { isLowerUuid, type CaseId } from "./router";
 
 /**
  * The console's calls to its API (3a design, sections 7 and 9). Every call goes to /api/staff/* on the console's own
@@ -179,5 +191,21 @@ export function createStaffApi(deps: StaffApiDeps) {
     /** The handle must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     revokeSession: (handle: string, body: StaffSessionRevokeRequest, call: Call = {}) =>
       request<void>("DELETE", `/api/staff/sessions/${encodeURIComponent(handle)}`, null, call, body),
+
+    // Moderation cases (3c design, section 7.3). A case's address is built from a checked id; every other value goes in
+    // a body or, for the queue's cursor, is one the API itself handed out, encoded.
+    overview: (call: Call = {}) => request("GET", "/api/staff/overview", StaffOverview, call),
+    /** A page of the queue. Its refreshes carry no mark: they are the page's own, never its person's. */
+    queue: (cursor: string | null, call: Call = {}) => request("GET", `/api/staff/queue${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, QueuePage, call),
+    caseView: (id: CaseId, call: Call = {}) => request("GET", `/api/staff/cases/${id}`, CaseView, call),
+    takeSnapshot: (id: CaseId, call: Call = {}) => request("POST", `/api/staff/cases/${id}/snapshots`, StaffSnapshotTaken, call, {}),
+    saveText: (id: CaseId, body: StaffTextSaveRequest, call: Call = {}) => request("POST", `/api/staff/cases/${id}/texts`, StaffTextSaved, call, body),
+    texts: (id: CaseId, call: Call = {}) => request("GET", `/api/staff/cases/${id}/texts`, StaffTextsResponse, call),
+    openFinding: (body: FindingRequest, call: Call = {}) => request("POST", "/api/staff/findings", FindingResponse, call, body),
+    /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
+    reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {
+      if (!isLowerUuid(itemId)) throw new ApiError(0, "invalid_request");
+      return request("POST", `/api/staff/items/${itemId}/reveal`, RevealResponse, call, body);
+    },
   };
 }

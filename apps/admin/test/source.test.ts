@@ -61,16 +61,52 @@ describe("no HTML or script sink in apps/admin", () => {
     expect(css).toEqual(["app.css"]);
   });
 
-  test("no link is built from data: the only href written from a value is NavLink's, whose type lists the console's own paths", () => {
-    expect(findInSource(/href=\{/).map((found) => found.split(":")[0])).toEqual(["src/nav.tsx"]);
+  test("no link is built from data: the only two hrefs written from a value are NavLink's, whose type lists the console's own paths, and CaseLink's, built from a checked case id", () => {
+    expect(findInSource(/href=\{/).map((found) => found.split(":")[0])).toEqual(["src/nav.tsx", "src/nav.tsx"]);
     const nav = readFileSync(path.join(SRC, "nav.tsx"), "utf8");
-    expect(nav).toMatch(/href=\{to\}/);
+    expect([...nav.matchAll(/href=\{[^}]*\}/g)].map((found) => found[0])).toEqual(["href={to}", "href={caseHref(id)}"]);
     expect(nav).toMatch(/to: ConsolePath/);
-    expect(readFileSync(path.join(SRC, "router.ts"), "utf8")).toMatch(/export type ConsolePath = "\/" \| "\/audit" \| "\/signin";/);
+    expect(nav).toMatch(/id: CaseId/);
+    const router = readFileSync(path.join(SRC, "router.ts"), "utf8");
+    expect(router).toMatch(/export type ConsolePath = "\/" \| "\/audit" \| "\/signin" \| "\/queue" \| "\/appeals";/);
+    // A CaseId is made in one place, by the function that checks it: nothing else may call a text a case's id.
+    expect(findInSource(/\bas CaseId\b/).map((found) => found.split(":")[0])).toEqual(["src/router.ts"]);
+    expect(router).toMatch(/return isLowerUuid\(text\) \? \(text as CaseId\) : null;/);
   });
 
-  test("no src or action attribute written from a value", () => {
-    expect(findInSource(/\b(src|action|formAction|xlinkHref)=\{/)).toEqual([]);
+  test("no src or action attribute written from a value, but the one image site, whose address is built from two checked ids and a literal size", () => {
+    expect(findInSource(/\b(action|formAction|xlinkHref)=\{/)).toEqual([]);
+    expect(findInSource(/\bsrc=\{/).map((found) => found.split(":")[0])).toEqual(["src/media.tsx"]);
+    const media = readFileSync(path.join(SRC, "media.tsx"), "utf8");
+    expect(media).toMatch(/src=\{staffImageSrc\(caseId, mediaId, size\)\}/);
+    expect(media).toMatch(/staffImageSrc\(caseId: CaseId, mediaId: ImageId, size: StaffImageSize\)/);
+    expect(findInSource(/\bas ImageId\b/).map((found) => found.split(":")[0])).toEqual(["src/media.tsx"]);
+    // An image element is written nowhere else.
+    expect(findInSource(/<img\b/).map((found) => found.split(":")[0])).toEqual(["src/media.tsx"]);
+    // And nothing else builds an image's address: staffImageSrc is declared and called in that file alone, once each.
+    expect(findInSource(/\bstaffImageSrc\b/).map((found) => found.split(":")[0])).toEqual(["src/media.tsx", "src/media.tsx"]);
+    expect(media.match(/\bstaffImageSrc\(/g)).toHaveLength(2);
+    // A failed load reaches the page through a handler React attaches (a prop), never through an attribute written as text.
+    expect(media).toMatch(/onError=\{onError\}/);
+    expect(findInSource(/\bon[A-Z][A-Za-z]*=["'`]/)).toEqual([]);
+  });
+
+  test("every refusal and every outcome is worded from messages.ts, one table each: no screen keeps a table of its own", () => {
+    // A table of words by code or by outcome is an object whose keys are the contracts' names: none is written outside
+    // the one file, where a second copy could drift from the first. A key opens a line or follows a brace or a comma.
+    const keyed = /(^|[{,])\s*(rate_limited|not_found|invalid_request|staff_recused|text_invalid|restricted_rule|restricted_legal|no_violation|not_evident|not_available|partly_reversed|interim|correction)\s*:/;
+    expect([...new Set(findInSource(keyed).map((found) => found.split(":")[0]))]).toEqual(["src/messages.ts"]);
+    const messages = readFileSync(path.join(SRC, "messages.ts"), "utf8").split("\n");
+    for (const table of ["CASE_WORDS", "REVEAL_WORDS", "NOTE_WORDS", "FINDING_WORDS", "OUTCOME_WORDS", "DECISION_KINDS", "DECISION_OUTCOMES"]) {
+      expect(messages.filter((line) => line.startsWith(`export const ${table}:`) || line.startsWith(`export const ${table} =`)), table).toHaveLength(1);
+      // Declared nowhere else: the name follows `const` in that one file only.
+      expect(findInSource(new RegExp(`const ${table}[^A-Za-z0-9_]`)).map((found) => found.split(":")[0]), table).toEqual(["src/messages.ts"]);
+    }
+  });
+
+  test("no link into the app: no source line writes the address of a post or a profile", () => {
+    expect(findInSource(/["'`]\/(post|u)\//)).toEqual([]);
+    expect(findInSource(/APP_ORIGIN|appOrigin/)).toEqual([]);
   });
 
   test("never a passkey_* code or text: the console has its own words", () => {
@@ -79,6 +115,14 @@ describe("no HTML or script sink in apps/admin", () => {
 });
 
 describe("the key is asked only after the console checked what it is asked to sign", () => {
+  test("a confirmation asks the key in one function, which every confirmed action goes through", () => {
+    const stepUp = readFileSync(path.join(SRC, "step-up.ts"), "utf8");
+    expect(stepUp.match(/credentials\.get\(/g)).toHaveLength(1);
+    expect(stepUp).toMatch(/export async function confirmWithKey</);
+    // The revocation of a session and the reveal are callers of it; neither asks the key itself.
+    expect(stepUp.match(/confirmWithKey\(deps, action,/g)).toHaveLength(2);
+  });
+
   test("navigator.credentials is called only by the three ceremonies, each of which checks its challenge first", () => {
     // A fourth call site would need a check of its own (3a design, section 9): this list makes adding one a decision.
     expect(findInSource(/credentials\.(get|create)\(/).map((found) => found.split(":")[0])).toEqual(["src/enroll.ts", "src/sign-in.ts", "src/step-up.ts"]);

@@ -8,20 +8,25 @@
  * only through the interfaces they export, never names an image row (the media module locks and holds a case's images for
  * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
+import type { CaseView, FindingRequest, FindingResponse, MediaSize, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { Logger } from "pino";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../auth";
 import type { Config } from "../config";
-import type { MediaForCases } from "../media";
+import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
+import { caseImage, openFinding, overview, queue, readCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
+import { reveal, type RevealOutcome } from "./reveal";
 import { moderationRoutes } from "./routes";
+import { ownTexts, saveText } from "./texts";
 
 export { ModerationError } from "./context";
 export type { ModerationDeps, ModerationErrorKind } from "./context";
 export type { DecideOutcome } from "./decide";
+export type { RevealOutcome } from "./reveal";
 
 /** What the staff module needs from this one: the console's operations on cases, which its routes run behind the staff gate. */
 export interface ModerationForStaff {
@@ -30,6 +35,30 @@ export interface ModerationForStaff {
    * or key no longer opens anything, "late" when the challenge's time ran out; neither writes anything.
    */
   decide(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome>;
+  /** What every staff member's home screen shows: counts, times, staff handles and cases. */
+  overview(): Promise<StaffOverview>;
+  /** A page of the queue: open cases by lane and age, after the cursor when one is given. */
+  queue(cursor?: string): Promise<QueuePage>;
+  /** The case as staff read it. The read is logged, and held to the day's limit on different cases; a recused person is refused. */
+  caseView(session: ActiveStaffSession, caseId: string): Promise<CaseView>;
+  /** An image of the case's own post, opened for staff and logged, or image_refused. The caller streams the file and closes it. */
+  caseImage(session: ActiveStaffSession, caseId: string, mediaId: string, size: MediaSize): Promise<StoredFile>;
+  /**
+   * A fresh snapshot of the case's target when it differs from the newest; its id and digest, never content. Run again
+   * when it gives way to a decision on the case, and refused as case_closed when it keeps having to.
+   */
+  takeSnapshot(session: ActiveStaffSession, caseId: string): Promise<StaffSnapshotTaken>;
+  /** Opens a case, or joins the open one, on the moderator's own finding under a rule (its target resolved first), within the day's limit. */
+  openFinding(session: ActiveStaffSession, request: FindingRequest): Promise<FindingResponse>;
+  /** Saves a text on the case, as written or not at all. */
+  saveText(session: ActiveStaffSession, caseId: string, request: StaffTextSaveRequest): Promise<StaffTextSaved>;
+  /** The person's own drafts on the case, with their salts. */
+  texts(session: ActiveStaffSession, caseId: string): Promise<StaffTextsResponse>;
+  /**
+   * Reveals who sent an item, once a step-up confirmed it: the access row and the audit row in one transaction, the
+   * identity read only after the commit. "ended" and "late" as for a decision.
+   */
+  reveal(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<RevealOutcome>;
 }
 
 export interface CreateModerationOptions {
@@ -62,6 +91,15 @@ export function createModeration(options: CreateModerationOptions) {
   };
   const forStaff: ModerationForStaff = {
     decide: (session, confirmed, ctx) => decide(deps, session, confirmed, ctx),
+    overview: () => overview(deps),
+    queue: (cursor) => queue(deps, cursor),
+    caseView: (session, caseId) => readCase(deps, session, caseId),
+    caseImage: (session, caseId, mediaId, size) => caseImage(deps, session, caseId, mediaId, size),
+    takeSnapshot: (session, caseId) => takeSnapshot(deps, session, caseId),
+    openFinding: (session, request) => openFinding(deps, session, request),
+    saveText: (session, caseId, request) => saveText(deps, session, caseId, request),
+    texts: (session, caseId) => ownTexts(deps, session, caseId),
+    reveal: (session, confirmed, ctx) => reveal(deps, session, confirmed, ctx),
   };
   return {
     deps,
@@ -70,8 +108,8 @@ export function createModeration(options: CreateModerationOptions) {
     /** The interface the staff module uses. */
     forStaff,
     /**
-     * Resolves once every task a request started and did not wait for has ended: the mails after a report or a notice.
-     * The tests await it; the server lets the tasks run.
+     * Resolves once every task a request started and did not wait for has ended: the mails after a report, a notice, a
+     * finding, a reveal or a refused case read. The tests await it; the server lets the tasks run.
      */
     settle: () => deps.background.settle(),
   };

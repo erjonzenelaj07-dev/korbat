@@ -1,5 +1,5 @@
 import type { MouseEvent, ReactNode } from "react";
-import type { ConsolePath } from "./router";
+import { caseHref, type CaseId, type ConsolePath } from "./router";
 
 /**
  * A link to one of the console's own pages. Its address is one of the constants ConsolePath lists, never built from
@@ -14,6 +14,23 @@ export function NavLink({ to, current = false, onNavigate, children }: { to: Con
   };
   return (
     <a href={to} aria-current={current ? "page" : undefined} onClick={follow}>
+      {children}
+    </a>
+  );
+}
+
+/**
+ * A link to a case's page in the console. Its address is built from a CaseId, which only parseCaseId makes, and from
+ * nothing else: an id an answer carries is checked before it can become an address. No link leads into the app.
+ */
+export function CaseLink({ id, onOpen, children }: { id: CaseId; onOpen(id: CaseId): void; children: ReactNode }) {
+  const follow = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    onOpen(id);
+  };
+  return (
+    <a href={caseHref(id)} onClick={follow}>
       {children}
     </a>
   );

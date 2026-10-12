@@ -317,14 +317,15 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
   return { intakeId, ref, token, suspect, items };
 }
 
-type SnapshotContent = Omit<Parameters<typeof insertSnapshot>[1], "salt" | "digest">;
+export type SnapshotContent = Omit<Parameters<typeof insertSnapshot>[1], "salt" | "digest">;
 
 /**
  * One snapshot: a salt of the server's own, and the digest over the salt, the time and everything copied. The time in
  * the digest is the one the database stamps the row with; when the two differ the transaction is rolled back, since the
- * stored row would not recompute to its digest.
+ * stored row would not recompute to its digest. Answers the snapshot's id and digest. The console's snapshot route
+ * stores its snapshots through this too, so every snapshot is made one way.
  */
-async function storeSnapshot(tx: DbTx, takenAt: string, content: SnapshotContent): Promise<void> {
+export async function storeSnapshot(tx: DbTx, takenAt: string, content: SnapshotContent): Promise<{ id: string; digest: string }> {
   const salt = randomBytes(32).toString("hex");
   const digest = await snapshotDigest({
     salt,
@@ -344,6 +345,7 @@ async function storeSnapshot(tx: DbTx, takenAt: string, content: SnapshotContent
   });
   const stored = await insertSnapshot(tx, { ...content, salt, digest });
   if (stored.takenAt !== takenAt) throw new Error("a snapshot was stamped at another time than its digest covers");
+  return { id: stored.id, digest };
 }
 
 // ---------------------------------------------------------------- reports and notices: POST /api/notices
@@ -367,7 +369,7 @@ export type NamedTarget = { type: "post"; id: string; mediaId: string | null } |
  * Counts one event in a window of the shared limit store and refuses it once the window is used up. An event that
  * cannot be counted is refused too: the limits are what keeps one sender from flooding the queue.
  */
-async function countOrRefuse(deps: Pick<ModerationDeps, "limits">, key: string, windowMs: number, max: number): Promise<void> {
+export async function countOrRefuse(deps: Pick<ModerationDeps, "limits">, key: string, windowMs: number, max: number): Promise<void> {
   let hit: { count: number; resetMs: number };
   try {
     hit = await deps.limits.hit(key, windowMs);

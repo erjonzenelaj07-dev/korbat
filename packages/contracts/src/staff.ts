@@ -300,6 +300,10 @@ export type StaffStepUpOptionsResponse = z.infer<typeof StaffStepUpOptionsRespon
 export const StaffSessionRevokeRequest = STAFF_STEP_UP_ACTIONS.staff_session_revoked.params.extend({ stepUp: AuthenticationResponseJSON });
 export type StaffSessionRevokeRequest = z.infer<typeof StaffSessionRevokeRequest>;
 
+/** POST /api/staff/items/:item/reveal: the action's params with the step-up assertion added as `stepUp`. */
+export const IdentityRevealRequest = IdentityRevealedParams.extend({ stepUp: AuthenticationResponseJSON });
+export type IdentityRevealRequest = z.infer<typeof IdentityRevealRequest>;
+
 /**
  * POST /api/staff/cases/:case/decisions answers 201 with the id of the decision that committed. The console's case
  * screens, when they come, read the case again in its place.

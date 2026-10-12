@@ -30,6 +30,8 @@ describe("mail templates", () => {
       pageUrl: "http://localhost:8081/notice/N-ABCDEFGH23#t=mail-token",
       termsUrl: "http://localhost:8081/terms",
       oldest: "2026-10-04 06:59 UTC",
+      handle: "mod_anna",
+      limit: "10",
     };
     for (const template of [
       "sign_in_code",
@@ -59,6 +61,8 @@ describe("mail templates", () => {
       "staff_keys_revoked",
       "notice_received",
       "moderation_urgent",
+      "moderation_reads",
+      "moderation_reveal",
     ] as const) {
       const r = renderTemplate(template, data);
       expect(r.subject.length, template).toBeGreaterThan(5);
@@ -314,6 +318,42 @@ describe("mail templates", () => {
       }
       expect(() => renderTemplate("moderation_urgent", { count: "3" })).toThrow(/oldest/);
       expect(() => renderTemplate("moderation_urgent", { oldest: "2026-10-04 06:59 UTC" })).toThrow(/count/);
+    });
+
+    test("moderation_reads names the staff account and the limit it reached, tells its holder what to do, and carries no link", () => {
+      const r = renderTemplate("moderation_reads", { handle: "mod_anna", limit: "400" });
+      expect(r.subject).toBe("korbat: a staff account reached its daily case limit");
+      expect(paragraphs(r.text)).toEqual([
+        "The staff account @mod_anna opened 400 different cases today and cannot open others until midnight UTC.",
+        "Every staff account gets this email. If @mod_anna is your account and you did not open them, someone else holds your key: tell the operator at once.",
+        "If that was not expected, ask them. The operator raises the limit with staff.js limits.",
+        LAST_STAFF,
+      ]);
+      expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
+      expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+      expect(() => renderTemplate("moderation_reads", { handle: "mod_anna" })).toThrow(/limit/);
+      expect(() => renderTemplate("moderation_reads", { limit: "400" })).toThrow(/handle/);
+    });
+
+    test("moderation_reveal names the staff account, the time, the day's count and the limit, never the case or who was revealed, and carries no link", () => {
+      const data = { handle: "mod_anna", time: "2026-10-04 06:59 UTC", count: "3", limit: "10" };
+      const r = renderTemplate("moderation_reveal", data);
+      expect(r.subject).toBe("korbat: a staff account revealed who sent a report");
+      expect(paragraphs(r.text)).toEqual([
+        "The staff account @mod_anna revealed who sent a report or notice at 2026-10-04 06:59 UTC. That is 3 of the 10 reveals one staff account may make today (UTC).",
+        "Every staff account gets this email. If @mod_anna is your account and you did not reveal it, someone else holds your key: tell the operator at once.",
+        "The staff console's home screen lists every reveal of the last 30 days with its case. If this one was not expected, ask them; if their key may be in someone else's hands, the operator revokes it with staff.js revoke.",
+        LAST_STAFF,
+      ]);
+      expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
+      expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+      for (const key of Object.keys(data)) {
+        const { [key]: _left, ...rest } = data as Record<string, string>;
+        expect(() => renderTemplate("moderation_reveal", rest), key).toThrow(new RegExp(key));
+      }
+      // Only what korbat generated: a name, a case or a reason handed over by mistake appears nowhere.
+      const more = renderTemplate("moderation_reveal", { ...data, name: "Ada Lovelace", caseId: "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a", reason: "the reason's own words" });
+      expect(more.text).toBe(r.text);
     });
   });
 

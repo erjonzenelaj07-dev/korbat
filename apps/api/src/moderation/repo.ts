@@ -406,3 +406,833 @@ export async function appendConfirmedAudit(tx: DbTx, row: ConfirmedAuditRow): Pr
   );
   return Number(written!.place);
 }
+
+// ---------------------------------------------------------------- the console: recusal, the day's limits and the access log
+
+/** A timestamptz expression as a UTC day. The expression is written here, never input. */
+const day = (expression: string) => sql.raw(`to_char(${expression} at time zone 'UTC', 'YYYY-MM-DD')`);
+
+/** Midnight UTC of the database's day: where a staff account's daily counts begin. */
+const TODAY = sql`(date_trunc('day', now() at time zone 'UTC') at time zone 'UTC')`;
+
+/**
+ * Whether the staff account is too close to the case's subject to open it: the account itself, a personal account the
+ * operator linked to it, or one that account follows, blocks, mutes or replied to. The database answers one boolean, and
+ * never looks at who reported, so a refused read says nothing about that. False for a case that does not exist.
+ */
+export async function staffCaseConflict(q: Runner, staffId: string, caseId: string): Promise<boolean> {
+  const [row] = await rows<{ conflict: boolean }>(q, sql`select public.staff_case_conflict(${staffId}::uuid, ${caseId}::uuid, false) as conflict`);
+  return row!.conflict;
+}
+
+/** What one staff account may do in a UTC day. The operator changes the numbers with the command line. */
+export interface DailyLimits {
+  caseOpens: number;
+  findings: number;
+  reveals: number;
+}
+
+/** The day's limits from the single row the migration wrote; the defaults when the row is missing. */
+export async function dailyLimits(q: Runner): Promise<DailyLimits> {
+  const [row] = await rows<{ case_opens_per_day: number; findings_per_day: number; reveals_per_day: number }>(q, sql`select case_opens_per_day, findings_per_day, reveals_per_day from moderation_limits where id = 1`);
+  return { caseOpens: row?.case_opens_per_day ?? 400, findings: row?.findings_per_day ?? 50, reveals: row?.reveals_per_day ?? 10 };
+}
+
+/** How many different cases the staff account has opened since midnight UTC, and whether this case is among them. */
+export async function casesOpenedToday(q: Runner, staffId: string, caseId: string): Promise<{ cases: number; thisCase: boolean }> {
+  const [row] = await rows<{ n: number; this_case: boolean }>(
+    q,
+    sql`select count(distinct case_id)::int as n, coalesce(bool_or(case_id = ${caseId}::uuid), false) as this_case
+          from case_access_log where staff_id = ${staffId}::uuid and kind = 'case_opened' and at >= ${TODAY}`,
+  );
+  return { cases: row!.n, thisCase: row!.this_case };
+}
+
+/** How many findings the staff account has opened since midnight UTC. */
+export async function findingsOpenedToday(q: Runner, staffId: string): Promise<number> {
+  const [row] = await rows<{ n: number }>(q, sql`select count(*)::int as n from intakes where finding_by = ${staffId}::uuid and received_at >= ${TODAY}`);
+  return row!.n;
+}
+
+/** How many sources the staff account has revealed since midnight UTC. */
+export async function revealsToday(q: Runner, staffId: string): Promise<number> {
+  const [row] = await rows<{ n: number }>(q, sql`select count(*)::int as n from case_access_log where staff_id = ${staffId}::uuid and kind = 'identity_revealed' and at >= ${TODAY}`);
+  return row!.n;
+}
+
+/** One row of the access log: a case opened, an image viewed, or a source revealed with the text that gives the reason. The database stamps it. */
+export async function insertAccess(
+  q: Runner,
+  row: { staffId: string; caseId: string; kind: "case_opened" | "image_viewed" | "identity_revealed"; mediaId?: string; itemId?: string; textId?: string },
+): Promise<Date> {
+  const [written] = await rows<{ at: string }>(
+    q,
+    sql`insert into case_access_log (staff_id, case_id, kind, media_id, intake_item_id, text_id)
+        values (${row.staffId}::uuid, ${row.caseId}::uuid, ${row.kind}::access_kind, ${row.mediaId ?? null}::uuid, ${row.itemId ?? null}::uuid, ${row.textId ?? null}::uuid)
+        returning ${iso("at")} as at`,
+  );
+  return new Date(written!.at);
+}
+
+/** A profile's public handle, or null when no row has the id: how the console and the staff mails name a staff account. */
+export async function handleOf(q: Runner, profileId: string): Promise<string | null> {
+  const [row] = await rows<{ handle: string }>(q, sql`select handle from profiles where id = ${profileId}::uuid`);
+  return row?.handle ?? null;
+}
+
+// ---------------------------------------------------------------- the console: the case
+
+/** A case's own row. */
+export interface CaseRow {
+  id: string;
+  targetType: TargetType;
+  targetId: string;
+  lane: Lane;
+  intakeSeq: number;
+  answeredSeq: number;
+  stateVersion: number;
+  openedAt: string;
+  closedAt: string | null;
+}
+
+export async function caseById(q: Runner, caseId: string): Promise<CaseRow | null> {
+  const [row] = await rows<{ id: string; target_type: TargetType; target_id: string; lane: Lane; intake_seq: number; answered_seq: number; state_version: number; opened_at: string; closed_at: string | null }>(
+    q,
+    sql`select id, target_type, target_id, lane, intake_seq, answered_seq, state_version, ${iso("opened_at")} as opened_at, ${iso("closed_at")} as closed_at from cases where id = ${caseId}::uuid`,
+  );
+  if (!row) return null;
+  return { id: row.id, targetType: row.target_type, targetId: row.target_id, lane: row.lane, intakeSeq: row.intake_seq, answeredSeq: row.answered_seq, stateVersion: row.state_version, openedAt: row.opened_at, closedAt: row.closed_at };
+}
+
+/** A post as it stands, for the case that is about it: read, never written; the rows are the social module's. */
+export interface LivePost {
+  authorId: string;
+  authorHandle: string;
+  state: "visible" | "withheld" | "removed" | "deleted_by_author";
+  level: "visible" | "withheld" | "removed";
+  /** Gate V's answer for the case page: false while the post is frozen, so the console asks for no image. */
+  imagesAllowed: boolean;
+}
+
+export async function livePost(q: Runner, postId: string): Promise<LivePost | null> {
+  const [row] = await rows<{ author_id: string; author_handle: string; state: LivePost["state"]; level: LivePost["level"]; images_allowed: boolean }>(
+    q,
+    sql`select p.author_id, a.handle as author_handle, p.state, p.moderation_level as level, not public.post_frozen(p.id) as images_allowed
+          from posts p join profiles a on a.id = p.author_id where p.id = ${postId}::uuid`,
+  );
+  return row ? { authorId: row.author_id, authorHandle: row.author_handle, state: row.state, level: row.level, imagesAllowed: row.images_allowed } : null;
+}
+
+/** An account's fields as they stand, for the case that is about it. */
+export async function liveAccount(q: Runner, accountId: string): Promise<{ handle: string; displayName: string; bio: string; deleted: boolean } | null> {
+  const [row] = await rows<{ handle: string; display_name: string; bio: string; deleted: boolean }>(
+    q,
+    sql`select handle, display_name, bio, deleted_at is not null as deleted from profiles where id = ${accountId}::uuid`,
+  );
+  return row ? { handle: row.handle, displayName: row.display_name, bio: row.bio, deleted: row.deleted } : null;
+}
+
+/** Whether the case is on the path for child sexual abuse material at all (it holds a suspect item or a seal), and whether a suspect item of it is unanswered. */
+export async function suspicionOf(q: Runner, caseId: string): Promise<{ holds: boolean; open: boolean }> {
+  const [row] = await rows<{ holds: boolean; open: boolean }>(
+    q,
+    sql`select (exists (select 1 from intake_items i where i.case_id = ${caseId}::uuid and i.suspect)
+             or exists (select 1 from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = ${caseId}::uuid and a.kind = 'seal_media')) as holds,
+               exists (select 1 from intake_items i where i.case_id = ${caseId}::uuid and i.suspect and i.answered_by is null) as open`,
+  );
+  return { holds: row!.holds, open: row!.open };
+}
+
+/** How often, and when last, an admin answered a report of this kind without a seal. */
+export interface EarlierAnswers {
+  count: number;
+  /** The UTC day of the latest such answer. */
+  lastOn: string | null;
+}
+
+/**
+ * The final decisions of the last `months` months that answered a suspect item without a seal: about this target, and
+ * about its author's profile or any of the author's posts. Such a decision is a stored fact (final, taken on a suspicion,
+ * holding no seal), so nothing here is computed from which case held which item. Counts and days only.
+ */
+export async function earlierAnswers(q: Runner, target: { type: TargetType; id: string }, authorId: string | null, months: number): Promise<{ target: EarlierAnswers; author: EarlierAnswers }> {
+  const about = sql`(c.target_type = ${target.type}::moderation_target and c.target_id = ${target.id}::uuid)`;
+  const ofAuthor =
+    authorId === null
+      ? about
+      : sql`((c.target_type = 'account' and c.target_id = ${authorId}::uuid) or (c.target_type = 'post' and c.target_id in (select p.id from posts p where p.author_id = ${authorId}::uuid)))`;
+  const [row] = await rows<{ target_count: number; target_last: string | null; author_count: number; author_last: string | null }>(
+    q,
+    sql`select (count(*) filter (where ${about}))::int as target_count,
+               to_char(max(d.decided_at) filter (where ${about}) at time zone 'UTC', 'YYYY-MM-DD') as target_last,
+               count(*)::int as author_count,
+               ${day("max(d.decided_at)")} as author_last
+          from decisions d join cases c on c.id = d.case_id
+         where d.kind = 'final' and d.suspect and d.decided_at >= now() - make_interval(months => ${months}::int)
+           and not exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind = 'seal_media')
+           and ${ofAuthor}`,
+  );
+  return { target: { count: row!.target_count, lastOn: row!.target_last }, author: { count: row!.author_count, lastOn: row!.author_last } };
+}
+
+/** The UTC day an image of the post was last served to staff by the console's image route, on any case about the post; null when none was. */
+export async function imagesOpenedOn(q: Runner, postId: string): Promise<string | null> {
+  const [row] = await rows<{ opened_on: string | null }>(
+    q,
+    sql`select ${day("max(l.at)")} as opened_on from case_access_log l join cases c on c.id = l.case_id
+         where l.kind = 'image_viewed' and c.target_type = 'post' and c.target_id = ${postId}::uuid`,
+  );
+  return row!.opened_on;
+}
+
+/** A snapshot as stored, with the database's word on whether its content may be shown. */
+export interface SnapshotRead extends Omit<SnapshotRow, "salt"> {
+  id: string;
+  takenAt: string;
+  withheld: boolean;
+  erased: boolean;
+  /** Null for an erased snapshot, which keeps its digest and loses its salt with its content. */
+  salt: string | null;
+}
+
+/** The case's snapshots, newest first. `withheld` is the one predicate by which a snapshot's content is withheld wherever it would be shown. */
+export async function caseSnapshots(q: Runner, caseId: string, newestOnly = false): Promise<SnapshotRead[]> {
+  const found = await rows<{
+    id: string;
+    taken_at: string;
+    withheld: boolean;
+    erased: boolean;
+    target_type: TargetType;
+    target_id: string;
+    author_handle: string;
+    post_state: SnapshotRow["postState"];
+    post_created_at: string | null;
+    reply_to_id: string | null;
+    quote_of_id: string | null;
+    body: string | null;
+    media: string | null;
+    display_name: string | null;
+    bio: string | null;
+    handle: string | null;
+    salt: string | null;
+    digest: string;
+  }>(
+    q,
+    sql`select s.id, ${iso("s.taken_at")} as taken_at, public.snapshot_withheld(s.id) as withheld, s.erased_at is not null as erased, s.target_type, s.target_id, s.author_handle, s.post_state,
+               ${iso("s.post_created_at")} as post_created_at, s.reply_to_id, s.quote_of_id, s.body, s.media::text as media, s.display_name, s.bio, s.handle, s.salt, s.digest
+          from evidence_snapshots s where s.case_id = ${caseId}::uuid order by s.taken_at desc, s.id desc ${newestOnly ? sql`limit 1` : sql``}`,
+  );
+  return found.map((row) => ({
+    id: row.id,
+    takenAt: row.taken_at,
+    withheld: row.withheld,
+    erased: row.erased,
+    caseId,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    authorHandle: row.author_handle,
+    postState: row.post_state,
+    postCreatedAt: row.post_created_at,
+    replyToId: row.reply_to_id,
+    quoteOfId: row.quote_of_id,
+    body: row.body,
+    media: row.media === null ? null : (JSON.parse(row.media) as SnapshotRow["media"]),
+    displayName: row.display_name,
+    bio: row.bio,
+    handle: row.handle,
+    salt: row.salt,
+    digest: row.digest,
+  }));
+}
+
+/**
+ * Whether a snapshot of the case that still holds its content lists the image. The console's image route asks this of
+ * the module's own evidence before it asks the media module for anything: `media` is the list a snapshot of a post
+ * copied, each entry with its image's id in the spelling the database writes.
+ */
+export async function snapshotListsImage(q: Runner, caseId: string, mediaId: string): Promise<boolean> {
+  const [row] = await rows<{ listed: boolean }>(
+    q,
+    sql`select exists (select 1 from evidence_snapshots s
+                        where s.case_id = ${caseId}::uuid and s.erased_at is null and s.media @> ${JSON.stringify([{ id: mediaId }])}::text::jsonb) as listed`,
+  );
+  return row!.listed;
+}
+
+/** One item of a case with its intake's ground and texts, as the case page reads it. */
+export interface CaseItemRow {
+  id: string;
+  seq: number;
+  position: number;
+  createdAt: string;
+  lane: Lane;
+  targetType: TargetType;
+  targetId: string;
+  namedHandle: string | null;
+  mediaId: string | null;
+  suspect: boolean;
+  reporterAccountId: string | null;
+  outcome: string | null;
+  answeredBy: string | null;
+  statement: string | null;
+  intakeKind: "user" | "finding";
+  channel: "signed_in" | "signed_out" | "staff";
+  contactId: string | null;
+  ruleId: string | null;
+  allegesIllegal: boolean;
+  csam: boolean;
+  category: string;
+  categoryKeyword: string | null;
+  citedLaw: string | null;
+  explanation: string | null;
+  erased: boolean;
+  reexaminesPosition: number | null;
+  reexaminesYourDecision: boolean;
+  quotedCaseId: string | null;
+}
+
+/**
+ * The case's items in the order they attached. For a re-examination: the position of the item it re-examines in its
+ * notice, and whether `personId` decided that item. For a suspect item about a post that quotes another: the case of the
+ * same notice's item on the quoted post (the one korbat added, or the one the notice named itself).
+ */
+export async function caseItems(q: Runner, caseId: string, personId: string): Promise<CaseItemRow[]> {
+  const found = await rows<{
+    id: string;
+    seq: number;
+    position: number;
+    created_at: string;
+    lane: Lane;
+    target_type: TargetType;
+    target_id: string;
+    named_handle: string | null;
+    media_id: string | null;
+    suspect: boolean;
+    reporter_account_id: string | null;
+    outcome: string | null;
+    answered_by: string | null;
+    statement: string | null;
+    intake_kind: "user" | "finding";
+    channel: CaseItemRow["channel"];
+    contact_id: string | null;
+    rule_id: string | null;
+    alleges_illegal: boolean;
+    csam: boolean;
+    category: string;
+    category_keyword: string | null;
+    cited_law: string | null;
+    explanation: string | null;
+    erased: boolean;
+    reexamines_position: number | null;
+    reexamines_your_decision: boolean;
+    quoted_case_id: string | null;
+  }>(
+    q,
+    sql`select i.id, i.seq, i.position, ${iso("i.created_at")} as created_at, i.lane, i.target_type, i.target_id, i.named_handle, i.media_id, i.suspect, i.reporter_account_id,
+               i.outcome, i.answered_by, i.statement,
+               n.kind as intake_kind, n.channel, n.contact_id, n.rule_id, n.alleges_illegal, n.csam, n.category, n.category_keyword, n.cited_law, n.explanation,
+               n.erased_at is not null as erased,
+               (select r.position from intake_items r where r.id = i.reexamines_item_id) as reexamines_position,
+               coalesce((select d.decided_by = ${personId}::uuid from intake_items r join decisions d on d.id = r.answered_by where r.id = i.reexamines_item_id), false) as reexamines_your_decision,
+               case when i.suspect and i.target_type = 'post' then
+                 (select a.case_id from posts p join intake_items a on a.intake_id = i.intake_id and a.target_type = 'post' and a.target_id = p.quote_of_id and a.case_id is not null
+                   where p.id = i.target_id order by a.created_at desc, a.id limit 1) end as quoted_case_id
+          from intake_items i join intakes n on n.id = i.intake_id
+         where i.case_id = ${caseId}::uuid order by i.seq`,
+  );
+  return found.map((row) => ({
+    id: row.id,
+    seq: row.seq,
+    position: row.position,
+    createdAt: row.created_at,
+    lane: row.lane,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    namedHandle: row.named_handle,
+    mediaId: row.media_id,
+    suspect: row.suspect,
+    reporterAccountId: row.reporter_account_id,
+    outcome: row.outcome,
+    answeredBy: row.answered_by,
+    statement: row.statement,
+    intakeKind: row.intake_kind,
+    channel: row.channel,
+    contactId: row.contact_id,
+    ruleId: row.rule_id,
+    allegesIllegal: row.alleges_illegal,
+    csam: row.csam,
+    category: row.category,
+    categoryKeyword: row.category_keyword,
+    citedLaw: row.cited_law,
+    explanation: row.explanation,
+    erased: row.erased,
+    reexaminesPosition: row.reexamines_position,
+    reexaminesYourDecision: row.reexamines_your_decision,
+    quotedCaseId: row.quoted_case_id,
+  }));
+}
+
+/** What a reporter's summary is banded from: when the account was made and four counts over its items that korbat still keeps. */
+export interface ReporterFacts {
+  createdAt: Date | null;
+  filed: number;
+  /** Items whose outcome was released, but those answered while nobody could open the images. */
+  decided: number;
+  actedOn: number;
+  /** Released items about a post that a decision answered without action while its images were out of sight. */
+  answeredUnseen: number;
+}
+
+/**
+ * Each reporter's facts, computed on read from the reporter's own rows, never stored. An item is decided once its outcome
+ * is released and acted on when that is a restriction, whole or in part. An item that was answered without action while
+ * nobody could open the post's images is counted apart and is not among the decided ones.
+ */
+export async function reporterFacts(q: Runner, reporterIds: readonly string[]): Promise<Map<string, ReporterFacts>> {
+  if (reporterIds.length === 0) return new Map();
+  const unseen = sql`(x.target_type = 'post' and not x.suspect and x.shown_outcome in ('no_violation', 'not_evident') and coalesce((select d.unseen from decisions d where d.id = x.answered_by), false))`;
+  const found = await rows<{ id: string; created_at: string | null; filed: number; decided: number; acted_on: number; unseen: number }>(
+    q,
+    sql`select r.id, ${iso("p.created_at")} as created_at,
+               (select count(*)::int from intake_items x where x.reporter_account_id = r.id) as filed,
+               (select count(*)::int from intake_items x where x.reporter_account_id = r.id and x.shown_outcome is not null and not ${unseen}) as decided,
+               (select count(*)::int from intake_items x where x.reporter_account_id = r.id and x.shown_outcome in ('restricted_rule', 'restricted_legal', 'partly_reversed')) as acted_on,
+               (select count(*)::int from intake_items x where x.reporter_account_id = r.id and x.shown_outcome is not null and ${unseen}) as unseen
+          from unnest(${uuids(reporterIds)}) as r(id) left join profiles p on p.id = r.id`,
+  );
+  return new Map(found.map((row) => [row.id, { createdAt: row.created_at === null ? null : new Date(row.created_at), filed: row.filed, decided: row.decided, actedOn: row.acted_on, answeredUnseen: row.unseen }]));
+}
+
+/** A decision of the case with its texts, as the case page reads it; who decided is a handle. */
+export interface CaseDecisionRow {
+  id: string;
+  kind: "interim" | "final" | "review" | "correction";
+  outcome: string;
+  ground: string | null;
+  ruleId: string | null;
+  rulesVersion: number;
+  redressVersion: number;
+  category: string;
+  categoryKeyword: string | null;
+  source: string;
+  decidedAt: string;
+  staffHandle: string;
+  throughSeq: number;
+  answersFromSeq: number | null;
+  reviewsDecisionId: string | null;
+  snapshotId: string;
+  suspect: boolean;
+  unseen: boolean;
+  needsAdmin: boolean;
+  endedInterim: boolean;
+  facts: string | null;
+  reason: string | null;
+  legalReference: string | null;
+}
+
+/** The case's decisions, oldest first. A text is read by the digest the decision confirmed; an erased text is null. */
+export async function caseDecisions(q: Runner, caseId: string): Promise<CaseDecisionRow[]> {
+  const found = await rows<Record<string, unknown>>(
+    q,
+    sql`select d.id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.category, d.category_keyword, d.source, ${iso("d.decided_at")} as decided_at,
+               s.handle as staff_handle, d.through_seq, d.answers_from_seq, d.reviews_decision_id, d.snapshot_id, d.suspect, d.unseen, d.needs_admin, d.ended_interim,
+               (select t.text from staff_texts t where t.digest = d.facts_digest) as facts,
+               (select t.text from staff_texts t where t.digest = d.reason_digest) as reason,
+               (select t.text from staff_texts t where t.digest = d.legal_reference_digest) as legal_reference
+          from decisions d join profiles s on s.id = d.decided_by
+         where d.case_id = ${caseId}::uuid order by d.decided_at, d.id`,
+  );
+  return found.map((row) => ({
+    id: row.id as string,
+    kind: row.kind as CaseDecisionRow["kind"],
+    outcome: row.outcome as string,
+    ground: row.ground as string | null,
+    ruleId: row.rule_id as string | null,
+    rulesVersion: row.rules_version as number,
+    redressVersion: row.redress_version as number,
+    category: row.category as string,
+    categoryKeyword: row.category_keyword as string | null,
+    source: row.source as string,
+    decidedAt: row.decided_at as string,
+    staffHandle: row.staff_handle as string,
+    throughSeq: row.through_seq as number,
+    answersFromSeq: row.answers_from_seq as number | null,
+    reviewsDecisionId: row.reviews_decision_id as string | null,
+    snapshotId: row.snapshot_id as string,
+    suspect: row.suspect as boolean,
+    unseen: row.unseen as boolean,
+    needsAdmin: row.needs_admin as boolean,
+    endedInterim: row.ended_interim as boolean,
+    facts: row.facts as string | null,
+    reason: row.reason as string | null,
+    legalReference: row.legal_reference as string | null,
+  }));
+}
+
+/** One ledger row of a decision of the case: whether it is in force by the view's one definition, and the decision whose reversal lifted it. */
+export interface CaseActionRow {
+  id: string;
+  decisionId: string;
+  kind: ActionKind;
+  mediaId: string | null;
+  noEffect: "already" | "deleted" | null;
+  reversesActionId: string | null;
+  inForce: boolean;
+  liftedBy: string | null;
+}
+
+export async function caseActions(q: Runner, caseId: string): Promise<CaseActionRow[]> {
+  const found = await rows<{ id: string; decision_id: string; kind: ActionKind; media_id: string | null; no_effect: CaseActionRow["noEffect"]; reverses_action_id: string | null; in_force: boolean; lifted_by: string | null }>(
+    q,
+    sql`select a.id, a.decision_id, a.kind, a.media_id, a.no_effect, a.reverses_action_id,
+               exists (select 1 from measures_in_force m where m.id = a.id) as in_force,
+               (select r.decision_id from decision_actions r where r.reverses_action_id = a.id) as lifted_by
+          from decision_actions a join decisions d on d.id = a.decision_id
+         where d.case_id = ${caseId}::uuid order by a.kind::text, a.media_id`,
+  );
+  return found.map((row) => ({ id: row.id, decisionId: row.decision_id, kind: row.kind, mediaId: row.media_id, noEffect: row.no_effect, reversesActionId: row.reverses_action_id, inForce: row.in_force, liftedBy: row.lifted_by }));
+}
+
+/** What a seal covers, from the list the database wrote when it was recorded: counts, and at most `max` rows of the list, oldest post first. */
+export async function sealCovers(q: Runner, actionId: string, max: number): Promise<{ posts: number; images: number; deletedPosts: number; list: { postId: string; createdAt: string; images: number }[] }> {
+  const [counts] = await rows<{ posts: number; images: number; deleted_posts: number }>(
+    q,
+    sql`select count(*)::int as posts, coalesce(sum(s.images), 0)::int as images, (count(*) filter (where p.state = 'deleted_by_author'))::int as deleted_posts
+          from seal_posts s left join posts p on p.id = s.post_id where s.action_id = ${actionId}::uuid`,
+  );
+  const list = await rows<{ post_id: string; created_at: string; images: number }>(
+    q,
+    sql`select s.post_id, ${iso("p.created_at")} as created_at, s.images from seal_posts s join posts p on p.id = s.post_id
+         where s.action_id = ${actionId}::uuid order by p.created_at, s.post_id limit ${max}::int`,
+  );
+  return { posts: counts!.posts, images: counts!.images, deletedPosts: counts!.deleted_posts, list: list.map((row) => ({ postId: row.post_id, createdAt: row.created_at, images: row.images })) };
+}
+
+/** The appeals of the case's decisions, oldest first; a statement is null when there was none or it was erased. */
+export async function caseAppeals(q: Runner, caseId: string): Promise<{ id: string; decisionId: string; filedAt: string; statement: string | null; answeredAt: string | null; result: "kept" | "partly_reversed" | "reversed" | null; answeredBy: string | null }[]> {
+  const found = await rows<{ id: string; decision_id: string; filed_at: string; statement: string | null; answered_at: string | null; result: "kept" | "partly_reversed" | "reversed" | null; answered_by: string | null }>(
+    q,
+    sql`select a.id, a.decision_id, ${iso("a.filed_at")} as filed_at, a.statement, ${iso("a.answered_at")} as answered_at, a.result, a.answered_by
+          from appeals a join decisions d on d.id = a.decision_id where d.case_id = ${caseId}::uuid order by a.filed_at, a.id`,
+  );
+  return found.map((row) => ({ id: row.id, decisionId: row.decision_id, filedAt: row.filed_at, statement: row.statement, answeredAt: row.answered_at, result: row.result, answeredBy: row.answered_by }));
+}
+
+/** The case's notes and its recorded choices not to seal, oldest first, each with its writer's handle. Erased ones are gone with their text. */
+export async function caseStaffTexts(q: Runner, caseId: string): Promise<{ id: string; kind: "note" | "seal_declined"; staffHandle: string; createdAt: string; text: string }[]> {
+  const found = await rows<{ id: string; kind: "note" | "seal_declined"; staff_handle: string; created_at: string; text: string }>(
+    q,
+    sql`select t.id, t.kind, p.handle as staff_handle, ${iso("t.created_at")} as created_at, t.text
+          from staff_texts t join profiles p on p.id = t.author_id
+         where t.case_id = ${caseId}::uuid and t.kind in ('note', 'seal_declined') and t.erased_at is null order by t.created_at, t.id`,
+  );
+  return found.map((row) => ({ id: row.id, kind: row.kind, staffHandle: row.staff_handle, createdAt: row.created_at, text: row.text }));
+}
+
+/** A saved text that no decision or reveal has named yet, with its salt. */
+export interface DraftRow {
+  id: string;
+  kind: string;
+  text: string;
+  salt: string;
+  digest: string;
+  createdAt: string;
+}
+
+/** The staff account's own drafts on the case: unconfirmed, unerased, and of a kind that waits for a decision or a reveal. */
+export async function ownDrafts(q: Runner, caseId: string, authorId: string): Promise<DraftRow[]> {
+  const found = await rows<{ id: string; kind: string; text: string; salt: string; digest: string; created_at: string }>(
+    q,
+    sql`select id, kind, text, salt, digest, ${iso("created_at")} as created_at from staff_texts
+         where case_id = ${caseId}::uuid and author_id = ${authorId}::uuid and confirmed_at is null and erased_at is null and kind not in ('note', 'seal_declined')
+         order by created_at, id`,
+  );
+  return found.map((row) => ({ id: row.id, kind: row.kind, text: row.text, salt: row.salt, digest: row.digest, createdAt: row.created_at }));
+}
+
+/** One event of a case's history, from the view that is its one definition; a staff account is its handle. */
+export interface HistoryRow {
+  at: string;
+  event: string;
+  refId: string | null;
+  seq: number | null;
+  intakeKind: string | null;
+  ruleId: string | null;
+  allegesIllegal: boolean | null;
+  csam: boolean | null;
+  reexamination: boolean | null;
+  decisionKind: string | null;
+  outcome: string | null;
+  staffHandle: string | null;
+  result: string | null;
+}
+
+export async function caseHistory(q: Runner, caseId: string): Promise<HistoryRow[]> {
+  const found = await rows<Record<string, unknown>>(
+    q,
+    sql`select ${iso("h.at")} as at, h.event, h.ref_id, h.seq, h.intake_kind, h.rule_id, h.alleges_illegal, h.csam, h.reexamination, h.decision_kind, h.outcome, p.handle as staff_handle, h.result
+          from case_history h left join profiles p on p.id = h.staff_id
+         where h.case_id = ${caseId}::uuid order by h.at, h.event, h.ref_id`,
+  );
+  return found.map((row) => ({
+    at: row.at as string,
+    event: row.event as string,
+    refId: row.ref_id as string | null,
+    seq: row.seq as number | null,
+    intakeKind: row.intake_kind as string | null,
+    ruleId: row.rule_id as string | null,
+    allegesIllegal: row.alleges_illegal as boolean | null,
+    csam: row.csam as boolean | null,
+    reexamination: row.reexamination as boolean | null,
+    decisionKind: row.decision_kind as string | null,
+    outcome: row.outcome as string | null,
+    staffHandle: row.staff_handle as string | null,
+    result: row.result as string | null,
+  }));
+}
+
+// ---------------------------------------------------------------- the console: saved texts
+
+/** Everything someone else wrote on the case that a staff text must not quote: explanations, cited laws, re-examination statements and appeal statements. */
+export async function theirTexts(q: Runner, caseId: string): Promise<string[]> {
+  const found = await rows<{ text: string }>(
+    q,
+    sql`select n.explanation as text from intakes n where n.explanation is not null and exists (select 1 from intake_items i where i.intake_id = n.id and i.case_id = ${caseId}::uuid)
+        union all
+        select n.cited_law from intakes n where n.cited_law is not null and exists (select 1 from intake_items i where i.intake_id = n.id and i.case_id = ${caseId}::uuid)
+        union all
+        select i.statement from intake_items i where i.case_id = ${caseId}::uuid and i.statement is not null
+        union all
+        select a.statement from appeals a join decisions d on d.id = a.decision_id where d.case_id = ${caseId}::uuid and a.statement is not null`,
+  );
+  return found.map((row) => row.text);
+}
+
+/** Stores a staff text; the trigger stamps it and leaves it unconfirmed, and the table's CHECK holds text, salt and digest together. Answers its id. */
+export async function insertStaffText(q: Runner, row: { caseId: string; authorId: string; kind: string; text: string; salt: string; digest: string }): Promise<string> {
+  const [inserted] = await rows<{ id: string }>(
+    q,
+    sql`insert into staff_texts (case_id, author_id, kind, text, salt, digest)
+        values (${row.caseId}::uuid, ${row.authorId}::uuid, ${row.kind}::staff_text_kind, ${row.text}, ${row.salt}, ${row.digest}) returning id`,
+  );
+  return inserted!.id;
+}
+
+/** The staff account's own draft with this digest on this case and of this kind, or null: what a repeated save answers. */
+export async function ownDraftByDigest(q: Runner, row: { caseId: string; authorId: string; kind: string; digest: string }): Promise<string | null> {
+  const [found] = await rows<{ id: string }>(
+    q,
+    sql`select id from staff_texts where digest = ${row.digest} and case_id = ${row.caseId}::uuid and author_id = ${row.authorId}::uuid and kind = ${row.kind}::staff_text_kind
+           and confirmed_at is null and erased_at is null`,
+  );
+  return found?.id ?? null;
+}
+
+// ---------------------------------------------------------------- the console: revealing a source
+
+/** An item with what decides whether its source can be revealed: its case, its intake's path and what links it to a person. */
+export interface RevealItemRow {
+  caseId: string | null;
+  intakeKind: "user" | "finding";
+  channel: "signed_in" | "signed_out" | "staff";
+  csam: boolean;
+  reporterAccountId: string | null;
+  contactId: string | null;
+}
+
+export async function revealItem(q: Runner, itemId: string): Promise<RevealItemRow | null> {
+  const [row] = await rows<{ case_id: string | null; intake_kind: "user" | "finding"; channel: RevealItemRow["channel"]; csam: boolean; reporter_account_id: string | null; contact_id: string | null }>(
+    q,
+    sql`select i.case_id, n.kind as intake_kind, n.channel, n.csam, i.reporter_account_id, n.contact_id from intake_items i join intakes n on n.id = i.intake_id where i.id = ${itemId}::uuid`,
+  );
+  return row ? { caseId: row.case_id, intakeKind: row.intake_kind, channel: row.channel, csam: row.csam, reporterAccountId: row.reporter_account_id, contactId: row.contact_id } : null;
+}
+
+/** The staff account's saved reason for a reveal on this case, by its digest: unerased, unconfirmed, and named by no access row yet. Its id, or null. */
+export async function revealReason(q: Runner, row: { caseId: string; authorId: string; digest: string }): Promise<string | null> {
+  const [found] = await rows<{ id: string }>(
+    q,
+    sql`select t.id from staff_texts t
+         where t.digest = ${row.digest} and t.case_id = ${row.caseId}::uuid and t.author_id = ${row.authorId}::uuid and t.kind = 'reveal_reason'
+           and t.confirmed_at is null and t.erased_at is null
+           and not exists (select 1 from case_access_log l where l.text_id = t.id)`,
+  );
+  return found?.id ?? null;
+}
+
+/** The handle of the reporter the item is still linked to, or null when the link is gone. Read only after a reveal's commit. */
+export async function reporterHandle(q: Runner, itemId: string): Promise<string | null> {
+  const [row] = await rows<{ handle: string }>(q, sql`select p.handle from intake_items i join profiles p on p.id = i.reporter_account_id where i.id = ${itemId}::uuid`);
+  return row?.handle ?? null;
+}
+
+// ---------------------------------------------------------------- the console: the queue
+
+/** A row of the queue with its sort key: the lane, whether it is deferred, the oldest unanswered item's time to the microsecond, and the id. */
+export interface QueueRead {
+  id: string;
+  lane: Lane;
+  targetType: TargetType;
+  openedAt: string;
+  oldestOpenAt: string;
+  /** The same time as the database holds it, to the microsecond: the cursor's. */
+  sortAt: string;
+  openItems: number;
+  rules: string[];
+  categories: string[];
+  allegesIllegal: boolean;
+  suspect: boolean;
+  reexamination: boolean;
+  deferred: boolean;
+}
+
+/** The place after which a page of the queue begins: the last row's sort key. */
+export interface QueueCursor {
+  lane: number;
+  deferred: boolean;
+  sortAt: string;
+  id: string;
+}
+
+/**
+ * Open cases in the queue's order: by lane, then (only with the emergency switch on) the deferred ones last within their
+ * lane, then by the oldest unanswered item, then by id. A case is deferred when every unanswered item of it comes from an
+ * unproven source: in lanes 1 and 2 a signed-out intake or an account under 48 hours old, in lane 0 a signed-out intake
+ * only, so a new account reporting a threat against itself is never deferred. Nothing else orders the queue: no count of
+ * reports and no standing of a reporter. `limit` rows after `after`.
+ */
+export async function queueRows(q: Runner, options: { deferUnproven: boolean; after: QueueCursor | null; limit: number }): Promise<QueueRead[]> {
+  const after = options.after;
+  const found = await rows<{
+    id: string;
+    lane: Lane;
+    target_type: TargetType;
+    opened_at: string;
+    oldest_open_at: string;
+    sort_at: string;
+    open_items: number;
+    rules: string;
+    categories: string;
+    alleges_illegal: boolean;
+    suspect: boolean;
+    reexamination: boolean;
+    deferred: boolean;
+  }>(
+    q,
+    sql`with open_cases as (
+          select c.id, c.lane, c.target_type, c.opened_at, coalesce(c.oldest_open_at, c.opened_at) as oldest_open_at, u.open_items, u.rules, u.categories, u.alleges_illegal, u.suspect, u.reexamination,
+                 (${options.deferUnproven}::boolean and u.unproven) as deferred
+            from cases c
+           cross join lateral (
+             select count(*)::int as open_items,
+                    coalesce(string_agg(distinct n.rule_id, ',' order by n.rule_id), '') as rules,
+                    coalesce(string_agg(distinct n.category, ',' order by n.category), '') as categories,
+                    coalesce(bool_or(i.alleges_illegal), false) as alleges_illegal,
+                    coalesce(bool_or(i.suspect), false) as suspect,
+                    coalesce(bool_or(i.reexamines_item_id is not null), false) as reexamination,
+                    coalesce(bool_and(n.channel = 'signed_out'
+                                      or (c.lane > 0 and exists (select 1 from profiles r where r.id = i.reporter_account_id and r.created_at > now() - interval '48 hours'))), false) as unproven
+               from intake_items i join intakes n on n.id = i.intake_id
+              where i.case_id = c.id and i.answered_by is null) u
+           where c.closed_at is null)
+        select o.id, o.lane, o.target_type, ${iso("o.opened_at")} as opened_at, ${iso("o.oldest_open_at")} as oldest_open_at,
+               to_char(o.oldest_open_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as sort_at,
+               o.open_items, o.rules, o.categories, o.alleges_illegal, o.suspect, o.reexamination, o.deferred
+          from open_cases o
+         where ${after === null ? sql`true` : sql`(o.lane, o.deferred, o.oldest_open_at, o.id) > (${after.lane}::smallint, ${after.deferred}::boolean, ${after.sortAt}::timestamptz, ${after.id}::uuid)`}
+         order by o.lane, o.deferred, o.oldest_open_at, o.id
+         limit ${options.limit}::int`,
+  );
+  const list = (joined: string) => (joined === "" ? [] : joined.split(","));
+  return found.map((row) => ({
+    id: row.id,
+    lane: row.lane,
+    targetType: row.target_type,
+    openedAt: row.opened_at,
+    oldestOpenAt: row.oldest_open_at,
+    sortAt: row.sort_at,
+    openItems: row.open_items,
+    rules: list(row.rules),
+    categories: list(row.categories),
+    allegesIllegal: row.alleges_illegal,
+    suspect: row.suspect,
+    reexamination: row.reexamination,
+    deferred: row.deferred,
+  }));
+}
+
+// ---------------------------------------------------------------- the console: the overview
+
+/** Per lane, the open cases and since when the oldest unanswered item of the lane waits. A lane without an open case has no row. */
+export async function openByLane(q: Runner): Promise<{ lane: Lane; open: number; oldestAt: string | null }[]> {
+  const found = await rows<{ lane: Lane; open: number; oldest: string | null }>(q, sql`select lane, count(*)::int as open, ${iso("min(oldest_open_at)")} as oldest from cases where closed_at is null group by lane`);
+  return found.map((row) => ({ lane: row.lane, open: row.open, oldestAt: row.oldest }));
+}
+
+/** The appeals no review has answered yet. */
+export async function appealsWaiting(q: Runner): Promise<number> {
+  const [row] = await rows<{ n: number }>(q, sql`select count(*)::int as n from appeals where answered_by is null`);
+  return row!.n;
+}
+
+/** The reveals of the last 30 days, newest first, at most `max`, with how many there are in all: time, staff handle and case. */
+export async function recentReveals(q: Runner, max: number): Promise<{ total: number; items: { at: string; handle: string; caseId: string }[] }> {
+  const found = await rows<{ at: string; handle: string; case_id: string; total: number }>(
+    q,
+    sql`select ${iso("l.at")} as at, p.handle, l.case_id, (count(*) over ())::int as total
+          from case_access_log l join profiles p on p.id = l.staff_id
+         where l.kind = 'identity_revealed' and l.at >= now() - interval '30 days'
+         order by l.at desc, l.id desc limit ${max}::int`,
+  );
+  return { total: found[0]?.total ?? 0, items: found.map((row) => ({ at: row.at, handle: row.handle, caseId: row.case_id })) };
+}
+
+/** Per staff handle, the images viewed and the findings opened since midnight UTC. */
+export async function staffToday(q: Runner): Promise<{ images: { handle: string; count: number }[]; findings: { handle: string; count: number }[] }> {
+  const images = await rows<{ handle: string; count: number }>(
+    q,
+    sql`select p.handle, count(*)::int as count from case_access_log l join profiles p on p.id = l.staff_id where l.kind = 'image_viewed' and l.at >= ${TODAY} group by p.handle order by p.handle`,
+  );
+  const findings = await rows<{ handle: string; count: number }>(
+    q,
+    sql`select p.handle, count(*)::int as count from intakes n join profiles p on p.id = n.finding_by where n.kind = 'finding' and n.received_at >= ${TODAY} group by p.handle order by p.handle`,
+  );
+  return { images: images.map((row) => ({ handle: row.handle, count: row.count })), findings: findings.map((row) => ({ handle: row.handle, count: row.count })) };
+}
+
+/** The three kinds of mail by what they wait for, and the decided items the daily release has not released. Counts only. */
+export interface MailCounts {
+  receipts: number;
+  authorMails: number;
+  outcomes: number;
+}
+
+/**
+ * Mails pending for more than an hour, counted from when each became due (an intake's receipt, a decision's time, an
+ * outcome's release); mails recorded failed whose give-up time (`giveUpDays` after that same moment) falls in the last 30
+ * days; and the items with an outcome that the daily release has not released 26 hours after their decision, or whose
+ * changed outcome has waited that long. The release takes about a day at most, so any of the last means it is not
+ * finishing.
+ */
+export async function mailAndReleaseCounts(q: Runner, giveUpDays: number): Promise<{ waiting: MailCounts; failed: MailCounts; releaseOverdue: number }> {
+  const gaveUp = (at: string) => sql.raw(`${at} + make_interval(days => ${Number(giveUpDays)}) >= now() - interval '30 days'`);
+  const [row] = await rows<Record<string, number>>(
+    q,
+    sql`select
+          (select count(*)::int from intakes where receipt = 'pending' and received_at < now() - interval '1 hour') as receipts_waiting,
+          (select count(*)::int from decisions where author_mail = 'pending' and decided_at < now() - interval '1 hour') as author_waiting,
+          (select count(*)::int from intake_items where outcome_mail = 'pending' and coalesce(revised_sent_at, outcome_sent_at) < now() - interval '1 hour') as outcomes_waiting,
+          (select count(*)::int from intakes where receipt = 'failed' and ${gaveUp("received_at")}) as receipts_failed,
+          (select count(*)::int from decisions where author_mail = 'failed' and ${gaveUp("decided_at")}) as author_failed,
+          (select count(*)::int from intake_items where outcome_mail = 'failed' and ${gaveUp("coalesce(revised_sent_at, outcome_sent_at)")}) as outcomes_failed,
+          (select count(*)::int from intake_items i
+            where i.outcome is not null and i.outcome_sent_at is null
+              and coalesce((select d.decided_at from decisions d where d.id = i.answered_by), i.created_at) < now() - interval '26 hours')
+          + (select count(*)::int from intake_items i where i.revision_pending_at < now() - interval '26 hours') as release_overdue`,
+  );
+  return {
+    waiting: { receipts: row!.receipts_waiting!, authorMails: row!.author_waiting!, outcomes: row!.outcomes_waiting! },
+    failed: { receipts: row!.receipts_failed!, authorMails: row!.author_failed!, outcomes: row!.outcomes_failed! },
+    releaseOverdue: row!.release_overdue!,
+  };
+}

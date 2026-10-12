@@ -6,8 +6,10 @@ import { describeError } from "./messages";
 import { NavLink } from "./nav";
 import type { ConsolePath } from "./router";
 import { Audit } from "./screens/Audit";
+import { CaseScreen } from "./screens/Case";
 import { Enroll } from "./screens/Enroll";
 import { Home } from "./screens/Home";
+import { Queue } from "./screens/Queue";
 import { SignIn } from "./screens/SignIn";
 import { Unavailable } from "./screens/Unavailable";
 import type { ConsoleStore } from "./store";
@@ -81,8 +83,17 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
           {signOutError}
         </p>
       ) : null}
-      {route.name === "home" || route.name === "signin" ? <Home me={session.me} api={api} credentials={credentials} /> : null}
+      {route.name === "home" || route.name === "signin" ? <Home me={session.me} api={api} credentials={credentials} onOpenCase={store.openCase} /> : null}
       {route.name === "audit" ? <Audit api={api} /> : null}
+      {route.name === "queue" ? <Queue api={api} onOpenCase={store.openCase} /> : null}
+      {/* Keyed by the case: another case's page starts with nothing of this one's. */}
+      {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} onOpenCase={store.openCase} /> : null}
+      {route.name === "appeals" ? (
+        <section aria-labelledby="appeals-title">
+          <h2 id="appeals-title">Appeals</h2>
+          <p>Appeals arrive later in sub-project 3c. The home page says how many wait.</p>
+        </section>
+      ) : null}
       {route.name === "unknown" ? (
         <section aria-labelledby="unknown-title">
           <h2 id="unknown-title">No such page</h2>

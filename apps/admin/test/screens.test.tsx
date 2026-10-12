@@ -1,4 +1,4 @@
-import type { AuditEntry, StaffKey, StaffMe, StaffSession } from "@korbat/contracts";
+import type { AuditEntry, StaffKey, StaffMe, StaffOverview, StaffSession } from "@korbat/contracts";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
@@ -56,6 +56,23 @@ const KEYS: StaffKey[] = [
   { id: "5b0e4a52-3c1d-4f6e-9a8b-7c6d5e4f3a2b", name: HOSTILE.long, createdAt: "2026-09-01T10:00:00.000Z", lastUsedAt: null },
   { id: "6c1f5b63-4d2e-4a7f-8b9c-8d7e6f5a4b3c", name: HOSTILE.url, createdAt: "2026-09-02T10:00:00.000Z", lastUsedAt: "2026-10-01T09:40:00.000Z" },
 ];
+
+/** A quiet day: no open case, nothing revealed, nothing waiting. */
+const QUIET: StaffOverview = {
+  lanes: [
+    { lane: 0, open: 0, oldestAt: null },
+    { lane: 1, open: 0, oldestAt: null },
+    { lane: 2, open: 0, oldestAt: null },
+  ],
+  appealsWaiting: 0,
+  reveals: { total: 0, items: [] },
+  imagesToday: [],
+  findingsToday: [],
+  mailsWaiting: { receipts: 0, authorMails: 0, outcomes: 0 },
+  mailsFailed: { receipts: 0, authorMails: 0, outcomes: 0 },
+  releaseOverdue: 0,
+  deferUnproven: false,
+};
 
 describe("sign-in", () => {
   test("asks for the staff key", () => {
@@ -171,6 +188,9 @@ describe("enrolment", () => {
 describe("home", () => {
   const props = {
     me: ME,
+    overview: { state: "ready" as const, value: QUIET },
+    now: Date.parse("2026-10-01T09:40:00.000Z"),
+    onOpenCase: noop,
     signIns: { state: "ready" as const, value: [signIn(HOSTILE.script, 9), signIn(HOSTILE.bidi, 8), signIn(HOSTILE.img, 7)] },
     sessions: { state: "ready" as const, value: SESSIONS },
     keys: { state: "ready" as const, value: KEYS },
@@ -188,7 +208,10 @@ describe("home", () => {
     expect(out).toContain("2026-09-30 08:05");
     expect(out).toContain(HOSTILE.long);
     expect(out).toContain("javascript:alert(3)");
-    expect(out).toContain("Cases arrive in sub-project 3c.");
+    // The cases' overview stands before the sign-ins; the placeholder line of 3a is gone.
+    expect(out).not.toContain("Cases arrive in sub-project 3c.");
+    expect(out).toContain("Urgent: no open case");
+    expect(out.indexOf("Urgent: no open case")).toBeLessThan(out.indexOf("Staff sign-ins in the last 7 days"));
   });
 
   test("Sign out that session on the other sessions, never on this one", () => {
@@ -233,6 +256,7 @@ describe("home", () => {
       },
       "GET /api/staff/sessions": { status: 200, body: { sessions: [] } },
       "GET /api/staff/keys": { status: 200, body: { keys: [] } },
+      "GET /api/staff/overview": { status: 200, body: QUIET },
     });
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
     const store = createConsoleStore({ api, clock: new FakeClock(), path: "/", history: { pushState: noop, replaceState: noop } });
@@ -243,7 +267,7 @@ describe("home", () => {
 
     // What the screen runs when it opens, with the session the page holds as its `me`.
     let signIns: Loadable<AuditEntry[]> = { state: "loading" };
-    openHome(api, { current: true }, { signIns: (value) => (signIns = value), sessions: noop, keys: noop });
+    openHome(api, { current: true }, { overview: noop, signIns: (value) => (signIns = value), sessions: noop, keys: noop });
     await settle();
     expect(signIns).toMatchObject({ state: "ready" });
     const out = html(<HomeView {...props} me={held.me} signIns={signIns} />);

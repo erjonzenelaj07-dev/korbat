@@ -1,12 +1,39 @@
 /**
- * The console's own router (3a design, section 9): four paths and nothing else. The address bar is the only state it
- * reads; the store pushes and replaces history entries itself, so the page needs no routing library.
+ * The console's own router (3a design, section 9; 3c design, section 8): its fixed pages, a case by its id, an enrolment
+ * link, and nothing else. The address bar is the only state it reads; the store pushes and replaces history entries
+ * itself, so the page needs no routing library.
  */
 
-/** The pages the console links to. A link is only ever one of these constants, never an address built from data. */
-export type ConsolePath = "/" | "/audit" | "/signin";
+/** The pages the console links to by name. Such a link is only ever one of these constants, never an address built from data. */
+export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals";
 
-export type Route = { name: "home" } | { name: "audit" } | { name: "signin" } | { name: "enroll"; token: string } | { name: "unknown" };
+/** A uuid in the one spelling PostgreSQL writes: the only form an id takes in an address the console builds. */
+const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Whether a text is a lower-case uuid, and nothing else. */
+export const isLowerUuid = (text: string): boolean => LOWER_UUID.test(text);
+
+declare const caseIdBrand: unique symbol;
+/** A case's id that parseCaseId has checked: the only thing a case's address is ever built from. */
+export type CaseId = string & { readonly [caseIdBrand]: true };
+
+/** The case's id when the text is a lower-case uuid; null for anything else, which names no case. */
+export function parseCaseId(text: string): CaseId | null {
+  return isLowerUuid(text) ? (text as CaseId) : null;
+}
+
+/** A case's address in the console: the one address the console builds from a value, and only from a checked id. */
+export const caseHref = (id: CaseId): string => `/cases/${id}`;
+
+export type Route =
+  | { name: "home" }
+  | { name: "audit" }
+  | { name: "signin" }
+  | { name: "queue" }
+  | { name: "appeals" }
+  | { name: "case"; id: CaseId }
+  | { name: "enroll"; token: string }
+  | { name: "unknown" };
 
 /**
  * The route an address names. A trailing slash names the same page. An enrolment link's token is kept exactly as written:
@@ -17,6 +44,13 @@ export function parseRoute(pathname: string): Route {
   if (path === "/") return { name: "home" };
   if (path === "/audit") return { name: "audit" };
   if (path === "/signin") return { name: "signin" };
+  if (path === "/queue") return { name: "queue" };
+  if (path === "/appeals") return { name: "appeals" };
+  const found = /^\/cases\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(path);
+  if (found) {
+    const id = parseCaseId(found[1]!);
+    if (id) return { name: "case", id };
+  }
   const enroll = /^\/enroll\/([^/]+)$/.exec(path);
   if (enroll) return { name: "enroll", token: enroll[1]! };
   return { name: "unknown" };

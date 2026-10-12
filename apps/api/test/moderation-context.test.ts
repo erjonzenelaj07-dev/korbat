@@ -3,7 +3,7 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import { ModerationError, isModerationErrorCode, moderationErrorMessage } from "../src/moderation/context";
 
 describe("the moderation module's refusals", () => {
-  test("each of the seventeen codes this module raises answers with the status the design gives it (3c design, section 10)", () => {
+  test("each of the twenty-one codes this module raises answers with the status the design gives it (3c design, section 10)", () => {
     const statuses = {
       notice_link_invalid: 422,
       notice_link_offsite: 422,
@@ -22,6 +22,10 @@ describe("the moderation module's refusals", () => {
       snapshot_erased: 409,
       text_not_found: 409,
       invalid_decision: 422,
+      text_invalid: 422,
+      text_quotes_user: 422,
+      image_refused: 404,
+      reveal_refused: 422,
     } as const;
     // The table above is the whole of the contracts' list, so a code added there fails here until its status is pinned.
     expect(Object.keys(statuses).sort()).toEqual([...ModerationErrorCode.options].sort());
@@ -40,6 +44,12 @@ describe("the moderation module's refusals", () => {
     // A session that has not finished onboarding is refused as requireSession refuses it, in the same words.
     expect(new ModerationError("onboarding_required")).toMatchObject({ status: 403, message: "Choose a handle to finish setting up your account." });
     expect([new ModerationError("rate_limited").status, new ModerationError("service_unavailable").status]).toEqual([429, 503]);
+  });
+
+  test("the console's refusals say nothing about who reported: a recusal reads the same whoever the conflict concerns, and an image that is not shown gives no reason", () => {
+    expect(moderationErrorMessage("staff_recused")).not.toMatch(/report/i);
+    expect(moderationErrorMessage("image_refused")).toBe("That image is not shown.");
+    expect(moderationErrorMessage("reveal_refused")).not.toMatch(/@|https?:/);
   });
 
   test("the words of the notice routes are written for the person reporting, and the human check names no address", () => {
