@@ -16,6 +16,7 @@ import { MemoryStore } from "../../src/middleware/rate-limit";
 import { enforceWriteLimit } from "../../src/social/limits";
 import { createSocialRepo } from "../../src/social/repo";
 import { DAY_MS, HOUR_MS } from "../../src/social/tiers";
+import { decideForTest } from "./moderation-decide";
 import { newPost, newProfile, ticker } from "./social-fixtures";
 
 /** The first bytes of each kind of file. The API judges an upload by these and never decodes it. */
@@ -104,7 +105,16 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
     return { postId, mediaIds };
   }
 
-  const setPostState = (postId: string, state: "visible" | "withheld" | "removed" | "deleted_by_author") => db.update(posts).set({ state }).where(eq(posts.id, postId));
+  /**
+   * Puts a post into a state. The author's deletion is written as the social module writes it. A moderation state comes
+   * about only through a decision: the posts' guard refuses the API role any other write of it, so withheld, removed and
+   * back to visible go through decideForTest, which needs the API's pool (a file that uses them closes its pools with
+   * closeDecisions).
+   */
+  const setPostState = async (postId: string, state: "visible" | "withheld" | "removed" | "deleted_by_author"): Promise<void> => {
+    if (state === "deleted_by_author") await db.update(posts).set({ state }).where(eq(posts.id, postId));
+    else await decideForTest(db, postId, state);
+  };
 
   return {
     deps,

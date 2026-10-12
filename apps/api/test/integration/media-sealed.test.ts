@@ -15,12 +15,12 @@ import { rolledBack } from "./staff-fixtures";
 vi.setConfig({ testTimeout: 30_000 });
 
 /**
- * The image readers fail closed (3c design, sections 5 and 7.10, gate S) before any code can write the state `sealed`: an
- * image in that state is served, listed and exported to nobody, its author included, and its status carries no blurhash.
- * Only a migrator-owned function will ever write an image's moderation state, and none exists yet, so each test runs as
- * the migrator inside one transaction that is rolled back: it makes its accounts, posts and images there, sets the state,
- * and runs the readers on that same transaction. A sealed image that no decision sealed never reaches the database's
- * other readers, and the file's last test holds it to leaving no row behind.
+ * The image readers fail closed (3c design, sections 5 and 7.10, gate S): an image in the state `sealed` is served,
+ * listed and exported to nobody, its author included, and its status carries no blurhash. Only the migrator-owned
+ * moderation_apply writes an image's moderation state, from a decision's ledger; these tests are about the readers, so
+ * each runs as the migrator inside one transaction that is rolled back: it makes its accounts, posts and images there,
+ * sets the state by hand, and runs the readers on that same transaction. A sealed image that no decision sealed never
+ * reaches the database's other readers, and the file's last test holds it to leaving no row behind.
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: a sealed image reaches nobody", () => {
   let migrateDb: Db;
@@ -45,7 +45,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a sealed image reaches n
         h.cleanup();
       }
     });
-  /** Sets the images' moderation state as the migrator, which stands in for the function of a later migration. */
+  /** Sets the images' moderation state as the migrator, which stands in for a seal's decision. */
   const seal = (tx: DbTx, mediaIds: readonly string[]) => tx.execute(sql`update post_media set moderation_state = 'sealed' where id = any(${`{${mediaIds.join(",")}}`}::uuid[])`);
   /** What serve answers for the large file, with the file it opened closed again. */
   async function ask(deps: MediaDeps, id: string, viewer: string | null, ifNoneMatch?: string) {

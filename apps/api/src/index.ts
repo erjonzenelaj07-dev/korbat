@@ -10,8 +10,9 @@ import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
 import { createMedia } from "./media";
 import { RedisStore } from "./middleware/rate-limit";
+import { createModeration } from "./moderation";
 import { createProfileStore } from "./profiles/store";
-import { createSocial, enforceWriteLimit } from "./social";
+import { createSocial, enforceWriteLimit, socialForModeration } from "./social";
 import { createStaff } from "./staff";
 
 const config = loadConfig();
@@ -53,6 +54,10 @@ const jobLock = redisJobLock(redis);
 const stopSweeper = media.startSweeper(jobLock);
 const stopJanitor = auth.startJanitor(jobLock);
 
+// Moderation cases: the module owns its tables on the API's role and reaches the social module through an interface of
+// that module's own, built over the same pool.
+const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+
 const social = createSocial({
   apiDb,
   rateLimitStore,
@@ -80,8 +85,9 @@ const account = createAccount({
 // Deletions the process did not finish (a crash after the auth step, a failed purge) are completed within five minutes.
 const stopPurge = account.startPurge(jobLock);
 
-// The staff console's API; createApp mounts it only while CONSOLE_ORIGIN is set. Its credential work is the auth module's.
-const staff = createStaff({ apiDb, auth: auth.forStaff });
+// The staff console's API; createApp mounts it only while CONSOLE_ORIGIN is set. Its credential work is the auth module's,
+// its case work the moderation module's.
+const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
 
 const app = createApp({
   config,

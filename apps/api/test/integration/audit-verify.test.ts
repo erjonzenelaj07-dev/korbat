@@ -120,12 +120,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
           expect(texts.map((t) => [t.metadata, t.stepUp])).toEqual(CHAIN_VECTORS.map((v) => [v.metadataText, v.stepUpText]));
 
           // The API role cannot read the staff keys: they come from the auth role's pool, as the command line reads them.
-          // Every hash recomputes; the one problem is the step-up vector's, whose assertion no stored key made, and which
-          // is the last vector.
+          // Every hash recomputes. Two rows are refused for what they are: the step-up vector, whose assertion no stored
+          // key made, and which is the last vector; and the vector that records a decision on a case with no step-up at
+          // all, an action that only a staff key's confirmation may leave in the record.
           const report = await checkAuditRecord(tx, [], authDb);
           expect(CHAIN_VECTORS.at(-1)!.insert.stepUp).not.toBeNull();
           expect(CHAIN_VECTORS.filter((vector) => vector.insert.stepUp !== null)).toHaveLength(1);
-          expect(report.problems).toEqual([{ place: before.seq + CHAIN_VECTORS.length, message: expect.stringMatching(/^its step-up/) }]);
+          const unconfirmed = CHAIN_VECTORS.findIndex((vector) => vector.insert.action === "case_decided" && vector.insert.stepUp === null);
+          expect(unconfirmed).toBeGreaterThanOrEqual(0);
+          expect(report.problems).toEqual([
+            { place: before.seq + unconfirmed + 1, message: "its action, case_decided, needs a step-up, and it carries none" },
+            { place: before.seq + CHAIN_VECTORS.length, message: expect.stringMatching(/^its step-up/) },
+          ]);
           expect(report.rows).toBe(before.seq + CHAIN_VECTORS.length);
         });
       } finally {

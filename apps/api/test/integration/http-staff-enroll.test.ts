@@ -15,6 +15,8 @@ import { loadConfig, type Config } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
+import { createModeration } from "../../src/moderation";
+import { socialForModeration } from "../../src/social";
 import { createStaff } from "../../src/staff";
 import { SoftAuthenticator, type CborValue, type SoftCreateInput } from "../auth/soft-authenticator";
 import { Browser } from "./http-client";
@@ -44,7 +46,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the enrolment routes ove
     repo = createAuthRepo(authDb);
     mailer = new MemoryMailer();
     const auth = createAuth({ config, logger, authDb, kv: new MemoryKv(), mailer, profiles: createProfileStore(apiDb) });
-    const staff = createStaff({ apiDb, auth: auth.forStaff });
+    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+    const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
     app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   });
   afterAll(async () => {

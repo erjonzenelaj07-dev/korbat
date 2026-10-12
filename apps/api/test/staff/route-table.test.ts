@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import pino from "pino";
 import { describe, expect, test } from "vitest";
-import { AuditEntry, AuditPage, StaffEnrollVerifyResponse, StaffKey, StaffKeysResponse, StaffMe, StaffSession, StaffSessionsResponse } from "@korbat/contracts";
+import { AuditEntry, AuditPage, CaseDecisionResponse, StaffEnrollVerifyResponse, StaffKey, StaffKeysResponse, StaffMe, StaffSession, StaffSessionsResponse } from "@korbat/contracts";
 import { createDb } from "@korbat/db";
 import { createAccount } from "../../src/account";
 import { createApp } from "../../src/app";
@@ -15,7 +15,8 @@ import { loadConfig } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
 import { createMedia } from "../../src/media";
 import { MemoryStore } from "../../src/middleware/rate-limit";
-import { createSocial } from "../../src/social";
+import { createModeration } from "../../src/moderation";
+import { createSocial, socialForModeration } from "../../src/social";
 import { createStaff } from "../../src/staff";
 
 const key = Buffer.alloc(32, 7).toString("base64");
@@ -80,7 +81,8 @@ function build() {
     rateLimitStore,
     logger,
   });
-  const staff = createStaff({ apiDb, auth: auth.forStaff });
+  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+  const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
   const app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, staff });
   // What the staff module mounts at /api/staff, as createApp mounts it.
   const staffOwn = staff.routes(CONSOLE_ORIGIN).routes.map((r) => ({ method: r.method, path: `/api/staff${r.path}` }));
@@ -110,7 +112,7 @@ function patternOf(routePath: string): RegExp {
   return new RegExp(`^${body}$`);
 }
 
-/** A lower-case uuid, as a staff path's parameter (a session's handle) takes one. */
+/** A lower-case uuid, as a staff path's parameter (a session's handle, a case's id) takes one. */
 const SAMPLE_PARAMETER = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
 
 /**
@@ -183,7 +185,7 @@ const roleWriterViolations = (files: { path: string; source: string }[]) => file
 const PERSONAL = /email|^ip|ipHash|address|device|phone|userId|accountId|actorId|userAgent|webauthn/i;
 
 describe("the staff routes in the route table (3a design, section 11)", () => {
-  test("are exactly the staff module's: the gate, sign-in, enrolment, the person's own reads, sign-out, step-up and the confirmed revocation", () => {
+  test("are exactly the staff module's: the gate, sign-in, enrolment, the person's own reads, sign-out, step-up, the confirmed revocation and the confirmed decision", () => {
     const { app } = build();
     expect(distinct(app.routes.filter((r) => isStaffPath(r.path)))).toEqual(
       [
@@ -199,6 +201,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/signout",
         "POST /api/staff/step-up/options",
         "DELETE /api/staff/sessions/:handle",
+        "POST /api/staff/cases/:case/decisions",
       ].sort(),
     );
   });
@@ -208,7 +211,19 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
     expect(staffOwn.length).toBeGreaterThan(0);
     // Every staff path is probed, the ones the old fixed list left out among them.
     const probes = staffProbes(staffOwn);
-    for (const p of ["/api/staff/audit", "/api/staff/keys", "/api/staff/signout", "/api/staff/signin/options", "/api/staff/signin/verify", "/api/staff/enroll/options", "/api/staff/enroll/verify", `/api/staff/sessions/${SAMPLE_PARAMETER}`]) {
+    for (const p of [
+      "/api/staff/audit",
+      "/api/staff/keys",
+      "/api/staff/signout",
+      "/api/staff/signin/options",
+      "/api/staff/signin/verify",
+      "/api/staff/enroll/options",
+      "/api/staff/enroll/verify",
+      `/api/staff/sessions/${SAMPLE_PARAMETER}`,
+      "/api/staff/cases",
+      `/api/staff/cases/${SAMPLE_PARAMETER}`,
+      `/api/staff/cases/${SAMPLE_PARAMETER}/decisions`,
+    ]) {
       expect(probes, p).toContain(p);
     }
     expect(foreignStaffRoutes(app.routes, staffOwn)).toEqual([]);
@@ -276,11 +291,12 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
 
   test("no route acts as another user or reads another user's sessions, email, IP, device or phone: no staff path names an account, and no staff answer has a member that would", () => {
     const { app } = build();
-    // The one path parameter under /api/staff is a staff session's handle, which the revocation takes only from the
-    // person's own sessions (the step-up suites show another account's is not found).
+    // The path parameters under /api/staff are a staff session's handle, which the revocation takes only from the
+    // person's own sessions (the step-up suites show another account's is not found), and a case's id: a case, never an
+    // account.
     const parameters = distinct(app.routes.filter((r) => isStaffPath(r.path) && r.path.includes(":")));
-    expect(parameters).toEqual(["DELETE /api/staff/sessions/:handle"]);
-    const answers = { StaffMe, StaffSession, StaffKey, AuditEntry, StaffSessionsResponse, StaffKeysResponse, AuditPage, StaffEnrollVerifyResponse };
+    expect(parameters).toEqual(["DELETE /api/staff/sessions/:handle", "POST /api/staff/cases/:case/decisions"]);
+    const answers = { StaffMe, StaffSession, StaffKey, AuditEntry, StaffSessionsResponse, StaffKeysResponse, AuditPage, StaffEnrollVerifyResponse, CaseDecisionResponse };
     const members = Object.entries(answers).flatMap(([name, schema]) => Object.keys(schema.shape).map((member) => `${name}.${member}`));
     expect(members.filter((member) => PERSONAL.test(member.split(".")[1]!))).toEqual([]);
     // The browser's coarse label and the actor's public handle are what the console shows of a session and a row.

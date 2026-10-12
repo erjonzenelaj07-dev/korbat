@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 /**
- * Module boundaries (1a spec section 2.2, 2a spec section 2.2, 3a design section 5). Paths are relative to apps/api/src
+ * Module boundaries (1a spec section 2.2, 2a spec section 2.2, 3a design section 5, 3c design section 5). Paths are relative to apps/api/src
  * with forward slashes. The rules are plain functions so the tests below can prove each one catches
  * a deliberate violation.
  */
@@ -25,7 +25,7 @@ const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts",
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
 /** Modules that may only be entered through their index file. */
-const MODULES = ["auth", "social", "media", "account", "staff"] as const;
+const MODULES = ["auth", "social", "media", "account", "staff", "moderation"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -86,6 +86,7 @@ const insideSocial = (path: string) => path.startsWith("social/");
 const insideMedia = (path: string) => path.startsWith("media/");
 const insideAccount = (path: string) => path.startsWith("account/");
 const insideStaff = (path: string) => path.startsWith("staff/");
+const insideModeration = (path: string) => path.startsWith("moderation/");
 
 function findViolations(files: SourceFile[], publicNames: Set<string>, authNames: Set<string>): string[] {
   const violations: string[] = [];
@@ -116,8 +117,9 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
       violations.push(`${path}: references post_media, which only the media module may touch`);
     }
     // The staff module (role korbat_api) reads and writes the public audit log; staff keys, staff sessions and enrolments
-    // are credentials, the auth module's alone (3a design, section 5).
-    if (insideSocial(path) || insideMedia(path) || insideStaff(path)) {
+    // are credentials, the auth module's alone (3a design, section 5). The moderation module owns the moderation tables on
+    // the same role: a notifier's contact and the staff links live in the auth schema, out of its reach (3c design, section 5).
+    if (insideSocial(path) || insideMedia(path) || insideStaff(path) || insideModeration(path)) {
       for (const name of dbImports(source)) {
         if (name === "*") violations.push(`${path}: namespace import of @korbat/db (import public-schema names explicitly)`);
         else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db`);
@@ -134,11 +136,12 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
       }
     }
     // The staff module uses the auth module's interface as the other modules do, never its repository or its session
-    // store, which would hand it the auth tables. Any mention counts, so a renamed, namespace or dynamic import is caught
-    // as surely as a named one.
-    if (insideStaff(path)) {
+    // store, which would hand it the auth tables; the moderation module likewise. Any mention counts, so a renamed,
+    // namespace or dynamic import is caught as surely as a named one.
+    if (insideStaff(path) || insideModeration(path)) {
+      const module = insideStaff(path) ? "staff" : "moderation";
       for (const name of new Set([...source.matchAll(/\b(createAuthRepo|createSessions)\b/g)].map((m) => m[1]!))) {
-        violations.push(`${path}: uses the auth module's ${name} (the staff module goes through the auth module's interface)`);
+        violations.push(`${path}: uses the auth module's ${name} (the ${module} module goes through the auth module's interface)`);
       }
     }
   }
@@ -153,6 +156,7 @@ describe("module boundaries", () => {
     expect(paths).toContain("media/index.ts");
     expect(paths).toContain("account/index.ts");
     expect(paths).toContain("staff/index.ts");
+    expect(paths).toContain("moderation/index.ts");
     expect(paths).toContain("cli/staff.ts");
     expect(paths).toContain("app.ts");
     expect(publicSchemaNames()).toContain("profiles");
@@ -181,8 +185,12 @@ describe("module boundaries", () => {
       { path: "cli/staff.ts", source: `import { createStaff } from "../staff";\nconst authDb = createDb(config.DATABASE_URL_AUTH);` },
       { path: "staff/audit.ts", source: `import { auditHead, auditLog, profiles, type Db, type DbTx } from "@korbat/db";` },
       { path: "staff/routes.ts", source: `import { AuthError, type Auth } from "../auth";\nimport { staffGate } from "./gate";` },
+      { path: "staff/cases.ts", source: `import { ModerationError, type ModerationForStaff } from "../moderation";` },
+      { path: "index.ts", source: `import { createModeration } from "./moderation";\nimport { socialForModeration } from "./social";` },
+      { path: "moderation/repo.ts", source: `import { cases, decisions, evidenceSnapshots, intakes, type Db, type DbTx } from "@korbat/db";\nimport { ModerationError } from "./context";` },
+      { path: "moderation/decide.ts", source: `import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";\nimport { boundLockWaits } from "../lib/lock-bounds";\nimport type { SocialForModeration } from "../social";` },
     ];
-    expect(findViolations(files, new Set(["profiles", "posts", "auditLog", "auditHead"]), new Set(["users", "sessions"]))).toEqual([]);
+    expect(findViolations(files, new Set(["profiles", "posts", "auditLog", "auditHead", "cases", "decisions", "evidenceSnapshots", "intakes"]), new Set(["users", "sessions"]))).toEqual([]);
   });
 
   test("catches a deep import into the auth module", () => {
@@ -304,6 +312,57 @@ describe("module boundaries", () => {
       "staff/flows/x.ts: uses the auth module's createAuthRepo (the staff module goes through the auth module's interface)",
       "staff/flows/x.ts: uses the auth module's createSessions (the staff module goes through the auth module's interface)",
       "staff/flows/y.ts: uses the auth module's createSessions (the staff module goes through the auth module's interface)",
+    ]);
+  });
+
+  test("catches a deep import into the moderation module, from outside it and from another module", () => {
+    const files: SourceFile[] = [
+      { path: "app.ts", source: `import { decide } from "./moderation/decide";\nimport { createModeration } from "./moderation";` },
+      { path: "staff/cases.ts", source: `import { ModerationError } from "../moderation/context";` },
+      { path: "social/views.ts", source: `import { authorFacts } from "../moderation/repo";` },
+      { path: "cli/staff.ts", source: `const { recordIntake } = await import("../moderation/intake");` },
+      { path: "moderation/decide.ts", source: `import { ModerationError } from "./context";\nimport { insertDecision } from "./repo";` },
+    ];
+    expect(findViolations(files, new Set(), new Set())).toEqual([
+      "app.ts: imports ./moderation/decide, which is inside the moderation module (use ./moderation)",
+      "staff/cases.ts: imports ../moderation/context, which is inside the moderation module (use ./moderation)",
+      "social/views.ts: imports ../moderation/repo, which is inside the moderation module (use ./moderation)",
+      "cli/staff.ts: imports ../moderation/intake, which is inside the moderation module (use ./moderation)",
+    ]);
+  });
+
+  test("catches the moderation module reaching into another module, naming post_media, or opening the auth pool", () => {
+    const files: SourceFile[] = [
+      { path: "moderation/intake.ts", source: `import { createSocialRepo } from "../social/repo";` },
+      { path: "moderation/decide.ts", source: `import { verifyStepUp } from "../auth/staff/step-up";` },
+      { path: "moderation/repo.ts", source: `import { cases, postMedia, type Db } from "@korbat/db";` },
+      { path: "moderation/cases.ts", source: "const rows = await tx.execute(sql`select id from post_media where post_id = ${postId}`);" },
+      { path: "moderation/context.ts", source: `export interface ModerationDeps { authDb: Db }` },
+    ];
+    expect(findViolations(files, new Set(["cases", "postMedia"]), new Set())).toEqual([
+      "moderation/intake.ts: imports ../social/repo, which is inside the social module (use ./social)",
+      "moderation/decide.ts: imports ../auth/staff/step-up, which is inside the auth module (use ./auth)",
+      "moderation/repo.ts: references post_media, which only the media module may touch",
+      "moderation/cases.ts: references post_media, which only the media module may touch",
+      "moderation/context.ts: references the auth database pool",
+    ]);
+  });
+
+  test("catches auth-schema imports inside the moderation module, and the auth module's repository or session store", () => {
+    const files: SourceFile[] = [
+      { path: "moderation/repo.ts", source: `import { decisions, notifierContacts, type Db } from "@korbat/db";` },
+      { path: "moderation/decide.ts", source: `import type { staffPersonalAccounts as links, users } from "@korbat/db";` },
+      { path: "moderation/cases.ts", source: `import * as db from "@korbat/db";` },
+      { path: "moderation/intake.ts", source: `import { createAuthRepo } from "../auth";` },
+      { path: "moderation/reveal.ts", source: `const { createSessions } = await import("../auth");` },
+    ];
+    expect(findViolations(files, new Set(["decisions"]), new Set(["notifierContacts", "staffPersonalAccounts", "users"]))).toEqual([
+      "moderation/repo.ts: imports auth-schema notifierContacts from @korbat/db",
+      "moderation/decide.ts: imports auth-schema staffPersonalAccounts from @korbat/db",
+      "moderation/decide.ts: imports auth-schema users from @korbat/db",
+      "moderation/cases.ts: namespace import of @korbat/db (import public-schema names explicitly)",
+      "moderation/intake.ts: uses the auth module's createAuthRepo (the moderation module goes through the auth module's interface)",
+      "moderation/reveal.ts: uses the auth module's createSessions (the moderation module goes through the auth module's interface)",
     ]);
   });
 

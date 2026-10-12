@@ -29,6 +29,8 @@ import { loadConfig, type Config } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
+import { createModeration } from "../../src/moderation";
+import { socialForModeration } from "../../src/social";
 import { createStaff } from "../../src/staff";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { fakeClock } from "./auth-fixtures";
@@ -84,7 +86,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
     repo = createAuthRepo(authDb);
     auth = createAuth({ config, logger, authDb, kv: new MemoryKv(clock.ms), mailer, profiles: createProfileStore(apiDb), now: clock.now });
-    const staff = createStaff({ apiDb, auth: auth.forStaff });
+    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+    const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
     app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   });
   afterAll(async () => {
@@ -701,6 +704,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
         ["a read of the audit log", "/api/staff/audit", { headers: { cookie } }],
         ["a read with the console's Origin", "/api/staff/sessions", { headers: { cookie, origin: TEST_CONSOLE_ORIGIN } }],
         ["the sign-in options", "/api/staff/signin/options", { method: "POST", headers: { origin: trusted } }],
+        // The case routes of sub-project 3c stand behind the same gate.
+        ["a decision on a case, from the trusted Origin", `/api/staff/cases/${randomUUID()}/decisions`, { method: "POST", headers: { cookie, origin: trusted } }],
+        ["a preflight for a decision on a case", `/api/staff/cases/${randomUUID()}/decisions`, { method: "OPTIONS", headers: { origin: trusted, "access-control-request-method": "POST" } }],
       ] as const) {
         const res = await raw(path, init);
         expect(accessControlHeaders(res), label).toEqual([]);

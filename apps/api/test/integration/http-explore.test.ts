@@ -18,6 +18,7 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createSocial, type Social } from "../../src/social";
 import { HOUR, MINUTE, accounts, after, approvedPost, before, listed, pageIds, rank, spans } from "./explore-fixtures";
 import { Browser } from "./http-client";
+import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 import { newPost } from "./social-fixtures";
 
 type App = ReturnType<typeof createApp>;
@@ -84,6 +85,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Explore over HTTP", () =
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, account });
   });
   afterAll(async () => {
+    await closeDecisions();
     await Promise.all([closeDb(authDb), closeDb(apiDb)]);
   });
   // Every test starts without any ranking (the cascade empties explore_items) and reads the generations its own rounds answer.
@@ -151,11 +153,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Explore over HTTP", () =
 
     // The extra row that decides the prompt is read through the same filters as the page: with the first post withheld,
     // the twenty left are all there is.
-    await apiDb.execute(sql`update posts set state = 'withheld' where id = ${order[0]!}::uuid`);
+    await decideForTest(apiDb, order[0]!, "withheld");
     const rest = await explore("?limit=50");
     expect(pageIds(rest)).toEqual(order.slice(1));
     expect(rest).toMatchObject({ nextCursor: null, computedAt, signInForMore: false });
-  });
+    // The withheld state comes from a real, confirmed decision: a staff key's enrolment, a sign-in, a step-up and the decision.
+  }, 30_000);
 
   test("a signed-out request with a cursor is refused with 401 before anything is read; signed in, the cursor pages on, and every answer is no-store", async () => {
     const asOf = nextAsOf();
@@ -273,4 +276,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Explore over HTTP", () =
     expect((await exported(on.b)).profile).toMatchObject({ handle: on.handle, showInExplore: true });
     expect((await exported(off.b)).profile).toMatchObject({ handle: off.handle, showInExplore: false });
   });
+
+  leavesNoModerationRows(() => apiDb);
 });

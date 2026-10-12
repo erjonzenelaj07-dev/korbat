@@ -5,6 +5,8 @@ import { clearStaffCookies, setStaffCookies, type ActiveStaffSession, type AuthF
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
+import type { ModerationForStaff } from "../moderation";
+import { caseRoutes } from "./cases";
 import { staffGate } from "./gate";
 
 /**
@@ -15,7 +17,7 @@ import { staffGate } from "./gate";
  * changes something stands behind requireStaffStepUp as well, which verifies the key's confirmation of exactly what the
  * route is about to do; sign-out alone needs none.
  */
-export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, readAudit: (query: AuditPageQuery) => Promise<AuditPage>) {
+export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, moderation: ModerationForStaff, readAudit: (query: AuditPageQuery) => Promise<AuditPage>) {
   const routes = new Hono<AppEnv>();
   routes.use("*", staffGate(consoleOrigin));
 
@@ -82,6 +84,9 @@ export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, readAudit
       return revoked ? c.body(null, 204) : c.json(errorBody("not_found", "No such session", c.get("requestId")), 404);
     },
   );
+
+  // The console's case routes, behind the gate above like every path here.
+  routes.route("/", caseRoutes(auth, moderation));
 
   return routes;
 }

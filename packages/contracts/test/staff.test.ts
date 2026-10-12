@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { z } from "zod";
 import {
   AuditEntry,
   AuditPage,
@@ -226,8 +227,8 @@ describe("the staff account and its session", () => {
 });
 
 describe("step-up actions", () => {
-  test("3a has one: revoking a staff session, whose target is a staff session and whose params are empty", () => {
-    expect(Object.keys(STAFF_STEP_UP_ACTIONS)).toEqual(["staff_session_revoked"]);
+  test("there are four: revoking a staff session, whose target is a staff session and whose params are empty, and the three of moderation cases", () => {
+    expect(Object.keys(STAFF_STEP_UP_ACTIONS)).toEqual(["staff_session_revoked", "case_decided", "appeals_reviewed", "identity_revealed"]);
     expect(StaffStepUpActionName.options).toEqual(Object.keys(STAFF_STEP_UP_ACTIONS));
     const spec = STAFF_STEP_UP_ACTIONS.staff_session_revoked;
     expect(spec.targetType).toBe("staff_session");
@@ -274,6 +275,280 @@ describe("step-up actions", () => {
     expect(StaffStoredAssertion.safeParse({ ...stored, signature: b64(1025) }).success).toBe(false);
     expect(StaffStoredAssertion.safeParse({ ...stored, clientDataJSON: "ab/cd" }).success).toBe(false);
     expect(StaffStoredAssertion.safeParse({ ...stored, userHandle: b64(43) }).success).toBe(false);
+  });
+});
+
+describe("the step-up actions of moderation cases", () => {
+  const image = "7a1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+  const otherImage = "9a1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+  const TC = "STATEMENT_CATEGORY_OTHER_VIOLATION_TC";
+  const SPEECH = "STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH";
+  const decided = STAFF_STEP_UP_ACTIONS.case_decided.params;
+  const reviewed = STAFF_STEP_UP_ACTIONS.appeals_reviewed.params;
+  const revealed = STAFF_STEP_UP_ACTIONS.identity_revealed.params;
+
+  /** An interim withhold under R1: the least a restricting decision carries. */
+  const interim = {
+    kind: "interim",
+    stateVersion: 0,
+    throughSeq: 0,
+    reviewsDecisionId: null,
+    snapshotId: uuid,
+    snapshotDigest: hex,
+    outcome: "restricted",
+    ground: "incompatible",
+    ruleId: "R1",
+    rulesVersion: 2,
+    redressVersion: 1,
+    category: TC,
+    categoryKeyword: null,
+    actions: [{ kind: "withhold", mediaId: null }],
+    factsDigest: hex,
+    reasonDigest: hex,
+    legalReferenceDigest: null,
+  };
+  const final = { ...interim, kind: "final", throughSeq: 3, actions: [{ kind: "remove", mediaId: null }] };
+  const noAction = { ...final, outcome: "no_violation", ground: null, ruleId: null, actions: [], factsDigest: null, reasonDigest: null };
+  const legal = { ...final, ground: "illegal", ruleId: null, category: SPEECH, legalReferenceDigest: hex };
+  const correction = {
+    ...interim,
+    kind: "correction",
+    reviewsDecisionId: "5f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a",
+    outcome: "reversed",
+    ground: null,
+    ruleId: null,
+    factsDigest: null,
+    actions: [{ kind: "restore", mediaId: null }],
+  };
+  const review = {
+    stateVersion: 4,
+    appealId: "4f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a",
+    snapshotId: uuid,
+    snapshotDigest: hex,
+    outcome: "reversed",
+    rulesVersion: 2,
+    redressVersion: 1,
+    category: TC,
+    actions: [{ kind: "restore", mediaId: null }],
+    reasonDigest: hex,
+  };
+  const reveal = { reasonCategory: "impersonation_claim", reasonDigest: hex };
+
+  const refused = (schema: { safeParse: (value: unknown) => { success: boolean } }, value: unknown) => schema.safeParse(value).success === false;
+
+  test("each has its target type, and a target id in PostgreSQL's lower-case spelling only", () => {
+    expect(STAFF_STEP_UP_ACTIONS.case_decided.targetType).toBe("case");
+    expect(STAFF_STEP_UP_ACTIONS.appeals_reviewed.targetType).toBe("decision");
+    expect(STAFF_STEP_UP_ACTIONS.identity_revealed.targetType).toBe("intake_item");
+    for (const action of ["case_decided", "appeals_reviewed", "identity_revealed"] as const) {
+      const spec = STAFF_STEP_UP_ACTIONS[action];
+      expect(spec.targetId.safeParse(uuid).success, action).toBe(true);
+      expect(spec.targetId.safeParse(uuid.toUpperCase()).success, action).toBe(false);
+      expect(spec.targetId.safeParse("abc").success, action).toBe(false);
+    }
+  });
+
+  test("case_decided takes an interim, a final and a correcting decision, each exactly as sent", () => {
+    for (const params of [interim, final, noAction, legal, correction]) expect(decided.parse(params), params.kind).toEqual(params);
+    everyFieldRequired(decided, interim);
+    // A final decision that finds no breach may still name the rule it examined, and may lift the case's interim withholds.
+    expect(decided.parse({ ...noAction, ground: "incompatible", ruleId: "R5", actions: [{ kind: "restore", mediaId: null }] }).ruleId).toBe("R5");
+    expect(decided.parse({ ...noAction, outcome: "not_evident" }).outcome).toBe("not_evident");
+    expect(decided.parse({ ...legal, categoryKeyword: "KEYWORD_TERRORIST_CONTENT" }).categoryKeyword).toBe("KEYWORD_TERRORIST_CONTENT");
+  });
+
+  test("the params are strict and unchanged: a member they do not know is refused, and nothing is trimmed, folded or defaulted", () => {
+    expect(refused(decided, { ...interim, note: "x" })).toBe(true);
+    expect(refused(decided, { ...interim, actions: [{ kind: "withhold", mediaId: null, extra: 1 }] })).toBe(true);
+    expect(refused(reviewed, { ...review, ground: null })).toBe(true);
+    expect(refused(revealed, { ...reveal, text: "why" })).toBe(true);
+    // No transform: an upper-case id or digest is refused, never lower-cased.
+    expect(refused(decided, { ...interim, snapshotId: uuid.toUpperCase() })).toBe(true);
+    expect(refused(decided, { ...interim, snapshotDigest: hex.toUpperCase() })).toBe(true);
+    expect(refused(decided, { ...interim, factsDigest: ` ${hex}` })).toBe(true);
+    expect(refused(decided, { ...interim, actions: [{ kind: "withhold_media", mediaId: image.toUpperCase() }] })).toBe(true);
+    // Numbers are whole and in range.
+    for (const stateVersion of [-1, 1.5, "0", 2_147_483_648]) expect(refused(decided, { ...interim, stateVersion }), String(stateVersion)).toBe(true);
+    for (const rulesVersion of [0, 1.5, 32_768]) expect(refused(decided, { ...interim, rulesVersion }), String(rulesVersion)).toBe(true);
+    expect(refused(decided, { ...interim, category: "STATEMENT_CATEGORY_PORNOGRAPHY_OR_SEXUALIZED_CONTENT" })).toBe(true);
+    expect(refused(decided, { ...interim, ruleId: "R7" })).toBe(true);
+    expect(refused(decided, { ...interim, kind: "review" })).toBe(true);
+  });
+
+  test("the outcome goes with the kind: an interim decision restricts, a final one restricts or finds no breach, a correction reverses", () => {
+    expect(refused(decided, { ...interim, outcome: "no_violation" })).toBe(true);
+    expect(refused(decided, { ...final, outcome: "kept" })).toBe(true);
+    expect(refused(decided, { ...final, outcome: "reversed" })).toBe(true);
+    expect(refused(decided, { ...correction, outcome: "restricted" })).toBe(true);
+    expect(refused(decided, { ...correction, outcome: "kept" })).toBe(true);
+    expect(decided.parse({ ...correction, outcome: "partly_reversed" }).outcome).toBe("partly_reversed");
+    expect(refused(reviewed, { ...review, outcome: "restricted" })).toBe(true);
+    expect(reviewed.parse({ ...review, outcome: "kept", actions: [] }).outcome).toBe("kept");
+  });
+
+  test("an interim decision answers no item: its throughSeq is 0", () => {
+    expect(refused(decided, { ...interim, throughSeq: 1 })).toBe(true);
+    expect(decided.parse({ ...final, throughSeq: 1 }).throughSeq).toBe(1);
+  });
+
+  test("a restriction carries its ground, its facts and its reason; a rule ground its rule; a legal ground its reference, and no rule", () => {
+    expect(refused(decided, { ...interim, ground: null, ruleId: null })).toBe(true);
+    expect(refused(decided, { ...interim, factsDigest: null })).toBe(true);
+    expect(refused(decided, { ...interim, reasonDigest: null })).toBe(true);
+    expect(refused(decided, { ...interim, ruleId: null })).toBe(true);
+    expect(refused(decided, { ...legal, legalReferenceDigest: null })).toBe(true);
+    expect(refused(decided, { ...legal, ruleId: "R3" })).toBe(true);
+  });
+
+  test("a keyword goes only with the ground of the law", () => {
+    expect(refused(decided, { ...final, categoryKeyword: "KEYWORD_TERRORIST_CONTENT" })).toBe(true);
+    expect(refused(decided, { ...noAction, categoryKeyword: "KEYWORD_TERRORIST_CONTENT" })).toBe(true);
+    expect(refused(decided, { ...legal, categoryKeyword: "KEYWORD_CHILD_SEXUAL_ABUSE_MATERIAL" })).toBe(true);
+  });
+
+  test("a correction names the decision it corrects, states no ground of its own, and holds reversals only; no other kind names a decision", () => {
+    expect(refused(decided, { ...correction, reviewsDecisionId: null })).toBe(true);
+    expect(refused(decided, { ...correction, reasonDigest: null })).toBe(true);
+    expect(refused(decided, { ...correction, ground: "incompatible", ruleId: "R1" })).toBe(true);
+    expect(refused(decided, { ...correction, ruleId: "R1" })).toBe(true);
+    expect(refused(decided, { ...correction, factsDigest: hex })).toBe(true);
+    expect(refused(decided, { ...correction, legalReferenceDigest: hex })).toBe(true);
+    expect(refused(decided, { ...correction, categoryKeyword: "KEYWORD_TERRORIST_CONTENT" })).toBe(true);
+    expect(refused(decided, { ...correction, actions: [{ kind: "withhold", mediaId: null }] })).toBe(true);
+    expect(refused(decided, { ...correction, actions: [{ kind: "restore", mediaId: null }, { kind: "seal_media", mediaId: null }] })).toBe(true);
+    expect(decided.parse({ ...correction, actions: [{ kind: "unseal_media", mediaId: null }] }).actions).toHaveLength(1);
+    expect(refused(decided, { ...interim, reviewsDecisionId: uuid })).toBe(true);
+    expect(refused(decided, { ...final, reviewsDecisionId: uuid })).toBe(true);
+  });
+
+  test("the actions are sorted by kind and then by image, without repeats, at most eight, with at most one post measure and one seal", () => {
+    const sorted = [
+      { kind: "remove", mediaId: null },
+      { kind: "remove_media", mediaId: image },
+      { kind: "remove_media", mediaId: otherImage },
+      { kind: "seal_media", mediaId: null },
+    ];
+    const sealing = { ...final, ruleId: "R2", category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS", actions: sorted };
+    expect(decided.parse(sealing).actions).toEqual(sorted);
+    // Any other order of the same actions, and any repeat, is refused: the same decision always has the same hash.
+    expect(refused(decided, { ...sealing, actions: [sorted[1], sorted[0], sorted[2], sorted[3]] })).toBe(true);
+    expect(refused(decided, { ...sealing, actions: [sorted[0], sorted[2], sorted[1], sorted[3]] })).toBe(true);
+    expect(refused(decided, { ...sealing, actions: [sorted[0], sorted[1], sorted[1], sorted[3]] })).toBe(true);
+    expect(refused(decided, { ...sealing, actions: [sorted[0], sorted[3], sorted[3]] })).toBe(true);
+    expect(refused(decided, { ...interim, actions: [{ kind: "withhold", mediaId: null }, { kind: "withhold", mediaId: null }] })).toBe(true);
+    // Two post measures in one decision.
+    expect(refused(decided, { ...final, actions: [{ kind: "remove", mediaId: null }, { kind: "withhold", mediaId: null }] })).toBe(true);
+    // Nine actions.
+    const nine = Array.from({ length: 9 }, (_, i) => ({ kind: "remove_media", mediaId: `${i}a1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a` }));
+    expect(refused(decided, { ...final, actions: nine })).toBe(true);
+    expect(decided.parse({ ...final, actions: nine.slice(0, 8) }).actions).toHaveLength(8);
+  });
+
+  test("an image measure names its image, and no other kind names one", () => {
+    expect(refused(decided, { ...interim, actions: [{ kind: "withhold_media", mediaId: null }] })).toBe(true);
+    expect(refused(decided, { ...interim, actions: [{ kind: "withhold", mediaId: image }] })).toBe(true);
+    expect(refused(decided, { ...final, actions: [{ kind: "seal_media", mediaId: image }] })).toBe(true);
+    expect(refused(decided, { ...correction, actions: [{ kind: "restore_media", mediaId: null }] })).toBe(true);
+    expect(decided.parse({ ...interim, actions: [{ kind: "withhold_media", mediaId: image }] }).actions[0]).toEqual({ kind: "withhold_media", mediaId: image });
+  });
+
+  test("appeals_reviewed takes the appeal, the snapshot, the outcome and reversals only, sorted like a decision's", () => {
+    expect(reviewed.parse(review)).toEqual(review);
+    everyFieldRequired(reviewed, review);
+    expect(refused(reviewed, { ...review, actions: [{ kind: "remove", mediaId: null }] })).toBe(true);
+    expect(refused(reviewed, { ...review, actions: [{ kind: "restore_media", mediaId: otherImage }, { kind: "restore_media", mediaId: image }] })).toBe(true);
+    expect(refused(reviewed, { ...review, actions: [{ kind: "restore", mediaId: null }, { kind: "restore", mediaId: null }] })).toBe(true);
+    expect(refused(reviewed, { ...review, appealId: uuid.toUpperCase() })).toBe(true);
+    expect(refused(reviewed, { ...review, reasonDigest: null })).toBe(true);
+    expect(reviewed.parse({ ...review, outcome: "partly_reversed", actions: [{ kind: "restore_media", mediaId: image }, { kind: "unseal_media", mediaId: null }] }).actions).toHaveLength(2);
+  });
+
+  test("identity_revealed takes a reason category and the digest of the saved reason, never the reason", () => {
+    expect(revealed.parse(reveal)).toEqual(reveal);
+    everyFieldRequired(revealed, reveal);
+    for (const reasonCategory of ["impersonation_claim", "abuse_of_reporting", "legal_requirement", "other"]) expect(revealed.parse({ ...reveal, reasonCategory }).reasonCategory).toBe(reasonCategory);
+    expect(refused(revealed, { ...reveal, reasonCategory: "curiosity" })).toBe(true);
+    expect(refused(revealed, { ...reveal, reasonDigest: "because" })).toBe(true);
+  });
+
+  test("the cross-field rules survive the route's extension with the assertion, since its key does not overlap", () => {
+    const extended = decided.extend({ stepUp: AuthenticationResponseJSON.optional() });
+    expect(extended.parse({ ...interim, stepUp: assertion })).toEqual({ ...interim, stepUp: assertion });
+    expect(extended.parse(interim)).toEqual(interim);
+    expect(refused(extended, { ...interim, outcome: "no_violation", stepUp: assertion })).toBe(true);
+    expect(refused(extended, { ...interim, throughSeq: 2, stepUp: assertion })).toBe(true);
+    expect(refused(extended, { ...interim, other: 1, stepUp: assertion })).toBe(true);
+    const extendedReview = reviewed.extend({ stepUp: AuthenticationResponseJSON.optional() });
+    expect(refused(extendedReview, { ...review, actions: [{ kind: "remove", mediaId: null }], stepUp: assertion })).toBe(true);
+    expect(extendedReview.parse({ ...review, stepUp: assertion }).stepUp).toEqual(assertion);
+  });
+
+  test("the options request takes each of the three with its own target and params", () => {
+    const requests = [
+      { action: "case_decided", target: { type: "case", id: uuid }, params: interim },
+      { action: "appeals_reviewed", target: { type: "decision", id: uuid }, params: review },
+      { action: "identity_revealed", target: { type: "intake_item", id: uuid }, params: reveal },
+    ];
+    for (const request of requests) expect(StaffStepUpOptionsRequest.parse(request), request.action).toEqual(request);
+    expect(refused(StaffStepUpOptionsRequest, { ...requests[0], target: { type: "decision", id: uuid } })).toBe(true);
+    expect(refused(StaffStepUpOptionsRequest, { ...requests[0], params: review })).toBe(true);
+    expect(refused(StaffStepUpOptionsRequest, { ...requests[0], params: { ...interim, outcome: "kept" } })).toBe(true);
+    expect(refused(StaffStepUpOptionsRequest, { ...requests[2], params: {} })).toBe(true);
+  });
+
+  /**
+   * Every string a params schema lets through, by its path: the walk goes through objects, arrays and nullable members.
+   * A string is described by its format (a uuid) and the patterns it is held to; enums and literals are closed lists and
+   * numbers are not strings, so neither is listed.
+   */
+  function strings(schema: unknown, path = "$"): { path: string; format: string | undefined; patterns: string[] }[] {
+    const def = (schema as { _zod: { def: Record<string, unknown> } })._zod.def;
+    switch (def.type) {
+      case "object":
+        return Object.entries(def.shape as Record<string, unknown>).flatMap(([key, member]) => strings(member, `${path}.${key}`));
+      case "array":
+        return strings(def.element, `${path}[]`);
+      case "nullable":
+      case "optional":
+        return strings(def.innerType, path);
+      case "string": {
+        const checks = ((def.checks as { _zod: { def: { format?: string; pattern?: RegExp } } }[] | undefined) ?? []).map((check) => check._zod.def);
+        return [{ path, format: def.format as string | undefined, patterns: checks.filter((check) => check.format === "regex").map((check) => String(check.pattern)) }];
+      }
+      case "enum":
+      case "literal":
+      case "number":
+        return [];
+      default:
+        // A kind of member this walk does not know could carry free text: it fails the test until it is listed above.
+        return [{ path, format: `unknown member type ${String(def.type)}`, patterns: [] }];
+    }
+  }
+  const LOWER_UUID = "/^[0-9a-f-]+$/";
+  const HEX_DIGEST = "/^[0-9a-f]{64}$/";
+  const free = (schema: unknown) => strings(schema).filter((s) => !((s.format === "uuid" && s.patterns.includes(LOWER_UUID)) || (s.format === undefined && s.patterns.includes(HEX_DIGEST))));
+
+  test("no params schema of any action lets a free string through: every string is a lower-case uuid or a hex digest", () => {
+    for (const [action, spec] of Object.entries(STAFF_STEP_UP_ACTIONS)) {
+      expect(free(spec.params), action).toEqual([]);
+      expect(free(spec.targetId), action).toEqual([]);
+    }
+    // What the walk finds in the decision's params: ids and digests, nothing else.
+    expect(strings(decided).map((s) => s.path)).toEqual(["$.reviewsDecisionId", "$.snapshotId", "$.snapshotDigest", "$.actions[].mediaId", "$.factsDigest", "$.reasonDigest", "$.legalReferenceDigest"]);
+    expect(strings(revealed).map((s) => s.path)).toEqual(["$.reasonDigest"]);
+  });
+
+  test("the walk catches a free string, a uuid in any case, a transform and a member it cannot read", () => {
+    const loose = z.strictObject({
+      note: z.string().max(10),
+      id: z.uuid(),
+      short: z.string().regex(/^[0-9a-f]{8}$/),
+      list: z.array(z.strictObject({ label: z.string().nullable() })),
+      trimmed: z.string().trim().pipe(z.uuid()),
+      ok: z.uuid().regex(/^[0-9a-f-]+$/),
+      digest: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+    });
+    expect(free(loose).map((s) => s.path)).toEqual(["$.note", "$.id", "$.short", "$.list[].label", "$.trimmed"]);
   });
 });
 

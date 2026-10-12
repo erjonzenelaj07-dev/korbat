@@ -14,6 +14,7 @@ import {
   users,
   type Db,
 } from "@korbat/db";
+import { boundLockWaits, isLockNotAvailable } from "../lib/lock-bounds";
 import { SYSTEM_ACTOR_ID } from "./admin";
 
 /**
@@ -1236,7 +1237,8 @@ export function createAuthRepo(db: Db) {
     async revokeConfirmedStaffSession(input: ConfirmedStaffSessionRevocation): Promise<"revoked" | "ended" | "not_found" | "late"> {
       try {
         return await db.transaction(async (tx) => {
-          if (!(await boundLockWaits(tx, input.expiresAt))) return "late";
+          // Three waits: the account's row, the session's row and the audit head.
+          if (!(await boundLockWaits(tx, input.expiresAt, 3))) return "late";
           return revokeConfirmedIn(tx, input);
         });
       } catch (err) {
@@ -1489,32 +1491,6 @@ export class LateConfirmation extends Error {
     super("the confirmation's row could not join the chain before its challenge expired");
     this.name = "LateConfirmation";
   }
-}
-
-/** True for PostgreSQL's lock_not_available (a lock_timeout ran out), however deeply the driver wrapped it. */
-function isLockNotAvailable(err: unknown): boolean {
-  let current: unknown = err;
-  for (let depth = 0; depth < 5 && current; depth++) {
-    if (typeof current === "object" && (current as { code?: unknown }).code === "55P03") return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
-}
-
-/**
- * Bounds every lock wait of a confirmed action's transaction (3a design, section 7, Step-up): lock_timeout becomes a third
- * of what is left of the challenge's life by the database's clock, at most 15 seconds, so the three waits it may meet (the
- * account's row, the session's row, the audit head) all end before the expiry. False when nothing is left, or less than a
- * millisecond, which lock_timeout would read as no limit at all.
- */
-async function boundLockWaits(tx: Tx, expiresAt: Date): Promise<boolean> {
-  const [left] = await tx.execute<{ ms: string }>(
-    sql`select floor(least(15000, (${expiresAt.getTime()}::numeric - extract(epoch from clock_timestamp()) * 1000) / 3))::bigint::text as ms`,
-  );
-  const ms = Number(left!.ms);
-  if (!(ms >= 1)) return false;
-  await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true)`);
-  return true;
 }
 
 /**

@@ -5,6 +5,7 @@ import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
 import { closeDb, createDb, likes, posts, profiles, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { createSocialRepo, type SocialRepo } from "../../src/social/repo";
+import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 import { newPost, newProfile } from "./social-fixtures";
 
 const MINUTE = 60_000;
@@ -44,6 +45,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     repo = createSocialRepo(db);
   });
   afterAll(async () => {
+    await closeDecisions();
     await closeDb(db);
   });
   // Every test starts without any ranking (the cascade empties explore_items) and reads the generations its rounds answer.
@@ -147,8 +149,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     const byGone = await post(gone!, at);
     const byShy = await post(shy!, at);
     for (const id of [shown, reply, quote, withheld, removed, deleted, byGone, byShy]) await likedBy(id, fans, before(asOf, 2 * HOUR));
-    await db.execute(sql`update posts set state = 'withheld' where id = ${withheld}::uuid`);
-    await db.execute(sql`update posts set state = 'removed' where id = ${removed}::uuid`);
+    await decideForTest(db, withheld, "withheld");
+    await decideForTest(db, removed, "removed");
     expect(await repo.deletePost(deleted, author!.id, before(asOf, HOUR))).toBe(true);
     // Marked deleted as the purge's last statement marks it, with the post left visible, so only the author's deletion keeps it out.
     await db.execute(sql`update profiles set deleted_at = ${before(asOf, HOUR).toISOString()}::timestamptz where id = ${gone!.id}::uuid`);
@@ -157,7 +159,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     const result = await rank(asOf);
     expect(await listed(result.generation)).toEqual([shown]);
     expect(result.candidates).toBe(1);
-  });
+    // The withheld and removed states come from real, confirmed decisions: a staff key's enrolment, a sign-in, and a step-up for each.
+  }, 30_000);
 
   test("the author's own likes and reposts do not count", async () => {
     const asOf = nextAsOf();
@@ -447,4 +450,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     expect(await order({ gravity: 1, offsetHours: 100 })).toEqual([old, fresh]);
     expect(await order({ gravity: 1 })).toEqual([fresh, old]);
   });
+
+  leavesNoModerationRows(() => db);
 });

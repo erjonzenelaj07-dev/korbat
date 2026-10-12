@@ -199,6 +199,10 @@ const SPECS: Spec[] = [
     hash: "d12e85713d582acc9f2b4efb018b807af54a28131dcea9442e0536b136cce840",
   },
   {
+    // This row records a decision on a case with no step-up. Since sub-project 3c, case_decided is an action that only a
+    // staff key's confirmation may leave in the record, so audit-verify reports this row when the vectors are written
+    // to a real log: audit-verify.test.ts expects that problem beside the step-up vector's. The vector stays as it is.
+    // Its text and its hash pin the chain's canonical form, and a row like it is exactly what audit-verify must refuse.
     name: "nested metadata",
     seq: 6,
     id: 11,

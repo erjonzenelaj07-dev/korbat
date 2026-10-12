@@ -12,6 +12,7 @@ import { createMediaFiles } from "../../src/media/files";
 import { mediaFileRoutes } from "../../src/media/routes";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { mediaHarness, type MediaHarness } from "./media-harness";
+import { closeDecisions, leavesNoModerationRows } from "./moderation-decide";
 
 describe.skipIf(!process.env.INTEGRATION)("integration: serving image files", () => {
   let db: Db;
@@ -34,6 +35,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: serving image files", ()
   });
   afterAll(async () => {
     h.cleanup();
+    await closeDecisions();
     await closeDb(db);
   });
 
@@ -99,7 +101,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: serving image files", ()
     expect((await get(h, path)).status).toBe(404);
     const revalidate = await get(h, path, { "x-test-viewer": bob.id, "if-none-match": `"${mediaIds[0]}-large"` });
     expect(revalidate.status).toBe(404);
-  });
+    // The state comes from a real, confirmed decision: a staff key's enrolment, a sign-in, a step-up and the decision.
+  }, 30_000);
 
   test("images of a deleted post are gone, for the author too", async () => {
     const ada = await h.established();
@@ -125,4 +128,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: serving image files", ()
     expect(await res.text()).not.toContain("webp-of");
     expect((await get(h, mediaPath(mediaIds[0]!, "large"))).status).toBe(200);
   });
+
+  leavesNoModerationRows(() => db);
 });

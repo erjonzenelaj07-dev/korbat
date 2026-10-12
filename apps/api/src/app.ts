@@ -12,6 +12,7 @@ import { MediaError, type Media } from "./media";
 import { observability } from "./middleware/observability";
 import { clientIpKey, rateLimit, type RateLimitStore } from "./middleware/rate-limit";
 import { noStore, securityHeaders } from "./middleware/security-headers";
+import { ModerationError } from "./moderation";
 import { healthRoutes, type HealthChecks } from "./routes/health";
 import { SocialError, type Social } from "./social";
 import type { Staff } from "./staff";
@@ -88,6 +89,11 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
     }
     // The account routes render nothing themselves: their own errors and those of the three modules they call all land here.
     if (err instanceof AccountError) {
+      if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
+      return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+    }
+    // A moderation flow's refusal, from the app's routes or from the console's case routes.
+    if (err instanceof ModerationError) {
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
       return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
     }

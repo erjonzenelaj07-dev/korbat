@@ -1,11 +1,16 @@
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import { PostView, ThreadResponse } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { setEngagement } from "../../src/social/flows/engagement";
 import { createPost, deletePost, getPost, thread } from "../../src/social/flows/posts";
+import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
+
+// Several tests here put posts into a moderation state, each through a real, confirmed decision (a staff key's enrolment
+// and sign-in once, then a step-up for each): on a loaded machine that takes longer than the five seconds a test gets by default.
+vi.setConfig({ testTimeout: 30_000 });
 
 describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flows", () => {
   let db: Db;
@@ -16,6 +21,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     h = socialHarness(db);
   });
   afterAll(async () => {
+    await closeDecisions();
     await closeDb(db);
   });
 
@@ -48,7 +54,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     expect(await rejection(post(bob.id, "late", { replyToId: target.id }))).toBe("post_unavailable");
 
     const withheld = await post(ada.id, "withheld");
-    await db.execute(sql`update posts set state = 'withheld' where id = ${withheld.id}::uuid`);
+    await decideForTest(db, withheld.id, "withheld");
     expect(await rejection(post(bob.id, "reply", { quoteOfId: withheld.id }))).toBe("post_unavailable");
     expect(await rejection(post(ada.id, "own reply", { replyToId: withheld.id }))).toBeNull();
 
@@ -97,7 +103,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     const replies = [];
     for (let i = 0; i < 3; i++) replies.push(await post(bob.id, `r${i}`, { replyToId: leaf.id }));
     const hidden = await post(ada.id, "hidden reply", { replyToId: leaf.id });
-    await db.execute(sql`update posts set state = 'removed' where id = ${hidden.id}::uuid`);
+    await decideForTest(db, hidden.id, "removed");
 
     const first = ThreadResponse.parse(await thread(h.deps, viewer.id, leaf.id, { limit: 2 }));
     expect(first.ancestors.map((a) => a.id)).toEqual([root.id, mid.id]);
@@ -122,7 +128,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     await h.repo.block(ada.id, bob.id, h.clock.next());
     expect((await getPost(h.deps, bob.id, reply.id)).replyTo).toEqual({ id: root.id, authorHandle: null });
     expect((await getPost(h.deps, carol.id, reply.id)).replyTo?.authorHandle).toBe(ada.handle);
-    await db.execute(sql`update posts set state = 'removed' where id = ${root.id}::uuid`);
+    await decideForTest(db, root.id, "removed");
     expect((await getPost(h.deps, null, reply.id)).replyTo).toEqual({ id: root.id, authorHandle: null });
     expect((await getPost(h.deps, ada.id, reply.id)).replyTo?.authorHandle).toBe(ada.handle);
   });
@@ -132,7 +138,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     const target = await post(ada.id, "engage");
     await setEngagement(h.deps, viewer.id, target.id, "bookmark", true);
     const withheld = await post(ada.id, "withheld");
-    await db.execute(sql`update posts set state = 'withheld' where id = ${withheld.id}::uuid`);
+    await decideForTest(db, withheld.id, "withheld");
     await h.repo.block(viewer.id, ada.id, h.clock.next());
     expect(await rejection(setEngagement(h.deps, viewer.id, withheld.id, "like", true))).toBe("not_found");
     expect(await rejection(setEngagement(h.deps, viewer.id, target.id, "like", true))).toBe("blocked");
@@ -155,4 +161,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     expect(await rejection(setEngagement(h.deps, bob.id, target.id, "like", true))).toBe("blocked");
     expect((await setEngagement(h.deps, bob.id, target.id, "repost", false)).viewer.reposted).toBe(false);
   });
+
+  leavesNoModerationRows(() => db);
 });

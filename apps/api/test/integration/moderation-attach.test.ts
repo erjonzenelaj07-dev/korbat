@@ -3,13 +3,15 @@ import { sql, type SQL } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { textDigest } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
+import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import {
   MINORS,
   SPEECH,
-  answerItem,
+  act,
   csamNotice,
-  fabricateDecision,
+  decideIn,
+  decisionRow,
   findingBy,
   gate,
   hex64,
@@ -18,13 +20,18 @@ import {
   insertItem,
   newMarker,
   newPostRow,
+  newTestStaff,
   openCase,
   readCase,
   removeFixtures,
   rowCounts,
   ruleReport,
+  staffProfile,
+  suspectItemOn,
   untilBlocked,
+  type DecisionInput,
   type ItemRow,
+  type TestStaff,
 } from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
 import { pgError, rolledBack, withLockTimeout } from "./staff-fixtures";
@@ -38,23 +45,33 @@ vi.setConfig({ testTimeout: 30_000 });
  * transaction will issue written here as SQL: intake_items_attach, which numbers an item into its open case and forces
  * what the API must not choose, with its checks of a re-examination; and intake_items_quote, which holds at commit that a
  * suspect item about a post that quotes another is a report about both. Statements run as korbat_api unless a test says
- * otherwise. Nothing in 0015 can answer an item or close a case, so the tests that need either write those rows as the
- * migrator. A test with one session runs inside a transaction that is rolled back; a test with two sessions has to
- * commit, and removes what it committed in a `finally`. The file's last test holds it to leaving nothing behind.
+ * otherwise. An item is answered by a real decision and released by the real release (migration 0016), inside a
+ * transaction of the migrator, which alone can move a stored time; the tests of the numbering close a case by hand. A
+ * test with one session runs inside a transaction that is rolled back; a test with two sessions has to commit, and
+ * removes what it committed in a `finally`. The file's last test holds it to leaving nothing behind.
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their cases and their re-examinations", () => {
   let apiDb: Db;
+  let authDb: Db;
   let migrateDb: Db;
+  /** The staff accounts whose decisions answer items here: an admin answers a suspect item, a moderator any other. */
+  let mod: TestStaff;
+  let admin: TestStaff;
   let before: Record<string, number>;
 
   beforeAll(async () => {
-    apiDb = createDb(loadConfig().DATABASE_URL_API, { max: 6 });
+    const config = loadConfig();
+    apiDb = createDb(config.DATABASE_URL_API, { max: 6 });
+    authDb = createDb(config.DATABASE_URL_AUTH, { max: 2 });
     // The migrate role is not part of the API configuration; the test environment carries it.
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
+    const repo = createAuthRepo(authDb);
+    mod = await newTestStaff(authDb, migrateDb, repo, "moderator");
+    admin = await newTestStaff(authDb, migrateDb, repo, "admin");
     before = await rowCounts(apiDb);
-  });
+  }, 60_000);
   afterAll(async () => {
-    await Promise.all([closeDb(apiDb), closeDb(migrateDb)]);
+    await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
   });
 
   /** A profile, written by whichever role runs the test. */
@@ -76,6 +93,40 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
       await make(sp);
       await sp.execute(sql`set constraints public.intake_items_quote immediate`);
     });
+
+  /** A transaction of the migrator that is rolled back, with the two staff accounts' profiles in it: the world of a test whose items are answered. */
+  const decided = (fn: (tx: DbTx) => Promise<void>) =>
+    rolledBack(migrateDb, async (tx) => {
+      await staffProfile(tx, mod);
+      await staffProfile(tx, admin);
+      await fn(tx);
+    });
+  /**
+   * What a final decision and the daily release leave on an item, by the real ones. The items here are written as SQL,
+   * without the intake's copy of the target, so the case first gets a snapshot when it holds none. Then a staff account
+   * decides the case through the moderation module's decide, which answers the item and, as it is the case's only
+   * unanswered one, closes the case: a re-examination goes into a new one. Then the release. Two steps stand in for time,
+   * which only the migrator can move: the decision is dated an hour back, since the release takes what was decided before
+   * its cut-off and every time inside one transaction is that transaction's start; and `released` moves the release's time
+   * where a test needs an old one. With `released: null` the item stays unreleased, through later releases too. Answers
+   * the decision's id.
+   */
+  async function answer(tx: DbTx, item: ItemRow, options: { outcome?: "no_violation" | "not_evident" | "restricted_rule"; released?: SQL | null } = {}): Promise<string> {
+    const caseId = item.case_id!;
+    await tx.execute(sql`
+      insert into evidence_snapshots (case_id, target_type, target_id, author_handle, digest)
+      select ${caseId}::uuid, ${item.target_type}::moderation_target, ${item.target_id}::uuid, 'author', ${hex64()}
+       where not exists (select 1 from evidence_snapshots s where s.case_id = ${caseId}::uuid)`);
+    const outcome = options.outcome ?? "no_violation";
+    const input: DecisionInput = outcome === "restricted_rule" ? { kind: "final", ruleId: item.suspect ? "R2" : "R1", actions: [act("remove")] } : { kind: "final", outcome };
+    const decisionId = await decideIn(tx, item.suspect ? admin : mod, caseId, input);
+    if (options.released !== null) {
+      await tx.execute(sql`update decisions set decided_at = decided_at - interval '1 hour' where id = ${decisionId}::uuid`);
+      await tx.execute(sql`select public.release_outcomes(now())`);
+      if (options.released !== undefined) await tx.execute(sql`update intake_items set outcome_sent_at = ${options.released} where id = ${item.id}::uuid`);
+    }
+    return decisionId;
+  }
 
   describe("numbering and the case's derived columns", () => {
     test("the first item is number 1 and gives the case its lane and its oldest time; later items number on, and the lane only gets more severe", async () => {
@@ -418,60 +469,80 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
 
   describe("re-examinations", () => {
     /**
-     * Inside a migrator transaction: a signed-in report about a post (or, with a handle, an account), its open case and
-     * its item, with a staff profile for the decisions the tests fabricate.
+     * Inside a migrator transaction: a report about a post (or, with a handle, an account), its open case and its item. The
+     * report is signed in and under a rule, or a notice of illegality, or on the path for child sexual abuse material.
+     * With `frozen` the post's author's account is under an unanswered report of that kind, so the post is frozen.
      */
-    async function reported(tx: DbTx, options: { suspect?: boolean; handle?: string } = {}) {
-      const staff = await profile(tx);
+    async function reported(tx: DbTx, options: { suspect?: boolean; illegal?: boolean; handle?: string; frozen?: boolean } = {}) {
       const author = await profile(tx);
       const targetType = options.handle ? ("account" as const) : ("post" as const);
       const targetId = options.handle ? author.id : await newPostRow(tx, author.id);
-      const intakeId = options.suspect ? await csamNotice(tx) : await ruleReport(tx, (await profile(tx)).id);
+      const intakeId = options.suspect ? await csamNotice(tx) : options.illegal ? await illegalNotice(tx, (await profile(tx)).id) : await ruleReport(tx, (await profile(tx)).id);
       const caseId = await openCase(tx, targetType, targetId);
       const item = await insertItem(tx, { intakeId, caseId, targetType, targetId, position: 3, lane: options.suspect ? 0 : 1, namedHandle: options.handle ?? null });
-      return { staff, intakeId, caseId, targetType, targetId, item };
+      if (options.frozen) await suspectItemOn(tx, "account", author.id, author.handle);
+      return { author, intakeId, caseId, targetType, targetId, item };
     }
-    /** A re-examination of the item, supplying a wrong target, position and lane on purpose. */
-    const reexamine = (tx: DbTx, r: { intakeId: string; caseId: string }, item: ItemRow, extra: Record<string, SQL> = {}) =>
-      insertItem(tx, { intakeId: r.intakeId, caseId: r.caseId, targetType: "account", targetId: randomUUID(), position: 9, lane: 0, namedHandle: "supplied", reexaminesItemId: item.id, extra });
+    /**
+     * A re-examination of the item, into its target's open case (the answer closed the last one, so this opens a new one),
+     * supplying a wrong target, position and lane on purpose.
+     */
+    const reexamine = async (tx: DbTx, r: { intakeId: string }, item: ItemRow, extra: Record<string, SQL> = {}) =>
+      insertItem(tx, {
+        intakeId: r.intakeId,
+        caseId: await openCase(tx, item.target_type, item.target_id),
+        targetType: "account",
+        targetId: randomUUID(),
+        position: 9,
+        lane: 0,
+        namedHandle: "supplied",
+        reexaminesItemId: item.id,
+        extra,
+      });
 
     test("a released no-action item is re-examined within its window, with the original's target, position, lane and handle whatever was supplied", async () => {
-      await rolledBack(migrateDb, async (tx) => {
+      await decided(async (tx) => {
         for (const outcome of ["no_violation", "not_evident"] as const) {
-          const r = await reported(tx);
-          await answerItem(tx, r.item, r.staff.id, { outcome });
+          // "Illegality not evident" answers a notice that alleged illegality.
+          const r = await reported(tx, { illegal: outcome === "not_evident" });
+          await answer(tx, r.item, { outcome });
+          const [answered] = await tx.execute<{ outcome: string; shown: string; released: boolean }>(sql`select outcome, shown_outcome as shown, outcome_sent_at is not null as released from intake_items where id = ${r.item.id}::uuid`);
+          expect({ ...answered! }, outcome).toEqual({ outcome, shown: outcome, released: true });
+          expect((await readCase(tx, r.caseId)).closed_at).not.toBeNull();
           const again = await reexamine(tx, r, r.item);
-          expect(again, outcome).toMatchObject({ target_type: "post", target_id: r.targetId, position: 3, lane: 1, named_handle: null, reexamines_item_id: r.item.id, case_id: r.caseId, seq: 2, suspect: false, outcome: null });
+          expect(again, outcome).toMatchObject({ target_type: "post", target_id: r.targetId, position: 3, lane: 1, named_handle: null, reexamines_item_id: r.item.id, seq: 1, suspect: false, outcome: null });
+          // The answer closed the item's case: its re-examination is the first item of a new one.
+          expect(again.case_id).not.toBe(r.caseId);
         }
         const account = await reported(tx, { handle: "as_named" });
-        await answerItem(tx, account.item, account.staff.id);
+        await answer(tx, account.item);
         expect(await reexamine(tx, account, account.item)).toMatchObject({ target_type: "account", target_id: account.targetId, named_handle: "as_named", position: 3, lane: 1 });
       });
     });
 
     test("it is refused for an unanswered item, a restricted one, an unreleased one, one past its window, an item of another intake and an erased intake", async () => {
-      await rolledBack(migrateDb, async (tx) => {
+      await decided(async (tx) => {
         const refused = async (label: string, prepare: (r: Awaited<ReturnType<typeof reported>>) => Promise<{ intakeId?: string } | void>) => {
           const r = await reported(tx);
           const other = await prepare(r);
-          const err = await within(tx, (sp) => reexamine(sp, { intakeId: other?.intakeId ?? r.intakeId, caseId: r.caseId }, r.item));
+          const err = await within(tx, (sp) => reexamine(sp, { intakeId: other?.intakeId ?? r.intakeId }, r.item));
           expect(err, label).toEqual({ code: "P0001", message: "reexamination_not_open" });
         };
         await refused("unanswered", async () => undefined);
-        await refused("restricted", async (r) => void (await answerItem(tx, r.item, r.staff.id, { outcome: "restricted_rule" })));
-        await refused("answered, not yet released", async (r) => void (await answerItem(tx, r.item, r.staff.id, { released: null })));
-        await refused("released seven months ago", async (r) => void (await answerItem(tx, r.item, r.staff.id, { released: sql`now() - interval '7 months'` })));
+        await refused("restricted", async (r) => void (await answer(tx, r.item, { outcome: "restricted_rule" })));
+        await refused("answered, not yet released", async (r) => void (await answer(tx, r.item, { released: null })));
+        await refused("released seven months ago", async (r) => void (await answer(tx, r.item, { released: sql`now() - interval '7 months'` })));
         await refused("an item of another intake", async (r) => {
-          await answerItem(tx, r.item, r.staff.id);
+          await answer(tx, r.item);
           return { intakeId: await ruleReport(tx, (await profile(tx)).id) };
         });
         await refused("an erased intake", async (r) => {
-          await answerItem(tx, r.item, r.staff.id);
+          await answer(tx, r.item);
           await tx.execute(sql`update intakes set erased_at = now(), explanation = null, cited_law = null where id = ${r.intakeId}::uuid`);
         });
         // The window is the appeal's, six calendar months from the release: five months on it is still open.
         const r = await reported(tx);
-        await answerItem(tx, r.item, r.staff.id, { released: sql`now() - interval '5 months'` });
+        await answer(tx, r.item, { released: sql`now() - interval '5 months'` });
         expect(await within(tx, (sp) => reexamine(sp, r, r.item))).toBeNull();
         // An item that does not exist cannot be re-examined either.
         const err = await within(tx, (sp) => insertItem(sp, { intakeId: r.intakeId, caseId: r.caseId, targetId: r.targetId, reexaminesItemId: randomUUID() }));
@@ -480,9 +551,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
     });
 
     test("an item is re-examined once", async () => {
-      await rolledBack(migrateDb, async (tx) => {
+      await decided(async (tx) => {
         const r = await reported(tx);
-        await answerItem(tx, r.item, r.staff.id);
+        await answer(tx, r.item);
         await reexamine(tx, r, r.item);
         const err = await within(tx, (sp) => reexamine(sp, r, r.item));
         expect(err).toMatchObject({ code: "23505", message: expect.stringMatching(/intake_items_reexamines_once/) });
@@ -490,43 +561,48 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
     });
 
     test("a re-examination is not re-examined, unless it is about a post, is not suspect and was answered while nobody could open the images", async () => {
-      await rolledBack(migrateDb, async (tx) => {
+      await decided(async (tx) => {
+        const unseenOf = async (decisionId: string) => (await decisionRow(tx, decisionId)).unseen;
         // Answered by a decision that saw the images: the one request is spent.
         const seen = await reported(tx);
-        await answerItem(tx, seen.item, seen.staff.id);
+        await answer(tx, seen.item);
         const seenAgain = await reexamine(tx, seen, seen.item);
-        await answerItem(tx, seenAgain, seen.staff.id, { unseen: false });
+        expect(await unseenOf(await answer(tx, seenAgain))).toBe(false);
         expect(await within(tx, (sp) => reexamine(sp, seen, seenAgain))).toEqual({ code: "P0001", message: "reexamination_not_open" });
 
-        // Answered unseen: it can be asked again, and again while the answers stay unseen.
-        const unseen = await reported(tx);
-        await answerItem(tx, unseen.item, unseen.staff.id, { unseen: true });
+        // Answered unseen: the post's author's account is under an unanswered report of child sexual abuse material, so
+        // the post is frozen and nobody can open its images. It can be asked again, and again while the answers stay unseen.
+        const unseen = await reported(tx, { illegal: true, frozen: true });
+        expect(await unseenOf(await answer(tx, unseen.item))).toBe(true);
         const second = await reexamine(tx, unseen, unseen.item);
-        await answerItem(tx, second, unseen.staff.id, { unseen: true });
+        expect(await unseenOf(await answer(tx, second))).toBe(true);
         const third = await reexamine(tx, unseen, second);
-        expect(third).toMatchObject({ reexamines_item_id: second.id, target_id: unseen.targetId, position: 3, lane: 1, seq: 3 });
-        await answerItem(tx, third, unseen.staff.id, { unseen: true, outcome: "not_evident" });
+        expect(third).toMatchObject({ reexamines_item_id: second.id, target_id: unseen.targetId, position: 3, lane: 1, seq: 1 });
+        expect(await unseenOf(await answer(tx, third, { outcome: "not_evident" }))).toBe(true);
         expect(await within(tx, (sp) => reexamine(sp, unseen, third))).toBeNull();
 
-        // A suspect item's answer is never "unseen" in this sense: its re-examination is final.
+        // A suspect item's answer is never "unseen" in this sense, though nobody saw the images: its re-examination is final.
         const suspect = await reported(tx, { suspect: true });
-        await answerItem(tx, suspect.item, suspect.staff.id, { unseen: true });
+        expect(await unseenOf(await answer(tx, suspect.item))).toBe(true);
         const suspectAgain = await reexamine(tx, suspect, suspect.item);
         expect(suspectAgain).toMatchObject({ suspect: true, lane: 0 });
-        await answerItem(tx, suspectAgain, suspect.staff.id, { unseen: true });
+        expect(await unseenOf(await answer(tx, suspectAgain))).toBe(true);
         expect(await within(tx, (sp) => reexamine(sp, suspect, suspectAgain))).toEqual({ code: "P0001", message: "reexamination_not_open" });
 
-        // Nor an account's: its answer concerns the display name and bio, which staff read.
+        // Nor an account's: its answer concerns the display name and bio, which staff read. No decision on an account's
+        // case is stored as unseen; the migrator marks this one so, to show that the rule holds on its own.
         const account = await reported(tx, { handle: "named" });
-        await answerItem(tx, account.item, account.staff.id, { unseen: true });
+        await answer(tx, account.item);
         const accountAgain = await reexamine(tx, account, account.item);
-        await answerItem(tx, accountAgain, account.staff.id, { unseen: true });
+        const accountAnswer = await answer(tx, accountAgain);
+        expect(await unseenOf(accountAnswer)).toBe(false);
+        await tx.execute(sql`update decisions set unseen = true where id = ${accountAnswer}::uuid`);
         expect(await within(tx, (sp) => reexamine(sp, account, accountAgain))).toEqual({ code: "P0001", message: "reexamination_not_open" });
       });
     });
 
     test("only a re-examination carries a statement, and only with its salt and the digest of both; the same holds for an appeal's statement", async () => {
-      await rolledBack(migrateDb, async (tx) => {
+      await decided(async (tx) => {
         const statement = "I think this was judged too quickly.";
         const salt = hex64();
         const digest = await textDigest(salt, statement);
@@ -534,7 +610,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
         const refusedBy = (name: string) => expect.objectContaining({ code: "23514", message: expect.stringMatching(new RegExp(`violates check constraint "${name}"`)) });
 
         const r = await reported(tx);
-        await answerItem(tx, r.item, r.staff.id);
+        await answer(tx, r.item);
         // A wrong digest, and no digest at all: a null comparison must not let the statement through.
         expect(await within(tx, (sp) => reexamine(sp, r, r.item, stated(hex64())))).toEqual(refusedBy("intake_items_statement"));
         expect(await within(tx, (sp) => reexamine(sp, r, r.item, stated(null)))).toEqual(refusedBy("intake_items_statement"));
@@ -547,12 +623,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
           expect(err, String(held)).toEqual(refusedBy("intake_items_statement"));
         }
 
-        // An appeal's statement is held the same way. Its row names a decision, which only the fixture can write here.
-        const decisionId = await fabricateDecision(tx, { caseId: plain.caseId, targetType: "post", targetId: plain.targetId, staffId: plain.staff.id, outcome: "restricted" });
+        // An appeal's statement is held the same way. Its row names a decision that restricted the post, and its author.
+        const decisionId = await answer(tx, plain.item, { outcome: "restricted_rule", released: null });
         const appeal = (held: string | null) =>
           within(tx, (sp) =>
             sp.execute(
-              sql`insert into appeals (decision_id, appellant_account_id, statement, statement_salt, statement_digest, filed_at) values (${decisionId}::uuid, ${plain.staff.id}::uuid, ${statement}, ${salt}, ${held}, now())`,
+              sql`insert into appeals (decision_id, appellant_account_id, statement, statement_salt, statement_digest, filed_at) values (${decisionId}::uuid, ${plain.author.id}::uuid, ${statement}, ${salt}, ${held}, now())`,
             ),
           );
         expect(await appeal(null)).toEqual(refusedBy("appeals_statement"));
@@ -660,7 +736,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
       async function notice(tx: DbTx) {
         // An earlier block may have left the check immediate; a notice's two items are checked together.
         await tx.execute(sql`set constraints public.intake_items_quote deferred`);
-        const staff = await profile(tx);
         const { quotingId, quotedId } = await quoting(tx);
         const intakeId = await csamNotice(tx);
         const originCase = await openCase(tx, "post", quotingId);
@@ -669,16 +744,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
         const added = await insertItem(tx, { intakeId, caseId: addedCase, targetId: quotedId, position: 12, lane: 0 });
         // The notice's own check passes here; from now on only the re-examinations' rows are pending.
         await tx.execute(sql`set constraints public.intake_items_quote immediate`);
-        await answerItem(tx, origin, staff.id);
-        return { staff, intakeId, originCase, addedCase, origin, added };
+        await answer(tx, origin);
+        return { intakeId, origin, added };
       }
-      const again = (sp: DbTx, n: Awaited<ReturnType<typeof notice>>, item: ItemRow) =>
-        insertItem(sp, { intakeId: n.intakeId, caseId: item.id === n.origin.id ? n.originCase : n.addedCase, targetId: item.target_id, lane: 0, reexaminesItemId: item.id });
+      /** A re-examination into the target's open case: the added item's own while that is unanswered, else a new one. */
+      const again = async (sp: DbTx, n: Awaited<ReturnType<typeof notice>>, item: ItemRow) =>
+        insertItem(sp, { intakeId: n.intakeId, caseId: await openCase(sp, "post", item.target_id), targetId: item.target_id, lane: 0, reexaminesItemId: item.id });
 
-      await rolledBack(migrateDb, async (tx) => {
+      await decided(async (tx) => {
         // The added item was answered without action and released too: both are re-examined, or neither.
         const open = await notice(tx);
-        await answerItem(tx, open.added, open.staff.id);
+        await answer(tx, open.added);
         expect(await atCommit(tx, async (sp) => void (await again(sp, open, open.origin)))).toEqual({ code: "P0001", message: "quote_item_missing" });
         expect(
           await atCommit(tx, async (sp) => {
@@ -693,18 +769,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: intake items, their case
 
         // Answered with a restriction, not yet released, or past its window: not open to re-examination, so the origin goes alone.
         const restricted = await notice(tx);
-        await answerItem(tx, restricted.added, restricted.staff.id, { outcome: "restricted_rule" });
+        await answer(tx, restricted.added, { outcome: "restricted_rule" });
         expect(await atCommit(tx, async (sp) => void (await again(sp, restricted, restricted.origin)))).toBeNull();
         const unreleased = await notice(tx);
-        await answerItem(tx, unreleased.added, unreleased.staff.id, { released: null });
+        await answer(tx, unreleased.added, { released: null });
         expect(await atCommit(tx, async (sp) => void (await again(sp, unreleased, unreleased.origin)))).toBeNull();
         const late = await notice(tx);
-        await answerItem(tx, late.added, late.staff.id, { released: sql`now() - interval '7 months'` });
+        await answer(tx, late.added, { released: sql`now() - interval '7 months'` });
         expect(await atCommit(tx, async (sp) => void (await again(sp, late, late.origin)))).toBeNull();
 
         // The added item can also be re-examined by itself: it has no added item of its own.
         const own = await notice(tx);
-        await answerItem(tx, own.added, own.staff.id);
+        await answer(tx, own.added);
         expect(await atCommit(tx, async (sp) => void (await again(sp, own, own.added)))).toBeNull();
         // And once it has been, the origin's re-examination needs nothing more.
         expect(await atCommit(tx, async (sp) => void (await again(sp, own, own.origin)))).toBeNull();

@@ -2,11 +2,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ErrorEnvelope, FlowResponse, HealthResponse, MEDIA_MAX_BYTES, MediaStatusResponse, PostView, TimelinePage, UploadResponse } from "@korbat/contracts";
-import { closeDb, createDb, posts, type Db } from "@korbat/db";
+import { closeDb, createDb, type Db } from "@korbat/db";
 import { uploadsLayout } from "@korbat/media-protocol";
 import { createApp } from "../../src/app";
 import { createAuth } from "../../src/auth";
@@ -21,6 +20,7 @@ import { createSocial, enforceWriteLimit } from "../../src/social";
 import { DAY_MS } from "../../src/social/tiers";
 import { Browser } from "./http-client";
 import { BYTES, fakeWorker } from "./media-harness";
+import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 
 type App = ReturnType<typeof createApp>;
 
@@ -76,6 +76,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
   });
   afterAll(async () => {
     rmSync(root, { recursive: true, force: true });
+    await closeDecisions();
     await Promise.all([closeDb(authDb), closeDb(apiDb)]);
   });
 
@@ -189,18 +190,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     const [ada, bob] = [await signUp(), await signUp()];
     const id = await readyImage(ada.b);
     const post = PostView.parse(await (await ada.b.fetch("/api/posts", { json: { body: "under review", media: [{ id, alt: "an image" }] } })).json());
-    await apiDb.update(posts).set({ state: "withheld" }).where(eq(posts.id, post.id));
+    await decideForTest(apiDb, post.id, "withheld");
 
     const own = await ada.b.fetch(`/api/media/${id}/small.webp`);
     expect([own.status, own.headers.get("cache-control")]).toEqual([200, "private, no-store"]);
     expect((await bob.b.fetch(`/api/media/${id}/small.webp`)).status).toBe(404);
     expect((await app.request(`/api/media/${id}/small.webp`)).status).toBe(404);
 
-    await apiDb.update(posts).set({ state: "visible" }).where(eq(posts.id, post.id));
+    await decideForTest(apiDb, post.id, "visible");
     expect((await ada.b.fetch(`/api/posts/${post.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await ada.b.fetch(`/api/media/${id}/small.webp`)).status).toBe(404);
     expect(existsSync(uploads.deletion(id))).toBe(true);
-  });
+    // The states come from real, confirmed decisions: a staff key's enrolment, a sign-in, and a step-up for each.
+  }, 30_000);
 
   test("an account in its first day may upload 20 images an hour", async () => {
     offsetMs = 0;
@@ -221,4 +223,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     worker.beat(now().getTime());
     expect(HealthResponse.parse(await (await app.request("/api/health")).json())).toMatchObject({ status: "ok", checks: { image_worker: "ok" } });
   });
+
+  leavesNoModerationRows(() => apiDb);
 });

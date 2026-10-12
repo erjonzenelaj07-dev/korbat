@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DisplayName, OpaqueId, Role } from "./auth";
 import { hex, sha256, sortedJson } from "./canonical";
+import { ACTION_KINDS, DECISION_KEYWORDS, MEASURES, REVEAL_REASON_CATEGORIES, RULE_IDS, TDB_CATEGORIES, compareDecisionActions, type ActionKind, type DecisionActionParams } from "./moderation";
 import { AuthenticationResponseJSON, PasskeyOptionsResponse, RegistrationResponseJSON } from "./passkeys";
 
 // The staff console (3a design, section 10). The console talks only to /api/staff/* on its own origin, and parses every
@@ -147,6 +148,112 @@ export type StaffSignInVerifyResponse = z.infer<typeof StaffSignInVerifyResponse
  */
 const LowerCaseUuid = z.uuid().regex(/^[0-9a-f-]+$/, { message: "a uuid in lower case" });
 
+// The params of the three actions of moderation cases (3c design, section 10). They are written into the audit chain for
+// good, so they hold only ids, enums, whole numbers and hex digests, never a free string: every text a decision carries is
+// saved first and named here by its salted digest. No member has a transform (a schema that changed a value would have the
+// key confirm one text and the record keep another), and the cross-field rules are refinements, which change nothing.
+// The database's triggers check every rule again.
+
+/** A case's version or an item's number: a whole number that PostgreSQL's integer holds. */
+const Counter = z.number().int().min(0).max(2_147_483_647);
+
+/** The version of the rulebook or of the redress texts: a whole number from 1 that PostgreSQL's smallint holds. */
+const TextVersion = z.number().int().min(1).max(32_767);
+
+/** One measure or reversal: its kind and, for an image measure, the image, as a lower-case uuid (an image id's own schema lower-cases, which a param must not). */
+const DecisionAction = z.strictObject({ kind: z.enum(ACTION_KINDS), mediaId: LowerCaseUuid.nullable() });
+
+const isReversal = (kind: ActionKind) => MEASURES[kind].lifts !== null;
+
+/**
+ * What is wrong with a decision's list of actions, or nothing: they come in the one order compareDecisionActions gives,
+ * without repeats; only an image measure names an image, and it must; at most one of them acts on the post itself
+ * (a seal acts on images and may stand beside it), and at most one seals; and a correction or a review lifts, never restricts.
+ */
+function actionProblems(actions: readonly DecisionActionParams[], reversalsOnly: boolean): string[] {
+  const problems: string[] = [];
+  if (actions.some((action, i) => i > 0 && compareDecisionActions(actions[i - 1]!, action) >= 0)) problems.push("the actions are sorted by kind and then by image, without repeats");
+  if (actions.some((action) => (MEASURES[action.kind].target === "image") !== (action.mediaId !== null))) problems.push("an image measure names its image, and no other kind names one");
+  if (actions.filter((action) => action.kind === "withhold" || action.kind === "remove").length > 1) problems.push("a decision holds at most one measure on the post itself");
+  if (actions.filter((action) => action.kind === "seal_media").length > 1) problems.push("a decision holds at most one seal");
+  if (reversalsOnly && actions.some((action) => !isReversal(action.kind))) problems.push("a correction or a review holds reversals only");
+  return problems;
+}
+
+/**
+ * POST /api/staff/cases/:case/decisions: a decision taken while deciding (interim), one that decides the case (final) or
+ * a correction of either. `stateVersion` is the case's version the console showed, `throughSeq` the last item a final
+ * decision answers, and the snapshot is named with the digest the console computed from what it displayed.
+ */
+export const CaseDecidedParams = z
+  .strictObject({
+    kind: z.enum(["interim", "final", "correction"]),
+    stateVersion: Counter,
+    throughSeq: Counter,
+    reviewsDecisionId: LowerCaseUuid.nullable(),
+    snapshotId: LowerCaseUuid,
+    snapshotDigest: Sha256Hex,
+    outcome: z.enum(["restricted", "no_violation", "not_evident", "partly_reversed", "reversed"]),
+    ground: z.enum(["incompatible", "illegal"]).nullable(),
+    ruleId: z.enum(RULE_IDS).nullable(),
+    rulesVersion: TextVersion,
+    redressVersion: TextVersion,
+    category: z.enum(TDB_CATEGORIES),
+    categoryKeyword: z.enum(DECISION_KEYWORDS).nullable(),
+    actions: z.array(DecisionAction).max(8),
+    factsDigest: Sha256Hex.nullable(),
+    reasonDigest: Sha256Hex.nullable(),
+    legalReferenceDigest: Sha256Hex.nullable(),
+  })
+  .superRefine((params, ctx) => {
+    const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+    const outcomes = { interim: ["restricted"], final: ["restricted", "no_violation", "not_evident"], correction: ["partly_reversed", "reversed"] } as const;
+    if (!(outcomes[params.kind] as readonly string[]).includes(params.outcome)) refuse("outcome", "a decision of this kind does not have this outcome");
+    if (params.kind === "interim" && params.throughSeq !== 0) refuse("throughSeq", "a decision taken while deciding answers no item");
+    if ((params.kind === "correction") !== (params.reviewsDecisionId !== null)) refuse("reviewsDecisionId", "a correction, and only a correction, names the decision it corrects");
+    if (params.categoryKeyword !== null && params.ground !== "illegal") refuse("categoryKeyword", "a keyword goes only with the ground of the law");
+    if (params.ground === "illegal" && params.ruleId !== null) refuse("ruleId", "a decision on the law cites no korbat rule");
+    if (params.ground === "incompatible" && params.ruleId === null) refuse("ruleId", "a decision on the rules cites its rule");
+    if (params.ground === "illegal" && params.legalReferenceDigest === null) refuse("legalReferenceDigest", "a decision on the law names its legal reference");
+    if (params.outcome === "restricted" && (params.ground === null || params.factsDigest === null || params.reasonDigest === null)) {
+      refuse("outcome", "a restriction carries its ground, its facts and its reason");
+    }
+    if (params.kind === "correction") {
+      if (params.ground !== null || params.ruleId !== null || params.categoryKeyword !== null || params.factsDigest !== null || params.legalReferenceDigest !== null) {
+        refuse("kind", "a correction states no ground of its own");
+      }
+      if (params.reasonDigest === null) refuse("reasonDigest", "a correction carries its reason");
+    }
+    for (const problem of actionProblems(params.actions, params.kind === "correction")) refuse("actions", problem);
+  });
+export type CaseDecidedParams = z.infer<typeof CaseDecidedParams>;
+
+/**
+ * POST /api/staff/decisions/:decision/review: the answer to the author's one appeal of the decision. It keeps the decision
+ * or lifts measures of it, never restricts, and always gives its reason.
+ */
+export const AppealsReviewedParams = z
+  .strictObject({
+    stateVersion: Counter,
+    appealId: LowerCaseUuid,
+    snapshotId: LowerCaseUuid,
+    snapshotDigest: Sha256Hex,
+    outcome: z.enum(["kept", "partly_reversed", "reversed"]),
+    rulesVersion: TextVersion,
+    redressVersion: TextVersion,
+    category: z.enum(TDB_CATEGORIES),
+    actions: z.array(DecisionAction).max(8),
+    reasonDigest: Sha256Hex,
+  })
+  .superRefine((params, ctx) => {
+    for (const problem of actionProblems(params.actions, true)) ctx.addIssue({ code: "custom", path: ["actions"], message: problem });
+  });
+export type AppealsReviewedParams = z.infer<typeof AppealsReviewedParams>;
+
+/** POST /api/staff/items/:item/reveal: why the source of the item is revealed, as a category and the digest of the saved reason. */
+export const IdentityRevealedParams = z.strictObject({ reasonCategory: z.enum(REVEAL_REASON_CATEGORIES), reasonDigest: Sha256Hex });
+export type IdentityRevealedParams = z.infer<typeof IdentityRevealedParams>;
+
 /**
  * Every action a staff key confirms, one at a time (3a design, section 7): the type of its target, the schema of the
  * target's id and the schema of its params. The step-up options, requireStaffStepUp, audit-verify and the console read it.
@@ -155,6 +262,12 @@ const LowerCaseUuid = z.uuid().regex(/^[0-9a-f-]+$/, { message: "a uuid in lower
 export const STAFF_STEP_UP_ACTIONS = {
   /** DELETE /api/staff/sessions/:handle: one of the person's own staff sessions, by its handle. */
   staff_session_revoked: { targetType: "staff_session", targetId: LowerCaseUuid, params: z.strictObject({}) },
+  /** POST /api/staff/cases/:case/decisions: a decision on the case, by the case's id. */
+  case_decided: { targetType: "case", targetId: LowerCaseUuid, params: CaseDecidedParams },
+  /** POST /api/staff/decisions/:decision/review: the review of the appeal of a decision, by the decision's id. */
+  appeals_reviewed: { targetType: "decision", targetId: LowerCaseUuid, params: AppealsReviewedParams },
+  /** POST /api/staff/items/:item/reveal: who sent an item, by the item's id. */
+  identity_revealed: { targetType: "intake_item", targetId: LowerCaseUuid, params: IdentityRevealedParams },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -171,7 +284,12 @@ function stepUpRequest<A extends StaffStepUpAction>(action: A) {
 }
 
 /** POST /api/staff/step-up/options: the action the route will execute, as it will execute it. */
-export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [stepUpRequest("staff_session_revoked")]);
+export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [
+  stepUpRequest("staff_session_revoked"),
+  stepUpRequest("case_decided"),
+  stepUpRequest("appeals_reviewed"),
+  stepUpRequest("identity_revealed"),
+]);
 export type StaffStepUpOptionsRequest = z.infer<typeof StaffStepUpOptionsRequest>;
 
 /** The options: a challenge bound to the session and the action, and an allow list holding only the session's key. */
@@ -181,6 +299,13 @@ export type StaffStepUpOptionsResponse = z.infer<typeof StaffStepUpOptionsRespon
 /** DELETE /api/staff/sessions/:handle: the action's params (none) with the step-up assertion added as `stepUp`. */
 export const StaffSessionRevokeRequest = STAFF_STEP_UP_ACTIONS.staff_session_revoked.params.extend({ stepUp: AuthenticationResponseJSON });
 export type StaffSessionRevokeRequest = z.infer<typeof StaffSessionRevokeRequest>;
+
+/**
+ * POST /api/staff/cases/:case/decisions answers 201 with the id of the decision that committed. The console's case
+ * screens, when they come, read the case again in its place.
+ */
+export const CaseDecisionResponse = z.object({ decisionId: z.uuid() });
+export type CaseDecisionResponse = z.infer<typeof CaseDecisionResponse>;
 
 /**
  * Which ceremony a WebAuthn challenge was issued for: its second byte, in either layout below. A challenge answers only

@@ -7,8 +7,10 @@ import {
   DAILY_LIMITS,
   DECISION_KEYWORDS,
   MEASURES,
+  ModerationErrorCode,
   NOTICE_LIMITS,
   RETENTION,
+  REVEAL_REASON_CATEGORIES,
   RULE_DEFAULT_CATEGORY,
   RULE_IDS,
   SEAL_LIST_MAX,
@@ -18,11 +20,13 @@ import {
   TDB_FORM_CATEGORIES,
   TEXT_DIGEST_TAG,
   appealDeadline,
+  compareDecisionActions,
   laneFor,
   snapshotDigest,
   snapshotText,
   textDigest,
   type ActionKind,
+  type DecisionActionParams,
   type SnapshotDigestInput,
   type TdbCategory,
 } from "../src/index";
@@ -250,6 +254,56 @@ describe("the measures", () => {
     });
     const labels = kinds.map((kind) => MEASURES[kind].label);
     expect(new Set(labels).size).toBe(labels.length);
+  });
+});
+
+describe("the order of a decision's actions", () => {
+  const a = "1a1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+  const b = "2a1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+
+  test("by kind as a string, then by image as a string, an action without an image first", () => {
+    const sorted: DecisionActionParams[] = [
+      { kind: "remove", mediaId: null },
+      { kind: "remove_media", mediaId: a },
+      { kind: "remove_media", mediaId: b },
+      { kind: "reset_bio", mediaId: null },
+      { kind: "seal_media", mediaId: null },
+      { kind: "withhold_media", mediaId: a },
+    ];
+    for (const shuffled of [[...sorted].reverse(), [sorted[3]!, sorted[0]!, sorted[5]!, sorted[2]!, sorted[1]!, sorted[4]!]]) {
+      expect([...shuffled].sort(compareDecisionActions)).toEqual(sorted);
+    }
+    expect(compareDecisionActions(sorted[1]!, sorted[1]!)).toBe(0);
+    expect(compareDecisionActions({ kind: "restore_media", mediaId: null }, { kind: "restore_media", mediaId: a })).toBeLessThan(0);
+  });
+});
+
+describe("the reasons for revealing a source", () => {
+  test("are the four categories the reveal dialog offers", () => {
+    expect(REVEAL_REASON_CATEGORIES).toEqual(["impersonation_claim", "abuse_of_reporting", "legal_requirement", "other"]);
+  });
+});
+
+describe("moderation error codes", () => {
+  test("are the codes the intake and the decision raise", () => {
+    expect(ModerationErrorCode.options).toEqual([
+      "already_reported",
+      "case_changed",
+      "case_closed",
+      "staff_recused",
+      "staff_target",
+      "admin_required",
+      "decision_cap",
+      "profile_changed",
+      "snapshot_mismatch",
+      "snapshot_erased",
+      "text_not_found",
+      "invalid_decision",
+    ]);
+    // The codes the database keeps to itself are no route's answer.
+    for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {
+      expect(ModerationErrorCode.safeParse(code).success, code).toBe(false);
+    }
   });
 });
 

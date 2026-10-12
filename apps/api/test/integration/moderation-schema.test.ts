@@ -4,8 +4,28 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { ACTION_KINDS, CSAM_KEYWORDS, DECISION_KEYWORDS, MEASURES, NOTICE_LIMITS, RULE_IDS, TDB_CATEGORIES, appealDeadline, textDigest } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { TEXT_DIGEST_VECTORS } from "../../../../packages/contracts/test/digest-vectors";
+import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
-import { MINORS, SPEECH, TC, fabricateDecision, hex64, insertIntake, newImageRow, newPostRow, newRef, openCase, rowCounts, type IntakeInput } from "./moderation-fixtures";
+import {
+  MINORS,
+  SPEECH,
+  TC,
+  aPost,
+  decideIn,
+  hex64,
+  imagePost,
+  insertIntake,
+  newImageRow,
+  newPostRow,
+  newRef,
+  newTestStaff,
+  openCase,
+  report,
+  rowCounts,
+  staffProfile,
+  type IntakeInput,
+  type TestStaff,
+} from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
 import { pgError, rolledBack, withLockTimeout } from "./staff-fixtures";
 
@@ -25,9 +45,10 @@ const COLUMN_UPDATES: Record<string, string[]> = {
 const READ_ONLY = ["moderation_limits", "seal_posts"];
 
 /**
- * Migrations 0014 and 0015 (3c design, sections 6.1 and 6.5) against the real database, before any flow uses them: what
- * the API role holds and does not hold, which columns the database forces whatever an insert supplies, the CHECKs against
- * the contracts' constants, and who names the freeze's functions. Statements run as korbat_api, the role the running API
+ * Migrations 0014 to 0016 (3c design, sections 6.1, 6.2 and 6.5) against the real database: what the API role holds and
+ * does not hold, which columns the database forces whatever an insert supplies, the CHECKs against the contracts'
+ * constants, who owns and may call each function, and which functions alone name the freeze, write a seal's list and
+ * write the moderation columns. Statements run as korbat_api, the role the running API
  * holds, unless a test says otherwise: what it cannot do is what a compromised API cannot do. Every test that writes a
  * row does it inside a transaction that is rolled back, each refused statement in a savepoint of it, so the file leaves
  * the database as it found it; its last test holds it to that.
@@ -36,6 +57,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
   let apiDb: Db;
   let authDb: Db;
   let migrateDb: Db;
+  /** A staff account, for the one test here that needs a decision. */
+  let mod: TestStaff;
   let before: Record<string, number>;
 
   beforeAll(async () => {
@@ -44,8 +67,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 2 });
     // The migrate role is not part of the API configuration; the test environment carries it.
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
+    mod = await newTestStaff(authDb, migrateDb, createAuthRepo(authDb), "moderator");
     before = await rowCounts(apiDb);
-  });
+  }, 60_000);
   afterAll(async () => {
     await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
   });
@@ -305,6 +329,41 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       }
     });
 
+    test("the migrator owns every function of 0016; the API role may call four of them and no other", async () => {
+      const pub = ["search_path=public, pg_temp"];
+      // [definer, EXECUTE for the API role, the pinned search path]. The trigger functions fire for every role and nobody
+      // calls them; moderation_apply, the one writer of the moderation columns, is called only by its owner's functions.
+      const expected: Record<string, [boolean, boolean, string[]]> = {
+        account_is_staff: [true, false, ["search_path=auth, pg_temp"]],
+        append_confirmed_audit: [true, true, pub],
+        decision_actions_apply: [true, false, pub],
+        decision_actions_check: [true, false, pub],
+        decision_actions_recheck: [true, false, pub],
+        decision_holds: [true, false, pub],
+        decisions_apply: [true, false, pub],
+        decisions_check: [true, false, pub],
+        decisions_record: [true, false, pub],
+        item_current_outcome: [false, false, pub],
+        moderation_apply: [true, false, pub],
+        posts_guard: [false, false, pub],
+        release_outcomes: [true, true, pub],
+        snapshot_withheld: [false, true, pub],
+        staff_case_conflict: [true, true, pub],
+        staff_party_conflict: [true, false, pub],
+      };
+      const names = Object.keys(expected);
+      const rows = (await functions()).filter((f) => f.name.startsWith("public.") && names.includes(f.name.slice(7)));
+      expect(rows.map((f) => f.name.slice(7)).sort()).toEqual([...names].sort());
+      for (const f of rows) {
+        const [definer, api, config] = expected[f.name.slice(7)]!;
+        expect({ name: f.name, owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }).toEqual({ name: f.name, owner: "korbat_migrate", definer, config, api, auth: false, pub: false });
+      }
+      // Every function of the public schema is one of 0015's or 0016's lists, or older than both.
+      const callable = (await functions()).filter((f) => f.name.startsWith("public.") && f.api).map((f) => f.name.slice(7));
+      expect(callable).toEqual(expect.arrayContaining(["append_confirmed_audit", "release_outcomes", "snapshot_withheld", "staff_case_conflict"]));
+      for (const name of ["moderation_apply", "item_current_outcome", "account_is_staff", "staff_party_conflict"]) expect(callable, name).not.toContain(name);
+    });
+
     test("every function the migrator owns in the two schemas pins its search path and is closed to PUBLIC", async () => {
       const owned = (await functions()).filter((f) => f.owner === "korbat_migrate");
       expect(owned.length).toBeGreaterThan(15);
@@ -314,15 +373,63 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       }
     });
 
-    test("frozen_for is named only by post_frozen and by the keep trigger's function; post_frozen by nothing else", async () => {
+    test("frozen_for is named only by post_frozen and by the keep trigger's function; post_frozen only by decisions_record", async () => {
       const all = await functions();
       const naming = (word: RegExp) => all.filter((f) => word.test(f.definition)).map((f) => f.name);
       // Each function's own definition holds its name.
       expect(naming(/\bfrozen_for\b/)).toEqual(["public.frozen_for", "public.post_frozen", "public.post_media_keep"]);
-      expect(naming(/\bpost_frozen\b/)).toEqual(["public.post_frozen"]);
+      // One function of 0016 reads the freeze: the one that stores whether a decision was taken while nobody could open the images.
+      expect(naming(/\bpost_frozen\b/)).toEqual(["public.decisions_record", "public.post_frozen"]);
       // Nor does a view, a trigger, a constraint, an index or a policy name either.
       const others = (await otherDefinitions()).filter((d) => /\b(frozen_for|post_frozen)\b/.test(d.definition));
       expect(others.map((d) => `${d.kind} ${d.name}`)).toEqual([]);
+    });
+
+    test("one function writes a seal's list, and one the moderation columns of posts and images", async () => {
+      const all = await functions();
+      const matching = (statement: RegExp) => all.filter((f) => statement.test(f.definition)).map((f) => f.name);
+      // A statement that writes the table, as SQL may spell it: an insert, an update, a delete or a merge, the name bare or
+      // schema-qualified, quoted or not; for a column, an update, a merge or an insert that updates on a conflict.
+      const sealList = /(insert\s+into|update|delete\s+from|merge\s+into)\s+(only\s+)?("?public"?\s*\.\s*)?"?seal_posts"?(?![\w"])/i;
+      const imageState = /(update\s+(only\s+)?|merge\s+into\s+(only\s+)?|insert\s+into\s+)("?public"?\s*\.\s*)?"?post_media"?(?![\w"])[^;]*\bset\b[^;]*"?moderation_state"?\s*=/i;
+      const postColumns = /(update\s+(only\s+)?|merge\s+into\s+(only\s+)?|insert\s+into\s+)("?public"?\s*\.\s*)?"?posts"?(?![\w"])[^;]*\bset\b[^;]*"?(moderation_level|state|erased_at)"?\s*=/i;
+      const calls = /\bmoderation_apply\s*\(/i;
+      expect(matching(sealList)).toEqual(["public.decision_actions_apply"]);
+      expect(matching(imageState)).toEqual(["public.moderation_apply"]);
+      expect(matching(postColumns)).toEqual(["public.moderation_apply"]);
+      // The writer is called by the two triggers that follow a stored decision and a stored measure, and by nothing else yet.
+      expect(matching(calls)).toEqual(["public.decision_actions_apply", "public.decisions_apply", "public.moderation_apply"]);
+      // Each search finds such a statement in every form, and no other statement.
+      for (const statement of [
+        "INSERT INTO public.seal_posts (action_id, post_id, images)",
+        'insert into "public"."seal_posts" (action_id)',
+        "update seal_posts s set images = 1",
+        'DELETE FROM ONLY "seal_posts" s',
+        "merge into public.seal_posts s using listed l on l.post_id = s.post_id",
+      ]) {
+        expect(sealList.test(statement), statement).toBe(true);
+      }
+      expect(sealList.test("select 1 from public.seal_posts s; delete from public.seal_posts_kept")).toBe(false);
+      for (const statement of [
+        "UPDATE public.post_media i SET status = 'ready', moderation_state = v.state",
+        'update only "public"."post_media" set "moderation_state" = $1',
+        "insert into post_media (id) values ($1) on conflict (id) do update set moderation_state = excluded.moderation_state",
+        "merge into public.post_media m using v on m.id = v.id when matched then update set moderation_state = v.state",
+      ]) {
+        expect(imageState.test(statement), statement).toBe(true);
+      }
+      expect(imageState.test("UPDATE public.post_media m SET hold_until = latest WHERE m.id = NEW.media_id; SELECT moderation_state = 'x'")).toBe(false);
+      expect(imageState.test("insert into public.post_media (owner_id, moderation_state) values ($1, 'visible')")).toBe(false);
+      for (const statement of [
+        "update posts set body = '', state = 'removed'",
+        'UPDATE "public"."posts" p SET "moderation_level" = v.level',
+        "insert into public.posts (id) values ($1) on conflict (id) do update set erased_at = now()",
+        "merge into posts p using v on p.id = v.id when matched then update set state = v.state",
+      ]) {
+        expect(postColumns.test(statement), statement).toBe(true);
+      }
+      expect(postColumns.test("insert into public.posts (author_id, body, state) values ($1, $2, 'visible')")).toBe(false);
+      expect(postColumns.test("update public.posts_archive set state = 'removed'")).toBe(false);
     });
 
     test("no function deletes from post_media: the image rows go only by a statement the keep trigger meets", async () => {
@@ -354,6 +461,34 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
         staff_texts_insert: "BEFORE INSERT ON public.staff_texts FOR EACH ROW",
       });
+    });
+
+    test("the triggers of 0016 are on their tables, in the timing the design gives", async () => {
+      const rows = await apiDb.execute<{ name: string; definition: string }>(sql`
+        select t.tgname::text as name, pg_get_triggerdef(t.oid) as definition from pg_trigger t
+         where not t.tgisinternal and t.tgrelid in ('public.posts'::regclass, 'public.decisions'::regclass, 'public.decision_actions'::regclass)
+         order by 1`);
+      const timing = Object.fromEntries(rows.map((row) => [row.name, row.definition.replace(/^CREATE (CONSTRAINT )?TRIGGER \S+ /, "").replace(/ EXECUTE FUNCTION .*$/, "")]));
+      expect(timing).toEqual({
+        decision_actions_apply: "AFTER INSERT ON public.decision_actions FOR EACH ROW",
+        decision_actions_check: "BEFORE INSERT ON public.decision_actions FOR EACH ROW",
+        // The decision's check at commit, queued again by every row of its ledger.
+        decision_actions_recheck: "AFTER INSERT ON public.decision_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
+        decisions_apply: "AFTER INSERT ON public.decisions FOR EACH ROW",
+        decisions_check: "AFTER INSERT ON public.decisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
+        decisions_record: "BEFORE INSERT ON public.decisions FOR EACH ROW",
+        posts_guard_insert: "BEFORE INSERT ON public.posts FOR EACH ROW",
+        // Only a statement that names one of the three columns and changes one meets the guard: a counter's update never does.
+        posts_guard_update: expect.stringMatching(/^BEFORE UPDATE OF state, moderation_level, erased_at ON public\.posts FOR EACH ROW WHEN \(.*IS DISTINCT FROM.*IS DISTINCT FROM.*IS DISTINCT FROM.*\)$/),
+      });
+    });
+
+    test("the case's history runs with its reader's rights, and the API role only reads it", async () => {
+      const [view] = await apiDb.execute<{ options: string[] | null }>(sql`select c.reloptions as options from pg_class c where c.oid = 'public.case_history'::regclass`);
+      expect(view!.options).toEqual(["security_invoker=true"]);
+      expect(await tablePrivileges("korbat_api", "public.case_history")).toEqual(["SELECT"]);
+      const columns = await apiDb.execute<{ name: string }>(sql`select attname::text as name from pg_attribute where attrelid = 'public.case_history'::regclass and attnum > 0 order by attnum`);
+      expect(columns.map((c) => c.name)).toEqual(["case_id", "at", "event", "ref_id", "seq", "intake_kind", "rule_id", "alleges_illegal", "csam", "reexamination", "decision_kind", "outcome", "staff_id", "result"]);
     });
 
     test("measures_in_force runs with its reader's rights and names exactly the contracts' measures", async () => {
@@ -703,11 +838,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
   });
 
   test("a decision's keyword needs the ground of the law: on a decision without a ground, or on a rule, it is refused", async () => {
-    // No code of Task 1 writes a decision, so the row is the fixture's, as the migrator, in a transaction that is rolled back.
+    // The decision is a real one, on a reported post; the migrator then changes its row, the only role that can, in a
+    // transaction that is rolled back.
     await rolledBack(migrateDb, async (tx) => {
-      const [author, staff] = [await profile(tx), await profile(tx)];
-      const postId = await newPostRow(tx, author.id);
-      const decisionId = await fabricateDecision(tx, { caseId: await openCase(tx, "post", postId), targetType: "post", targetId: postId, staffId: staff.id });
+      await staffProfile(tx, mod);
+      const { postId } = await imagePost(tx);
+      const { caseId } = await report(tx, aPost(postId));
+      const decisionId = await decideIn(tx, mod, caseId, { kind: "final", outcome: "no_violation" });
       const keyword = DECISION_KEYWORDS[0];
       const set = (changes: ReturnType<typeof sql>) => run(tx, sql`update decisions set ${changes} where id = ${decisionId}::uuid`);
       const refused = { code: "23514", message: expect.stringMatching(/decisions_keyword/) };

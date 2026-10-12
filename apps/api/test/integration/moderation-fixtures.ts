@@ -1,13 +1,25 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql, type SQL } from "drizzle-orm";
+import pino from "pino";
+import { RULE_DEFAULT_CATEGORY, compareDecisionActions, textDigest, type ActionKind, type CaseDecidedParams, type RuleId, type TdbCategory } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
+import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
+import type { ActiveStaffSession, StaffStepUpConfirmed } from "../../src/auth";
+import type { AuthRepo } from "../../src/auth/repo";
+import { loadConfig } from "../../src/config";
+import { ModerationError, isModerationErrorCode, type ModerationDeps } from "../../src/moderation/context";
+import { decide } from "../../src/moderation/decide";
+import { recordIntake, type IntakeGround, type IntakeRecorded, type LiveTarget } from "../../src/moderation/intake";
+import { socialForModeration } from "../../src/social";
+import { newProfile } from "./social-fixtures";
+import { newStaffKey } from "./staff-fixtures";
 
 /**
- * Rows for the database tests of the moderation tables (3c design, section 6.1), written as SQL the way the intake
- * transaction writes them: an insert names only what the API supplies, and the triggers of migration 0015 force the rest.
- * The helpers take a pool or a transaction, so a test chooses the role and whether anything commits. The suites share
- * one database, so a test leaves nothing behind: it runs inside a transaction that is rolled back, or, where a second
- * session must see its rows, it commits them and removes them again with removeFixtures.
+ * Rows for the database tests of the moderation tables (3c design, sections 6.1 and 6.2), written as SQL the way the
+ * intake transaction writes them: an insert names only what the API supplies, and the triggers of migrations 0015 and
+ * 0016 force the rest. The helpers take a pool or a transaction, so a test chooses the role and whether anything commits.
+ * The suites share one database, so a test leaves nothing behind: it runs inside a transaction that is rolled back, or,
+ * where a second session must see its rows, it commits them and removes them again with removeFixtures.
  */
 export type Runner = Db | DbTx;
 export type TargetType = "post" | "account";
@@ -29,16 +41,18 @@ export function newRef(): string {
 const orNull = (value: string | null | undefined, cast: string): SQL => (value === null || value === undefined ? sql`null` : sql`${value}::${sql.raw(cast)}`);
 
 /** Ids as one uuid[] parameter. */
-const uuids = (ids: readonly string[]): SQL => sql`${`{${ids.join(",")}}`}::uuid[]`;
+export const uuids = (ids: readonly string[]): SQL => sql`${`{${ids.join(",")}}`}::uuid[]`;
 
 /**
  * A post row straight in the table: these tests need the row, not the flow and its counters. It is dated a month back.
  * The suites share one database, and others read the public Latest timeline from its newest post down and Explore's
  * 48-hour window: a visible post dated now would stand among theirs, and dozens of them push theirs off the first page.
  */
-export async function newPostRow(db: Runner, authorId: string, options: { quoteOfId?: string; body?: string } = {}): Promise<string> {
+export async function newPostRow(db: Runner, authorId: string, options: { quoteOfId?: string; replyToId?: string; body?: string; createdAt?: SQL } = {}): Promise<string> {
   const [row] = await db.execute<{ id: string }>(
-    sql`insert into posts (author_id, body, quote_of_id, created_at) values (${authorId}::uuid, ${options.body ?? "a post"}, ${orNull(options.quoteOfId, "uuid")}, now() - interval '30 days') returning id`,
+    sql`insert into posts (author_id, body, quote_of_id, reply_to_id, created_at)
+        values (${authorId}::uuid, ${options.body ?? "a post"}, ${orNull(options.quoteOfId, "uuid")}, ${orNull(options.replyToId, "uuid")}, ${options.createdAt ?? sql`now() - interval '30 days'`})
+        returning id`,
   );
   return row!.id;
 }
@@ -184,6 +198,12 @@ export async function readCase(db: Runner, id: string): Promise<CaseRow> {
   return row!;
 }
 
+/** The items of a case, in the order they attached. */
+export async function itemsOf(db: Runner, caseId: string): Promise<ItemRow[]> {
+  const rows = await db.execute<ItemRow & Record<string, unknown>>(sql`select * from intake_items where case_id = ${caseId}::uuid order by seq`);
+  return [...rows];
+}
+
 /**
  * A whole suspect intake on one target, as a notice on the CSAM path leaves it: the intake, the target's open case and
  * the item in lane 0. From its commit on, every post the case reaches is frozen.
@@ -195,63 +215,393 @@ export async function suspectItemOn(db: Runner, targetType: TargetType, targetId
   return { intakeId, caseId, item };
 }
 
-/**
- * A final decision's row with a snapshot for it to name, written as the migrator: Task 1 of 3c has no decision engine, and
- * a re-examination can only be tested on an item that a decision answered (as an appeal's statement and a decision's own
- * checks can only be tested on a decision's row). Migration 0015 has no trigger on decisions, so nothing but the table's
- * checks looks at this row and no audit row names it: it is only ever written inside a transaction that is rolled back.
- * Task 2 replaces it by a real, confirmed decision when the triggers of migration 0016 land, which refuse a row like this
- * one.
- */
-export async function fabricateDecision(
-  tx: DbTx,
-  input: { caseId: string; targetType: TargetType; targetId: string; staffId: string; outcome?: "restricted" | "no_violation" | "not_evident"; unseen?: boolean },
-): Promise<string> {
-  const [snapshot] = await tx.execute<{ id: string }>(
-    sql`insert into evidence_snapshots (case_id, target_type, target_id, author_handle, digest) values (${input.caseId}::uuid, ${input.targetType}::moderation_target, ${input.targetId}::uuid, 'author', ${hex64()}) returning id`,
-  );
-  const restricted = (input.outcome ?? "no_violation") === "restricted";
-  const [decision] = await tx.execute<{ id: string }>(sql`
-    insert into decisions (case_id, kind, seen_state_version, through_seq, outcome, ground, rule_id, rules_version, redress_version, category, source, snapshot_id, snapshot_digest,
-                           facts_digest, reason_digest, decided_by, decided_at, xact, puid, informed_at, suspect, unseen, needs_admin, ended_interim)
-    values (${input.caseId}::uuid, 'final', 0, 0, ${input.outcome ?? "no_violation"}::decision_outcome,
-            ${restricted ? sql`'incompatible'` : sql`null`}, ${restricted ? sql`'R1'` : sql`null`}, 2, 1, ${TC}, 'report', ${snapshot!.id}::uuid, ${hex64()},
-            ${restricted ? sql`${hex64()}` : sql`null`}, ${restricted ? sql`${hex64()}` : sql`null`}, ${input.staffId}::uuid, now(), pg_current_xact_id(),
-            ${randomUUID().replaceAll("-", "")}, now(), false, ${input.unseen ?? false}, false, false)
-    returning id`);
-  return decision!.id;
-}
-
-/**
- * Marks an item answered by a fabricated decision and, unless told otherwise, released at the given time: what a final
- * decision and the daily release leave on it. Written as the migrator, inside a transaction that is rolled back, because
- * Task 1 of 3c has no decision engine and no release; Task 2 replaces it by a real decision, and by the release function,
- * when the triggers of migration 0016 land.
- */
-export async function answerItem(
-  tx: DbTx,
-  item: ItemRow,
-  staffId: string,
-  options: { outcome?: "no_violation" | "not_evident" | "restricted_rule"; released?: SQL | null; unseen?: boolean } = {},
-): Promise<string> {
-  const outcome = options.outcome ?? "no_violation";
-  const decisionId = await fabricateDecision(tx, {
-    caseId: item.case_id!,
-    targetType: item.target_type,
-    targetId: item.target_id,
-    staffId,
-    outcome: outcome === "restricted_rule" ? "restricted" : outcome,
-    unseen: options.unseen,
-  });
-  const released = options.released === undefined ? sql`now()` : (options.released ?? sql`null`);
-  await tx.execute(sql`update intake_items set answered_by = ${decisionId}::uuid, outcome = ${outcome}::item_outcome, outcome_sent_at = ${released}, shown_outcome = case when ${released} is null then null else ${outcome}::item_outcome end where id = ${item.id}::uuid`);
-  return decisionId;
-}
-
 /** Whether the post is frozen, as the role of the runner reads it. */
 export async function postFrozen(db: Runner, postId: string): Promise<boolean> {
   const [row] = await db.execute<{ frozen: boolean }>(sql`select public.post_frozen(${postId}::uuid) as frozen`);
   return row!.frozen;
+}
+
+// ---------------------------------------------------------------- the moderation module on a pool or a transaction
+
+/**
+ * The moderation module's dependencies over a pool, or over a transaction that the test rolls back: the module opens its
+ * own transactions on what it is given, which on a transaction are savepoints, so the intake and the decision run their
+ * real statements and nothing commits.
+ */
+export function moderationDeps(db: Runner): ModerationDeps {
+  return { apiDb: db as Db, social: socialForModeration(db as Db), config: loadConfig(), log: pino({ level: "silent" }), now: () => new Date() };
+}
+
+const NO_GROUND = { reporterId: null, findingBy: null, contactId: null, ruleId: null, allegesIllegal: false, csam: false, categoryKeyword: null, citedLaw: null, explanation: null, bonaFide: false } as const;
+
+/** What an intake alleges and who sent it, for each way a report arrives. */
+export const ground = {
+  /** A signed-in report under a korbat rule. */
+  rule: (reporterId: string, ruleId: RuleId = "R1"): IntakeGround => ({ ...NO_GROUND, kind: "user", channel: "signed_in", reporterId, ruleId, category: TC }),
+  /** A notice that the target is illegal: signed in, or signed out without a contact when no reporter is given. */
+  illegal: (reporterId: string | null, category: TdbCategory = SPEECH): IntakeGround => ({
+    ...NO_GROUND,
+    kind: "user",
+    channel: reporterId === null ? "signed_out" : "signed_in",
+    reporterId,
+    allegesIllegal: true,
+    category,
+    explanation: "It breaks the law.",
+    bonaFide: true,
+  }),
+  /** A notice on the path for child sexual abuse material: no account, no contact. */
+  csam: (): IntakeGround => ({ ...NO_GROUND, kind: "user", channel: "signed_out", allegesIllegal: true, csam: true, category: MINORS }),
+  /** A moderator's own finding under a rule; citing R2 it is suspect. */
+  finding: (staffId: string, ruleId: RuleId = "R1"): IntakeGround => ({ ...NO_GROUND, kind: "finding", channel: "staff", findingBy: staffId, ruleId, category: RULE_DEFAULT_CATEGORY[ruleId] }),
+};
+
+/** One intake through the module's own transaction. A single target gets position 1. */
+export function intake(db: Runner, ground: IntakeGround, targets: LiveTarget | readonly LiveTarget[]): Promise<IntakeRecorded> {
+  const live = Array.isArray(targets) ? (targets as readonly LiveTarget[]) : [targets as LiveTarget];
+  return recordIntake(moderationDeps(db), { ground, live });
+}
+
+/** A post as an intake's first target. */
+export const aPost = (id: string, position = 1): LiveTarget => ({ type: "post", id, position });
+/** An account as an intake's first target, named by a handle. */
+export const anAccount = (id: string, namedHandle = "named", position = 1): LiveTarget => ({ type: "account", id, position, namedHandle });
+
+/** An author (a new profile unless one is given) and a post of theirs with this many images. */
+export async function imagePost(db: Runner, images = 0, authorId?: string, options: { quoteOfId?: string; replyToId?: string } = {}): Promise<{ authorId: string; postId: string; mediaIds: string[] }> {
+  const owner = authorId ?? (await newProfile(db as Db)).id;
+  const postId = await newPostRow(db, owner, options);
+  const mediaIds: string[] = [];
+  for (let position = 0; position < images; position++) mediaIds.push(await newImageRow(db, owner, postId, position));
+  return { authorId: owner, postId, mediaIds };
+}
+
+/**
+ * One report about the target by someone new, into the target's open case (opened when there is none): under a rule, as
+ * a notice of illegality, or on the path for child sexual abuse material, which records no sender.
+ */
+export async function report(db: Runner, target: LiveTarget, by: "rule" | "illegal" | "csam" = "rule", rule: RuleId = "R1"): Promise<{ caseId: string; recorded: IntakeRecorded }> {
+  const sender = by === "csam" ? null : (await newProfile(db as Db)).id;
+  const recorded = await intake(db, by === "csam" ? ground.csam() : by === "illegal" ? ground.illegal(sender) : ground.rule(sender!, rule), target);
+  return { caseId: recorded.items.find((item) => item.position === target.position)!.caseId!, recorded };
+}
+
+// ---------------------------------------------------------------- staff and decisions
+
+/** A staff account as the database tests need it: its id, a live staff key of its own and its role. It has no profile until a test gives it one. */
+export interface TestStaff {
+  id: string;
+  keyId: string;
+  role: "moderator" | "admin";
+}
+
+/**
+ * A live staff account with one live key, committed on the auth side: the decision triggers read the account's role and
+ * the audit function its key, in the auth schema, which a transaction of the API role cannot write. The key's public key
+ * is a placeholder: no test that commits an audit row signs with it.
+ */
+export async function newTestStaff(authDb: Db, migrateDb: Db, repo: AuthRepo, role: "moderator" | "admin" = "moderator"): Promise<TestStaff> {
+  const { user, key } = await newStaffKey(authDb, migrateDb, repo, role);
+  return { id: user.id, keyId: key.id, role };
+}
+
+/** The staff account's profile row, which a decision, a finding and a staff text refer to. Its handle is random. */
+export async function staffProfile(db: Runner, staff: { id: string }): Promise<void> {
+  await db.execute(sql`insert into profiles (id, handle, display_name) values (${staff.id}::uuid, ${`st_${randomBytes(5).toString("hex")}`}, 'Staff')`);
+}
+
+/** Saves a staff text on a case as the console will: a fresh salt, and the digest of the salt and the text. Answers the digest. */
+export async function saveText(db: Runner, caseId: string, authorId: string, kind: string, text = `a ${kind} text ${randomUUID()}`): Promise<string> {
+  const salt = hex64();
+  const digest = await textDigest(salt, text);
+  await db.execute(sql`insert into staff_texts (case_id, author_id, kind, text, salt, digest) values (${caseId}::uuid, ${authorId}::uuid, ${kind}::staff_text_kind, ${text}, ${salt}, ${digest})`);
+  return digest;
+}
+
+/** The case's newest snapshot, as a decision names it. */
+export async function newestSnapshot(db: Runner, caseId: string): Promise<{ id: string; digest: string }> {
+  const [row] = await db.execute<{ id: string; digest: string }>(sql`select id, digest from evidence_snapshots where case_id = ${caseId}::uuid order by taken_at desc, id desc limit 1`);
+  if (!row) throw new Error("the case holds no snapshot");
+  return { id: row.id, digest: row.digest };
+}
+
+/** What a test says about a decision; everything left out is filled in from the case as the console would. */
+export interface DecisionInput {
+  /** `interim` unless said. */
+  kind?: "interim" | "final" | "correction";
+  /** `restricted` for an interim or final decision, `reversed` for a correction, unless said. */
+  outcome?: CaseDecidedParams["outcome"];
+  /** For a restriction `incompatible` unless said; else none. */
+  ground?: "incompatible" | "illegal" | null;
+  /** R1 for the ground `incompatible` unless said. */
+  ruleId?: RuleId | null;
+  category?: TdbCategory;
+  categoryKeyword?: "KEYWORD_TERRORIST_CONTENT" | null;
+  actions?: readonly { kind: ActionKind; mediaId?: string | null }[];
+  /** For a final decision the case's newest item unless said. */
+  throughSeq?: number;
+  /** The case's version now unless said. */
+  stateVersion?: number;
+  reviewsDecisionId?: string | null;
+  snapshotId?: string;
+  snapshotDigest?: string;
+  /** Each text is saved fresh where the decision needs one, unless a digest (or null) is given. */
+  factsDigest?: string | null;
+  reasonDigest?: string | null;
+  legalReferenceDigest?: string | null;
+  rulesVersion?: number;
+  redressVersion?: number;
+}
+
+/** A measure on the post, the account's field or the case's images; an image measure with its image. */
+export const act = (kind: ActionKind, mediaId: string | null = null) => ({ kind, mediaId });
+
+/**
+ * The params of a decision on the case as the console builds them: the case's version, the range a final decision
+ * answers, the newest snapshot with its digest, the digests of freshly saved texts, and the actions in their one order.
+ */
+export async function decisionParams(db: Runner, staff: { id: string }, caseId: string, input: DecisionInput = {}): Promise<CaseDecidedParams> {
+  const kind = input.kind ?? "interim";
+  const outcome = input.outcome ?? (kind === "correction" ? "reversed" : "restricted");
+  const groundOf = input.ground !== undefined ? input.ground : outcome === "restricted" ? "incompatible" : null;
+  const ruleId = input.ruleId !== undefined ? input.ruleId : groundOf === "incompatible" ? "R1" : null;
+  const current = await readCase(db, caseId);
+  const snapshot = input.snapshotId !== undefined && input.snapshotDigest !== undefined ? { id: input.snapshotId, digest: input.snapshotDigest } : await newestSnapshot(db, caseId);
+  let category: TdbCategory = input.category ?? (ruleId !== null ? RULE_DEFAULT_CATEGORY[ruleId] : groundOf === "illegal" ? SPEECH : TC);
+  let rulesVersion = input.rulesVersion ?? RULES_VERSION;
+  if (kind === "correction" && input.reviewsDecisionId) {
+    // A correction carries the category and the rules version of the decision it corrects.
+    const [corrected] = await db.execute<{ category: TdbCategory; rules_version: number }>(sql`select category, rules_version from decisions where id = ${input.reviewsDecisionId}::uuid`);
+    category = input.category ?? corrected?.category ?? category;
+    rulesVersion = input.rulesVersion ?? corrected?.rules_version ?? rulesVersion;
+  }
+  const text = async (given: string | null | undefined, needed: boolean, textKind: string) => (given !== undefined ? given : needed ? await saveText(db, caseId, staff.id, textKind) : null);
+  return {
+    kind,
+    stateVersion: input.stateVersion ?? current.state_version,
+    throughSeq: input.throughSeq ?? (kind === "final" ? current.intake_seq : 0),
+    reviewsDecisionId: input.reviewsDecisionId ?? null,
+    snapshotId: input.snapshotId ?? snapshot.id,
+    snapshotDigest: input.snapshotDigest ?? snapshot.digest,
+    outcome,
+    ground: groundOf,
+    ruleId,
+    rulesVersion,
+    redressVersion: input.redressVersion ?? REDRESS_VERSION,
+    category,
+    categoryKeyword: input.categoryKeyword ?? null,
+    actions: (input.actions ?? []).map((action) => ({ kind: action.kind, mediaId: action.mediaId ?? null })).sort(compareDecisionActions),
+    factsDigest: await text(input.factsDigest, outcome === "restricted", "facts"),
+    reasonDigest: await text(input.reasonDigest, outcome === "restricted" || kind === "correction", kind === "correction" ? "review_reason" : "reason"),
+    legalReferenceDigest: await text(input.legalReferenceDigest, groundOf === "illegal", "legal_reference"),
+  };
+}
+
+/**
+ * A staff session and a confirmation as the staff routes hand them to the moderation module, made up: the hash and the
+ * assertion are placeholders that audit-verify would refuse, so the audit row they lead to is only ever written inside a
+ * transaction that is rolled back. A decision that commits is confirmed with a real key (moderation-decide.ts).
+ */
+export function madeUpConfirmation(staff: TestStaff, caseId: string, params: CaseDecidedParams, expiresAt = new Date(Date.now() + 10 * 60_000)): { session: ActiveStaffSession; confirmed: StaffStepUpConfirmed } {
+  const now = new Date();
+  return {
+    session: {
+      sessionId: hex64(),
+      handle: randomUUID(),
+      userId: staff.id,
+      keyId: staff.keyId,
+      role: staff.role,
+      createdAt: now,
+      lastUsedAt: now,
+      idleExpiresAt: new Date(now.getTime() + 15 * 60_000),
+      absoluteExpiresAt: new Date(now.getTime() + 12 * 60 * 60_000),
+      browser: "Firefox on Linux",
+    },
+    confirmed: {
+      action: "case_decided",
+      target: { type: "case", id: caseId },
+      params,
+      actionHash: hex64(),
+      keyId: staff.keyId,
+      assertion: { authenticatorData: "AAAA", clientDataJSON: "BBBB", signature: "CCCC" },
+      expiresAt,
+    },
+  };
+}
+
+/** What the database raised, however deeply the driver wrapped it: its SQLSTATE, message and detail. */
+export function raised(err: unknown): { code: string; message: string; detail: string | null } | null {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (typeof current === "object" && typeof (current as { code?: unknown }).code === "string" && /^[0-9A-Z]{5}$/.test((current as { code: string }).code)) {
+      const found = current as { code: string; message?: unknown; detail?: unknown };
+      return { code: found.code, message: String(found.message ?? ""), detail: typeof found.detail === "string" ? found.detail : null };
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/**
+ * A decision inside a transaction that the test rolls back, through the module's own decide: the decision's row, its
+ * measures and its audit row, with a made-up confirmation of exactly these params. The deferred check, which a real
+ * decision meets at its commit, is made to run right after, inside the same savepoint, so a decision it refuses leaves
+ * nothing behind and a later decision of the test is checked alone. Answers the decision's id; a refusal is thrown as the
+ * module throws it, with the detail the database gave.
+ */
+export async function decideWith(tx: DbTx, staff: TestStaff, caseId: string, params: CaseDecidedParams): Promise<string> {
+  const { session, confirmed } = madeUpConfirmation(staff, caseId, params);
+  try {
+    return await tx.transaction(async (sp) => {
+      const outcome = await decide(moderationDeps(sp), session, confirmed, { requestId: `req-${randomUUID()}` });
+      if (typeof outcome === "string") throw new Error(`the decision was not recorded: ${outcome}`);
+      await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck immediate`);
+      await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck deferred`);
+      return outcome.decisionId;
+    });
+  } catch (err) {
+    // The check at commit raises its code as the triggers do; decide maps the same code when a real commit fails.
+    const refused = raised(err);
+    if (!(err instanceof ModerationError) && refused?.code === "P0001" && isModerationErrorCode(refused.message)) {
+      throw Object.assign(new ModerationError(refused.message), { detail: refused.detail });
+    }
+    throw err;
+  }
+}
+
+/** The same, with the params filled in from the case as the console would build them. */
+export async function decideIn(tx: DbTx, staff: TestStaff, caseId: string, input: DecisionInput = {}): Promise<string> {
+  return decideWith(tx, staff, caseId, await decisionParams(tx, staff, caseId, input));
+}
+
+/** The code a flow or a statement was refused with, or null when it went through: a module's error code, or what the database raised. */
+export async function refusal(promise: PromiseLike<unknown>): Promise<string | null> {
+  try {
+    await promise;
+    return null;
+  } catch (err) {
+    if (err instanceof ModerationError) return err.code;
+    const fromDatabase = raised(err);
+    if (fromDatabase) return fromDatabase.code === "P0001" ? fromDatabase.message : `${fromDatabase.code} ${fromDatabase.message}`;
+    if (err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string") return (err as { code: string }).code;
+    throw err;
+  }
+}
+
+/** The detail a refusal at commit names: the member of the audit row, or the rule, that did not hold. */
+export async function refusalDetail(promise: PromiseLike<unknown>): Promise<string | null> {
+  try {
+    await promise;
+    return null;
+  } catch (err) {
+    return (err as { detail?: string | null }).detail ?? raised(err)?.detail ?? null;
+  }
+}
+
+/** A decision's row as the triggers left it, with the columns these tests read. */
+export interface DecisionRow {
+  id: string;
+  case_id: string;
+  kind: string;
+  outcome: string;
+  ground: string | null;
+  rule_id: string | null;
+  through_seq: number;
+  answers_from_seq: number | null;
+  source: string;
+  suspect: boolean;
+  unseen: boolean;
+  needs_admin: boolean;
+  ended_interim: boolean;
+  author_mail: string;
+  decided_by: string;
+  automated_detection: boolean;
+  automated_decision: string;
+  territorial_scope: string;
+  puid: string;
+  redacted_at: string | null;
+}
+
+export async function decisionRow(db: Runner, id: string): Promise<DecisionRow> {
+  const [row] = await db.execute<DecisionRow & Record<string, unknown>>(sql`select * from decisions where id = ${id}::uuid`);
+  return row!;
+}
+
+/** A ledger row as the triggers left it. actionsOf answers a decision's rows in the order its params list them: by kind as a word, then by image. */
+export interface ActionRow {
+  id: string;
+  decision_id: string;
+  kind: ActionKind;
+  media_id: string | null;
+  subject_account_id: string;
+  post_id: string | null;
+  reverses_action_id: string | null;
+  no_effect: string | null;
+}
+
+export async function actionsOf(db: Runner, decisionId: string): Promise<ActionRow[]> {
+  const rows = await db.execute<ActionRow & Record<string, unknown>>(sql`select * from decision_actions where decision_id = ${decisionId}::uuid order by kind::text, media_id`);
+  return [...rows];
+}
+
+/** A post's state, its level and whether its content was erased. */
+export async function postRow(db: Runner, id: string): Promise<{ state: string; level: string; erased: boolean }> {
+  const [row] = await db.execute<{ state: string; level: string; erased: boolean }>(sql`select state, moderation_level as level, erased_at is not null as erased from posts where id = ${id}::uuid`);
+  return { ...row! };
+}
+
+/** Each image's moderation state, in the order asked. */
+export async function imageStates(db: Runner, ids: readonly string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await db.execute<{ id: string; state: string }>(sql`select id, moderation_state as state from post_media where id = any(${uuids(ids)})`);
+  const byId = new Map([...rows].map((row) => [row.id, row.state]));
+  return ids.map((id) => byId.get(id) ?? "missing");
+}
+
+/** The measures in force that the view names, as "kind" or "kind:image", sorted. */
+export async function inForce(db: Runner, where: { caseId?: string; postId?: string }): Promise<string[]> {
+  const rows = await db.execute<{ kind: string; media_id: string | null }>(
+    sql`select kind, media_id from measures_in_force where ${where.caseId ? sql`case_id = ${where.caseId}::uuid` : sql`post_id = ${where.postId!}::uuid`} order by kind::text, media_id`,
+  );
+  return [...rows].map((row) => (row.media_id ? `${row.kind}:${row.media_id}` : row.kind));
+}
+
+/**
+ * Deletes these cases with everything that hangs on them, and these intakes with their items, in the order the keep
+ * trigger and the foreign keys ask for (removeFixtures says why). Both ids are uuid[] parameters.
+ */
+async function removeCasesIn(tx: DbTx, caseIds: SQL, intakeIds: SQL): Promise<void> {
+  await tx.execute(sql`delete from intake_items where case_id = any(${caseIds}) or intake_id = any(${intakeIds})`);
+  await tx.execute(sql`update media_holds set released_at = now() where case_id = any(${caseIds}) and released_at is null`);
+  await tx.execute(sql`delete from media_holds where case_id = any(${caseIds})`);
+  await tx.execute(sql`delete from seal_posts where action_id in (select a.id from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = any(${caseIds}))`);
+  await tx.execute(sql`delete from decision_actions where decision_id in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
+  await tx.execute(sql`delete from staff_texts where case_id = any(${caseIds})`);
+  await tx.execute(sql`delete from appeals where decision_id in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
+  await tx.execute(sql`delete from decisions where case_id = any(${caseIds})`);
+  await tx.execute(sql`delete from evidence_snapshots where case_id = any(${caseIds})`);
+  await tx.execute(sql`delete from case_access_log where case_id = any(${caseIds})`);
+  await tx.execute(sql`delete from cases where id = any(${caseIds})`);
+  await tx.execute(sql`delete from intakes where id = any(${intakeIds})`);
+}
+
+/**
+ * Removes, as the migrator, what decisions about these posts left: the posts' cases with everything that hangs on them,
+ * the findings of these staff accounts, and those accounts' profiles. The posts themselves stay, as their suites leave
+ * them, and their levels are derived again, so none keeps a level that no decision gives it any more.
+ */
+export async function removeDecided(migrateDb: Db, postIds: readonly string[], staffIds: readonly string[]): Promise<void> {
+  if (postIds.length === 0 && staffIds.length === 0) return;
+  await migrateDb.transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '10s'`);
+    const cases = await tx.execute<{ id: string }>(sql`select id from cases where target_type = 'post' and target_id = any(${uuids(postIds)})`);
+    const caseIds = uuids(cases.map((row) => row.id));
+    const intakes = await tx.execute<{ id: string }>(sql`
+      select distinct i.intake_id as id from intake_items i where i.case_id = any(${caseIds})
+      union select n.id from intakes n where n.finding_by = any(${uuids(staffIds)})`);
+    await removeCasesIn(tx, caseIds, uuids(intakes.map((row) => row.id)));
+    await tx.execute(sql`select public.moderation_apply(${uuids(postIds)}, true)`);
+    await tx.execute(sql`delete from profiles where id = any(${uuids(staffIds)})`);
+  });
 }
 
 /**
@@ -259,8 +609,10 @@ export async function postFrozen(db: Runner, postId: string): Promise<boolean> {
  * its rows commits them, and it calls this in a `finally`. The order is the one the keep trigger and the foreign keys
  * ask for: the items first (an unanswered suspect item freezes every image its case reaches, and the database then keeps
  * those rows against every delete); the holds released and then deleted (a release takes the image's hold_until back; a
- * delete of the hold's row would not); snapshots, texts and access rows; the cases; the intakes of the items and of
- * these reporters and finders; then the image rows, the posts and the profiles.
+ * delete of the hold's row would not); the seals' lists, the ledger and the texts before the decisions that own them, and
+ * the decisions before the snapshots they name; access rows; the cases; the intakes of the items and of these reporters
+ * and finders; then the image rows, the posts and the profiles. The audit rows of committed decisions stay: they are the
+ * record, and audit-verify still accepts them.
  */
 export async function removeFixtures(migrateDb: Db, profileIds: readonly string[]): Promise<void> {
   if (profileIds.length === 0) return;
@@ -276,14 +628,7 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
       select distinct i.intake_id as id from intake_items i where i.case_id = any(${caseIds})
       union select n.id from intakes n where n.reporter_id = any(${profiles}) or n.finding_by = any(${profiles})`);
     const intakeIds = uuids(intakes.map((row) => row.id));
-    await tx.execute(sql`delete from intake_items where case_id = any(${caseIds}) or intake_id = any(${intakeIds})`);
-    await tx.execute(sql`update media_holds set released_at = now() where case_id = any(${caseIds}) and released_at is null`);
-    await tx.execute(sql`delete from media_holds where case_id = any(${caseIds})`);
-    await tx.execute(sql`delete from evidence_snapshots where case_id = any(${caseIds})`);
-    await tx.execute(sql`delete from staff_texts where case_id = any(${caseIds})`);
-    await tx.execute(sql`delete from case_access_log where case_id = any(${caseIds})`);
-    await tx.execute(sql`delete from cases where id = any(${caseIds})`);
-    await tx.execute(sql`delete from intakes where id = any(${intakeIds})`);
+    await removeCasesIn(tx, caseIds, intakeIds);
     await tx.execute(sql`delete from post_media where owner_id = any(${profiles})`);
     await tx.execute(sql`delete from posts where author_id = any(${profiles})`);
     await tx.execute(sql`delete from profiles where id = any(${profiles})`);
@@ -296,6 +641,12 @@ export async function rowCounts(db: Runner): Promise<Record<string, number>> {
   const columns = tables.map((table) => `(select count(*)::int from public.${table}) as ${table}`).join(", ");
   const [row] = await db.execute<Record<string, number>>(sql.raw(`select ${columns}`));
   return { ...row! };
+}
+
+/** The same for the moderation tables alone: what a suite that keeps its own posts and profiles is held to. */
+export async function moderationCounts(db: Runner): Promise<Record<string, number>> {
+  const kept = new Set(["post_media", "posts", "profiles"]);
+  return Object.fromEntries(Object.entries(await rowCounts(db)).filter(([table]) => !kept.has(table)));
 }
 
 /** A marker for one statement of one test: a word that no other statement holds. */

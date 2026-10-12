@@ -10,6 +10,8 @@ import { MemoryKv } from "../../src/auth/kv";
 import { loadConfig } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
 import { MemoryStore } from "../../src/middleware/rate-limit";
+import { createModeration } from "../../src/moderation";
+import { socialForModeration } from "../../src/social";
 import { createStaff } from "../../src/staff";
 
 const key = Buffer.alloc(32, 7).toString("base64");
@@ -51,7 +53,9 @@ function build(consoleOrigin: string | undefined, probe = false) {
     mailer: new MemoryMailer(),
     profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null, setVerified: async () => undefined },
   });
-  const staff = createStaff({ apiDb: createDb(config.DATABASE_URL_API, { max: 1 }), auth: auth.forStaff });
+  const apiDb = createDb(config.DATABASE_URL_API, { max: 1 });
+  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+  const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
   const app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   const seen: { session: unknown; method: string; path: string }[] = [];
   if (probe) {

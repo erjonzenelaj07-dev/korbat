@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -219,6 +220,51 @@ export const MEASURES = {
   restore_display_name: { interim: false, final: false, lifts: ["reset_display_name"], target: "display_name", label: "Lift the reset of the display name" },
   restore_bio: { interim: false, final: false, lifts: ["reset_bio"], target: "bio", label: "Lift the reset of the bio" },
 } as const satisfies Record<ActionKind, MeasureSpec>;
+
+/** One measure or reversal as a decision's confirmed params name it: its kind, and for an image measure the image. */
+export interface DecisionActionParams {
+  kind: ActionKind;
+  mediaId: string | null;
+}
+
+/**
+ * The one order a decision's actions are confirmed in: by kind and then by image, each compared as a string, an action
+ * without an image first. The console sorts with it before it asks for the key, and the params' schema refuses any other
+ * order, so the same decision always has the same hash.
+ */
+export function compareDecisionActions(a: DecisionActionParams, b: DecisionActionParams): number {
+  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+  const [left, right] = [a.mediaId ?? "", b.mediaId ?? ""];
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Why a moderator reveals who sent a report: the choices of the reveal dialog. The reason itself is a saved text. */
+export const REVEAL_REASON_CATEGORIES = ["impersonation_claim", "abuse_of_reporting", "legal_requirement", "other"] as const;
+export type RevealReasonCategory = (typeof REVEAL_REASON_CATEGORIES)[number];
+
+// ---------------------------------------------------------------- errors
+
+/**
+ * Every code the moderation flows put in ErrorEnvelope.error.code so far: what taking in a report and deciding a case
+ * raise. The routes may also answer the shared invalid_request, not_found, rate_limited and service_unavailable, and the
+ * staff routes the staff codes. The codes the database keeps to itself (moderation_column, quote_item_missing,
+ * read_committed_only) are not among them: no route answers one.
+ */
+export const ModerationErrorCode = z.enum([
+  "already_reported",
+  "case_changed",
+  "case_closed",
+  "staff_recused",
+  "staff_target",
+  "admin_required",
+  "decision_cap",
+  "profile_changed",
+  "snapshot_mismatch",
+  "snapshot_erased",
+  "text_not_found",
+  "invalid_decision",
+]);
+export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
 // ---------------------------------------------------------------- digests
 

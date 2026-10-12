@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { EXPLORE_V1, ExplorePage, ExploreStatus, type ExploreFormula, type ExploreStatusKind } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
@@ -13,8 +13,13 @@ import { getPost } from "../../src/social/flows/posts";
 import { profilePosts } from "../../src/social/flows/timelines";
 import type { SocialRepo } from "../../src/social/repo";
 import { DAY, HOUR, MINUTE, accounts, after, approvedPost, before, exploreDeps, likedBy, listed, pageIds, rank, spans } from "./explore-fixtures";
+import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 import { newPost, newProfile } from "./social-fixtures";
 import { rejection } from "./social-harness";
+
+// Several tests here put posts into a moderation state, each through a real, confirmed decision (a staff key's enrolment
+// and sign-in once, then a step-up for each): on a loaded machine that takes longer than the five seconds a test gets by default.
+vi.setConfig({ testTimeout: 30_000 });
 
 /** This suite's past (see explore-fixtures.ts): its rankings are computed as of times in 2022, each test in a span of its own. */
 const EPOCH = Date.UTC(2022, 0, 1);
@@ -31,6 +36,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
     ({ deps, repo, setNow } = exploreDeps(db));
   });
   afterAll(async () => {
+    await closeDecisions();
     await closeDb(db);
   });
   // Every test starts without any ranking (the cascade empties explore_items) and reads the generations its own rounds answer.
@@ -41,8 +47,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
   /** A page as a reader asks for it: twenty posts unless the test says otherwise. */
   const read = (viewer: string | null, query: { limit?: number; cursor?: string } = {}) => explorePage(deps, viewer, { limit: 20, ...query });
   const status = (viewer: string, postId: string, formula?: ExploreFormula) => exploreStatus(deps, viewer, postId, formula);
-  /** Sets a moderation state as sub-project 3 will; nothing in 2c writes one. */
-  const setState = (postId: string, state: "withheld" | "removed") => db.execute(sql`update posts set state = ${state}::post_state where id = ${postId}::uuid`);
+  /** A moderation state comes about only through a decision: a real, confirmed one, since the posts' guard refuses the API role any other write. */
+  const setState = (postId: string, state: "withheld" | "removed") => decideForTest(db, postId, state);
 
   test("before the first round the page is empty, with no cursor, no time and no sign-in prompt, a cursor is not valid, and the author's status is no_ranking", async () => {
     const asOf = nextAsOf();
@@ -451,4 +457,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
     expect(await getPost(deps, b!.id, b1)).not.toHaveProperty("inExplore");
     expect(new Set(await listed(db, g))).toEqual(new Set([a1, b1]));
   });
+
+  leavesNoModerationRows(() => db);
 });

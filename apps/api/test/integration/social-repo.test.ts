@@ -4,6 +4,7 @@ import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { SocialError } from "../../src/social/context";
 import { createSocialRepo, type ListRow, type SocialRepo } from "../../src/social/repo";
+import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 import { newPost, newProfile, ticker } from "./social-fixtures";
 
 const ids = (rowsList: ListRow[]) => rowsList.map((r) => r.postId);
@@ -17,6 +18,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: social repository", () =
     repo = createSocialRepo(db);
   });
   afterAll(async () => {
+    await closeDecisions();
     await closeDb(db);
   });
 
@@ -153,8 +155,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: social repository", () =
     const shown = await newPost(repo, ada.id, clock.next());
     const withheld = await newPost(repo, ada.id, clock.next());
     const removed = await newPost(repo, ada.id, clock.next());
-    await db.execute(sql`update posts set state = 'withheld' where id = ${withheld}::uuid`);
-    await db.execute(sql`update posts set state = 'removed' where id = ${removed}::uuid`);
+    await decideForTest(db, withheld, "withheld");
+    await decideForTest(db, removed, "removed");
     await newPost(repo, ada.id, clock.next(), "reply", { replyToId: shown });
 
     expect(ids(await repo.profilePosts(ada.id, ada.id, undefined, 10))).toEqual([removed, withheld, shown]);
@@ -163,7 +165,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: social repository", () =
     expect(ids(await repo.followingTimeline(bob.id, undefined, 10))).toEqual([shown]);
     expect(ids(await repo.followingTimeline(ada.id, undefined, 10))).toEqual([removed, withheld, shown]);
     expect(ids(await repo.latestTimeline(null, undefined, 500))).not.toContain(withheld);
-  });
+    // The withheld and removed states come from real, confirmed decisions: a staff key's enrolment, a sign-in, and a step-up for each.
+  }, 30_000);
 
   test("threads: ancestors come root first and stop at the cap, replies page oldest first", async () => {
     const clock = ticker();
@@ -228,6 +231,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: social repository", () =
     expect([found?.followerCount, found?.followingCount, found?.postCount]).toEqual([1, 0, 0]);
     expect(await repo.findProfileByHandle("no_such_handle_here")).toBeNull();
   });
+
+  leavesNoModerationRows(() => db);
 });
 
 /**

@@ -189,6 +189,43 @@ export interface ExploreJudgement {
   places: number;
 }
 
+/** The two modes a profile row is locked in for a moderation case: a decision's on its subject, and a report's on its sender. */
+export type AccountLockMode = "no key update" | "key share";
+
+/** A post as a case's evidence copies it. `body` is empty when the post's content was erased (`erased`). */
+export interface CapturedPost {
+  id: string;
+  authorId: string;
+  authorHandle: string;
+  body: string;
+  state: StoredPostState;
+  createdAt: Date;
+  replyToId: string | null;
+  quoteOfId: string | null;
+  erased: boolean;
+}
+
+/** An account's profile fields as a case's evidence copies them. */
+export interface CapturedProfile {
+  id: string;
+  handle: string;
+  displayName: string;
+  bio: string;
+  deleted: boolean;
+}
+
+interface RawCapturedPost {
+  id: string;
+  author_id: string;
+  author_handle: string;
+  body: string;
+  state: StoredPostState;
+  created_at: string;
+  reply_to_id: string | null;
+  quote_of_id: string | null;
+  erased: boolean;
+}
+
 export const MAX_ANCESTORS = 50;
 const NO_REPOSTER = "00000000-0000-0000-0000-000000000000";
 
@@ -476,9 +513,15 @@ export function createSocialRepo(db: Db) {
       });
     },
 
-    /** Blanks the body and marks the post deleted; adjusts the counters it contributed to. False when there was nothing to delete. `within` runs in the same transaction. */
+    /**
+     * Blanks the body and marks the post deleted; adjusts the counters it contributed to. False when there was nothing to
+     * delete. `within` runs in the same transaction. The author's profile row is taken first, in the mode the counter
+     * update below needs: a decision about the author holds that row before it takes the post, so a deletion that took
+     * the post first and the profile second would deadlock with it, and one that takes the profile first waits its turn.
+     */
     async deletePost(id: string, authorId: string, now: Date, within?: (tx: DbTx) => Promise<void>): Promise<boolean> {
       return db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from profiles where id = ${authorId}::uuid for no key update`);
         const [old] = await tx
           .update(posts)
           .set({ state: "deleted_by_author", deletedAt: now, body: "" })
@@ -1056,6 +1099,91 @@ export function createSocialRepo(db: Db) {
         if (isUniqueViolation(err)) return { ok: false, reason: "handle_taken" };
         throw err;
       }
+    },
+
+    // ------------------------------------------------------------ what moderation cases read
+
+    /**
+     * Locks these profile rows for the rest of the transaction, in one statement and in id order, so two transactions
+     * that lock several accounts never take them in opposite orders. `no key update` is what a decision takes on its
+     * subject: two decisions about one account then run one after the other, while the likes and follows of others,
+     * which take `key share`, never wait for it. `key share` is what a report takes on its sender. It answers each row
+     * found with whether its account is deleted; with `live`, a missing or deleted account is refused (not_found).
+     */
+    async lockAccounts(tx: DbTx, ids: readonly string[], mode: AccountLockMode, live = false): Promise<{ id: string; deleted: boolean }[]> {
+      const wanted = [...new Set(ids)];
+      if (wanted.length === 0) return [];
+      // The mode is one of two literals of this file, never input.
+      const found = (await tx.execute(
+        sql`select id, deleted_at is not null as deleted from profiles where id = any(${uuidArray(wanted)}) order by id for ${sql.raw(mode)}`,
+      )) as unknown as { id: string; deleted: boolean }[];
+      if (live && (found.length !== wanted.length || found.some((row) => row.deleted))) throw new SocialError("not_found", 404);
+      return found.map((row) => ({ id: row.id, deleted: row.deleted }));
+    },
+
+    /**
+     * A post as a case's evidence copies it, or null when no row has the id: the row is locked `for share`, so the
+     * author's deletion comes after the copy or has left its tombstone before it. A post whose content was erased is
+     * answered with an empty body, so no copy holds erased text.
+     */
+    async capturePost(tx: DbTx, postId: string): Promise<CapturedPost | null> {
+      const [row] = (await tx.execute(sql`
+        select p.id, p.author_id, a.handle as author_handle, p.body, p.state, ${iso("p.created_at")} as created_at, p.reply_to_id, p.quote_of_id,
+               p.erased_at is not null as erased
+        from posts p join profiles a on a.id = p.author_id where p.id = ${postId}::uuid for share of p`)) as unknown as RawCapturedPost[];
+      if (!row) return null;
+      return {
+        id: row.id,
+        authorId: row.author_id,
+        authorHandle: row.author_handle,
+        body: row.erased ? "" : row.body,
+        state: row.state,
+        createdAt: new Date(row.created_at),
+        replyToId: row.reply_to_id,
+        quoteOfId: row.quote_of_id,
+        erased: row.erased,
+      };
+    },
+
+    /** An account's handle, display name and bio as a case's evidence copies them, with whether it is deleted; null when no row has the id. */
+    async captureProfile(tx: DbTx, accountId: string): Promise<CapturedProfile | null> {
+      const [row] = (await tx.execute(
+        sql`select id, handle, display_name, bio, deleted_at is not null as deleted from profiles where id = ${accountId}::uuid`,
+      )) as unknown as { id: string; handle: string; display_name: string; bio: string; deleted: boolean }[];
+      return row ? { id: row.id, handle: row.handle, displayName: row.display_name, bio: row.bio, deleted: row.deleted } : null;
+    },
+
+    /**
+     * The account a handle names, for a report. Without `withDeleted`, only a live profile that holds the handle now: an
+     * old handle names nothing, as everywhere else. With it, for a report of child sexual abuse material, also a deleted
+     * profile (the purge keeps the handle on the row) and, for a handle no profile holds now, the profile that
+     * handle_history records for it: a handle an account has left stays reserved for that account, so it names that
+     * account and nobody else.
+     */
+    async findAccountByHandle(handle: string, withDeleted: boolean): Promise<{ id: string; deleted: boolean } | null> {
+      const lower = handle.toLowerCase();
+      const [holder] = await rows<{ id: string; deleted: boolean }>(
+        sql`select id, deleted_at is not null as deleted from profiles where lower(handle) = ${lower} and (${withDeleted}::boolean or deleted_at is null)`,
+      );
+      if (holder || !withDeleted) return holder ? { id: holder.id, deleted: holder.deleted } : null;
+      const [former] = await rows<{ id: string; deleted: boolean }>(
+        sql`select p.id, p.deleted_at is not null as deleted from handle_history h join profiles p on p.id = h.profile_id where h.handle_lower = ${lower}`,
+      );
+      return former ? { id: former.id, deleted: former.deleted } : null;
+    },
+
+    /** Who wrote a post, or null when no row has the id. */
+    async postAuthor(postId: string): Promise<string | null> {
+      const [row] = await rows<{ author_id: string }>(sql`select author_id from posts where id = ${postId}::uuid`);
+      return row?.author_id ?? null;
+    },
+
+    /** A post's author, its state and the post it quotes, or null when no row has the id. Nothing is locked. */
+    async postRef(postId: string): Promise<{ authorId: string; state: StoredPostState; quoteOfId: string | null } | null> {
+      const [row] = await rows<{ author_id: string; state: StoredPostState; quote_of_id: string | null }>(
+        sql`select author_id, state, quote_of_id from posts where id = ${postId}::uuid`,
+      );
+      return row ? { authorId: row.author_id, state: row.state, quoteOfId: row.quote_of_id } : null;
     },
 
     // ------------------------------------------------------------ deletion
