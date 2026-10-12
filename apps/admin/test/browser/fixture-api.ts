@@ -808,6 +808,8 @@ export function createFixtureApi() {
           protectionLifted: { total: 1, items: [{ at: iso(now - 3 * HOUR), handle: HOSTILE.img, caseId: CASE_FROZEN, kind: "dismissed" }] },
           sealsDeclined: { total: declined.length, items: declined },
           interimSeals: { total: seals.length, items: seals },
+          // Two due rules are late, so the home screen shows its line for late erasures with the runbook's sentence.
+          erasureOverdue: { caseEvidence: 0, intakeRecords: 0, statements: 0, redactions: 0, images: 60, drafts: 0, accessLog: 0, contacts: 2 },
         }),
       };
     }

@@ -9,6 +9,7 @@ import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
 import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, PROTECTION_LIFTED_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES } from "../../src/messages";
+import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
 import { SIGN_IN_WINDOW_MS } from "../../src/signins";
@@ -362,6 +363,18 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await shown(page.locator("ul.signins"));
     await shown(page.locator("ul.keys"));
     await shown(page.getByRole("cell", { name: "This session" }));
+    await texts();
+    await clean();
+  });
+
+  test("home says which erasures are more than a day late, with the runbook's sentence, as an alert", async () => {
+    await page.getByRole("link", { name: "Home" }).click();
+    await shown(page.getByRole("heading", { name: "Home" }));
+    const late = page.getByRole("alert").filter({ hasText: "Erasures more than a day late" });
+    await shown(late);
+    expect(await late.innerText()).toBe(`Erasures more than a day late: image rows nothing retains: 60; notifiers' contacts and confirmations: 2. ${ERASURE_OVERDUE_RUNBOOK}`);
+    // A count of zero is not on the screen at all.
+    expect(await page.getByText("unconfirmed drafts").count()).toBe(0);
     await texts();
     await clean();
   });

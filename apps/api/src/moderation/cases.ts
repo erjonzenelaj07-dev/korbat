@@ -13,6 +13,7 @@ import {
   type CaseSnapshot,
   type CaseTarget,
   type CaseView,
+  type ErasureOverdue,
   type FindingRequest,
   type FindingResponse,
   type MediaSize,
@@ -49,6 +50,7 @@ import {
   imagesOpenedOn,
   insertAccess,
   interimSealsInForce,
+  lateErasures,
   liveAccount,
   livePost,
   mailAndReleaseCounts,
@@ -153,11 +155,42 @@ async function openableCase(deps: Pick<ModerationDeps, "apiDb">, session: Active
 /** The reading person as the review marks ask about them: the session's account, and whether its role is admin. */
 export const reviewerOf = (session: ActiveStaffSession) => ({ id: session.userId, admin: session.role === "admin" });
 
+/** How long the overview's late erasures are kept before they are read again. */
+export const ERASURE_OVERDUE_TTL_MS = 60_000;
+
+/** The late erasures last read on a pool, and when: one read serves every staff member's home screen for a minute. */
+const lateByPool = new WeakMap<object, { at: number; counts: Promise<ErasureOverdue> }>();
+
+/**
+ * The overview's erasureOverdue (3c design, section 7.3): one count for each due rule of what a step of the retention
+ * job or the auth janitor should have changed more than a day ago and has not. The image rows are the media module's to
+ * count and the notifiers' contacts the auth module's, since this module names neither.
+ *
+ * The counts are read at most once a minute for all staff, and a read in flight is shared: the count of late image rows
+ * reads the freeze once for each kept row of a frozen account's deleted posts (seconds at twenty thousand rows), which a
+ * home screen must not pay on every load, and both jobs run only every ten minutes, so a count a minute old says the
+ * same. A read that failed is not kept.
+ */
+export function erasureOverdue(deps: Pick<ModerationDeps, "apiDb" | "media" | "auth" | "now">): Promise<ErasureOverdue> {
+  const now = deps.now().getTime();
+  const kept = lateByPool.get(deps.apiDb);
+  if (kept && now >= kept.at && now - kept.at < ERASURE_OVERDUE_TTL_MS) return kept.counts;
+  const counts = (async (): Promise<ErasureOverdue> => {
+    const late = await lateErasures(deps.apiDb, RETENTION);
+    return { ...late, images: await deps.media.overdueDeletions(), contacts: await deps.auth.overdueContacts() };
+  })();
+  lateByPool.set(deps.apiDb, { at: now, counts });
+  counts.catch(() => {
+    if (lateByPool.get(deps.apiDb)?.counts === counts) lateByPool.delete(deps.apiDb);
+  });
+  return counts;
+}
+
 /**
  * GET /api/staff/overview: counts, times, staff handles and cases, for every staff member's home screen. One number is
  * the reading person's own: how many of the waiting appeals they may review.
  */
-export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config">, session: ActiveStaffSession): Promise<StaffOverview> {
+export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "media" | "auth" | "now">, session: ActiveStaffSession): Promise<StaffOverview> {
   const q = deps.apiDb;
   const byLane = await openByLane(q);
   const today = await staffToday(q);
@@ -174,6 +207,7 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config">, s
     mailsWaiting: mails.waiting,
     mailsFailed: mails.failed,
     releaseOverdue: mails.releaseOverdue,
+    erasureOverdue: await erasureOverdue(deps),
     deferUnproven: deps.config.MODERATION_DEFER_UNPROVEN === "on",
     // The three lists of the path for child sexual abuse material, which every staff member sees: what lifted the
     // protection of reported images, who chose not to seal, and which seals taken while deciding stand.

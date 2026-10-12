@@ -9,6 +9,7 @@ import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { insertAction, insertDecision } from "../../src/moderation/repo";
+import { deciderWorld, type DeciderWorld } from "../integration/moderation-decide";
 import {
   aPost,
   act,
@@ -26,6 +27,7 @@ import {
   type DecisionInput,
   type TestStaff,
 } from "../integration/moderation-fixtures";
+import { ageCase } from "../integration/retention-fixtures";
 import { newProfile } from "../integration/social-fixtures";
 import { rolledBack } from "../integration/staff-fixtures";
 
@@ -34,8 +36,9 @@ import { rolledBack } from "../integration/staff-fixtures";
  * it meets, measured against the real database with migration 0016. The lab issues the statements itself, as SQL: a
  * decision is its profile lock, its row and its ledger rows, whose triggers do the rest; a like, a follow, a deletion and
  * a purge are the statements the social and media repositories issue. Every measured transaction is rolled back, so the
- * lab writes no audit row and no decision that stays; the accounts and posts it commits for the two-session rounds and the
- * large accounts are removed at the end. It writes one line of JSON for each measurement, with how busy the machine's
+ * lab leaves no decision. Its one audit row is the R4 removal that the redaction's rounds need committed, which is a real,
+ * confirmed decision. The accounts and posts it commits for the two-session rounds and the large accounts are removed at
+ * the end. It writes one line of JSON for each measurement, with how busy the machine's
  * processors were just before it. Run it by hand (see README.md); no suite includes it.
  */
 
@@ -70,6 +73,8 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
   let mod: TestStaff;
   let admin: TestStaff;
   const committed: string[] = [];
+  /** The one thing the lab confirms with a real key: the R4 removal that the redaction's rounds make final again and again. */
+  let world: DeciderWorld | null = null;
 
   beforeAll(async () => {
     const config = loadConfig();
@@ -82,6 +87,7 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
   });
   afterAll(async () => {
     await removeFixtures(migrateDb, committed);
+    await world?.close();
     await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
   });
 
@@ -275,6 +281,72 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
         }
         line("contention", { decision: decisionName, against: otherName, rounds: ROUNDS, busyPercent: load, outcomes: counts, longestMs: Math.round(longest) });
       }
+    }
+  });
+
+  test("the R4 redaction against a decision that derives the post's level, a report that holds the post's images and a notice that locks them through the account: forty rounds each, both orders", async () => {
+    // Migration 0018's redaction takes its decision's case, then the post, then the post's images in id order, as
+    // moderation_apply and an intake do. A committed R4 removal, final for its author seven months ago, is redacted in a
+    // transaction that is rolled back, so every round finds it due again.
+    world = deciderWorld(apiDb);
+    const staff = await world.staff("moderator");
+    const [author, reporter] = [await newProfile(apiDb), await newProfile(apiDb)];
+    committed.push(author.id, reporter.id);
+    const postId = await newPostRow(apiDb, author.id);
+    for (const position of [0, 1, 2, 3]) await newImageRow(apiDb, author.id, postId, position);
+    const r4Case = (await intake(apiDb, ground.rule(reporter.id), aPost(postId))).items[0]!.caseId!;
+    const removal = await world.decideAs(staff, r4Case, { kind: "final", ruleId: "R4", actions: [act("remove")] });
+    if (typeof removal === "string") throw new Error(`the lab's R4 removal was not recorded: ${removal}`);
+    await ageCase(migrateDb, r4Case, "7 months");
+    // A second, open case of the same post, on which the other side decides: its measure derives the post's level.
+    const openCase = (await report(apiDb, aPost(postId))).caseId;
+    const withhold = await decisionParams(apiDb, staff, openCase, { kind: "interim", actions: [act("withhold")] });
+    const pause = (tx: DbTx) => tx.execute(sql`select pg_sleep(0.015)`);
+
+    const redaction = async (tx: DbTx) => {
+      const [row] = (await tx.execute(sql`select public.redact_r4_body(${removal.decisionId}::uuid) as done`)) as unknown as { done: boolean }[];
+      if (!row!.done) throw new Error("the redaction changed nothing");
+    };
+    const others: Record<string, (tx: DbTx) => Promise<unknown>> = {
+      "interim withhold on the post's other case (moderation_apply)": (tx) => decisionWith(tx, staff, author.id, openCase, withhold),
+      "report under a rule, which holds the post's images": async (tx) => {
+        await intake(tx, ground.rule((await newProfile(tx as unknown as Db)).id), aPost(postId));
+      },
+      "notice naming the post and its author's account, which locks the images through both": async (tx) => {
+        await intake(tx, ground.csam(), [aPost(postId, 1), anAccount(author.id, author.handle, 2)]);
+      },
+    };
+
+    const ROUNDS = 40;
+    const load = await busy();
+    const single = await timed(() => rolledBack(apiDb, redaction));
+    line("redaction alone", { images: 4, busyPercent: load, ms: single });
+    for (const [otherName, other] of Object.entries(others)) {
+      const counts: Record<string, number> = {};
+      let longest = 0;
+      for (let round = 0; round < ROUNDS; round++) {
+        const side = (fn: (tx: DbTx) => Promise<unknown>, delay: number) => async () => {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          const start = performance.now();
+          const outcome = await rolledBack(apiDb, async (tx) => {
+            await fn(tx);
+            await pause(tx);
+          }).then(
+            () => "ok",
+            (err: unknown) => {
+              const fromDatabase = raised(err);
+              return fromDatabase ? `${fromDatabase.code} ${fromDatabase.message}` : (err as { code?: string }).code ?? String(err);
+            },
+          );
+          longest = Math.max(longest, performance.now() - start);
+          return outcome;
+        };
+        // Each side starts first in half the rounds, a few milliseconds ahead.
+        const ahead = Math.floor(Math.random() * 8);
+        const [a, b] = await Promise.all(round % 2 === 0 ? [side(redaction, 0)(), side(other, ahead)()] : [side(redaction, ahead)(), side(other, 0)()]);
+        for (const [who, outcome] of [["redaction", a], ["other", b]] as const) counts[`${who}: ${outcome}`] = (counts[`${who}: ${outcome}`] ?? 0) + 1;
+      }
+      line("redaction contention", { redaction: "redact_r4_body of a post removal", against: otherName, rounds: ROUNDS, busyPercent: load, outcomes: counts, longestMs: Math.round(longest) });
     }
   });
 });

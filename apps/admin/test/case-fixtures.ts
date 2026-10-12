@@ -371,6 +371,7 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     mailsWaiting: { receipts: 0, authorMails: 0, outcomes: 0 },
     mailsFailed: { receipts: 0, authorMails: 0, outcomes: 0 },
     releaseOverdue: 0,
+    erasureOverdue: { caseEvidence: 0, intakeRecords: 0, statements: 0, redactions: 0, images: 0, drafts: 0, accessLog: 0, contacts: 0 },
     deferUnproven: false,
     protectionLifted: { total: 0, items: [] },
     sealsDeclined: { total: 0, items: [] },

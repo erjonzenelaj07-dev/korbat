@@ -24,6 +24,24 @@ export type { StoredFile } from "./files";
 export type { CaseReach, HeldImage, HoldPair } from "./repo";
 export type { SweepReport } from "./sweeper";
 
+/** One attached image row as text-verify reads it: its id, its post, its stored moderation state and when its content was erased. */
+export interface ImageModerationState {
+  id: string;
+  postId: string;
+  moderationState: "visible" | "withheld" | "removed" | "sealed";
+  erasedAt: Date | null;
+}
+
+/**
+ * Up to `limit` image rows that are on a post and whose id is greater than `afterId` (from the start when it is null),
+ * in id order (3c design, section 5). Built on the media repository over the pool it is given, with no files and no
+ * configuration: its only caller is `staff.js text-verify`, which opens database URLs alone and, like every file outside
+ * this module, may not name the image table itself.
+ */
+export function imageModerationStates(apiDb: Db, afterId: string | null, limit: number): Promise<ImageModerationState[]> {
+  return createMediaRepo(apiDb).moderationStates(afterId, limit);
+}
+
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
   /**

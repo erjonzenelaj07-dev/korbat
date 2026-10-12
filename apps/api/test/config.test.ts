@@ -69,6 +69,17 @@ describe("loadConfig", () => {
         expect(() => loadConfig({ ...good, MODERATION_DISPATCH_HOUR: refused }), refused).toThrow(/MODERATION_DISPATCH_HOUR/);
       }
     });
+    test("MODERATION_RETENTION is on unless set to off; a blank value is on and nothing else is taken", () => {
+      expect(loadConfig(good).MODERATION_RETENTION).toBe("on");
+      // Compose passes an empty line of infra/.env as an empty value: a blank must never read as "off", which stops every erasure.
+      for (const blank of ["", " ", "   "]) expect(loadConfig({ ...good, MODERATION_RETENTION: blank }).MODERATION_RETENTION, JSON.stringify(blank)).toBe("on");
+      expect(loadConfig({ ...good, MODERATION_RETENTION: "on" }).MODERATION_RETENTION).toBe("on");
+      expect(loadConfig({ ...good, MODERATION_RETENTION: "off" }).MODERATION_RETENTION).toBe("off");
+      for (const refused of ["yes", "no", "true", "false", "1", "0", "ON", "Off", "paused"]) {
+        expect(() => loadConfig({ ...good, MODERATION_RETENTION: refused }), refused).toThrow(/MODERATION_RETENTION/);
+      }
+    });
+
     test("MODERATION_DEFER_UNPROVEN is off unless set to on; a blank value is the default and nothing else is taken", () => {
       expect(loadConfig(good).MODERATION_DEFER_UNPROVEN).toBe("off");
       expect(loadConfig({ ...good, MODERATION_DEFER_UNPROVEN: "" }).MODERATION_DEFER_UNPROVEN).toBe("off");

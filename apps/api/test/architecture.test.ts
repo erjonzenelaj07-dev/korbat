@@ -200,6 +200,8 @@ const REQUEST_DELETION = {
   "media/flows/remove.ts": 1,
   "media/index.ts": 5,
   "media/sweeper.ts": 2,
+  // The retention job, which asks for a batch's files after the commit of the transaction that deleted their rows.
+  "moderation/retention.ts": 1,
   "social/context.ts": 1,
   "social/flows/posts.ts": 1,
 };
@@ -272,9 +274,9 @@ describe("the freeze's source pins", () => {
     // A second request in the purge's flow, and a first one in a file that had none.
     const withCallers = real
       .map((file) => (file.path === "account/flows/deletion.ts" ? { ...file, source: `${file.source}\nawait deps.media.requestDeletion(kept);` } : file))
-      .concat([{ path: "moderation/retention.ts", source: "await deps.media.requestDeletion(ids);" }]);
+      .concat([{ path: "moderation/decide.ts", source: "await deps.media.requestDeletion(ids);" }]);
     expect(mentions(withCallers, "requestDeletion")).not.toEqual(REQUEST_DELETION);
-    expect(mentions(withCallers, "requestDeletion")).toMatchObject({ "account/flows/deletion.ts": 2, "moderation/retention.ts": 1 });
+    expect(mentions(withCallers, "requestDeletion")).toMatchObject({ "account/flows/deletion.ts": 2, "moderation/decide.ts": 1 });
     // A fourth opener of the store's files.
     const withOpener = real.concat([{ path: "staff/cases.ts", source: 'const file = await files.openImage(id, "large");' }]);
     expect(mentions(withOpener, "openImage")).not.toEqual(OPEN_IMAGE);

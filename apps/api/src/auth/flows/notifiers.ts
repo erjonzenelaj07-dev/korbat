@@ -116,7 +116,7 @@ export interface NotifierFacts {
 }
 
 /** A contact's ciphertexts open under the key, or under a key it replaced. Nothing read is ever written back under the newer key. */
-const open = (deps: AuthDeps, payload: string): string => decrypt(payload, [deps.config.notifierKey, ...deps.config.notifierPreviousKeys]).toString("utf8");
+const open = (deps: Pick<AuthDeps, "config">, payload: string): string => decrypt(payload, [deps.config.notifierKey, ...deps.config.notifierPreviousKeys]).toString("utf8");
 const seal = (deps: AuthDeps, plain: string): string => encrypt(Buffer.from(plain, "utf8"), deps.config.notifierKey);
 
 /** The same day `months` calendar months later in UTC; a day the target month lacks becomes that month's last day. */
@@ -388,7 +388,7 @@ export function forgetNotifierAfter(deps: AuthDeps, contactIds: readonly string[
 }
 
 /** The contacts that gave this address, with the names they gave: for an access request from a signed-out notifier, from the command line only. */
-export async function findNotifierContacts(deps: AuthDeps, email: string): Promise<{ id: string; name: string | null }[]> {
+export async function findNotifierContacts(deps: Pick<AuthDeps, "repo" | "config">, email: string): Promise<{ id: string; name: string | null }[]> {
   const rows = await deps.repo.notifierContactsByEmailHash(emailHash(deps.config.authHmacKey, email));
   return rows.map((row) => ({ id: row.id, name: row.nameEnc ? open(deps, row.nameEnc) : null }));
 }

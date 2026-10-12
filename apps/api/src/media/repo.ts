@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { mediaPath } from "@korbat/contracts";
 import { postMedia, posts, profiles, type Db, type DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
@@ -393,6 +393,22 @@ export function createMediaRepo(db: Db) {
         where m.id = ${id}::uuid`)) as unknown as { post_id: string; status: MediaRow["status"]; width: number | null; height: number | null; moderation_state: MediaRow["moderationState"]; erased: boolean; frozen: boolean }[];
       if (!row) return null;
       return { postId: row.post_id, status: row.status, width: row.width, height: row.height, mediaState: row.moderation_state, erased: row.erased, frozen: row.frozen };
+    },
+
+    /**
+     * A page of the image rows that are on a post, in id order after `afterId` (from the start when it is null): each
+     * one's id, its post, its stored moderation state and when its content was erased. It locks nothing and gives nothing
+     * of an image itself. The staff command line's text-verify reads every such row through it, a page at a time, to
+     * hold the stored states to what the ledger of measures says they must be.
+     */
+    async moderationStates(afterId: string | null, limit: number): Promise<{ id: string; postId: string; moderationState: MediaRow["moderationState"]; erasedAt: Date | null }[]> {
+      const found = await db
+        .select({ id: postMedia.id, postId: postMedia.postId, moderationState: postMedia.moderationState, erasedAt: postMedia.erasedAt })
+        .from(postMedia)
+        .where(and(isNotNull(postMedia.postId), afterId === null ? undefined : gt(postMedia.id, afterId)))
+        .orderBy(postMedia.id)
+        .limit(limit);
+      return found.map((row) => ({ id: row.id, postId: row.postId!, moderationState: row.moderationState, erasedAt: row.erasedAt }));
     },
 
     /**

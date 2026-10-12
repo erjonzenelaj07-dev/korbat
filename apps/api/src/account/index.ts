@@ -8,6 +8,7 @@ import type { AuthForAccount } from "../auth";
 import type { AppEnv } from "../env";
 import type { JobLock } from "../lib/jobs";
 import type { MediaForAccount } from "../media";
+import type { ModerationForAccount } from "../moderation";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForAccount } from "../social";
 import type { AccountDeps } from "./context";
@@ -22,6 +23,8 @@ export interface CreateAccountOptions {
   auth: AuthForAccount;
   social: SocialForAccount;
   media: MediaForAccount;
+  /** The moderation module's interface for this one: moderation.forAccount. Without it the purge forgets no report's sender. */
+  moderation?: ModerationForAccount;
   /** The auth module's requireSession: an onboarded account with CSRF and Origin checked. */
   requireSession: MiddlewareHandler<AppEnv>;
   /** The auth module's requireFreshAuth: a credential proven in the last five minutes, which the export needs. */
@@ -39,6 +42,7 @@ export function createAccount(options: CreateAccountOptions) {
     auth: options.auth,
     social: options.social,
     media: options.media,
+    moderation: options.moderation,
     limits: options.rateLimitStore,
     log: options.logger,
     now: options.now ?? (() => new Date()),

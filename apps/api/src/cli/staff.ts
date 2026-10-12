@@ -7,6 +7,18 @@
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js revoke <email> <key id>|all
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-head
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-verify [<chain_seq>:<hash> ...]
+ *   docker compose -f infra/compose.yml run --rm api node dist/staff.js text-verify
+ *   docker compose -f infra/compose.yml run --rm api node dist/staff.js access-request <@handle | email>
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js link|unlink <staff email> <personal handle>
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js limits <five numbers>
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js account-facts <handle> <case id>
+ *
+ * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
+ * staff member's personal accounts for the recusal check, limits sets the limits on staff, and account-facts prints an
+ * account's address for a report to the police: each as the migrator, in the migrate service. text-verify holds what the
+ * record names, and what posts and images show, to the record, on the API's role. access-request drafts the moderation
+ * part of an answer to a GDPR access request in the API service, whose whole configuration it reads: a notifier's
+ * contact is found and opened only with the API's keys.
  *
  * enroll prints a one-time link that registers one staff key for a live staff account with a handle; the database lets
  * only the migrator issue one. keys lists an account's staff keys, or every staff account with its keys, for the
@@ -29,17 +41,28 @@ import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-o
 import { z } from "zod";
 import { Email, STAFF_STEP_UP_ACTIONS, STAFF_STEP_UP_CHALLENGE, StaffStoredAssertion, stepUpActionHash, stepUpBindingText } from "@korbat/contracts";
 import { auditHead, auditLog, authEvents, closeDb, createDb, profiles, staffEnrollments, staffKeys, users, type Db, type DbTx } from "@korbat/db";
-import { SYSTEM_ACTOR_ID, createAuthRepo, revokeStaffKeys, verifyRecordedAssertion, type StaffKeysRevokedReport } from "../auth";
-import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl, mailFrom, smtpUrl } from "../config";
+import { SYSTEM_ACTOR_ID, createAuthRepo, notifierContactsFor, revokeStaffKeys, verifyRecordedAssertion, type StaffKeysRevokedReport } from "../auth";
+import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl, loadConfig, mailFrom, smtpUrl } from "../config";
 import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 import { mailerFor, type CommandLineMailSettings } from "./mail";
+import { accessRequest, accountFacts, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
 
 export const STAFF_USAGE = [
   "usage: node dist/staff.js <command>",
   "  enroll <email>                         print a one-time link, valid 30 minutes, that registers one staff key for the account;",
   "                                         run it in the migrate service: docker compose -f infra/compose.yml run --rm migrate node dist/staff.js enroll <email>",
-  "  keys [<email>]                         list the account's staff keys, or every staff account with its role, address, handle and keys",
+  "  keys [<email>]                         list the account's staff keys, or every staff account with its role, address, handle, keys",
+  "                                         and the number of personal accounts linked to it",
+  "  text-verify                            check that every text and snapshot a confirmed row names is held or erased, every decision",
+  "                                         against its row, and every post's level and image's state against the ledger of measures",
+  "  access-request <@handle | email>       draft the moderation part of an answer to a GDPR access request, as JSON; run it in the api service",
+  "  link <staff email> <personal handle>   record that the personal account is this staff member's own, for the recusal check;",
+  "  unlink <staff email> <personal handle> take that record back; both run in the migrate service, as enroll does",
+  "  limits <decisions per hour> <decisions per day> <case opens per day> <findings per day> <reveals per day>",
+  "                                         set the limits on staff; run it in the migrate service",
+  "  account-facts <handle> <case id>       print the handle, address and creation time of the account the case is about; run it in the",
+  "                                         migrate service",
   "  audit-head                             print the audit log's newest place, its hash and its time, to keep off the server",
   "  audit-verify [<chain_seq>:<hash> ...]  recompute the audit chain and check it against places kept before",
   "  revoke <email> <key id>                revoke that staff key and every staff session it opened, and mail its owner",
@@ -58,7 +81,23 @@ export type StaffCommand =
   | { command: "keys"; email: string | null }
   | { command: "audit-head" }
   | { command: "audit-verify"; kept: KeptPlace[] }
-  | { command: "revoke"; email: string; key: string | "all" };
+  | { command: "revoke"; email: string; key: string | "all" }
+  | { command: "text-verify" }
+  | { command: "access-request"; who: { handle: string } | { email: string } }
+  | { command: "link"; email: string; handle: string }
+  | { command: "unlink"; email: string; handle: string }
+  | { command: "limits"; limits: StaffLimits }
+  | { command: "account-facts"; handle: string; caseId: string };
+
+/** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
+const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
+/** A limit on staff: a whole number from 1, at most a million, written in digits alone. */
+const LIMIT = /^[1-9][0-9]{0,6}$/;
+
+function handleOf(arg: string): string {
+  if (!HANDLE.test(arg)) throw new Error(`not a handle: ${arg}\n${STAFF_USAGE}`);
+  return arg.replace(/^@/, "").toLowerCase();
+}
 
 /** A place as the keeper copies it: at most 15 digits, so it is always a safe integer, and a lower-case hex sha256. */
 const KEPT_PLACE = /^([1-9][0-9]{0,14}):([0-9a-f]{64})$/;
@@ -102,6 +141,32 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
           return { seq: Number(match[1]), hash: match[2]! };
         }),
       };
+    case "text-verify":
+      if (rest.length > 0) throw new Error(STAFF_USAGE);
+      return { command };
+    case "access-request": {
+      if (rest.length !== 1) throw new Error(STAFF_USAGE);
+      // An address has an at sign inside it; a handle has none, or one in front.
+      return { command, who: rest[0]!.lastIndexOf("@") > 0 ? { email: emailArg(rest[0]!) } : { handle: handleOf(rest[0]!) } };
+    }
+    case "link":
+    case "unlink":
+      if (rest.length !== 2) throw new Error(STAFF_USAGE);
+      return { command, email: emailArg(rest[0]!), handle: handleOf(rest[1]!) };
+    case "limits": {
+      if (rest.length !== 5) throw new Error(STAFF_USAGE);
+      const numbers = rest.map((arg) => {
+        if (!LIMIT.test(arg)) throw new Error(`not a limit: ${arg} (a limit is a whole number from 1 to 9999999)\n${STAFF_USAGE}`);
+        return Number(arg);
+      });
+      return { command, limits: { decisionsPerHour: numbers[0]!, decisionsPerDay: numbers[1]!, caseOpensPerDay: numbers[2]!, findingsPerDay: numbers[3]!, revealsPerDay: numbers[4]! } };
+    }
+    case "account-facts": {
+      if (rest.length !== 2) throw new Error(STAFF_USAGE);
+      const caseId = rest[1]!.toLowerCase();
+      if (!KEY_ID.test(caseId)) throw new Error(`not a case id: ${rest[1]} (the console shows a case's id in its address)\n${STAFF_USAGE}`);
+      return { command, handle: handleOf(rest[0]!), caseId };
+    }
     case undefined:
       throw new Error(STAFF_USAGE);
     default:
@@ -128,9 +193,10 @@ function readEnv<T extends z.ZodType>(schema: T, env: Record<string, string | un
 
 /**
  * The database URLs a command connects with: the API role's, and the auth role's for audit-verify and keys, which read the
- * staff keys there. enroll connects as the migrator alone and reads its settings with enrollSettings.
+ * staff keys there (keys also the number of links). text-verify reads on the API's role alone. enroll connects as the
+ * migrator alone and reads its settings with enrollSettings; link, unlink, limits and account-facts with migratorUrl.
  */
-export function staffDatabaseUrls(command: Exclude<StaffCommand, { command: "enroll" | "revoke" }>, env: Record<string, string | undefined>): { api: string; auth: string | null } {
+export function staffDatabaseUrls(command: Extract<StaffCommand, { command: "keys" | "audit-head" | "audit-verify" | "text-verify" }>, env: Record<string, string | undefined>): { api: string; auth: string | null } {
   if (command.command === "audit-verify" || command.command === "keys") {
     const urls = readEnv(AUDIT_VERIFY_ENV, env, command.command);
     return { api: urls.DATABASE_URL_API, auth: urls.DATABASE_URL_AUTH };
@@ -163,6 +229,13 @@ export function enrollSettings(env: Record<string, string | undefined>): EnrollS
   const settings = readEnv(ENROLL_ENV, env, "enroll");
   const consoleOrigin = settings.CONSOLE_ORIGIN!;
   return { migrate: settings.DATABASE_URL_MIGRATE, consoleOrigin, consoleRpId: settings.CONSOLE_RP_ID ?? consoleHostOf(consoleOrigin) };
+}
+
+/** What link, unlink, limits and account-facts read: the migrator's URL, which only the migrate service holds, and nothing else. */
+const MIGRATOR_ENV = z.object({ DATABASE_URL_MIGRATE: databaseUrl });
+
+export function migratorUrl(command: string, env: Record<string, string | undefined>): string {
+  return readEnv(MIGRATOR_ENV, env, command).DATABASE_URL_MIGRATE;
 }
 
 /**
@@ -701,6 +774,8 @@ export interface StaffKeysListing {
   email: string;
   role: string;
   handle: string | null;
+  /** How many personal accounts are linked to the account, never which (3c design, section 7.13). */
+  links: number;
   keys: {
     id: string;
     name: string;
@@ -716,7 +791,7 @@ export interface StaffKeysListing {
  * Runs `read` in a read-only transaction that waits at most 10 seconds for a lock, as every staff command waits: the API's
  * roles may lock any table they can update and hold it, and a command that gave up says so (LOCK_TIMEOUT_ADVICE).
  */
-function readOnly<T>(db: Pick<Db, "transaction">, read: (tx: Pick<Db, "select">) => Promise<T>): Promise<T> {
+function readOnly<T>(db: Pick<Db, "transaction">, read: (tx: Pick<Db, "select" | "execute">) => Promise<T>): Promise<T> {
   return db.transaction(
     async (tx) => {
       await tx.execute(sql`set local lock_timeout = '10s'`);
@@ -740,7 +815,10 @@ export async function listStaffKeys(db: { api: Pick<Db, "transaction">; auth: Pi
       .from(users)
       .where(and(isNull(users.deletedAt), email === null ? ne(users.role, "user") : sql`lower(${users.email}) = lower(${email})`))
       .orderBy(asc(users.email));
-    if (accounts.length === 0) return { accounts, keys: [] };
+    if (accounts.length === 0) return { accounts, keys: [], links: new Map<string, number>() };
+    // The links themselves are out of every role's reach but the migrator's: the auth role is told only how many each account has.
+    const counted = (await auth.execute(sql`select staff_user_id, links from auth.staff_link_counts()`)) as unknown as { staff_user_id: string; links: number }[];
+    const links = new Map(counted.map((row) => [row.staff_user_id, row.links]));
     const keys = await auth
       .select({
       id: staffKeys.id,
@@ -755,9 +833,9 @@ export async function listStaffKeys(db: { api: Pick<Db, "transaction">; auth: Pi
       .from(staffKeys)
       .where(inArray(staffKeys.userId, accounts.map((account) => account.id)))
       .orderBy(asc(staffKeys.createdAt), asc(staffKeys.id));
-    return { accounts, keys };
+    return { accounts, keys, links };
   });
-  const { accounts, keys } = read;
+  const { accounts, keys, links } = read;
   if (email !== null && accounts.length === 0) return null;
   if (accounts.length === 0) return [];
   const ids = accounts.map((account) => account.id);
@@ -767,6 +845,7 @@ export async function listStaffKeys(db: { api: Pick<Db, "transaction">; auth: Pi
   return accounts.map((account) => ({
     ...account,
     handle: handles.get(account.id) ?? null,
+    links: links.get(account.id) ?? 0,
     keys: keys.filter((key) => key.userId === account.id).map(({ userId: _owner, ...key }) => key),
   }));
 }
@@ -789,6 +868,8 @@ export function describeStaffKeys(listing: StaffKeysListing[]): string[] {
           `last used ${key.lastUsedAt ? key.lastUsedAt.toISOString() : "never"}, ${state}`,
       );
     }
+    // After the keys, so that an account's keys still follow its own line: the count the operator compares with their records.
+    lines.push(`  linked personal accounts: ${account.links}`);
   }
   return lines;
 }
@@ -847,6 +928,8 @@ export async function runStaffCommand(args: readonly string[], env: Record<strin
   }
   if (command.command === "enroll") return runEnroll(command.email, env, out);
   if (command.command === "revoke") return runRevoke(command.email, command.key, env, out);
+  if (command.command === "link" || command.command === "unlink" || command.command === "limits" || command.command === "account-facts") return runAsMigrator(command, env, out);
+  if (command.command === "access-request") return runAccessRequest(command.who, env, out);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -867,6 +950,14 @@ export async function runStaffCommand(args: readonly string[], env: Record<strin
       }
       out.log(`${head.place.seq}:${head.place.hash} ${head.createdAt ? head.createdAt.toISOString() : "(the audit log is empty)"}`);
       return 0;
+    }
+    if (command.command === "text-verify") {
+      const report = await textVerifyOn(apiDb);
+      for (const line of describeTextReport(report)) {
+        if (report.ok) out.log(line);
+        else out.error(line);
+      }
+      return report.ok ? 0 : 1;
     }
     if (command.command === "keys") {
       const listing = await listStaffKeys({ api: apiDb, auth: authDb! }, command.email);
@@ -914,6 +1005,68 @@ async function runEnroll(email: string, env: Record<string, string | undefined>,
     return 1;
   } finally {
     await closeDb(migrateDb);
+  }
+}
+
+// ---------------------------------------------------------------- the commands for moderation cases
+
+/** link, unlink, limits and account-facts, on the migrator's own connection: the URL first, so a missing one connects to nothing. */
+async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | "unlink" | "limits" | "account-facts" }>, env: Record<string, string | undefined>, out: Output): Promise<number> {
+  let url: string;
+  try {
+    url = migratorUrl(command.command, env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    let done: Changed;
+    if (command.command === "limits") done = await setLimits(migrateDb, command.limits);
+    else if (command.command === "account-facts") done = await accountFacts(migrateDb, command.handle, command.caseId);
+    else done = await changeLink(migrateDb, command.email, command.handle, command.command === "unlink");
+    if (!done.ok) {
+      out.error(`${command.command}: ${done.problem}`);
+      return 1;
+    }
+    for (const line of done.lines) out.log(line);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
+  }
+}
+
+/**
+ * access-request, in the API service: it reads the API's whole configuration, as the API does, because a notifier's
+ * contact is found by a keyed hash of the address and its name opened with the notifier key, both the API's secrets. The
+ * draft is printed as JSON on standard output, for the operator, and on nothing else.
+ */
+async function runAccessRequest(who: { handle: string } | { email: string }, env: Record<string, string | undefined>, out: Output): Promise<number> {
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig(env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const apiDb = createDb(config.DATABASE_URL_API, { max: 1 });
+  const authDb = createDb(config.DATABASE_URL_AUTH, { max: 1 });
+  try {
+    const drafted = await accessRequest(apiDb, config.APP_ORIGIN, who, (email) => notifierContactsFor(authDb, config, email));
+    if (!drafted.ok) {
+      out.error(`access-request: ${drafted.problem}; nothing was drafted`);
+      return 1;
+    }
+    out.log(JSON.stringify(drafted.draft, null, 2));
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `access-request: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await Promise.allSettled([closeDb(apiDb), closeDb(authDb)]);
   }
 }
 

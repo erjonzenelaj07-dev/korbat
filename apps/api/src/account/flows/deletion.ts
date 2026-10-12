@@ -9,7 +9,9 @@ export function startDeletion(deps: AccountDeps, session: Session, ctx: RequestC
 
 /**
  * Steps 2 to 4 of section 7.6, for an account the auth module has marked deleted: the social purge,
- * with the image rows detached and their files asked for inside its transaction; then the auth row's
+ * with the image rows detached and their files asked for inside its transaction; then the forgetting
+ * of the reports the account sent (3c design, section 7.10: the database acts only on an account whose
+ * auth row is marked deleted, which the take-down did before any step here); then the auth row's
  * anonymisation. The files are asked for before the commit, not after it: were the process to stop
  * between a commit and the request, a rerun would find no rows left, mark the account purged and
  * leave the files to the sweeper's reconcile pass, which refuses to act on many orphans at once. A
@@ -22,6 +24,9 @@ export async function purge(deps: AccountDeps, userId: string): Promise<void> {
   await deps.social.purgeProfile(userId, deps.now(), async (tx) => {
     await deps.media.requestDeletion(await deps.media.purgeOwner(tx, userId));
   });
+  // After the profile is marked deleted and before the account counts as purged: a failure here leaves the purge pending,
+  // and its rerun, like every step's, changes nothing that is already done.
+  await deps.moderation?.forgetAccount(userId);
   await deps.auth.finishPurge(userId);
 }
 

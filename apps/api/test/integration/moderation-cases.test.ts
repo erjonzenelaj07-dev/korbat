@@ -164,6 +164,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         mailed.push(message);
         return 3;
       },
+      // The overview asks how many contacts the janitor is late with (its erasureOverdue): none here.
+      overdueContacts: async () => 0,
     } as unknown as AuthForModeration;
     const deps = moderationDeps(tx, { auth, ...overrides });
     return { deps, contacts, mailed };

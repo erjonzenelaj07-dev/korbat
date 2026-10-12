@@ -59,7 +59,8 @@ const stopJanitor = auth.startJanitor(jobLock);
 // notifier's contact and every mail through the auth module's. Its limits count in the store the per-IP limit uses, and
 // the routes of an account's own decisions and reports stand behind the auth module's session guard.
 const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, requireSession: auth.requireSession, rateLimitStore, config, logger });
-// The dispatch job: the staff alerts that are still due, the daily release of outcomes, and the mails that waited.
+// The dispatch job: the staff alerts that are still due, the daily release of outcomes, and the mails that waited. And the
+// retention job, unless MODERATION_RETENTION switched it off: what is due is erased, and kept image rows nothing retains go.
 const stopModeration = moderation.startJobs(jobLock);
 
 const social = createSocial({
@@ -82,6 +83,8 @@ const account = createAccount({
   auth: auth.forAccount,
   social: social.forAccount,
   media: media.forAccount,
+  // The purge forgets that the deleted account sent its reports, which the moderation module's tables hold.
+  moderation: moderation.forAccount,
   requireSession: auth.requireSession,
   requireFreshAuth: auth.requireFreshAuth(),
   requireStrongFreshAuth: auth.requireStrongFreshAuth(),

@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { AuthForAccount } from "../auth";
 import type { MediaForAccount } from "../media";
+import type { ModerationForAccount } from "../moderation";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForAccount } from "../social";
 
@@ -41,6 +42,11 @@ export interface AccountDeps {
   auth: AuthForAccount;
   social: SocialForAccount;
   media: MediaForAccount;
+  /**
+   * The purge's forgetting of a deleted account's reports, in the moderation module's tables (3c design, section 7.10).
+   * The server always hands it over; a test of the other steps may leave it out, and the purge then skips that step.
+   */
+  moderation?: ModerationForAccount;
   limits: RateLimitStore;
   log: Logger;
   now: () => Date;

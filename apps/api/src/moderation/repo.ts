@@ -1972,3 +1972,112 @@ export async function waitingCases(q: Runner, now: Date): Promise<{ lanes: { lan
   );
   return { lanes: found.map((row) => ({ lane: row.lane, count: row.n, oldest: new Date(row.oldest) })), interim: held!.n };
 }
+
+// ---------------------------------------------------------------- retention
+
+/**
+ * The SQL of the retention job and of the overview's late erasures (3c design, sections 6.4, 7.3 and 7.9). Every time is
+ * the database's own: each erase function checks its due rule against the database's now(), so the job asks with the same
+ * clock, and one clock decides what is due. The periods are the contracts' RETENTION, handed over as numbers.
+ *
+ * The candidates are read from the partial indexes that hold only what is left to erase, so a round's work follows what
+ * is left, never every case ever closed. The freeze is read here only to keep a case that holds nothing but snapshots of
+ * a frozen post out of the candidates: for every snapshot the one function that erases one decides.
+ */
+
+/** The cases that hold a row erase_case_evidence would change: an unerased snapshot that is not of a frozen post, an unerased note or draft, an appeal statement, or an unreleased hold. */
+const CANDIDATE_CASES = sql`
+  select s.case_id from evidence_snapshots s where s.erased_at is null and not (s.target_type = 'post' and public.post_frozen(s.target_id))
+  union select t.case_id from staff_texts t where t.confirmed_at is null and t.erased_at is null
+  union select d.case_id from appeals a join decisions d on d.id = a.decision_id where a.statement is not null
+  union select h.case_id from media_holds h where h.released_at is null`;
+
+/** A final decision citing R4 that is not redacted yet and one of whose R4 measures is in force, as `d`. */
+const REDACTABLE = sql`d.kind = 'final' and d.rule_id = 'R4' and d.redacted_at is null
+  and exists (select 1 from measures_in_force m where m.decision_id = d.id and m.kind in ('remove', 'remove_media', 'reset_bio', 'reset_display_name'))`;
+
+/** A decision one of whose statement texts is unerased, as `d`, joined to the profile `p` of its case's subject. */
+const STATEMENT_HELD = sql`from decisions d
+  join cases c on c.id = d.case_id
+  join profiles p on p.id = case when c.target_type = 'account' then c.target_id else (select x.author_id from posts x where x.id = c.target_id) end
+  where exists (select 1 from staff_texts t where t.digest in (d.facts_digest, d.reason_digest, d.legal_reference_digest) and t.erased_at is null)`;
+
+/** The candidate cases whose evidence is due now, in id order. */
+export async function dueCases(q: Runner): Promise<string[]> {
+  const found = await rows<{ id: string }>(q, sql`select k.case_id as id from (${CANDIDATE_CASES}) k where public.case_evidence_due_at(k.case_id) <= now() order by 1`);
+  return found.map((row) => row.id);
+}
+
+/** The unerased intakes whose record is due now. None is due before `days` days after it was received, which the index is read by. */
+export async function dueIntakes(q: Runner, days: number): Promise<string[]> {
+  const found = await rows<{ id: string }>(
+    q,
+    sql`select n.id from intakes n where n.erased_at is null and n.received_at <= now() - make_interval(days => ${days}::int) and public.intake_due_at(n.id) <= now() order by n.received_at, n.id`,
+  );
+  return found.map((row) => row.id);
+}
+
+/** The R4 decisions that are final for their author and not redacted yet. The redaction itself answers false for one whose post is frozen. */
+export async function dueRedactions(q: Runner): Promise<string[]> {
+  const found = await rows<{ id: string }>(q, sql`select d.id from decisions d where ${REDACTABLE} and public.decision_final_at(d.id) <= now() order by d.decided_at, d.id`);
+  return found.map((row) => row.id);
+}
+
+/** The decisions that still hold a statement text and whose subject's profile was deleted at least `months` months ago. */
+export async function dueStatements(q: Runner, months: number): Promise<string[]> {
+  const found = await rows<{ id: string }>(q, sql`select d.id ${STATEMENT_HELD} and p.deleted_at <= now() - make_interval(months => ${months}::int) order by d.decided_at, d.id`);
+  return found.map((row) => row.id);
+}
+
+const changedBy = async (q: Runner, call: ReturnType<typeof sql>): Promise<number> => (await rows<{ n: number }>(q, sql`select ${call} as n`))[0]!.n;
+
+/** Deletes the drafts nobody confirmed that are older than `hours` hours; never a note, a recorded choice not to seal or a confirmed text. */
+export const sweepStaffTexts = (q: Runner, hours: number) => changedBy(q, sql`public.sweep_staff_texts(now() - make_interval(hours => ${hours}::int))`);
+/** Erases a due case's snapshots (never one of a frozen post), notes, drafts and appeal statements, and releases its holds. */
+export const eraseCaseEvidence = (q: Runner, caseId: string) => changedBy(q, sql`public.erase_case_evidence(${caseId}::uuid)`);
+/** Erases a due intake's record: its explanation, its cited law, who sent it and its re-examinations' statements. */
+export const eraseIntake = (q: Runner, intakeId: string) => changedBy(q, sql`public.erase_intake(${intakeId}::uuid)`);
+/** Erases the statement texts of a decision whose subject's account has been deleted for 12 months. */
+export const eraseStatementTexts = (q: Runner, decisionId: string) => changedBy(q, sql`public.erase_statement_texts(${decisionId}::uuid)`);
+/** Deletes the access rows older than `months` months, erasing first the reveal reasons they name. */
+export const deleteAccessLog = (q: Runner, months: number) => changedBy(q, sql`public.delete_access_log(now() - make_interval(months => ${months}::int))`);
+/** Forgets that a deleted account sent its reports; 0 for an account whose auth row is not marked deleted. */
+export const forgetReporter = (q: Runner, accountId: string) => changedBy(q, sql`public.forget_reporter(${accountId}::uuid)`);
+
+/** Makes an R4 restriction's erasure final; false when it changed nothing (its post is frozen, or another round was faster). */
+export async function redactR4(q: Runner, decisionId: string): Promise<boolean> {
+  return (await rows<{ done: boolean }>(q, sql`select public.redact_r4_body(${decisionId}::uuid) as done`))[0]!.done;
+}
+
+/** The overview's late erasures that this module's tables answer: what each step should have changed more than a day ago. */
+export interface LateErasures {
+  caseEvidence: number;
+  intakeRecords: number;
+  statements: number;
+  redactions: number;
+  drafts: number;
+  accessLog: number;
+}
+
+/**
+ * How much each due rule is late by more than a day. A case that holds only snapshots of a frozen post is no candidate
+ * and never counted, and a redaction whose post is frozen would change nothing now, so it is not counted either: both
+ * wait for an admin's answer, not for the job.
+ */
+export async function lateErasures(q: Runner, periods: { intakeDays: number; statementMonths: number; draftHours: number; accessLogMonths: number }): Promise<LateErasures> {
+  const [row] = await rows<{ case_evidence: number; intake_records: number; statements: number; redactions: number; drafts: number; access_log: number }>(
+    q,
+    sql`select
+      (select count(*)::int from (${CANDIDATE_CASES}) k where public.case_evidence_due_at(k.case_id) < now() - interval '1 day') as case_evidence,
+      (select count(*)::int from intakes n
+        where n.erased_at is null and n.received_at <= now() - make_interval(days => ${periods.intakeDays}::int) and public.intake_due_at(n.id) < now() - interval '1 day') as intake_records,
+      (select count(*)::int ${STATEMENT_HELD} and p.deleted_at < now() - make_interval(months => ${periods.statementMonths}::int) - interval '1 day') as statements,
+      (select count(*)::int from decisions d join cases c on c.id = d.case_id
+        where ${REDACTABLE} and public.decision_final_at(d.id) < now() - interval '1 day'
+          and not (c.target_type = 'post' and public.post_frozen(c.target_id))) as redactions,
+      (select count(*)::int from staff_texts t
+        where t.kind not in ('note', 'seal_declined') and t.confirmed_at is null and t.created_at < now() - make_interval(hours => ${periods.draftHours}::int) - interval '1 day') as drafts,
+      (select count(*)::int from case_access_log l where l.at < now() - make_interval(months => ${periods.accessLogMonths}::int) - interval '1 day') as access_log`,
+  );
+  return { caseEvidence: row!.case_evidence, intakeRecords: row!.intake_records, statements: row!.statements, redactions: row!.redactions, drafts: row!.drafts, accessLog: row!.access_log };
+}

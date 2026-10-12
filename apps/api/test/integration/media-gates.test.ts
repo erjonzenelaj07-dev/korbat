@@ -88,6 +88,7 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   staffAccess: { is: "reader" },
   dropDisposable: { is: "deleter" },
   overdueDeletions: { is: "neither", why: "answers how many rows the disposal should have taken by now" },
+  moderationStates: { is: "neither", why: "answers each attached row's id, post, stored state and erasure time to text-verify, and nothing of an image itself" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 

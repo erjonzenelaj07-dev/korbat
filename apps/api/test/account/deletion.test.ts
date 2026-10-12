@@ -275,3 +275,51 @@ describe("the purge job", () => {
     expect(await lock.acquire("job:account-purge", "other", 10_000)).toBe(true);
   });
 });
+
+describe("the purge and the reports the account sent (3c design, section 7.10)", () => {
+  /** The harness with the moderation module's interface for this one: the forgetting is logged with the other calls, and can be made to fail. */
+  function withModeration() {
+    const h = harness();
+    const forgotten: string[] = [];
+    const failing = new Set<string>();
+    h.deps.moderation = {
+      forgetAccount: async (userId) => {
+        h.calls.push("moderation.forgetAccount");
+        if (failing.delete(userId)) throw new Error("the forgetting failed");
+        forgotten.push(userId);
+      },
+    };
+    return { ...h, forgotten, failingForget: failing };
+  }
+
+  test("the reporter links are forgotten after the social purge has committed and before the account counts as purged", async () => {
+    const h = withModeration();
+    const ada = h.account({ deletedAt: new Date(T0 - 60_000), images: [randomUUID()] });
+    await purge(h.deps, ada.userId);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(1)", "social.commit", "moderation.forgetAccount", "auth.finishPurge"]);
+    expect(h.forgotten).toEqual([ada.userId]);
+    expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
+  });
+
+  test("a forgetting that fails leaves the account pending, and the next run does every step again and finishes", async () => {
+    const h = withModeration();
+    const ada = h.account({ deletedAt: new Date(T0 - 60_000) });
+    h.failingForget.add(ada.userId);
+    await expect(purge(h.deps, ada.userId)).rejects.toThrow(/forgetting/);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(0)", "social.commit", "moderation.forgetAccount"]);
+    expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
+    expect(await h.deps.auth.pendingPurges()).toEqual([ada.userId]);
+    // The job's next round: the same steps, and this time the account is purged.
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0 });
+    expect(h.forgotten).toEqual([ada.userId]);
+    expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
+  });
+
+  test("the confirmation purges through the same steps: the owner's request answers once their reports are forgotten too", async () => {
+    const h = withModeration();
+    const ada = h.account();
+    await confirmDeletion(h.deps, ada.session, { flowId: "f", code: "123456", handle: "ada" });
+    expect(h.calls).toEqual(["auth.confirmDeletion", "social.purgeProfile", "media.purgeOwner", "media.requestDeletion(0)", "social.commit", "moderation.forgetAccount", "auth.finishPurge"]);
+    expect(h.forgotten).toEqual([ada.userId]);
+  });
+});

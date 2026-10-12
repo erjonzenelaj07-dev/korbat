@@ -253,14 +253,17 @@ export function moderationDeps(db: Runner, overrides: Partial<ModerationDeps> = 
 
 /**
  * The auth module's interface for a test that stores no contact and sends no mail: every member throws, so a flow that
- * reaches one fails its test instead of passing by accident. A test of the notice routes passes the real interface.
+ * reaches one fails its test instead of passing by accident. A test of the notice routes passes the real interface. One
+ * member answers: every read of the staff overview asks how many contacts the janitor is late with, and here none is.
  */
 export function noAuthForModeration(): AuthForModeration {
   return new Proxy({} as AuthForModeration, {
     get: (_target, member) =>
       typeof member !== "string" || member === "then"
         ? undefined
-        : () => {
+        : member === "overdueContacts"
+          ? async () => 0
+          : () => {
             throw new Error(`this test built the moderation module without the auth module, and ${member} was called`);
           },
   });

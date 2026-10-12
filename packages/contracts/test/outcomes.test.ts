@@ -254,6 +254,7 @@ describe("the home screen's three lists of the path for child sexual abuse mater
     mailsWaiting: { receipts: 0, authorMails: 0, outcomes: 0 },
     mailsFailed: { receipts: 0, authorMails: 0, outcomes: 0 },
     releaseOverdue: 0,
+    erasureOverdue: { caseEvidence: 0, intakeRecords: 0, statements: 0, redactions: 0, images: 0, drafts: 0, accessLog: 0, contacts: 0 },
     deferUnproven: false,
     protectionLifted: { total: 2, items: [{ at: "2026-10-04T09:00:00.000Z", handle: "mod_anna", caseId: "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a", kind: "unsealed" }] },
     sealsDeclined: { total: 1, items: [{ at: "2026-10-04T09:00:00.000Z", handle: "mod_anna", caseId: "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a" }] },

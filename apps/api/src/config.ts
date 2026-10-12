@@ -198,6 +198,13 @@ const schema = z.object({
    * unproven sources after the others of their lane, never below a less severe lane. `off` is the default.
    */
   MODERATION_DEFER_UNPROVEN: blankAsUnset.pipe(z.enum(["on", "off"]).default("off")),
+  /**
+   * The retention job's switch (3c design, section 7.9), on unless set to off. Off only for a restore window: a restored
+   * database no longer holds the cases, freezes and seals made after its backup, so the job would erase evidence and delete
+   * images they protected; the README's restore steps turn it off before the API starts and on again once the seals stand.
+   * While it is off nothing is erased or deleted, the API logs a warning at every start, and the console counts what is late.
+   */
+  MODERATION_RETENTION: blankAsUnset.pipe(z.enum(["on", "off"]).default("on")),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS

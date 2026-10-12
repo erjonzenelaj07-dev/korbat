@@ -3,6 +3,7 @@ import {
   CaseSnapshot,
   CaseView,
   FINDING_CATEGORIES,
+  ErasureOverdue,
   FindingRequest,
   FindingResponse,
   IdentityRevealRequest,
@@ -352,6 +353,7 @@ describe("the queue and the overview", () => {
       mailsWaiting: { receipts: 0, authorMails: 1, outcomes: 0 },
       mailsFailed: { receipts: 0, authorMails: 0, outcomes: 2 },
       releaseOverdue: 0,
+      erasureOverdue: { caseEvidence: 0, intakeRecords: 0, statements: 0, redactions: 0, images: 0, drafts: 0, accessLog: 0, contacts: 0 },
       deferUnproven: false,
       protectionLifted: { total: 1, items: [{ at: TIME, handle: "mod_anna", caseId: CASE, kind: "dismissed" }] },
       sealsDeclined: { total: 0, items: [] },
@@ -363,5 +365,21 @@ describe("the queue and the overview", () => {
     expect(StaffOverview.safeParse({ ...overview, lanes: overview.lanes.slice(0, 2) }).success).toBe(false);
     expect(StaffOverview.safeParse({ ...overview, reveals: { total: 101, items: Array.from({ length: 101 }, () => overview.reveals.items[0]) } }).success).toBe(false);
     expect(StaffOverview.safeParse({ ...overview, releaseOverdue: -1 }).success).toBe(false);
+  });
+
+  test("erasureOverdue is one count for each due rule of retention: all eight, each a whole number from 0", () => {
+    const counts = { caseEvidence: 2, intakeRecords: 0, statements: 1, redactions: 0, images: 60, drafts: 0, accessLog: 0, contacts: 3 };
+    expect(ErasureOverdue.parse(counts)).toEqual(counts);
+    expect(Object.keys(ErasureOverdue.shape).sort()).toEqual(["accessLog", "caseEvidence", "contacts", "drafts", "images", "intakeRecords", "redactions", "statements"]);
+    for (const key of Object.keys(counts)) {
+      const { [key]: _left, ...missing } = counts as Record<string, number>;
+      expect(ErasureOverdue.safeParse(missing).success, key).toBe(false);
+      expect(ErasureOverdue.safeParse({ ...counts, [key]: -1 }).success, key).toBe(false);
+      expect(ErasureOverdue.safeParse({ ...counts, [key]: 1.5 }).success, key).toBe(false);
+    }
+    // The overview carries it: an answer without it is refused, so a console never reads "nothing is late" from a missing member.
+    const parsed = StaffOverview.safeParse({ lanes: [], erasureOverdue: counts });
+    expect(parsed.success).toBe(false);
+    expect(Object.keys(StaffOverview.shape)).toContain("erasureOverdue");
   });
 });

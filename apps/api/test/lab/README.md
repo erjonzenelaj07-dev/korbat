@@ -9,7 +9,8 @@ deletion and the purge are the statements the social and media repositories issu
 delete by owner (`delete from post_media where id in (select id from post_media where owner_id = $1 order by id for
 update) returning id`). An intake is the moderation module's `recordIntake`. It uses no code of a later task.
 
-Every measured transaction is rolled back, so the lab leaves no decision and writes no audit row. The accounts it commits
+Every measured transaction is rolled back, so the lab leaves no decision, and writes no audit row but one: the R4
+removal that the redaction's rounds need committed (the last section) is a real, confirmed decision. The accounts it commits
 (the large ones, written in bulk by the migrator, and the pair for the two-session rounds) are removed when it ends.
 
 ## Running it
@@ -284,3 +285,33 @@ and 1.1 s in Task 2's runs), 361 ms and 3.3 s in the second, 58 and 156 ms in th
   nothing they delete.
 - **The freeze read for every row.** The disposal's two statements, above.
 - **The purge and its own posts.** The staged rounds, above.
+
+## The numbers of 2026-10-09: the R4 redaction (migration 0018)
+
+`contention.lab.ts` gains one test for `redact_r4_body` (3c design, sections 2 and 6.4): the redaction takes its
+decision's case, then the post, then the post's images in id order, the order of `moderation_apply` and of an intake's
+locks, and the design asks for it to be measured against both. The post has four images. Its R4 removal is the one
+thing this lab confirms with a real staff key (the software authenticator, as `decideForTest` does), because a
+redaction acts only on a committed decision; it is dated back seven months, so that it is final for its author. The
+redaction itself, and everything that runs against it, is rolled back in every round, so each round finds the decision
+due again. The removal's case goes with the lab's accounts at the end; its one audit row stays, as every real
+decision's does. Run alone with `-t "the R4 redaction"`.
+
+Two runs: the test alone on a machine busy with other work (`busyPercent` 82), then the whole file on a quieter one
+(`busyPercent` 22; the whole file took 122 s).
+
+| the redaction against | rounds | redaction | other side | longest transaction, busy | longest, quieter |
+|---|---|---|---|---|---|
+| (alone, one session) | 1 | ok | | 67 ms | 29 ms |
+| an interim withhold on the post's other, open case, whose trigger runs `moderation_apply` on the post | 40 | 40 ok | 40 ok | 233 ms | 68 ms |
+| a report under a rule, which locks the post `FOR SHARE` and holds its images | 40 | 40 ok | 40 ok | 125 ms | 104 ms |
+| a notice of child sexual abuse material naming the post and its author's account, which locks the images through both | 40 | 40 ok | 40 ok | 123 ms | 83 ms |
+
+- No deadlock and no refusal in 120 rounds of either run, each side first in half of them. The redaction and a decision on the post's
+  other case meet at the post's row, which both take `FOR UPDATE` before any image row; the redaction and a report meet
+  there too (`FOR UPDATE` against `FOR SHARE`); a notice that reaches the images through the account takes them
+  `FOR KEY SHARE`, which the redaction's `FOR NO KEY UPDATE` does not wait for.
+- That last pair is the one the design accepts as a race and not as a wait (6.4): a report about the author's account
+  that commits between the redaction's check of the freeze and its erasure of the snapshots leaves the body blank, the
+  snapshots kept and the decision unmarked, and the round after the answer finishes it. The database test of
+  `redact_r4_body` stages exactly that.

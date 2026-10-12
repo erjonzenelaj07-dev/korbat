@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { STAFF_USAGE, enrollSettings, parseStaffArgs, revokeSettings, runStaffCommand, staffDatabaseUrls } from "../src/cli/staff";
+import { STAFF_USAGE, enrollSettings, migratorUrl, parseStaffArgs, revokeSettings, runStaffCommand, staffDatabaseUrls } from "../src/cli/staff";
 
 const HASH_A = "ab".repeat(32);
 const HASH_B = "0123456789abcdef".repeat(4);
@@ -268,5 +268,79 @@ describe("what staff.js revoke reads of the environment", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^err Invalid environment for revoke:/);
     expect(lines[0]).toContain("SMTP_URL");
+  });
+});
+
+describe("staff.js: the commands for moderation cases (3c design, section 7.13)", () => {
+  const CASE = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+  const MIGRATE_URL = "postgres://korbat_migrate:x@localhost:5432/korbat";
+
+  test("the usage lists them, and says which run in the migrate service", () => {
+    for (const words of ["text-verify", "access-request <@handle | email>", "link <staff email> <personal handle>", "unlink <staff email> <personal handle>", "limits <decisions per hour> <decisions per day> <case opens per day> <findings per day> <reveals per day>", "account-facts <handle> <case id>"]) {
+      expect(STAFF_USAGE, words).toContain(words);
+    }
+    expect(STAFF_USAGE).toContain("linked to it");
+  });
+
+  test("reads link and unlink with a staff address and a personal handle, with or without its at sign, in lower case", () => {
+    expect(parseStaffArgs(["link", " Mod@Korbat.Local ", "@Ada_L"])).toEqual({ command: "link", email: "mod@korbat.local", handle: "ada_l" });
+    expect(parseStaffArgs(["unlink", "mod@korbat.local", "ada_l"])).toEqual({ command: "unlink", email: "mod@korbat.local", handle: "ada_l" });
+    expect(() => parseStaffArgs(["link", "mod@korbat.local"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["link", "mod@korbat.local", "ada", "bob"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["link", "moderator", "ada"])).toThrow(`not an email address: moderator\n${STAFF_USAGE}`);
+    for (const handle of ["ada lovelace", "ada@korbat.local", "@", "a-b", "'; drop table profiles; --"]) {
+      expect(() => parseStaffArgs(["unlink", "mod@korbat.local", handle]), handle).toThrow(`not a handle: ${handle}`);
+    }
+  });
+
+  test("reads limits with exactly five whole numbers from 1, in the order of the usage", () => {
+    expect(parseStaffArgs(["limits", "60", "300", "400", "50", "10"])).toEqual({
+      command: "limits",
+      limits: { decisionsPerHour: 60, decisionsPerDay: 300, caseOpensPerDay: 400, findingsPerDay: 50, revealsPerDay: 10 },
+    });
+    expect(() => parseStaffArgs(["limits", "60", "300", "400", "50"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["limits", "60", "300", "400", "50", "10", "5"])).toThrow(STAFF_USAGE);
+    for (const number of ["0", "-1", "1.5", "1e3", "ten", "", " 5", "05", "12345678"]) {
+      expect(() => parseStaffArgs(["limits", "60", "300", number, "50", "10"]), JSON.stringify(number)).toThrow(`not a limit: ${number}`);
+    }
+  });
+
+  test("reads text-verify without arguments, account-facts with a handle and a case id, and access-request with a handle or an address", () => {
+    expect(parseStaffArgs(["text-verify"])).toEqual({ command: "text-verify" });
+    expect(() => parseStaffArgs(["text-verify", "now"])).toThrow(STAFF_USAGE);
+    expect(parseStaffArgs(["account-facts", "@Ada", CASE.toUpperCase()])).toEqual({ command: "account-facts", handle: "ada", caseId: CASE });
+    expect(() => parseStaffArgs(["account-facts", "ada"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["account-facts", "ada", "the-case"])).toThrow("not a case id: the-case");
+    expect(() => parseStaffArgs(["account-facts", "ada@korbat.local", CASE])).toThrow("not a handle: ada@korbat.local");
+    // An at sign in front is a handle's; one inside is an address's.
+    expect(parseStaffArgs(["access-request", "@Ada"])).toEqual({ command: "access-request", who: { handle: "ada" } });
+    expect(parseStaffArgs(["access-request", "ada"])).toEqual({ command: "access-request", who: { handle: "ada" } });
+    expect(parseStaffArgs(["access-request", " Ada@Korbat.Local "])).toEqual({ command: "access-request", who: { email: "ada@korbat.local" } });
+    expect(() => parseStaffArgs(["access-request"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["access-request", "ada", "bob"])).toThrow(STAFF_USAGE);
+    expect(() => parseStaffArgs(["access-request", "ada lovelace"])).toThrow("not a handle: ada lovelace");
+  });
+
+  test("text-verify reads DATABASE_URL_API alone; link, unlink, limits and account-facts the migrator's URL alone", () => {
+    expect(staffDatabaseUrls({ command: "text-verify" }, { DATABASE_URL_API: API_URL })).toEqual({ api: API_URL, auth: null });
+    expect(() => staffDatabaseUrls({ command: "text-verify" }, { DATABASE_URL_AUTH: AUTH_URL })).toThrow(/DATABASE_URL_API/);
+    expect(migratorUrl("limits", { DATABASE_URL_MIGRATE: MIGRATE_URL, CONSOLE_ORIGIN: "not an origin", SMTP_URL: "nonsense" })).toBe(MIGRATE_URL);
+    expect(() => migratorUrl("link", { DATABASE_URL_API: API_URL })).toThrow(/Invalid environment for link:[^]*DATABASE_URL_MIGRATE/);
+  });
+
+  test("run in the wrong service, each says which URL it lacks, answers 1 and connects to nothing", async () => {
+    for (const args of [["link", "mod@korbat.local", "ada"], ["unlink", "mod@korbat.local", "ada"], ["limits", "60", "300", "400", "50", "10"], ["account-facts", "ada", CASE]]) {
+      const { lines, out } = capture();
+      expect(await runStaffCommand(args, { DATABASE_URL_API: API_URL, DATABASE_URL_AUTH: AUTH_URL }, out), args[0]).toBe(1);
+      expect(lines, args[0]).toHaveLength(1);
+      expect(lines[0], args[0]).toMatch(new RegExp(`^err Invalid environment for ${args[0]}:`));
+      expect(lines[0], args[0]).toContain("DATABASE_URL_MIGRATE");
+    }
+    // access-request reads the API's whole configuration, and refuses with what is missing of it.
+    const { lines, out } = capture();
+    expect(await runStaffCommand(["access-request", "@ada"], { DATABASE_URL_MIGRATE: MIGRATE_URL }, out)).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^err /);
+    expect(lines[0]).toContain("DATABASE_URL_API");
   });
 });

@@ -128,9 +128,11 @@ services:
       # answers 404. The migrate service gets the same two values for `staff.js enroll`.
       CONSOLE_ORIGIN: ${API_CONSOLE_ORIGIN:-}
       CONSOLE_RP_ID: ${API_CONSOLE_RP_ID:-}
-      # Moderation: the UTC hour of the daily release of decisions to those who reported, and the queue's emergency switch.
+      # Moderation: the UTC hour of the daily release of decisions to those who reported, the queue's emergency switch, and
+      # the retention job's switch, which is off only for a restore window (README, Restoring, step 5).
       MODERATION_DISPATCH_HOUR: ${API_MODERATION_DISPATCH_HOUR:-7}
       MODERATION_DEFER_UNPROVEN: ${API_MODERATION_DEFER_UNPROVEN:-off}
+      MODERATION_RETENTION: ${API_MODERATION_RETENTION:-on}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

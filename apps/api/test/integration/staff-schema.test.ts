@@ -315,15 +315,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the staff tables and fun
     });
 
     test("never blanks a live key, even when the auth role marks the account deleted around the call", async () => {
-      // The auth role may set and clear deleted_at, so the account's mark alone cannot guard the keys the column grants
-      // keep it from changing; a key it has not revoked (which it can never undo) is never blanked.
+      // The auth role may set deleted_at, so the account's mark alone cannot guard the keys the column grants keep it
+      // from changing; a key it has not revoked (which it can never undo) is never blanked. It can no longer clear the
+      // mark (migration 0018, users_deleted_mark), so the transaction that set it is rolled back instead.
       const { user, key } = await newStaffKey(authDb, migrateDb, repo);
       const before = await keyRow(key.id);
-      const forgotten = await withLockTimeout(authDb, async (tx) => {
+      let forgotten = -1;
+      await rolledBack(authDb, async (tx) => {
         await tx.update(users).set({ deletedAt: new Date() }).where(eq(users.id, user.id));
         const [result] = await tx.execute<{ n: number }>(sql`select auth.forget_staff_keys(${user.id}::uuid) as n`);
-        await tx.update(users).set({ deletedAt: null }).where(eq(users.id, user.id));
-        return result!.n;
+        forgotten = result!.n;
       });
       expect(forgotten).toBe(0);
       expect(await keyRow(key.id)).toEqual(before);

@@ -107,6 +107,15 @@ export { clearSessionCookies } from "./cookies";
 export { clearStaffCookies, setStaffCookies } from "./staff/cookies";
 /** `staff.js revoke`, from the server's command line only, as grant-role's grantRole is. */
 export { revokeStaffKeys } from "./staff/revoke";
+
+/**
+ * `staff.js access-request <email>`, from the server's command line only (3c design, section 7.13): the notifier contacts
+ * that gave this address, each with the name it gave, read on the auth pool with the keys of the API's configuration.
+ * Only this module can find a contact by its address or open its name; the caller gets ids and names, never an address.
+ */
+export function notifierContactsFor(authDb: Db, config: Config, email: string): Promise<{ id: string; name: string | null }[]> {
+  return findNotifierContacts({ repo: createAuthRepo(authDb), config: authConfigFrom(config) }, email);
+}
 /**
  * audit-verify's check of a step-up assertion an audit row stored, against the public key, origin and relying party ID
  * recorded on its key (3a design, section 7, Command line): the WebAuthn library stays behind the wrapper, and the check

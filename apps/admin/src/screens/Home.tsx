@@ -58,6 +58,34 @@ export const RELEASE_OVERDUE_RUNBOOK =
 export const releaseOverdue = (n: number): string => `Decisions not released after 26 hours: ${n}. ${RELEASE_OVERDUE_RUNBOOK}`;
 
 /**
+ * The runbook's sentence for a count of late erasures, in the words of the runbook's own bullet (3c design, section 13,
+ * Task 12(a)), a constant of its own for the same reason as the one above.
+ */
+export const ERASURE_OVERDUE_RUNBOOK =
+  "A count of late erasures names the due rule whose step keeps failing, so evidence, an intake record or a notifier's name and address outlives its published period: read the API log for moderation-retention and for auth janitor: purge failed, and check that API_MODERATION_RETENTION was not left off after a restore (the API logs it at every start).";
+
+/** What each count of late erasures counts, in the order the retention job's steps run; the two last are the image rows and the auth janitor's. */
+export const ERASURE_OVERDUE_WORDS: Record<keyof StaffOverview["erasureOverdue"], string> = {
+  drafts: "unconfirmed drafts",
+  caseEvidence: "closed cases whose evidence is due",
+  intakeRecords: "records of reports and notices",
+  redactions: "R4 erasures",
+  statements: "statements of deleted accounts",
+  accessLog: "access log rows",
+  images: "image rows nothing retains",
+  contacts: "notifiers' contacts and confirmations",
+};
+
+/**
+ * The home screen's line for what retention is late with by more than a day: each count above zero under its own words,
+ * then the runbook's sentence. Null when nothing is late, and then the screen says nothing.
+ */
+export function erasureOverdue(counts: StaffOverview["erasureOverdue"]): string | null {
+  const late = (Object.keys(ERASURE_OVERDUE_WORDS) as (keyof StaffOverview["erasureOverdue"])[]).filter((key) => counts[key] > 0).map((key) => `${ERASURE_OVERDUE_WORDS[key]}: ${counts[key]}`);
+  return late.length === 0 ? null : `Erasures more than a day late: ${late.join("; ")}. ${ERASURE_OVERDUE_RUNBOOK}`;
+}
+
+/**
  * What every staff member sees of the cases (3c design, section 8): the lanes with their open cases and how long the
  * oldest has waited, the appeals waiting (with those this person may review and those nobody may review now), every reveal of a source in the last 30 days with its staff handle and its
  * case, the decisions that lifted the protection of reported images, the recorded choices not to seal and the seals
@@ -78,6 +106,7 @@ export function appealsLine(overview: Pick<StaffOverview, "appealsWaiting" | "ap
 
 export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOverview; now: number; onOpenCase(id: CaseId): void }) {
   const { reveals, mailsWaiting, mailsFailed } = overview;
+  const lateErasures = erasureOverdue(overview.erasureOverdue);
   const waiting = mailsWaiting.receipts + mailsWaiting.authorMails + mailsWaiting.outcomes;
   const failed = mailsFailed.receipts + mailsFailed.authorMails + mailsFailed.outcomes;
   const mails = (m: StaffOverview["mailsWaiting"]) => `${counted(m.receipts, "receipt", "receipts")}, ${counted(m.authorMails, "statement to an author", "statements to authors")}, ${counted(m.outcomes, "outcome", "outcomes")}`;
@@ -95,6 +124,11 @@ export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOve
       {overview.releaseOverdue > 0 ? (
         <p role="alert" className="error">
           {releaseOverdue(overview.releaseOverdue)}
+        </p>
+      ) : null}
+      {lateErasures !== null ? (
+        <p role="alert" className="error">
+          {lateErasures}
         </p>
       ) : null}
       {waiting > 0 ? <p className="notice">{`Mails waiting for more than an hour: ${mails(mailsWaiting)}.`}</p> : null}

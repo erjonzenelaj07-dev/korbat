@@ -99,6 +99,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: revealing who sent a rep
         mailed.push(message);
         return options.accepted ?? 3;
       },
+      // The overview asks how many contacts the janitor is late with (its erasureOverdue): none here.
+      overdueContacts: async () => 0,
     } as unknown as AuthForModeration;
     return { deps: moderationDeps(tx, { auth }), contacts, names, mailed };
   }

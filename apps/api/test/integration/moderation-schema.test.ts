@@ -399,6 +399,71 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(rows.map((row) => [row.name, row.definition.replace(/^CREATE (CONSTRAINT )?TRIGGER \S+ /, "").replace(/ EXECUTE FUNCTION .*$/, "")])).toEqual([["appeals_check", "BEFORE INSERT ON public.appeals FOR EACH ROW"]]);
     });
 
+    test("the migrator owns every function of 0018; the API role may call the due rules and the erasures that check them, never the two gates' own functions", async () => {
+      const pub = ["search_path=public, pg_temp"];
+      const auth = ["search_path=auth, pg_temp"];
+      // [definer, EXECUTE for the API role]. The three due rules are plain and run with their reader's rights. The one
+      // function that erases a snapshot (gate E) and the one that releases holds are called only by their owner's functions.
+      const expected: Record<string, [boolean, boolean]> = {
+        case_evidence_due_at: [false, true],
+        decision_final_at: [false, true],
+        delete_access_log: [true, true],
+        erase_case_evidence: [true, true],
+        erase_intake: [true, true],
+        erase_snapshots: [true, false],
+        erase_statement_texts: [true, true],
+        forget_reporter: [true, true],
+        intake_due_at: [false, true],
+        redact_r4_body: [true, true],
+        release_case_holds: [true, false],
+        sweep_staff_texts: [true, true],
+      };
+      const names = Object.keys(expected);
+      const all = await functions();
+      const rows = all.filter((f) => f.name.startsWith("public.") && names.includes(f.name.slice(7)));
+      expect(rows.map((f) => f.name.slice(7)).sort()).toEqual([...names].sort());
+      for (const f of rows) {
+        const [definer, api] = expected[f.name.slice(7)]!;
+        expect({ name: f.name, owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }).toEqual({ name: f.name, owner: "korbat_migrate", definer, config: pub, api, auth: false, pub: false });
+      }
+      // The auth schema's two: the count of links, which the auth role alone may call, and the trigger function nobody calls.
+      const authSide = all.filter((f) => f.name === "auth.users_deleted_mark" || f.name === "auth.staff_link_counts");
+      expect(authSide.map((f) => ({ name: f.name, owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }))).toEqual([
+        { name: "auth.staff_link_counts", owner: "korbat_migrate", definer: true, config: auth, api: false, auth: true, pub: false },
+        { name: "auth.users_deleted_mark", owner: "korbat_migrate", definer: false, config: auth, api: false, auth: false, pub: false },
+      ]);
+      // Everything the API role may call of what the migrator owns, in both schemas, after the last migration of 3c (design, section 11).
+      const callable = all.filter((f) => f.owner === "korbat_migrate" && f.api).map((f) => f.name);
+      expect(callable).toEqual([
+        "public.appeal_deadline",
+        "public.appeal_reviewer_state",
+        "public.append_confirmed_audit",
+        "public.case_evidence_due_at",
+        "public.decision_final_at",
+        "public.delete_access_log",
+        "public.erase_case_evidence",
+        "public.erase_intake",
+        "public.erase_statement_texts",
+        "public.forget_reporter",
+        "public.frozen_for",
+        "public.intake_due_at",
+        "public.post_frozen",
+        "public.redact_r4_body",
+        "public.release_outcomes",
+        "public.review_needs_admin",
+        "public.snapshot_withheld",
+        "public.staff_case_conflict",
+        "public.sweep_staff_texts",
+      ]);
+    });
+
+    test("the deletion mark's trigger is on auth.users, before an update that names the mark", async () => {
+      const rows = await apiDb.execute<{ definition: string }>(sql`
+        select pg_get_triggerdef(t.oid) as definition from pg_trigger t join pg_class c on c.oid = t.tgrelid
+         where not t.tgisinternal and c.relnamespace = 'auth'::regnamespace and c.relname = 'users' and t.tgname = 'users_deleted_mark'`);
+      expect(rows.map((row) => row.definition.replace(/^CREATE TRIGGER \S+ /, "").replace(/ EXECUTE FUNCTION .*$/, ""))).toEqual(["BEFORE UPDATE OF deleted_at ON auth.users FOR EACH ROW"]);
+    });
+
     test("every function the migrator owns in the two schemas pins its search path and is closed to PUBLIC", async () => {
       const owned = (await functions()).filter((f) => f.owner === "korbat_migrate");
       expect(owned.length).toBeGreaterThan(15);
@@ -408,13 +473,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       }
     });
 
-    test("frozen_for is named only by post_frozen and by the keep trigger's function; post_frozen only by decisions_record", async () => {
+    test("frozen_for is named only by post_frozen and by the keep trigger's function; post_frozen only by decisions_record, erase_snapshots and redact_r4_body", async () => {
       const all = await functions();
       const naming = (word: RegExp) => all.filter((f) => word.test(f.definition)).map((f) => f.name);
       // Each function's own definition holds its name.
       expect(naming(/\bfrozen_for\b/)).toEqual(["public.frozen_for", "public.post_frozen", "public.post_media_keep"]);
       // One function of 0016 reads the freeze: the one that stores whether a decision was taken while nobody could open the images.
-      expect(naming(/\bpost_frozen\b/)).toEqual(["public.decisions_record", "public.post_frozen"]);
+      // And two of 0018: the one function that erases a snapshot (gate E), and the R4 redaction, which waits while its post is frozen.
+      expect(naming(/\bpost_frozen\b/)).toEqual(["public.decisions_record", "public.erase_snapshots", "public.post_frozen", "public.redact_r4_body"]);
       // Nor does a view, a trigger, a constraint, an index or a policy name either.
       const others = (await otherDefinitions()).filter((d) => /\b(frozen_for|post_frozen)\b/.test(d.definition));
       expect(others.map((d) => `${d.kind} ${d.name}`)).toEqual([]);
@@ -431,9 +497,36 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const calls = /\bmoderation_apply\s*\(/i;
       expect(matching(sealList)).toEqual(["public.decision_actions_apply"]);
       expect(matching(imageState)).toEqual(["public.moderation_apply"]);
-      expect(matching(postColumns)).toEqual(["public.moderation_apply"]);
-      // The writer is called by the two triggers that follow a stored decision and a stored measure, and by nothing else yet.
-      expect(matching(calls)).toEqual(["public.decision_actions_apply", "public.decisions_apply", "public.moderation_apply"]);
+      // Of the three columns of posts, the level and the state are moderation_apply's alone; the erasure mark is the R4 redaction's.
+      expect(matching(postColumns)).toEqual(["public.moderation_apply", "public.redact_r4_body"]);
+      const written = (table: string, columns: string) =>
+        new RegExp(String.raw`(update\s+(only\s+)?|merge\s+into\s+(only\s+)?|insert\s+into\s+)("?public"?\s*[.]\s*)?"?${table}"?(?![\w"])[^;]*\bset\b[^;]*"?(${columns})"?\s*=`, "i");
+      const postLevel = written("posts", "moderation_level|state");
+      const postErased = written("posts", "erased_at");
+      const imageErased = written("post_media", "erased_at");
+      const snapshotErased = written("evidence_snapshots", "erased_at");
+      expect(matching(postLevel)).toEqual(["public.moderation_apply"]);
+      expect(matching(postErased)).toEqual(["public.redact_r4_body"]);
+      expect(matching(imageErased)).toEqual(["public.redact_r4_body"]);
+      // Gate E: one function writes a snapshot's erasure, no function deletes a snapshot, and that one function is called
+      // by the two erasures of 0018 and by nothing else.
+      expect(matching(snapshotErased)).toEqual(["public.erase_snapshots"]);
+      expect(matching(/delete\s+from\s+(only\s+)?("?public"?\s*[.]\s*)?"?evidence_snapshots"?(?![\w"])/i)).toEqual([]);
+      expect(matching(/\berase_snapshots\s*\(/i)).toEqual(["public.erase_case_evidence", "public.erase_snapshots", "public.redact_r4_body"]);
+      // The writer is called by the two triggers that follow a stored decision and a stored measure, and by the R4 redaction.
+      expect(matching(calls)).toEqual(["public.decision_actions_apply", "public.decisions_apply", "public.moderation_apply", "public.redact_r4_body"]);
+      for (const statement of [
+        "UPDATE public.evidence_snapshots s SET erased_at = now(), body = NULL",
+        'update only "public"."evidence_snapshots" set "erased_at" = $1',
+        "merge into evidence_snapshots s using v on s.id = v.id when matched then update set erased_at = now()",
+      ]) {
+        expect(snapshotErased.test(statement), statement).toBe(true);
+      }
+      expect(snapshotErased.test("select 1 from public.evidence_snapshots s where s.erased_at is null; update public.staff_texts t set erased_at = now()")).toBe(false);
+      expect(imageErased.test("UPDATE public.post_media m SET erased_at = coalesce(m.erased_at, now())")).toBe(true);
+      expect(imageErased.test("UPDATE public.media_holds h SET released_at = now(); select m.erased_at = now() from public.post_media m")).toBe(false);
+      expect(postErased.test("UPDATE public.posts p SET body = '', erased_at = now()")).toBe(true);
+      expect(postErased.test("UPDATE public.posts p SET moderation_level = v.level WHERE p.erased_at IS NOT NULL")).toBe(false);
       // Each search finds such a statement in every form, and no other statement.
       for (const statement of [
         "INSERT INTO public.seal_posts (action_id, post_id, images)",

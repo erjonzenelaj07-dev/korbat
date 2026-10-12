@@ -1458,6 +1458,16 @@ export type ReportsQuery = z.infer<typeof ReportsQuery>;
 export const OVERVIEW_LIST_MAX = 100;
 
 const MailCounts = z.object({ receipts: Count, authorMails: Count, outcomes: Count });
+
+/**
+ * What retention should have erased or deleted more than a day ago and has not, one count for each due rule: closed
+ * cases whose evidence is due, intake records, statements of accounts deleted for 12 months, R4 redactions, image rows
+ * that nothing retains, unconfirmed drafts, access rows, and notifiers' contacts and confirmations. The retention job and
+ * the auth janitor each run every ten minutes, so any count above zero means a step keeps failing, or that the retention
+ * job is switched off. The API reads the counts at most once a minute, for all staff.
+ */
+export const ErasureOverdue = z.object({ caseEvidence: Count, intakeRecords: Count, statements: Count, redactions: Count, images: Count, drafts: Count, accessLog: Count, contacts: Count });
+export type ErasureOverdue = z.infer<typeof ErasureOverdue>;
 const HandleCount = z.object({ handle: z.string(), count: Count });
 
 /**
@@ -1467,7 +1477,8 @@ const HandleCount = z.object({ handle: z.string(), count: Count });
  * (`appealsWithoutReviewer`: the database's appeal_reviewer_state is not `available`); every reveal of a source in the last 30 days, newest first, with
  * its staff handle and its case; per staff handle the images viewed and the findings opened today (UTC); the mails
  * waiting for more than an hour and those given up in the last 30 days; the decided items the daily release has not
- * released after 26 hours; and whether the emergency switch is on. And, of the path for child sexual abuse material,
+ * released after 26 hours; what retention should have erased more than a day ago and has not (`erasureOverdue`); and
+ * whether the emergency switch is on. And, of the path for child sexual abuse material,
  * three lists every staff member sees: the decisions of the last 30 days that lifted the protection of reported images
  * (a lifted seal, `unsealed`, or an admin's final answer to such a report without a seal, `dismissed`), the recorded
  * choices not to seal of the last 30 days, and the seals taken while deciding that are in force, each with what it
@@ -1484,6 +1495,7 @@ export const StaffOverview = z.object({
   mailsWaiting: MailCounts,
   mailsFailed: MailCounts,
   releaseOverdue: Count,
+  erasureOverdue: ErasureOverdue,
   deferUnproven: z.boolean(),
   protectionLifted: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid(), kind: z.enum(["unsealed", "dismissed"]) })).max(OVERVIEW_LIST_MAX) }),
   sealsDeclined: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid() })).max(OVERVIEW_LIST_MAX) }),

@@ -25,10 +25,14 @@ import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, tak
 import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
 import { createDispatchJob } from "./dispatch";
+import { forgetReporter } from "./repo";
+import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { reveal, type RevealOutcome } from "./reveal";
 import { moderationRoutes, noSession } from "./routes";
 import { ownTexts, saveText } from "./texts";
 
+export { ACCESS_WORDS, accessDraftForAccount, accessDraftForContacts, uuidBefore } from "./access";
+export type { AccountAccessDraft, ContactsAccessDraft } from "./access";
 export { ModerationError } from "./context";
 export type { ModerationDeps, ModerationErrorKind } from "./context";
 export type { DecideOutcome } from "./decide";
@@ -87,6 +91,15 @@ export interface ModerationForSocial {
   authorFacts(viewer: string, postIds: readonly string[]): Promise<Map<string, PostModeration>>;
 }
 
+/**
+ * What the account module needs from this one (3c design, sections 5 and 7.10): the purge's forgetting. It forgets that a
+ * deleted account sent its reports: the account's id goes from its intakes and their items, which go on being processed.
+ * The database acts only on an account whose auth row the take-down marked deleted, and changes nothing when run again.
+ */
+export interface ModerationForAccount {
+  forgetAccount(userId: string): Promise<void>;
+}
+
 export interface CreateModerationOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
   apiDb: Db;
@@ -139,6 +152,11 @@ export function createModeration(options: CreateModerationOptions) {
   const forSocial: ModerationForSocial = {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),
   };
+  const forAccount: ModerationForAccount = {
+    forgetAccount: async (userId) => {
+      await forgetReporter(deps.apiDb, userId);
+    },
+  };
   return {
     deps,
     /**
@@ -150,16 +168,31 @@ export function createModeration(options: CreateModerationOptions) {
     forStaff,
     /** The interface the social module's views use. */
     forSocial,
+    /** The interface the account module's purge uses. */
+    forAccount,
     /**
      * Resolves once every task a request started and did not wait for has ended: the mails after a report, a notice, a
      * finding, a reveal or a refused case read. The tests await it; the server lets the tasks run.
      */
     settle: () => deps.background.settle(),
     /**
-     * Starts the module's background work under the jobs' shared lock, on one API instance at a time: the dispatch job,
-     * whose first round comes ten minutes after the start. Answers the function that stops it; a round in flight finishes.
+     * Starts the module's background work under the jobs' shared lock, on one API instance at a time: the dispatch job
+     * always, and the retention job only while MODERATION_RETENTION is on. Each one's first round comes ten minutes after
+     * the start. While the switch is off nothing is erased, released or deleted, and the warning is logged at every start,
+     * so a switch left off after a restore is seen. Answers the function that stops both; a round in flight finishes.
      */
-    startJobs: (lock: JobLock): (() => void) => createDispatchJob(deps, lock).start(),
+    startJobs: (lock: JobLock): (() => void) => {
+      const stopDispatch = createDispatchJob(deps, lock).start();
+      if (deps.config.MODERATION_RETENTION !== "on") {
+        deps.log.warn(RETENTION_OFF_WARNING);
+        return stopDispatch;
+      }
+      const stopRetention = createRetentionJob(deps, lock).start();
+      return () => {
+        stopDispatch();
+        stopRetention();
+      };
+    },
   };
 }
 

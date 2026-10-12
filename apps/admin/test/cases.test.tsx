@@ -12,7 +12,7 @@ import { parseImageId, StaffImage, staffImageSrc } from "../src/media";
 import { CASE_WORDS, CONSOLE_MODERATION_CODES, DECISION_KINDS, DECISION_OUTCOMES, describeError, FINDING_WORDS, messageFor, MODERATION_MESSAGES, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS } from "../src/messages";
 import { parseCaseId } from "../src/router";
 import { afterFailedRead, ART_18_BANNER, CaseScreenView, IMAGES_NOT_SHOWN, RevealDialog, revealSource, SUSPECT_BANNER, targetDiffers, type CaseScreenViewProps } from "../src/screens/Case";
-import { OverviewView, RELEASE_OVERDUE_RUNBOOK, releaseOverdue } from "../src/screens/Home";
+import { ERASURE_OVERDUE_RUNBOOK, ERASURE_OVERDUE_WORDS, OverviewView, RELEASE_OVERDUE_RUNBOOK, erasureOverdue, releaseOverdue } from "../src/screens/Home";
 import { findingOf, marksOf, QUEUE_REFRESH_MS, QueueView, readQueue, startQueueReads, type QueueViewProps } from "../src/screens/Queue";
 import { revealAction, revealWithKey, StepUpMismatch } from "../src/step-up";
 import { createConsoleStore } from "../src/store";
@@ -329,6 +329,33 @@ describe("the home screen's overview", () => {
     expect(out).toContain(": 1 finding opened");
     expect(out).not.toContain("Mails waiting");
     expect(out).not.toContain("not released");
+    expectInert(out);
+  });
+
+  test("late erasures are said only when there are any: each count above zero under its own words, then the runbook's sentence", () => {
+    const none = { caseEvidence: 0, intakeRecords: 0, statements: 0, redactions: 0, images: 0, drafts: 0, accessLog: 0, contacts: 0 };
+    // The runbook's sentence, in the words of the design's runbook bullet (section 13, Task 12(a)).
+    expect(ERASURE_OVERDUE_RUNBOOK).toBe(
+      "A count of late erasures names the due rule whose step keeps failing, so evidence, an intake record or a notifier's name and address outlives its published period: read the API log for moderation-retention and for auth janitor: purge failed, and check that API_MODERATION_RETENTION was not left off after a restore (the API logs it at every start).",
+    );
+    // Every count of the contract has its words, and no other key has any.
+    expect(Object.keys(ERASURE_OVERDUE_WORDS).sort()).toEqual(Object.keys(StaffOverview.shape.erasureOverdue.shape).sort());
+    expect(erasureOverdue(none)).toBeNull();
+    const quiet = html(<OverviewView overview={overview()} now={NOW} onOpenCase={noop} />);
+    expect(quiet).not.toContain("Erasures more than a day late");
+    expect(quiet).not.toContain("moderation-retention");
+
+    expect(erasureOverdue({ ...none, images: 60 })).toBe(`Erasures more than a day late: image rows nothing retains: 60. ${ERASURE_OVERDUE_RUNBOOK}`);
+    const late = { ...none, caseEvidence: 2, redactions: 1, contacts: 3 };
+    expect(erasureOverdue(late)).toBe(`Erasures more than a day late: closed cases whose evidence is due: 2; R4 erasures: 1; notifiers' contacts and confirmations: 3. ${ERASURE_OVERDUE_RUNBOOK}`);
+    const out = html(<OverviewView overview={overview({ erasureOverdue: late })} now={NOW} onOpenCase={noop} />);
+    expect(out).toContain('<p role="alert" class="error">Erasures more than a day late: closed cases whose evidence is due: 2; R4 erasures: 1; notifiers&#x27; contacts and confirmations: 3. A count of late erasures names');
+    // A count of zero is not listed among the late ones.
+    expect(out).not.toContain("unconfirmed drafts");
+    expect(out).not.toContain("image rows nothing retains");
+    for (const key of Object.keys(none) as (keyof typeof none)[]) {
+      expect(erasureOverdue({ ...none, [key]: 7 }), key).toBe(`Erasures more than a day late: ${ERASURE_OVERDUE_WORDS[key]}: 7. ${ERASURE_OVERDUE_RUNBOOK}`);
+    }
     expectInert(out);
   });
 
