@@ -1,0 +1,106 @@
+import type { MediaSize } from "@korbat/contracts";
+import type { DbTx } from "@korbat/db";
+import { VARIANTS } from "@korbat/media-protocol";
+import type { MediaDeps } from "./context";
+import type { StoredFile } from "./files";
+import type { CaseReach, HeldImage, HoldPair } from "./repo";
+import { RECONCILE_MAX_ORPHANS } from "./sweeper";
+import { WEBP_HEADER_BYTES, webpSize } from "./webp";
+
+/**
+ * How many image rows one call of dropDisposable deletes at most: half of what the reconcile pass deletes without
+ * MEDIA_RECONCILE=force. The files of a batch are requested after its commit, so a crash in between loses one batch's
+ * requests; with other deletions' requests lost in the same crash, those files still stay within what one reconcile
+ * pass removes by itself (3c design, section 5).
+ */
+export const DISPOSAL_BATCH = RECONCILE_MAX_ORPHANS / 2;
+
+/** An image file opened for staff, with the post it is on. The caller reads the handle from its start and closes it. */
+export interface StaffImage {
+  postId: string;
+  file: StoredFile;
+}
+
+/**
+ * What the moderation module needs from this one (3c design, section 5). The moderation module never names an image
+ * row: it hands over its transaction, its cases and its targets, and gets back what its evidence lists and what its
+ * screens count.
+ */
+export interface MediaForCases {
+  /**
+   * An intake's holds, inside its transaction: each pair `{ caseId, postId }` locks the post's image rows and places
+   * the case's evidence hold on them; a pair `{ ownerId }` only locks every image row on that account's posts, for a
+   * report of child sexual abuse material about the account. All rows are locked by one statement, in one id order.
+   * It answers each post pair's images in position order, for the post's snapshot; an empty list means they are gone.
+   */
+  hold(tx: DbTx, pairs: readonly HoldPair[]): Promise<Map<string, HeldImage[]>>;
+  /**
+   * Opens an image file for staff, or answers null: the only function that does (gate V; 3c design, sections 6.1 and
+   * 7.3). Never an image of a frozen post, a sealed image or an erased one, on whatever case the request came; and only a
+   * file whose header says that it is a WebP of the size its variant and its row allow.
+   */
+  staffImage(mediaId: string, size: MediaSize): Promise<StaffImage | null>;
+  /** What a case about this post or account reaches: counts, a day and a time, never an id, an alt text or a file. */
+  reach(target: { type: "post" | "account"; id: string }): Promise<CaseReach>;
+  /**
+   * Deletes, in the caller's transaction, at most DISPOSAL_BATCH image rows that nothing retains and that their post's
+   * deletion, their owner's purge or an erasure left behind, the lowest ids first, and answers their ids. The caller
+   * asks for their files with requestDeletion after its commit, and calls again until fewer than a batch came back.
+   */
+  dropDisposable(tx: DbTx): Promise<string[]>;
+  /** How many rows the disposal should have taken more than a day ago. */
+  overdueDeletions(): Promise<number>;
+  /** Asks the worker to delete the files of these images. Called after the commit of the transaction that deleted their rows. */
+  requestDeletion(ids: readonly string[]): Promise<void>;
+}
+
+/** The moderation module's interface over this module's dependencies, as createMedia hands it out; the tests build it the same way. */
+export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log">): MediaForCases {
+  /**
+   * Why a file of the store is not the image its row describes, or null when it is. The store is written by the worker,
+   * which runs the decoder, so the bytes are not trusted: the console is given a file only when its first bytes are those
+   * of a WebP whose longer side fits the variant, and whose large variant is exactly as large as the row says.
+   */
+  async function fault(file: StoredFile, size: MediaSize, row: { width: number | null; height: number | null }): Promise<string | null> {
+    const head = Buffer.alloc(WEBP_HEADER_BYTES);
+    // Read at an explicit position, which leaves the handle's own position at the start for whoever streams the file.
+    const { bytesRead } = await file.handle.read(head, 0, WEBP_HEADER_BYTES, 0);
+    const stated = webpSize(head.subarray(0, bytesRead));
+    if (!stated) return "not a WebP file";
+    if (Math.max(stated.width, stated.height) > VARIANTS[size].edge) return "larger than its variant may be";
+    if (size === "large" && (stated.width !== row.width || stated.height !== row.height)) return "not the size its row states";
+    return null;
+  }
+
+  return {
+    hold: (tx, pairs) => deps.repo.hold(tx, pairs),
+
+    async staffImage(mediaId, size) {
+      const access = await deps.repo.staffAccess(mediaId);
+      if (!access || access.status !== "ready") return null;
+      // Gate V. The image's state is asked for by name: a state this reader has not been taught opens nothing.
+      const shown = access.mediaState === "visible" || access.mediaState === "withheld" || access.mediaState === "removed";
+      if (!shown || access.frozen || access.erased) return null;
+      const file = await deps.files.openImage(mediaId, size);
+      if (!file) return null;
+      let reason: string | null;
+      try {
+        reason = await fault(file, size, access);
+      } catch (err) {
+        await file.handle.close();
+        throw err;
+      }
+      if (reason !== null) {
+        await file.handle.close();
+        deps.log.error({ id: mediaId, size, reason }, "media store: refused to open for staff a file that is not the image its row describes");
+        return null;
+      }
+      return { postId: access.postId, file };
+    },
+
+    reach: (target) => deps.repo.reach(target),
+    dropDisposable: (tx) => deps.repo.dropDisposable(tx, DISPOSAL_BATCH),
+    overdueDeletions: () => deps.repo.overdueDeletions(),
+    requestDeletion: (ids) => deps.files.requestDeletion(ids),
+  };
+}

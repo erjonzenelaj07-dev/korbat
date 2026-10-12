@@ -13,7 +13,7 @@ import { recordIntake } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { flowHarness } from "./flow-harness";
-import { act, decisionParams, ground, moderationCounts, removeDecided, uuids, type DecisionInput, type TestStaff } from "./moderation-fixtures";
+import { act, casesMedia, decisionParams, ground, moderationCounts, removeDecided, uuids, type DecisionInput, type TestStaff } from "./moderation-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { TEST_CONSOLE, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 import { signedIn, stepUpAssertion } from "./staff-step-up";
@@ -58,7 +58,7 @@ export function deciderWorld(apiDb: Db): DeciderWorld {
   const migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
   const repo = createAuthRepo(authDb);
   const h = flowHarness(repo, { console: TEST_CONSOLE });
-  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger: pino({ level: "silent" }) });
+  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: casesMedia(apiDb), config, logger: pino({ level: "silent" }) });
   const members: RealStaff[] = [];
   /**
    * The harness's clock stands still unless moved, and a step-up challenge lives ten minutes from it; the audit row is

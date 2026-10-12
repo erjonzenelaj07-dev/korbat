@@ -8,6 +8,7 @@ import type { Db, DbTx } from "@korbat/db";
 import { HEARTBEAT_STALE_MS, type MediaFormat } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
 import type { RateLimitStore } from "../middleware/rate-limit";
+import { mediaForCases } from "./cases";
 import type { MediaDeps, MediaForPosts } from "./context";
 import { createMediaFiles, type StoredFile } from "./files";
 import { createMediaRepo } from "./repo";
@@ -15,14 +16,21 @@ import { mediaFileRoutes, mediaRoutes } from "./routes";
 import type { JobLock } from "../lib/jobs";
 import { createSweeper, sweep } from "./sweeper";
 
+export { DISPOSAL_BATCH, mediaForCases } from "./cases";
+export type { MediaForCases, StaffImage } from "./cases";
 export { MediaError } from "./context";
-export type { MediaDeps, MediaForPosts } from "./context";
+export type { MediaDeps, MediaForPosts, PostImage } from "./context";
 export type { StoredFile } from "./files";
+export type { CaseReach, HeldImage, HoldPair } from "./repo";
 export type { SweepReport } from "./sweeper";
 
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
-  /** Removes every image row of the owner, on a post or not, whatever its state, inside the account purge's transaction; the ids name the files to delete. */
+  /**
+   * Removes the owner's image rows, on a post or not, whatever their state, inside the account purge's transaction; the
+   * ids name the files to delete. A row that a case holds, and every row of a frozen post, stays and is not answered
+   * (3c design, section 7.10): the purge asks for the files of the rows it was answered, and of no other.
+   */
   purgeOwner(tx: DbTx, ownerId: string): Promise<string[]>;
   /**
    * Asks the worker to delete the files of these images, whatever their state: an upload still waiting
@@ -34,10 +42,12 @@ export interface MediaForAccount {
    */
   requestDeletion(ids: readonly string[]): Promise<void>;
   /**
-   * The account's ready images, on a post or not, each with the checked open of its large variant: the
-   * store is written by the worker and not trusted, so a file is read only when it is a plain file of the
+   * The account's ready images that it is still shown, on a post or not, each with the checked open of its large
+   * variant: the store is written by the worker and not trusted, so a file is read only when it is a plain file of the
    * store's own device no larger than a variant may be, and only up to the size that check measured
-   * (null, and the export lists the image as missing, otherwise).
+   * (null, and the export lists the image as missing, otherwise). A sealed image, an image of a deleted post and an
+   * erased one are not listed; `open` reads the row again and answers null for an image that has become one of those
+   * since the list was read, so a seal that commits while an archive streams leaves no sealed file in it from then on.
    */
   exportImages(ownerId: string): Promise<{ id: string; open(): Promise<StoredFile | null> }[]>;
 }
@@ -50,7 +60,12 @@ export function mediaForAccount(deps: MediaDeps): MediaForAccount {
       for (const id of ids) await deps.files.discardUpload(id);
       await deps.files.requestDeletion(ids);
     },
-    exportImages: async (ownerId) => (await deps.repo.readyImages(ownerId)).map((id) => ({ id, open: () => deps.files.openImage(id, "large") })),
+    exportImages: async (ownerId) =>
+      (await deps.repo.readyImages(ownerId)).map((id) => ({
+        id,
+        // The row is read again, with the list's own condition, right before the file is opened.
+        open: async () => ((await deps.repo.isExportable(ownerId, id)) ? deps.files.openImage(id, "large") : null),
+      })),
   };
 }
 
@@ -94,12 +109,15 @@ export function createMedia(options: CreateMediaOptions) {
     forPosts: (postIds) => deps.repo.forPosts(postIds),
   };
   const forAccount = mediaForAccount(deps);
+  const forCases = mediaForCases(deps);
   return {
     deps,
     /** The interface the social module uses to put images on posts and read them back. */
     forPosts,
     /** The interface the account module uses. */
     forAccount,
+    /** The interface the moderation module uses: an intake's holds, what a case reaches, the staff's image, the disposal. */
+    forCases,
     /** Creates the uploads volume's directories. Call once before serving. */
     prepare: () => deps.files.prepare(),
     routes: mediaRoutes(deps, options.requireSession),

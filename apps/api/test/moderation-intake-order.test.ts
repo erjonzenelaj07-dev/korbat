@@ -8,9 +8,10 @@ import { recordIntake, type IntakeGround, type LiveTarget } from "../src/moderat
 
 /**
  * The order of the intake's transaction (3c design, section 7.1, step 4), without a database: the transaction is a
- * stand-in that records every statement in the order it is issued and answers each as the test scripts it, and the social
- * module is one that records what it is asked to lock and to copy. What the statements do to real rows is in the
- * integration tests; this holds only their order and how often a target's open case is read.
+ * stand-in that records every statement in the order it is issued and answers each as the test scripts it, the social
+ * module is one that records what it is asked to lock and to copy, and the media module one that records the pairs it is
+ * asked to hold and answers each post with one image. What the statements do to real rows is in the integration tests;
+ * this holds only their order and how often a target's open case is read.
  */
 
 const POST_ONE = "00000000-0000-4000-8000-000000000001";
@@ -43,6 +44,8 @@ function recording(openCases: Record<string, (string | null)[]>) {
   const dialect = new PgDialect();
   const events: string[] = [];
   const reads: Record<string, number> = {};
+  /** What each stored snapshot lists as the target's images. */
+  const snapshots: { target: string; media: unknown }[] = [];
   let runs = 0;
   const tx = {
     execute: async (query: SQL) => {
@@ -62,8 +65,19 @@ function recording(openCases: Record<string, (string | null)[]>) {
       if (statement.startsWith("insert into intake_items")) return events.push(`item ${String(params[2])} ${String(params[3])} in ${String(params[1])}`), [{ id: randomUUID(), seq: 1 }];
       if (statement.startsWith("select to_char(")) return events.push("time"), [{ at: TAKEN }];
       if (statement.startsWith("select display_name, bio, handle from evidence_snapshots")) return [];
-      if (statement.startsWith("insert into evidence_snapshots")) return events.push(`snapshot ${String(params[1])} ${String(params[2])}`), [{ id: randomUUID(), taken_at: TAKEN }];
+      if (statement.startsWith("insert into evidence_snapshots")) {
+        snapshots.push({ target: String(params[2]), media: params[9] === null ? null : JSON.parse(String(params[9])) });
+        return events.push(`snapshot ${String(params[1])} ${String(params[2])}`), [{ id: randomUUID(), taken_at: TAKEN }];
+      }
       throw new Error(`the intake issued a statement this test does not know: ${statement}`);
+    },
+  };
+  /** The media module's hold: every pair it was given, in order, and one image for each post it was asked to hold. */
+  const media = {
+    hold: async (within: unknown, pairs: readonly ({ caseId: string; postId: string } | { ownerId: string })[]) => {
+      if (within !== tx) throw new Error("the hold ran outside the intake's transaction");
+      events.push(`hold ${pairs.map((pair) => ("postId" in pair ? `post ${pair.postId} for ${pair.caseId}` : `owner ${pair.ownerId}`)).join(", ") || "nothing"}`);
+      return new Map(pairs.flatMap((pair) => ("postId" in pair ? [[pair.postId, [{ id: `image-of-${pair.postId}`, alt: "an image", width: 1200, height: 800 }]] as const] : [])));
     },
   };
   const social = {
@@ -81,8 +95,8 @@ function recording(openCases: Record<string, (string | null)[]>) {
       return fn(tx);
     },
   };
-  const deps = { apiDb, social, config: {}, log: pino({ level: "silent" }), now: () => new Date() } as unknown as ModerationDeps;
-  return { deps, events, runs: () => runs };
+  const deps = { apiDb, social, media, config: {}, log: pino({ level: "silent" }), now: () => new Date() } as unknown as ModerationDeps;
+  return { deps, events, snapshots, runs: () => runs };
 }
 
 /** The targets in an order that is not the cases' own: the account first, then the later post, then the earlier one. */
@@ -93,7 +107,7 @@ const live: LiveTarget[] = [
 ];
 
 describe("the intake's transaction keeps one order", () => {
-  test("every case with its item first, posts before accounts and each kind by id, whatever order the request names them in; only then the copies, in that same order", async () => {
+  test("every case with its item first, posts before accounts and each kind by id, whatever order the request names them in; then the copies, in that same order; then one hold for the whole intake; only then the snapshots", async () => {
     const world = recording({});
     const recorded = await recordIntake(world.deps, { ground, live });
     expect(world.events).toEqual([
@@ -112,11 +126,20 @@ describe("the intake's transaction keeps one order", () => {
       // No post is copied, and so none is locked, before the last case is taken.
       "time",
       `copy post ${POST_ONE}`,
-      `snapshot post ${POST_ONE}`,
       `copy post ${POST_TWO}`,
-      `snapshot post ${POST_TWO}`,
       `copy account ${ACCOUNT}`,
+      // No image row is locked before the last post is: one hold, a pair for each post with its case, in the cases' order.
+      // An account that is reported under a rule reaches no image, so it brings no pair.
+      `hold post ${POST_ONE} for case-of-${POST_ONE}, post ${POST_TWO} for case-of-${POST_TWO}`,
+      `snapshot post ${POST_ONE}`,
+      `snapshot post ${POST_TWO}`,
       `snapshot account ${ACCOUNT}`,
+    ]);
+    // A post's snapshot lists the images the hold answered for it; an account's lists none.
+    expect(world.snapshots).toEqual([
+      { target: POST_ONE, media: [{ id: `image-of-${POST_ONE}`, alt: "an image", width: 1200, height: 800 }] },
+      { target: POST_TWO, media: [{ id: `image-of-${POST_TWO}`, alt: "an image", width: 1200, height: 800 }] },
+      { target: ACCOUNT, media: null },
     ]);
     // The answer lists the items as the request named them.
     expect(recorded.items.map((item) => [item.position, item.targetId])).toEqual([[1, ACCOUNT], [2, POST_TWO], [3, POST_ONE]]);
@@ -126,12 +149,23 @@ describe("the intake's transaction keeps one order", () => {
     expect(reversed.events).toEqual(world.events);
   });
 
+  test("a report of child sexual abuse material that names an account brings the pair that only locks the account's images, after the posts' pairs; no other report of an account does", async () => {
+    const csam: IntakeGround = { ...ground, channel: "signed_out", reporterId: null, ruleId: null, allegesIllegal: true, csam: true, category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS" };
+    const world = recording({});
+    await recordIntake({ ...world.deps, social: { ...world.deps.social, postRef: async () => ({ authorId: ACCOUNT, state: "visible", quoteOfId: null }) } } as ModerationDeps, { ground: csam, live });
+    expect(world.events.filter((event) => event.startsWith("hold"))).toEqual([`hold post ${POST_ONE} for case-of-${POST_ONE}, post ${POST_TWO} for case-of-${POST_TWO}, owner ${ACCOUNT}`]);
+    // An account alone, reported under a rule: the hold is still asked once, for nothing.
+    const plain = recording({});
+    await recordIntake(plain.deps, { ground, live: [{ type: "account", id: ACCOUNT, position: 1, namedHandle: "Named" }] });
+    expect(plain.events.filter((event) => event.startsWith("hold"))).toEqual(["hold nothing"]);
+  });
+
   test("a target whose open case is read as none twice and found the third time stays in one run: the insert and the read are repeated in the same transaction", async () => {
     const world = recording({ [POST_ONE]: [null, null, "the-new-case"] });
     await recordIntake(world.deps, { ground, live: [{ type: "post", id: POST_ONE, position: 1 }] });
     expect(world.runs()).toBe(1);
     const pair = [`open post ${POST_ONE}`, `read post ${POST_ONE}`];
-    expect(world.events).toEqual(["run 1", "lock sender", "intake", ...pair, ...pair, ...pair, `item post ${POST_ONE} in the-new-case`, "time", `copy post ${POST_ONE}`, `snapshot post ${POST_ONE}`]);
+    expect(world.events).toEqual(["run 1", "lock sender", "intake", ...pair, ...pair, ...pair, `item post ${POST_ONE} in the-new-case`, "time", `copy post ${POST_ONE}`, `hold post ${POST_ONE} for the-new-case`, `snapshot post ${POST_ONE}`]);
   });
 
   test("three reads that find none start the transaction over, with no item stored without a case; after the fourth run the answer is case_closed", async () => {

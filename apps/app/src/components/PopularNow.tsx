@@ -1,13 +1,20 @@
 import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
-import type { PostView } from "@korbat/contracts";
+import { isHiddenMedia, type MediaView, type PostView } from "@korbat/contracts";
 import { social } from "@/lib/social";
 
-/** What a link says for a post: its text up to 100 characters, or, for a post of images only, its first image's description. */
+/**
+ * What a link says for a post: its text up to 100 characters, or, for a post of images only, the description of the
+ * first image this reader is shown. An image moderation hid has no description and is skipped; a post of hidden images
+ * alone is listed by its author's name only.
+ */
 function snippet(post: PostView): string {
   const text = post.body.replace(/\s+/g, " ").trim();
-  if (!text) return post.media[0] ? `Image: ${post.media[0].alt}` : "";
+  if (!text) {
+    const shown = post.media.find((item): item is MediaView => !isHiddenMedia(item));
+    return shown ? `Image: ${shown.alt}` : "";
+  }
   const characters = Array.from(text);
   return characters.length > 100 ? `${characters.slice(0, 100).join("")}...` : text;
 }

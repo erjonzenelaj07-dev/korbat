@@ -9,6 +9,9 @@ import { createAuth } from "../../src/auth";
 import { MemoryKv } from "../../src/auth/kv";
 import { loadConfig } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
+import { mediaForCases } from "../../src/media";
+import { createMediaFiles } from "../../src/media/files";
+import { createMediaRepo } from "../../src/media/repo";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createModeration } from "../../src/moderation";
 import { socialForModeration } from "../../src/social";
@@ -54,7 +57,9 @@ function build(consoleOrigin: string | undefined, probe = false) {
     profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null, setVerified: async () => undefined },
   });
   const apiDb = createDb(config.DATABASE_URL_API, { max: 1 });
-  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+  // The media module's interface for cases, over volumes nothing here creates: no route of this test reads an image.
+  const media = mediaForCases({ repo: createMediaRepo(apiDb), files: createMediaFiles({ uploadsDir: "no-uploads", storeDir: "no-store", log: logger }), log: logger });
+  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media, config, logger });
   const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
   const app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   const seen: { session: unknown; method: string; path: string }[] = [];

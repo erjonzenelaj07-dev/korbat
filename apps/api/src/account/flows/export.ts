@@ -218,8 +218,10 @@ const indented = (json: string, pad: string): string => json.replaceAll("\n", `\
 /**
  * Writes the archive: every image as a stored entry, then export.json, then the central directory.
  * export.json comes last so that missingMedia can name every image whose file the checked open refused
- * or did not find when its turn came (the sweeper may be between the row and the file); the order of
- * entries means nothing to a reader.
+ * or did not find when its turn came (the sweeper may be between the row and the file), or that was no
+ * longer the owner's to export by then: the media module reads each image's row again as it opens the
+ * file, and opens none for an image deleted with its post, erased or sealed since the list was read.
+ * The order of entries means nothing to a reader.
  */
 export async function writeExport(writer: ZipWriter, plan: ExportPlan): Promise<void> {
   for (const image of plan.images) {

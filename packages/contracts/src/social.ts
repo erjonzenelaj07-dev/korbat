@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DisplayName, HandleInput } from "./auth";
-import { MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
+import { HiddenMedia, MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
 import { FORBIDDEN_FORMAT, visibleLength } from "./text";
 
 /**
@@ -102,8 +102,8 @@ const postFields = {
   /** The handle is null when the viewer could not open the parent: its author is blocked either way, or it is hidden or deleted. */
   replyTo: z.object({ id: z.uuid(), authorHandle: z.string().nullable() }).nullable(),
   counts: PostCounts,
-  /** The post's images in order. Always present, often empty. */
-  media: z.array(MediaView),
+  /** The post's images in order, each as the image or, where the reader is not shown it, as a hidden image in its place. Always present, often empty. */
+  media: z.array(z.union([MediaView, HiddenMedia])),
   /** Present only for a signed-in viewer. */
   viewer: ViewerPostState.optional(),
 };

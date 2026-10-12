@@ -520,10 +520,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the seal, the freeze and
       // As the migrator: the API role deletes no post and no profile.
       await inWorld(async (tx) => {
         const p = await imagePost(tx, 1);
-        const { caseId } = await report(tx, aPost(p.postId), "csam");
+        // The report names the author's account: a case about the post itself would also hold the image as its evidence,
+        // and that hold would keep the row whatever became of the seal.
+        const { caseId } = await report(tx, anAccount(p.authorId), "csam");
         const final = await decideIn(tx, admin, caseId, SEAL_FOR_GOOD);
-        // The case is closed and no item waits: the seal alone keeps the row.
+        // The case is closed, no item waits and no hold stands: the seal alone keeps the row.
         expect((await readCase(tx, caseId)).closed_at).not.toBeNull();
+        expect(await tx.execute(sql`select 1 from media_holds where media_id = ${p.mediaIds[0]!}::uuid`)).toHaveLength(0);
         const retained = { code: "23001", message: expect.stringMatching(/^post_media row [0-9a-f-]{36} is retained$/) };
         expect(await pgError(tx.transaction((sp) => sp.execute(sql`delete from posts where id = ${p.postId}::uuid`)))).toEqual(retained);
         expect(await pgError(tx.transaction((sp) => sp.execute(sql`delete from profiles where id = ${p.authorId}::uuid`)))).toEqual(retained);

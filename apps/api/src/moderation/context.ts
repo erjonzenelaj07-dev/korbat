@@ -2,6 +2,7 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { Logger } from "pino";
 import type { Config } from "../config";
+import type { MediaForCases } from "../media";
 import type { SocialForModeration } from "../social";
 
 /** The moderation codes plus the shared ones the module also raises. */
@@ -76,6 +77,8 @@ export interface ModerationDeps {
   apiDb: Db;
   /** The social module's interface: the locks on profile rows and the reads evidence is copied from. */
   social: SocialForModeration;
+  /** The media module's interface: an intake's holds on image rows, which this module never names itself. */
+  media: MediaForCases;
   config: Config;
   log: Logger;
   now: () => Date;

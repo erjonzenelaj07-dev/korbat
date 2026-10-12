@@ -1,4 +1,5 @@
-import type { Author, PostView, TimelineItem, Tombstone } from "@korbat/contracts";
+import type { Author, HiddenMedia, MediaView, PostView, TimelineItem, Tombstone } from "@korbat/contracts";
+import type { PostImage } from "../media";
 import type { SocialDeps, ViewerId } from "./context";
 import { encodeCursor } from "./cursor";
 import type { ListRow, PostRow, ProfileRow } from "./repo";
@@ -19,11 +20,26 @@ export function authorOf(profile: ProfileRow): Author {
 }
 
 /**
+ * One image of a post as this viewer gets it (3c design, section 7.10). A visible image is the image. A withheld or
+ * removed one stays with its author, who gets it with that state; anyone else gets a placeholder in its place, the same
+ * for both states, with nothing of the image in it. A sealed image is that placeholder for every viewer, its author
+ * included, who alone is told that it is sealed.
+ */
+export function mediaFor(viewer: ViewerId, authorId: string, image: PostImage): MediaView | HiddenMedia {
+  const own = viewer !== null && viewer === authorId;
+  if (image.state === "sealed") return own ? { id: image.id, hidden: true, sealed: true } : { id: image.id, hidden: true };
+  const { state, ...view } = image;
+  if (state === "visible") return view;
+  return own ? { ...view, moderation: state } : { id: image.id, hidden: true };
+}
+
+/**
  * Turns post ids into views for one viewer: loads the rows and, one level deep, the posts they
  * quote; decides access for every row with the visibility rule and the viewer's blocks; attaches
- * the viewer's like, repost and bookmark state, and every post's images. Ids that resolve to nothing
- * become tombstones, and tombstones carry no images. The viewer's own visible posts that the current
- * Explore ranking holds, while their switch is on, carry the author's chip (2c design, section 8):
+ * the viewer's like, repost and bookmark state, and every post's images, each as this viewer gets it
+ * (mediaFor). Ids that resolve to nothing become tombstones, and tombstones carry no images. The
+ * viewer's own visible posts that the current Explore ranking holds, while their switch is on, carry
+ * the author's chip (2c design, section 8):
  * asked in one query, and only when the viewer wrote some of the posts; a quoted embed never carries it.
  */
 export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
@@ -54,7 +70,7 @@ export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerI
     state: row.state as PostView["state"],
     replyTo: row.replyToId ? { id: row.replyToId, authorHandle: parentHandle(row) } : null,
     counts: { likes: row.likeCount, reposts: row.repostCount, replies: row.replyCount, quotes: row.quoteCount },
-    media: images.get(row.id) ?? [],
+    media: (images.get(row.id) ?? []).map((image) => mediaFor(viewer, row.authorId, image)),
     ...(states ? { viewer: states.get(row.id)! } : {}),
   });
   const quoteOf = (id: string | null): PostView["quoteOf"] => {

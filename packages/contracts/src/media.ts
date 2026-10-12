@@ -68,7 +68,10 @@ export const MediaStatusResponse = z.discriminatedUnion("status", [
 ]);
 export type MediaStatusResponse = z.infer<typeof MediaStatusResponse>;
 
-/** An image on a post, as every reader gets it. */
+/**
+ * An image on a post, as a reader who is shown it gets it. `moderation` is set only on the author's own image that
+ * moderation withheld or removed, with that state: the author keeps seeing such an image, and nobody else is shown it.
+ */
 export const MediaView = z.object({
   id: MediaId,
   width: z.number().int().positive(),
@@ -77,5 +80,19 @@ export const MediaView = z.object({
   alt: z.string(),
   small: z.string(),
   large: z.string(),
+  moderation: z.enum(["withheld", "removed"]).optional(),
 });
 export type MediaView = z.infer<typeof MediaView>;
+
+/**
+ * What a reader gets in place of an image they are not shown: its id and the mark, never its size, its blurhash, its
+ * description or a path. It is what anyone but the author gets for a withheld or removed image, the same for both states,
+ * and what everyone gets for a sealed image, its author included: `sealed` is set only then, and only for the author.
+ */
+export const HiddenMedia = z.strictObject({ id: MediaId, hidden: z.literal(true), sealed: z.literal(true).optional() });
+export type HiddenMedia = z.infer<typeof HiddenMedia>;
+
+/** Whether an entry of a post's media list is a hidden image, which has nothing to draw or to open. */
+export function isHiddenMedia(item: MediaView | HiddenMedia): item is HiddenMedia {
+  return "hidden" in item;
+}

@@ -2,9 +2,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ErrorEnvelope, FlowResponse, HealthResponse, MEDIA_MAX_BYTES, MediaStatusResponse, PostView, TimelinePage, UploadResponse } from "@korbat/contracts";
+import { ErrorEnvelope, FlowResponse, HealthResponse, MEDIA_MAX_BYTES, MediaStatusResponse, MediaView, PostView, TimelinePage, UploadResponse } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { uploadsLayout } from "@korbat/media-protocol";
 import { createApp } from "../../src/app";
@@ -123,17 +124,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     const post = PostView.parse(await created.json());
     expect(post.media).toEqual([{ id, width: 1200, height: 800, blurhash: "L2Eo_P_3jb_3~qoL", alt: "a harbour at dawn", small: `/api/media/${id}/small.webp`, large: `/api/media/${id}/large.webp` }]);
 
-    const image = await app.request(post.media[0]!.large);
+    const first = MediaView.parse(post.media[0]);
+    const image = await app.request(first.large);
     expect(image.status).toBe(200);
     expect(image.headers.get("content-type")).toBe("image/webp");
     expect(image.headers.get("cache-control")).toBe("public, max-age=300");
     expect(image.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await image.text()).toBe(`large-webp-of-${id}`);
-    const again = await app.request(post.media[0]!.large, { headers: { "if-none-match": image.headers.get("etag")! } });
+    const again = await app.request(first.large, { headers: { "if-none-match": image.headers.get("etag")! } });
     expect(again.status).toBe(304);
 
     const latest = TimelinePage.parse(await (await app.request("/api/timeline/latest?limit=50")).json());
-    expect(latest.items.find((item) => item.post.id === post.id)?.post.media[0]?.alt).toBe("a harbour at dawn");
+    expect(latest.items.find((item) => item.post.id === post.id)?.post.media[0]).toMatchObject({ alt: "a harbour at dawn" });
   });
 
   test("uploads need a session, the CSRF token and the app's origin", async () => {
@@ -186,10 +188,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     expect(PostView.parse(await four.json())).toMatchObject({ body: "", media: [{ alt: "image 1" }, { alt: "image 2" }, { alt: "image 3" }, { alt: "image 4" }] });
   });
 
-  test("images of a withheld post reach their author only, and deleting a post takes its images with it", async () => {
+  test("images of a withheld post reach their author only; deleting a post takes its images with it, unless a case holds them", async () => {
     const [ada, bob] = [await signUp(), await signUp()];
     const id = await readyImage(ada.b);
     const post = PostView.parse(await (await ada.b.fetch("/api/posts", { json: { body: "under review", media: [{ id, alt: "an image" }] } })).json());
+    // The decision's case holds the post's image as evidence from the finding on.
     await decideForTest(apiDb, post.id, "withheld");
 
     const own = await ada.b.fetch(`/api/media/${id}/small.webp`);
@@ -197,10 +200,24 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     expect((await bob.b.fetch(`/api/media/${id}/small.webp`)).status).toBe(404);
     expect((await app.request(`/api/media/${id}/small.webp`)).status).toBe(404);
 
+    // The author deletes the post: the held image's row stays, the image is served to nobody, its status answers as
+    // for an upload that does not exist, and no deletion of its files is requested.
     await decideForTest(apiDb, post.id, "visible");
     expect((await ada.b.fetch(`/api/posts/${post.id}`, { method: "DELETE" })).status).toBe(204);
     expect((await ada.b.fetch(`/api/media/${id}/small.webp`)).status).toBe(404);
-    expect(existsSync(uploads.deletion(id))).toBe(true);
+    expect((await ada.b.fetch(`/api/media/${id}`)).status).toBe(404);
+    const [kept] = await apiDb.execute<{ held: boolean }>(sql`select hold_until > now() as held from post_media where id = ${id}::uuid`);
+    expect(kept).toEqual({ held: true });
+    expect(existsSync(uploads.deletion(id))).toBe(false);
+
+    // A post that no case concerns: its image goes with it, and the worker is asked to delete the files.
+    const other = await readyImage(ada.b);
+    const plain = PostView.parse(await (await ada.b.fetch("/api/posts", { json: { body: "nobody reported this", media: [{ id: other, alt: "another image" }] } })).json());
+    expect((await app.request(`/api/media/${other}/small.webp`)).status).toBe(200);
+    expect((await ada.b.fetch(`/api/posts/${plain.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await ada.b.fetch(`/api/media/${other}/small.webp`)).status).toBe(404);
+    expect(await apiDb.execute(sql`select 1 from post_media where id = ${other}::uuid`)).toHaveLength(0);
+    expect(existsSync(uploads.deletion(other))).toBe(true);
     // The states come from real, confirmed decisions: a staff key's enrolment, a sign-in, and a step-up for each.
   }, 30_000);
 

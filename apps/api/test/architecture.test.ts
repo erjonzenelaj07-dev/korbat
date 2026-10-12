@@ -148,6 +148,141 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
   return violations;
 }
 
+/**
+ * The source pins of the freeze (3c design, sections 6.1 and 6.5). The freeze of the path for suspected child sexual abuse
+ * material holds only while every path of a kind passes one gate, so who may name what is pinned here, beside the
+ * database's own pins of who names the predicate there:
+ *   - `post_frozen` is named only in the media repository and the moderation repository, and `frozen_for` nowhere in the
+ *     API: no other file decides by itself what is frozen;
+ *   - a delete of `post_media` is written only in the media repository, whose every delete the keep trigger judges and
+ *     whose every answer names only rows that are gone;
+ *   - `requestDeletion` (asking the worker to delete an image's files) and `openImage` (opening an image file of the
+ *     store) are named in a pinned list of files, each a pinned number of times, comments included: a new caller of
+ *     either fails the test until whoever adds it has checked it against the gates and listed it.
+ */
+const POST_FROZEN_ALLOWED = new Set(["media/repo.ts", "moderation/repo.ts"]);
+const POST_MEDIA_DELETE_ALLOWED = new Set(["media/repo.ts"]);
+const POST_MEDIA_DELETE = /\bdelete\s+from\s+(?:only\s+)?(?:"?public"?\s*\.\s*)?"?post_media\b|\btruncate\b[^;`]*\bpost_media\b|\.delete\(\s*postMedia\b/i;
+
+function findFreezeViolations(files: SourceFile[]): string[] {
+  const violations: string[] = [];
+  for (const { path, source } of files) {
+    if (/\bfrozen_for\b/.test(source)) violations.push(`${path}: names frozen_for, which only the database's own functions name`);
+    if (/\bpost_frozen\b/.test(source) && !POST_FROZEN_ALLOWED.has(path)) violations.push(`${path}: names post_frozen, which only the media and moderation repositories may`);
+    if (POST_MEDIA_DELETE.test(source) && !POST_MEDIA_DELETE_ALLOWED.has(path)) violations.push(`${path}: deletes from post_media, which only the media repository may`);
+  }
+  return violations;
+}
+
+/** Every file that names `name` as a whole word, with how often, comments included. */
+function mentions(files: SourceFile[], name: string): Record<string, number> {
+  const found: Record<string, number> = {};
+  for (const { path, source } of files) {
+    // Cut at every word boundary: a whole word is then a piece of its own.
+    const count = source.split(/\b/).filter((piece) => piece === name).length;
+    if (count > 0) found[path] = count;
+  }
+  return found;
+}
+
+/**
+ * Where `requestDeletion` is named. A deletion request names an id that a delete of post_media answered, an upload that
+ * failed before it could be put on a post, or a file that has no row: the files module writes the request; the upload's
+ * removal, the sweeper, the author's deletion (after its commit), the account's purge (inside its transaction) and the
+ * disposal's caller (after its commit) ask for it through the module's interfaces.
+ */
+const REQUEST_DELETION = {
+  "account/flows/deletion.ts": 1,
+  "media/cases.ts": 4,
+  "media/context.ts": 2,
+  "media/files.ts": 1,
+  "media/flows/remove.ts": 1,
+  "media/index.ts": 5,
+  "media/sweeper.ts": 2,
+  "social/context.ts": 1,
+  "social/flows/posts.ts": 1,
+};
+
+/**
+ * Where `openImage` is named: the files module, which opens a file of the store under its checks, and its three callers,
+ * each behind its own reader's rule: serve (gate S), the export's open (which reads the row again) and the staff's image
+ * (gate V).
+ */
+const OPEN_IMAGE = {
+  "media/cases.ts": 1,
+  "media/files.ts": 1,
+  "media/flows/serve.ts": 1,
+  "media/index.ts": 1,
+};
+
+describe("the freeze's source pins", () => {
+  test("apps/api/src names post_frozen only in the two repositories, frozen_for nowhere, and deletes from post_media only in the media repository", () => {
+    expect(findFreezeViolations(loadSources())).toEqual([]);
+    // The media repository does name the predicate and does delete: the pins are about a file that exists.
+    const repo = loadSources().find((file) => file.path === "media/repo.ts")!;
+    expect(repo.source).toMatch(/\bpost_frozen\b/);
+    expect(POST_MEDIA_DELETE.test(repo.source)).toBe(true);
+  });
+
+  test("catches the predicate named outside the two repositories, and its core named anywhere", () => {
+    const files: SourceFile[] = [
+      { path: "media/repo.ts", source: "sql`select public.post_frozen(m.post_id) as frozen from post_media m`" },
+      { path: "moderation/repo.ts", source: "sql`select not public.post_frozen(${postId}::uuid) as images_allowed`" },
+      { path: "moderation/cases.ts", source: "const [row] = await tx.execute(sql`select public.post_frozen(${postId}::uuid) as frozen`);" },
+      { path: "media/flows/serve.ts", source: "const frozen = await db.execute(sql`select post_frozen(${postId})`);" },
+      { path: "staff/cases.ts", source: "await db.execute(sql`select public.frozen_for(${postId}::uuid, ${authorId}::uuid)`);" },
+      { path: "media/repo.ts", source: "sql`select public.frozen_for(m.post_id, m.owner_id) from post_media m`" },
+      // Another word that only contains the name is not the name.
+      { path: "social/views.ts", source: "const post_frozen_label = 1; const unfrozen_for_now = 2;" },
+    ];
+    expect(findFreezeViolations(files)).toEqual([
+      "moderation/cases.ts: names post_frozen, which only the media and moderation repositories may",
+      "media/flows/serve.ts: names post_frozen, which only the media and moderation repositories may",
+      "staff/cases.ts: names frozen_for, which only the database's own functions name",
+      "media/repo.ts: names frozen_for, which only the database's own functions name",
+    ]);
+  });
+
+  test("catches a delete of post_media outside the media repository, in SQL and through the query builder", () => {
+    const files: SourceFile[] = [
+      { path: "media/repo.ts", source: "await tx.execute(sql`delete from post_media where id in (select id from post_media where post_id = ${postId}::uuid order by id for update) returning id`);\nawait db.delete(postMedia).where(eq(postMedia.id, id));" },
+      { path: "media/sweeper.ts", source: "await db.execute(sql`delete from post_media where post_id is null and created_at < ${before}`);" },
+      { path: "media/flows/remove.ts", source: "await deps.db.delete(postMedia).where(eq(postMedia.id, id));" },
+      { path: "media/cases.ts", source: 'await tx.execute(sql`DELETE FROM "public"."post_media" WHERE "id" = ${id}`);' },
+      { path: "media/index.ts", source: "await tx.execute(sql`truncate table post_media cascade`);" },
+      // Reading and updating image rows, and deleting something else, is not a delete of image rows.
+      { path: "media/flows/status.ts", source: "await db.update(postMedia).set({ status }).where(eq(postMedia.id, id));\nawait db.delete(posts).where(eq(posts.id, id));\nconst rows = await db.execute(sql`select id from post_media`);" },
+    ];
+    expect(findFreezeViolations(files)).toEqual([
+      "media/sweeper.ts: deletes from post_media, which only the media repository may",
+      "media/flows/remove.ts: deletes from post_media, which only the media repository may",
+      "media/cases.ts: deletes from post_media, which only the media repository may",
+      "media/index.ts: deletes from post_media, which only the media repository may",
+    ]);
+  });
+
+  test("requestDeletion and openImage are named in exactly the pinned files, each the pinned number of times", () => {
+    expect(mentions(loadSources(), "requestDeletion")).toEqual(REQUEST_DELETION);
+    expect(mentions(loadSources(), "openImage")).toEqual(OPEN_IMAGE);
+  });
+
+  test("catches a new caller of either, in a file of the list and in one outside it", () => {
+    const real = loadSources();
+    // A second request in the purge's flow, and a first one in a file that had none.
+    const withCallers = real
+      .map((file) => (file.path === "account/flows/deletion.ts" ? { ...file, source: `${file.source}\nawait deps.media.requestDeletion(kept);` } : file))
+      .concat([{ path: "moderation/retention.ts", source: "await deps.media.requestDeletion(ids);" }]);
+    expect(mentions(withCallers, "requestDeletion")).not.toEqual(REQUEST_DELETION);
+    expect(mentions(withCallers, "requestDeletion")).toMatchObject({ "account/flows/deletion.ts": 2, "moderation/retention.ts": 1 });
+    // A fourth opener of the store's files.
+    const withOpener = real.concat([{ path: "staff/cases.ts", source: 'const file = await files.openImage(id, "large");' }]);
+    expect(mentions(withOpener, "openImage")).not.toEqual(OPEN_IMAGE);
+    // A name that only contains the word is not counted.
+    expect(mentions([{ path: "x.ts", source: "requestDeletions(); reopenImage(); openImages();" }], "requestDeletion")).toEqual({});
+    expect(mentions([{ path: "x.ts", source: "requestDeletions(); reopenImage(); openImages();" }], "openImage")).toEqual({});
+  });
+});
+
 describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);

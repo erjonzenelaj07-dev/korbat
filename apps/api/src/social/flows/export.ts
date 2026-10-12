@@ -1,4 +1,4 @@
-import type { MediaView } from "@korbat/contracts";
+import type { PostImage } from "../../media";
 import { SocialError, type SocialDeps } from "../context";
 import type { ExportKey, ExportPage, ExportedPostRow, HandleRefRow, PostRefRow } from "../repo";
 
@@ -54,15 +54,20 @@ function paged<T>(read: (after: ExportKey | null) => Promise<ExportPage<T>>): As
   };
 }
 
-/** Each page of posts with its images, fetched from the media module for that page's posts only. */
+/**
+ * Each page of posts with its images, fetched from the media module for that page's posts only. The author's own
+ * withheld and removed images are listed like any other: they stay with their author. A sealed image is exported to
+ * nobody, its author included, so the list does not name it (3c design, section 7.10), and the media module lists no
+ * image of a deleted post and no erased image at all.
+ */
 function withMedia(deps: SocialDeps, pages: AsyncIterable<ExportedPostRow[]>): AsyncIterable<ExportedPost[]> {
   return {
     async *[Symbol.asyncIterator]() {
       for await (const rows of pages) {
-        const media: Map<string, MediaView[]> = await deps.media.forPosts(rows.map((post) => post.id));
+        const media: Map<string, PostImage[]> = await deps.media.forPosts(rows.map((post) => post.id));
         yield rows.map((post) => ({
           ...post,
-          media: (media.get(post.id) ?? []).map((view) => ({ id: view.id, altText: view.alt, width: view.width, height: view.height })),
+          media: (media.get(post.id) ?? []).flatMap((image) => (image.state === "sealed" ? [] : [{ id: image.id, altText: image.alt, width: image.width, height: image.height }])),
         }));
       }
     },

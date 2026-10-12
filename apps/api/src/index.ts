@@ -55,8 +55,8 @@ const stopSweeper = media.startSweeper(jobLock);
 const stopJanitor = auth.startJanitor(jobLock);
 
 // Moderation cases: the module owns its tables on the API's role and reaches the social module through an interface of
-// that module's own, built over the same pool.
-const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+// that module's own, built over the same pool, and the image rows through the media module's interface for cases.
+const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: media.forCases, config, logger });
 
 const social = createSocial({
   apiDb,

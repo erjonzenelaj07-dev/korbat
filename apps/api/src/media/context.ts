@@ -39,15 +39,24 @@ export function mediaErrorMessage(code: MediaErrorKind): string {
 }
 
 /**
+ * An image of a post as this module hands it to the social module, with the image's own moderation state: the view
+ * builder decides from the state and the viewer what a reader gets. A sealed image is its id and its state only (3c
+ * design, section 7.10): nobody is given its size, its blurhash, its alt text or a path.
+ */
+export type PostImage = (Omit<MediaView, "moderation"> & { state: "visible" | "withheld" | "removed" }) | { id: string; state: "sealed" };
+
+/**
  * What the social module needs from this one. `attach` and `detachAll` run inside the social
  * module's own transaction; `requestDeletion` runs after it committed, because files cannot be
- * rolled back.
+ * rolled back. `detachAll` answers only the images that are really gone: a row a case holds, and every
+ * row of a frozen post, stays, and no deletion may be requested for its files. `forPosts` never lists
+ * an image of a deleted post or an erased image.
  */
 export interface MediaForPosts {
   attach(tx: DbTx, input: { postId: string; ownerId: string; items: readonly MediaAttachment[] }): Promise<void>;
   detachAll(tx: DbTx, postId: string): Promise<string[]>;
   requestDeletion(ids: readonly string[]): Promise<void>;
-  forPosts(postIds: readonly string[]): Promise<Map<string, MediaView[]>>;
+  forPosts(postIds: readonly string[]): Promise<Map<string, PostImage[]>>;
 }
 
 /** How many uploads one account may hold that are not on a post yet. */

@@ -1195,18 +1195,28 @@ export function createSocialRepo(db: Db) {
      * tombstoned already; its likes, reposts and bookmarks go with the counters of their posts; its
      * follows go in both directions with the other side's counters; its blocks and mutes go in both
      * directions; the profile row stays, anonymised, with its handle, so the handle is never reused.
-     * `within` runs in the same transaction, for the media rows. The profile row is locked first, so a
+     * `within` runs in the same transaction, as its last act, for the media rows. The profile row is locked first, so a
      * second purge of the same account (the request's and the job's) waits for the first and then finds
      * nothing left: every statement below changes only what is still there, so a repeat changes nothing.
      * The same lock orders the purge against every write by or about the account (a follow, like, repost,
      * bookmark, block, mute, post, reply or quote), which takes a shared lock on the row (lockLive): one that
      * comes second waits for the purge and is refused, one that comes first makes the purge wait and has what
      * it wrote removed or tombstoned here (a reply or a quote by another account stays, as one written before
-     * the deletion would).
+     * the deletion would). After the profile row come the row locks of every post of the account, in id order,
+     * before any post is written (3c design, section 7.10): a report that holds two of them holds them in that
+     * order. What stays unordered are the counters of other accounts' posts that this account replied to, quoted,
+     * liked or reposted, which are written after.
      */
     async purgeProfile(id: string, now: Date, within: (tx: DbTx) => Promise<void>): Promise<void> {
       await db.transaction(async (tx) => {
         const [row] = (await tx.execute(sql`select handle from profiles where id = ${id}::uuid for update`)) as unknown as { handle: string }[];
+        // Every post of the account is locked first, in id order, before any of them is written. A report holds the posts it
+        // copies for share in that order, and one about a post that quotes or replies to its author's own post holds two
+        // posts of this account. The counter statements below write such a quoted or replied-to post, in their scan's
+        // order, and the tombstones write the rest: with the locks taken here, in the report's order, the purge either
+        // waits at the first post the report holds, holding none itself, or holds them all before the report asks. The
+        // deleted posts are locked too: a live post may quote or reply to one, and its counter is written all the same.
+        await tx.execute(sql`select id from posts where author_id = ${id}::uuid order by id for update`);
         // The counters come off first, from the posts about to go, in one statement each: a self-reply's parent is a post of the author's too, and a row may be written once per statement.
         await tx.execute(sql`
           update posts set reply_count = greatest(0, reply_count - c.n)
@@ -1216,11 +1226,12 @@ export function createSocialRepo(db: Db) {
           update posts set quote_count = greatest(0, quote_count - c.n)
           from (select quote_of_id, count(*)::int as n from posts where author_id = ${id}::uuid and state <> 'deleted_by_author' and quote_of_id is not null group by quote_of_id) c
           where posts.id = c.quote_of_id`);
+        // The tombstones. The rows are this transaction's already, and no post of the account can appear meanwhile: writing
+        // one takes a shared lock on the profile row, which this transaction holds for update.
         await tx
           .update(posts)
           .set({ state: "deleted_by_author", deletedAt: now, body: "" })
           .where(and(eq(posts.authorId, id), ne(posts.state, "deleted_by_author")));
-        await within(tx);
         // The account's own engagement, with the counters of the posts it was on; bookmarks count nothing.
         await tx.execute(sql`
           with gone as (delete from likes where user_id = ${id}::uuid returning post_id)
@@ -1245,6 +1256,10 @@ export function createSocialRepo(db: Db) {
           .update(profiles)
           .set({ displayName: "Deleted account", bio: "", avatarPath: null, verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0, deletedAt: now })
           .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)));
+        // The media rows go last (3c design, section 7.10): they are the last rows this transaction locks, after every
+        // post and profile row it takes, and the requests for their files, which cannot be rolled back, are written as
+        // close to the commit as they can be.
+        await within(tx);
       });
     },
   };

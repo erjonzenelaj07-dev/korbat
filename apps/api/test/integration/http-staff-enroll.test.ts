@@ -20,6 +20,7 @@ import { socialForModeration } from "../../src/social";
 import { createStaff } from "../../src/staff";
 import { SoftAuthenticator, type CborValue, type SoftCreateInput } from "../auth/soft-authenticator";
 import { Browser } from "./http-client";
+import { casesMedia } from "./moderation-fixtures";
 import { DEVICE_BOUND, TEST_CONSOLE_ORIGIN, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 
 /**
@@ -46,7 +47,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the enrolment routes ove
     repo = createAuthRepo(authDb);
     mailer = new MemoryMailer();
     const auth = createAuth({ config, logger, authDb, kv: new MemoryKv(), mailer, profiles: createProfileStore(apiDb) });
-    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: casesMedia(apiDb), config, logger });
     const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
     app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   });

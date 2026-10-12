@@ -81,7 +81,7 @@ function build() {
     rateLimitStore,
     logger,
   });
-  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: media.forCases, config, logger });
   const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
   const app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, staff });
   // What the staff module mounts at /api/staff, as createApp mounts it.

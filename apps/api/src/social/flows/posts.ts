@@ -62,6 +62,8 @@ export async function deletePost(deps: SocialDeps, viewer: string, id: string): 
   if (!row) throw new SocialError("not_found", 404);
   if (row.authorId === viewer) {
     // The image rows go with the post, in its transaction. Their files are deleted after the commit: files cannot be rolled back.
+    // The media module answers only the rows that are gone: an image a case holds as evidence, and every image of a frozen
+    // post, keeps its row, served to nobody, and no deletion is asked for its files.
     let images: string[] = [];
     await deps.repo.deletePost(id, viewer, deps.now(), async (tx) => {
       images = await deps.media.detachAll(tx, id);

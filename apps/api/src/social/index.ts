@@ -25,8 +25,8 @@ export type { ExportedMedia, ExportedPost, ProfileExport } from "./flows/export"
 export interface SocialForAccount {
   /**
    * One transaction that tombstones every post, removes the engagement and graph rows with their
-   * counters and anonymises the profile row, keeping its handle; `within` runs inside it, for the
-   * media rows. Safe to repeat: a second run changes nothing.
+   * counters and anonymises the profile row, keeping its handle; `within` runs inside it, as its last
+   * act, for the media rows. Safe to repeat: a second run changes nothing.
    */
   purgeProfile(userId: string, now: Date, within: (tx: DbTx) => Promise<void>): Promise<void>;
   /**

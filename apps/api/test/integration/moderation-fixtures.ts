@@ -1,4 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { sql, type SQL } from "drizzle-orm";
 import pino from "pino";
 import { RULE_DEFAULT_CATEGORY, compareDecisionActions, textDigest, type ActionKind, type CaseDecidedParams, type RuleId, type TdbCategory } from "@korbat/contracts";
@@ -7,6 +9,9 @@ import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../../src/auth";
 import type { AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
+import { mediaForCases, type MediaForCases } from "../../src/media";
+import { createMediaFiles } from "../../src/media/files";
+import { createMediaRepo } from "../../src/media/repo";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "../../src/moderation/context";
 import { decide } from "../../src/moderation/decide";
 import { recordIntake, type IntakeGround, type IntakeRecorded, type LiveTarget } from "../../src/moderation/intake";
@@ -229,7 +234,18 @@ export async function postFrozen(db: Runner, postId: string): Promise<boolean> {
  * real statements and nothing commits.
  */
 export function moderationDeps(db: Runner): ModerationDeps {
-  return { apiDb: db as Db, social: socialForModeration(db as Db), config: loadConfig(), log: pino({ level: "silent" }), now: () => new Date() };
+  return { apiDb: db as Db, social: socialForModeration(db as Db), media: casesMedia(db), config: loadConfig(), log: pino({ level: "silent" }), now: () => new Date() };
+}
+
+/**
+ * The media module's interface for cases over a pool or a transaction, as the server hands it to the moderation module.
+ * Its volumes are folders that nothing creates: the database tests lock, hold and count image rows and never open or
+ * request a file, and a test that does builds the interface over a store of its own.
+ */
+export function casesMedia(db: Runner): MediaForCases {
+  const log = pino({ level: "silent" });
+  const root = path.join(tmpdir(), "korbat-test-no-volumes");
+  return mediaForCases({ repo: createMediaRepo(db as Db), files: createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log }), log });
 }
 
 const NO_GROUND = { reporterId: null, findingBy: null, contactId: null, ruleId: null, allegesIllegal: false, csam: false, categoryKeyword: null, citedLaw: null, explanation: null, bonaFide: false } as const;

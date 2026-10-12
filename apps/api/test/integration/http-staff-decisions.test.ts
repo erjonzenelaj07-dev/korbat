@@ -20,7 +20,7 @@ import { socialForModeration } from "../../src/social";
 import { createStaff } from "../../src/staff";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { Browser } from "./http-client";
-import { aPost, act, decisionParams, gate, ground, newPostRow, postRow, removeFixtures, rowCounts, uuids, type DecisionInput } from "./moderation-fixtures";
+import { aPost, act, casesMedia, decisionParams, gate, ground, newPostRow, postRow, removeFixtures, rowCounts, uuids, type DecisionInput } from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { DEVICE_BOUND, TEST_CONSOLE_ORIGIN, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount, withLockTimeout } from "./staff-fixtures";
@@ -75,7 +75,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
     // challenge's expiry, which the auth module's clock sets.
     const clock = () => Date.now() + skewMs;
     auth = createAuth({ config, logger, authDb, kv: new MemoryKv(clock), mailer: new MemoryMailer(), profiles: createProfileStore(apiDb), now: () => new Date(clock()) });
-    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: casesMedia(apiDb), config, logger });
     deps = moderation.deps;
     // The staff routes get the moderation module through a wrapper that counts the route's calls and lets a test act
     // inside the request, between the step-up's verification and the decision's own transaction.

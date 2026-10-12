@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   ALT_MAX_LENGTH,
   AltText,
+  HiddenMedia,
   MEDIA_ACCEPTED_TYPES,
   MEDIA_MAX_BYTES,
   MEDIA_MAX_PER_POST,
@@ -13,6 +14,7 @@ import {
   PostView,
   UploadResponse,
   altLength,
+  isHiddenMedia,
   mediaPath,
   normalizeAltText,
 } from "../src/index";
@@ -124,5 +126,39 @@ describe("images on posts", () => {
     const quoted = { ...post, id: id(3), media: [image] };
     const parsed = PostView.parse({ ...post, body: "look", media: [], quoteOf: quoted });
     expect(parsed.quoteOf).toMatchObject({ media: [image] });
+  });
+
+  test("the author's own image that moderation withheld or removed carries that state, and no other", () => {
+    expect(MediaView.parse({ ...image, moderation: "withheld" })).toEqual({ ...image, moderation: "withheld" });
+    expect(MediaView.parse({ ...image, moderation: "removed" })).toEqual({ ...image, moderation: "removed" });
+    // A sealed image is never a media view: nobody is given its size, its blurhash, its description or its paths.
+    for (const state of ["sealed", "visible", "hidden"]) expect(MediaView.safeParse({ ...image, moderation: state }).success, state).toBe(false);
+    expect("moderation" in MediaView.parse(image)).toBe(false);
+  });
+
+  test("a hidden image is its id and the mark, with `sealed` only as true, and carries nothing of the image", () => {
+    expect(HiddenMedia.parse({ id: id(9), hidden: true })).toEqual({ id: id(9), hidden: true });
+    expect(HiddenMedia.parse({ id: id(9), hidden: true, sealed: true })).toEqual({ id: id(9), hidden: true, sealed: true });
+    expect(HiddenMedia.safeParse({ id: id(9) }).success).toBe(false);
+    expect(HiddenMedia.safeParse({ id: id(9), hidden: false }).success).toBe(false);
+    expect(HiddenMedia.safeParse({ id: id(9), hidden: true, sealed: false }).success).toBe(false);
+    // No size, no blurhash, no description and no path: a placeholder that carries one is not one.
+    for (const member of ["width", "height", "blurhash", "alt", "small", "large"] as const) {
+      expect(HiddenMedia.safeParse({ id: id(9), hidden: true, [member]: image[member] }).success, member).toBe(false);
+    }
+    expect(Object.keys(HiddenMedia.shape).sort()).toEqual(["hidden", "id", "sealed"]);
+  });
+
+  test("a post's media list holds images and hidden images side by side, in their order, on the post and on a quoted post", () => {
+    const hidden = { id: id(10), hidden: true as const };
+    const sealed = { id: id(11), hidden: true as const, sealed: true as const };
+    const own = { ...image, id: id(12), moderation: "removed" as const };
+    const media = [image, hidden, own, sealed];
+    const parsed = PostView.parse({ ...post, media, quoteOf: { ...post, id: id(3), media: [hidden, image] } });
+    expect(parsed.media).toEqual(media);
+    expect(parsed.quoteOf).toMatchObject({ media: [hidden, image] });
+    expect(parsed.media.map(isHiddenMedia)).toEqual([false, true, false, true]);
+    // Something that is neither is refused.
+    expect(PostView.safeParse({ ...post, media: [{ id: id(10) }] }).success).toBe(false);
   });
 });

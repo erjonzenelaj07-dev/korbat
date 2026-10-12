@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Image } from "expo-image";
 import { Pressable, Text, View } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
-import type { MediaView } from "@korbat/contracts";
+import { isHiddenMedia, type HiddenMedia, type MediaView } from "@korbat/contracts";
 import { API_BASE } from "@/lib/api";
+import { HiddenImage, HiddenRowWords, HiddenThumbnail, hiddenImageWords } from "./HiddenImage";
 import { MediaViewer } from "./MediaViewer";
 
 /** A single image keeps its own shape, within limits, so a very tall or very wide one cannot take over the timeline. */
@@ -37,16 +38,24 @@ function Cell({ item, onPress }: { item: MediaView; onPress: () => void }) {
 
 /**
  * The images of a post. One image is shown in its own ratio; two to four share a 16:9 frame and are
- * cropped to their cell. Pressing one opens the viewer; ALT shows the descriptions in place.
+ * cropped to their cell. Pressing one opens the viewer; ALT shows the descriptions in place. An image
+ * moderation hid from this reader keeps its place as a placeholder: it has no size of its own, so alone
+ * it takes the frame's ratio, it is no control, and it has no description to show.
  */
-function Grid({ media }: { media: MediaView[] }) {
+function Grid({ media }: { media: (MediaView | HiddenMedia)[] }) {
   const [open, setOpen] = useState<number | null>(null);
   const [described, setDescribed] = useState(false);
-  const cell = (index: number) => <Cell key={media[index]!.id} item={media[index]!} onPress={() => setOpen(index)} />;
+  const cell = (index: number) => {
+    const item = media[index]!;
+    return isHiddenMedia(item) ? <HiddenImage key={item.id} item={item} /> : <Cell key={item.id} item={item} onPress={() => setOpen(index)} />;
+  };
+  const first = media[0]!;
+  // Descriptions exist only for the images this reader is shown.
+  const anyShown = media.some((item) => !isHiddenMedia(item));
 
   let frame;
   if (media.length === 1) {
-    frame = <View style={{ aspectRatio: clampRatio(media[0]!.width, media[0]!.height) }}>{cell(0)}</View>;
+    frame = <View style={{ aspectRatio: isHiddenMedia(first) ? FRAME_RATIO : clampRatio(first.width, first.height) }}>{cell(0)}</View>;
   } else if (media.length === 2) {
     frame = <View style={{ aspectRatio: FRAME_RATIO, flexDirection: "row", gap: GAP }}>{[cell(0), cell(1)]}</View>;
   } else if (media.length === 3) {
@@ -68,14 +77,17 @@ function Grid({ media }: { media: MediaView[] }) {
   return (
     <View className="mt-2">
       <View className="overflow-hidden rounded-xl border border-zinc-800">{frame}</View>
-      <Pressable accessibilityRole="button" aria-expanded={described} accessibilityLabel={described ? "Hide image descriptions" : "Show image descriptions"} onPress={() => setDescribed(!described)} className="mt-1 self-start rounded border border-zinc-700 px-1.5 py-0.5">
-        <Text className="text-xs font-semibold text-zinc-300">ALT</Text>
-      </Pressable>
+      {anyShown ? (
+        <Pressable accessibilityRole="button" aria-expanded={described} accessibilityLabel={described ? "Hide image descriptions" : "Show image descriptions"} onPress={() => setDescribed(!described)} className="mt-1 self-start rounded border border-zinc-700 px-1.5 py-0.5">
+          <Text className="text-xs font-semibold text-zinc-300">ALT</Text>
+        </Pressable>
+      ) : null}
       {described
         ? media.map((item, index) => (
             <Text key={item.id} className="mt-1 text-sm leading-5 text-zinc-300">
               {media.length > 1 ? `${index + 1}. ` : ""}
-              {item.alt}
+              {/* A hidden image keeps its number, so the others' numbers match their places in the frame. */}
+              {isHiddenMedia(item) ? hiddenImageWords(item) : item.alt}
             </Text>
           ))
         : null}
@@ -88,15 +100,18 @@ function Grid({ media }: { media: MediaView[] }) {
  * A post's images (`Grid`), or a quoted post's as one row of small squares (`compact`). The squares
  * are pictures, not buttons: the whole quote is a link to the quoted post, where the grid and the
  * viewer are, and a control inside another control is one that assistive technology cannot reach.
+ * A hidden image keeps its square in the row, and the row says the placeholder's sentence once, as
+ * text, under the squares.
  */
-export function MediaGrid({ media, compact = false }: { media: MediaView[]; compact?: boolean }) {
+export function MediaGrid({ media, compact = false }: { media: (MediaView | HiddenMedia)[]; compact?: boolean }) {
   if (media.length === 0) return null;
   if (!compact) return <Grid media={media} />;
   return (
-    <View className="mt-2 flex-row" style={{ gap: GAP }}>
-      {media.map((item) => (
-        <Picture key={item.id} item={item} style={{ width: THUMBNAIL, height: THUMBNAIL, borderRadius: 6 }} />
-      ))}
+    <View className="mt-2">
+      <View className="flex-row" style={{ gap: GAP }}>
+        {media.map((item) => (isHiddenMedia(item) ? <HiddenThumbnail key={item.id} size={THUMBNAIL} /> : <Picture key={item.id} item={item} style={{ width: THUMBNAIL, height: THUMBNAIL, borderRadius: 6 }} />))}
+      </View>
+      <HiddenRowWords media={media} />
     </View>
   );
 }

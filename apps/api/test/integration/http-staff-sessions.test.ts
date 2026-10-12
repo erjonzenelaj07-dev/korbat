@@ -35,6 +35,7 @@ import { createStaff } from "../../src/staff";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { fakeClock } from "./auth-fixtures";
 import { Browser, randomIp } from "./http-client";
+import { casesMedia } from "./moderation-fixtures";
 import { DEVICE_BOUND, TEST_CONSOLE_ORIGIN, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { revokeRequest } from "./staff-step-up";
@@ -86,7 +87,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
     repo = createAuthRepo(authDb);
     auth = createAuth({ config, logger, authDb, kv: new MemoryKv(clock.ms), mailer, profiles: createProfileStore(apiDb), now: clock.now });
-    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), config, logger });
+    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: casesMedia(apiDb), config, logger });
     const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
     app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   });

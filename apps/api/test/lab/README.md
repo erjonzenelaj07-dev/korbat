@@ -120,3 +120,167 @@ The keep trigger costs about 0.12 to 0.18 ms a row here.
 
 The two-session rounds at 24% busy: the same 18 pairs of 40 rounds each, every transaction completed, no deadlock and no
 lock timeout, the longest transaction 124 ms.
+
+# The lab of the intake's lock statement
+
+`hold.lab.ts` measures what an intake's hold costs and what it meets (3c design, sections 5 and 12, Task 3), at the
+repository: `MediaForCases.hold` with an owner pair, which is the statement that locks every image row on an account's
+posts when a report of child sexual abuse material names the account
+(`select ... from post_media m join posts p on p.id = m.post_id where m.post_id = any($1) or m.owner_id = any($2) order
+by m.id for key share of m`). It also times the disposal's two statements over the same accounts, and runs the purge
+against a notice about a post that quotes its author's own post. It runs against the test database with migration 0016,
+through the media repository and the moderation module's own `recordIntake`; the purge is the social repository's
+`purgeProfile` with the media repository's `purgeOwner` as its last act. Every measured transaction is rolled back; the
+accounts it commits are removed when it ends.
+
+    node ../../node_modules/vitest/vitest.mjs run --config vitest.lab.config.ts test/lab/hold.lab.ts
+
+It takes about a minute and a quarter. Each measurement is one line of JSON in `.data/lab-hold.jsonl` (or the file
+`LAB_OUT` names), with `busyPercent` as above. `LAB_ROUNDS` sets how many rounds the two sessions meet by chance (40
+unless said).
+
+## The numbers of 2026-10-04
+
+Three runs on the shared Windows machine, PostgreSQL 18 in the scratch stack's container: two before the review of
+Task 3 and one after its fixes. The machine was never quiet, most of the load other projects' containers:
+`busyPercent` read 14 to 40 before the lock statement's runs of the first run (up to 100 before its last measurements),
+14 to 83 before those of the second and 15 to 40 throughout the third. The times are upper bounds.
+
+### The lock statement (`hold` with one owner pair; one image on each post; three runs each, a transaction of its own each)
+
+| attached rows | run | busy | lock statement | WAL written |
+|---|---|---|---|---|
+| 5,000 | first | 29 to 40% | 36, 25 and 21 ms | 288, 274 and 274 kB |
+| 5,000 | second | 64 to 83% | 90, 65 and 26 ms | 288, 274 and 274 kB |
+| 5,000 | third | 23 to 31% | 46, 31 and 28 ms | 288, 274 and 274 kB |
+| 20,000 | first | 14 to 19% | 114, 80 and 69 ms | 1,153, 1,097 and 1,097 kB |
+| 20,000 | second | 14 to 76% | 102, 180 and 198 ms | 1,408, 1,097 and 1,097 kB |
+| 20,000 | third | 23 to 31% | 151, 123 and 102 ms | 1,153, 1,097 and 1,097 kB |
+
+- The research lab's figures (`lab-gate-k`, H) were 77 ms and 287 kB at 5,000 rows and 102 ms and 1.1 MB at 20,000:
+  these agree. The lock writes its mark to each row it takes, though no column changes: about 55 bytes of WAL a row.
+- The plan is LockRows over a Sort on `m.id` over a hash join of `post_media` and `posts`, as the design says of the
+  owner form. In the test database the lab's account owns most image rows, so `post_media` is scanned whole; the sort
+  took 0.6 MB of memory at 5,000 rows and 2.5 MB at 20,000.
+- A whole notice on the path for child sexual abuse material that names the account (its rows, the copy of the profile,
+  the hold and the snapshot) took 72, 95 and 77 ms at 5,000 rows and 104, 238 and 147 ms at 20,000; one that names a
+  post of the account as well took 85, 91 and 80 ms at 5,000 and 743 (at 90% busy), 299 and 147 ms at 20,000.
+- The purge's ordered delete (`purgeOwner`) right after such a notice, in the same transaction, deleted no row: 1.4,
+  1.6 and 1.3 s at 5,000 rows, 5.6 and 5.5 s (73 to 100% busy) and 3.2 s (31% busy) at 20,000, the keep trigger reading
+  the freeze once for each row.
+
+### The disposal's two statements (one batch of `dropDisposable`, and `overdueDeletions`)
+
+The account's rows are all attached. In the first two lines nothing of the account is disposable: its posts are
+visible. In the last, the account is reported on the path for child sexual abuse material and every post of it is
+deleted, so every row carries a mark of disposal and none may go.
+
+| what | attached rows | busy | `dropDisposable` | `overdueDeletions` |
+|---|---|---|---|---|
+| nothing disposable, the freeze a condition of its own (as first built) | 5,000 | 100% | 3,332 ms | 3,332 ms |
+| | 20,000 | 97% | 14,226 ms | 13,863 ms |
+| nothing disposable, the marks tested first (as built now) | 5,000 | 24% | 18 ms | 8 ms |
+| | 20,000 | 40% | 62 ms | 19 ms |
+| every row marked and frozen (as built now) | 5,000 | 18% | 1,285 ms | 1,174 ms |
+| | 20,000 | 26% | 4,148 ms | 3,666 ms |
+
+- As first built, the predicate was `... and (marks) and (m.post_id is null or not public.post_frozen(m.post_id))`.
+  The second condition names `post_media` alone, so the planner made it the filter of that table's scan and called the
+  freeze for every attached image row in the table before a mark was tested. The review measured 0.9 s at 5,000 rows
+  and 3.4 s at 20,000 on a quieter machine; the first two lines are the same statement on a saturated one.
+- Now the marks and the freeze are one condition, `case when (marks) then (m.post_id is null or not
+  public.post_frozen(m.post_id)) else false end`: it names all three tables, so it runs where they are joined, and the
+  freeze is read only for a row that carries a mark. `media-cases.test.ts` pins that no scan's filter names the
+  predicate, under the planner's own plan and under each join method alone.
+- What remains is the last pair of lines: a frozen account whose posts are all deleted (a purged account under an
+  unanswered report, or under a seal for good) costs one read of the freeze for each kept row, about 0.2 ms, at every
+  round of the disposal and at every count of overdue rows, for as long as the freeze lasts.
+
+### The purge against a notice about a post that quotes its author's own post
+
+A report of child sexual abuse material about a post that quotes another is taken in as two items, so a notice about a
+post that quotes its author's own post holds two posts of one account for share, in id order, while the purge writes
+both. The lab's account has such a pair, four images on each post; the notice names the quoting post and the account.
+The notice's side counts the runs the moderation module made, so a deadlock it absorbed by running again shows; nothing
+runs a purge again, so a deadlock that picks the purge shows as its error.
+
+By chance (two sessions, each side first in half the rounds, a few milliseconds ahead, each holding its locks for
+15 ms before it rolls back):
+
+| purge | rounds | busy | purge | notice | deadlocks | longest transaction |
+|---|---|---|---|---|---|---|
+| as first built (counters, then the posts in id order) | 200 | 95% | 200 of 200 | 200 of 200, each in one run | 0 | 528 ms |
+| as built now (every post locked first, in id order) | 40 | 25% | 40 of 40 | 40 of 40, each in one run | 0 | 139 ms |
+
+Staged (ten rounds a shape: the notice has copied the first of the two posts and is held there, the purge comes to
+wait, the notice goes on to the second post):
+
+| purge | the quoting post has the lower id | the quoted post has the lower id and was deleted by its author |
+|---|---|---|
+| as first built: the counters of what its posts quote, then the posts in id order | 10 of 10: the purge ends with 40P01 | not run |
+| the account's posts that are not deleted locked first, in id order | 10 of 10: both complete | 10 of 10: the purge ends with 40P01 |
+| every post of the account locked first, in id order (as built now) | 10 of 10: both complete | 10 of 10: both complete |
+
+- As first built, the purge's quote counter wrote the quoted post before the ordered statement asked for the quoting
+  one, which the notice held: each waited for the other. The window is one statement of the notice wide, so 200 rounds
+  by chance never met it, and every staged round did. PostgreSQL ended the purge each time: a session looks for a
+  deadlock once it has waited a second, and the purge was the first to wait. The notice went through in one run. A purge
+  that ends this way is finished by the purge job within five minutes.
+- Locking only the posts that are not deleted leaves the same wait in the second shape: a live post that quotes (or
+  replies to) its author's own deleted post has that post's counter written by the purge, and a report of child sexual
+  abuse material holds a deleted post like any other. So the purge locks every post of the account first.
+- What stays unordered: the counters of other accounts' posts that the purged account replied to, quoted, liked or
+  reposted, which the purge writes after its own posts; and the author's deletion of one post, which writes the post
+  and then the post it replied to or quoted.
+- Before the review this pair ran with two plain posts (and with the purge as first built): 40 of 40 on both sides in
+  both runs, no deadlock, the longest transaction 307 ms at 64% busy and 200 ms at 23%.
+- What the two-session tests add (`media-cases.test.ts`): when the notice locks first, the purge waits and then keeps
+  every attached row; when the purge deletes first, the notice waits, locks nothing and is stored without an error.
+
+### The contention lab again
+
+`contention.lab.ts` issues the purge's statements as the repositories issue them since Task 3: every post of the
+account locked in id order (`select id from posts where author_id = $1 order by id for update`), then the tombstones,
+and the ordered delete of the image rows last. Three runs on 2026-10-04 with the intake locking image rows and placing
+its holds. The first, before the review, still tombstoned by one ordered statement and met a machine at 9 to 14% busy
+(53 and 93 before the two purges of 20,000 rows). The second and the third issue the statements above: the second met
+a saturated machine (93 to 100% throughout), so its times say more about the machine than about the change; the third
+a quiet one (6 to 16%). "Tombstones" is the lock statement and the update together.
+
+| image rows | frozen | run | busy | tombstones | ordered delete | rows deleted | whole purge |
+|---|---|---|---|---|---|---|---|
+| 5,000 | no | first | 9% | 170 ms | 891 ms | 5,000 | 1.1 s |
+| 5,000 | yes | first | 14% | 120 ms | 827 ms | 0 | 1.0 s |
+| 20,000 | no | first | 53% | 603 ms | 4,019 ms | 20,000 | 4.6 s |
+| 20,000 | yes | first | 93% | 1,440 ms | 4,249 ms | 0 | 5.7 s |
+| 5,000 | no | second | 100% | 481 ms | 3,136 ms | 5,000 | 3.6 s |
+| 5,000 | yes | second | 100% | 309 ms | 3,423 ms | 0 | 3.8 s |
+| 20,000 | no | second | 100% | 1,934 ms | 8,112 ms | 20,000 | 10.1 s |
+| 20,000 | yes | second | 100% | 2,249 ms | 8,467 ms | 0 | 10.7 s |
+| 5,000 | no | third | 16% | 91 ms | 827 ms | 5,000 | 0.9 s |
+| 5,000 | yes | third | 6% | 103 ms | 730 ms | 0 | 0.8 s |
+| 20,000 | no | third | 13% | 442 ms | 2,207 ms | 20,000 | 2.7 s |
+| 20,000 | yes | third | 13% | 481 ms | 1,977 ms | 0 | 2.5 s |
+
+Locking the posts first costs nothing that shows: at 5,000 posts the lock statement and the update together took 91
+and 103 ms, where the one ordered statement took 170 and 120 ms.
+
+The 18 pairs of 40 rounds: in every run each transaction completed, with no deadlock and no lock timeout; the longest
+transaction was 137 ms in the first (12% busy), 562 ms in the second (100% busy) and 116 ms in the third (13% busy).
+The account's seal taken while deciding: 84 ms at 1,000 image posts and 2.2 s at 5,000 in the first run (13% busy; 0.4
+and 1.1 s in Task 2's runs), 361 ms and 3.3 s in the second, 58 and 156 ms in the third.
+
+### What the lab's tests found
+
+- **A batch that was not one.** `dropDisposable` as the design writes it (`delete from post_media where id in (select
+  ... order by id limit $1 for update)`) can delete more than its limit. When the planner joins the delete's rows to
+  the sub-select by a nested loop, the sub-select runs again for every row; each run skips the rows this statement has
+  deleted already and lets the next ones in. On a fresh test database one call deleted all 60 disposable rows under a
+  limit of 25, and with hash joins, merge joins, materialising, hashed aggregation and sorting switched off it deleted
+  33 of 36. The repository therefore chooses the batch in a materialized common table expression, which runs once
+  whatever the plan (`with batch as materialized (select ... order by m.id limit $1 for update of m) delete from
+  post_media where id in (select id from batch) returning id`); `media-cases.test.ts` holds the bound under those
+  planner settings. The ordered deletes of the author's deletion and the purge have no limit, so the same re-run changes
+  nothing they delete.
+- **The freeze read for every row.** The disposal's two statements, above.
+- **The purge and its own posts.** The staged rounds, above.

@@ -164,13 +164,18 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
         await withStaff(async (tx) => {
           if (frozen) await report(tx, anAccount(owner.id, owner.handle), "csam");
           const lock = await timed(() => tx.execute(sql`select handle from profiles where id = ${owner.id}::uuid for update`));
-          const tombstones = await timed(() => tx.execute(sql`update posts set state = 'deleted_by_author', deleted_at = now(), body = '' where author_id = ${owner.id}::uuid and state <> 'deleted_by_author'`));
+          // Every post of the account under a row lock, in id order, before any is written; then the tombstones. Both are
+          // counted as "tombstones", as the one statement was that did both before.
+          const tombstones = await timed(async () => {
+            await tx.execute(sql`select id from posts where author_id = ${owner.id}::uuid order by id for update`);
+            await tx.execute(sql`update posts set state = 'deleted_by_author', deleted_at = now(), body = '' where author_id = ${owner.id}::uuid and state <> 'deleted_by_author'`);
+          });
+          const profile = await timed(() => tx.execute(sql`update profiles set display_name = 'Deleted account', bio = '', deleted_at = now() where id = ${owner.id}::uuid and deleted_at is null`));
           let deleted = 0;
-          // The ordered delete by owner, as the media repository issues it: the keep trigger reads the freeze once for each row.
+          // The ordered delete by owner, as the media repository issues it, last: the keep trigger reads the freeze once for each row.
           const images = await timed(async () => {
             deleted = (await tx.execute(sql`delete from post_media where id in (select id from post_media where owner_id = ${owner.id}::uuid order by id for update) returning id`)).length;
           });
-          const profile = await timed(() => tx.execute(sql`update profiles set display_name = 'Deleted account', bio = '', deleted_at = now() where id = ${owner.id}::uuid and deleted_at is null`));
           line("account purge", { imageRows: rows, frozen, busyPercent: load, profileLockMs: lock, tombstonesMs: tombstones, orderedDeleteMs: images, rowsDeleted: deleted, profileMs: profile, totalMs: lock + tombstones + images + profile });
         });
       }
@@ -223,11 +228,14 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
         await tx.execute(sql`update posts set state = 'deleted_by_author', deleted_at = now(), body = '' where id = ${postId}::uuid and author_id = ${author.id}::uuid`);
         await tx.execute(sql`update profiles set post_count = greatest(0, post_count - 1) where id = ${author.id}::uuid`);
       },
+      // As the repositories issue it since the deleters take their rows in id order: every post of the account locked in id
+      // order before any is written, then the tombstones, and the image rows last.
       purge: async (tx) => {
         await tx.execute(sql`select handle from profiles where id = ${author.id}::uuid for update`);
+        await tx.execute(sql`select id from posts where author_id = ${author.id}::uuid order by id for update`);
         await tx.execute(sql`update posts set state = 'deleted_by_author', deleted_at = now(), body = '' where author_id = ${author.id}::uuid and state <> 'deleted_by_author'`);
-        await tx.execute(sql`delete from post_media where id in (select id from post_media where owner_id = ${author.id}::uuid order by id for update) returning id`);
         await tx.execute(sql`update profiles set display_name = 'Deleted account', bio = '', deleted_at = now() where id = ${author.id}::uuid and deleted_at is null`);
+        await tx.execute(sql`delete from post_media where id in (select id from post_media where owner_id = ${author.id}::uuid order by id for update) returning id`);
       },
       "notice naming the post and its author's account": async (tx) => {
         await intake(tx, ground.csam(), [aPost(postId, 1), anAccount(author.id, author.handle, 2)]);
