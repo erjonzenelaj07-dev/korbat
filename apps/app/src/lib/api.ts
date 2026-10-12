@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import { ErrorEnvelope, HealthResponse, type AuthErrorCode } from "@korbat/contracts";
+import { ErrorEnvelope, HealthResponse, type AuthErrorCode, type ModerationErrorCode } from "@korbat/contracts";
 import type { z } from "zod";
 
 /** Same origin on web (Caddy proxies /api). Native needs an absolute URL. */
@@ -41,7 +41,7 @@ export class ApiError extends Error {
   }
 }
 
-const MESSAGES: Partial<Record<AuthErrorCode | "unauthenticated" | "invalid_request" | "not_found" | "internal" | "network", string>> = {
+const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "unauthenticated" | "invalid_request" | "not_found" | "internal" | "network", string>> = {
   invalid_code: "That code is not valid. Check the latest email or request a new code.",
   code_expired: "That code has expired. Request a new one.",
   too_many_attempts: "Too many attempts. Start again.",
@@ -77,6 +77,14 @@ const MESSAGES: Partial<Record<AuthErrorCode | "unauthenticated" | "invalid_requ
   passkey_suspended: "This passkey was switched off because a copy of it may exist. Remove it and add a new one.",
   passkey_not_found: "That passkey is gone.",
   challenge_expired: "That took too long. Try again.",
+  // Reports and notices (3c design, section 9): the codes a person who reports can meet. The report form words three
+  // failures itself, with the users' contact address: the human check, the limits and an API that cannot take reports.
+  notice_link_invalid: "That link does not name a post or a profile on korbat.",
+  notice_link_offsite: "Only links to this korbat can be reported.",
+  human_check_failed: "We could not verify that you are human. Try again.",
+  already_reported: "You already reported this; it is being looked at.",
+  staff_cannot_report: "A staff account does not send reports. Open a finding in the staff console instead.",
+  notice_not_found: "We could not find a report with this link.",
   unauthenticated: "Sign in to continue.",
   invalid_request: "Some details are missing or invalid.",
   not_found: "That no longer exists.",

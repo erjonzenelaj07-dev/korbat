@@ -18,6 +18,7 @@ import {
   type TdbCategory,
 } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
+import { getRule } from "@korbat/rules";
 import type { AccountMailResult, NotifierMailResult, Session } from "../auth";
 import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { MailUnavailable } from "../mail/mailer";
@@ -653,7 +654,7 @@ function sameDigest(a: string, b: string): boolean {
  * be asked for, so the page and the mail tell the same at the same time. And nothing before it tells whether the target
  * was live: an item whose link named nothing reads exactly as one that waits for a moderator.
  */
-async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">, item: NoticeItemRow): Promise<NoticeItemStatus> {
+export async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">, item: NoticeItemRow): Promise<NoticeItemStatus> {
   // "No action for now": a decision taken while nobody could open the post's images, on an item about a post that is not itself suspect.
   const unseen = item.released && item.decisionUnseen && item.targetType === "post" && !item.suspect;
   // What the answer concerns. Before the release the scope comes from what the notice named and from the item's suspect
@@ -672,6 +673,16 @@ async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">, item:
   // Only a moderator's decision to take no action can be examined again, once; an answer given with the images out of
   // sight does not spend that, also when it answered a re-examination.
   const reexaminable = item.released && item.noAction && (!item.reexamines || unseen);
+  // What the outcome's words need beside it, as the mail's line reads them: the rule a restriction under a rule names, in
+  // the wording of the rulebook the decision was made under, and whether the restriction changed nothing anyone saw.
+  const outcome = item.released ? (item.shownOutcome as ItemOutcome) : null;
+  let rule: NoticeItemStatus["rule"];
+  if (outcome === "restricted_rule") {
+    const found = item.ruleId === null || item.rulesVersion === null ? undefined : getRule(item.ruleId, item.rulesVersion);
+    if (!found) throw new Error("the item's restriction names no rule of a rulebook korbat holds");
+    rule = { id: found.id as RuleId, title: found.title };
+  }
+  const restricting = outcome === "restricted_rule" || outcome === "restricted_legal";
   return {
     position: item.position,
     link: itemLink(deps, item),
@@ -680,11 +691,13 @@ async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">, item:
     sealed: item.released && item.sealed,
     unseen,
     quotedBy: item.position > 10 ? item.position - 10 : null,
-    outcome: item.released ? (item.shownOutcome as ItemOutcome) : null,
+    outcome,
     decidedOn: item.released ? item.decidedOn : null,
     changed: item.changed,
     reexamines: item.reexamines,
     reexamination: reexaminable ? { open: !item.reexamined && item.inWindow, until: item.until! } : null,
+    ...(rule ? { rule } : {}),
+    ...(restricting && item.noEffect ? { noEffect: true as const } : {}),
   };
 }
 
@@ -696,7 +709,7 @@ async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">, item:
  * window to ask for a re-examination runs. Its origin's waiting past that same release already told that it names a row:
  * a link to no row was answered by then. A re-examination is filed only on a released item, so it is always listed.
  */
-function listedItems(items: readonly NoticeItemRow[]): NoticeItemRow[] {
+export function listedItems(items: readonly NoticeItemRow[]): NoticeItemRow[] {
   const releasedOrigins = new Set(items.filter((item) => item.position <= 10 && !item.reexamines && item.released).map((item) => item.position));
   return items.filter((item) => item.position <= 10 || item.reexamines || item.released || releasedOrigins.has(item.position - 10));
 }

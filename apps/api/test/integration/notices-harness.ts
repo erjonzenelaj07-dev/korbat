@@ -96,7 +96,7 @@ export function noticesWorld() {
   });
   // A copy the tests may script: a member replaced here is what the moderation module calls.
   const authForModeration: AuthForModeration = { ...auth.forModeration };
-  const moderation = createModeration({ apiDb, auth: authForModeration, social: socialForModeration(apiDb), media: casesMedia(apiDb), rateLimitStore, config, logger });
+  const moderation = createModeration({ apiDb, auth: authForModeration, social: socialForModeration(apiDb), media: casesMedia(apiDb), requireSession: auth.requireSession, rateLimitStore, config, logger });
   const app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, moderation });
 
   const profileIds: string[] = [];

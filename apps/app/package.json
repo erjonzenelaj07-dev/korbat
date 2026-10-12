@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@korbat/contracts": "workspace:*",
+    "@korbat/rules": "workspace:*",
     "@marsidev/react-turnstile": "1.6.1",
     "@simplewebauthn/browser": "14.0.0",
     "expo": "57.0.22",

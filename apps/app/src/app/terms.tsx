@@ -1,6 +1,8 @@
 import { ScrollView, Text, View } from "react-native";
 
 import { TextLink } from "@/components/ui";
+import { CONTACT_EMAIL, reportHref } from "@/lib/moderation";
+import { CONTACT_WORDS } from "@/lib/moderation-words";
 import { TERMS_SECTIONS, TERMS_VERSION } from "@/lib/terms";
 
 export default function Terms() {
@@ -19,6 +21,15 @@ export default function Terms() {
             <Text className="mt-2 text-base leading-7 text-zinc-300">{section.body}</Text>
           </View>
         ))}
+        {/* Not one of the terms' sections: the users' contact address is the build's (3c design, section 9). */}
+        <View className="mt-8">
+          <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-100">
+            {CONTACT_WORDS.title}
+          </Text>
+          <Text className="mt-2 text-base leading-7 text-zinc-300">{CONTACT_WORDS.body(CONTACT_EMAIL)}</Text>
+        </View>
+        {/* The report form needs no account and no item to start from. */}
+        <TextLink label={CONTACT_WORDS.report} href={reportHref()} />
         <TextLink label="Back to korbat" href="/" replace />
       </View>
     </ScrollView>

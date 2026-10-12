@@ -18,7 +18,13 @@ RUN if [ "$KORBAT_ENV" = "production" ]; then case "$EXPO_PUBLIC_TURNSTILE_SITE_
 # verification provider is on, off by default as the provider is. Anything else is refused, so a typo cannot hide or show it.
 ARG EXPO_PUBLIC_BADGE=off
 RUN case "$EXPO_PUBLIC_BADGE" in on|off) ;; *) echo "EXPO_PUBLIC_BADGE must be on or off" >&2; exit 1;; esac
-RUN cd apps/app && EXPO_PUBLIC_TURNSTILE_SITE_KEY="$EXPO_PUBLIC_TURNSTILE_SITE_KEY" EXPO_PUBLIC_BADGE="$EXPO_PUBLIC_BADGE" npx expo export --platform web
+# The users' contact address (WEB_CONTACT_EMAIL in infra/.env), inlined like the site key: the report form names it when
+# the form itself cannot be used, and the terms page shows it. A build without an address is refused, and a production
+# build refuses a placeholder domain, as it refuses a Turnstile test key: mail to it would reach nobody.
+ARG EXPO_PUBLIC_CONTACT_EMAIL
+RUN case "$EXPO_PUBLIC_CONTACT_EMAIL" in *?@?*.?*) ;; *) echo "the EXPO_PUBLIC_CONTACT_EMAIL build argument must be an email address" >&2; exit 1;; esac
+RUN if [ "$KORBAT_ENV" = "production" ]; then case "$(printf %s "${EXPO_PUBLIC_CONTACT_EMAIL##*@}" | tr A-Z a-z)" in *.local|*.localhost|*.test|*.invalid|*.example|example.com|example.org|example.net) echo "EXPO_PUBLIC_CONTACT_EMAIL is a placeholder address; a production build needs the address people can write to" >&2; exit 1;; esac; fi
+RUN cd apps/app && EXPO_PUBLIC_TURNSTILE_SITE_KEY="$EXPO_PUBLIC_TURNSTILE_SITE_KEY" EXPO_PUBLIC_BADGE="$EXPO_PUBLIC_BADGE" EXPO_PUBLIC_CONTACT_EMAIL="$EXPO_PUBLIC_CONTACT_EMAIL" npx expo export --platform web
 
 # The staff console (apps/admin), in a stage of its own: its page takes no build argument and holds no secret, and its
 # packages never meet the app's. esbuild writes dist/: index.html, favicon.svg and the hashed script and stylesheet.

@@ -11,12 +11,12 @@ import type { Db, DbTx } from "@korbat/db";
  */
 
 /** What a statement runs through: the pool, or a transaction. */
-type Runner = Pick<Db, "execute"> | Pick<DbTx, "execute">;
+export type Runner = Pick<Db, "execute"> | Pick<DbTx, "execute">;
 
-const rows = async <T>(q: Runner, query: ReturnType<typeof sql>): Promise<T[]> => (await q.execute(query)) as unknown as T[];
+export const rows = async <T>(q: Runner, query: ReturnType<typeof sql>): Promise<T[]> => (await q.execute(query)) as unknown as T[];
 
 /** A timestamptz expression as the text Date.prototype.toISOString writes: UTC, to the millisecond. The expression is written here, never input. */
-const iso = (expression: string) => sql.raw(`to_char(${expression} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
+export const iso = (expression: string) => sql.raw(`to_char(${expression} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
 
 // ---------------------------------------------------------------- what the database raised
 
@@ -193,6 +193,11 @@ export interface NoticeItemRow {
   sealed: boolean;
   /** Whether the answering decision was taken while nobody could open the post's images. */
   decisionUnseen: boolean;
+  /** The rule the answering decision cites and the rulebook version it was made under; null without a decision or a rule. */
+  ruleId: string | null;
+  rulesVersion: number | null;
+  /** Every measure of the answering decision changed nothing when it was imposed. */
+  noEffect: boolean;
   changed: boolean;
   reexamines: boolean;
   /** A moderator's decision to take no action: the only answer a re-examination can be asked for. */
@@ -203,14 +208,26 @@ export interface NoticeItemRow {
   inWindow: boolean;
 }
 
+const MEASURE_KINDS_SQL = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
+
 /**
- * A notice's items in the order its page lists them: by position, an item korbat added for a quoted post (positions 11
- * to 20) directly after the item it was added for, and a re-examination, which shares its item's position, after it.
- * The window's end is the database's own appeal_deadline of the release, read against its clock, as the attach trigger
- * reads it when a re-examination is filed.
+ * Whether every measure of the decision that answered item `i` changed nothing when it was imposed: it holds a measure,
+ * and none whose `no_effect` is null. The mail's line and the status answer read it through this one expression.
  */
-export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeItemRow[]> {
+const answerChangedNothing = sql`(exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind in ${MEASURE_KINDS_SQL})
+                and not exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind in ${MEASURE_KINDS_SQL} and a.no_effect is null))`;
+
+/**
+ * The items of these notices, each notice's in the order its page lists them: by position, an item korbat added for a
+ * quoted post (positions 11 to 20) directly after the item it was added for, and a re-examination, which shares its
+ * item's position, after it. The window's end is the database's own appeal_deadline of the release, read against its
+ * clock, as the attach trigger reads it when a re-examination is filed.
+ */
+export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Promise<Map<string, NoticeItemRow[]>> {
+  const byNotice = new Map<string, NoticeItemRow[]>(intakeIds.map((id) => [id, []]));
+  if (intakeIds.length === 0) return byNotice;
   const found = await rows<{
+    intake_id: string;
     position: number;
     target_type: TargetType;
     target_id: string;
@@ -222,6 +239,9 @@ export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeIt
     decided_on: string;
     sealed: boolean;
     decision_unseen: boolean;
+    rule_id: string | null;
+    rules_version: number | null;
+    no_effect: boolean;
     changed: boolean;
     reexamines: boolean;
     no_action: boolean;
@@ -230,11 +250,12 @@ export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeIt
     in_window: boolean;
   }>(
     q,
-    sql`select i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
+    sql`select i.intake_id, i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
                i.outcome_sent_at is not null as released, i.shown_outcome,
                to_char(coalesce(d.decided_at, i.created_at) at time zone 'UTC', 'YYYY-MM-DD') as decided_on,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
                coalesce(d.unseen, false) as decision_unseen,
+               d.rule_id, d.rules_version, ${answerChangedNothing} as no_effect,
                i.revised_sent_at is not null as changed,
                i.reexamines_item_id is not null as reexamines,
                (i.answered_by is not null and i.outcome in ('no_violation', 'not_evident')) as no_action,
@@ -242,10 +263,10 @@ export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeIt
                ${iso("public.appeal_deadline(i.outcome_sent_at)")} as until,
                coalesce(clock_timestamp() < public.appeal_deadline(i.outcome_sent_at), false) as in_window
           from intake_items i left join decisions d on d.id = i.answered_by
-         where i.intake_id = ${intakeId}::uuid
-         order by (case when i.position > 10 then i.position - 10 else i.position end), (i.position > 10), i.created_at, i.id`,
+         where i.intake_id = any(${`{${intakeIds.join(",")}}`}::uuid[])
+         order by i.intake_id, (case when i.position > 10 then i.position - 10 else i.position end), (i.position > 10), i.created_at, i.id`,
   );
-  return found.map((row) => ({
+  const itemOf = (row: (typeof found)[number]): NoticeItemRow => ({
     position: row.position,
     targetType: row.target_type,
     targetId: row.target_id,
@@ -257,13 +278,49 @@ export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeIt
     decidedOn: row.decided_on,
     sealed: row.sealed,
     decisionUnseen: row.decision_unseen,
+    ruleId: row.rule_id,
+    rulesVersion: row.rules_version,
+    noEffect: row.no_effect,
     changed: row.changed,
     reexamines: row.reexamines,
     noAction: row.no_action,
     reexamined: row.reexamined,
     until: row.until,
     inWindow: row.in_window,
-  }));
+  });
+  for (const row of found) byNotice.get(row.intake_id)?.push(itemOf(row));
+  return byNotice;
+}
+
+/** One notice's items, in the order its page lists them. */
+export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeItemRow[]> {
+  return (await noticeItemsOf(q, [intakeId])).get(intakeId) ?? [];
+}
+
+/** Where a page of the reporter's list starts: after this notice, by its time (to the microsecond, as text) and id. */
+export interface ReportsCursor {
+  at: string;
+  id: string;
+}
+
+/**
+ * The reports and notices this account sent, newest first: those whose record still names it. A notice on the path for
+ * child sexual abuse material never does, and an account's deletion forgets the link. `sortAt` is the received time to
+ * the microsecond, which the next page starts after.
+ */
+export async function reporterNotices(q: Runner, reporterId: string, after: ReportsCursor | null, limit: number): Promise<(NoticeRow & { sortAt: string })[]> {
+  const found = await rows<NoticeColumns & { sort_at: string }>(
+    q,
+    sql`select ${noticeColumns}, to_char(received_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as sort_at
+          from intakes
+         where reporter_id = ${reporterId}::uuid
+           ${after === null ? sql`` : sql`and (received_at, id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
+         order by received_at desc, id desc limit ${limit}::int`,
+  );
+  return found.flatMap((row) => {
+    const notice = noticeOf(row);
+    return notice ? [{ ...notice, sortAt: row.sort_at }] : [];
+  });
 }
 
 /** What became of a receipt: the delivery states a send can end in. */
@@ -1537,7 +1594,6 @@ export interface OutcomeLineRow {
 
 /** Every released item whose outcome mail is still pending, whichever round released it, by notice and position. */
 export async function pendingOutcomeLines(q: Runner): Promise<OutcomeLineRow[]> {
-  const measures = sql`a.kind in ('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
   const found = await rows<Record<string, unknown>>(
     q,
     sql`select i.id, i.intake_id, n.ref, n.contact_id, i.reporter_account_id, i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
@@ -1545,8 +1601,7 @@ export async function pendingOutcomeLines(q: Runner): Promise<OutcomeLineRow[]> 
                exists (select 1 from intake_items r where r.reexamines_item_id = i.id) as reexamined,
                d.rule_id, d.rules_version, coalesce(d.unseen, false) as decision_unseen,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
-               (exists (select 1 from decision_actions a where a.decision_id = i.answered_by and ${measures})
-                and not exists (select 1 from decision_actions a where a.decision_id = i.answered_by and ${measures} and a.no_effect is null)) as no_effect,
+               ${answerChangedNothing} as no_effect,
                coalesce((select p.quote_of_id is not null from posts p where i.target_type = 'post' and p.id = i.target_id), false) as quotes
           from intake_items i join intakes n on n.id = i.intake_id left join decisions d on d.id = i.answered_by
          where i.outcome_sent_at is not null and i.outcome_mail = 'pending' and i.shown_outcome is not null

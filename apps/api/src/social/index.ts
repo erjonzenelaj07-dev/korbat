@@ -9,6 +9,7 @@ import type { AppEnv } from "../env";
 import type { JobLock } from "../lib/jobs";
 import type { MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
+import type { ModerationForSocial } from "../moderation";
 import { WITHOUT_MEDIA, type SocialDeps, type SocialEvents } from "./context";
 import { startExplore } from "./explore";
 import { exportProfile, type ProfileExport } from "./flows/export";
@@ -90,6 +91,8 @@ export interface CreateSocialOptions {
   events?: SocialEvents;
   /** The media module's interface for posts. Without it posts carry no images. */
   media?: MediaForPosts;
+  /** The moderation module's interface for views: moderation.forSocial. Without it no post carries the author's chip. */
+  moderation?: ModerationForSocial;
   now?: () => Date;
 }
 
@@ -97,6 +100,7 @@ export function createSocial(options: CreateSocialOptions) {
   const deps: SocialDeps = {
     repo: createSocialRepo(options.apiDb),
     media: options.media ?? WITHOUT_MEDIA,
+    moderation: options.moderation,
     limits: options.rateLimitStore,
     log: options.logger,
     now: options.now ?? (() => new Date()),

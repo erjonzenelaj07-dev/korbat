@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { AuthEventType } from "../auth";
 import { MediaError, type MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
+import type { ModerationForSocial } from "../moderation";
 import type { SocialRepo } from "./repo";
 
 /** The handle codes onboarding answers with, which a handle change raises too, plus its cooldown. */
@@ -70,6 +71,11 @@ export interface SocialDeps {
   repo: SocialRepo;
   /** Images on posts. The media module owns them; this module only passes its transaction along. */
   media: MediaForPosts;
+  /**
+   * The decision behind the state of the viewer's own withheld or removed post, for its chip. The moderation module owns
+   * the decisions. Absent in the tests of posting alone, whose posts then carry no chip.
+   */
+  moderation?: ModerationForSocial;
   /** Per-account write limits; the same store the per-IP middleware uses. */
   limits: RateLimitStore;
   log: Logger;

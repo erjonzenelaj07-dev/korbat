@@ -37,7 +37,7 @@ const html = (element: ReactElement): string => renderToStaticMarkup(element);
 /** Every anchor's opening tag in the markup. */
 const anchors = (markup: string): string[] => markup.match(/<a\b[^>]*>/g) ?? [];
 
-const PAGES: SettingsPage[] = ["security", "privacy", "profile", "account"];
+const PAGES: SettingsPage[] = ["security", "privacy", "profile", "account", "cases"];
 
 describe("the settings row", () => {
   test("links every settings screen as a real anchor inside a navigation landmark", () => {
@@ -56,10 +56,16 @@ describe("the settings row", () => {
 
   test("every settings screen shows the row and names itself as the current page", () => {
     const dir = path.join(SRC, "app", "settings");
-    const screens = readdirSync(dir).filter((file) => file.endsWith(".tsx") && !file.startsWith("_"));
-    expect(screens.sort()).toEqual(PAGES.map((page) => `${page}.tsx`).sort());
-    for (const file of screens) {
-      expect(readFileSync(path.join(dir, file), "utf8"), file).toContain(`<SettingsNav current="${file.replace(/\.tsx$/, "")}"`);
+    // A page is a file of the folder, or a folder of its own whose screens all belong to it (Cases: its list and one decision).
+    const screens = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => !entry.name.startsWith("_"))
+      .flatMap((entry) =>
+        entry.isDirectory() ? readdirSync(path.join(dir, entry.name)).map((file) => ({ page: entry.name, file: path.join(entry.name, file) })) : [{ page: entry.name.replace(/\.tsx$/, ""), file: entry.name }],
+      );
+    expect([...new Set(screens.map((screen) => screen.page))].sort()).toEqual([...PAGES].sort());
+    for (const { page, file } of screens) {
+      expect(file.endsWith(".tsx"), file).toBe(true);
+      expect(readFileSync(path.join(dir, file), "utf8"), file).toContain(`<SettingsNav current="${page}"`);
     }
   });
 });

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DisplayName, HandleInput } from "./auth";
 import { HiddenMedia, MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
+import { RULE_IDS } from "./moderation";
 import { FORBIDDEN_FORMAT, visibleLength } from "./text";
 
 /**
@@ -112,6 +113,14 @@ const postFields = {
 export const QuotedPost = z.object({ ...postFields, quoteOf: z.null() });
 export type QuotedPost = z.infer<typeof QuotedPost>;
 
+/**
+ * The decision behind the state of the viewer's own withheld or removed post (3c design, sections 5 and 7.6): the decision
+ * of the strongest post measure in force, by its id, the rule it cites (null for a decision on the law), whether it rests
+ * on the law, and whether korbat is still deciding. The app shows it as the chip that links to the statement.
+ */
+export const PostModeration = z.object({ decisionId: z.uuid(), ruleId: z.enum(RULE_IDS).nullable(), legal: z.boolean(), interim: z.boolean() });
+export type PostModeration = z.infer<typeof PostModeration>;
+
 export const PostView = z.object({
   ...postFields,
   /**
@@ -120,6 +129,8 @@ export const PostView = z.object({
    * rather than in `viewer`, which the like, repost and bookmark answers replace.
    */
   inExplore: z.literal(true).optional(),
+  /** Present only on the viewer's own post while moderation withholds or removed it; nobody else's view carries it, nor does a quoted embed. */
+  moderation: PostModeration.optional(),
   quoteOf: z.union([QuotedPost, Tombstone]).nullable(),
 });
 export type PostView = z.infer<typeof PostView>;

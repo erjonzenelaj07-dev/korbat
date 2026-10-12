@@ -4,6 +4,7 @@ import { Pressable, Text, View } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
 import { isHiddenMedia, type HiddenMedia, type MediaView } from "@korbat/contracts";
 import { API_BASE } from "@/lib/api";
+import { CHIP_WORDS } from "@/lib/moderation-words";
 import { HiddenImage, HiddenRowWords, HiddenThumbnail, hiddenImageWords } from "./HiddenImage";
 import { MediaViewer } from "./MediaViewer";
 
@@ -28,11 +29,28 @@ function Picture({ item, style }: { item: MediaView; style: { width: number | "1
   );
 }
 
+/**
+ * The label on the author's own image that moderation withheld or removed (3c design, section 9): the author keeps seeing
+ * such an image, and reads on the image itself that others do not. The API marks an image so only for its author.
+ */
+export function OwnImageLabel({ state }: { state: NonNullable<MediaView["moderation"]> }) {
+  const amber = state === "withheld";
+  return (
+    <View pointerEvents="none" className={`absolute left-1 top-1 rounded-full px-2 py-0.5 ${amber ? "bg-amber-950" : "bg-red-950"}`}>
+      <Text className={`text-xs font-medium ${amber ? "text-amber-300" : "text-red-300"}`}>{amber ? CHIP_WORDS.underReview : CHIP_WORDS.removed}</Text>
+    </View>
+  );
+}
+
+/** One image of the frame: the control that opens it and, beside that control, the label of the author's own restricted image, as text of its own. */
 function Cell({ item, onPress }: { item: MediaView; onPress: () => void }) {
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`Open image: ${item.alt}`} onPress={onPress} style={{ flex: 1 }}>
-      <Picture item={item} style={{ width: "100%", height: "100%" }} />
-    </Pressable>
+    <View style={{ flex: 1 }}>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Open image: ${item.alt}`} onPress={onPress} style={{ flex: 1 }}>
+        <Picture item={item} style={{ width: "100%", height: "100%" }} />
+      </Pressable>
+      {item.moderation ? <OwnImageLabel state={item.moderation} /> : null}
+    </View>
   );
 }
 
@@ -40,9 +58,10 @@ function Cell({ item, onPress }: { item: MediaView; onPress: () => void }) {
  * The images of a post. One image is shown in its own ratio; two to four share a 16:9 frame and are
  * cropped to their cell. Pressing one opens the viewer; ALT shows the descriptions in place. An image
  * moderation hid from this reader keeps its place as a placeholder: it has no size of its own, so alone
- * it takes the frame's ratio, it is no control, and it has no description to show.
+ * it takes the frame's ratio, it is no control, and it has no description to show. The viewer is told the
+ * post that holds the images, so that an image can be reported on it, unless the post is the reader's own.
  */
-function Grid({ media }: { media: (MediaView | HiddenMedia)[] }) {
+function Grid({ media, postId, own }: { media: (MediaView | HiddenMedia)[]; postId?: string; own?: boolean }) {
   const [open, setOpen] = useState<number | null>(null);
   const [described, setDescribed] = useState(false);
   const cell = (index: number) => {
@@ -91,7 +110,7 @@ function Grid({ media }: { media: (MediaView | HiddenMedia)[] }) {
             </Text>
           ))
         : null}
-      {open === null ? null : <MediaViewer media={media} index={open} onIndex={setOpen} onClose={() => setOpen(null)} />}
+      {open === null ? null : <MediaViewer media={media} index={open} onIndex={setOpen} onClose={() => setOpen(null)} postId={own ? undefined : postId} />}
     </View>
   );
 }
@@ -101,11 +120,12 @@ function Grid({ media }: { media: (MediaView | HiddenMedia)[] }) {
  * are pictures, not buttons: the whole quote is a link to the quoted post, where the grid and the
  * viewer are, and a control inside another control is one that assistive technology cannot reach.
  * A hidden image keeps its square in the row, and the row says the placeholder's sentence once, as
- * text, under the squares.
+ * text, under the squares. `postId` is the post that holds the images and `own` says that the reader
+ * wrote it: the viewer reports an image on that post, and offers no report of the reader's own.
  */
-export function MediaGrid({ media, compact = false }: { media: (MediaView | HiddenMedia)[]; compact?: boolean }) {
+export function MediaGrid({ media, compact = false, postId, own = false }: { media: (MediaView | HiddenMedia)[]; compact?: boolean; postId?: string; own?: boolean }) {
   if (media.length === 0) return null;
-  if (!compact) return <Grid media={media} />;
+  if (!compact) return <Grid media={media} postId={postId} own={own} />;
   return (
     <View className="mt-2">
       <View className="flex-row" style={{ gap: GAP }}>

@@ -56,8 +56,9 @@ const stopJanitor = auth.startJanitor(jobLock);
 
 // Moderation cases: the module owns its tables on the API's role and reaches the social module through an interface of
 // that module's own, built over the same pool, the image rows through the media module's interface for cases, and a
-// notifier's contact and every mail through the auth module's. Its limits count in the store the per-IP limit uses.
-const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, rateLimitStore, config, logger });
+// notifier's contact and every mail through the auth module's. Its limits count in the store the per-IP limit uses, and
+// the routes of an account's own decisions and reports stand behind the auth module's session guard.
+const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, requireSession: auth.requireSession, rateLimitStore, config, logger });
 // The dispatch job: the staff alerts that are still due, the daily release of outcomes, and the mails that waited.
 const stopModeration = moderation.startJobs(jobLock);
 
@@ -68,6 +69,8 @@ const social = createSocial({
   requireSession: auth.requireSession,
   requireFreshAuth: auth.requireFreshAuth(),
   media: media.forPosts,
+  // The chip on the author's own withheld or removed post names its decision, which the moderation module reads.
+  moderation: moderation.forSocial,
   // Profile and handle changes are security events; the social module hands them to the auth module, which owns the table.
   events: { append: auth.appendEvent },
 });

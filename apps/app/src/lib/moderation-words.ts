@@ -1,0 +1,213 @@
+import { CSAM_NOTICE_MAX_ACCOUNTS, NOTICE_LIMITS, type CsamKeywordChoice, type TdbFormCategory } from "@korbat/contracts";
+
+/**
+ * The app's words for reports, notices and moderation cases (3c design, section 9): the report form, the notice status
+ * page, the cases screens, the chips and the labels. Each sentence is written here once and the screens take it from
+ * here; the words of an outcome, of a statement and of a rule are not here at all: they come from @korbat/contracts and
+ * @korbat/rules, which the mails and the staff console use too, so the app can never word them differently.
+ */
+
+/** A small count as a word, as the form's sentences print the limits; a larger one as digits. */
+export function numberWord(count: number): string {
+  return ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"][count] ?? String(count);
+}
+
+const PROFILE_LIMIT = `${numberWord(CSAM_NOTICE_MAX_ACCOUNTS)} ${CSAM_NOTICE_MAX_ACCOUNTS === 1 ? "profile" : "profiles"}`;
+
+/** What follows every sentence that offers the contact address in place of the form. */
+const MAIL_INSTEAD = (contact: string) => `email your report to ${contact} with the korbat links of what you report and why. Do not attach images or files: korbat does not open them.`;
+
+export const REPORT_WORDS = {
+  control: "Report",
+  imageControl: "Report this image",
+  title: "Report to korbat",
+  question: "What is wrong with it?",
+  /** The three grounds, of equal weight and in this order. */
+  grounds: {
+    rule: "It breaks a korbat rule",
+    illegal: "It is illegal",
+    csam: "It is sexual abuse or exploitation of a child, child sexual abuse material, or grooming of a child",
+  },
+  whichRule: "Which rule?",
+  /** In the list of rules, in R2's place: such a report goes the third way. */
+  r2Instead: "Child sexual abuse material: choose the third answer, which is anonymous.",
+  explanation: "Anything the moderator should know",
+  category: "What kind of illegal content is it?",
+  categoryNotSure: "I am not sure",
+  /** Directly below the categories. */
+  csamInstead: "For the sexual abuse or exploitation of a child, child sexual abuse material or grooming, choose the third answer, which is anonymous.",
+  citedLaw: "Which law or country (optional)",
+  whyIllegal: "Why is it illegal?",
+  alsoRule: "A korbat rule it also breaks (optional)",
+  noRule: "None",
+  which: "Which is it?",
+  keywords: {
+    csam: "Sexual images or videos of a child",
+    deepfake: "Such images made or altered by software",
+    grooming: "An adult seeking sexual contact with a child",
+    abuse: "Other sexual abuse or exploitation of a child, such as offering a child for sex",
+  } satisfies Record<CsamKeywordChoice, string>,
+  csamExplanation: "Anything korbat should know (optional)",
+  anonymous: "This report is anonymous: korbat does not record who sent it, not even your account. Keep the link we show you to follow it.",
+  profileOnly: "If you can, report the post or the image itself: open it and choose Report. From a profile alone korbat cannot tell which image you mean, and its answer covers the images on all the profile's posts.",
+  oneProfile: `On this path a report can name ${PROFILE_LIMIT}. Send another report for the next one.`,
+  item: "What you report",
+  itemPost: "This post",
+  itemImage: "One image of this post",
+  itemProfile: (handle: string) => `The profile @${handle}`,
+  link: "Link to the post or profile on korbat",
+  otherItems: "Other items",
+  otherItemsHint: `You can add up to ${numberWord(NOTICE_LIMITS.maxTargets - 1)} more korbat links.`,
+  otherLink: (n: number) => `Link ${n}`,
+  addLink: "Add another link",
+  removeLink: "Remove",
+  bonaFide: "I believe in good faith that the information in this report is accurate and complete.",
+  name: "Your name (optional)",
+  email: "Your email (optional)",
+  contactHint: "Without an email we cannot send you a receipt or our decision. korbat never shows your name or email to the person you report.",
+  /** The privacy line's three sentences; the second is not shown on the anonymous path, which records no sender. */
+  privacy: {
+    use: "korbat uses what you send only to handle this report; how long it keeps it is in the terms.",
+    sender: "Moderators see who sent a report only when a case needs it, for example when you report an account impersonating you; each time is recorded and shown to every staff member.",
+    access: "If the person you report asks korbat for their data, the law may require korbat to give them what you wrote, never your name, email or account.",
+  },
+  turnstile: "Cloudflare Turnstile checks that you are not a bot; it sees your IP address and browser details for that check.",
+  send: "Send report",
+  /** What the form says in place of sending while something is missing. */
+  missing: {
+    ground: "Choose what is wrong with it.",
+    rule: "Choose the rule it breaks.",
+    keyword: "Choose which it is.",
+    link: "Give the link to the post or profile on korbat.",
+    linkInvalid: "A link must be a whole address that begins with http:// or https://.",
+    whyIllegal: "Say why it is illegal.",
+    bonaFide: "Confirm that you report in good faith.",
+    human: "Wait for the check that you are not a bot.",
+    details: "Some details are missing or invalid.",
+  },
+  sent: "Your report was received",
+  reference: (ref: string) => `Its reference is ${ref}.`,
+  keepLink: "Keep this link to follow your report or ask for a decision to be re-examined. It is shown only now.",
+  copy: "Copy",
+  copied: "Copied",
+  followInSettings: "You can follow it under Settings, Cases, Your reports.",
+  yourReports: "Your reports",
+  /** The three failures the form words itself, each naming the users' contact address. */
+  humanCheckFailed: (contact: string) => `The check that you are not a bot failed. Try again, or ${MAIL_INSTEAD(contact)}`,
+  rateLimited: (wait: string, contact: string) =>
+    `korbat cannot take another report from this network or account right now: it takes at most ${NOTICE_LIMITS.signedOut.perHour} reports an hour and ${NOTICE_LIMITS.signedOut.perDay} a day without an account, and ${NOTICE_LIMITS.signedIn.perHour} an hour and ${NOTICE_LIMITS.signedIn.perDay} a day with one. Try again in about ${wait}, or ${MAIL_INSTEAD(contact)}`,
+  unavailable: (contact: string) => `korbat cannot take reports right now. Try again in a few minutes, or ${MAIL_INSTEAD(contact)}`,
+  /** After each of the three on the anonymous path: a mail is not anonymous. */
+  mailShowsAddress: "An email shows korbat your address. korbat deletes your email, and its reply to you, once your report is entered.",
+} as const;
+
+/** The Transparency Database's names for the categories the illegal ground offers. */
+export const CATEGORY_LABELS: Record<TdbFormCategory, string> = {
+  STATEMENT_CATEGORY_ANIMAL_WELFARE: "Animal welfare",
+  STATEMENT_CATEGORY_CONSUMER_INFORMATION: "Consumer information infringements",
+  STATEMENT_CATEGORY_CYBER_VIOLENCE: "Cyber violence",
+  STATEMENT_CATEGORY_CYBER_VIOLENCE_AGAINST_WOMEN: "Cyber violence against women",
+  STATEMENT_CATEGORY_DATA_PROTECTION_AND_PRIVACY_VIOLATIONS: "Data protection and privacy violations",
+  STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH: "Illegal or harmful speech",
+  STATEMENT_CATEGORY_INTELLECTUAL_PROPERTY_INFRINGEMENTS: "Intellectual property infringements",
+  STATEMENT_CATEGORY_NEGATIVE_EFFECTS_ON_CIVIC_DISCOURSE_OR_ELECTIONS: "Negative effects on civic discourse or elections",
+  STATEMENT_CATEGORY_PROTECTION_OF_MINORS: "Protection of minors",
+  STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY: "Risk for public security",
+  STATEMENT_CATEGORY_SCAMS_AND_FRAUD: "Scams and fraud",
+  STATEMENT_CATEGORY_SELF_HARM: "Self-harm",
+  STATEMENT_CATEGORY_UNSAFE_AND_PROHIBITED_PRODUCTS: "Unsafe, non-compliant or prohibited products",
+  STATEMENT_CATEGORY_VIOLENCE: "Violence",
+};
+
+const OUTSIDE_KORBAT = "go to court, or complain to the Digital Services Coordinator of the EU country where you live.";
+
+export const STATUS_WORDS = {
+  title: "Your report",
+  reference: (ref: string) => `Reference ${ref}`,
+  received: (time: string) => `Received on ${time}.`,
+  item: (n: number) => `Item ${n}`,
+  /** The heading of an item korbat added for the post a named post quotes. */
+  added: (n: number, link: string) => `The post that item ${n} quotes (${link}), added by korbat`,
+  waiting: "Not decided yet.",
+  decided: (day: string) => `Decided on ${day}:`,
+  reexaminationLabel: "Re-examination",
+  /** Beside an item whose answer can still be examined again: what that is, and until when. */
+  reexaminationOpen: (until: string) => `A moderator decides it again as a new report. You can ask once for each item, within six months of being told, until ${until}.`,
+  /** Beside an outcome a review or a correction changed, and a re-examination's answer. */
+  final: `This is final within korbat. You can also ${OUTSIDE_KORBAT}`,
+  /** Beside any other decided outcome that cannot be examined again. */
+  courts: `You can ${OUTSIDE_KORBAT}`,
+  contact: "Emails about this report",
+  confirmed: "This address is confirmed as the sender's.",
+  unconfirmed: "korbat has not been told yet whether this address sent the report.",
+  confirm: "Yes, I sent this: keep me informed",
+  stop: "I did not send this: stop korbat's report emails to this address",
+  stopHint: "This also stops korbat's emails about reports you send yourself from this address, signed in or not, until you undo it on this page or, if a korbat account uses this address, under Settings, Cases, Your reports.",
+  stopped: "korbat's report emails to this address are stopped.",
+  undo: "Undo: email this address about reports again",
+  retry: "Try again",
+} as const;
+
+export const CASES_WORDS = {
+  nav: "Cases",
+  title: "Cases",
+  tabs: { about: "About you", reports: "Your reports" },
+  noDecisions: "korbat has made no decision about your posts or your profile.",
+  noReports: "You have sent no reports.",
+  post: (time: string) => `Your post of ${time}`,
+  profile: "Your profile",
+  law: "the law",
+  rule: (id: string) => `Rule ${id}`,
+  decidedOn: (day: string) => `Decided on ${day}`,
+  whileDeciding: "while korbat decides",
+  ended: "What korbat did while deciding has ended",
+  noAction: "No action",
+  review: "the answer to your appeal",
+  correction: "a correction by korbat",
+  appealOpen: (until: string) => `You can appeal until ${until}`,
+  reversed: (day: string) => `Reversed in full on ${day}`,
+  more: "Show more",
+  report: (ref: string, time: string) => `Report ${ref}, sent on ${time}`,
+  mailStopped: "korbat does not email you about your reports, because someone using your email address asked it to stop. Their outcomes are listed here.",
+  resume: "Email me about my reports again",
+  resumeHint: "korbat may then also email this address about reports sent without an account that give it.",
+} as const;
+
+export const DECISION_WORDS = {
+  title: "korbat's decision",
+  back: "All cases",
+  statement: "Statement of reasons",
+  content: "What this decision was made on",
+  post: (time: string) => `Your post of ${time}`,
+  noText: "The post had no text.",
+  displayName: "Display name",
+  bio: "Bio",
+  handle: "Handle",
+  empty: "(empty)",
+  r4Redacted: "Content erased when the R4 decision became final",
+  erased: (day: string) => `korbat's copy of the content this decision was made on was erased on ${day} under its retention rules (Terms, Your data).`,
+  postKept: "The post itself stays in your profile while you keep it.",
+  deleted: "You deleted this post. korbat keeps this copy for the case for the periods in its terms.",
+  deletedImages: "Images kept for the case, not shown",
+  resetDecision: "The decision that reset it",
+  appeal: "Appeal",
+  appealUntil: (until: string) => `You can appeal this decision until ${until}.`,
+  reversed: (day: string) => `Reversed in full on ${day}: nothing of this decision is in force, so there is nothing to appeal.`,
+  notFound: "That decision does not exist, or it is not about your account.",
+  /** A statement is never rendered with another version of the rules than the one it was made under. */
+  cannotRender: "This decision was made under a version of the rules this page does not hold yet. Reload the page to read it.",
+} as const;
+
+/** The chip on the author's own withheld or removed post, and the labels on their own images. */
+export const CHIP_WORDS = {
+  underReview: "Under review",
+  removed: "Removed",
+  illegal: "illegal content",
+} as const;
+
+/** The terms page's Contact section, built from the build's contact address; it is not part of the terms' own sections. */
+export const CONTACT_WORDS = {
+  title: "Contact",
+  body: (contact: string) => `Write to korbat at ${contact} when the report form does not work for you, to ask for your data, or about a decision. A person reads every email. Do not attach images or files: korbat does not open them.`,
+  report: "Report something on korbat",
+} as const;

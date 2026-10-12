@@ -200,6 +200,7 @@ services:
         KORBAT_ENV: ${KORBAT_ENV:?set KORBAT_ENV to development or production in infra/.env}
         TUNNEL: ${TUNNEL:-off}
         EXPO_PUBLIC_BADGE: ${WEB_BADGE:-off}
+        EXPO_PUBLIC_CONTACT_EMAIL: ${WEB_CONTACT_EMAIL:?set WEB_CONTACT_EMAIL in infra/.env}
     depends_on:
       api: { condition: service_healthy }
     volumes:

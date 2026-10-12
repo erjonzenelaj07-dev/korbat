@@ -7,6 +7,8 @@ import { PostList, TimelineList } from "@/components/social/PagedList";
 import { FollowButton } from "@/components/social/ProfileList";
 import { Button, Loading, VerifiedChip } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
+import { reportHref } from "@/lib/moderation";
+import { REPORT_WORDS } from "@/lib/moderation-words";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
 
@@ -101,6 +103,16 @@ export default function ProfileScreen() {
   const viewer = profile.viewer;
   const tabs: Tab[] = own ? ["posts", "replies", "likes"] : ["posts", "replies"];
 
+  // Anyone but the profile's owner may report it, signed in or out (3c design, section 9): a link to the report form,
+  // which stands beside Mute and Block when those are shown.
+  const report = own ? null : (
+    <Link href={reportHref({ account: profile.handle })} asChild>
+      <Pressable className="rounded-full border border-zinc-600 px-4 py-1.5">
+        <Text className="text-sm text-zinc-200">{REPORT_WORDS.control}</Text>
+      </Pressable>
+    </Link>
+  );
+
   const header = (
     <View className="border-b border-zinc-800 px-4 pt-4">
       <View className="flex-row flex-wrap items-center gap-x-2">
@@ -143,8 +155,11 @@ export default function ProfileScreen() {
           <Pressable accessibilityRole="button" disabled={busy} onPress={() => setConfirmBlock(true)} className="rounded-full border border-red-900 px-4 py-1.5">
             <Text className="text-sm text-red-300">Block</Text>
           </Pressable>
+          {report}
         </View>
       ) : null}
+      {/* Without the signed-in controls (signed out, or no relation loaded) the report link stands alone in their place. */}
+      {!own && !(me && viewer) ? <View className="mt-3 flex-row">{report}</View> : null}
       {own ? <Button label="Security and privacy settings" onPress={() => router.push("/settings/security")} tone="secondary" /> : null}
       {!me ? <Text className="mt-3 text-xs text-zinc-400">Sign in to follow this account.</Text> : null}
       {actionError ? (

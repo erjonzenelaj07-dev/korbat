@@ -8,21 +8,24 @@
  * only through the interfaces they export, never names an image row (the media module locks and holds a case's images for
  * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
-import type { CaseView, FindingRequest, FindingResponse, MediaSize, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse } from "@korbat/contracts";
+import type { CaseView, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
+import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../auth";
 import type { Config } from "../config";
+import type { AppEnv } from "../env";
 import type { JobLock } from "../lib/jobs";
 import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
+import { authorFacts } from "./author";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
 import { createDispatchJob } from "./dispatch";
 import { reveal, type RevealOutcome } from "./reveal";
-import { moderationRoutes } from "./routes";
+import { moderationRoutes, noSession } from "./routes";
 import { ownTexts, saveText } from "./texts";
 
 export { ModerationError } from "./context";
@@ -65,6 +68,15 @@ export interface ModerationForStaff {
   reveal(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<RevealOutcome>;
 }
 
+/**
+ * What the social module needs from this one (3c design, section 5): the facts behind the chip on the author's own post.
+ * For each of these posts that the viewer wrote and that is withheld or removed, the decision of the strongest post
+ * measure in force, or the decision whose erasure removed it. Asked once a page, and only about the viewer's own posts.
+ */
+export interface ModerationForSocial {
+  authorFacts(viewer: string, postIds: readonly string[]): Promise<Map<string, PostModeration>>;
+}
+
 export interface CreateModerationOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
   apiDb: Db;
@@ -74,6 +86,11 @@ export interface CreateModerationOptions {
   social: SocialForModeration;
   /** The media module's interface for cases: media.forCases. */
   media: MediaForCases;
+  /**
+   * The auth module's requireSession: an onboarded account with CSRF and Origin checked. The author's and the reporter's
+   * routes stand behind it. Without it they refuse every request, so a module built for the staff side alone opens none.
+   */
+  requireSession?: MiddlewareHandler<AppEnv>;
   /** What one sender may send, and the throttles of the staff alerts, count in the store the per-IP middleware uses. */
   rateLimitStore: RateLimitStore;
   config: Config;
@@ -106,12 +123,20 @@ export function createModeration(options: CreateModerationOptions) {
     texts: (session, caseId) => ownTexts(deps, session, caseId),
     reveal: (session, confirmed, ctx) => reveal(deps, session, confirmed, ctx),
   };
+  const forSocial: ModerationForSocial = {
+    authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),
+  };
   return {
     deps,
-    /** The app's routes, mounted at /api: reports and notices, their status page and its contact buttons. */
-    routes: moderationRoutes(deps),
+    /**
+     * The app's routes, mounted at /api: reports and notices, their status page and its contact buttons, and behind the
+     * session guard the account's own decisions and reports.
+     */
+    routes: moderationRoutes(deps, options.requireSession ?? noSession),
     /** The interface the staff module uses. */
     forStaff,
+    /** The interface the social module's views use. */
+    forSocial,
     /**
      * Resolves once every task a request started and did not wait for has ended: the mails after a report, a notice, a
      * finding, a reveal or a refused case read. The tests await it; the server lets the tasks run.

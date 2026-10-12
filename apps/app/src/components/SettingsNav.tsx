@@ -1,13 +1,16 @@
 import { Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
+import { CASES_WORDS } from "@/lib/moderation-words";
 
-export type SettingsPage = "security" | "privacy" | "profile" | "account";
+export type SettingsPage = "security" | "privacy" | "profile" | "account" | "cases";
 
 const PAGES: { page: SettingsPage; label: string }[] = [
   { page: "security", label: "Security" },
   { page: "privacy", label: "Privacy" },
   { page: "profile", label: "Profile" },
   { page: "account", label: "Account" },
+  // The decisions about the account and the reports it sent (3c design, section 9); its screens are the folder settings/cases.
+  { page: "cases", label: CASES_WORDS.nav },
 ];
 
 /**

@@ -4,6 +4,8 @@ import { Link, router } from "expo-router";
 import type { Author, PostView, QuotedPost, Tombstone } from "@korbat/contracts";
 import { VerifiedChip } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
+import { chipText, reportHref } from "@/lib/moderation";
+import { CHIP_WORDS, REPORT_WORDS } from "@/lib/moderation-words";
 import { useSession } from "@/lib/session";
 import { social, timeAgo, type EngagementKind } from "@/lib/social";
 import { MediaGrid } from "./MediaGrid";
@@ -40,19 +42,28 @@ export function QuoteEmbed({ quote }: { quote: QuotedPost | Tombstone }) {
       <Pressable className="mt-2 rounded-lg border border-zinc-800 px-3 py-2">
         <AuthorLine author={quote.author} createdAt={quote.createdAt} />
         {quote.body ? <RichText body={quote.body} className="mt-1 text-sm leading-5 text-zinc-300" /> : null}
-        <MediaGrid media={quote.media} compact />
+        <MediaGrid media={quote.media} compact postId={quote.id} />
       </Pressable>
     </Link>
   );
 }
 
-function StateChip({ state }: { state: PostView["state"] }) {
-  if (state === "visible") return null;
-  const amber = state === "withheld";
+/**
+ * The chip on the author's own withheld or removed post (3c design, section 9). With the decision behind the state it
+ * names the rule or says "illegal content", amber while korbat decides and red once removed, and links to the decision's
+ * statement under Settings, Cases. A view without the decision's facts still says the state, and links nowhere.
+ */
+function StateChip({ post }: { post: PostView }) {
+  if (post.state === "visible") return null;
+  const decision = post.moderation;
+  const amber = decision ? decision.interim : post.state === "withheld";
+  const surface = `self-start rounded-full px-2 py-0.5 ${amber ? "bg-amber-500/15" : "bg-red-500/15"}`;
+  const words = <Text className={`text-xs font-medium ${amber ? "text-amber-300" : "text-red-300"}`}>{decision ? chipText(decision) : amber ? CHIP_WORDS.underReview : CHIP_WORDS.removed}</Text>;
+  if (!decision) return <View className={surface}>{words}</View>;
   return (
-    <View className={`self-start rounded-full px-2 py-0.5 ${amber ? "bg-amber-500/15" : "bg-red-500/15"}`}>
-      <Text className={`text-xs font-medium ${amber ? "text-amber-300" : "text-red-300"}`}>{amber ? "Under review" : "Removed"}</Text>
-    </View>
+    <Link href={`/settings/cases/${decision.decisionId}`} asChild>
+      <Pressable className={surface}>{words}</Pressable>
+    </Link>
   );
 }
 
@@ -164,7 +175,7 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
     <View className="border-b border-zinc-800 px-4 py-3">
       {repostedBy ? <Text className="mb-1 text-xs text-zinc-400">↻ {repostedBy.displayName} reposted</Text> : null}
       <AuthorLine author={post.author} createdAt={post.createdAt} />
-      {post.author.id === me ? <StateChip state={post.state} /> : null}
+      {post.author.id === me ? <StateChip post={post} /> : null}
       {/* The API sets inExplore only on the viewer's own posts; the check keeps the chip on them whatever a view carries. */}
       {post.author.id === me && post.inExplore ? <ExploreChip id={post.id} /> : null}
       {post.replyTo ? (
@@ -185,7 +196,7 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
           </Pressable>
         </Link>
       ) : null}
-      <MediaGrid media={post.media} />
+      <MediaGrid media={post.media} postId={post.id} own={post.author.id === me} />
       {post.quoteOf ? <QuoteEmbed quote={post.quoteOf} /> : null}
       <View className="mt-2 flex-row flex-wrap items-center">
         <Action label="Reply" count={post.counts.replies} onPress={() => router.push(`/post/${post.id}`)} />
@@ -194,6 +205,14 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
         <Action label="Like" count={post.counts.likes} active={post.viewer?.liked} pressed={post.viewer?.liked} busy={busy} activeClass="text-rose-400" onPress={() => toggle("like")} />
         <Action label={post.viewer?.bookmarked ? "Saved" : "Save"} active={post.viewer?.bookmarked} busy={busy} activeClass="text-sky-400" onPress={() => toggle("bookmark")} />
         {post.author.id === me && !confirmingDelete ? <Action ref={deleteRef} label="Delete" busy={busy} onPress={() => setConfirmingDelete(true)} /> : null}
+        {/* Anyone but the author may report the post, signed in or out; the form is a page of its own, so this is a link. */}
+        {post.author.id !== me ? (
+          <Link href={reportHref({ post: post.id })} asChild>
+            <Pressable className="flex-row items-center gap-1 py-1 pr-4">
+              <Text className="text-sm text-zinc-400">{REPORT_WORDS.control}</Text>
+            </Pressable>
+          </Link>
+        ) : null}
       </View>
       {confirmingDelete ? (
         <View role="dialog" aria-labelledby={`delete-${post.id}`} className="mt-2 flex-row flex-wrap items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2">

@@ -5,8 +5,8 @@ import { encodeCursor } from "./cursor";
 import type { ListRow, PostRow, ProfileRow } from "./repo";
 import { postAccess, tombstone } from "./visibility";
 
-/** Where views come from: the posts, and their images through the media module. */
-export type ViewSource = Pick<SocialDeps, "repo" | "media">;
+/** Where views come from: the posts, their images through the media module, and the chip's facts through the moderation module. */
+export type ViewSource = Pick<SocialDeps, "repo" | "media" | "moderation">;
 
 /** What a post id resolves to for a viewer: the view, or a tombstone when the viewer may not see it. */
 export type LoadedPost = PostView | Tombstone;
@@ -41,8 +41,10 @@ export function mediaFor(viewer: ViewerId, authorId: string, image: PostImage): 
  * viewer's own visible posts that the current Explore ranking holds, while their switch is on, carry
  * the author's chip (2c design, section 8):
  * asked in one query, and only when the viewer wrote some of the posts; a quoted embed never carries it.
+ * The viewer's own withheld and removed posts carry the decision behind their state (3c design, section 7.6), which the
+ * moderation module names: asked the same way, once for the page and only when the viewer wrote such a post.
  */
-export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
+export async function loadPostViews({ repo, media, moderation }: ViewSource, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
   const unique = [...new Set(ids)];
   const primary = await repo.findPosts(unique);
   const quoteIds = [...new Set([...primary.values()].map((row) => row.quoteOfId).filter((id): id is string => id !== null && !primary.has(id)))];
@@ -55,6 +57,9 @@ export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerI
   // A withheld or removed post is never in Explore for anyone, its author included, so only visible ones are asked about.
   const own = viewer ? [...primary.values()].filter((row) => row.authorId === viewer && row.state === "visible").map((row) => row.id) : [];
   const inExplore = viewer && own.length > 0 ? await repo.listedInExplore(viewer, own) : new Set<string>();
+  // The chip of a withheld or removed post is its author's alone, so only the viewer's own such posts are asked about.
+  const restricted = viewer ? [...primary.values()].filter((row) => row.authorId === viewer && (row.state === "withheld" || row.state === "removed")).map((row) => row.id) : [];
+  const decisions = viewer && moderation && restricted.length > 0 ? await moderation.authorFacts(viewer, restricted) : null;
 
   const access = (row: PostRow) => postAccess(viewer, row, blocked.has(row.authorId));
   /** The parent's handle only when the viewer could open the parent; a block either way, or a hidden or deleted parent, gives null. */
@@ -89,7 +94,8 @@ export async function loadPostViews({ repo, media }: ViewSource, viewer: ViewerI
       continue;
     }
     const a = access(row);
-    out.set(id, a === "shown" ? { ...base(row), ...(inExplore.has(id) ? { inExplore: true as const } : {}), quoteOf: quoteOf(row.quoteOfId) } : tombstone(id, a));
+    const decision = decisions?.get(id);
+    out.set(id, a === "shown" ? { ...base(row), ...(inExplore.has(id) ? { inExplore: true as const } : {}), ...(decision ? { moderation: decision } : {}), quoteOf: quoteOf(row.quoteOfId) } : tombstone(id, a));
   }
   return out;
 }

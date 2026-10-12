@@ -606,7 +606,10 @@ export function outcomeWords(input: OutcomeWordsInput): string {
  * and `sealed`, `unseen` and `reexamination` say nothing before that either: `sealed` that the answering decision sealed
  * images, `unseen` that it was taken while nobody could open the post's images, `reexamination` whether a re-examination
  * can still be asked for and until when (null for an item that cannot be re-examined). `changed` marks an outcome that a
- * review or a correction changed, `reexamines` the item of a re-examination.
+ * review or a correction changed, `reexamines` the item of a re-examination. Two members come only with a released
+ * outcome and only when they say something, since the outcome's words need them: `rule`, the rule a `restricted_rule`
+ * outcome names, with its title in the rulebook the decision was made under, and `noEffect`, set when every measure of
+ * the answering decision changed nothing when it was imposed.
  */
 export const NoticeItemStatus = z.object({
   position: z.number().int().min(1).max(20),
@@ -621,8 +624,19 @@ export const NoticeItemStatus = z.object({
   changed: z.boolean(),
   reexamines: z.boolean(),
   reexamination: z.object({ open: z.boolean(), until: z.string() }).nullable(),
+  rule: z.object({ id: z.enum(RULE_IDS), title: z.string() }).optional(),
+  noEffect: z.literal(true).optional(),
 });
 export type NoticeItemStatus = z.infer<typeof NoticeItemStatus>;
+
+/**
+ * A released item's outcome as its sender reads it on the status page and in the app's list: the same composition as a
+ * mail's line (outcomeWords), from the item's own facts. Null while nothing is released.
+ */
+export function itemOutcomeWords(item: NoticeItemStatus): string | null {
+  if (item.outcome === null) return null;
+  return outcomeWords({ outcome: item.outcome, rule: item.rule ?? null, suspect: item.suspect, sealed: item.sealed, unseen: item.unseen, noEffect: item.noEffect === true, scope: item.scope });
+}
 
 /**
  * The status page's answer. `items` holds the items the notice named, by position, and an item korbat added for a
@@ -1211,6 +1225,109 @@ export const DecisionStatement = z.object({
     .nullable(),
 });
 export type DecisionStatement = z.infer<typeof DecisionStatement>;
+
+// ---------------------------------------------------------------- the app: what the author and the reporter read
+
+/** A page cursor of the app's moderation lists: an opaque word the API wrote. */
+const ListCursor = z.string().regex(/^[A-Za-z0-9_-]{1,400}$/);
+
+/** How many decisions one page of the author's list holds. */
+export const AUTHOR_CASES_PAGE_SIZE = 20;
+
+/**
+ * One decision in its author's list (3c design, section 7.6): the decisions their author was told of, and no other.
+ * `decidedOn` is the decision's UTC day, never the day its case opened, which would tell when a report arrived. `post` is
+ * the post a decision about a post concerns, by its id and creation time; null for a decision about the account.
+ * `actions` are what the decision did, measures and reversals, in the ledger's order of kinds; `endedInterim` says that
+ * what korbat did while deciding ended with it. `ruleId` and `legal` name the rule or the law it rests on (neither for a
+ * decision without a ground). `appealUntil` is the end of the appeal's window while an appeal can still be filed, and
+ * `reversedOn` the UTC day a final restriction was reversed in full; both null otherwise.
+ */
+export const AuthorCaseRow = z.object({
+  id: z.uuid(),
+  kind: z.enum(["interim", "final", "review", "correction"]),
+  outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
+  decidedOn: UtcDay,
+  post: z.object({ id: z.uuid(), createdAt: z.iso.datetime() }).nullable(),
+  actions: z.array(z.enum(ACTION_KINDS)),
+  endedInterim: z.boolean(),
+  ruleId: z.enum(RULE_IDS).nullable(),
+  legal: z.boolean(),
+  appealUntil: z.iso.datetime().nullable(),
+  reversedOn: UtcDay.nullable(),
+});
+export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
+
+/** GET /api/moderation/cases: the decisions about the viewer's account, newest first. */
+export const AuthorCasesPage = z.object({ decisions: z.array(AuthorCaseRow).max(AUTHOR_CASES_PAGE_SIZE), nextCursor: z.string().nullable() });
+export type AuthorCasesPage = z.infer<typeof AuthorCasesPage>;
+
+export const AuthorCasesQuery = z.object({ cursor: ListCursor.optional() });
+export type AuthorCasesQuery = z.infer<typeof AuthorCasesQuery>;
+
+/**
+ * An image of the content a decision was made on, as the app's own image route serves it to its author. It is listed
+ * only while that route serves it: never for a sealed image or one of a post its author deleted.
+ */
+export const DecisionImage = z.object({ id: MediaId, alt: z.string(), width: z.number().int().positive(), height: z.number().int().positive(), small: z.string(), large: z.string() });
+export type DecisionImage = z.infer<typeof DecisionImage>;
+
+/**
+ * The content a decision was made on, from the decision's snapshot, or the reason it is not shown; the first that
+ * applies, in this order (3c design, sections 7.6 and 10):
+ *   - `r4_redacted`: an R4 redaction erased it when the restriction became final;
+ *   - `erased`: korbat's copy was erased under its retention rules, on `contentErasedOn` (a UTC day); `postKept` says
+ *     that the post itself is still in its author's profile;
+ *   - `post`: the post's text, which is never sealed, and its images. `imagesHidden` says why none is listed: `sealed`
+ *     (nobody is shown them, the author included), or `deleted_by_author` (kept for the case, served to nobody);
+ *     `imageCount` is how many the snapshot holds either way. `deletedByAuthor` says that the author deleted the post;
+ *   - `account`: the account's fields as the snapshot held them, which for a field reset is the value the reset removed.
+ */
+export const DecisionContent = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("r4_redacted") }),
+  z.strictObject({ kind: z.literal("erased"), contentErasedOn: UtcDay, postKept: z.boolean() }),
+  z.strictObject({
+    kind: z.literal("post"),
+    body: z.string(),
+    deletedByAuthor: z.boolean(),
+    images: z.array(DecisionImage),
+    imageCount: Count,
+    imagesHidden: z.enum(["sealed", "deleted_by_author"]).nullable(),
+  }),
+  z.strictObject({ kind: z.literal("account"), handle: z.string(), displayName: z.string(), bio: z.string() }),
+]);
+export type DecisionContent = z.infer<typeof DecisionContent>;
+
+/**
+ * GET /api/moderation/decisions/:id: one decision as its author reads it (3c design, sections 7.6 and 10). It is the
+ * statement's data, which the app renders with statementParagraphs exactly as the mail was rendered, and what the
+ * author's screen adds: `appealUntil` and `reversedOn` as the list gives them, and the content actioned.
+ */
+export const DecisionView = DecisionStatement.extend({
+  id: z.uuid(),
+  appealUntil: z.iso.datetime().nullable(),
+  reversedOn: UtcDay.nullable(),
+  content: DecisionContent,
+});
+export type DecisionView = z.infer<typeof DecisionView>;
+
+/** How many reports one page of the reporter's list holds. */
+export const REPORTS_PAGE_SIZE = 20;
+
+/** One report or notice in its sender's list: its reference, when korbat received it, and its items as the status page gives them. */
+export const ReportRow = z.object({ ref: NoticeRef, receivedAt: z.string(), items: z.array(NoticeItemStatus) });
+export type ReportRow = z.infer<typeof ReportRow>;
+
+/**
+ * GET /api/moderation/reports: the viewer's own reports and notices, newest first, while korbat keeps their records.
+ * `reportMailStopped` says that korbat's mails about reports to the account's address are stopped, which someone who
+ * holds that address asked for.
+ */
+export const ReportsPage = z.object({ reports: z.array(ReportRow).max(REPORTS_PAGE_SIZE), nextCursor: z.string().nullable(), reportMailStopped: z.boolean() });
+export type ReportsPage = z.infer<typeof ReportsPage>;
+
+export const ReportsQuery = z.object({ cursor: ListCursor.optional() });
+export type ReportsQuery = z.infer<typeof ReportsQuery>;
 
 /** How many rows each of the overview's lists holds at most; its total says how many there are. */
 export const OVERVIEW_LIST_MAX = 100;
