@@ -12,7 +12,6 @@ export const profiles = pgTable(
     bio: text("bio").notNull().default(""),
     avatarPath: text("avatar_path"),
     verifiedAt: ts("verified_at"),
-    reputation: integer("reputation").notNull().default(0),
     /** Counters kept exact by the application, in the same transaction as the follow, unfollow, block or post. */
     followerCount: integer("follower_count").notNull().default(0),
     followingCount: integer("following_count").notNull().default(0),

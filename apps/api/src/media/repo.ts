@@ -16,6 +16,8 @@ export interface MediaRow {
   height: number | null;
   blurhash: string | null;
   createdAt: Date;
+  /** The image's own moderation state, which only a migrator-owned function writes. A sealed image is shown to nobody. */
+  moderationState: "visible" | "withheld" | "removed" | "sealed";
 }
 
 const columns = {
@@ -28,6 +30,7 @@ const columns = {
   height: postMedia.height,
   blurhash: postMedia.blurhash,
   createdAt: postMedia.createdAt,
+  moderationState: postMedia.moderationState,
 };
 
 export function createMediaRepo(db: Db) {
@@ -51,9 +54,23 @@ export function createMediaRepo(db: Db) {
       await db.insert(postMedia).values({ id: input.id, ownerId: input.ownerId, status: "processing", createdAt: input.now });
     },
 
+    /**
+     * One image row, for its owner's status. Two rules of the readers hold here (3c design, section 7.10): a row that a
+     * case or a freeze keeps after its post was deleted, and a row whose content, its own or its post's, was erased, is
+     * answered as a row that does not exist, to its owner too, so nothing tells the author that the row was kept; and a
+     * sealed image is handed over without its blurhash, which is made from the image.
+     */
     async find(id: string): Promise<MediaRow | null> {
-      const rows = await db.select(columns).from(postMedia).where(eq(postMedia.id, id)).limit(1);
-      return rows[0] ?? null;
+      const rows = await db
+        .select({ ...columns, erasedAt: postMedia.erasedAt, postState: posts.state, postErasedAt: posts.erasedAt })
+        .from(postMedia)
+        .leftJoin(posts, eq(posts.id, postMedia.postId))
+        .where(eq(postMedia.id, id))
+        .limit(1);
+      const found = rows[0];
+      if (!found || found.postState === "deleted_by_author" || found.erasedAt !== null || found.postErasedAt !== null) return null;
+      const { erasedAt: _erasedAt, postState: _postState, postErasedAt: _postErasedAt, ...row } = found;
+      return row.moderationState === "sealed" ? { ...row, blurhash: null } : row;
     },
 
     /** Records the worker's verdict, once. A row that is no longer processing is left as it is. */
@@ -69,10 +86,10 @@ export function createMediaRepo(db: Db) {
       return rows.length === 1;
     },
 
-    /** What serving an image file depends on: whether it is ready, and its post's state and author. */
-    async fileAccess(id: string): Promise<{ status: MediaRow["status"]; postState: string | null; authorId: string | null } | null> {
+    /** What serving an image file depends on: whether it is ready, its own moderation state, and its post's state and author. */
+    async fileAccess(id: string): Promise<{ status: MediaRow["status"]; mediaState: MediaRow["moderationState"]; postState: string | null; authorId: string | null } | null> {
       const rows = await db
-        .select({ status: postMedia.status, postState: posts.state, authorId: posts.authorId })
+        .select({ status: postMedia.status, mediaState: postMedia.moderationState, postState: posts.state, authorId: posts.authorId })
         .from(postMedia)
         .leftJoin(posts, eq(posts.id, postMedia.postId))
         .where(eq(postMedia.id, id))
@@ -110,14 +127,18 @@ export function createMediaRepo(db: Db) {
       return rows.map((row) => row.id);
     },
 
-    /** The images of a page of posts, in one query, in their order on each post. */
+    /**
+     * The images of a page of posts, in one query, in their order on each post. Only an image whose own moderation state
+     * is `visible` is listed: the list names the state it shows, so a sealed image, and any state this reader has not
+     * been taught, is in no view and no export's list.
+     */
     async forPosts(postIds: readonly string[]): Promise<Map<string, MediaView[]>> {
       const byPost = new Map<string, MediaView[]>();
       if (postIds.length === 0) return byPost;
       const rows = await db
         .select({ id: postMedia.id, postId: postMedia.postId, width: postMedia.width, height: postMedia.height, blurhash: postMedia.blurhash, altText: postMedia.altText })
         .from(postMedia)
-        .where(and(inArray(postMedia.postId, [...postIds]), eq(postMedia.status, "ready")))
+        .where(and(inArray(postMedia.postId, [...postIds]), eq(postMedia.status, "ready"), eq(postMedia.moderationState, "visible")))
         .orderBy(postMedia.postId, postMedia.position);
       for (const row of rows) {
         if (!row.postId || row.width === null || row.height === null || row.blurhash === null) continue;
@@ -127,12 +148,15 @@ export function createMediaRepo(db: Db) {
       return byPost;
     },
 
-    /** Every ready image of the account, on a post or not, oldest first: the images the data export takes files for. */
+    /**
+     * Every ready image of the account, on a post or not, oldest first: the images the data export takes files for. As
+     * in forPosts, only an image whose own moderation state is `visible`: a sealed image is exported to nobody.
+     */
     async readyImages(ownerId: string): Promise<string[]> {
       const rows = await db
         .select({ id: postMedia.id })
         .from(postMedia)
-        .where(and(eq(postMedia.ownerId, ownerId), eq(postMedia.status, "ready")))
+        .where(and(eq(postMedia.ownerId, ownerId), eq(postMedia.status, "ready"), eq(postMedia.moderationState, "visible")))
         .orderBy(postMedia.createdAt, postMedia.id);
       return rows.map((row) => row.id);
     },

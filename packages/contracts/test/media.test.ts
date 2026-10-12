@@ -86,6 +86,9 @@ describe("upload and status responses", () => {
     expect(MediaStatusResponse.safeParse({ id: id(1), status: "processing" }).success).toBe(true);
     expect(MediaStatusResponse.safeParse({ id: id(1), status: "ready", width: 2048, height: 1536, blurhash: "L2Eo_P_3jb_3" }).success).toBe(true);
     expect(MediaStatusResponse.safeParse({ id: id(1), status: "ready" }).success).toBe(false);
+    // A sealed image is ready and shown to nobody: its status carries the size and no blurhash, which is made from the image.
+    expect(MediaStatusResponse.safeParse({ id: id(1), status: "ready", width: 2048, height: 1536 }).success).toBe(true);
+    expect(MediaStatusResponse.safeParse({ id: id(1), status: "ready", width: 2048, height: 1536, blurhash: "short" }).success).toBe(false);
     expect(MediaStatusResponse.safeParse({ id: id(1), status: "ready", width: 0, height: 1536, blurhash: "L2Eo_P_3jb_3" }).success).toBe(false);
     expect(MediaStatusResponse.safeParse({ id: id(1), status: "failed", error: "animated_not_supported" }).success).toBe(true);
     expect(MediaStatusResponse.safeParse({ id: id(1), status: "failed", error: "because" }).success).toBe(false);

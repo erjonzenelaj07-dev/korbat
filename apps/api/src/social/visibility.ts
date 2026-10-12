@@ -13,13 +13,24 @@ export type PostAccess = "shown" | "hidden" | "deleted";
 /**
  * The one rule every read applies (2a spec, section 4). A block in either direction hides
  * everything, even a deleted post's tombstone reason. The author sees their own withheld and
- * removed posts; nobody else does.
+ * removed posts; nobody else does. The switch names every stored state: a state added to
+ * StoredPostState does not compile here until this reader decides it, and a value the code was
+ * never told about is hidden from everyone, its author included.
  */
 export function postAccess(viewer: ViewerId, post: { authorId: string; state: StoredPostState }, blockedEitherWay: boolean): PostAccess {
   if (blockedEitherWay) return "hidden";
-  if (post.state === "deleted_by_author") return "deleted";
-  if (post.state === "visible") return "shown";
-  return viewer !== null && viewer === post.authorId ? "shown" : "hidden";
+  switch (post.state) {
+    case "deleted_by_author":
+      return "deleted";
+    case "visible":
+      return "shown";
+    case "withheld":
+    case "removed":
+      return viewer !== null && viewer === post.authorId ? "shown" : "hidden";
+    default:
+      post.state satisfies never;
+      return "hidden";
+  }
 }
 
 export function tombstone(id: string, access: Exclude<PostAccess, "shown">): Tombstone {

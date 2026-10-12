@@ -31,6 +31,8 @@ export * from "./account";
 export * from "./auth";
 export * from "./explore";
 export * from "./media";
+// Evaluated before ./staff, and importing nothing from it: staff.ts can read this module's constants while it loads.
+export * from "./moderation";
 export * from "./passkeys";
 export * from "./social";
 export * from "./staff";

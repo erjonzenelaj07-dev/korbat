@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, bigserial, boolean, check, foreignKey, index, integer, jsonb, pgPolicy, pgSchema, text, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, check, foreignKey, index, integer, jsonb, pgPolicy, pgSchema, primaryKey, text, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authRole, bytea, emptyTextArray, fullAccess, ts } from "./helpers";
 
 export const auth = pgSchema("auth");
@@ -317,5 +317,71 @@ export const staffSessions = auth.table(
       sql`${t.absoluteExpiresAt} <= ${t.createdAt} + interval '12 hours' and ${t.idleExpiresAt} <= ${t.absoluteExpiresAt}`,
     ),
     fullAccess("staff_sessions_auth_all", authRole),
+  ],
+).enableRLS();
+
+/**
+ * What a signed-out notifier gave to be told about their notice (3c design, section 6.1): a name and an address, each
+ * encrypted under NOTIFIER_ENC_KEY, a keyed hash of the address for the caps and for suppression, and the contact's mail
+ * token. The public intake row holds only this row's id, which the moderation module chose, and the API role reaches none
+ * of this. Migration 0015 leaves the auth role SELECT, INSERT, DELETE and UPDATE of forget_after only, so a contact is
+ * never re-encrypted.
+ */
+export const notifierContacts = auth.table(
+  "notifier_contacts",
+  {
+    /** Chosen by the moderation module: the intake row names it before the contact is stored. */
+    id: uuid("id").primaryKey(),
+    nameEnc: text("name_enc"),
+    emailEnc: text("email_enc"),
+    emailHash: text("email_hash"),
+    /** The contact's mail token, which alone confirms or stops the address; null without an address. */
+    mailTokenEnc: text("mail_token_enc"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    /** When the janitor deletes the row: 13 months after creation unless the notice is still owed something. */
+    forgetAfter: ts("forget_after").notNull(),
+  },
+  () => [fullAccess("notifier_contacts_auth_all", authRole)],
+).enableRLS();
+
+/** An address a notifier confirmed, by its keyed hash, for 30 days. */
+export const notifierConfirmations = auth.table(
+  "notifier_confirmations",
+  {
+    emailHash: text("email_hash").primaryKey(),
+    confirmedAt: ts("confirmed_at").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+  },
+  () => [fullAccess("notifier_confirmations_auth_all", authRole)],
+).enableRLS();
+
+/** An address that asked korbat to stop its report mails, by its keyed hash. Its notices are still processed. */
+export const notifierSuppressions = auth.table(
+  "notifier_suppressions",
+  {
+    emailHash: text("email_hash").primaryKey(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  () => [fullAccess("notifier_suppressions_auth_all", authRole)],
+).enableRLS();
+
+/**
+ * The personal accounts the operator linked to a staff account, so that a staff member never decides where an account of
+ * their own is a party. Only `staff.js link` and `unlink` write it, as the migrator, and only migrator-owned definer
+ * functions read it: migration 0015 revokes everything from the auth role, and the one policy, which the rule that every
+ * table has one asks for, lets that role see no row. On delete restrict: the development cleaner must not take a link
+ * with an account.
+ */
+export const staffPersonalAccounts = auth.table(
+  "staff_personal_accounts",
+  {
+    staffUserId: uuid("staff_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    personalUserId: uuid("personal_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    linkedAt: ts("linked_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.staffUserId, t.personalUserId] }),
+    check("staff_personal_accounts_differ", sql`${t.staffUserId} <> ${t.personalUserId}`),
+    pgPolicy("staff_personal_accounts_auth_none", { for: "select", to: authRole, using: sql`false` }),
   ],
 ).enableRLS();

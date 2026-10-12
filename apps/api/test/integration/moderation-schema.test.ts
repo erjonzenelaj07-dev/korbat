@@ -1,0 +1,734 @@
+import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { ACTION_KINDS, CSAM_KEYWORDS, DECISION_KEYWORDS, MEASURES, NOTICE_LIMITS, RULE_IDS, TDB_CATEGORIES, appealDeadline, textDigest } from "@korbat/contracts";
+import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
+import { TEXT_DIGEST_VECTORS } from "../../../../packages/contracts/test/digest-vectors";
+import { loadConfig } from "../../src/config";
+import { MINORS, SPEECH, TC, fabricateDecision, hex64, insertIntake, newImageRow, newPostRow, newRef, openCase, rowCounts, type IntakeInput } from "./moderation-fixtures";
+import { newProfile } from "./social-fixtures";
+import { pgError, rolledBack, withLockTimeout } from "./staff-fixtures";
+
+// Most tests here issue dozens of statements, each a round trip, and several hold a transaction open across them: on a
+// loaded machine that takes longer than the five seconds a test gets by default.
+vi.setConfig({ testTimeout: 30_000 });
+
+/** The public tables migration 0015 creates, and what the API role holds on each beside SELECT. */
+const APPEND_ONLY = ["cases", "decision_actions", "appeals", "staff_texts", "evidence_snapshots", "case_access_log", "media_holds"];
+const COLUMN_UPDATES: Record<string, string[]> = {
+  intakes: ["receipt", "receipt_sent_at"],
+  intake_items: ["outcome_mail"],
+  decisions: ["author_mail", "author_mail_at"],
+  posts: ["body", "state", "deleted_at", "like_count", "repost_count", "reply_count", "quote_count"],
+  post_media: ["status", "error", "post_id", "position", "width", "height", "blurhash", "alt_text", "nsfw_score"],
+};
+const READ_ONLY = ["moderation_limits", "seal_posts"];
+
+/**
+ * Migrations 0014 and 0015 (3c design, sections 6.1 and 6.5) against the real database, before any flow uses them: what
+ * the API role holds and does not hold, which columns the database forces whatever an insert supplies, the CHECKs against
+ * the contracts' constants, and who names the freeze's functions. Statements run as korbat_api, the role the running API
+ * holds, unless a test says otherwise: what it cannot do is what a compromised API cannot do. Every test that writes a
+ * row does it inside a transaction that is rolled back, each refused statement in a savepoint of it, so the file leaves
+ * the database as it found it; its last test holds it to that.
+ */
+describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, their grants and their checks", () => {
+  let apiDb: Db;
+  let authDb: Db;
+  let migrateDb: Db;
+  let before: Record<string, number>;
+
+  beforeAll(async () => {
+    const config = loadConfig();
+    apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    authDb = createDb(config.DATABASE_URL_AUTH, { max: 2 });
+    // The migrate role is not part of the API configuration; the test environment carries it.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
+    before = await rowCounts(apiDb);
+  });
+  afterAll(async () => {
+    await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
+  });
+
+  /** Runs one statement as the API role, in a transaction with a lock timeout, and returns its error or null. For statements that write no row. */
+  const asApi = (statement: ReturnType<typeof sql>) => pgError(withLockTimeout(apiDb, (tx) => tx.execute(statement)));
+  const asAuth = (statement: ReturnType<typeof sql>) => pgError(withLockTimeout(authDb, (tx) => tx.execute(statement)));
+  /** The error of one step inside a transaction, which stays usable: the step runs in a savepoint. */
+  const within = (tx: DbTx, fn: (sp: DbTx) => Promise<unknown>) => pgError(tx.transaction(fn));
+  const run = (tx: DbTx, statement: ReturnType<typeof sql>) => within(tx, (sp) => sp.execute(statement));
+  const profile = (tx: DbTx) => newProfile(tx as unknown as Db);
+  /** The digest of a salt and a text as SQL computes it, also for a salt the contracts' textDigest refuses. */
+  const sqlDigest = async (db: Db | DbTx, salt: string, text: string) =>
+    (await db.execute<{ digest: string }>(sql`select encode(sha256(convert_to('korbat.text.v1', 'UTF8') || decode('0a', 'hex') || decode(${salt}, 'hex') || convert_to(${text}::text, 'UTF8')), 'hex') as digest`))[0]!.digest;
+
+  /**
+   * Which of the four table privileges, TRUNCATE and MAINTAIN a role holds on a table, named as schema.table. The table is
+   * found in the catalogue by its oid: looking it up by name would need USAGE on its schema, which the API role lacks on auth.
+   */
+  async function tablePrivileges(role: string, table: string): Promise<string[]> {
+    const [schema, name] = table.split(".");
+    const rows = await apiDb.execute<{ privilege: string; held: boolean }>(sql`
+      select p as privilege, has_table_privilege(${role}::name, c.oid, p) as held
+        from pg_class c join pg_namespace n on n.oid = c.relnamespace, unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'MAINTAIN']) with ordinality as u(p, place)
+       where n.nspname = ${schema} and c.relname = ${name}
+       order by u.place`);
+    expect(rows, table).toHaveLength(6);
+    return rows.filter((row) => row.held).map((row) => row.privilege);
+  }
+
+  /** The columns of a table a role may update, by a column grant or the table's. */
+  async function updatableColumns(role: string, table: string): Promise<string[]> {
+    const [schema, name] = table.split(".");
+    const rows = await apiDb.execute<{ name: string }>(sql`
+      select a.attname as name from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
+       where n.nspname = ${schema} and c.relname = ${name} and a.attnum > 0 and not a.attisdropped and has_column_privilege(${role}::name, a.attrelid, a.attnum, 'UPDATE')
+       order by a.attnum`);
+    return rows.map((row) => row.name);
+  }
+
+  /** One CHECK as the migrated database defines it. */
+  async function checkDefinition(table: string, name: string): Promise<string> {
+    const [row] = await apiDb.execute<{ definition: string }>(sql`select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid = ${`public.${table}`}::regclass and conname = ${name}`);
+    expect(row, `${table}.${name}`).toBeDefined();
+    return row!.definition;
+  }
+
+  describe("what the API role holds", () => {
+    test("the append-only tables: SELECT and INSERT, and no column of them can be updated", async () => {
+      for (const table of APPEND_ONLY) {
+        expect(await tablePrivileges("korbat_api", `public.${table}`), table).toEqual(["SELECT", "INSERT"]);
+        expect(await updatableColumns("korbat_api", `public.${table}`), table).toEqual([]);
+      }
+    });
+
+    test("intakes, items and decisions: SELECT, INSERT and UPDATE of their mail columns only; no DELETE and no TRUNCATE", async () => {
+      for (const table of ["intakes", "intake_items", "decisions"]) {
+        expect(await tablePrivileges("korbat_api", `public.${table}`), table).toEqual(["SELECT", "INSERT"]);
+        expect(await updatableColumns("korbat_api", `public.${table}`), table).toEqual(COLUMN_UPDATES[table]);
+      }
+    });
+
+    test("the limits and a seal's list are read only", async () => {
+      for (const table of READ_ONLY) {
+        expect(await tablePrivileges("korbat_api", `public.${table}`), table).toEqual(["SELECT"]);
+        expect(await updatableColumns("korbat_api", `public.${table}`), table).toEqual([]);
+      }
+      expect(await tablePrivileges("korbat_api", "public.measures_in_force")).toEqual(["SELECT"]);
+    });
+
+    test("posts: UPDATE of the seven columns the API writes, never of the moderation level or the erasure time; no DELETE, no TRUNCATE", async () => {
+      expect(await tablePrivileges("korbat_api", "public.posts")).toEqual(["SELECT", "INSERT"]);
+      expect((await updatableColumns("korbat_api", "public.posts")).sort()).toEqual([...COLUMN_UPDATES.posts!].sort());
+    });
+
+    test("post_media: UPDATE of the nine columns the API writes, never of the moderation state, the hold or the erasure time; DELETE stays, TRUNCATE never", async () => {
+      expect(await tablePrivileges("korbat_api", "public.post_media")).toEqual(["SELECT", "INSERT", "DELETE"]);
+      expect((await updatableColumns("korbat_api", "public.post_media")).sort()).toEqual([...COLUMN_UPDATES.post_media!].sort());
+    });
+
+    test("profiles: everything but DELETE and TRUNCATE", async () => {
+      expect(await tablePrivileges("korbat_api", "public.profiles")).toEqual(["SELECT", "INSERT", "UPDATE"]);
+    });
+
+    test("it has no access to the auth schema, nor to any of the four new auth tables", async () => {
+      const [row] = await apiDb.execute<{ usage: boolean }>(sql`select has_schema_privilege('korbat_api', 'auth', 'usage') as usage`);
+      expect(row!.usage).toBe(false);
+      for (const table of ["notifier_contacts", "notifier_confirmations", "notifier_suppressions", "staff_personal_accounts"]) {
+        expect(await tablePrivileges("korbat_api", `auth.${table}`), table).toEqual([]);
+        expect((await asApi(sql`select count(*) from auth.${sql.identifier(table)}`))?.message, table).toMatch(/permission denied for schema auth/);
+      }
+    });
+
+    test("the statements themselves are refused: updates, deletes and truncates of the moderation tables", async () => {
+      await rolledBack(apiDb, async (tx) => {
+        const ada = await profile(tx);
+        const postId = await newPostRow(tx, ada.id);
+        const caseId = await openCase(tx, "post", postId);
+        const intakeId = await insertIntake(tx, { reporterId: ada.id, ruleId: "R1" });
+        const refused: [ReturnType<typeof sql>, RegExp][] = [
+          [sql`update cases set lane = 0 where id = ${caseId}::uuid`, /permission denied for table cases/],
+          [sql`update cases set closed_at = now() where id = ${caseId}::uuid`, /permission denied for table cases/],
+          [sql`delete from cases where id = ${caseId}::uuid`, /permission denied for table cases/],
+          [sql`truncate cases cascade`, /permission denied for table/],
+          // Without UPDATE on the table no row of it can be locked either, so the API cannot stall a decision by holding a case.
+          [sql`select id from cases where id = ${caseId}::uuid for update`, /permission denied for table cases/],
+          [sql`select id from cases where id = ${caseId}::uuid for key share`, /permission denied for table cases/],
+          [sql`lock table cases in share mode`, /permission denied for table cases/],
+          [sql`update intakes set erased_at = now() where id = ${intakeId}::uuid`, /permission denied for table intakes/],
+          [sql`update intakes set reporter_id = null where id = ${intakeId}::uuid`, /permission denied for table intakes/],
+          [sql`delete from intakes where id = ${intakeId}::uuid`, /permission denied for table intakes/],
+          [sql`update intake_items set outcome_sent_at = now()`, /permission denied for table intake_items/],
+          [sql`update intake_items set shown_outcome = 'no_violation'`, /permission denied for table intake_items/],
+          [sql`update intake_items set revised_sent_at = now()`, /permission denied for table intake_items/],
+          [sql`update intake_items set answered_by = null`, /permission denied for table intake_items/],
+          [sql`delete from intake_items`, /permission denied for table intake_items/],
+          [sql`update decisions set outcome = 'no_violation'`, /permission denied for table decisions/],
+          [sql`delete from decisions`, /permission denied for table decisions/],
+          [sql`delete from decision_actions`, /permission denied for table decision_actions/],
+          [sql`insert into seal_posts (action_id, post_id, images) values (${randomUUID()}::uuid, ${postId}::uuid, 1)`, /permission denied for table seal_posts/],
+          [sql`insert into moderation_limits (id, decisions_per_hour, decisions_per_day, case_opens_per_day, findings_per_day, reveals_per_day, updated_at) values (1, 9, 9, 9, 9, 9, now())`, /permission denied for table moderation_limits/],
+          [sql`update moderation_limits set decisions_per_hour = 100000`, /permission denied for table moderation_limits/],
+          [sql`delete from moderation_limits`, /permission denied for table moderation_limits/],
+          [sql`update staff_texts set text = 'changed'`, /permission denied for table staff_texts/],
+          [sql`update evidence_snapshots set body = 'changed'`, /permission denied for table evidence_snapshots/],
+          [sql`delete from case_access_log`, /permission denied for table case_access_log/],
+          [sql`update media_holds set released_at = now()`, /permission denied for table media_holds/],
+          [sql`delete from media_holds`, /permission denied for table media_holds/],
+        ];
+        for (const [statement, refusal] of refused) expect((await run(tx, statement))?.message, JSON.stringify(statement.queryChunks[0])).toMatch(refusal);
+        // The granted columns are writable.
+        expect(await run(tx, sql`update intakes set receipt = 'sent', receipt_sent_at = now() where id = ${intakeId}::uuid`)).toBeNull();
+      });
+    });
+
+    test("posts and profiles are never deleted, and the moderation columns of posts and images are never written", async () => {
+      await rolledBack(apiDb, async (tx) => {
+        const ada = await profile(tx);
+        const postId = await newPostRow(tx, ada.id);
+        const mediaId = await newImageRow(tx, ada.id, postId);
+        const refused: [ReturnType<typeof sql>, RegExp][] = [
+          [sql`delete from posts where id = ${postId}::uuid`, /permission denied for table posts/],
+          [sql`delete from profiles where id = ${ada.id}::uuid`, /permission denied for table profiles/],
+          [sql`truncate posts cascade`, /permission denied for table/],
+          [sql`truncate profiles cascade`, /permission denied for table/],
+          [sql`truncate post_media cascade`, /permission denied for table/],
+          [sql`update posts set moderation_level = 'removed' where id = ${postId}::uuid`, /permission denied for table posts/],
+          [sql`update posts set erased_at = now() where id = ${postId}::uuid`, /permission denied for table posts/],
+          [sql`update posts set author_id = ${ada.id}::uuid where id = ${postId}::uuid`, /permission denied for table posts/],
+          [sql`update post_media set moderation_state = 'sealed' where id = ${mediaId}::uuid`, /permission denied for table post_media/],
+          [sql`update post_media set hold_until = null where id = ${mediaId}::uuid`, /permission denied for table post_media/],
+          [sql`update post_media set erased_at = now() where id = ${mediaId}::uuid`, /permission denied for table post_media/],
+        ];
+        for (const [statement, refusal] of refused) expect((await run(tx, statement))?.message, JSON.stringify(statement.queryChunks[0])).toMatch(refusal);
+        // What the API writes today still works: a counter, the author's deletion and an upload's verdict.
+        expect(await run(tx, sql`update posts set like_count = like_count + 1 where id = ${postId}::uuid`)).toBeNull();
+        expect(await run(tx, sql`update posts set state = 'deleted_by_author', body = '', deleted_at = now() where id = ${postId}::uuid`)).toBeNull();
+        const upload = await newImageRow(tx, ada.id, null);
+        expect(await run(tx, sql`update post_media set status = 'failed', error = 'processing_failed' where id = ${upload}::uuid`)).toBeNull();
+      });
+    });
+
+    test("it can neither switch off nor replace a trigger of the moderation tables", async () => {
+      const refusals: [ReturnType<typeof sql>, RegExp][] = [
+        [sql`alter table public.post_media disable trigger post_media_keep`, /must be owner of table post_media/],
+        [sql`alter table public.intake_items disable trigger all`, /must be owner of table intake_items/],
+        [sql`drop trigger post_media_guard on public.post_media`, /must be owner of (table|relation) post_media/],
+        [sql`create or replace function public.frozen_for(post uuid, author uuid) returns boolean language sql as 'select false'`, /permission denied|must be owner/],
+        [sql`drop trigger intake_items_quote on public.intake_items`, /must be owner of (table|relation) intake_items/],
+      ];
+      for (const [statement, refusal] of refusals) expect((await asApi(statement))?.message, JSON.stringify(statement.queryChunks[0])).toMatch(refusal);
+    });
+  });
+
+  describe("what the auth role holds on the new auth tables", () => {
+    test("a contact is stored, read and deleted, and only its forget_after is ever updated", async () => {
+      expect(await tablePrivileges("korbat_auth", "auth.notifier_contacts")).toEqual(["SELECT", "INSERT", "DELETE"]);
+      expect(await updatableColumns("korbat_auth", "auth.notifier_contacts")).toEqual(["forget_after"]);
+      await rolledBack(authDb, async (tx) => {
+        const id = randomUUID();
+        await tx.execute(sql`insert into auth.notifier_contacts (id, name_enc, email_enc, email_hash, forget_after) values (${id}::uuid, 'v1:n', 'v1:e', ${hex64()}, now() + interval '13 months')`);
+        expect(await run(tx, sql`update auth.notifier_contacts set forget_after = now() + interval '6 months' where id = ${id}::uuid`)).toBeNull();
+        // Never re-encrypted, renamed or pointed at another address.
+        for (const column of ["name_enc", "email_enc", "email_hash", "mail_token_enc", "created_at"]) {
+          const err = await run(tx, sql`update auth.notifier_contacts set ${sql.identifier(column)} = null where id = ${id}::uuid`);
+          expect(err?.message, column).toMatch(/permission denied for table notifier_contacts/);
+        }
+        const gone = await tx.execute<{ id: string }>(sql`delete from auth.notifier_contacts where id = ${id}::uuid returning id`);
+        expect(gone).toHaveLength(1);
+      });
+    });
+
+    test("confirmations keep every default privilege; a suppression is inserted, read and deleted, never changed", async () => {
+      expect(await tablePrivileges("korbat_auth", "auth.notifier_confirmations")).toEqual(["SELECT", "INSERT", "UPDATE", "DELETE"]);
+      expect(await tablePrivileges("korbat_auth", "auth.notifier_suppressions")).toEqual(["SELECT", "INSERT", "DELETE"]);
+      expect(await updatableColumns("korbat_auth", "auth.notifier_suppressions")).toEqual([]);
+    });
+
+    test("it holds nothing on the staff links, which only the migrator writes and reads", async () => {
+      expect(await tablePrivileges("korbat_auth", "auth.staff_personal_accounts")).toEqual([]);
+      expect((await asAuth(sql`select count(*) from auth.staff_personal_accounts`))?.message).toMatch(/permission denied for table staff_personal_accounts/);
+      expect((await asAuth(sql`insert into auth.staff_personal_accounts (staff_user_id, personal_user_id) values (${randomUUID()}::uuid, ${randomUUID()}::uuid)`))?.message).toMatch(
+        /permission denied for table staff_personal_accounts/,
+      );
+    });
+  });
+
+  describe("the functions and who names them", () => {
+    type Fn = { name: string; args: string; owner: string; definer: boolean; config: string[] | null; api: boolean; auth: boolean; pub: boolean; definition: string };
+    /** Every function of the public and auth schemas with its definition, as the catalogue holds it. */
+    const functions = () =>
+      apiDb.execute<Fn>(sql`
+        select p.pronamespace::regnamespace::text || '.' || p.proname as name, pg_get_function_identity_arguments(p.oid) as args, p.proowner::regrole::text as owner,
+               p.prosecdef as definer, p.proconfig as config, has_function_privilege('korbat_api', p.oid, 'execute') as api,
+               has_function_privilege('korbat_auth', p.oid, 'execute') as auth, has_function_privilege('public', p.oid, 'execute') as pub,
+               pg_get_functiondef(p.oid) as definition
+          from pg_proc p
+         where p.pronamespace in ('public'::regnamespace, 'auth'::regnamespace) and p.prokind = 'f'
+         order by 1`);
+
+    /** Every other definition the database holds that could name a function: views, triggers, constraints, index predicates and policies. */
+    const otherDefinitions = () =>
+      apiDb.execute<{ kind: string; name: string; definition: string }>(sql`
+        select 'view' as kind, c.relname::text as name, pg_get_viewdef(c.oid) as definition from pg_class c where c.relkind = 'v' and c.relnamespace in ('public'::regnamespace, 'auth'::regnamespace)
+        union all select 'trigger', t.tgname::text, pg_get_triggerdef(t.oid) from pg_trigger t join pg_class c on c.oid = t.tgrelid where not t.tgisinternal and c.relnamespace in ('public'::regnamespace, 'auth'::regnamespace)
+        union all select 'constraint', n.conname::text, pg_get_constraintdef(n.oid) from pg_constraint n where n.connamespace in ('public'::regnamespace, 'auth'::regnamespace)
+        union all select 'index', i.indexrelid::regclass::text, pg_get_indexdef(i.indexrelid) from pg_index i join pg_class c on c.oid = i.indrelid where c.relnamespace in ('public'::regnamespace, 'auth'::regnamespace)
+        union all select 'policy', p.polname::text, coalesce(pg_get_expr(p.polqual, p.polrelid), '') || ' ' || coalesce(pg_get_expr(p.polwithcheck, p.polrelid), '') from pg_policy p`);
+
+    test("the migrator owns every function of 0015, each with its search path pinned and EXECUTE taken from PUBLIC", async () => {
+      const pub = ["search_path=public, pg_temp"];
+      // [definer, EXECUTE for the API role]. The few a role calls directly are granted to that role alone; a trigger
+      // function fires for every role all the same, and nobody calls it.
+      const expected: Record<string, [boolean, boolean]> = {
+        appeal_deadline: [false, true],
+        case_access_log_insert: [false, false],
+        cases_insert: [false, false],
+        evidence_snapshots_insert: [false, false],
+        frozen_for: [false, true],
+        intake_items_attach: [true, false],
+        intake_items_quote: [true, false],
+        intakes_insert: [false, false],
+        media_holds_apply: [true, false],
+        media_holds_insert: [false, false],
+        post_frozen: [false, true],
+        post_media_guard: [false, false],
+        post_media_insert: [false, false],
+        post_media_keep: [true, false],
+        staff_texts_insert: [false, false],
+      };
+      const names = Object.keys(expected);
+      const rows = (await functions()).filter((f) => f.name.startsWith("public.") && names.includes(f.name.slice(7)));
+      expect(rows.map((f) => f.name.slice(7)).sort()).toEqual([...names].sort());
+      for (const f of rows) {
+        const [definer, api] = expected[f.name.slice(7)]!;
+        expect({ name: f.name, owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }).toEqual({ name: f.name, owner: "korbat_migrate", definer, config: pub, api, auth: false, pub: false });
+      }
+    });
+
+    test("every function the migrator owns in the two schemas pins its search path and is closed to PUBLIC", async () => {
+      const owned = (await functions()).filter((f) => f.owner === "korbat_migrate");
+      expect(owned.length).toBeGreaterThan(15);
+      for (const f of owned) {
+        expect(f.config?.some((setting) => /^search_path=(public|auth), pg_temp$/.test(setting)), f.name).toBe(true);
+        expect(f.pub, f.name).toBe(false);
+      }
+    });
+
+    test("frozen_for is named only by post_frozen and by the keep trigger's function; post_frozen by nothing else", async () => {
+      const all = await functions();
+      const naming = (word: RegExp) => all.filter((f) => word.test(f.definition)).map((f) => f.name);
+      // Each function's own definition holds its name.
+      expect(naming(/\bfrozen_for\b/)).toEqual(["public.frozen_for", "public.post_frozen", "public.post_media_keep"]);
+      expect(naming(/\bpost_frozen\b/)).toEqual(["public.post_frozen"]);
+      // Nor does a view, a trigger, a constraint, an index or a policy name either.
+      const others = (await otherDefinitions()).filter((d) => /\b(frozen_for|post_frozen)\b/.test(d.definition));
+      expect(others.map((d) => `${d.kind} ${d.name}`)).toEqual([]);
+    });
+
+    test("no function deletes from post_media: the image rows go only by a statement the keep trigger meets", async () => {
+      const deleting = (await functions()).filter((f) => /delete\s+from\s+(only\s+)?("?public"?\s*\.\s*)?"?post_media"?\b/i.test(f.definition));
+      expect(deleting.map((f) => f.name)).toEqual([]);
+      // The search finds such a statement where there is one.
+      expect(/delete\s+from\s+(only\s+)?("?public"?\s*\.\s*)?"?post_media"?\b/i.test('DELETE FROM "public"."post_media" WHERE id = $1')).toBe(true);
+      expect(/delete\s+from\s+(only\s+)?("?public"?\s*\.\s*)?"?post_media"?\b/i.test("delete from public.post_media m where m.id = x")).toBe(true);
+    });
+
+    test("the triggers of 0015 are on their tables, in the timing the design gives", async () => {
+      const rows = await apiDb.execute<{ name: string; definition: string }>(sql`
+        select t.tgname::text as name, pg_get_triggerdef(t.oid) as definition from pg_trigger t
+         where not t.tgisinternal and t.tgrelid in ('public.cases'::regclass, 'public.intakes'::regclass, 'public.intake_items'::regclass, 'public.staff_texts'::regclass,
+               'public.evidence_snapshots'::regclass, 'public.case_access_log'::regclass, 'public.post_media'::regclass, 'public.media_holds'::regclass)
+         order by 1`);
+      const timing = Object.fromEntries(rows.map((row) => [row.name, row.definition.replace(/^CREATE (CONSTRAINT )?TRIGGER \S+ /, "").replace(/ EXECUTE FUNCTION .*$/, "")]));
+      expect(timing).toEqual({
+        case_access_log_insert: "BEFORE INSERT ON public.case_access_log FOR EACH ROW",
+        cases_insert: "BEFORE INSERT ON public.cases FOR EACH ROW",
+        evidence_snapshots_insert: "BEFORE INSERT ON public.evidence_snapshots FOR EACH ROW",
+        intake_items_attach: "BEFORE INSERT ON public.intake_items FOR EACH ROW",
+        intake_items_quote: "AFTER INSERT ON public.intake_items DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
+        intakes_insert: "BEFORE INSERT ON public.intakes FOR EACH ROW",
+        media_holds_apply: "AFTER INSERT OR UPDATE ON public.media_holds FOR EACH ROW",
+        media_holds_insert: "BEFORE INSERT ON public.media_holds FOR EACH ROW",
+        post_media_guard: 'BEFORE UPDATE OF post_id, owner_id, alt_text, "position", width, height, blurhash ON public.post_media FOR EACH ROW',
+        post_media_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
+        post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
+        staff_texts_insert: "BEFORE INSERT ON public.staff_texts FOR EACH ROW",
+      });
+    });
+
+    test("measures_in_force runs with its reader's rights and names exactly the contracts' measures", async () => {
+      const [view] = await apiDb.execute<{ options: string[] | null; definition: string }>(sql`select c.reloptions as options, pg_get_viewdef(c.oid) as definition from pg_class c where c.oid = 'public.measures_in_force'::regclass`);
+      expect(view!.options).toEqual(["security_invoker=true"]);
+      const measures = ACTION_KINDS.filter((kind) => MEASURES[kind].lifts === null);
+      const named = [...view!.definition.matchAll(/'([a-z_]+)'::action_kind/g)].map((m) => m[1]);
+      expect([...new Set(named)].sort()).toEqual([...measures].sort());
+      // No value of post_state: a migration that adds one cannot change what "in force" means.
+      expect(view!.definition).not.toMatch(/post_state/);
+      const columns = await apiDb.execute<{ name: string }>(sql`select attname::text as name from pg_attribute where attrelid = 'public.measures_in_force'::regclass and attnum > 0 order by attnum`);
+      expect(columns.map((c) => c.name)).toEqual(["id", "kind", "post_id", "media_id", "subject_account_id", "decision_id", "decision_kind", "case_id"]);
+    });
+  });
+
+  describe("each CHECK written from a contracts constant holds exactly that constant's values", () => {
+    /** The quoted values of one CHECK, as the migrated database defines it. */
+    const checkValues = async (table: string, name: string) => [...(await checkDefinition(table, name)).matchAll(/'([^']*)'/g)].map((m) => m[1]!).sort();
+    /** The one number of a length CHECK. */
+    async function checkBound(table: string, name: string): Promise<number> {
+      const definition = await checkDefinition(table, name);
+      const numbers = [...definition.matchAll(/<= (\d+)/g)].map((m) => Number(m[1]));
+      expect(numbers, definition).toHaveLength(1);
+      return numbers[0]!;
+    }
+
+    test("the 16 Transparency Database categories, on intakes and on decisions", async () => {
+      expect(await checkValues("intakes", "intakes_category")).toEqual([...TDB_CATEGORIES].sort());
+      expect(await checkValues("decisions", "decisions_category")).toEqual([...TDB_CATEGORIES].sort());
+    });
+
+    test("the CSAM path's keywords on intakes, and a decision's keywords", async () => {
+      const keywords = Object.values(CSAM_KEYWORDS).filter((keyword): keyword is NonNullable<typeof keyword> => keyword !== null);
+      expect(await checkValues("intakes", "intakes_category_keyword")).toEqual([...keywords].sort());
+      expect(await checkValues("decisions", "decisions_category_keyword")).toEqual([...DECISION_KEYWORDS].sort());
+    });
+
+    test("the six rules, on intakes and on decisions", async () => {
+      expect(await checkValues("intakes", "intakes_rule_id")).toEqual([...RULE_IDS]);
+      expect(await checkValues("decisions", "decisions_rule_id")).toEqual([...RULE_IDS]);
+    });
+
+    test("the bounds of a notice's two texts", async () => {
+      expect(await checkBound("intakes", "intakes_explanation_len")).toBe(NOTICE_LIMITS.explanationMax);
+      expect(await checkBound("intakes", "intakes_cited_law_len")).toBe(NOTICE_LIMITS.citedLawMax);
+    });
+
+    test("the ledger's kinds are the contracts' action kinds, in their order", async () => {
+      const rows = await apiDb.execute<{ label: string }>(sql`select e.enumlabel::text as label from pg_enum e where e.enumtypid = 'public.action_kind'::regtype order by e.enumsortorder`);
+      expect(rows.map((row) => row.label)).toEqual([...ACTION_KINDS]);
+    });
+
+    test("post_state still has its four values: a seal is a state of images", async () => {
+      const rows = await apiDb.execute<{ label: string }>(sql`select e.enumlabel::text as label from pg_enum e where e.enumtypid = 'public.post_state'::regtype order by e.enumsortorder`);
+      expect(rows.map((row) => row.label)).toEqual(["visible", "withheld", "removed", "deleted_by_author"]);
+    });
+
+    test("no check lets a row through on a null: the database holds the null-safe forms", async () => {
+      // A CHECK passes when its expression is null. These five are written so that it never is. PostgreSQL stores
+      // "is not distinct from" as the negation of "is distinct from" and prints it that way.
+      expect(await checkDefinition("intake_items", "intake_items_case")).toContain("(NOT (outcome IS DISTINCT FROM 'not_available'::item_outcome))");
+      expect(await checkDefinition("decisions", "decisions_keyword")).toContain("(NOT (ground IS DISTINCT FROM 'illegal'::decision_ground))");
+      expect(await checkDefinition("intake_items", "intake_items_statement")).toContain("statement_digest IS NOT NULL");
+      expect(await checkDefinition("appeals", "appeals_statement")).toContain("statement_digest IS NOT NULL");
+      expect(await checkDefinition("staff_texts", "staff_texts_digest")).toContain("salt ~ '^[0-9a-f]{64}$'");
+    });
+  });
+
+  describe("appeal_deadline", () => {
+    test("it equals the contracts' appealDeadline on every month end of two years, a leap year among them, and on the days around them", async () => {
+      // The last three days of each month of 2027 and 2028 (2028 has a 29 February) and the first of the next, at three times of day.
+      // Both times as the text toISOString writes, so that nothing depends on how the driver reads a timestamp.
+      const rows = await apiDb.execute<{ informed: string; deadline: string }>(sql`
+        select to_char(t at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as informed, to_char(public.appeal_deadline(t) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as deadline
+          from generate_series('2027-01-01'::timestamp, '2028-12-01'::timestamp, interval '1 month') month,
+               generate_series(-3, 0) shift,
+               unnest(array[interval '0 hours', interval '12 hours 30 minutes 15.25 seconds', interval '23 hours 59 minutes 59.999 seconds']) time_of_day,
+               lateral (select (month + interval '1 month' + make_interval(days => shift) + time_of_day) at time zone 'UTC' as t) s
+         order by 1`);
+      expect(rows).toHaveLength(24 * 4 * 3);
+      for (const row of rows) expect(appealDeadline(new Date(row.informed)).toISOString(), row.informed).toBe(row.deadline);
+      // The set really holds the clamp: 31 August 2027 is due on the leap day.
+      const august = rows.find((row) => row.informed === "2027-08-31T00:00:00.000Z");
+      expect(august?.deadline).toBe("2028-02-29T00:00:00.000Z");
+    });
+
+    test("it does not depend on the session's time zone", async () => {
+      const deadlines = await withLockTimeout(apiDb, async (tx) => {
+        const read = async () =>
+          (await tx.execute<{ d: string }>(sql`select to_char(public.appeal_deadline('2027-08-30T23:30:00Z'::timestamptz) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as d`))[0]!.d;
+        // 30 August, 23:30 UTC, is already the 31st at +14 and still the 30th at -7: a deadline computed in the session's zone
+        // would differ between the two, and from UTC's 29 February.
+        await tx.execute(sql`set local time zone 'Pacific/Kiritimati'`);
+        const east = await read();
+        await tx.execute(sql`set local time zone 'America/Los_Angeles'`);
+        return [east, await read()];
+      });
+      expect(deadlines).toEqual(["2028-02-29T23:30:00.000Z", "2028-02-29T23:30:00.000Z"]);
+    });
+  });
+
+  describe("the forced columns ignore what an insert supplies", () => {
+    test("a case starts open, in lane 2, at number 0, whatever the insert said, for the API role and for the migrator", async () => {
+      for (const db of [apiDb, migrateDb]) {
+        await rolledBack(db, async (tx) => {
+          const targetId = randomUUID();
+          const [row] = await tx.execute<Record<string, unknown>>(sql`
+            insert into cases (target_type, target_id, opened_at, lane, intake_seq, answered_seq, state_version, oldest_open_at, last_decided_at, closed_at)
+            values ('post', ${targetId}::uuid, '2001-01-01T00:00:00Z', 0, 7, 7, 9, '2001-01-01T00:00:00Z', '2001-01-01T00:00:00Z', '2001-01-01T00:00:00Z')
+            returning *, (opened_at = now()) as opened_now`);
+          expect(row).toMatchObject({ target_type: "post", target_id: targetId, lane: 2, intake_seq: 0, answered_seq: 0, state_version: 0, oldest_open_at: null, last_decided_at: null, closed_at: null, opened_now: true });
+        });
+      }
+    });
+
+    test("an intake's times and receipt: pending for a contact, or for a signed-in reporter alleging illegality, else none", async () => {
+      await rolledBack(apiDb, async (tx) => {
+        const ada = await profile(tx);
+        const insert = (input: IntakeInput) =>
+          tx.execute<{ receipt: string; receipt_sent_at: string | null; erased_at: string | null; now: boolean }>(sql`
+            insert into intakes (kind, ref, lookup_hash, channel, reporter_id, contact_id, rule_id, alleges_illegal, csam, category, explanation, bona_fide, received_at, receipt, receipt_sent_at, erased_at)
+            values ('user', ${newRef()}, ${input.lookupHash ?? null}, ${input.channel ?? "signed_in"}::intake_channel, ${input.reporterId ?? null}::uuid, ${input.contactId ?? null}::uuid, ${input.ruleId ?? null},
+                    ${input.allegesIllegal ?? false}, ${input.csam ?? false}, ${input.category ?? TC}, ${input.explanation ?? null}, ${input.bonaFide ?? false},
+                    '2001-01-01T00:00:00Z', 'sent', '2001-01-01T00:00:00Z', null)
+            returning receipt, receipt_sent_at, erased_at, (received_at = now()) as now`);
+        const cases: [string, IntakeInput, string][] = [
+          ["a rule report", { reporterId: ada.id, ruleId: "R1" }, "none"],
+          ["a signed-in notice of illegality", { reporterId: ada.id, allegesIllegal: true, category: SPEECH, explanation: "why", bonaFide: true }, "pending"],
+          ["a signed-out notice with a contact", { channel: "signed_out", contactId: randomUUID(), lookupHash: hex64(), allegesIllegal: true, category: SPEECH, explanation: "why", bonaFide: true }, "pending"],
+          ["a signed-out rule report without a contact", { channel: "signed_out", lookupHash: hex64(), ruleId: "R3" }, "none"],
+          ["a CSAM notice", { channel: "signed_out", lookupHash: hex64(), csam: true, allegesIllegal: true, category: MINORS }, "none"],
+        ];
+        for (const [label, input, receipt] of cases) {
+          const [row] = await insert(input);
+          expect(row, label).toEqual({ receipt, receipt_sent_at: null, erased_at: null, now: true });
+        }
+      });
+    });
+
+    test("a staff text is born unconfirmed, and a snapshot is taken at the transaction's start, to the millisecond", async () => {
+      await rolledBack(apiDb, async (tx) => {
+        const ada = await profile(tx);
+        const postId = await newPostRow(tx, ada.id);
+        const caseId = await openCase(tx, "post", postId);
+        const salt = hex64();
+        const [text] = await tx.execute<Record<string, unknown>>(sql`
+          insert into staff_texts (case_id, author_id, kind, text, salt, digest, created_at, decision_id, confirmed_at)
+          values (${caseId}::uuid, ${ada.id}::uuid, 'note', 'a note', ${salt}, ${await textDigest(salt, "a note")}, '2001-01-01T00:00:00Z', null, '2001-01-01T00:00:00Z')
+          returning decision_id, confirmed_at, (created_at = now()) as now`);
+        expect(text).toEqual({ decision_id: null, confirmed_at: null, now: true });
+
+        const [snapshot] = await tx.execute<Record<string, unknown>>(sql`
+          insert into evidence_snapshots (case_id, target_type, target_id, taken_at, author_handle, body, salt, digest)
+          values (${caseId}::uuid, 'post', ${postId}::uuid, '2001-01-01T00:00:00.123456Z', ${ada.handle}, 'a post', ${hex64()}, ${hex64()})
+          returning (taken_at = date_trunc('milliseconds', now())) as at_start, (taken_at = date_trunc('milliseconds', taken_at)) as whole_ms`);
+        expect(snapshot).toEqual({ at_start: true, whole_ms: true });
+
+        const [access] = await tx.execute<Record<string, unknown>>(sql`
+          insert into case_access_log (staff_id, case_id, kind, at) values (${ada.id}::uuid, ${caseId}::uuid, 'case_opened', '2001-01-01T00:00:00Z') returning (at = now()) as now`);
+        expect(access).toEqual({ now: true });
+      });
+    });
+
+    test("an image row is born visible, unheld and unerased, for the API role and for the migrator", async () => {
+      for (const db of [apiDb, migrateDb]) {
+        await rolledBack(db, async (tx) => {
+          const ada = await profile(tx);
+          const [row] = await tx.execute<Record<string, unknown>>(
+            sql`insert into post_media (owner_id, status, moderation_state, hold_until, erased_at) values (${ada.id}::uuid, 'processing', 'sealed', 'infinity', now()) returning moderation_state, hold_until, erased_at`,
+          );
+          expect(row).toEqual({ moderation_state: "visible", hold_until: null, erased_at: null });
+        });
+      }
+    });
+
+    test("a hold is born unreleased, held from the transaction's start", async () => {
+      await rolledBack(apiDb, async (tx) => {
+        const ada = await profile(tx);
+        const postId = await newPostRow(tx, ada.id);
+        const mediaId = await newImageRow(tx, ada.id, postId);
+        const caseId = await openCase(tx, "post", postId);
+        const [hold] = await tx.execute<Record<string, unknown>>(sql`
+          insert into media_holds (media_id, case_id, held_at, released_at) values (${mediaId}::uuid, ${caseId}::uuid, '2001-01-01T00:00:00Z', '2001-01-01T00:00:00Z')
+          returning released_at, (held_at = now()) as now`);
+        expect(hold).toEqual({ released_at: null, now: true });
+      });
+    });
+  });
+
+  describe("the checks of intakes", () => {
+    /** One test's intakes, all in a transaction that is rolled back: each insert in a savepoint, its refusal's message or null. */
+    const intakes = (fn: (refusal: (input: IntakeInput) => Promise<string | null>, ada: { id: string }) => Promise<void>) =>
+      rolledBack(apiDb, async (tx) => {
+        const ada = await profile(tx);
+        await fn(async (input) => (await within(tx, (sp) => insertIntake(sp, input)))?.message ?? null, ada);
+      });
+
+    test("a ground is needed: a rule, an allegation of illegality or the CSAM path", async () => {
+      await intakes(async (refusal, ada) => {
+        expect(await refusal({ reporterId: ada.id })).toMatch(/intakes_has_ground/);
+        expect(await refusal({ reporterId: ada.id, ruleId: "R7" })).toMatch(/intakes_rule_id/);
+        expect(await refusal({ reporterId: ada.id, ruleId: "R1" })).toBeNull();
+      });
+    });
+
+    test("a notice of illegality carries its explanation and its good-faith statement; the CSAM path needs neither", async () => {
+      await intakes(async (refusal, ada) => {
+        const illegal = { reporterId: ada.id, allegesIllegal: true, category: SPEECH };
+        expect(await refusal({ ...illegal })).toMatch(/intakes_illegal_elements/);
+        expect(await refusal({ ...illegal, explanation: "why" })).toMatch(/intakes_illegal_elements/);
+        expect(await refusal({ ...illegal, bonaFide: true })).toMatch(/intakes_illegal_elements/);
+        expect(await refusal({ ...illegal, explanation: "why", bonaFide: true })).toBeNull();
+        // A CSAM intake alleges illegality with neither, and with no keyword (the "abuse" choice) or one of the three.
+        const csam = { channel: "signed_out" as const, csam: true, allegesIllegal: true, category: MINORS };
+        expect(await refusal({ ...csam, lookupHash: hex64() })).toBeNull();
+        expect(await refusal({ ...csam, lookupHash: hex64(), categoryKeyword: "KEYWORD_GROOMING_SEXUAL_ENTICEMENT_MINORS" })).toBeNull();
+        expect(await refusal({ ...csam, lookupHash: hex64(), categoryKeyword: "KEYWORD_TERRORIST_CONTENT" })).toMatch(/intakes_category_keyword/);
+      });
+    });
+
+    test("the CSAM path stores no account and no contact, and is always about the protection of minors", async () => {
+      await intakes(async (refusal, ada) => {
+        const csam = { csam: true, allegesIllegal: true, category: MINORS };
+        expect(await refusal({ ...csam, channel: "signed_in", reporterId: ada.id, lookupHash: hex64() })).toMatch(/intakes_csam/);
+        expect(await refusal({ ...csam, channel: "signed_out", contactId: randomUUID(), lookupHash: hex64() })).toMatch(/intakes_csam/);
+        expect(await refusal({ ...csam, channel: "signed_out", category: SPEECH, lookupHash: hex64() })).toMatch(/intakes_csam/);
+        // Signed in, it still stores no account: the channel is kept, the reporter is not, and the token's hash is needed.
+        expect(await refusal({ ...csam, channel: "signed_in", lookupHash: hex64() })).toBeNull();
+        expect(await refusal({ ...csam, channel: "signed_in" })).toMatch(/intakes_lookup/);
+      });
+    });
+
+    test("a user never reports under R2, signed in or out; a moderator's finding may cite it", async () => {
+      await intakes(async (refusal, ada) => {
+        expect(await refusal({ reporterId: ada.id, ruleId: "R2" })).toMatch(/intakes_r2_finding_only/);
+        expect(await refusal({ channel: "signed_out", lookupHash: hex64(), ruleId: "R2" })).toMatch(/intakes_r2_finding_only/);
+        expect(await refusal({ kind: "finding", channel: "staff", findingBy: ada.id, ruleId: "R2", category: MINORS })).toBeNull();
+      });
+    });
+
+    test("a finding names its finder, comes through the staff channel and never alleges illegality", async () => {
+      await intakes(async (refusal, ada) => {
+        const finding = { kind: "finding" as const, channel: "staff" as const, findingBy: ada.id, ruleId: "R3" };
+        expect(await refusal(finding)).toBeNull();
+        expect(await refusal({ ...finding, allegesIllegal: true, category: SPEECH, explanation: "why", bonaFide: true })).toMatch(/intakes_finding_legal/);
+        expect(await refusal({ ...finding, findingBy: null })).toMatch(/intakes_finding/);
+        expect(await refusal({ ...finding, channel: "signed_in" })).toMatch(/intakes_finding/);
+        expect(await refusal({ kind: "user", channel: "staff", ruleId: "R3" })).toMatch(/intakes_finding/);
+        expect(await refusal({ kind: "user", channel: "signed_in", findingBy: ada.id, ruleId: "R3" })).toMatch(/intakes_finding/);
+      });
+    });
+
+    test("a contact belongs to a signed-out notice, a reporter to a signed-in one, and a token's hash to a signed-out or CSAM one", async () => {
+      await intakes(async (refusal, ada) => {
+        expect(await refusal({ channel: "signed_in", reporterId: ada.id, contactId: randomUUID(), ruleId: "R1" })).toMatch(/intakes_contact_signed_out/);
+        expect(await refusal({ channel: "signed_out", reporterId: ada.id, lookupHash: hex64(), ruleId: "R1" })).toMatch(/intakes_reporter_signed_in/);
+        expect(await refusal({ channel: "signed_out", ruleId: "R1" })).toMatch(/intakes_lookup/);
+        expect(await refusal({ channel: "signed_in", reporterId: ada.id, lookupHash: hex64(), ruleId: "R1" })).toMatch(/intakes_lookup/);
+        const hash = hex64();
+        expect(await refusal({ channel: "signed_out", lookupHash: hash, ruleId: "R1" })).toBeNull();
+        expect(await refusal({ channel: "signed_out", lookupHash: hash, ruleId: "R1" })).toMatch(/intakes_lookup_hash_unique/);
+      });
+    });
+
+    test("the category is one of the 16, never the terms-and-conditions one on an allegation of illegality; the texts are bounded; the reference has its form", async () => {
+      await intakes(async (refusal, ada) => {
+        expect(await refusal({ reporterId: ada.id, ruleId: "R1", category: "STATEMENT_CATEGORY_PORNOGRAPHY_OR_SEXUALIZED_CONTENT" })).toMatch(/intakes_category/);
+        expect(await refusal({ reporterId: ada.id, allegesIllegal: true, category: TC, explanation: "why", bonaFide: true })).toMatch(/intakes_illegal_not_tc/);
+        const illegal = { reporterId: ada.id, allegesIllegal: true, category: SPEECH, bonaFide: true };
+        expect(await refusal({ ...illegal, explanation: "x".repeat(2000), citedLaw: "y".repeat(300) })).toBeNull();
+        expect(await refusal({ ...illegal, explanation: "x".repeat(2001) })).toMatch(/intakes_explanation_len/);
+        expect(await refusal({ ...illegal, explanation: "why", citedLaw: "y".repeat(301) })).toMatch(/intakes_cited_law_len/);
+        for (const ref of ["N-ABCDEFGH2", "n-ABCDEFGHJ2", "N-abcdefghj2", "N-ABCDEFGH01", "N-ABCDEFGHJ23", "X-ABCDEFGHJ2"]) expect(await refusal({ reporterId: ada.id, ruleId: "R1", ref }), ref).toMatch(/intakes_ref/);
+        const ref = newRef();
+        expect(await refusal({ reporterId: ada.id, ruleId: "R1", ref })).toBeNull();
+        expect(await refusal({ reporterId: ada.id, ruleId: "R1", ref })).toMatch(/intakes_ref_unique/);
+      });
+    });
+  });
+
+  describe("the staff_texts CHECK", () => {
+    type Save = (text: string | null, salt: string | null, digest: string, erased?: boolean) => Promise<{ message: string; code: string } | null>;
+    /** One test's texts on a case of their own, in a transaction that is rolled back; each insert in a savepoint. */
+    const texts = (fn: (save: Save, tx: DbTx) => Promise<void>) =>
+      rolledBack(apiDb, async (tx) => {
+        const ada = await profile(tx);
+        const caseId = await openCase(tx, "post", await newPostRow(tx, ada.id));
+        const save: Save = (text, salt, digest, erased = false) =>
+          run(tx, sql`insert into staff_texts (case_id, author_id, kind, text, salt, digest, erased_at) values (${caseId}::uuid, ${ada.id}::uuid, 'facts', ${text}, ${salt}, ${digest}, ${erased ? sql`now()` : sql`null`})`);
+        await fn(save, tx);
+      });
+
+    test.each(TEXT_DIGEST_VECTORS.map((vector) => [vector.name, vector] as const))("%s: SQL computes the digest the contracts' textDigest computes", async (_name, vector) => {
+      expect(await sqlDigest(apiDb, vector.salt, vector.text)).toBe(vector.digest);
+    });
+
+    test("a text is stored with the digest the contracts compute for its salt and itself, and with no other", async () => {
+      await texts(async (save) => {
+        // Fresh salts: a digest names one text, so a vector's own digest could be stored only once.
+        for (const vector of TEXT_DIGEST_VECTORS) {
+          const salt = hex64();
+          const digest = await textDigest(salt, vector.text);
+          expect(await save(vector.text, salt, digest), vector.name).toBeNull();
+          // The same text under the digest of another salt, or of another text, is refused.
+          expect((await save(vector.text, hex64(), digest))?.message, vector.name).toMatch(/staff_texts_digest/);
+          expect((await save(`${vector.text}.`, salt, digest))?.message, vector.name).toMatch(/staff_texts_digest/);
+        }
+      });
+    });
+
+    test("a digest names one text; a text has a salt; only an erased row has neither", async () => {
+      await texts(async (save) => {
+        const salt = hex64();
+        const digest = await textDigest(salt, "a text");
+        expect(await save("a text", salt, digest)).toBeNull();
+        expect((await save("a text", salt, digest))?.message).toMatch(/staff_texts_digest_unique/);
+        expect((await save("a text", null, hex64()))?.message).toMatch(/staff_texts_digest/);
+        expect((await save(null, hex64(), hex64()))?.message).toMatch(/staff_texts_digest/);
+        expect((await save(null, null, hex64()))?.message).toMatch(/staff_texts_digest/);
+        expect((await save("a text", hex64(), hex64(), true))?.message).toMatch(/staff_texts_digest/);
+        // The erased form: text and salt gone, the digest kept.
+        expect(await save(null, null, hex64(), true)).toBeNull();
+      });
+    });
+
+    test("the salt is 32 bytes as lower-case hex: an empty, a short or an upper-case salt is refused, also with the digest it gives", async () => {
+      await texts(async (save, tx) => {
+        const salt = hex64();
+        // hex decodes either case to the same bytes, so the upper-case spelling has the lower-case salt's digest.
+        const upper = salt.toUpperCase();
+        expect(await sqlDigest(tx, upper, "a text")).toBe(await textDigest(salt, "a text"));
+        for (const malformed of ["", salt.slice(2), upper, `${salt}00`]) {
+          const err = await save("a text", malformed, await sqlDigest(tx, malformed, "a text"));
+          expect(err, JSON.stringify(malformed)).toMatchObject({ code: "23514", message: expect.stringMatching(/staff_texts_digest/) });
+        }
+        expect(await save("a text", salt, await textDigest(salt, "a text"))).toBeNull();
+      });
+    });
+
+    test("a text longer than 5000 characters is refused whatever its digest", async () => {
+      await texts(async (save, tx) => {
+        const salt = hex64();
+        const long = "x".repeat(5001);
+        expect((await save(long, salt, await sqlDigest(tx, salt, long)))?.message).toMatch(/staff_texts_text_len/);
+      });
+    });
+  });
+
+  test("a decision's keyword needs the ground of the law: on a decision without a ground, or on a rule, it is refused", async () => {
+    // No code of Task 1 writes a decision, so the row is the fixture's, as the migrator, in a transaction that is rolled back.
+    await rolledBack(migrateDb, async (tx) => {
+      const [author, staff] = [await profile(tx), await profile(tx)];
+      const postId = await newPostRow(tx, author.id);
+      const decisionId = await fabricateDecision(tx, { caseId: await openCase(tx, "post", postId), targetType: "post", targetId: postId, staffId: staff.id });
+      const keyword = DECISION_KEYWORDS[0];
+      const set = (changes: ReturnType<typeof sql>) => run(tx, sql`update decisions set ${changes} where id = ${decisionId}::uuid`);
+      const refused = { code: "23514", message: expect.stringMatching(/decisions_keyword/) };
+      // A null ground is the row a plain comparison let through: its result is null, and a check passes on a null.
+      expect(await set(sql`category_keyword = ${keyword}`)).toMatchObject(refused);
+      expect(await set(sql`category_keyword = ${keyword}, ground = 'incompatible', rule_id = 'R1'`)).toMatchObject(refused);
+      expect(await set(sql`category_keyword = ${keyword}, ground = 'illegal', legal_reference_digest = ${hex64()}`)).toBeNull();
+    });
+  });
+
+  test("the limits' row is the migration's: 60 decisions an hour and 300 a day, 400 case opens, 50 findings and 10 reveals a day", async () => {
+    // The suite's setup leaves this table alone, so the row read here is the one migration 0015 inserted.
+    const rows = await apiDb.execute<Record<string, unknown>>(sql`select id, decisions_per_hour, decisions_per_day, case_opens_per_day, findings_per_day, reveals_per_day from moderation_limits`);
+    expect(rows.map((row) => ({ ...row }))).toEqual([{ id: 1, decisions_per_hour: 60, decisions_per_day: 300, case_opens_per_day: 400, findings_per_day: 50, reveals_per_day: 10 }]);
+    await rolledBack(migrateDb, async (tx) => {
+      const err = await run(tx, sql`insert into moderation_limits (id, decisions_per_hour, decisions_per_day, case_opens_per_day, findings_per_day, reveals_per_day, updated_at) values (2, 1, 1, 1, 1, 1, now())`);
+      expect(err?.message).toMatch(/moderation_limits_single_row/);
+    });
+  });
+
+  test("this file left no row behind: the tables it writes hold what they held before it", async () => {
+    expect(await rowCounts(apiDb)).toEqual(before);
+  });
+});

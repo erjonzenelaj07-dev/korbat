@@ -16,8 +16,11 @@ export async function finalize(deps: MediaDeps, id: string): Promise<boolean> {
 }
 
 function statusOf(row: MediaRow): MediaStatusResponse {
-  if (row.status === "ready" && row.width !== null && row.height !== null && row.blurhash !== null) {
-    return { id: row.id, status: "ready", width: row.width, height: row.height, blurhash: row.blurhash };
+  if (row.status === "ready" && row.width !== null && row.height !== null) {
+    // A sealed image is shown to nobody, its owner included: its status says that it is ready and how large it is, never
+    // the blurhash, which is made from the image and which the repository did not hand over.
+    if (row.moderationState === "sealed") return { id: row.id, status: "ready", width: row.width, height: row.height };
+    if (row.blurhash !== null) return { id: row.id, status: "ready", width: row.width, height: row.height, blurhash: row.blurhash };
   }
   if (row.status === "failed") {
     const reason = MediaFailure.safeParse(row.error);

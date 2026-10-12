@@ -22,11 +22,16 @@ export interface ServeRequest {
 /**
  * Decides whether an image file may be sent. An image follows its post: visible posts are public,
  * as 2a made them, so blocks are not checked here; withheld and removed posts show their images to
- * their author only; an image without a post, or not ready, does not exist for anyone.
+ * their author only; an image without a post, or not ready, does not exist for anyone. It also
+ * follows its own moderation state, by a whitelist: only an image whose state is `visible` is sent.
+ * A sealed image reaches nobody, its author included, and any other state is not found for everyone
+ * until this reader is taught who may see it. The image's state is tested before the post's, so a
+ * sealed image of a withheld or removed post is not found for its author too.
  */
 export async function serve(deps: MediaDeps, request: ServeRequest): Promise<Served> {
   const access = await deps.repo.fileAccess(request.id);
   if (!access || access.status !== "ready" || !access.postState) return { kind: "not_found" };
+  if (access.mediaState !== "visible") return { kind: "not_found" };
 
   let cacheControl = PUBLIC_CACHE;
   if (access.postState !== "visible") {

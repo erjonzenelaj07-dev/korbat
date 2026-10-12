@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DisplayName, OpaqueId, Role } from "./auth";
+import { hex, sha256, sortedJson } from "./canonical";
 import { AuthenticationResponseJSON, PasskeyOptionsResponse, RegistrationResponseJSON } from "./passkeys";
 
 // The staff console (3a design, section 10). The console talks only to /api/staff/* on its own origin, and parses every
@@ -243,29 +244,6 @@ export interface StaffStepUpActionInput {
 }
 
 /**
- * JSON with every object's keys sorted and no whitespace. Keys are sorted by UTF-16 code units (Array.prototype.sort's
- * order), and strings and numbers are written as JSON.stringify writes them, so the API, audit-verify and the console write
- * the same text. Anything JSON cannot carry is refused rather than dropped or changed, as JSON.stringify would.
- */
-function sortedJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("a step-up action's params hold only JSON values: a number must be finite");
-    return JSON.stringify(value);
-  }
-  // Array.from visits holes too, so a sparse array is refused as undefined.
-  if (Array.isArray(value)) return `[${Array.from(value, sortedJson).join(",")}]`;
-  if (typeof value === "object" && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${sortedJson(record[key])}`)
-      .join(",")}}`;
-  }
-  throw new TypeError(`a step-up action's params hold only JSON values, not ${value instanceof Object ? value.constructor.name : typeof value}`);
-}
-
-/**
  * The text an action's hash is taken over (3a design, section 7, Step-up): the sorted JSON of `{ action, target: { type,
  * id }, params }`. The step-up options take it from what the console sent, requireStaffStepUp from what the route is about
  * to do, audit-verify from the row's action, target and `metadata.params`, and the console from what it chose.
@@ -282,23 +260,9 @@ export function stepUpBindingText(sessionHandle: string, actionHash: string): st
   return `${sessionHandle}\n${actionHash}`;
 }
 
-/**
- * The parts of the Web Crypto and Encoding APIs the hashes below use. Browsers and Node (from 19) both have them as
- * globals; the contracts are compiled without the DOM's or Node's types, so only these members are declared.
- */
-interface WebPlatform {
-  crypto: { subtle: { digest(algorithm: "SHA-256", data: Uint8Array): Promise<ArrayBuffer> } };
-  TextEncoder: new () => { encode(text: string): Uint8Array };
-}
-
-async function sha256(text: string): Promise<Uint8Array> {
-  const platform = globalThis as unknown as WebPlatform;
-  return new Uint8Array(await platform.crypto.subtle.digest("SHA-256", new platform.TextEncoder().encode(text)));
-}
-
 /** The action's hash: the lower-case hex sha256 of stepUpActionText's UTF-8 bytes. */
 export async function stepUpActionHash(input: StaffStepUpActionInput): Promise<string> {
-  return Array.from(await sha256(stepUpActionText(input)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return hex(await sha256(stepUpActionText(input)));
 }
 
 /** The step-up challenge's binding: all 32 bytes of the sha256 of stepUpBindingText's UTF-8 bytes. */

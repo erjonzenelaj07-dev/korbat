@@ -25,6 +25,16 @@ export const bytea = customType<{ data: Buffer; driverData: Uint8Array }>({
 });
 
 /**
+ * A 64-bit transaction id (what pg_current_xact_id() answers), which drizzle's pg-core has no column for. It is handed
+ * over as its decimal string, as postgres.js reads a type it does not know: a JavaScript number cannot hold every value.
+ */
+export const xid8 = customType<{ data: string; driverData: string }>({
+  dataType() {
+    return "xid8";
+  },
+});
+
+/**
  * Foundation policy: the given role may touch every row of the table.
  * Sub-projects replace this per table with owner-scoped policies as the
  * routes that need them are built. RLS being ON from day one means adding a

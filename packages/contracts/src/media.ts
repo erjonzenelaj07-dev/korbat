@@ -57,10 +57,13 @@ export type MediaAttachment = z.infer<typeof MediaAttachment>;
 export const UploadResponse = z.object({ id: MediaId, status: z.literal("processing") });
 export type UploadResponse = z.infer<typeof UploadResponse>;
 
-/** The state of one upload, for its owner. Width and height are those of the large size, after rotation. */
+/**
+ * The state of one upload, for its owner. Width and height are those of the large size, after rotation. A ready image
+ * carries its blurhash, except one that moderation sealed: it is shown to nobody, and the blurhash is made from the image.
+ */
 export const MediaStatusResponse = z.discriminatedUnion("status", [
   z.object({ id: MediaId, status: z.literal("processing") }),
-  z.object({ id: MediaId, status: z.literal("ready"), width: z.number().int().positive(), height: z.number().int().positive(), blurhash: z.string().min(6) }),
+  z.object({ id: MediaId, status: z.literal("ready"), width: z.number().int().positive(), height: z.number().int().positive(), blurhash: z.string().min(6).optional() }),
   z.object({ id: MediaId, status: z.literal("failed"), error: MediaFailure }),
 ]);
 export type MediaStatusResponse = z.infer<typeof MediaStatusResponse>;

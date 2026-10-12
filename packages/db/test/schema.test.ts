@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { is } from "drizzle-orm";
-import { PgTable, getTableConfig, pgTable } from "drizzle-orm/pg-core";
-import { apiRole, authRole, bytea } from "../src/schema/helpers";
+import { is, type SQL } from "drizzle-orm";
+import { PgDialect, PgTable, getTableConfig, pgTable } from "drizzle-orm/pg-core";
+import { apiRole, authRole, bytea, xid8 } from "../src/schema/helpers";
 import * as schema from "../src/schema/index";
 
 const tables = Object.values(schema).filter((v) => is(v, PgTable)) as PgTable[];
@@ -46,20 +46,20 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 28 tables in total", () => {
-    expect(tables.length).toBe(28);
+  test("there are 39 tables in total", () => {
+    // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables.
+    expect(tables.length).toBe(39);
   });
-  test("transparency_log carries no user identifiers", () => {
-    const cols = byName.get("transparency_log")!.columns.map((c) => c.name);
-    for (const c of cols) expect(c, c).not.toMatch(/user|author|moderator|reporter/);
+  test("the tables 3c retired are gone, with their enums and the reputation column", () => {
+    for (const name of ["reports", "strikes", "transparency_log"]) expect(byName.has(name), name).toBe(false);
+    for (const name of ["targetType", "reportStatus", "caseAction", "appealStatus", "reports", "strikes", "transparencyLog"]) {
+      expect(Object.keys(schema), name).not.toContain(name);
+    }
+    expect(byName.get("profiles")!.columns.map((c) => c.name)).not.toContain("reputation");
   });
   test("audit_log policies allow only insert and select", () => {
     const kinds = byName.get("audit_log")!.policies.map((p) => p.for).sort();
     expect(kinds).toEqual(["insert", "select"]);
-  });
-  test("one appeal per case", () => {
-    const idx = byName.get("appeals")!.indexes.find((i) => i.config.name === "appeals_case_idx");
-    expect(idx?.config.unique).toBe(true);
   });
 });
 
@@ -501,5 +501,434 @@ describe("staff console 3a", () => {
     expect(checks("audit_head")).toEqual(["audit_head_single_row"]);
     expect(cfg.enableRLS).toBe(true);
     expect(policies("audit_head")).toEqual([["audit_head_api_select", "select", apiRole]]);
+  });
+});
+
+describe("moderation cases 3c", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** Name, SQL type and not-null of every column, in order. */
+  const shape = (table: string) => byName.get(table)!.columns.map((c) => [c.name, c.getSQLType(), c.notNull]);
+  const checks = (table: string) => byName.get(table)!.checks.map((c) => c.name).sort();
+  const policies = (table: string) => byName.get(table)!.policies.map((p) => [p.name, p.for, p.to]);
+  const index = (table: string, name: string) => byName.get(table)!.indexes.find((i) => i.config.name === name)?.config;
+  const indexColumns = (config: { columns: unknown[] } | undefined) => config?.columns.map((c) => (c as { name?: string }).name);
+  /** An index's predicate as the SQL the migration holds. */
+  const predicate = (config: { where?: SQL } | undefined) => (config?.where ? new PgDialect().sqlToQuery(config.where).sql : undefined);
+  /** Every foreign key of a table by its local columns: the table and columns it points at and what a delete there does. */
+  const foreignKeys = (table: string) =>
+    Object.fromEntries(
+      byName.get(table)!.foreignKeys.map((k) => {
+        const ref = k.reference();
+        return [ref.columns.map((c) => c.name).join(","), { table: getTableConfig(ref.foreignTable).name, columns: ref.foreignColumns.map((c) => c.name), onDelete: k.onDelete }];
+      }),
+    );
+  /** The columns declared unique by themselves, each with the name of its constraint. */
+  const uniques = (table: string) =>
+    byName
+      .get(table)!
+      .columns.filter((c) => c.isUnique)
+      .map((c) => [c.uniqueName, [c.name]])
+      .sort();
+
+  /** A check's expression as the migration holds it. */
+  const checkSql = (table: string, name: string) => new PgDialect().sqlToQuery(byName.get(table)!.checks.find((c) => c.name === name)!.value).sql;
+
+  const MODERATION_TABLES = ["cases", "intakes", "intake_items", "decisions", "decision_actions", "seal_posts", "appeals", "staff_texts", "evidence_snapshots", "case_access_log", "moderation_limits", "media_holds"];
+  const AUTH_TABLES = ["notifier_contacts", "notifier_confirmations", "notifier_suppressions", "staff_personal_accounts"];
+
+  test("the twelve moderation tables are public, with row level security and one policy for the API role", () => {
+    for (const name of MODERATION_TABLES) {
+      const cfg = byName.get(name);
+      expect(cfg, name).toBeDefined();
+      expect(cfg!.schema, name).toBeUndefined(); // public
+      expect(cfg!.enableRLS, name).toBe(true);
+      // The grants do the restricting (migration 0015); moderation_limits is read only, so its one policy is a SELECT one.
+      expect(policies(name), name).toEqual(name === "moderation_limits" ? [["moderation_limits_api_select", "select", apiRole]] : [[`${name}_api_all`, "all", apiRole]]);
+    }
+  });
+
+  test("no moderation table has a column named like an email or an address", () => {
+    for (const name of MODERATION_TABLES) {
+      for (const c of byName.get(name)!.columns) expect(c.name, `${name}.${c.name}`).not.toMatch(/email|address/i);
+    }
+  });
+
+  test("xid8 is the xid8 SQL type and hands the transaction id over as a string", () => {
+    const table = pgTable("xid8_probe", { value: xid8("value") });
+    const probe = getTableConfig(table).columns[0]!;
+    expect(probe.getSQLType()).toBe("xid8");
+    // A 64-bit counter: a string keeps every digit, where a JavaScript number would not.
+    expect(probe.mapFromDriverValue("18446744073709551615")).toBe("18446744073709551615");
+    expect(probe.mapToDriverValue("773")).toBe("773");
+  });
+
+  test("one open case a target: the partial unique index, the queue's index and the target's index", () => {
+    const open = index("cases", "cases_one_open_per_target");
+    expect(open?.unique).toBe(true);
+    expect(indexColumns(open)).toEqual(["target_type", "target_id"]);
+    expect(predicate(open)).toBe("closed_at is null");
+    const queue = index("cases", "cases_queue_idx");
+    expect(queue?.unique).toBe(false);
+    expect(indexColumns(queue)).toEqual(["lane", "oldest_open_at"]);
+    expect(predicate(queue)).toBe("closed_at is null");
+    expect(indexColumns(index("cases", "cases_target_idx"))).toEqual(["target_type", "target_id", "opened_at"]);
+    expect(checks("cases")).toEqual(["cases_closed_answered", "cases_lane", "cases_seq_order"]);
+    expect(column("cases", "id")?.hasDefault).toBe(true);
+    // No foreign key on the target: it names two tables.
+    expect(foreignKeys("cases")).toEqual({});
+  });
+
+  test("an item's partial unique indexes: one target a notice, one re-examination an item, one item per reporter, case and ground", () => {
+    const target = index("intake_items", "intake_items_target_once");
+    expect(target?.unique).toBe(true);
+    expect(indexColumns(target)).toEqual(["intake_id", "target_type", "target_id"]);
+    expect(predicate(target)).toBe("reexamines_item_id is null");
+
+    const reexamines = index("intake_items", "intake_items_reexamines_once");
+    expect(reexamines?.unique).toBe(true);
+    expect(indexColumns(reexamines)).toEqual(["reexamines_item_id"]);
+    expect(predicate(reexamines)).toBe("reexamines_item_id is not null");
+
+    const reporter = index("intake_items", "intake_items_reporter_once");
+    expect(reporter?.unique).toBe(true);
+    expect(indexColumns(reporter)).toEqual(["case_id", "reporter_account_id", "alleges_illegal"]);
+    expect(predicate(reporter)).toBe("reexamines_item_id is null");
+
+    const seq = index("intake_items", "intake_items_case_seq_idx");
+    expect(seq?.unique).toBe(true);
+    expect(indexColumns(seq)).toEqual(["case_id", "seq"]);
+    expect(seq?.where).toBeUndefined();
+
+    // The freeze's probe, and the release's.
+    const suspect = index("intake_items", "intake_items_suspect_open_idx");
+    expect(indexColumns(suspect)).toEqual(["case_id"]);
+    expect(predicate(suspect)).toBe("suspect and answered_by is null");
+    expect(predicate(index("intake_items", "intake_items_revision_idx"))).toBe("revision_pending_at is not null");
+    expect(indexColumns(index("intake_items", "intake_items_answered_by_idx"))).toEqual(["answered_by"]);
+  });
+
+  test("an item records whether it is suspect and the handle an account was named by, and the database holds both halves of that", () => {
+    const suspect = column("intake_items", "suspect");
+    expect(suspect?.getSQLType()).toBe("boolean");
+    expect(suspect?.notNull).toBe(true);
+    // The trigger forces it; the default is there so that no insert must name a forced column.
+    expect(suspect?.default).toBe(false);
+    const named = column("intake_items", "named_handle");
+    expect(named?.getSQLType()).toBe("text");
+    expect(named?.notNull).toBe(false);
+    expect(checks("intake_items")).toEqual([
+      "intake_items_case",
+      "intake_items_lane",
+      "intake_items_named_handle",
+      "intake_items_position",
+      "intake_items_shown",
+      "intake_items_statement",
+      "intake_items_statement_len",
+    ]);
+    expect(foreignKeys("intake_items")).toEqual({
+      intake_id: { table: "intakes", columns: ["id"], onDelete: "restrict" },
+      case_id: { table: "cases", columns: ["id"], onDelete: "restrict" },
+      answered_by: { table: "decisions", columns: ["id"], onDelete: "no action" },
+      reexamines_item_id: { table: "intake_items", columns: ["id"], onDelete: "no action" },
+    });
+  });
+
+  test("no check lets a row through on a null: a statement always has its digest, a salt its form, and the two comparisons with a nullable value are null-safe", () => {
+    // A CHECK passes when its expression is null, so `digest = encode(...)` alone would accept a statement with no digest.
+    for (const [table, name] of [
+      ["intake_items", "intake_items_statement"],
+      ["appeals", "appeals_statement"],
+    ] as const) {
+      expect(checkSql(table, name), name).toContain(`"${table}"."statement_digest" is not null and "${table}"."statement_digest" = encode(sha256(`);
+      expect(checkSql(table, name), name).toContain(`"${table}"."statement_salt" ~ '^[0-9a-f]{64}$'`);
+    }
+    expect(checkSql("staff_texts", "staff_texts_digest")).toContain(`"staff_texts"."salt" ~ '^[0-9a-f]{64}$' and "staff_texts"."digest" = encode(sha256(`);
+    expect(checkSql("intake_items", "intake_items_case")).toBe(
+      `("intake_items"."case_id" is null) = ("intake_items"."seq" is null) and ("intake_items"."case_id" is not null or "intake_items"."outcome" is not distinct from 'not_available')`,
+    );
+    expect(checkSql("decisions", "decisions_keyword")).toBe(`"decisions"."category_keyword" is null or "decisions"."ground" is not distinct from 'illegal'`);
+  });
+
+  test("every check of intakes, by name", () => {
+    expect(checks("intakes")).toEqual([
+      "intakes_category",
+      "intakes_category_keyword",
+      "intakes_cited_law_len",
+      "intakes_contact_signed_out",
+      "intakes_csam",
+      "intakes_erased",
+      "intakes_explanation_len",
+      "intakes_finding",
+      "intakes_finding_legal",
+      "intakes_has_ground",
+      "intakes_illegal_elements",
+      "intakes_illegal_not_tc",
+      "intakes_lookup",
+      "intakes_r2_finding_only",
+      "intakes_ref",
+      "intakes_reporter_signed_in",
+      "intakes_rule_id",
+    ]);
+    // The public reference and the token's hash each name one notice.
+    expect(uniques("intakes")).toEqual([
+      ["intakes_lookup_hash_unique", ["lookup_hash"]],
+      ["intakes_ref_unique", ["ref"]],
+    ]);
+    expect(foreignKeys("intakes")).toEqual({
+      reporter_id: { table: "profiles", columns: ["id"], onDelete: "set null" },
+      finding_by: { table: "profiles", columns: ["id"], onDelete: "restrict" },
+    });
+    // The notifier's contact lives in the auth schema; the public row holds only its id, with no foreign key.
+    expect(column("intakes", "contact_id")?.getSQLType()).toBe("uuid");
+    expect(predicate(index("intakes", "intakes_unerased_idx"))).toBe("erased_at is null");
+  });
+
+  test("every check of decisions, by name, and one review an appeal", () => {
+    expect(checks("decisions")).toEqual([
+      "decisions_automated_decision",
+      "decisions_category",
+      "decisions_category_keyword",
+      "decisions_digests",
+      "decisions_ground_law",
+      "decisions_ground_rule",
+      "decisions_interim",
+      "decisions_keyword",
+      "decisions_law_no_rule",
+      "decisions_restricted",
+      "decisions_reversal_plain",
+      "decisions_review_target",
+      "decisions_rule_id",
+      "decisions_territorial_scope",
+    ]);
+    const once = index("decisions", "decisions_appeal_once");
+    expect(once?.unique).toBe(true);
+    expect(indexColumns(once)).toEqual(["appeal_id"]);
+    expect(predicate(once)).toBe("appeal_id is not null");
+    expect(foreignKeys("decisions")).toEqual({
+      case_id: { table: "cases", columns: ["id"], onDelete: "restrict" },
+      reviews_decision_id: { table: "decisions", columns: ["id"], onDelete: "no action" },
+      appeal_id: { table: "appeals", columns: ["id"], onDelete: "no action" },
+      snapshot_id: { table: "evidence_snapshots", columns: ["id"], onDelete: "restrict" },
+      decided_by: { table: "profiles", columns: ["id"], onDelete: "restrict" },
+    });
+  });
+
+  test("the columns of decisions that the database forces: their types, and which carry a default", () => {
+    // [name, SQL type, not null, default]; undefined where the column has none and the trigger of 0016 alone fills it.
+    const forced = [
+      ["appeal_id", "uuid", false, undefined],
+      ["answers_from_seq", "integer", false, undefined],
+      ["source", "decision_source", true, undefined],
+      ["automated_detection", "boolean", true, false],
+      ["automated_decision", "text", true, "not_automated"],
+      ["territorial_scope", "text", true, "worldwide"],
+      ["decided_at", "timestamp with time zone", true, undefined],
+      ["xact", "xid8", true, undefined],
+      ["puid", "text", true, undefined],
+      ["informed_at", "timestamp with time zone", true, undefined],
+      ["suspect", "boolean", true, undefined],
+      ["unseen", "boolean", true, false],
+      ["needs_admin", "boolean", true, undefined],
+      ["ended_interim", "boolean", true, undefined],
+      ["author_mail", "delivery_state", true, "none"],
+      ["author_mail_at", "timestamp with time zone", false, undefined],
+    ] as const;
+    for (const [name, type, notNull, fallback] of forced) {
+      const c = column("decisions", name);
+      expect(c?.getSQLType(), name).toBe(type);
+      expect(c?.notNull, name).toBe(notNull);
+      expect(c?.default, name).toBe(fallback);
+    }
+    // The Transparency Database's platform id: one per decision, never the internal id.
+    expect(uniques("decisions")).toEqual([["decisions_puid_unique", ["puid"]]]);
+  });
+
+  test("the ledger: a measure once a decision, lifted at most once, and the columns the database forces", () => {
+    expect(shape("decision_actions")).toEqual([
+      ["id", "uuid", true],
+      ["decision_id", "uuid", true],
+      ["kind", "action_kind", true],
+      ["media_id", "uuid", false],
+      ["subject_account_id", "uuid", true],
+      ["post_id", "uuid", false],
+      ["reverses_action_id", "uuid", false],
+      ["no_effect", "text", false],
+      ["created_at", "timestamp with time zone", true],
+    ]);
+    // None of the forced columns has a default: the trigger of 0016 alone fills them.
+    for (const name of ["subject_account_id", "post_id", "reverses_action_id", "no_effect", "created_at"]) expect(column("decision_actions", name)?.hasDefault, name).toBe(false);
+    const once = byName.get("decision_actions")!.uniqueConstraints.map((u) => [u.getName(), u.columns.map((c) => c.name), u.nullsNotDistinct]);
+    expect(once).toEqual([["decision_actions_once", ["decision_id", "kind", "media_id"], true]]);
+    const reversed = index("decision_actions", "decision_actions_reversed_once");
+    expect(reversed?.unique).toBe(true);
+    expect(indexColumns(reversed)).toEqual(["reverses_action_id"]);
+    expect(predicate(reversed)).toBe("reverses_action_id is not null");
+    expect(checks("decision_actions")).toEqual(["decision_actions_no_effect"]);
+    expect(foreignKeys("decision_actions")).toEqual({
+      decision_id: { table: "decisions", columns: ["id"], onDelete: "restrict" },
+      reverses_action_id: { table: "decision_actions", columns: ["id"], onDelete: "no action" },
+    });
+    expect(schema.actionKind.enumValues).toEqual([
+      "withhold",
+      "remove",
+      "seal_media",
+      "withhold_media",
+      "remove_media",
+      "reset_display_name",
+      "reset_bio",
+      "restore",
+      "unseal_media",
+      "restore_media",
+      "restore_display_name",
+      "restore_bio",
+    ]);
+  });
+
+  test("seal_posts lists the posts of a seal with their image counts, keyed by measure and post", () => {
+    expect(shape("seal_posts")).toEqual([
+      ["action_id", "uuid", true],
+      ["post_id", "uuid", true],
+      ["images", "smallint", true],
+    ]);
+    expect(byName.get("seal_posts")!.primaryKeys.map((k) => k.columns.map((c) => c.name))).toEqual([["action_id", "post_id"]]);
+    // No foreign key on the post, as a case's target has none.
+    expect(foreignKeys("seal_posts")).toEqual({ action_id: { table: "decision_actions", columns: ["id"], onDelete: "restrict" } });
+    expect(indexColumns(index("seal_posts", "seal_posts_post_idx"))).toEqual(["post_id"]);
+    expect(checks("seal_posts")).toEqual(["seal_posts_images"]);
+  });
+
+  test("decisions record whether they were taken under suspicion and with the images out of sight", () => {
+    expect(column("decisions", "suspect")?.getSQLType()).toBe("boolean");
+    expect(column("decisions", "suspect")?.notNull).toBe(true);
+    expect(column("decisions", "unseen")?.getSQLType()).toBe("boolean");
+    expect(column("decisions", "unseen")?.notNull).toBe(true);
+  });
+
+  test("one appeal a decision", () => {
+    const once = index("appeals", "appeals_once");
+    expect(once?.unique).toBe(true);
+    expect(indexColumns(once)).toEqual(["decision_id"]);
+    expect(once?.where).toBeUndefined();
+    expect(predicate(index("appeals", "appeals_pending_idx"))).toBe("answered_by is null");
+    expect(predicate(index("appeals", "appeals_statement_idx"))).toBe("statement is not null");
+    expect(checks("appeals")).toEqual(["appeals_statement", "appeals_statement_len"]);
+    expect(foreignKeys("appeals")).toEqual({
+      decision_id: { table: "decisions", columns: ["id"], onDelete: "restrict" },
+      answered_by: { table: "decisions", columns: ["id"], onDelete: "no action" },
+    });
+  });
+
+  test("posts gain a moderation level and an erasure time; post_state keeps its four values", () => {
+    const level = column("posts", "moderation_level");
+    expect(level?.getSQLType()).toBe("moderation_level");
+    expect(level?.notNull).toBe(true);
+    expect(level?.default).toBe("visible");
+    expect(schema.moderationLevel.enumValues).toEqual(["visible", "withheld", "removed"]);
+    expect(column("posts", "erased_at")?.getSQLType()).toBe("timestamp with time zone");
+    expect(column("posts", "erased_at")?.notNull).toBe(false);
+    // A seal is a state of images: no reader of posts learns a new state.
+    expect(schema.postState.enumValues).toEqual(["visible", "withheld", "removed", "deleted_by_author"]);
+  });
+
+  test("post_media gains its own moderation state, the time a hold retains it until and an erasure time", () => {
+    const state = column("post_media", "moderation_state");
+    expect(state?.getSQLType()).toBe("media_moderation_state");
+    expect(state?.notNull).toBe(true);
+    expect(state?.default).toBe("visible");
+    // Only an image is ever sealed.
+    expect(schema.mediaModerationState.enumValues).toEqual(["visible", "withheld", "removed", "sealed"]);
+    for (const name of ["hold_until", "erased_at"]) {
+      expect(column("post_media", name)?.getSQLType(), name).toBe("timestamp with time zone");
+      expect(column("post_media", name)?.notNull, name).toBe(false);
+      expect(column("post_media", name)?.hasDefault, name).toBe(false);
+    }
+  });
+
+  test("media_holds keeps a case's hold on an image row and goes with the row", () => {
+    expect(shape("media_holds")).toEqual([
+      ["id", "bigint", true],
+      ["media_id", "uuid", true],
+      ["case_id", "uuid", true],
+      ["held_at", "timestamp with time zone", true],
+      ["until", "timestamp with time zone", false],
+      ["released_at", "timestamp with time zone", false],
+    ]);
+    expect(column("media_holds", "id")?.generatedIdentity?.type).toBe("always");
+    expect(foreignKeys("media_holds")).toEqual({
+      media_id: { table: "post_media", columns: ["id"], onDelete: "cascade" },
+      case_id: { table: "cases", columns: ["id"], onDelete: "restrict" },
+    });
+    expect(predicate(index("media_holds", "media_holds_media_idx"))).toBe("released_at is null");
+    expect(predicate(index("media_holds", "media_holds_case_idx"))).toBe("released_at is null");
+  });
+
+  test("staff texts and snapshots are held to their digests and erasable; the access log numbers its rows", () => {
+    expect(checks("staff_texts")).toEqual(["staff_texts_digest", "staff_texts_text_len"]);
+    expect(uniques("staff_texts")).toEqual([["staff_texts_digest_unique", ["digest"]]]);
+    expect(predicate(index("staff_texts", "staff_texts_open_idx"))).toBe("confirmed_at is null and erased_at is null");
+    expect(checks("evidence_snapshots")).toEqual(["evidence_erased"]);
+    expect(column("evidence_snapshots", "media")?.getSQLType()).toBe("jsonb");
+    expect(column("evidence_snapshots", "post_state")?.getSQLType()).toBe("post_state");
+    expect(indexColumns(index("evidence_snapshots", "evidence_snapshots_target_idx"))).toEqual(["target_type", "target_id"]);
+    expect(predicate(index("evidence_snapshots", "evidence_snapshots_unerased_idx"))).toBe("erased_at is null");
+    expect(column("case_access_log", "id")?.generatedIdentity?.type).toBe("always");
+    expect(predicate(index("case_access_log", "case_access_log_reveals_idx"))).toBe("kind = 'identity_revealed'");
+    expect(checks("moderation_limits")).toEqual(["moderation_limits_single_row"]);
+  });
+
+  test("the four new auth tables live in the auth schema, each with row level security and one policy", () => {
+    for (const name of AUTH_TABLES) {
+      const cfg = byName.get(name);
+      expect(cfg, name).toBeDefined();
+      expect(cfg!.schema, name).toBe("auth");
+      expect(cfg!.enableRLS, name).toBe(true);
+    }
+    for (const name of ["notifier_contacts", "notifier_confirmations", "notifier_suppressions"]) {
+      expect(policies(name), name).toEqual([[`${name}_auth_all`, "all", authRole]]);
+    }
+    // The auth role holds nothing on the staff links (migration 0015 revokes all); its one policy lets it see no row.
+    const none = byName.get("staff_personal_accounts")!.policies;
+    expect(none.map((p) => [p.name, p.for, p.to])).toEqual([["staff_personal_accounts_auth_none", "select", authRole]]);
+    expect(new PgDialect().sqlToQuery(none[0]!.using!).sql).toBe("false");
+  });
+
+  test("a notifier's contact is kept encrypted, with a keyed hash of the address and the day it is forgotten", () => {
+    expect(shape("notifier_contacts")).toEqual([
+      ["id", "uuid", true],
+      ["name_enc", "text", false],
+      ["email_enc", "text", false],
+      ["email_hash", "text", false],
+      ["mail_token_enc", "text", false],
+      ["created_at", "timestamp with time zone", true],
+      ["forget_after", "timestamp with time zone", true],
+    ]);
+    // The moderation module chooses the id: the public intake row names it before the contact is stored.
+    expect(column("notifier_contacts", "id")?.primary).toBe(true);
+    expect(column("notifier_contacts", "id")?.hasDefault).toBe(false);
+    expect(shape("notifier_confirmations")).toEqual([
+      ["email_hash", "text", true],
+      ["confirmed_at", "timestamp with time zone", true],
+      ["expires_at", "timestamp with time zone", true],
+    ]);
+    expect(column("notifier_confirmations", "email_hash")?.primary).toBe(true);
+    expect(shape("notifier_suppressions")).toEqual([
+      ["email_hash", "text", true],
+      ["created_at", "timestamp with time zone", true],
+    ]);
+    expect(column("notifier_suppressions", "email_hash")?.primary).toBe(true);
+  });
+
+  test("a staff link pairs a staff account with a personal account that is not the same one, and stops either from being deleted", () => {
+    expect(shape("staff_personal_accounts")).toEqual([
+      ["staff_user_id", "uuid", true],
+      ["personal_user_id", "uuid", true],
+      ["linked_at", "timestamp with time zone", true],
+    ]);
+    expect(byName.get("staff_personal_accounts")!.primaryKeys.map((k) => k.columns.map((c) => c.name))).toEqual([["staff_user_id", "personal_user_id"]]);
+    expect(foreignKeys("staff_personal_accounts")).toEqual({
+      staff_user_id: { table: "users", columns: ["id"], onDelete: "restrict" },
+      personal_user_id: { table: "users", columns: ["id"], onDelete: "restrict" },
+    });
+    expect(checks("staff_personal_accounts")).toEqual(["staff_personal_accounts_differ"]);
   });
 });

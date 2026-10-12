@@ -5,6 +5,15 @@ import { profiles } from "./identity";
 
 export const postState = pgEnum("post_state", ["visible", "withheld", "removed", "deleted_by_author"]);
 
+/**
+ * What moderation derives for a post from the measures in force (3c design, section 6.1): the strongest of them.
+ * posts.state mirrors it unless the author deleted the post, so post_state gains no value.
+ */
+export const moderationLevel = pgEnum("moderation_level", ["visible", "withheld", "removed"]);
+
+/** An image's own moderation state, beside its post's. Only an image is ever sealed: shown to nobody, its author included. */
+export const mediaModerationState = pgEnum("media_moderation_state", ["visible", "withheld", "removed", "sealed"]);
+
 /** A counter kept exact by the application: updated in the same transaction as the action it counts. */
 const counter = (name: string) => integer(name).notNull().default(0);
 
@@ -26,6 +35,10 @@ export const posts = pgTable(
     createdAt: ts("created_at").notNull().defaultNow(),
     /** Set together with state = 'deleted_by_author'; the body is blanked at the same time. */
     deletedAt: ts("deleted_at"),
+    /** Derived from the ledger of measures by a migrator-owned function, the only writer; the API role cannot update it. */
+    moderationLevel: moderationLevel("moderation_level").notNull().default("visible"),
+    /** Set, one way, when the R4 redaction erased the post's content; written only by a migrator-owned function. */
+    erasedAt: ts("erased_at"),
   },
   (t) => [
     index("posts_author_created_idx").on(t.authorId, t.createdAt),
@@ -114,6 +127,14 @@ export const postMedia = pgTable(
     /** Filled by sub-project 3. Empty until then. */
     nsfwScore: real("nsfw_score"),
     createdAt: ts("created_at").notNull().defaultNow(),
+    // The three columns below are forced to their defaults at insert and written only by migrator-owned functions; the
+    // API role holds no UPDATE on them (migration 0015).
+    /** Derived from the ledger of measures, as the post's level is. */
+    moderationState: mediaModerationState("moderation_state").notNull().default("visible"),
+    /** The latest end of the image's unreleased holds (media_holds): while it lies ahead, every delete skips the row. */
+    holdUntil: ts("hold_until"),
+    /** Set when an R4 removal of the image became final and its content was erased. */
+    erasedAt: ts("erased_at"),
   },
   (t) => [
     uniqueIndex("post_media_post_position_idx").on(t.postId, t.position),

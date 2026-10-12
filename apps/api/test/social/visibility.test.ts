@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { postState } from "@korbat/db";
 import { postAccess, tombstone, type StoredPostState } from "../../src/social/visibility";
 
 const author = "00000000-0000-4000-8000-000000000001";
@@ -25,5 +26,14 @@ describe("post visibility", () => {
       expect(postAccess(other, post(state), true), state).toBe("hidden");
     }
     expect(tombstone("x", "hidden")).toEqual({ id: "x", unavailable: true });
+  });
+  test("the reader decides every state the database stores", () => {
+    // The four states above are all of post_state: a seal is a state of images, and no reader of posts learns a new state.
+    expect([...postState.enumValues].sort()).toEqual(["deleted_by_author", "removed", "visible", "withheld"]);
+  });
+  test("a state the reader does not know is hidden from everyone, its author included", () => {
+    // What a value added to the database's enum would be for code that was not told about it: never shown.
+    const unknown = { authorId: author, state: "sealed" as StoredPostState };
+    for (const viewer of [null, other, author]) expect(postAccess(viewer, unknown, false), String(viewer)).toBe("hidden");
   });
 });
