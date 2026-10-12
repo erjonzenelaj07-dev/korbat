@@ -14,7 +14,7 @@ import type { SocialDeps } from "../../src/social/context";
 import { deletePost } from "../../src/social/flows/posts";
 import { createSocialRepo } from "../../src/social/repo";
 import { deciderWorld } from "./moderation-decide";
-import { act, casesMedia, gate, imagePost, newPostRow, postFrozen, refusal, untilBlocked, uuids, type DecisionInput } from "./moderation-fixtures";
+import { act, authCaseCounts, casesMedia, gate, imagePost, newPostRow, postFrozen, refusal, untilBlocked, uuids, type DecisionInput } from "./moderation-fixtures";
 import { HUMAN, accountTarget, linkTarget, notices, noticesWorld, postTarget, type NoticesWorld } from "./notices-harness";
 import { newStaffAccount, withLockTimeout } from "./staff-fixtures";
 
@@ -35,6 +35,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices", ()
   let w: NoticesWorld;
   let app: string;
   let before: Record<string, number>;
+  let beforeAuth: Record<string, number>;
   /** A staff account of this file's own, which every urgent alert must reach. */
   let staffAddress: string;
 
@@ -42,6 +43,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices", ()
     w = noticesWorld();
     app = w.config.APP_ORIGIN;
     before = await w.counts();
+    beforeAuth = await authCaseCounts(w.migrateDb);
     staffAddress = (await newStaffAccount(w.authDb, w.repo, "moderator")).user.email;
   });
   afterAll(async () => {
@@ -272,6 +274,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices", ()
       } finally {
         w.authForModeration.storeNotifierContact = store;
       }
+    });
+
+    test("a notice on the urgent lane whose staff alert fails still gets its receipt: the alert's failure is logged, and the receipt goes after it", async () => {
+      const author = await w.account();
+      const { postId } = await imagePost(w.apiDb, 0, author.id);
+      const email = w.address();
+      const mailStaff = w.authForModeration.mailStaff;
+      w.authForModeration.mailStaff = async () => Promise.reject(new Error("the staff accounts could not be read"));
+      let answer: Awaited<ReturnType<typeof submit>>;
+      try {
+        // A notice of illegality about violence goes to the urgent lane, and its sender gave an address.
+        answer = await submit(notices.illegal([postTarget(postId)], { email, category: "STATEMENT_CATEGORY_VIOLENCE" }));
+        await settle();
+      } finally {
+        w.authForModeration.mailStaff = mailStaff;
+      }
+      expect((await w.items(answer.ref))[0]!.lane).toBe(0);
+      expect((await w.notice(answer.ref))!.receipt).toBe("sent");
+      expect(w.mailer.to(email, "notice_received")).toHaveLength(1);
     });
 
     test("the answer never waits for a mail: a notice with an address and one on the urgent path are answered while the relay hangs, and their mails are recorded once it answers", async () => {
@@ -1012,8 +1033,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices", ()
     }
   });
 
-  test("this file left no row behind: the moderation tables, the posts and profiles and the notifier tables hold what they held before it", async () => {
+  test("this file left no row behind: the moderation tables, the posts and profiles, and the four auth tables of moderation cases hold what they held before it", async () => {
     await w.cleanUp();
     expect(await w.counts()).toEqual(before);
+    expect(await authCaseCounts(w.migrateDb)).toEqual(beforeAuth);
   });
 });

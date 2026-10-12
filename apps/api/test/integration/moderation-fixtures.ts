@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { sql, type SQL } from "drizzle-orm";
@@ -14,7 +15,7 @@ import { createMediaFiles } from "../../src/media/files";
 import { createMediaRepo } from "../../src/media/repo";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { review } from "../../src/moderation/appeals";
-import { ModerationError, createBackground, isModerationErrorCode, type ModerationDeps } from "../../src/moderation/context";
+import { ModerationError, createBackground, isModerationErrorCode, type Background, type ModerationDeps } from "../../src/moderation/context";
 import { decide } from "../../src/moderation/decide";
 import { recordIntake, type IntakeGround, type IntakeRecorded, type LiveTarget } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
@@ -231,19 +232,41 @@ export async function postFrozen(db: Runner, postId: string): Promise<boolean> {
 // ---------------------------------------------------------------- the moderation module on a pool or a transaction
 
 /**
+ * The tasks a request starts after its commit, for the module over a transaction: kept until `settle`, which runs them
+ * one after the other. Over a pool they run at once, as on the server. Over a transaction they would share the test's
+ * one connection with the test's own statements, and the transaction in which a mail's result is recorded (a savepoint
+ * there) would open and roll back among the test's own savepoints. A test that reads what such a task did settles first.
+ */
+function deferredBackground(log: pino.Logger): Background {
+  const queued: (() => Promise<void>)[] = [];
+  const running = createBackground(log);
+  return {
+    start: (task) => void queued.push(task),
+    async settle() {
+      while (queued.length > 0) {
+        running.start(queued.shift()!);
+        await running.settle();
+      }
+    },
+  };
+}
+
+/**
  * The moderation module's dependencies over a pool, or over a transaction that the test rolls back: the module opens its
  * own transactions on what it is given, which on a transaction are savepoints, so the intake and the decision run their
  * real statements and nothing commits.
  */
 export function moderationDeps(db: Runner, overrides: Partial<ModerationDeps> = {}): ModerationDeps {
   const log = pino({ level: "silent" });
+  // A transaction can be rolled back; a pool cannot.
+  const overTransaction = "rollback" in db;
   return {
     apiDb: db as Db,
     auth: noAuthForModeration(),
     social: socialForModeration(db as Db),
     media: casesMedia(db),
     limits: new MemoryStore(),
-    background: createBackground(log),
+    background: overTransaction ? deferredBackground(log) : createBackground(log),
     config: loadConfig(),
     log,
     now: () => new Date(),
@@ -269,15 +292,33 @@ export function noAuthForModeration(): AuthForModeration {
   });
 }
 
+/** The folders that casesMedia made in this test process, removed when the process ends. */
+const caseVolumes = new Set<string>();
+process.once("exit", () => {
+  for (const root of caseVolumes) rmSync(root, { recursive: true, force: true });
+});
+
 /**
  * The media module's interface for cases over a pool or a transaction, as the server hands it to the moderation module.
- * Its volumes are folders that nothing creates: the database tests lock, hold and count image rows and never open or
- * request a file, and a test that does builds the interface over a store of its own.
+ * Its volumes are folders that nothing creates: the database tests lock, hold and count image rows and never open a
+ * file, and a test that does builds the interface over a store of its own. One thing is written all the same: the
+ * disposal deletes no row whose files it cannot note as owed, so the first time an interface made here is asked to note
+ * or to request a deletion, the two directories of deletion requests are created under a folder of that interface's
+ * own. What one test wrote there is never read through another test's interface.
  */
 export function casesMedia(db: Runner): MediaForCases {
   const log = pino({ level: "silent" });
-  const root = path.join(tmpdir(), "korbat-test-no-volumes");
-  return mediaForCases({ repo: createMediaRepo(db as Db), files: createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log }), log });
+  const root = path.join(tmpdir(), "korbat-test-case-volumes", randomUUID());
+  const files = createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log });
+  /** The write, with the two directories made before the first one. */
+  const writing = (write: (ids: readonly string[]) => Promise<void>) => async (ids: readonly string[]) => {
+    if (!caseVolumes.has(root)) {
+      for (const dir of [files.uploads.deletions, files.uploads.owed]) mkdirSync(dir, { recursive: true });
+      caseVolumes.add(root);
+    }
+    await write(ids);
+  };
+  return mediaForCases({ repo: createMediaRepo(db as Db), files: { ...files, oweDeletion: writing(files.oweDeletion), requestDeletion: writing(files.requestDeletion) }, log });
 }
 
 const NO_GROUND = { reporterId: null, findingBy: null, contactId: null, ruleId: null, allegesIllegal: false, csam: false, categoryKeyword: null, citedLaw: null, explanation: null, bonaFide: false } as const;

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Platform, ScrollView, Text, View, type TextInput } from "react-native";
 import { router } from "expo-router";
-import { BadgeVerifyResponse, DeleteStartResponse, EmailChangeResponse, FlowResponse, type MeResponse } from "@korbat/contracts";
+import { ACCOUNT_DELETION_WORDS, BadgeVerifyResponse, DeleteStartResponse, EmailChangeResponse, FlowResponse, type MeResponse } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { ReauthPanel, ReenrollNotice, useReauth } from "@/components/security/ReauthPanel";
 import { SettingsNav } from "@/components/SettingsNav";
@@ -299,8 +299,8 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
   return (
     <View>
       <Body>
-        Deleting your account removes your posts and images, and your likes, reposts, bookmarks, follows, blocks and mutes. Your handle stays reserved, so nobody can take it.
-        This cannot be undone.
+        {ACCOUNT_DELETION_WORDS} Your likes, reposts, bookmarks, follows, blocks and mutes are removed too. Your handle stays reserved, so nobody can take it. This
+        cannot be undone.
       </Body>
       {flowId ? (
         <>

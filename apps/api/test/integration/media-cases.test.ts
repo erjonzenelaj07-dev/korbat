@@ -2,15 +2,17 @@ import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { sql, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import type { Logger } from "pino";
+import pino, { type Logger } from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { DISPOSAL_BATCH, mediaForCases, type MediaForCases } from "../../src/media";
 import { createMediaRepo } from "../../src/media/repo";
+import { OWED_LATE_MS } from "../../src/media/owed";
 import { ORPHAN_AGE_MS, RECONCILE_MAX_ORPHANS, sweep } from "../../src/media/sweeper";
 import { recordIntake, type IntakeGround, type LiveTarget } from "../../src/moderation/intake";
+import { retentionRound } from "../../src/moderation/retention";
 import { createSocialRepo } from "../../src/social/repo";
 import { webpBytes, type WebpKind } from "../media/webp-bytes";
 import { mediaHarness, type MediaHarness } from "./media-harness";
@@ -18,6 +20,7 @@ import {
   aPost,
   act,
   anAccount,
+  authCaseCounts,
   casesMedia,
   decideIn,
   gate,
@@ -67,6 +70,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
   let mod: TestStaff;
   let admin: TestStaff;
   let before: Record<string, number>;
+  let beforeAuth: Record<string, number>;
 
   beforeAll(async () => {
     const config = loadConfig();
@@ -78,6 +82,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
     mod = await newTestStaff(authDb, migrateDb, repo, "moderator");
     admin = await newTestStaff(authDb, migrateDb, repo, "admin");
     before = await moderationCounts(apiDb);
+    beforeAuth = await authCaseCounts(migrateDb);
   }, 60_000);
   afterAll(async () => {
     await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
@@ -653,7 +658,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
       expect(DISPOSAL_BATCH).toBe(RECONCILE_MAX_ORPHANS / 2);
     });
 
-    test("the files of a batch whose request was skipped are deleted by one reconcile pass without MEDIA_RECONCILE=force", async () => {
+    test("a batch owes its files from inside its transaction: after a crash between its commit and its request, the sweeper's next pass asks for exactly those files, without waiting for them to become orphans", async () => {
       await withStore(async (tx, h) => {
         await drain(tx);
         // Seven deleted posts of four images each, with their files in the store: 28 disposable rows, more than a batch.
@@ -665,18 +670,101 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
         }
         const gone = await mediaForCases(h.deps).dropDisposable(tx);
         expect(gone).toEqual(sorted(all).slice(0, DISPOSAL_BATCH));
-        // The crash: the batch's rows are gone, and its files were never asked for.
+        // The crash: the batch's rows are gone, and its files were never asked for. What the batch left is the record
+        // that they are owed, in a directory the worker does not read.
         expect((await h.files.deletionRequests()).filter((id) => all.includes(id))).toEqual([]);
-        expect(h.deps.reconcileMode).toBe("on");
+        expect(sorted((await h.files.owedDeletions(Date.now())).map((entry) => entry.id))).toEqual(gone);
 
+        // One pass of the sweeper, with no reconcile and the files a minute old: the 25 are asked for, and no other.
+        await sweep(h.deps, new Date(), { reconcile: false });
+        expect(sorted((await h.files.deletionRequests()).filter((id) => all.includes(id)))).toEqual(gone);
+        expect(await h.files.owedDeletions(Date.now())).toEqual([]);
+        // The three rows the batch left keep their files.
+        expect(await existing(tx, all)).toEqual(sorted(all).slice(DISPOSAL_BATCH));
+      });
+    });
+
+    test("files that lost both their row and the record that they are owed are still within what one reconcile pass deletes without MEDIA_RECONCILE=force", async () => {
+      await withStore(async (tx, h) => {
+        await drain(tx);
+        const all: string[] = [];
+        for (let n = 0; n < 7; n++) {
+          const p = await h.postWithImages((await h.established()).id, 4);
+          await authorDeletes(tx, p.postId);
+          all.push(...p.mediaIds);
+        }
+        const gone = await mediaForCases(h.deps).dropDisposable(tx);
+        // The uploads volume was restored from before the batch: the rows are gone and nothing says so.
+        await h.files.settleOwed(gone);
+        expect(h.deps.reconcileMode).toBe("on");
         // A reconcile pass once the files are old enough to be orphans: it takes all 25 for files without a row, which is
         // within what it deletes by itself, and refuses none.
         const report = await sweep(h.deps, new Date(Date.now() + 2 * ORPHAN_AGE_MS), { reconcile: true });
         expect(report.refused).toBe(0);
         expect(report.orphans).toBe(DISPOSAL_BATCH);
         expect(sorted((await h.files.deletionRequests()).filter((id) => all.includes(id)))).toEqual(gone);
-        // The three rows the batch left keep their files.
-        expect(await existing(tx, all)).toEqual(sorted(all).slice(DISPOSAL_BATCH));
+      });
+    });
+
+    test("while the request for a batch's files cannot be written the disposal takes no further batch, in that round or in any later one; what it owes is counted as late, and once requests can be written it asks for those files first and then goes on", async () => {
+      await withStore(async (tx, h) => {
+        await drain(tx);
+        // Fifteen deleted posts of four images each, with their files in the store: 60 disposable rows.
+        const owner = (await h.established()).id;
+        const all: string[] = [];
+        for (let n = 0; n < 15; n++) {
+          const p = await h.postWithImages(owner, 4);
+          await authorDeletes(tx, p.postId);
+          all.push(...p.mediaIds);
+        }
+        const log = pino({ level: "silent" });
+        const real = mediaForCases(h.deps);
+        // The requests' directory cannot be written, as on a read-only or a full uploads volume: every request fails.
+        const unwritable = {
+          ...h.deps,
+          files: {
+            ...h.files,
+            requestDeletion: async () => {
+              throw new Error("EROFS: the uploads volume cannot be written");
+            },
+          },
+        };
+        const failing = mediaForCases(unwritable);
+        const rounds: { batches: number[]; failed: number; left: number }[] = [];
+        for (let round = 1; round <= 3; round++) {
+          const report = await retentionRound({ apiDb: tx as unknown as Db, media: failing, log });
+          rounds.push({ batches: report.batches, failed: report.failed, left: (await existing(tx, all)).length });
+        }
+        // The invariant: however many rounds run while a request fails, no more rows are gone than one batch.
+        expect(all.length - rounds.at(-1)!.left).toBeLessThanOrEqual(DISPOSAL_BATCH);
+        // The first round took one batch and could not ask for its files; no later round took another.
+        expect(rounds).toEqual([
+          { batches: [25], failed: 1, left: 35 },
+          { batches: [], failed: 1, left: 35 },
+          { batches: [], failed: 1, left: 35 },
+        ]);
+        const gone = sorted(all).slice(0, DISPOSAL_BATCH);
+        expect((await h.files.deletionRequests()).filter((id) => all.includes(id))).toEqual([]);
+        expect(sorted((await h.files.owedDeletions(Date.now())).map((entry) => entry.id))).toEqual(gone);
+        // What is owed is no row any more, so the count of late erasures names it by itself: not at once (a request
+        // normally follows its commit within the moment), and from one round's length on.
+        expect(await failing.overdueDeletions()).toBe(0);
+        expect(await mediaForCases({ ...unwritable, now: () => new Date(Date.now() + OWED_LATE_MS + 60_000) }).overdueDeletions()).toBe(DISPOSAL_BATCH);
+
+        // The volume is back. The next round first asks for the files it owes, then takes the rest in its batches.
+        const again = await retentionRound({ apiDb: tx as unknown as Db, media: real, log });
+        expect({ batches: again.batches, failed: again.failed }).toEqual({ batches: [25, 10], failed: 0 });
+        expect(await existing(tx, all)).toEqual([]);
+        expect(sorted((await h.files.deletionRequests()).filter((id) => all.includes(id)))).toEqual(sorted(all));
+        expect(await h.files.owedDeletions(Date.now())).toEqual([]);
+        // Every file has its request. The worker carries them out, as it does on its next tick, and the reconcile pass
+        // two hours on finds no file of them left to judge: nothing is refused, and nothing waits for MEDIA_RECONCILE=force.
+        for (const id of all) {
+          rmSync(h.files.store.imageDir(id), { recursive: true, force: true });
+          rmSync(h.files.store.result(id), { force: true });
+        }
+        const report = await sweep(h.deps, new Date(Date.now() + 2 * ORPHAN_AGE_MS), { reconcile: true });
+        expect(report.refused).toBe(0);
       });
     });
 
@@ -1313,7 +1401,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
     });
   });
 
-  test("this file left no moderation row behind: the moderation tables hold what they held before it", async () => {
+  test("this file left no moderation row behind: the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
     expect(await moderationCounts(apiDb)).toEqual(before);
+    expect(await authCaseCounts(migrateDb)).toEqual(beforeAuth);
   });
 });

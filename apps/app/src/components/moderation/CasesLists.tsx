@@ -6,8 +6,13 @@ import { utcMinute } from "@/lib/moderation";
 import { CASES_WORDS } from "@/lib/moderation-words";
 import { ItemLines } from "./ItemLines";
 
-/** What a decision did, in the measures' own labels; a decision without a measure ended what was done while deciding, or took no action. */
+/**
+ * What a decision did, in the measures' own labels; a decision without a measure ended what was done while deciding, or
+ * took no action. A review that kept the decision is worded by its outcome first: it lifts nothing, and the restriction
+ * it answered stands.
+ */
 function done(row: AuthorCaseRow): string {
+  if (row.kind === "review" && row.outcome === "kept") return CASES_WORDS.keptDecision;
   const labels: string[] = row.actions.map((kind) => MEASURES[kind].label);
   if (row.endedInterim) labels.push(CASES_WORDS.ended);
   return labels.length > 0 ? labels.join(", ") : CASES_WORDS.noAction;

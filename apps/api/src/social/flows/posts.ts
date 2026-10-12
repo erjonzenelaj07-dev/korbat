@@ -1,4 +1,5 @@
 import type { CreatePostRequest, Pagination, PostView, ThreadResponse } from "@korbat/contracts";
+import { isDeadlock } from "../../lib/lock-bounds";
 import { SocialError, type SocialDeps, type ViewerId } from "../context";
 import { decodeCursor } from "../cursor";
 import { enforceWriteLimit } from "../limits";
@@ -65,9 +66,21 @@ export async function deletePost(deps: SocialDeps, viewer: string, id: string): 
     // The media module answers only the rows that are gone: an image a case holds as evidence, and every image of a frozen
     // post, keeps its row, served to nobody, and no deletion is asked for its files.
     let images: string[] = [];
-    await deps.repo.deletePost(id, viewer, deps.now(), async (tx) => {
-      images = await deps.media.detachAll(tx, id);
-    });
+    const remove = () =>
+      deps.repo.deletePost(id, viewer, deps.now(), async (tx) => {
+        images = await deps.media.detachAll(tx, id);
+      });
+    try {
+      await remove();
+    } catch (err) {
+      // The deletion takes its posts in the order a report takes them, so the two never deadlock. An account's purge
+      // still writes the counters of other accounts' posts in no order (its own comment says so), and the database may
+      // end this transaction to break such a cycle. It has then changed nothing, so it is run once more: the author who
+      // takes content down is not answered with an error for a wait that is over. A second deadlock is the caller's.
+      if (!isDeadlock(err)) throw err;
+      images = [];
+      await remove();
+    }
     await deps.media.requestDeletion(images);
     return;
   }

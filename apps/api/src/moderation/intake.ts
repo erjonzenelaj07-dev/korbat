@@ -36,11 +36,13 @@ import { accountLink, parseLink, postLink } from "./links";
 import {
   addedItemOpen,
   alreadyReported,
+  beginMailRecord,
   insertIntake,
   insertItem,
   insertSnapshot,
   isSerializationFailure,
   latestSnapshot,
+  lockPendingReceipt,
   newestItemAt,
   noticeById,
   noticeByRef,
@@ -660,25 +662,30 @@ export async function receiptMessage(deps: Pick<ModerationDeps, "apiDb" | "confi
  * notice of illegality sent signed in. A notice without a pending receipt sends nothing. A failure of the relay leaves
  * the receipt pending, for the dispatch job to send; any other result is recorded, only while the receipt is still
  * pending. A fault that is not the relay's (a database error, a contact no configured key opens) is thrown: its caller
- * logs it as what it is, and the receipt stays pending.
+ * logs it as what it is, and the receipt stays pending. The notice's row is taken before anything is sent, in the
+ * transaction that records the result (beginMailRecord): a database that cannot write refuses that, and nothing is sent.
  */
 export async function sendReceipt(deps: Pick<ModerationDeps, "apiDb" | "auth" | "config" | "log">, intakeId: string): Promise<ReceiptState | "pending" | "none"> {
   const notice = await noticeById(deps.apiDb, intakeId);
   if (!notice || notice.receipt !== "pending") return "none";
   const message = await receiptMessage(deps, notice);
-  let result: NotifierMailResult | AccountMailResult;
-  try {
-    if (notice.contactId !== null) result = await deps.auth.mailNotifier(notice.contactId, message);
-    else if (notice.reporterId !== null) result = await deps.auth.mailAccount(notice.reporterId, message);
-    // The reporter's link was forgotten with their account: there is nobody to mail.
-    else result = "no_address";
-  } catch (err) {
-    if (!(err instanceof MailUnavailable)) throw err;
-    deps.log.warn({ err, intakeId }, "notice receipt: not sent; it stays pending for the next try");
-    return "pending";
-  }
-  await recordReceipt(deps.apiDb, intakeId, RECEIPT_STATES[result]);
-  return RECEIPT_STATES[result];
+  return deps.apiDb.transaction(async (tx): Promise<ReceiptState | "pending" | "none"> => {
+    await beginMailRecord(tx);
+    if (!(await lockPendingReceipt(tx, intakeId))) return "none";
+    let result: NotifierMailResult | AccountMailResult;
+    try {
+      if (notice.contactId !== null) result = await deps.auth.mailNotifier(notice.contactId, message);
+      else if (notice.reporterId !== null) result = await deps.auth.mailAccount(notice.reporterId, message);
+      // The reporter's link was forgotten with their account: there is nobody to mail.
+      else result = "no_address";
+    } catch (err) {
+      if (!(err instanceof MailUnavailable)) throw err;
+      deps.log.warn({ err, intakeId }, "notice receipt: not sent; it stays pending for the next try");
+      return "pending";
+    }
+    await recordReceipt(tx, intakeId, RECEIPT_STATES[result]);
+    return RECEIPT_STATES[result];
+  });
 }
 
 // ---------------------------------------------------------------- the notifier's status page and contact

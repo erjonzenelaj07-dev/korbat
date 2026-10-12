@@ -9,6 +9,7 @@ import {
   confirmDecision,
   correctable,
   correctionDraft,
+  decidedNotice,
   decisionParamsOf,
   finalNeedsAdmin,
   kindsOffered,
@@ -17,6 +18,7 @@ import {
   measuresOffered,
   newDraft,
   noEffectOf,
+  offeredDraft,
   outcomesOffered,
   predictedSource,
   previewOf,
@@ -31,7 +33,7 @@ import { MODERATION_MESSAGES } from "../src/messages";
 import { parseCaseId } from "../src/router";
 import { ComposerView, CorrectControl, type ComposerViewProps } from "../src/screens/Composer";
 import { decisionAction, decideWithKey, StepUpMismatch } from "../src/step-up";
-import { accountCase, CASE_ACCOUNT, CASE_FROZEN, CASE_POST, decision, frozenCase, IMAGE_ONE, item, ITEM_FINDING, ITEM_NOTIFIER, ITEM_SUSPECT, postCase, postSnapshot, SOURCES } from "./case-fixtures";
+import { accountCase, CASE_ACCOUNT, CASE_FROZEN, CASE_POST, decision, frozenCase, IMAGE_ONE, IMAGE_TWO, item, ITEM_FINDING, ITEM_NOTIFIER, ITEM_SUSPECT, postCase, postSnapshot, SOURCES } from "./case-fixtures";
 import { envelope, fakeCredentials, fakeFetch, HOSTILE_ESCAPED, hrefs, makeMe, SESSION_HANDLE, stepUpChallenge, stepUpOptions } from "./fixtures";
 
 /**
@@ -79,7 +81,8 @@ const sealableAccount = (more: Partial<CaseView> = {}): CaseView =>
 
 describe("what the composer offers", () => {
   test("to a moderator on an ordinary case: both kinds, the three outcomes only where an item alleges illegality, and the measures of the target and the kind", () => {
-    const view = postCase();
+    // Nothing decided yet: a withhold taken while deciding in force would keep a second one from being offered.
+    const view = postCase({ decisions: [] });
     expect(kindsOffered(view, MODERATOR)).toEqual(["interim", "final"]);
     expect(outcomesOffered(view, "final")).toEqual(["restricted", "no_violation", "not_evident"]);
     expect(outcomesOffered(view, "interim")).toEqual(["restricted"]);
@@ -134,9 +137,9 @@ describe("what the composer offers", () => {
   });
 
   test("a measure on a post that is not visible is offered with the sentence that it changes nothing now, and a lane-0 case with the note advice", () => {
-    const hidden = postCase({ lane: 0, target: { ...postCase().target, type: "post", state: "withheld", level: "withheld" } as CaseView["target"], items: [item({ ruleId: "R5", lane: 0 })], intakeSeq: 1 });
+    // The post is removed by another case's final decision: a withhold while deciding is recorded and changes nothing.
+    const hidden = postCase({ lane: 0, target: { ...postCase().target, type: "post", state: "removed", level: "removed" } as CaseView["target"], items: [item({ ruleId: "R5", lane: 0 })], intakeSeq: 1, decisions: [] });
     expect(noEffectOf(hidden, { kind: "withhold", mediaId: null })).toBe("already");
-    expect(noEffectOf(hidden, { kind: "remove", mediaId: null })).toBeNull();
     expect(noEffectOf(hidden, { kind: "withhold_media", mediaId: IMAGE_ONE })).toBe("already");
     const out = composer(hidden, MODERATOR, { actions: [{ kind: "withhold", mediaId: null }] });
     expect(out).toContain(MEASURES.withhold.label);
@@ -163,6 +166,71 @@ describe("what the composer offers", () => {
     expect(composer(account, MODERATOR)).toContain(
       "To record that you read a new urgent item, save your Art. 18 check as a note: a note saved after the item arrived ends its urgent-lane mails. Reset the display name or bio while deciding only when it carries what was reported: a reset mails its author at once.",
     );
+  });
+});
+
+describe("a post this case hides while deciding", () => {
+  /** A post this case withheld while deciding (the fixture's decision), with its one item unanswered: a final decision now closes the case. */
+  const hiddenHere = (more: Partial<CaseView> = {}) =>
+    postCase({ target: { ...postCase().target, type: "post", state: "withheld", level: "withheld" } as CaseView["target"], items: [item()], intakeSeq: 1, ...more });
+
+  test("a final decision that closes the case ends the withhold, as the database does: an image measure then changes what everyone sees, and the preview says what ends", () => {
+    const view = hiddenHere();
+    expect(leftOpen(view)).toEqual([]);
+    const removeImage = { kind: "remove_media" as const, mediaId: IMAGE_ONE };
+    expect(noEffectOf(view, removeImage, "final")).toBeNull();
+    expect(noEffectOf(view, { kind: "remove", mediaId: null }, "final")).toBeNull();
+    const draft = { ...newDraft(caseId(view.id), view, MODERATOR), kind: "final" as const, actions: [removeImage] };
+    const preview = statementParagraphs(previewOf(view, draft, NOW));
+    expect(preview.join(" ")).not.toContain("Another decision already keeps this image from being shown");
+    expect(preview).toContain(STATEMENT_WORDS.ended(MEASURES.withhold.label));
+    // The composer says nothing beside the measure about it changing nothing.
+    expect(composer(view, MODERATOR, { kind: "final", actions: [removeImage] })).not.toContain(COMPOSER.noEffect);
+    // While deciding, the post stays hidden by this case: the image measure changes nothing now.
+    expect(noEffectOf(view, { kind: "withhold_media", mediaId: IMAGE_ONE }, "interim")).toBe("already");
+    // A post removed for good stays removed whatever this case decides.
+    const removed = hiddenHere({ target: { ...postCase().target, type: "post", state: "removed", level: "removed" } as CaseView["target"] });
+    expect(noEffectOf(removed, removeImage, "final")).toBe("already");
+  });
+
+  test("a final decision that leaves the case open leaves the withhold in force: there the image measure changes nothing now", () => {
+    // An unanswered suspect item ends the range of a final decision: the rule report after it stays open.
+    const open = rangeCase({ target: hiddenHere().target, decisions: hiddenHere().decisions });
+    expect(leftOpen(open).length).toBeGreaterThan(0);
+    expect(noEffectOf(open, { kind: "remove_media", mediaId: IMAGE_ONE }, "final")).toBe("already");
+  });
+
+  test("while deciding, a second withhold of the post is not offered: the page says that the case hides it already, and a kept draft drops it", () => {
+    const view = hiddenHere();
+    expect(measuresOffered(view, "interim")).not.toContain("withhold");
+    expect(measuresOffered(view, "interim")).toContain("withhold_media");
+    // A final decision may still remove the post.
+    expect(measuresOffered(view, "final")).toContain("remove");
+    const out = composer(view, MODERATOR, { kind: "interim" });
+    expect(out).toContain(COMPOSER.alreadyHidden);
+    expect(COMPOSER.alreadyHidden).toBe("This case already hides the post while it is decided.");
+    expect(out).not.toContain(`> <span>${MEASURES.withhold.label}</span>`);
+    const kept = { ...newDraft(caseId(view.id), view, MODERATOR), kind: "interim" as const, actions: [{ kind: "withhold" as const, mediaId: null }] };
+    expect(offeredDraft(view, MODERATOR, kept).actions).toEqual([]);
+    // An image this case withholds while deciding is not offered for a second withhold; the other image is.
+    const imageHeld = postCase({ decisions: [decision({ actions: [{ ...decision().actions[0]!, kind: "withhold_media", mediaId: IMAGE_ONE }] })], items: [item()], intakeSeq: 1 });
+    const second = { ...newDraft(caseId(imageHeld.id), imageHeld, MODERATOR), kind: "interim" as const, actions: [{ kind: "withhold_media" as const, mediaId: IMAGE_ONE }] };
+    expect(offeredDraft(imageHeld, MODERATOR, second).actions).toEqual([]);
+    const other = { ...second, actions: [{ kind: "withhold_media" as const, mediaId: IMAGE_TWO }] };
+    expect(offeredDraft(imageHeld, MODERATOR, other).actions).toEqual(other.actions);
+    expect(composer(imageHeld, MODERATOR, { kind: "interim", actions: other.actions })).not.toContain(`value="${IMAGE_ONE}"`);
+  });
+
+  test("after a final decision that left the case open because an item arrived meanwhile, the page says that what was done while deciding stays in force", () => {
+    const before = hiddenHere();
+    const answered = { ...before.items[0]!, outcome: "no_violation" as const, answeredBy: "7b8c9dae-bfc0-41d2-b34e-6f7a8b9cadbe" };
+    const arrived = item({ id: ITEM_FINDING, seq: 2, ruleId: "R3", lane: 2, source: SOURCES.reporter });
+    const now = hiddenHere({ answeredSeq: 1, intakeSeq: 2, items: [answered, arrived] });
+    expect(decidedNotice(before, now, true)).toBe(`The decision is recorded. ${COMPOSER.arrivedSince(1)} ${COMPOSER.interimStays(MEASURES.withhold.label)}`);
+    expect(COMPOSER.interimStays(MEASURES.withhold.label)).toBe(`The case stays open, so what was done while deciding stays in force: ${MEASURES.withhold.label}.`);
+    // Closed as the page read it: nothing stays.
+    const closed = hiddenHere({ answeredSeq: 1, closedAt: "2026-10-04T09:30:00.000Z", items: [answered], decisions: [decision({ actions: [{ ...decision().actions[0]!, inForce: false }] })] });
+    expect(decidedNotice(before, closed, true)).toBe("The decision is recorded.");
   });
 });
 

@@ -7,7 +7,7 @@ import type { ActiveStaffSession, AuthForModeration, NotifierFacts, StaffMessage
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { overview, readCase } from "../../src/moderation/cases";
-import type { ModerationDeps } from "../../src/moderation/context";
+import { ModerationError, type ModerationDeps } from "../../src/moderation/context";
 import { reveal } from "../../src/moderation/reveal";
 import { saveText } from "../../src/moderation/texts";
 import { newUserWithDevice } from "./auth-fixtures";
@@ -192,6 +192,35 @@ describe.skipIf(!process.env.INTEGRATION)("integration: revealing who sent a rep
       expect(await reveals(tx, mod.id)).toBe(2);
       await deps.background.settle();
       expect(mailed.map((message) => (message.template === "moderation_reveal" ? message.count : null)).sort()).toEqual([1, 2]);
+    });
+  });
+
+  test("a reveal whose name cannot be read stays on the record and is mailed to every staff account all the same: the read's failure is the answer's alone, a server error", async () => {
+    await inWorld(async (tx) => {
+      const { deps, contacts, mailed } = world(tx);
+      // A contact that no configured key opens: the auth module cannot read the name it holds.
+      const unreadable = { ...deps, auth: { ...deps.auth, notifierName: async () => Promise.reject(new Error("no configured key opens this contact")) } };
+      const p = await imagePost(tx, 0);
+      const contact = randomUUID();
+      contacts.set(contact, { found: true, named: true, contactGiven: true, confirmed: true, suppressed: false });
+      const notice = await intake(tx, { ...ground.illegal(null), contactId: contact }, aPost(p.postId));
+      const itemId = notice.items[0]!.id;
+      const reason = await savedReason(unreadable, mod, notice.items[0]!.caseId!);
+
+      const failure = await revealAs(unreadable, mod, itemId, reason.digest).then(
+        () => null,
+        (err: unknown) => err,
+      );
+      // No refusal of the module's own: the route answers it with a server error.
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(ModerationError);
+      // The reveal is on the record: its access row, its audit row, and its reason confirmed.
+      expect(await reveals(tx, mod.id)).toBe(1);
+      expect((await tx.execute<{ n: number }>(sql`select count(*)::int as n from audit_log where action = 'identity_revealed' and target_id = ${itemId}`))[0]!.n).toBe(1);
+      expect(await confirmedAt(tx, reason.id)).toBe(true);
+      // And every staff account is told of it.
+      await unreadable.background.settle();
+      expect(mailed).toEqual([{ template: "moderation_reveal", handle: await handleOf(tx, mod.id), at: expect.any(Date), count: 1, limit: 10 }]);
     });
   });
 

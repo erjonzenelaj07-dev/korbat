@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
 import {
   ACCOUNT_SUSPECT_SCOPE,
+  MEASURES,
   OUTCOME_PHRASES,
   SUSPECT_NO_SEAL,
   SUSPECT_OUTCOME_PHRASES,
@@ -325,6 +326,18 @@ describe("Cases, under Settings", () => {
     expect(text).toContain(CASES_WORDS.appealOpen(utcMinute("2027-04-05T10:00:00.000Z")));
     expect(text).toContain(CASES_WORDS.reversed("2026-10-06"));
     expect(textOf(html(<DecisionsList decisions={[]} />))).toContain(CASES_WORDS.noDecisions);
+  });
+
+  test("the answer to an appeal that kept the decision reads as a kept decision, never as No action; a reversal by what it lifted", () => {
+    const kept = row({ id: id(8), kind: "review", outcome: "kept", actions: [], ruleId: null, appealUntil: null });
+    const reversed = row({ id: id(9), kind: "review", outcome: "reversed", actions: ["restore"], ruleId: null, appealUntil: null });
+    const text = textOf(html(<DecisionsList decisions={[kept, reversed, row()]} />));
+    expect(CASES_WORDS.keptDecision).toBe("korbat kept its decision");
+    expect(count(text, CASES_WORDS.keptDecision)).toBe(1);
+    expect(text).not.toContain(CASES_WORDS.noAction);
+    expect(text).toContain(MEASURES.restore.label);
+    // A final decision without a measure that ended nothing still reads No action.
+    expect(textOf(html(<DecisionsList decisions={[row({ id: id(10), outcome: "no_violation", actions: [], ruleId: null, appealUntil: null })]} />))).toContain(CASES_WORDS.noAction);
   });
 
   const reports = (extra: Partial<ReportsPage> = {}): ReportsPage => ({

@@ -90,11 +90,22 @@ async function inStep(deps: Pick<ModerationDeps, "apiDb">, step: RetentionStep, 
  * The disposal: the one deleter of image rows that a case or a freeze kept, in batches. Each batch is a transaction of
  * its own with its audit row, and its files are requested right after its commit and before the next batch. They are
  * never requested before the commit: a disposable row is not disposable for good (a report may freeze a deleted post's
- * images at any moment), so a batch rolled back after its request would lose the files of rows a freeze then keeps. A
- * request lost to a crash names at most one batch, which the reconcile pass makes good. When a request fails the step
- * stops for this round, so that no second batch's files join the first's as orphans.
+ * images at any moment), so a batch rolled back after its request would lose the files of rows a freeze then keeps.
+ *
+ * No row goes unless its files can be found again. The media module notes inside the batch's transaction that the files
+ * are owed (a batch whose note cannot be written does not commit), and the request is written from that note when this
+ * process stops between the commit and the request, or when the request fails. A failed request ends the step for the
+ * round, and every round begins by asking again for what is still owed, by this job or by the account's purge: while
+ * that cannot be written no batch is taken, so a volume that takes no requests costs one batch's wait and never a second
+ * batch's rows. The failure is logged with the step; what is owed is counted among the overview's late erasures.
  */
 async function dispose(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, report: RetentionReport): Promise<void> {
+  const owed = await deps.media.requestOwed();
+  if (owed > 0) {
+    report.failed++;
+    deps.log.error({ job: RETENTION_JOB, step: "images", owed }, "moderation-retention: files of image rows that are gone are still owed a request; no batch is taken until they can be asked for");
+    return;
+  }
   for (;;) {
     let ids: string[] = [];
     await inStep(deps, "images", {}, async (tx) => {
@@ -107,7 +118,7 @@ async function dispose(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, re
         await deps.media.requestDeletion(ids);
       } catch (err) {
         report.failed++;
-        deps.log.error({ err, job: RETENTION_JOB, step: "images", count: ids.length }, "moderation-retention: the files of a deleted batch could not be requested; the reconcile pass removes them, and the disposal goes on at the next round");
+        deps.log.error({ err, job: RETENTION_JOB, step: "images", count: ids.length }, "moderation-retention: the files of a deleted batch could not be requested; they stay owed, and the disposal takes no further batch until they are asked for");
         return;
       }
     }

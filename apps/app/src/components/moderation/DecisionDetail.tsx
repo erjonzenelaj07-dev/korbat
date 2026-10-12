@@ -7,8 +7,8 @@ import { statementParagraphs } from "@korbat/rules";
 import { Button, ErrorText, Field, Section } from "@/components/ui";
 import { SEALED_IMAGE } from "@/components/social/HiddenImage";
 import { clampRatio } from "@/components/social/MediaGrid";
-import { API_BASE, errorMessage } from "@/lib/api";
-import { appealWaitWords, utcMinute } from "@/lib/moderation";
+import { API_BASE } from "@/lib/api";
+import { appealWaitWords, dailyLimitFailure, utcMinute } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
 
 const Line = ({ children, strong = false }: { children: string; strong?: boolean }) => <Text className={`mt-3 text-base leading-6 ${strong ? "font-semibold text-zinc-100" : "text-zinc-200"}`}>{children}</Text>;
@@ -91,7 +91,7 @@ function AppealForm({ onAppeal }: { onAppeal: (statement: string) => Promise<voi
     try {
       await onAppeal(statement);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(dailyLimitFailure(err, "appeals"));
     } finally {
       setBusy(false);
     }

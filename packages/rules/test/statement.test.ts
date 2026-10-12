@@ -160,9 +160,16 @@ describe("statementParagraphs", () => {
             expect(out, label).toContain("korbat decided this following a report by another user.");
             // (c) the use of automated means.
             expect(out, label).toContain(W.automation);
-            // (d) and (e) the legal ground, or the rule, with its explanation.
-            if (ground.ground === "illegal") expect(out, label).toContain("korbat found it illegal. The law it rests on: Section 130 of the criminal code.");
-            else expect(out, label).toContain(`It breaks korbat rule R3, "${getRule("R3", rulesVersion)!.title}": ${getRule("R3", rulesVersion)!.text}`);
+            // (d) and (e) the legal ground, or the rule, with its explanation: as a finding only for a final restriction
+            // that seals nothing; while deciding, as what korbat is checking; for a seal, as what the step rests on.
+            const rule = getRule("R3", rulesVersion)!;
+            const seals = measureKind === "seal_media";
+            if (ground.ground === "illegal") {
+              expect(out, label).toContain(seals ? "This step rests on the law: Section 130 of the criminal code." : kind === "interim" ? "korbat is checking whether this is illegal. The law in question: Section 130 of the criminal code." : "korbat found it illegal. The law it rests on: Section 130 of the criminal code.");
+            } else {
+              expect(out, label).toContain(`${seals ? "This step rests on" : kind === "interim" ? "korbat is checking this against" : "It breaks"} korbat rule R3, "${rule.title}": ${rule.text}`);
+            }
+            if (seals || kind === "interim") expect(out.join(" "), label).not.toMatch(/It breaks korbat rule|korbat found it illegal/);
             expect(out, label).toContain("korbat's reasons: That is content whose primary purpose is sexual arousal.");
             // (f) redress.
             expect(out.at(-1)!.startsWith(kind === "interim" ? REDRESS_TEXTS[1].interim : "You can appeal this decision once"), label).toBe(true);
@@ -209,6 +216,51 @@ describe("statementParagraphs", () => {
       expect(first(statement({ post: null, measures: [measure("reset_display_name", { noEffect: "deleted" })] }))).toBe("korbat reset your display name. Your account is deleted, so this changes nothing.");
       // A reset that changed nothing wrote no placeholder, so it does not say that it wrote one.
       expect(first(statement({ post: null, measures: [measure("reset_bio", { noEffect: "already" })] }))).not.toContain("wrote this placeholder once");
+    });
+  });
+
+  describe("the ground is worded by what the decision is", () => {
+    const r2 = getRule("R2", 2)!;
+    const r5 = getRule("R5", 2)!;
+
+    test("the words, each a constant", () => {
+      expect(W.ground.sealRule("R2", "Title", "Text.")).toBe('This step rests on korbat rule R2, "Title": Text.');
+      expect(W.ground.sealLaw("Section 184b.")).toBe("This step rests on the law: Section 184b.");
+      expect(W.ground.checkingRule("R5", "Title", "Text.")).toBe('korbat is checking this against korbat rule R5, "Title": Text.');
+      expect(W.ground.checkingLaw("Section 241.")).toBe("korbat is checking whether this is illegal. The law in question: Section 241.");
+      expect(W.ground.breaks("R1", "Title", "Text.")).toBe('It breaks korbat rule R1, "Title": Text.');
+      expect(W.ground.illegal("Section 241.")).toBe("korbat found it illegal. The law it rests on: Section 241.");
+      expect(W.ground.restedOnRule("R1", "Title", "Text.")).toBe('That decision rested on korbat rule R1, "Title": Text.');
+      expect(W.ground.restedOnLaw("Section 241.")).toBe("That decision rested on the law: Section 241.");
+      expect(W.ground.referenceErased).toBe("its reference was erased under korbat's retention rules.");
+    });
+
+    test("a seal, while deciding and for good, on a report alone: the step rests on rule R2, and nothing says that the rule is broken or the images illegal", () => {
+      const sealing = (kind: "interim" | "final") =>
+        statementParagraphs(statement({ kind, ruleId: "R2", facts: SEAL_DRAFTS.facts.notice_post, reason: kind === "interim" ? SEAL_DRAFTS.reason.deciding : SEAL_DRAFTS.reason.final, source: "notice", measures: [measure("seal_media")] }));
+      for (const kind of ["interim", "final"] as const) {
+        const out = sealing(kind);
+        expect(out, kind).toContain(`This step rests on korbat rule R2, "${r2.title}": ${r2.text}`);
+        expect(out.join(" "), kind).not.toMatch(/It breaks korbat rule|korbat found it illegal|korbat is checking/);
+      }
+      // A seal in the category Protection of minors, on the law: the same, with the law.
+      const law = statementParagraphs(statement({ kind: "interim", ground: "illegal", ruleId: null, legalReference: "Section 184b of the criminal code.", source: "notice", measures: [measure("seal_media")] }));
+      expect(law).toContain("This step rests on the law: Section 184b of the criminal code.");
+      expect(law.join(" ")).not.toMatch(/found it illegal|korbat is checking/);
+    });
+
+    test("a decision taken while deciding that seals nothing says what korbat is checking, on a rule and on the law", () => {
+      const rule = statementParagraphs(statement({ kind: "interim", ruleId: "R5", measures: [measure("withhold")] }));
+      expect(rule).toContain(`korbat is checking this against korbat rule R5, "${r5.title}": ${r5.text}`);
+      const law = statementParagraphs(statement({ kind: "interim", ground: "illegal", ruleId: null, legalReference: "Section 241 of the criminal code (threats).", source: "notice", measures: [measure("withhold")] }));
+      expect(law).toContain("korbat is checking whether this is illegal. The law in question: Section 241 of the criminal code (threats).");
+      // Beside "while it decides", nothing states a finding.
+      for (const out of [rule, law]) expect(out.join(" ")).not.toMatch(/It breaks korbat rule|korbat found it illegal/);
+    });
+
+    test("a final restriction that seals nothing states what korbat found", () => {
+      expect(statementParagraphs(statement())).toContain(`It breaks korbat rule R1, "No sexual or pornographic content": ${getRule("R1", 2)!.text}`);
+      expect(statementParagraphs(statement({ ground: "illegal", ruleId: null, legalReference: "Section 241." }))).toContain("korbat found it illegal. The law it rests on: Section 241.");
     });
   });
 

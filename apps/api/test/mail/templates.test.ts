@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { ACCOUNT_DELETION_WORDS } from "@korbat/contracts";
 import { MemoryMailer } from "../../src/mail/memory";
 import { renderTemplate } from "../../src/mail/templates";
 
@@ -143,6 +144,12 @@ describe("mail templates", () => {
     expect(deleteCode.text).toMatch(/delete/i);
     expect(deleteCode.text).toMatch(/revoke|sign out/i);
     expect(renderTemplate("account_deleted", {}).text).toMatch(/cannot be undone/);
+    // Both deletion mails say what is removed and what korbat keeps for a case, in the one sentence the deletion screen says
+    // too; neither says that everything is gone for good.
+    for (const mail of [deleteCode, renderTemplate("account_deleted", {})]) {
+      expect(mail.text).toContain(ACCOUNT_DELETION_WORDS);
+      expect(mail.text).not.toMatch(/for good|are gone/);
+    }
     expect(renderTemplate("badge_verified", {}).text).toMatch(/verified/i);
     expect(renderTemplate("badge_removed", {}).text).toMatch(/removed/i);
   });

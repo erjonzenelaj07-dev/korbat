@@ -1,6 +1,7 @@
 import { createJob, type JobLock } from "../lib/jobs";
 import type { MediaDeps } from "./context";
 import { finalize } from "./flows/status";
+import { requestOwed } from "./owed";
 
 /** An upload the worker has not answered for this long has failed. Normal processing takes seconds. */
 export const PROCESSING_TIMEOUT_MS = 5 * 60_000;
@@ -55,14 +56,21 @@ export async function sweep(deps: MediaDeps, now: Date, options: { reconcile: bo
   for (const id of [...stale, ...expired]) await deps.files.discardUpload(id);
   await deps.files.requestDeletion([...stale, ...expired]);
 
-  // 4. Deletion requests the worker has carried out, once they are old enough to have covered late writes.
+  // 4. Deletions that are owed: rows the account's purge or the disposal deleted whose request was never written (the
+  //    process stopped after the commit, or the request failed), asked for now; and the notes of rows that are still
+  //    there, forgotten once they are stale. Every pass, so a request that could not be written is retried within
+  //    thirty seconds of the volume taking writes again, however many files it names: these are known deletions, not
+  //    orphans, and the reconcile pass below never has to judge them.
+  await requestOwed(deps, now.getTime());
+
+  // 5. Deletion requests the worker has carried out, once they are old enough to have covered late writes.
   for (const { id, ageMs } of await deps.files.deletionRequestAges(now.getTime())) {
     if (ageMs < DELETION_GRACE_MS || (await deps.files.imageRemains(id))) continue;
     await deps.files.withdrawDeletion(id);
     report.withdrawn++;
   }
 
-  // 5. What a crash between a commit and a file operation left behind, and the files of deleted
+  // 6. What a crash between a commit and a file operation left behind, and the files of deleted
   //    accounts, whose rows went by cascade.
   if (options.reconcile && deps.reconcileMode !== "off") {
     const nowMs = now.getTime();

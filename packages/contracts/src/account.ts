@@ -115,6 +115,15 @@ const ExportedReport = z.object({
  * export.json inside the data export archive (1b design, section 7.5): everything the account owns, and
  * nothing about other people beyond the handle they had at export time.
  */
+/**
+ * What deleting an account removes, and what korbat keeps of it (3c design, section 2, row Deletion and cases): the one
+ * sentence the deletion screen and both deletion mails say. Since moderation cases, korbat keeps a case's copy of a
+ * reported or restricted post or profile for the periods its terms give, and sealed images for the authorities, also
+ * after the account is gone, so no sentence about a deletion says that everything is gone for good.
+ */
+export const ACCOUNT_DELETION_WORDS =
+  "Your posts, images and profile are removed from korbat for everyone, but where a post or your profile was reported or restricted, korbat keeps its copy for that case for the periods in its terms (Terms, Your data).";
+
 export const ExportFormat = z.object({
   format: z.literal("korbat-export-1"),
   exportedAt: at,

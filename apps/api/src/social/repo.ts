@@ -481,7 +481,9 @@ export function createSocialRepo(db: Db) {
      * between them refused inside the transaction, so a reply cannot land across a concurrent block.
      * The author's profile row is locked and a deleted one refused (not_found), and so is the row of the
      * author of the post replied to or quoted (post_unavailable, as for a post that is gone), so no post
-     * lands behind a concurrent purge of either account (lockLive).
+     * lands behind a concurrent purge of either account (lockLive). A post that both replies and quotes writes two
+     * other posts' counters: their rows are taken first, in id order, the order in which a report takes the posts it
+     * copies (3c design, section 2, Lock order), so the new post never holds one of them while it waits for the other.
      */
     async createPost(input: {
       authorId: string;
@@ -498,6 +500,7 @@ export function createSocialRepo(db: Db) {
         if (input.replyToId || input.quoteOfId) {
           await lockLive(tx, sql`id in (select author_id from posts where id in (${input.replyToId}::uuid, ${input.quoteOfId}::uuid))`, "post_unavailable");
         }
+        if (input.replyToId && input.quoteOfId) await lockPostsInOrder(tx, [input.replyToId, input.quoteOfId]);
         const [row] = await tx
           .insert(posts)
           .values({ authorId: input.authorId, body: input.body, replyToId: input.replyToId, quoteOfId: input.quoteOfId, createdAt: input.now })
@@ -518,10 +521,22 @@ export function createSocialRepo(db: Db) {
      * delete. `within` runs in the same transaction. The author's profile row is taken first, in the mode the counter
      * update below needs: a decision about the author holds that row before it takes the post, so a deletion that took
      * the post first and the profile second would deadlock with it, and one that takes the profile first waits its turn.
+     * Then every post this transaction writes is taken, in id order, before any is written: the post itself and the post
+     * it replies to or quotes, whose counter goes down. A report takes the posts it copies for share in that order (3c
+     * design, section 2, Lock order), and one of child sexual abuse material about a quoting post reaches the quoted post
+     * by itself: a deletion that wrote its own post first and then asked for a quoted post with a lower id would hold
+     * what that report asks for next while it waits for what the report holds. The two ids never change, so a plain read
+     * names the right rows; only the author's own post is read, so nobody else's request locks anything here.
      */
     async deletePost(id: string, authorId: string, now: Date, within?: (tx: DbTx) => Promise<void>): Promise<boolean> {
       return db.transaction(async (tx) => {
         await tx.execute(sql`select 1 from profiles where id = ${authorId}::uuid for no key update`);
+        const [own] = (await tx.execute(sql`select reply_to_id, quote_of_id from posts where id = ${id}::uuid and author_id = ${authorId}::uuid`)) as unknown as {
+          reply_to_id: string | null;
+          quote_of_id: string | null;
+        }[];
+        if (!own) return false;
+        await lockPostsInOrder(tx, [id, own.reply_to_id, own.quote_of_id]);
         const [old] = await tx
           .update(posts)
           .set({ state: "deleted_by_author", deletedAt: now, body: "" })
@@ -1284,6 +1299,18 @@ async function guardPair(tx: Tx, me: string, other: string, code: "not_found" | 
     sql`select 1 from blocks where (blocker_id = ${me}::uuid and blocked_id = ${other}::uuid) or (blocker_id = ${other}::uuid and blocked_id = ${me}::uuid) limit 1`,
   );
   if (found.length > 0) throw new SocialError(code, code === "not_found" ? 404 : 400);
+}
+
+/**
+ * Takes these posts' rows, in id order and in one statement, in the mode an update of a counter or of the state takes
+ * them: what a transaction that writes more than one post does before it writes the first, so that every such
+ * transaction and every report that copies the same posts (for share, in id order) meet at the lowest post they share,
+ * where the one that comes second holds none of the others yet. An id no post has locks nothing.
+ */
+async function lockPostsInOrder(tx: Tx, ids: readonly (string | null)[]): Promise<void> {
+  const wanted = [...new Set(ids.filter((id): id is string => id !== null))];
+  if (wanted.length === 0) return;
+  await tx.execute(sql`select id from posts where id = any(${uuidArray(wanted)}) order by id for no key update`);
 }
 
 /** The profile rows an engagement is about, for lockLive: the account acting and the author of the post (one row when they are the same). */

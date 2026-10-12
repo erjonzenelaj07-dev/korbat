@@ -2,9 +2,8 @@ import { useState } from "react";
 import { Text, View } from "react-native";
 import { STATEMENT_MAX, itemOutcomeWords, type NoticeItemStatus } from "@korbat/contracts";
 import { Button, ErrorText, Field } from "@/components/ui";
-import { errorMessage } from "@/lib/api";
 import { externalLink } from "@/lib/links";
-import { itemRedress, quotedExaminedToo, utcMinute } from "@/lib/moderation";
+import { dailyLimitFailure, itemRedress, quotedExaminedToo, utcMinute } from "@/lib/moderation";
 import { STATUS_WORDS } from "@/lib/moderation-words";
 
 /**
@@ -24,7 +23,7 @@ function ReexamineControl({ both, onAsk }: { both: boolean; onAsk: (statement: s
     try {
       await onAsk(statement);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(dailyLimitFailure(err, "reexaminations"));
     } finally {
       setBusy(false);
     }

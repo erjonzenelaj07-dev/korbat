@@ -189,8 +189,9 @@ function mentions(files: SourceFile[], name: string): Record<string, number> {
 /**
  * Where `requestDeletion` is named. A deletion request names an id that a delete of post_media answered, an upload that
  * failed before it could be put on a post, or a file that has no row: the files module writes the request; the upload's
- * removal, the sweeper, the author's deletion (after its commit), the account's purge (inside its transaction) and the
- * disposal's caller (after its commit) ask for it through the module's interfaces.
+ * removal, the sweeper, the author's deletion (after its commit), the account's purge (after its commit) and the
+ * disposal's caller (after its commit) ask for it through the module's interfaces; and the one retry of what the purge
+ * and the disposal owe asks for it only for a row that is gone.
  */
 const REQUEST_DELETION = {
   "account/flows/deletion.ts": 1,
@@ -199,6 +200,8 @@ const REQUEST_DELETION = {
   "media/files.ts": 1,
   "media/flows/remove.ts": 1,
   "media/index.ts": 5,
+  // The retry of owed deletions, which asks only for ids whose row it found gone.
+  "media/owed.ts": 1,
   "media/sweeper.ts": 2,
   // The retention job, which asks for a batch's files after the commit of the transaction that deleted their rows.
   "moderation/retention.ts": 1,

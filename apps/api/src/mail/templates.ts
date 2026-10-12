@@ -1,3 +1,4 @@
+import { ACCOUNT_DELETION_WORDS } from "@korbat/contracts";
 import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
@@ -155,12 +156,14 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "delete_account_code":
       return build("Confirm deleting your korbat account", [
         `Someone asked to delete your korbat account. The confirmation code is ${need(data, "code")}.`,
-        "It expires in 10 minutes. Deleting the account removes your posts, images and profile for good; nothing happens without the code.",
+        "It expires in 10 minutes, and nothing happens without it.",
+        ACCOUNT_DELETION_WORDS,
         "If this was not you, do not enter the code: sign in, open Security, and revoke your other sessions.",
       ]);
     case "account_deleted":
       return build("Your korbat account was deleted", [
-        "Your korbat account was deleted as you asked. Your posts, images and profile are gone, and your handle stays reserved so nobody can take it.",
+        "Your korbat account was deleted as you asked, and your handle stays reserved so nobody can take it.",
+        ACCOUNT_DELETION_WORDS,
         "This cannot be undone. Thank you for having been part of korbat; you are welcome back with a new account any time.",
       ]);
     case "passkey_added":

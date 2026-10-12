@@ -108,6 +108,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-examination, from the
     // The mail says how, in the words of the status page.
     expect(renderMail(w.mailer.updatesTo(email).at(-1)!).text).toContain("You can ask korbat once, within six months and free of charge, to re-examine a moderator's decision to take no action");
 
+    // The release has just set the day the contact is forgotten. That day is moved back to tomorrow here, as for a request
+    // made on the window's last day, so only the request's own move can set it again.
+    const contactId = (await w.notice(notice.ref))!.contact_id!;
+    await w.migrateDb.execute(sql`update auth.notifier_contacts set forget_after = now() + interval '1 day' where id = ${contactId}::uuid`);
     const answer = await asked(notice, 1, "The second sentence names where she lives.");
     expect(ReexamineResponse.parse(answer)).toEqual({ positions: [1] });
     await w.moderation.settle();
@@ -117,7 +121,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-examination, from the
     expect(again!.case_id).not.toBe(first!.case_id);
     expect(again!.statement_digest).toBe(await textDigest(again!.statement_salt!, again!.statement!));
     // korbat owes the notifier another answer: the day their contact is forgotten moves to six months from now.
-    const contactId = (await w.notice(notice.ref))!.contact_id!;
     const [contact] = await w.authDb.execute<{ forget_after: string }>(sql`select to_char(forget_after at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as forget_after from auth.notifier_contacts where id = ${contactId}::uuid`);
     expect(Math.abs(Date.parse(contact!.forget_after) - appealDeadline(w.deps.now()).getTime())).toBeLessThan(5 * MIN);
 

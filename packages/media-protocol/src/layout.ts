@@ -15,22 +15,28 @@ function checked(id: string): string {
 
 /**
  * The uploads volume: the API writes it, the worker only reads it.
- *   tmp/<id>.part   a body being received
- *   incoming/<id>   a complete upload waiting for the worker
- *   delete/<id>     a request to delete image <id>
+ *   tmp/<id>.part     a body being received
+ *   incoming/<id>     a complete upload waiting for the worker
+ *   delete/<id>       a request to delete image <id>
+ *   delete-owed/<id>  the API's own note that a request for image <id> is owed: written inside the transaction that
+ *                     deletes the image's row, and removed once the request stands. The worker never reads it, so a
+ *                     transaction that does not commit has asked for nothing.
  */
 export function uploadsLayout(root: string) {
   const tmp = path.join(root, "tmp");
   const incoming = path.join(root, "incoming");
   const deletions = path.join(root, "delete");
+  const owed = path.join(root, "delete-owed");
   return {
     root,
     tmp,
     incoming,
     deletions,
+    owed,
     part: (id: string) => path.join(tmp, `${checked(id)}.part`),
     upload: (id: string) => path.join(incoming, checked(id)),
     deletion: (id: string) => path.join(deletions, checked(id)),
+    owedDeletion: (id: string) => path.join(owed, checked(id)),
   };
 }
 export type UploadsLayout = ReturnType<typeof uploadsLayout>;

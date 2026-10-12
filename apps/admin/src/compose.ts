@@ -118,6 +118,8 @@ export const COMPOSER = {
   reviewLabel: "Review the appeal",
   leftForLater: (count: number) => `The reports on other grounds that arrived after the newest report of child sexual abuse material stay open (${count} ${count === 1 ? "item" : "items"}), to be judged with the images once the freeze has ended.`,
   arrivedSince: (count: number) => `${count === 1 ? "1 new item arrived" : `${count} new items arrived`} since this page read the case: ${count === 1 ? "it stays" : "they stay"} open.`,
+  interimStays: (measures: string) => `The case stays open, so what was done while deciding stays in force: ${measures}.`,
+  alreadyHidden: "This case already hides the post while it is decided.",
   liftLabel: "Lift what was done while deciding",
   correctLabel: "Correct this decision",
 } as const;
@@ -181,10 +183,26 @@ export function outcomesListed(view: CaseView, role: StaffRole): CaseDraft["outc
   return kindsOffered(view, role).includes("final") ? outcomesOffered(view, "final") : ["restricted"];
 }
 
-/** The measures this target and kind allow, but the seal, which has a control of its own: offered whatever the target's level. */
+/**
+ * The measures this target and kind allow, but the seal, which has a control of its own: offered whatever the target's
+ * level, but for one the database always refuses. A second withhold of the post while deciding, while this case's own
+ * withhold taken while deciding is in force, is such a one; the page says instead that the case hides the post already.
+ */
 export function measuresOffered(view: CaseView, kind: "interim" | "final"): MeasureKind[] {
   const targets = view.target.type === "post" ? ["post", "image"] : ["display_name", "bio"];
-  return MEASURE_KINDS.filter((measure) => measure !== "seal_media" && MEASURES[measure][kind] && targets.includes(MEASURES[measure].target));
+  return MEASURE_KINDS.filter((measure) => measure !== "seal_media" && MEASURES[measure][kind] && targets.includes(MEASURES[measure].target) && !(kind === "interim" && measure === "withhold" && hiddenWhileDeciding(view)));
+}
+
+/** Whether this case hides its post while it is decided: a withhold taken while deciding is in force. */
+export const hiddenWhileDeciding = (view: CaseView): boolean => interimInForce(view).some(({ action }) => action.kind === "withhold");
+
+/**
+ * The images an image measure of this kind can name: those of the newest shown snapshot, but, while deciding, not an
+ * image a withhold of this case taken while deciding already holds back, which the database refuses to withhold twice.
+ */
+export function imagesOffered(view: CaseView, kind: "interim" | "final", measure: MeasureKind): string[] {
+  const held = kind === "interim" && measure === "withhold_media" ? new Set(interimInForce(view).filter(({ action }) => action.kind === "withhold_media").map(({ action }) => action.mediaId)) : new Set<string | null>();
+  return snapshotImages(view).filter((image) => !held.has(image));
 }
 
 /** Whether the seal is offered: on a case with an unanswered suspect item that reaches an image; while deciding to anyone eligible, for good to an admin. */
@@ -202,10 +220,16 @@ export function snapshotImages(view: CaseView): string[] {
  * Whether a measure would change nothing now, as far as the page can tell: the post is deleted or already not shown,
  * the image already held back by a measure of this case, the field already the placeholder, the account deleted. The
  * database decides when the measure is recorded; this is what the composer says beside it and what the preview shows.
- * `standing` is the kind of the decision the measure would belong to, which a seal's answer turns on.
+ * `standing` is the kind of the decision the measure would belong to, which a seal's answer turns on, and so does what
+ * the decision ends first. The database ends what was done while deciding before it writes a final decision's measures:
+ * every such measure when the decision closes the case, and a seal taken while deciding when it answers the suspect
+ * items. What ends then holds nothing back: a post that only this case's withhold hid is visible again, and the measure
+ * changes what everyone sees.
  */
 export function noEffectOf(view: CaseView, action: DecisionActionParams, standing: "interim" | "final" = "interim"): "already" | "deleted" | null {
   const { target } = view;
+  const closes = standing === "final" && leftOpen(view).length === 0;
+  const ending = new Set(standing === "final" ? interimInForce(view).filter(({ action: held }) => (held.kind === "seal_media" ? suspectOpen(view).length > 0 : closes)).map(({ action: held }) => held.id) : []);
   const spec = MEASURES[action.kind];
   if (spec.lifts !== null) return null;
   if (action.kind === "seal_media") {
@@ -223,11 +247,14 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
     return action.kind === "reset_bio" && target.bio === "" ? "already" : null;
   }
   if (target.state === "deleted_by_author") return "deleted";
-  if (action.kind === "withhold") return target.level !== null && target.level !== "visible" ? "already" : null;
-  if (action.kind === "remove") return target.level === "removed" ? "already" : null;
+  // A post is withheld only by a withhold taken while deciding, and a target has one open case: by this case's own, which
+  // a final decision that closes the case ends.
+  const level = closes && target.level === "withheld" ? "visible" : target.level;
+  if (action.kind === "withhold") return level !== null && level !== "visible" ? "already" : null;
+  if (action.kind === "remove") return level === "removed" ? "already" : null;
   // An image measure: the post is not shown, or a measure in force of this case already holds the image back at least as far.
-  if (target.level !== null && target.level !== "visible") return "already";
-  const held = view.decisions.flatMap((decided) => decided.actions).filter((held) => held.inForce && (held.kind === "seal_media" || held.mediaId === action.mediaId));
+  if (level !== null && level !== "visible") return "already";
+  const held = view.decisions.flatMap((decided) => decided.actions).filter((held) => held.inForce && !ending.has(held.id) && (held.kind === "seal_media" || held.mediaId === action.mediaId));
   const strong = held.some((measure) => measure.kind === "seal_media" || measure.kind === "remove_media");
   return strong || (action.kind === "withhold_media" && held.some((measure) => measure.kind === "withhold_media")) ? "already" : null;
 }
@@ -291,8 +318,8 @@ function actionOffered(view: CaseView, role: StaffRole, kind: "interim" | "final
   if (!restricts) return false;
   if (action.kind === "seal_media") return sealOffered(view, kind, role);
   if (!measuresOffered(view, kind).includes(action.kind as MeasureKind)) return false;
-  // An image measure names an image of the snapshot the page shows.
-  return MEASURES[action.kind].target !== "image" || (action.mediaId !== null && snapshotImages(view).includes(action.mediaId));
+  // An image measure names an image of the snapshot the page shows that it may still name.
+  return MEASURES[action.kind].target !== "image" || (action.mediaId !== null && imagesOffered(view, kind, action.kind as MeasureKind).includes(action.mediaId));
 }
 
 /**
@@ -765,6 +792,10 @@ export function decidedNotice(before: CaseView, now: CaseView, wasFinal: boolean
   const open = now.items.filter((item) => item.outcome === null).length;
   if (left > 0) words.push(COMPOSER.leftForLater(left));
   if (open > left) words.push(COMPOSER.arrivedSince(open - left));
+  // The page showed a decision that closes the case and ends what was done while deciding; an item that arrived meanwhile
+  // kept the case open, and with it those measures.
+  const staying = left === 0 && open > 0 && now.closedAt === null ? interimInForce(now).map(({ action }) => MEASURES[action.kind].label) : [];
+  if (staying.length > 0) words.push(COMPOSER.interimStays(staying.join(", ")));
   return words.join(" ");
 }
 

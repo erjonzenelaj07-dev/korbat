@@ -2,10 +2,15 @@ import { randomUUID } from "node:crypto";
 import { sql, type SQL } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { RETENTION } from "@korbat/contracts";
+import { STATEMENT_WORDS, statementParagraphs } from "@korbat/rules";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
-import { aPost, act, anAccount, appealOf, authCaseCounts, csamNotice, decideIn, ground, hex64, imagePost, imageStates, inForce, intake, newTestStaff, openCase, postFrozen, postRow, refusal, report, reviewIn, rowCounts, saveText, staffProfile, type TestStaff } from "./moderation-fixtures";
+import { createMediaRepo } from "../../src/media/repo";
+import { authorDecisionView } from "../../src/moderation/author";
+import { dueCases, dueRedactions, eraseCaseEvidence, redactR4 } from "../../src/moderation/repo";
+import { decisionStatement } from "../../src/moderation/statement";
+import { aPost, act, anAccount, appealOf, authCaseCounts, csamNotice, decideIn, ground, hex64, imagePost, imageStates, inForce, intake, moderationDeps, newTestStaff, openCase, postFrozen, postRow, refusal, report, reviewIn, rowCounts, saveText, staffProfile, type TestStaff } from "./moderation-fixtures";
 import { ageCase, authAccount, evidenceDue, evidenceLeft, intakeDue, one, releaseItems } from "./retention-fixtures";
 import { newProfile } from "./social-fixtures";
 import { pgError, rolledBack } from "./staff-fixtures";
@@ -28,6 +33,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
   let repo: AuthRepo;
   let mod: TestStaff;
   let admin: TestStaff;
+  /** A second admin, for a review of an admin's seal. */
+  let admin2: TestStaff;
   let before: Record<string, number>;
   let beforeAuth: Record<string, number>;
 
@@ -40,6 +47,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
     repo = createAuthRepo(authDb);
     mod = await newTestStaff(authDb, migrateDb, repo, "moderator");
     admin = await newTestStaff(authDb, migrateDb, repo, "admin");
+    admin2 = await newTestStaff(authDb, migrateDb, repo, "admin");
     before = await rowCounts(apiDb);
     beforeAuth = await authCaseCounts(migrateDb);
   }, 60_000);
@@ -572,7 +580,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
       });
     });
 
-    test("a post removal made final: the body blank, the post erased for good, every snapshot of the post in every case erased, the case's holds released, and a later reversal changes nothing anyone sees", async () => {
+    test("a post removal made final: the body blank, the post erased for good, every snapshot of the post taken up to the removal erased in every case, the case's holds released, and a later reversal changes nothing anyone sees", async () => {
       await inWorld(async (tx) => {
         // An earlier case about the same post, closed without action, still holds its snapshot and its holds.
         const p = await imagePost(tx, 2);
@@ -581,6 +589,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
         const { caseId } = await report(tx, aPost(p.postId));
         const removal = await decideIn(tx, mod, caseId, { kind: "final", ruleId: "R4", actions: [act("remove")] });
         await ageCase(tx, caseId, "6 months 1 day");
+        // The earlier case is the older of the two: its copy was taken before the removal, and holds what was removed.
+        await ageCase(tx, earlier, "6 months 2 days");
         expect(await count(tx, sql`select count(*)::int as n from evidence_snapshots where target_id = ${p.postId}::uuid and erased_at is null`)).toBe(2);
 
         expect(await count(tx, redact(removal))).toBe(true);
@@ -652,6 +662,65 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
       });
     });
 
+    test("a field reset made final erases the copies taken up to the reset and never the copy an open case took afterwards: that case is still decided on what its moderator read", async () => {
+      await inWorld(async (tx) => {
+        const a = await newProfile(tx as unknown as Db);
+        await tx.execute(sql`update profiles set bio = 'a home address' where id = ${a.id}::uuid`);
+        const first = (await report(tx, anAccount(a.id, a.handle))).caseId;
+        const reset = await decideIn(tx, mod, first, { kind: "final", ruleId: "R4", actions: [act("reset_bio")] });
+        await ageCase(tx, first, "7 months");
+        // Since the reset the account wrote a new bio, which someone reports on another ground: a new, open case, whose copy
+        // holds what the R4 decision never judged.
+        await tx.execute(sql`update profiles set bio = 'a new bio, written after the reset' where id = ${a.id}::uuid`);
+        const second = (await report(tx, anAccount(a.id, a.handle))).caseId;
+        expect(second).not.toBe(first);
+        const copies = async () =>
+          [...(await tx.execute<{ case_id: string; erased: boolean; bio: string | null }>(sql`select case_id, erased_at is not null as erased, bio from evidence_snapshots where target_type = 'account' and target_id = ${a.id}::uuid order by taken_at, id`))].map((row) => ({ ...row }));
+        expect(await copies()).toEqual([
+          { case_id: first, erased: false, bio: "a home address" },
+          { case_id: second, erased: false, bio: "a new bio, written after the reset" },
+        ]);
+
+        expect(await count(tx, redact(reset))).toBe(true);
+        expect(await copies()).toEqual([
+          { case_id: first, erased: true, bio: null },
+          { case_id: second, erased: false, bio: "a new bio, written after the reset" },
+        ]);
+        // Nothing the decision restricted is left, so it is marked, and a second call changes nothing.
+        expect(await count(tx, sql`select redacted_at is not null as n from decisions where id = ${reset}::uuid`)).toBe(true);
+        expect(await count(tx, redact(reset))).toBe(false);
+        // The open case is undecided and unanswered still, and a decision that names the copy its moderator read commits.
+        expect(await one(tx, sql`select closed_at is null as open, (select count(*)::int from intake_items i where i.case_id = c.id and i.answered_by is null) as unanswered from cases c where c.id = ${second}::uuid`)).toEqual({ open: true, unanswered: 1 });
+        await decideIn(tx, mod, second, { kind: "final", outcome: "no_violation" });
+        expect(await count(tx, sql`select closed_at is not null as n from cases where id = ${second}::uuid`)).toBe(true);
+      });
+    });
+
+    test("a post removal made final keeps the copy an open case took after the removal: the case is decided on it, and the copy then goes by its own case's rule", async () => {
+      await inWorld(async (tx) => {
+        const r = await removed(tx, "R4", 1);
+        await ageCase(tx, r.caseId, "7 months");
+        // A later report opens a new case about the post. Its copy is taken before the redaction, so it holds the body.
+        const later = (await report(tx, aPost(r.postId))).caseId;
+        expect(later).not.toBe(r.caseId);
+
+        expect(await count(tx, redact(r.decisionId))).toBe(true);
+        expect(await one(tx, sql`select body, erased_at is not null as erased from posts where id = ${r.postId}::uuid`)).toEqual({ body: "", erased: true });
+        expect(await evidenceLeft(tx, r.caseId)).toMatchObject({ snapshots: 0 });
+        expect([...(await snapshots(tx, sql`case_id = ${later}::uuid`))].map((s) => [s.erased, s.body])).toEqual([[false, "a post"]]);
+        expect(await count(tx, sql`select redacted_at is not null as n from decisions where id = ${r.decisionId}::uuid`)).toBe(true);
+        expect(await count(tx, redact(r.decisionId))).toBe(false);
+
+        // The open case's decision names the copy its moderator read, and commits.
+        await decideIn(tx, mod, later, { kind: "final", outcome: "no_violation" });
+        // Closed without action, the case's evidence is due a day after its close and its newest copy: its own rule erases it.
+        await ageCase(tx, later, "25 hours");
+        expect(await evidenceDue(tx, later)).toBe("due");
+        await tx.execute(sql`select public.erase_case_evidence(${later}::uuid)`);
+        expect(await evidenceLeft(tx, later)).toMatchObject({ snapshots: 0 });
+      });
+    });
+
     test("while the post is frozen it answers false and changes nothing; after a seal for good it goes on waiting, and after an answer without a seal it erases as usual", async () => {
       for (const answer of ["without a seal", "sealed for good"] as const) {
         await inWorld(async (tx) => {
@@ -715,6 +784,159 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
         expect(await count(tx, redact(r.decisionId))).toBe(true);
         expect(await evidenceLeft(tx, r.caseId)).toMatchObject({ snapshots: 0 });
         expect(await count(tx, sql`select redacted_at is not null as n from decisions where id = ${r.decisionId}::uuid`)).toBe(true);
+      });
+    });
+  });
+
+  describe("section 12's retention cases", () => {
+    /** One test's world, with the second admin's profile too. */
+    const inWorld3 = (fn: (tx: DbTx) => Promise<void>) =>
+      inWorld(async (tx) => {
+        await staffProfile(tx, admin2);
+        await fn(tx);
+      });
+    const copies = (tx: DbTx, where: SQL) =>
+      tx.execute<{ case_id: string; erased: boolean; body: string | null; media: { id: string; alt: string | null }[] | null }>(sql`select case_id, erased_at is not null as erased, body, media from evidence_snapshots where ${where} order by taken_at, id`);
+
+    test("an R4 removal made final while a suspect item waits in the same open case: the redaction waits for the admin's answer, and then erases the body, the post and its copy", async () => {
+      await inWorld3(async (tx) => {
+        const p = await imagePost(tx, 1);
+        const { caseId } = await report(tx, aPost(p.postId), "rule", "R1");
+        const suspect = await report(tx, aPost(p.postId), "csam");
+        expect(suspect.caseId).toBe(caseId);
+        // A moderator removes the post under R4 for the rule report alone: answered with the images unseen; the case stays open.
+        const removal = await decideIn(tx, mod, caseId, { kind: "final", ruleId: "R4", actions: [act("remove")], throughSeq: 1 });
+        expect(await one(tx, sql`select unseen, suspect, needs_admin from decisions where id = ${removal}::uuid`)).toEqual({ unseen: true, suspect: false, needs_admin: false });
+        expect(await count(tx, sql`select closed_at is null as n from cases where id = ${caseId}::uuid`)).toBe(true);
+        expect(await postRow(tx, p.postId)).toEqual({ state: "removed", level: "removed", erased: false });
+        expect(await postFrozen(tx, p.postId)).toBe(true);
+        await ageCase(tx, caseId, "7 months");
+        // Final for its author and a candidate, but the post is frozen: nothing is erased, and the open case's evidence is not due.
+        expect(await dueRedactions(tx)).toContain(removal);
+        expect(await redactR4(tx, removal)).toBe(false);
+        expect([...(await copies(tx, sql`case_id = ${caseId}::uuid`))].map((s) => ({ erased: s.erased, body: s.body, alt: s.media?.[0]?.alt }))).toEqual([{ erased: false, body: "a post", alt: "image 1" }]);
+        expect(await evidenceDue(tx, caseId)).toBe("never");
+        expect(await dueCases(tx)).not.toContain(caseId);
+        // The admin answers the suspect item without a seal: the freeze ends, and the redaction does its work.
+        await decideIn(tx, admin, caseId, { kind: "final", outcome: "no_violation" });
+        expect(await postFrozen(tx, p.postId)).toBe(false);
+        expect(await redactR4(tx, removal)).toBe(true);
+        expect(await postRow(tx, p.postId)).toEqual({ state: "removed", level: "removed", erased: true });
+        expect(await one(tx, sql`select body from posts where id = ${p.postId}::uuid`)).toEqual({ body: "" });
+        expect([...(await copies(tx, sql`case_id = ${caseId}::uuid`))].map((s) => [s.erased, s.body, s.media])).toEqual([[true, null, null]]);
+        expect(await count(tx, sql`select redacted_at is not null as n from decisions where id = ${removal}::uuid`)).toBe(true);
+      });
+    });
+
+    test("a closed case's copy that a seal for good kept is erased at the first round after a review lifts the seal", async () => {
+      await inWorld3(async (tx) => {
+        const p = await imagePost(tx, 1);
+        const first = await report(tx, aPost(p.postId), "rule");
+        await decideIn(tx, mod, first.caseId, { kind: "final", outcome: "no_violation" });
+        const second = await report(tx, aPost(p.postId), "csam");
+        expect(second.caseId).not.toBe(first.caseId);
+        const seal = await decideIn(tx, admin, second.caseId, { kind: "final", ruleId: "R2", actions: [act("seal_media")] });
+        await ageCase(tx, first.caseId, "3 days");
+        // The closed case is due and a candidate once: its holds go, its copy of the frozen post stays (gate E).
+        expect(await postFrozen(tx, p.postId)).toBe(true);
+        expect(await evidenceDue(tx, first.caseId)).toBe("due");
+        expect(await dueCases(tx)).toContain(first.caseId);
+        expect(await eraseCaseEvidence(tx, first.caseId)).toBe(1);
+        expect(await evidenceLeft(tx, first.caseId)).toEqual({ snapshots: 1, texts: 0, statements: 0, holds: 0 });
+        expect(await dueCases(tx)).not.toContain(first.caseId);
+        // The author appeals the seal, and a second admin lifts it.
+        await appealOf(tx, seal, p.authorId, "It is a holiday picture.");
+        await reviewIn(tx, admin2, seal, { outcome: "reversed", actions: [act("unseal_media")] });
+        expect(await postFrozen(tx, p.postId)).toBe(false);
+        expect(await imageStates(tx, p.mediaIds)).toEqual(["visible"]);
+        // The next round finds the closed case due again, and erases its copy.
+        expect(await dueCases(tx)).toContain(first.caseId);
+        expect(await eraseCaseEvidence(tx, first.caseId)).toBe(1);
+        expect(await evidenceLeft(tx, first.caseId)).toEqual({ snapshots: 0, texts: 0, statements: 0, holds: 0 });
+        expect(await evidenceDue(tx, second.caseId)).toBe("later");
+      });
+    });
+
+    test("an R4-redacted image that a second, later case still holds: erased for every reader, the later case keeps its own copy and its hold, a report into it holds nothing more, and a new case copies no alt text of it", async () => {
+      await inWorld3(async (tx) => {
+        const p = await imagePost(tx, 2);
+        const [m1, m2] = p.mediaIds as [string, string];
+        const first = await report(tx, aPost(p.postId), "rule");
+        const removal = await decideIn(tx, mod, first.caseId, { kind: "final", ruleId: "R4", actions: [act("remove_media", m1)] });
+        const second = await report(tx, aPost(p.postId), "rule");
+        expect(second.caseId).not.toBe(first.caseId);
+        await ageCase(tx, first.caseId, "7 months");
+        const holds = () => tx.execute<{ first: boolean; m1: boolean; released: boolean }>(sql`select case_id = ${first.caseId}::uuid as first, media_id = ${m1}::uuid as m1, released_at is not null as released from media_holds where media_id in (${m1}::uuid, ${m2}::uuid) order by 1, 2, 3`);
+
+        expect(await redactR4(tx, removal)).toBe(true);
+        expect([...(await tx.execute(sql`select id = ${m1}::uuid as m1, erased_at is not null as erased, moderation_state::text as state, hold_until is not null as held from post_media where post_id = ${p.postId}::uuid order by position`))].map((row) => ({ ...row }))).toEqual([
+          { m1: true, erased: true, state: "removed", held: true },
+          { m1: false, erased: false, state: "visible", held: true },
+        ]);
+        // The first case's hold on the erased image is released; the second case's holds stand.
+        expect([...(await holds())].map((row) => ({ ...row }))).toEqual([
+          { first: false, m1: false, released: false },
+          { first: false, m1: true, released: false },
+          { first: true, m1: false, released: false },
+          { first: true, m1: true, released: true },
+        ]);
+        // The first case's copy, taken before the removal, is erased; the second case's, taken after it, is that open case's.
+        expect([...(await copies(tx, sql`target_id = ${p.postId}::uuid`))].map((s) => [s.case_id === first.caseId, s.erased])).toEqual([
+          [true, true],
+          [false, false],
+        ]);
+        // Every reader refuses the erased image; the disposal takes neither, both being held.
+        const repo = createMediaRepo(tx as unknown as Db);
+        expect(await repo.fileAccess(m1)).toMatchObject({ erased: true });
+        expect(await repo.staffAccess(m1)).toMatchObject({ erased: true });
+        expect(await repo.find(m1)).toBeNull();
+        expect((await repo.forPosts([p.postId])).get(p.postId)?.map((image) => image.id)).toEqual([m2]);
+        expect(await repo.readyImages(p.authorId)).toEqual([m2]);
+        expect(await repo.isExportable(p.authorId, m1)).toBe(false);
+        expect((await repo.dropDisposable(tx, 500)).filter((id) => p.mediaIds.includes(id))).toEqual([]);
+        // A later report joins the open second case and holds nothing more.
+        const third = await report(tx, aPost(p.postId), "illegal");
+        expect(third.caseId).toBe(second.caseId);
+        expect([...(await holds())].map((row) => ({ ...row }))).toHaveLength(4);
+        // Once the second case is closed, a report opens a new case: its copy lists the erased image without its alt
+        // text, and it holds only the other image.
+        await decideIn(tx, mod, second.caseId, { kind: "final", outcome: "no_violation" });
+        const fourth = await report(tx, aPost(p.postId), "rule");
+        expect([...(await copies(tx, sql`case_id = ${fourth.caseId}::uuid`))].map((s) => s.media?.map((image) => [image.id === m1, image.alt]))).toEqual([
+          [
+            [true, null],
+            [false, "image 2"],
+          ],
+        ]);
+        expect([...(await tx.execute<{ m1: boolean }>(sql`select media_id = ${m1}::uuid as m1 from media_holds where case_id = ${fourth.caseId}::uuid`))].map((row) => row.m1)).toEqual([false]);
+      });
+    });
+
+    test("the correction that lifts a final reset of the bio after its copies were erased: refused on the erased copy, committed on a fresh one, and its statement says that korbat does not put the old bio back", async () => {
+      await inWorld3(async (tx) => {
+        const account = await newProfile(tx as unknown as Db);
+        await tx.execute(sql`update profiles set bio = 'my home address is 1 Example Street' where id = ${account.id}::uuid`);
+        const { caseId } = await report(tx, anAccount(account.id, account.handle), "rule");
+        const reset = await decideIn(tx, mod, caseId, { kind: "final", ruleId: "R4", actions: [act("reset_bio")] });
+        await ageCase(tx, caseId, "7 months");
+        expect(await redactR4(tx, reset)).toBe(true);
+        expect([...(await tx.execute<{ erased: boolean; bio: string | null }>(sql`select erased_at is not null as erased, bio from evidence_snapshots where case_id = ${caseId}::uuid`))].map((row) => ({ ...row }))).toEqual([{ erased: true, bio: null }]);
+        expect(await inForce(tx, { caseId })).toEqual(["reset_bio"]);
+        // On the case's only copy, which is erased, the correction is refused.
+        expect(await refusal(decideIn(tx, admin, caseId, { kind: "correction", reviewsDecisionId: reset, actions: [act("restore_bio")] }))).toBe("snapshot_erased");
+        // On a fresh copy it commits, and lifts the reset.
+        await tx.execute(sql`insert into evidence_snapshots (case_id, target_type, target_id, author_handle, salt, digest) values (${caseId}::uuid, 'account', ${account.id}::uuid, 'author', ${hex64()}, ${hex64()})`);
+        const correction = await decideIn(tx, admin, caseId, { kind: "correction", reviewsDecisionId: reset, actions: [act("restore_bio")] });
+        expect(await inForce(tx, { caseId })).toEqual([]);
+        const found = await decisionStatement(tx as unknown as Db, correction);
+        expect(found!.statement.reversals).toEqual([{ kind: "restore_bio", mediaId: null, resetDecisionId: reset, oldValueKept: false, resetRuleId: "R4" }]);
+        const paragraphs = statementParagraphs(found!.statement);
+        expect(paragraphs[1]).toBe(`${STATEMENT_WORDS.liftedField("bio")} ${STATEMENT_WORDS.field("bio")}`);
+        expect(paragraphs.join(" ")).not.toContain(STATEMENT_WORDS.oldValueKeptR4);
+        // The reset's own screen shows the content as erased under R4, and that it was reversed.
+        const view = await authorDecisionView(moderationDeps(tx), account.id, reset);
+        expect(view).toMatchObject({ content: { kind: "r4_redacted" }, reversedOn: expect.any(String) });
+        expect(await one(tx, sql`select bio from profiles where id = ${account.id}::uuid`)).toEqual({ bio: "" });
       });
     });
   });

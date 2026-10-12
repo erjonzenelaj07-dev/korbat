@@ -17,7 +17,7 @@ import {
 } from "@korbat/contracts";
 import type { Rule } from "@korbat/rules";
 import { api, ApiError, errorMessage } from "./api";
-import { CHIP_WORDS, DECISION_WORDS, REPORT_WORDS } from "./moderation-words";
+import { CHIP_WORDS, DAILY_LIMIT_WORDS, DECISION_WORDS, REPORT_WORDS } from "./moderation-words";
 
 /**
  * Reports, notices and moderation cases in the app (3c design, section 9): the calls, and the rules the screens share.
@@ -237,6 +237,12 @@ export function reportFailure(err: unknown, anonymous: boolean, contact: string 
   if (err.code === "service_unavailable") words = REPORT_WORDS.unavailable(contact);
   if (words === null) return errorMessage(err);
   return anonymous ? `${words} ${REPORT_WORDS.mailShowsAddress}` : words;
+}
+
+/** What the appeal form and the re-examination control show for a failed request: the day's limit in words of its own, with the wait; anything else as elsewhere. */
+export function dailyLimitFailure(err: unknown, limit: keyof typeof DAILY_LIMIT_WORDS): string {
+  if (err instanceof ApiError && err.code === "rate_limited") return DAILY_LIMIT_WORDS[limit](waitWords(err.retryAfter));
+  return errorMessage(err);
 }
 
 // ---------------------------------------------------------------- the status page

@@ -3,15 +3,15 @@ import path from "node:path";
 import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
-import { ModerationErrorCode, STATEMENT_MAX, type AuthorCaseRow, type DecisionAppeal, type DecisionView, type NoticeItemStatus, type NoticeStatus, type ReportItem } from "@korbat/contracts";
+import { DAILY_LIMITS, ModerationErrorCode, STATEMENT_MAX, type AuthorCaseRow, type DecisionAppeal, type DecisionView, type NoticeItemStatus, type NoticeStatus, type ReportItem } from "@korbat/contracts";
 import { STATEMENT_WORDS, statementParagraphs } from "@korbat/rules";
 import { DecisionsList, ReportsList } from "../src/components/moderation/CasesLists";
 import { DecisionDetail } from "../src/components/moderation/DecisionDetail";
 import { ItemLines } from "../src/components/moderation/ItemLines";
 import { NoticeStatusView } from "../src/components/moderation/NoticeStatusView";
-import { messageFor } from "../src/lib/api";
-import { appealWaitWords, quotedExaminedToo, statementOf } from "../src/lib/moderation";
-import { CASES_WORDS, DECISION_WORDS, STATUS_WORDS } from "../src/lib/moderation-words";
+import { ApiError, errorMessage, messageFor } from "../src/lib/api";
+import { appealWaitWords, dailyLimitFailure, quotedExaminedToo, statementOf } from "../src/lib/moderation";
+import { CASES_WORDS, DAILY_LIMIT_WORDS, DECISION_WORDS, STATUS_WORDS } from "../src/lib/moderation-words";
 
 /**
  * The appeal form and its states on the decision's screen, and "Ask for a re-examination" on the notice status page and
@@ -104,6 +104,25 @@ describe("the words of appeals and re-examination", () => {
     expect(messageFor("reexamination_not_open")).toBe("A re-examination cannot be asked for this item now.");
     expect(messageFor("reexamination_exists")).toBe("A re-examination of this item has already been asked for.");
     for (const code of ["appeal_not_open", "appeal_exists", "reexamination_not_open", "reexamination_exists"]) expect(ModerationErrorCode.options).toContain(code);
+  });
+
+  test("the day's limit of appeals and of re-examinations is worded as a daily limit with its number and the wait the answer gives, never as a moment", () => {
+    const limited = new ApiError(429, "rate_limited", "Too many requests. Wait a moment and try again.", 86_400);
+    const appeal = dailyLimitFailure(limited, "appeals");
+    expect(appeal).toBe(DAILY_LIMIT_WORDS.appeals("24 hours"));
+    expect(DAILY_LIMIT_WORDS.appeals("24 hours")).toBe(`korbat takes at most ${DAILY_LIMITS.appeals} appeals a day from one account. Try again in about 24 hours.`);
+    const asked = dailyLimitFailure(new ApiError(429, "rate_limited", "Too many requests. Wait a moment and try again.", 3_000), "reexaminations");
+    expect(asked).toBe(DAILY_LIMIT_WORDS.reexaminations("50 minutes"));
+    expect(DAILY_LIMIT_WORDS.reexaminations("50 minutes")).toBe(
+      `korbat takes at most ${DAILY_LIMITS.reexaminations} requests for a re-examination a day from one account, or without an account from one network. Try again in about 50 minutes.`,
+    );
+    for (const words of [appeal, asked]) expect(words).not.toMatch(/a moment/);
+    // Any other failure is worded as before.
+    const refused = new ApiError(422, "appeal_not_open", "the server's own words");
+    expect(dailyLimitFailure(refused, "appeals")).toBe(errorMessage(refused));
+    // The appeal form and the re-examination control word their failures through it.
+    expect(read("components", "moderation", "DecisionDetail.tsx")).toContain('setError(dailyLimitFailure(err, "appeals"));');
+    expect(read("components", "moderation", "ItemLines.tsx")).toContain('setError(dailyLimitFailure(err, "reexaminations"));');
   });
 
   test("a statement is sent only when something was written, and never longer than the contracts allow", () => {

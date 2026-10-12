@@ -1,4 +1,4 @@
-import { CSAM_NOTICE_MAX_ACCOUNTS, NOTICE_LIMITS, type CsamKeywordChoice, type TdbFormCategory } from "@korbat/contracts";
+import { CSAM_NOTICE_MAX_ACCOUNTS, DAILY_LIMITS, NOTICE_LIMITS, type CsamKeywordChoice, type TdbFormCategory } from "@korbat/contracts";
 
 /**
  * The app's words for reports, notices and moderation cases (3c design, section 9): the report form, the notice status
@@ -153,6 +153,16 @@ export const STATUS_WORDS = {
   retry: "Try again",
 } as const;
 
+/**
+ * The day's limits of the two forms that ask korbat to look again, an appeal and a re-examination (3c design, section
+ * 7.7): worded with their number and the wait the answer gives, since the wait can be a whole day. An appeal is counted
+ * per account; a re-examination per account, and without one per network.
+ */
+export const DAILY_LIMIT_WORDS = {
+  appeals: (wait: string) => `korbat takes at most ${DAILY_LIMITS.appeals} appeals a day from one account. Try again in about ${wait}.`,
+  reexaminations: (wait: string) => `korbat takes at most ${DAILY_LIMITS.reexaminations} requests for a re-examination a day from one account, or without an account from one network. Try again in about ${wait}.`,
+};
+
 export const CASES_WORDS = {
   nav: "Cases",
   title: "Cases",
@@ -167,6 +177,8 @@ export const CASES_WORDS = {
   whileDeciding: "while korbat decides",
   ended: "What korbat did while deciding has ended",
   noAction: "No action",
+  /** A review that kept the decision lifts nothing, and is no decision to take no action. */
+  keptDecision: "korbat kept its decision",
   review: "the answer to your appeal",
   correction: "a correction by korbat",
   appealOpen: (until: string) => `You can appeal until ${until}`,

@@ -4,6 +4,7 @@ import { strFromU8, unzipSync } from "fflate";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { PostView, mediaPath, type HiddenMedia, type MediaView } from "@korbat/contracts";
+import { STATEMENT_WORDS, statementParagraphs } from "@korbat/rules";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import type { AccountDeps } from "../../src/account/context";
 import { purge } from "../../src/account/flows/deletion";
@@ -19,6 +20,8 @@ import { status } from "../../src/media/flows/status";
 import { createMediaRepo, type MediaRepo } from "../../src/media/repo";
 import { sweep } from "../../src/media/sweeper";
 import { MemoryStore } from "../../src/middleware/rate-limit";
+import { dueStatements, eraseStatementTexts, forgetReporter } from "../../src/moderation/repo";
+import { decisionStatement, sendStatement } from "../../src/moderation/statement";
 import { explorePage } from "../../src/social/flows/explore";
 import { exportProfile } from "../../src/social/flows/export";
 import { deletePost, getPost, thread } from "../../src/social/flows/posts";
@@ -29,9 +32,14 @@ import { mediaHarness, type MediaHarness } from "./media-harness";
 import {
   aPost,
   act,
+  actionsOf,
   anAccount,
+  authCaseCounts,
   decideIn,
+  ground,
+  imagePost,
   insertItem,
+  intake,
   moderationCounts,
   newImageRow,
   newPostRow,
@@ -47,6 +55,7 @@ import {
 } from "./moderation-fixtures";
 import { newPost, newProfile } from "./social-fixtures";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
+import { ageCase, authAccount } from "./retention-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
 // Each test builds a store directory, uploads its images and runs dozens of statements inside one open transaction: on
@@ -143,6 +152,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
   let mod: TestStaff;
   let admin: TestStaff;
   let counts: Record<string, number>;
+  let authCounts: Record<string, number>;
 
   beforeAll(async () => {
     const config = loadConfig();
@@ -154,6 +164,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
     mod = await newTestStaff(authDb, migrateDb, repo, "moderator");
     admin = await newTestStaff(authDb, migrateDb, repo, "admin");
     counts = await moderationCounts(apiDb);
+    authCounts = await authCaseCounts(migrateDb);
   }, 60_000);
   afterAll(async () => {
     await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
@@ -399,6 +410,172 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
       });
     });
 
+    test("a purge whose transaction does not commit has asked for no file: a report that then freezes the account keeps rows whose files nobody was told to delete, neither the rerun nor the sweeper asks for them, and a seal lists images that are still there", async () => {
+      await inWorld(async (w) => {
+        const ada = await w.s.established();
+        const own = await w.h.postWithImages(ada.id, 2);
+        const requested = async () => (await w.h.files.deletionRequests()).filter((id) => own.mediaIds.includes(id));
+        const deps = accountDeps(w, [ada.id]);
+        // The first run deletes the rows, and its transaction does not commit: the process stops, or the connection is lost.
+        const stopping: AccountDeps = {
+          ...deps,
+          social: {
+            ...deps.social,
+            purgeProfile: (userId, now, within) =>
+              w.s.repo.purgeProfile(userId, now, async (tx) => {
+                await within(tx);
+                throw new Error("the transaction did not commit");
+              }),
+          },
+        };
+        await expect(purge(stopping, ada.id)).rejects.toThrow("the transaction did not commit");
+        expect(await existing(w.tx, own.mediaIds)).toEqual(sorted(own.mediaIds));
+        // The rows are back, and no file of them was asked for: the worker deletes whatever a request names.
+        expect(await requested()).toEqual([]);
+
+        // Before the purge job's next round, a report on the protected path about the account: every image is frozen.
+        const suspect = await report(w.tx, anAccount(ada.id, ada.handle), "csam");
+        expect(await postFrozen(w.tx, own.postId)).toBe(true);
+        // The job's rerun keeps the frozen rows and asks for nothing of them.
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0 });
+        expect(await existing(w.tx, own.mediaIds)).toEqual(sorted(own.mediaIds));
+        expect(await requested()).toEqual([]);
+        // The sweeper, which asks again for whatever a deleter still owes: a row that is still there is owed nothing,
+        // at once or two days on, when the marker the failed run left is forgotten.
+        await sweep(w.h.deps, new Date(), { reconcile: false });
+        expect(await requested()).toEqual([]);
+        await sweep(w.h.deps, new Date(Date.now() + 2 * DAY), { reconcile: true });
+        expect(await requested()).toEqual([]);
+        expect((await w.h.files.owedDeletions(Date.now())).filter((entry) => own.mediaIds.includes(entry.id))).toEqual([]);
+        for (const id of own.mediaIds) expect(await w.h.files.imageRemains(id)).toBe(true);
+
+        // An admin seals: the seal lists the rows, and their files are there for whoever they are released to.
+        await decideIn(w.tx, admin, suspect.caseId, SEAL_FOR_GOOD);
+        const states = await w.tx.execute<{ moderation_state: string }>(sql`select moderation_state from post_media where id = any(${uuids(own.mediaIds)})`);
+        expect(states.map((row) => row.moderation_state)).toEqual(["sealed", "sealed"]);
+        expect(await requested()).toEqual([]);
+      });
+    });
+
+    test("a purge that commits and whose request for the files then fails still finishes: what it deleted stays owed, is counted as late, and the sweeper's next pass asks for exactly those files", async () => {
+      await inWorld(async (w) => {
+        const ada = await w.s.established();
+        const own = await w.h.postWithImages(ada.id, 2);
+        const upload = await w.h.readyImage(ada.id);
+        const mine = [...own.mediaIds, upload];
+        const requested = async () => sorted((await w.h.files.deletionRequests()).filter((id) => mine.includes(id)));
+        const owed = async () => sorted((await w.h.files.owedDeletions(Date.now())).map((entry) => entry.id).filter((id) => mine.includes(id)));
+        const deps = accountDeps(w, [ada.id]);
+        // The requests' directory cannot be written when the purge comes to ask.
+        const failing: AccountDeps = {
+          ...deps,
+          media: mediaForAccount({
+            ...w.h.deps,
+            files: {
+              ...w.h.files,
+              requestDeletion: async () => {
+                throw new Error("EROFS: the uploads volume cannot be written");
+              },
+            },
+          }),
+        };
+        await purge(failing, ada.id);
+        expect(deps.finished).toEqual([ada.id]);
+        expect(await existing(w.tx, mine)).toEqual([]);
+        expect(await requested()).toEqual([]);
+        expect(await owed()).toEqual(sorted(mine));
+        // Ten minutes on, what is still owed counts among the late erasures of the staff's home screen.
+        const drained = await mediaForCases(w.h.deps).overdueDeletions();
+        const later = mediaForCases({ ...w.h.deps, now: () => new Date(Date.now() + 11 * 60_000) });
+        expect((await later.overdueDeletions()) - drained).toBe(mine.length);
+
+        // The sweeper's next pass, with the volume back: the files are asked for, and nothing is owed any more.
+        await sweep(w.h.deps, new Date(), { reconcile: false });
+        expect(await requested()).toEqual(sorted(mine));
+        expect(await owed()).toEqual([]);
+        expect(await later.overdueDeletions()).toBe(drained);
+      });
+    });
+
+    test("the account's purge end to end with open cases about it and a report it sent: a run that does not commit asks for nothing; the request's run and the job's keep what a case holds or a freeze keeps, ask for none of its files and forget her report; the cases then go on to their decisions, the disposal and the erasure of statements", async () => {
+      await inWorld(async (w) => {
+        const ada = await w.s.established();
+        const own = await w.h.postWithImages(ada.id, 1);
+        const second = await w.h.postWithImages(ada.id, 1);
+        const other = await imagePost(w.tx, 0);
+        // She reported someone else's post, signed in; someone reported a post of hers under a rule; and her account is
+        // reported on the protected path. The take-down has marked her auth row.
+        const hers = await intake(w.tx, ground.illegal(ada.id), aPost(other.postId));
+        const rule = await report(w.tx, aPost(own.postId), "rule");
+        const suspect = await report(w.tx, anAccount(ada.id, ada.handle), "csam");
+        await authAccount(w.tx, ada.id, "0 seconds");
+        const images = [...own.mediaIds, ...second.mediaIds];
+        const requested = async () => (await w.h.files.deletionRequests()).filter((id) => images.includes(id));
+        const base = accountDeps(w, [ada.id]);
+        const deps: typeof base = {
+          ...base,
+          moderation: { forgetAccount: async (userId) => void (await forgetReporter(w.tx, userId)), exportFor: () => Promise.reject(new Error("not exercised here")) },
+        };
+
+        // A first run whose transaction does not commit: nothing of it stands, and no file was asked for.
+        const stopping: AccountDeps = {
+          ...deps,
+          social: {
+            ...deps.social,
+            purgeProfile: (userId, now, within) =>
+              w.s.repo.purgeProfile(userId, now, async (tx) => {
+                await within(tx);
+                throw new Error("the transaction did not commit");
+              }),
+          },
+        };
+        await expect(purge(stopping, ada.id)).rejects.toThrow("the transaction did not commit");
+        expect(await requested()).toEqual([]);
+
+        // The request's run, and the job's after it.
+        await purge(deps, ada.id);
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0 });
+        expect(deps.finished).toEqual([ada.id, ada.id]);
+        const [profile] = await w.tx.execute<{ display_name: string; bio: string; deleted: boolean; handle: string }>(sql`select display_name, bio, deleted_at is not null as deleted, handle from profiles where id = ${ada.id}::uuid`);
+        expect({ ...profile! }).toEqual({ display_name: "Deleted account", bio: "", deleted: true, handle: ada.handle });
+        expect([...(await w.tx.execute<{ state: string; body: string }>(sql`select state, body from posts where author_id = ${ada.id}::uuid`))].map((row) => ({ ...row }))).toEqual([
+          { state: "deleted_by_author", body: "" },
+          { state: "deleted_by_author", body: "" },
+        ]);
+        // Every image row stays (the freeze keeps them all, the rule case holds one), and none of their files was asked for.
+        expect(await existing(w.tx, images)).toEqual(sorted(images));
+        expect(await requested()).toEqual([]);
+        expect([await postFrozen(w.tx, own.postId), await postFrozen(w.tx, second.postId)]).toEqual([true, true]);
+        // Her report no longer names her, on the notice or on its items.
+        const [forgotten] = await w.tx.execute<{ intake: boolean; items: boolean }>(
+          sql`select n.reporter_id is null as intake, (select bool_and(i.reporter_account_id is null) from intake_items i where i.intake_id = n.id) as items from intakes n where n.id = ${hers.intakeId}::uuid`,
+        );
+        expect({ ...forgotten! }).toEqual({ intake: true, items: true });
+
+        // The rule case is decided on its copy: the removal changes nothing, the post being deleted, and says so.
+        const removal = await decideIn(w.tx, mod, rule.caseId, { kind: "final", ruleId: "R1", actions: [act("remove")] });
+        expect((await actionsOf(w.tx, removal)).map((action) => [action.kind, action.no_effect])).toEqual([["remove", "deleted"]]);
+        expect(statementParagraphs((await decisionStatement(w.tx as unknown as Db, removal))!.statement)[0]).toContain(STATEMENT_WORDS.deletedPost);
+        // Its mail finds nobody: the auth module answers no_address for an account that is gone.
+        expect(await sendStatement({ apiDb: w.tx as unknown as Db, auth: { mailAccount: async () => "no_address" } as never }, removal)).toBe("no_address");
+
+        // The admin answers the report about her account without a seal: the freeze ends, and the disposal takes the image
+        // no case holds and keeps the one the rule case holds.
+        await decideIn(w.tx, admin, suspect.caseId, { kind: "final", outcome: "no_violation" });
+        expect([await postFrozen(w.tx, own.postId), await postFrozen(w.tx, second.postId)]).toEqual([false, false]);
+        const gone = await w.cases.dropDisposable(w.tx);
+        expect(gone.filter((id) => images.includes(id))).toEqual(second.mediaIds);
+        expect(await existing(w.tx, images)).toEqual(own.mediaIds);
+
+        // Thirteen months after her account was deleted, the removal's statement texts are due and erased.
+        await ageCase(w.tx, rule.caseId, "13 months");
+        await w.tx.execute(sql`update auth.users set deleted_at = now() - interval '13 months' where id = ${ada.id}::uuid`);
+        await w.tx.execute(sql`update profiles set deleted_at = now() - interval '13 months' where id = ${ada.id}::uuid`);
+        expect(await dueStatements(w.tx, 12)).toContain(removal);
+        expect(await eraseStatementTexts(w.tx, removal)).toBe(2);
+      }, migrateDb);
+    });
+
     test("a deleted post whose images a case holds, with no freeze: the same for every reader and for the export", async () => {
       await inWorld(async (w) => {
         const ada = await w.s.established();
@@ -628,7 +805,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
     });
   });
 
-  test("this file left no moderation row behind: the moderation tables hold what they held before it", async () => {
+  test("this file left no moderation row behind: the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
     expect(await moderationCounts(apiDb)).toEqual(counts);
+    expect(await authCaseCounts(migrateDb)).toEqual(authCounts);
   });
 });

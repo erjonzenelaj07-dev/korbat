@@ -527,6 +527,69 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
       expect(await refusal(apiDb.execute(sql`select public.erase_case_evidence(${r.caseId}::uuid)`))).toBe("not_due");
       expect((await evidenceLeft(apiDb, r.caseId)).snapshots).toBe(2);
     });
+
+    /**
+     * A post with one image and two closed cases. The earlier one removed the image under R1 eight months ago, and its copy
+     * of the post was taken then. The later one removed the post under R4 seven months ago: that removal is final for its
+     * author, so its redaction is due, and the earlier case's copy, taken before it, holds what it restricted.
+     */
+    async function dueRedaction() {
+      const p = await post(1);
+      const earlier = await reported(aPost(p.postId));
+      const imageRemoval = decided(await w.decideAs(mod, earlier.caseId, { kind: "final", actions: [act("remove_media", p.mediaIds[0]!)] }));
+      const later = await reported(aPost(p.postId));
+      const removal = decided(await w.decideAs(mod, later.caseId, { kind: "final", ruleId: "R4", actions: [act("remove")] }));
+      await ageCase(w.migrateDb, earlier.caseId, "8 months");
+      await ageCase(w.migrateDb, later.caseId, "7 months");
+      return { ...p, earlier: earlier.caseId, imageRemoval, later: later.caseId, removal };
+    }
+
+    test("the R4 redaction takes every case whose copy it erases before it erases one: it waits for a transaction that holds an earlier case of the post, as a decision on that case does, and erases that case's copy only afterwards", async () => {
+      const r = await dueRedaction();
+      const marker = newMarker();
+      const [held, release] = [gate(), gate()];
+      // A decision takes its case's row in this mode before it reads the copy it names.
+      const holding = withLockTimeout(w.migrateDb, async (tx) => {
+        await tx.execute(sql`select 1 from cases where id = ${r.earlier}::uuid for update`);
+        held.open();
+        await release.opened;
+      });
+      await held.opened;
+      const redacting = one<{ changed: boolean }>(apiDb, sql`select /* ${sql.raw(marker)} */ public.redact_r4_body(${r.removal}::uuid) as changed`);
+      try {
+        // The redaction either comes to wait, or ends without waiting: then it erased the earlier case's copy beside
+        // whoever holds that case, and a decision in that place would commit naming a copy erased under it.
+        const first = await Promise.race([
+          untilBlocked(apiDb, marker).then(() => "waited" as const, () => "never waited" as const),
+          redacting.then(() => "ended without waiting" as const, () => "ended without waiting" as const),
+        ]);
+        expect(first).toBe("waited");
+        expect(await snapshotErased(r.earlier)).toBe(false);
+      } finally {
+        release.open();
+        await holding;
+      }
+      expect(await redacting).toEqual({ changed: true });
+      expect(await snapshotErased(r.earlier)).toBe(true);
+      expect(await snapshotErased(r.later)).toBe(true);
+      expect(await one(apiDb, sql`select redacted_at is not null as redacted from decisions where id = ${r.removal}::uuid`)).toEqual({ redacted: true });
+    });
+
+    test("a correction of an earlier case's decision that names a copy the R4 redaction is erasing waits for the redaction at that case and is refused before it commits: snapshot_erased", async () => {
+      const r = await dueRedaction();
+      let correcting: Promise<unknown> = Promise.resolve();
+      await withLockTimeout(apiDb, async (tx) => {
+        expect(await one(tx, sql`select public.redact_r4_body(${r.removal}::uuid) as changed`)).toEqual({ changed: true });
+        correcting = w.decideAs(admin, r.earlier, { kind: "correction", reviewsDecisionId: r.imageRemoval, actions: [act("restore_media", r.mediaIds[0]!)] });
+        // The correction first saves its reason on the earlier case, and that already waits for the redaction, which holds
+        // that case's row because it erases that case's copy. A redaction that held only its own case would let the
+        // correction read the copy whole and commit naming it.
+        await untilBlocked(apiDb, "insert into");
+      });
+      expect(await refusal(correcting)).toBe("snapshot_erased");
+      expect(await snapshotErased(r.earlier)).toBe(true);
+      expect(await one(apiDb, sql`select count(*)::int as n from decisions where case_id = ${r.earlier}::uuid`)).toEqual({ n: 1 });
+    });
   });
 
   test("this file left no moderation row behind: what its tests committed is removed, and the moderation tables and the four auth tables hold what they held before it", async () => {

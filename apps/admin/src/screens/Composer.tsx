@@ -11,6 +11,8 @@ import {
   leftOpen,
   liftable,
   liftedKind,
+  hiddenWhileDeciding,
+  imagesOffered,
   measuresOffered,
   noEffectOf,
   offeredDraft,
@@ -298,15 +300,16 @@ function Measure({ measure, props, images }: { measure: MeasureKind; props: Comp
             disabled={props.busy}
             onChange={(event) => props.onChange({ actions: [...draft.actions.filter((other) => other.kind !== measure), { kind: measure, mediaId: images.find((image) => image === event.target.value) ?? null }] })}
           >
-            {images.map((image, index) => (
+            {/* Each image keeps its number in the snapshot, also when an image before it is not offered. */}
+            {images.map((image) => (
               <option key={image} value={image}>
-                {`Image ${index + 1}`}
+                {`Image ${snapshotImages(view).indexOf(image) + 1}`}
               </option>
             ))}
           </select>
         </>
       ) : null}
-      {noEffectOf(view, action) !== null ? <p className="hint">{COMPOSER.noEffect}</p> : null}
+      {noEffectOf(view, action, draft.kind === "final" ? "final" : "interim") !== null ? <p className="hint">{COMPOSER.noEffect}</p> : null}
     </li>
   );
 }
@@ -334,7 +337,6 @@ export function ComposerView(shown: ComposerViewProps) {
   const law = restricts && draft.ground === "illegal";
   const suspect = suspectOpen(view);
   const sealChosen = draft.actions.some((action) => action.kind === "seal_media");
-  const images = snapshotImages(view);
   const left = leftOpen(view);
   const rule = RULES.find((each) => each.id === draft.ruleId) ?? RULES[0];
   const postHidden = view.target.type === "post" && view.target.state !== null && view.target.state !== "visible";
@@ -504,8 +506,13 @@ export function ComposerView(shown: ComposerViewProps) {
               </li>
             ) : null}
             {measuresOffered(view, kind).map((measure) => (
-              <Measure key={measure} measure={measure} props={props} images={images} />
+              <Measure key={measure} measure={measure} props={props} images={imagesOffered(view, kind, measure)} />
             ))}
+            {kind === "interim" && view.target.type === "post" && hiddenWhileDeciding(view) ? (
+              <li>
+                <p className="hint">{COMPOSER.alreadyHidden}</p>
+              </li>
+            ) : null}
           </ul>
         </fieldset>
       ) : null}

@@ -47,16 +47,20 @@ export interface MediaForAccount {
   /**
    * Removes the owner's image rows, on a post or not, whatever their state, inside the account purge's transaction; the
    * ids name the files to delete. A row that a case holds, and every row of a frozen post, stays and is not answered
-   * (3c design, section 7.10): the purge asks for the files of the rows it was answered, and of no other.
+   * (3c design, section 7.10): the purge asks for the files of the rows it was answered, and of no other. Still inside
+   * that transaction it notes that those files are owed a request, so the rows cannot be gone for good without a record
+   * from which the request is written; where the note cannot be written this throws, and the purge's transaction fails.
    */
   purgeOwner(tx: DbTx, ownerId: string): Promise<string[]>;
   /**
    * Asks the worker to delete the files of these images, whatever their state: an upload still waiting
    * in the uploads volume is removed first, as the sweeper removes one it gives up on, so no worker picks
    * it up after the account is gone (removing is idempotent, and costs nothing for an image whose upload
-   * was taken already); then one empty request file per id, so asking twice is asking once. The account
-   * purge asks inside its transaction, right after purgeOwner, so the requests are on disk before the rows
-   * are gone for good.
+   * was taken already); then one empty request file per id, so asking twice is asking once; then what was
+   * owed for them is settled. The account purge asks only after its transaction has committed, for the rows
+   * that transaction deleted: a request cannot be taken back, and rows that a failed commit put back may be
+   * frozen by a report before the purge runs again. When it throws, the deletion stays owed, and the sweeper
+   * asks again at its next pass.
    */
   requestDeletion(ids: readonly string[]): Promise<void>;
   /**
@@ -73,10 +77,15 @@ export interface MediaForAccount {
 /** The account module's interface over this module's dependencies, as createMedia hands it out; the integration tests build it the same way. */
 export function mediaForAccount(deps: MediaDeps): MediaForAccount {
   return {
-    purgeOwner: (tx, ownerId) => deps.repo.purgeOwner(tx, ownerId),
+    async purgeOwner(tx, ownerId) {
+      const ids = await deps.repo.purgeOwner(tx, ownerId);
+      await deps.files.oweDeletion(ids);
+      return ids;
+    },
     async requestDeletion(ids) {
       for (const id of ids) await deps.files.discardUpload(id);
       await deps.files.requestDeletion(ids);
+      await deps.files.settleOwed(ids);
     },
     exportImages: async (ownerId) =>
       (await deps.repo.readyImages(ownerId)).map((id) => ({

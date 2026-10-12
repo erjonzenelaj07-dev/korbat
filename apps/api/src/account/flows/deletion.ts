@@ -9,21 +9,32 @@ export function startDeletion(deps: AccountDeps, session: Session, ctx: RequestC
 
 /**
  * Steps 2 to 4 of section 7.6, for an account the auth module has marked deleted: the social purge,
- * with the image rows detached and their files asked for inside its transaction; then the forgetting
- * of the reports the account sent (3c design, section 7.10: the database acts only on an account whose
- * auth row is marked deleted, which the take-down did before any step here); then the auth row's
- * anonymisation. The files are asked for before the commit, not after it: were the process to stop
- * between a commit and the request, a rerun would find no rows left, mark the account purged and
- * leave the files to the sweeper's reconcile pass, which refuses to act on many orphans at once. A
- * request is one empty file per id, so a rerun after a failed commit, which finds the same rows again,
- * asks again for the same ids and changes nothing; the files it asked for belong to an account that is
- * being deleted either way. Every step changes only what is still there, so the purge can run again
- * after a failure, from the request or from the job, and finish what an earlier run left.
+ * with the image rows detached inside its transaction; then, once that transaction has committed, the
+ * request for the files of exactly the rows it deleted; then the forgetting of the reports the account
+ * sent (3c design, section 7.10: the database acts only on an account whose auth row is marked deleted,
+ * which the take-down did before any step here); then the auth row's anonymisation.
+ *
+ * The files are asked for after the commit, never before it. A request cannot be taken back, and the
+ * worker deletes whatever one names: a transaction that asked first and then did not commit left its
+ * rows standing with their files on the way out, and a report of child sexual abuse material about the
+ * account, which a deleted account still takes, could freeze those rows before the rerun, which then
+ * keeps them: kept, sealable evidence whose images korbat itself had deleted. What the old order was
+ * for (a process that stops between the commit and the request leaves files nobody asks for) the media
+ * module covers: it notes inside the transaction that the files are owed, and its sweeper writes the
+ * request from that note when this run could not. So a request that fails here is logged and does not
+ * hold the purge back. Every step changes only what is still there, so the purge can run again after a
+ * failure, from the request or from the job, and finish what an earlier run left.
  */
 export async function purge(deps: AccountDeps, userId: string): Promise<void> {
+  let images: string[] = [];
   await deps.social.purgeProfile(userId, deps.now(), async (tx) => {
-    await deps.media.requestDeletion(await deps.media.purgeOwner(tx, userId));
+    images = await deps.media.purgeOwner(tx, userId);
   });
+  try {
+    await deps.media.requestDeletion(images);
+  } catch (err) {
+    deps.log.error({ err, userId, count: images.length }, "account purge: the files of the deleted images could not be requested now; the media sweeper asks again");
+  }
   // After the profile is marked deleted and before the account counts as purged: a failure here leaves the purge pending,
   // and its rerun, like every step's, changes nothing that is already done.
   await deps.moderation?.forgetAccount(userId);

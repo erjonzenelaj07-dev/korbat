@@ -10,7 +10,38 @@ const IPV6 = /(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9
 // phone, and to (the field Vonage takes the number in, and the mailer its address), keep a phone number out of every log line (1b design, section 10).
 const SECRET_KEYS = new Set(["authorization", "cookie", "set-cookie", "password", "token", "secret", "session", "code", "otp", "phone", "to"]);
 
-/** Recursively masks emails, IPs, and secret-bearing keys. Applied to every log line. */
+/**
+ * A failed query as drizzle-orm wraps the driver's error: its message is "Failed query: <statement>", a line feed, and
+ * "params: " with every parameter of the statement. Those are what a request wrote (a staff text with its salt, a
+ * notifier's explanation, an account id), and they must not outlive their erasure in a log (3c design, section 11,
+ * Privacy). Such an error is logged by its statement, and by the code, the constraint and the message of the database's
+ * own error, which name no value; its stack keeps its frames.
+ */
+const FAILED_QUERY = "Failed query: ";
+const PARAMS_FROM = String.fromCharCode(10) + "params: ";
+
+function failedQuery(err: Error): Record<string, unknown> | null {
+  const at = err.message.indexOf(PARAMS_FROM);
+  if (!err.message.startsWith(FAILED_QUERY) || at === -1) return null;
+  const message = err.message.slice(0, at);
+  // The frames are the stack's last lines that start with "at": the message above them, parameters included, is dropped.
+  const lines = (err.stack ?? "").split(String.fromCharCode(10));
+  let first = lines.length;
+  while (first > 0 && lines[first - 1]!.trimStart().startsWith("at ")) first--;
+  const stack = [`${err.name}: ${message}`, ...lines.slice(first)].join(String.fromCharCode(10));
+  const cause = (err as { cause?: unknown }).cause;
+  const db = cause && typeof cause === "object" ? (cause as { code?: unknown; constraint_name?: unknown; message?: unknown }) : null;
+  return {
+    name: err.name,
+    message: scrub(message),
+    stack: scrub(stack),
+    ...(typeof db?.code === "string" ? { code: db.code } : {}),
+    ...(typeof db?.constraint_name === "string" ? { constraint: db.constraint_name } : {}),
+    ...(typeof db?.message === "string" ? { cause: scrub(db.message) } : {}),
+  };
+}
+
+/** Recursively masks emails, IPs, and secret-bearing keys, and a failed query's parameters. Applied to every log line. */
 export function scrub(value: unknown, key?: string): unknown {
   if (key && SECRET_KEYS.has(key.toLowerCase())) return "[redacted]";
   if (typeof value === "string") return value.replace(EMAIL, "[email]").replace(IPV6, "[ip]").replace(IPV4, "[ip]");
@@ -20,7 +51,7 @@ export function scrub(value: unknown, key?: string): unknown {
     for (const [k, v] of Object.entries(value)) out[k] = scrub(v, k);
     return out;
   }
-  if (value instanceof Error) return { name: value.name, message: scrub(value.message), stack: value.stack === undefined ? undefined : scrub(value.stack) };
+  if (value instanceof Error) return failedQuery(value) ?? { name: value.name, message: scrub(value.message), stack: value.stack === undefined ? undefined : scrub(value.stack) };
   return value;
 }
 

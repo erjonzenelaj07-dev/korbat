@@ -54,6 +54,9 @@ describe("layout", () => {
     expect(up.upload(ID)).toBe(path.join("x", "uploads", "incoming", ID));
     expect(up.deletion(ID)).toBe(path.join("x", "uploads", "delete", ID));
     expect([up.tmp, up.incoming, up.deletions]).toEqual(["tmp", "incoming", "delete"].map((name) => path.join("x", "uploads", name)));
+    // A deletion that is owed is no request: its marker lies beside the requests, in a directory the worker never reads.
+    expect(up.owed).toBe(path.join("x", "uploads", "delete-owed"));
+    expect(up.owedDeletion(ID)).toBe(path.join("x", "uploads", "delete-owed", ID));
   });
 
   test("the store volume shards image folders by the id's first two characters", () => {
@@ -71,7 +74,7 @@ describe("layout", () => {
     const up = uploadsLayout("u");
     const store = storeLayout("s");
     for (const bad of ["../../etc/passwd", "..", "", ID.toUpperCase(), `${ID}/x`]) {
-      for (const make of [up.part, up.upload, up.deletion, store.shard, store.imageDir, store.result, store.attempt]) expect(() => make(bad)).toThrow("not a media id");
+      for (const make of [up.part, up.upload, up.deletion, up.owedDeletion, store.shard, store.imageDir, store.result, store.attempt]) expect(() => make(bad)).toThrow("not a media id");
       expect(() => store.image(bad, "large")).toThrow("not a media id");
     }
   });

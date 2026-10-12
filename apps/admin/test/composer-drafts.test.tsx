@@ -361,11 +361,12 @@ describe("a kept draft is brought back to what the case now offers", () => {
   });
 
   test("an image measure whose image the shown snapshot no longer lists, a measure of another kind or target, and a Lift that is no longer there are dropped; what is still offered stays", () => {
-    const view = postCase();
+    // Nothing decided yet, so a withhold of the post is offered while deciding.
+    const view = postCase({ decisions: [] });
     const both = draftOf(view, MODERATOR, { actions: [{ kind: "withhold", mediaId: null }, { kind: "withhold_media", mediaId: IMAGE_ONE }] });
     expect(offeredDraft(view, MODERATOR, both)).toBe(both);
     // A fresh snapshot lists the second image alone.
-    const fewer = postCase({ snapshots: [postSnapshot({ media: [{ id: IMAGE_TWO, alt: "x", width: 800, height: 600 }] })] });
+    const fewer = postCase({ decisions: [], snapshots: [postSnapshot({ media: [{ id: IMAGE_TWO, alt: "x", width: 800, height: 600 }] })] });
     expect(offeredDraft(fewer, MODERATOR, both).actions).toEqual([{ kind: "withhold", mediaId: null }]);
     // A field reset is no measure of a post case.
     expect(offeredDraft(view, MODERATOR, draftOf(view, MODERATOR, { actions: [{ kind: "reset_bio", mediaId: null }] })).actions).toEqual([]);
@@ -381,8 +382,9 @@ describe("a kept draft is brought back to what the case now offers", () => {
     const empty = rangeCase({ suspicion: { ...rangeCase().suspicion!, reach: { posts: 0, images: 0, sealed: 0, served: 0, newestPostOn: null } } });
     expect(offeredDraft(empty, MODERATOR, sealed).actions).toEqual([]);
     // A correction's draft is left as it is.
-    const correction = correctionDraft(caseId(view.id), view, view.decisions[0]!, MODERATOR);
-    expect(offeredDraft(view, MODERATOR, correction)).toBe(correction);
+    const decided = postCase();
+    const correction = correctionDraft(caseId(decided.id), decided, decided.decisions[0]!, MODERATOR);
+    expect(offeredDraft(decided, MODERATOR, correction)).toBe(correction);
   });
 });
 
@@ -431,7 +433,7 @@ describe("the preview", () => {
   });
 
   test("a post case without a snapshot the page can show has no preview: no creation time is made up, and the page says the preview follows the fresh snapshot", () => {
-    const hidden = postCase({ snapshots: [{ id: "8c9daebf-c0d1-42e3-845f-7a8b9cadbecf", takenAt: "2026-10-01T08:00:00.000Z", digest: HEX, withheld: true }] });
+    const hidden = postCase({ decisions: [], snapshots: [{ id: "8c9daebf-c0d1-42e3-845f-7a8b9cadbecf", takenAt: "2026-10-01T08:00:00.000Z", digest: HEX, withheld: true }] });
     expect(previewable(hidden)).toBe(false);
     expect(previewable(postCase())).toBe(true);
     expect(previewable(postCase({ snapshots: [] }))).toBe(false);
@@ -444,13 +446,13 @@ describe("the preview", () => {
     expect(out).not.toContain("Preview: the statement as its author will receive it");
     expect(out).not.toContain("korbat hid your post of");
     // An older snapshot that is still shown gives the post's time.
-    const older = postCase({ snapshots: [hidden.snapshots[0]!, postSnapshot()] });
+    const older = postCase({ decisions: [], snapshots: [hidden.snapshots[0]!, postSnapshot()] });
     expect(previewable(older)).toBe(true);
     expect(statementParagraphs(previewOf(older, draft, NOW))[0]).toBe(STATEMENT_WORDS.done.withhold("2026-09-30 12:00 UTC"));
   });
 
   test("draws each paragraph as text in a frame of its own direction", () => {
-    const view = postCase();
+    const view = postCase({ decisions: [] });
     const draft = draftOf(view, MODERATOR, { actions: [{ kind: "withhold", mediaId: null }], written: written({ facts: "<b>bold</b> claims", reason: "That is spam." }) });
     const out = composer(view, MODERATOR, draft);
     const preview = out.slice(out.indexOf("Preview: the statement as its author will receive it"));
@@ -638,7 +640,8 @@ describe("after a confirmation", () => {
     const plain = postCase();
     const closed = postCase({ answeredSeq: 2, items: plain.items.map((each) => ({ ...each, outcome: "no_violation" as const, answeredBy: "7b8c9dae-bfc0-41d2-b34e-6f7a8b9cadbe" })) });
     expect(decidedNotice(plain, closed, true)).toBe("The decision is recorded.");
-    expect(decidedNotice(plain, { ...closed, items: [...closed.items, item({ id: ITEM_FINDING, seq: 3 })] }, true)).toBe(`The decision is recorded. ${COMPOSER.arrivedSince(1)}`);
+    // The case stays open for the new item, so the withhold this case took while deciding stays in force, and the page says so.
+    expect(decidedNotice(plain, { ...closed, items: [...closed.items, item({ id: ITEM_FINDING, seq: 3 })] }, true)).toBe(`The decision is recorded. ${COMPOSER.arrivedSince(1)} ${COMPOSER.interimStays(MEASURES.withhold.label)}`);
     // A decision taken while deciding answers nothing, and says nothing about what is open.
     expect(decidedNotice(before, before, false)).toBe("The decision is recorded.");
   });

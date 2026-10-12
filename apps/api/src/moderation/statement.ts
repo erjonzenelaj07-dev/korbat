@@ -2,7 +2,8 @@ import { MEASURES, type DecisionStatement, type MeasureKind, type ReversalKind, 
 import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
 import type { ModerationDeps } from "./context";
-import { endedMeasures, recordAuthorMail, statementActions, statementDecision, type MailState, type StatementDecisionRow } from "./repo";
+import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, type MailState } from "./repo";
+import { endedMeasures, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
 
 /**
  * The data a statement of reasons and its mail are rendered from (3c design, sections 7.5 and 10). A decision is the
@@ -104,7 +105,11 @@ export function mailSubjectOf(statement: DecisionStatement): DecisionMessage["su
  * Mails a decision's statement to its author when that mail is still owed, and records what became of it: `sent`,
  * `no_address` for an account that is gone, `failed` when the relay refused the address for good. A failure of the relay
  * is thrown, and the mail stays pending for the dispatch job. Answers what was recorded, or "none" when nothing was owed.
- * The record is written only while the mail is still pending, so a late answer never overwrites one already recorded.
+ *
+ * The decision's row is taken before the mail is sent, in the transaction that records the result (beginMailRecord): a
+ * database that cannot write refuses that, and nothing is sent, so a mail is never sent again and again for want of a
+ * record. Two senders of one statement (the decision's own request and the dispatch job) then send it once: the second
+ * waits for the row and finds the mail recorded.
  */
 export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth">, decisionId: string): Promise<MailState | "none"> {
   const found = await decisionStatement(deps.apiDb, decisionId);
@@ -112,9 +117,13 @@ export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth">
   const subject = found.decision.subjectId;
   // The statement is rendered before anything is sent: one that cannot be rendered is no mail, and stays pending.
   const message: DecisionMessage = { template: "moderation_decision", subject: mailSubjectOf(found.statement), paragraphs: statementParagraphs(found.statement) };
-  const result = subject === null ? "no_address" : await deps.auth.mailAccount(subject, message);
-  // A stop of the address never holds a statement back, so "suppressed" is never answered for it.
-  const state: MailState = result === "sent" ? "sent" : result === "refused" ? "failed" : "no_address";
-  await recordAuthorMail(deps.apiDb, decisionId, state);
-  return state;
+  return deps.apiDb.transaction(async (tx) => {
+    await beginMailRecord(tx);
+    if (!(await lockPendingAuthorMail(tx, decisionId))) return "none";
+    const result = subject === null ? "no_address" : await deps.auth.mailAccount(subject, message);
+    // A stop of the address never holds a statement back, so "suppressed" is never answered for it.
+    const state: MailState = result === "sent" ? "sent" : result === "refused" ? "failed" : "no_address";
+    await recordAuthorMail(tx, decisionId, state);
+    return state;
+  });
 }

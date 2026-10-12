@@ -1,5 +1,8 @@
-import { sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { sql, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { closeDb, createDb } from "@korbat/db";
 import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, OUTCOME_PHRASES, QUOTE_ITEM_SCOPE, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, appealDeadline, type NoticeRequest } from "@korbat/contracts";
 import { parseVersionedKey } from "../../src/auth/crypto";
 import { MemoryJobLock, type JobLock } from "../../src/lib/jobs";
@@ -10,8 +13,9 @@ import { noticeStatus, submitNotice } from "../../src/moderation/intake";
 import { accountLink, postLink } from "../../src/moderation/links";
 import { waitingCases } from "../../src/moderation/repo";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { act, authCaseCounts, moderationCounts, newImageRow, newPostRow, saveText, uuids } from "./moderation-fixtures";
+import { aPost, act, authCaseCounts, casesMedia, illegalNotice, imagePost, insertItem, moderationCounts, newImageRow, newPostRow, report, saveText, uuids } from "./moderation-fixtures";
 import { accountTarget, linkTarget, noticesWorld, notices, postTarget, type NoticesWorld } from "./notices-harness";
+import { rolledBack } from "./staff-fixtures";
 
 // Every test signs decisions with a real staff key and runs whole dispatch rounds: more than a test gets by default.
 vi.setConfig({ testTimeout: 180_000 });
@@ -627,6 +631,36 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the dispatch job", () =>
       return (await casesCalling(w.deps, jobNow())).includes(caseId);
     }
 
+    test("a round reads what at most a bounded number of suspect cases reach, the oldest first; every case beyond the bound counts as calling, unread", async () => {
+      await rolledBack(w.migrateDb, async (tx) => {
+        // Three suspect cases about image posts, made the oldest of the lane, a day apart, and their items older than 15 minutes.
+        const caseIds: string[] = [];
+        for (let n = 0; n < 3; n++) {
+          const p = await imagePost(tx, 1);
+          const made = await report(tx, aPost(p.postId), "csam");
+          await tx.execute(sql`update cases set oldest_open_at = now() - make_interval(days => ${30 - n}::int) where id = ${made.caseId}::uuid`);
+          await tx.execute(sql`update intake_items set created_at = now() - interval '1 hour' where case_id = ${made.caseId}::uuid`);
+          caseIds.push(made.caseId);
+        }
+        const real = casesMedia(tx);
+        const read: string[] = [];
+        const counting = { ...real, reach: async (target: Parameters<typeof real.reach>[0]) => {
+          read.push(target.id);
+          return real.reach(target);
+        } };
+        const targets = new Map((await tx.execute<{ id: string; target_id: string }>(sql`select id, target_id from cases where id = any(${uuids(caseIds)})`)).map((row) => [row.target_id, row.id]));
+        const deps = { apiDb: tx as unknown as typeof w.apiDb, media: counting, log: w.deps.log };
+        // A bound of two: the two oldest cases are read, the third is not, and all three call.
+        const calling = await casesCalling(deps, new Date(), 2);
+        expect(read.map((id) => targets.get(id))).toEqual(caseIds.slice(0, 2));
+        expect(calling).toEqual(expect.arrayContaining(caseIds));
+        // A bound of none: nothing is read, and every suspect case calls.
+        read.length = 0;
+        expect(await casesCalling(deps, new Date(), 0)).toEqual(expect.arrayContaining(caseIds));
+        expect(read).toEqual([]);
+      });
+    });
+
     test("a suspect item whose case reaches a served image repeats through a note and a field reset; it ends with a seal, starts again when an image is posted, ends with a recorded choice not to seal, and starts again when an image is posted after that choice", async () => {
       const owner = await w.account();
       const postId = await newPostRow(w.apiDb, owner.id);
@@ -709,6 +743,144 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the dispatch job", () =>
       expect(await calls(threat.caseId)).toBe(false);
       await decided(admin, threat.caseId, { kind: "final", ruleId: "R5", actions: [act("remove")] });
     });
+  });
+
+  test("a released line whose reporter was forgotten with their account records no_address at its first round, and nothing of it is given up later", async () => {
+    const reporter = await w.account();
+    const { postId } = await post();
+    const notice = await sent(notices.illegal([postTarget(postId)], { turnstileToken: undefined }), reporter.session);
+    await decided(moderator, notice.caseId, { kind: "final", outcome: "no_violation" });
+    // The reporter's account is taken down, and the purge forgets which reports it sent.
+    await w.migrateDb.execute(sql`update auth.users set deleted_at = now() where id = ${reporter.id}::uuid`);
+    await w.migrateDb.execute(sql`select public.forget_reporter(${reporter.id}::uuid)`);
+    toNextDispatch();
+    const report = await round();
+    expect((await itemRows(notice.ref))[0]).toMatchObject({ outcome_mail: "no_address", released: true });
+    expect(w.mailer.updatesTo(reporter.email)).toHaveLength(0);
+    const [itemId] = await itemIds(notice.ref);
+    expect(report.givenUp.outcomes).toBe(0);
+    // The line is recorded, so no later round counts it among what it gives up.
+    ahead(10 * MIN);
+    const [silent, kept] = [w.deps.log, recorded()];
+    w.deps.log = kept.log;
+    await round().finally(() => {
+      w.deps.log = silent;
+    });
+    expect(kept.lines.filter((line) => line.message === "moderation: mail given up" && line.fields.id === itemId)).toEqual([]);
+  });
+
+  test("a folded receipt that cannot be built does not hold back the lines of its contact: the update goes with the lines alone, and the receipt waits", async () => {
+    const email = w.address();
+    // Two notices from one address that has not confirmed: the second's receipt is folded into the next update.
+    const first = await sent(notices.illegal([postTarget((await post()).postId)], { email }));
+    const second = await sent(notices.illegal([postTarget((await post()).postId)], { email }));
+    expect([await receiptOf(first.ref), await receiptOf(second.ref)]).toEqual(["sent", "folded"]);
+    await decided(moderator, second.caseId, { kind: "final", outcome: "no_violation" });
+    // The second notice's items cannot be read when its receipt is built: every other read goes as it is.
+    const secondId = (await w.notice(second.ref))!.id;
+    const pool = w.deps.apiDb;
+    const failing = new Proxy(pool, {
+      get(target, property, receiver) {
+        if (property !== "execute") return Reflect.get(target, property, receiver) as unknown;
+        return (query: Parameters<typeof target.execute>[0]) => {
+          const built = new PgDialect().sqlToQuery(query as SQL);
+          if (built.sql.includes("as decision_unseen") && built.params.includes(`{${secondId}}`)) return Promise.reject(new Error("the notice's items could not be read"));
+          return target.execute(query);
+        };
+      },
+    });
+    toNextDispatch();
+    w.deps.apiDb = failing;
+    try {
+      await round();
+    } finally {
+      w.deps.apiDb = pool;
+    }
+    const updates = w.mailer.updatesTo(email);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.data.lines.map((line) => line.ref)).toEqual([second.ref]);
+    expect(updates[0]!.data.receipts).toEqual([]);
+    expect((await itemRows(second.ref))[0]!.outcome_mail).toBe("sent");
+    expect(await receiptOf(second.ref)).toBe("folded");
+  });
+
+  test("a round sends at most 100 receipts, the oldest first; the others wait for the next round", async () => {
+    const reporter = await w.account();
+    const made: string[] = [];
+    for (let n = 0; n < 101; n++) {
+      const intakeId = await illegalNotice(w.apiDb, reporter.id);
+      // Each names a link to no post, answered at once: a receipt lists what its notice named.
+      await insertItem(w.apiDb, { intakeId, caseId: null, targetId: randomUUID(), outcome: "not_available" });
+      made.push(intakeId);
+    }
+    // All of them past the job's 15 minutes, the oldest a minute apart.
+    await w.migrateDb.execute(sql`update intakes set received_at = now() - interval '1 hour' - make_interval(mins => array_position(${uuids(made)}, id)) where id = any(${uuids(made)})`);
+    ahead(MIN);
+    const sentBefore = w.mailer.to(reporter.email, "notice_received").length;
+    const report = await round();
+    expect(report.receipts).toBe(100);
+    const pending = await w.migrateDb.execute<{ id: string }>(sql`select id from intakes where id = any(${uuids(made)}) and receipt = 'pending'`);
+    expect(pending.length).toBeGreaterThanOrEqual(1);
+    expect(w.mailer.to(reporter.email, "notice_received").length - sentBefore).toBe(101 - pending.length);
+    // The newest are the ones left for the next round.
+    expect(pending.map((row) => row.id)).toContain(made[0]);
+    // What is left is not this test's to send.
+    await w.migrateDb.execute(sql`update intakes set receipt = 'none' where id = any(${uuids(made)}) and receipt = 'pending'`);
+  });
+
+  test("a database that reads and cannot write sends nothing whose result it could not record: no receipt, no statement and no update goes out in any round while it lasts, and each goes once when it can write again", async () => {
+    // The relay takes nothing while the notices and the decisions are made, so every mail is still owed.
+    w.mailer.mode = "fail";
+    const email = w.address();
+    const signedOut = await sent(notices.illegal([postTarget((await post()).postId)], { email }));
+    const reporter = await w.account();
+    const signedIn = await sent(notices.illegal([postTarget((await post()).postId)], { turnstileToken: undefined }), reporter.session);
+    const held = await post();
+    const heldCase = await sent(notices.rule([postTarget(held.postId)]));
+    const statement = await decided(moderator, heldCase.caseId, { kind: "interim", actions: [act("withhold")] });
+    await decided(moderator, signedOut.caseId, { kind: "final", outcome: "no_violation" });
+    await decided(moderator, signedIn.caseId, { kind: "final", outcome: "no_violation" });
+    toNextDispatch();
+    // The day's release runs and writes its marker; every mail of the round fails at the relay.
+    await round();
+    w.mailer.mode = "deliver";
+    const owed = async () => [await receiptOf(signedOut.ref), await receiptOf(signedIn.ref), await authorMail(statement), (await itemRows(signedOut.ref))[0]!.outcome_mail, (await itemRows(signedIn.ref))[0]!.outcome_mail];
+    expect(await owed()).toEqual(["pending", "pending", "pending", "pending", "pending"]);
+    const addresses = [email, reporter.email, held.author.email];
+    const toThem = () => w.mailer.attempts.filter((message) => addresses.includes(message.to)).length;
+    const tried = toThem();
+
+    // From here on the database answers reads and refuses every write, as a server in recovery, a full disk or
+    // default_transaction_read_only does. Two rounds, the second ten minutes after the first: nothing is mailed.
+    const url = new URL(w.config.DATABASE_URL_API);
+    url.searchParams.set("default_transaction_read_only", "on");
+    const readOnly = createDb(url.toString(), { max: 2 });
+    try {
+      for (let n = 0; n < 2; n++) {
+        ahead(10 * MIN);
+        const report = await dispatchRound({ ...w.deps, apiDb: readOnly }, lock);
+        expect({ receipts: report.receipts, statements: report.statements, outcomeMails: report.outcomeMails }).toEqual({ receipts: 0, statements: 0, outcomeMails: 0 });
+      }
+    } finally {
+      await closeDb(readOnly);
+    }
+    expect(toThem()).toBe(tried);
+    expect(await owed()).toEqual(["pending", "pending", "pending", "pending", "pending"]);
+
+    // It can write again: one round sends each mail once, and records it.
+    ahead(10 * MIN);
+    await round();
+    expect(w.mailer.to(email, "notice_received")).toHaveLength(1);
+    expect(w.mailer.updatesTo(email)).toHaveLength(1);
+    expect(w.mailer.to(reporter.email, "notice_received")).toHaveLength(1);
+    expect(w.mailer.updatesTo(reporter.email)).toHaveLength(1);
+    expect(w.mailer.to(held.author.email, "moderation_decision")).toHaveLength(1);
+    expect(await owed()).toEqual(["sent", "sent", "sent", "sent", "sent"]);
+    // And a round after it sends none of them again.
+    const sentNow = toThem();
+    ahead(10 * MIN);
+    await round();
+    expect(toThem()).toBe(sentNow);
   });
 
   test("a relay failure leaves the lines pending for the next round; a refused address is recorded failed at once and is owed nothing more; a stopped address gets no update; and a line, a receipt and a statement still unsent after five days are tried once more and given up", async () => {

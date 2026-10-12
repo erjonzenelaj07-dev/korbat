@@ -207,6 +207,36 @@ describe("deletion requests and the sweeper's view", () => {
     expect(await files.deletionRequests()).toEqual([]);
   });
 
+  test("a deletion that is owed is a marker the worker never reads: it is no request until one is written, it is listed with its age, and it is forgotten by id", async () => {
+    const files = await volumes();
+    const [first, second] = [randomUUID(), randomUUID()];
+    expect(existsSync(files.uploads.owed)).toBe(true);
+    await files.oweDeletion([first, second]);
+    await files.oweDeletion([first]);
+    expect((await files.owedDeletions(Date.now() + 5_000)).map((entry) => entry.id).sort()).toEqual([first, second].sort());
+    for (const entry of await files.owedDeletions(Date.now() + 5_000)) expect(entry.ageMs).toBeGreaterThanOrEqual(4_000);
+    expect(statSync(files.uploads.owedDeletion(first)).size).toBe(0);
+    // The directory the worker reads holds nothing of it.
+    expect(await files.deletionRequests()).toEqual([]);
+    expect(readdirSync(files.uploads.deletions)).toEqual([]);
+    await files.settleOwed([first, randomUUID()]);
+    expect((await files.owedDeletions(Date.now())).map((entry) => entry.id)).toEqual([second]);
+    // A name that is no image's id is not listed.
+    writeFileSync(path.join(files.uploads.owed, "notes.txt"), "");
+    expect((await files.owedDeletions(Date.now())).map((entry) => entry.id)).toEqual([second]);
+  });
+
+  test("a deletion cannot be owed where the marker cannot be written: the caller's transaction then fails, and no row goes", async () => {
+    const files = await volumes();
+    rmSync(files.uploads.owed, { recursive: true });
+    // A plain file where the directory was: nothing can be created under it.
+    writeFileSync(files.uploads.owed, "");
+    await expect(files.oweDeletion([randomUUID()])).rejects.toThrow();
+    // Nothing owed is nothing to write.
+    await files.oweDeletion([]);
+    expect(await files.owedDeletions(Date.now())).toEqual([]);
+  });
+
   test("a leftover result also counts as remaining", async () => {
     const files = await volumes();
     const id = randomUUID();

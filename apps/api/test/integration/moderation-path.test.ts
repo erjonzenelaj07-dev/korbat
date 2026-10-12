@@ -1,8 +1,10 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { MEASURES, OUTCOME_PHRASES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, outcomeWords, type NoticeItemStatus, type NoticeRequest } from "@korbat/contracts";
 import { REDRESS_TEXTS, STATEMENT_WORDS, getRule, statementParagraphs } from "@korbat/rules";
 import { MemoryJobLock, type JobLock } from "../../src/lib/jobs";
+import { afterDecision } from "../../src/moderation/decide";
 import { dispatchRound } from "../../src/moderation/dispatch";
 import { noticeStatus, submitNotice } from "../../src/moderation/intake";
 import { decisionStatement } from "../../src/moderation/statement";
@@ -223,6 +225,52 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the path for child sexua
       { at: await decidedAt(lift), handle: admin.handle, caseId: report.caseId, kind: "unsealed" },
     ]);
     expect(await postFrozen(w.apiDb, postId)).toBe(false);
+  });
+
+  test("every staff account is told of an answer without a seal whatever becomes of the steps beside that mail: the author's statement the relay cannot take, and the count of the admin's decisions that cannot be read", async () => {
+    const { author, postId } = await post(1);
+    const report = await sent(notices.csam([postTarget(postId)]));
+    // A seal taken while deciding: the answer that ends it owes its author a statement.
+    await decided(moderator, report.caseId, { kind: "interim", ruleId: "R2", actions: [act("seal_media")] });
+    const [toModerator, toAdmin] = [(await lifted(moderator)).length, (await lifted(admin)).length];
+    // The relay cannot take a mail to the author's address, and takes every other.
+    const send = w.mailer.send.bind(w.mailer);
+    w.mailer.send = async (message) => {
+      w.mailer.mode = message.to === author.email ? "fail" : "deliver";
+      try {
+        await send(message);
+      } finally {
+        w.mailer.mode = "deliver";
+      }
+    };
+    let answer: string;
+    try {
+      answer = await decided(admin, report.caseId, { kind: "final", outcome: "no_violation" });
+    } finally {
+      w.mailer.send = send;
+    }
+    // The statement waits for the dispatch job; the staff were told at once, each once.
+    const [mail] = await w.apiDb.execute<{ author_mail: string }>(sql`select author_mail from decisions where id = ${answer}::uuid`);
+    expect(mail!.author_mail).toBe("pending");
+    const alert = { handle: admin.handle, time: expect.any(String), what: "dismissed" };
+    expect((await lifted(moderator)).slice(toModerator)).toEqual([alert]);
+    expect((await lifted(admin)).slice(toAdmin)).toEqual([alert]);
+
+    // The same steps once more for the committed answer, with the count of the admin's recent decisions failing: the
+    // read of that count raises, and the staff are told all the same.
+    const failing = new Proxy(w.apiDb, {
+      get(target, property, receiver) {
+        if (property !== "execute") return Reflect.get(target, property, receiver) as unknown;
+        return (query: Parameters<typeof target.execute>[0]) => {
+          const text = new PgDialect().sqlToQuery(query as SQL).sql;
+          if (text.includes("count(*)") && text.includes("decided_by")) return Promise.reject(new Error("the count could not be read"));
+          return target.execute(query);
+        };
+      },
+    });
+    await afterDecision({ apiDb: failing, auth: w.authForModeration, limits: w.deps.limits, log: w.deps.log }, admin.id, answer);
+    expect((await lifted(moderator)).slice(toModerator)).toEqual([alert, alert]);
+    expect((await lifted(admin)).slice(toAdmin)).toEqual([alert, alert]);
   });
 
   test("this file left no row behind: the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {

@@ -8,10 +8,13 @@ import { alertUrgentLane, staffAlert } from "./alerts";
 import type { ModerationDeps } from "./context";
 import { itemLink, receiptMessage, sendReceipt } from "./intake";
 import {
+  beginMailRecord,
   contactsOwed,
   foldedReceipts,
   giveUpOutcomeMails,
   giveUpReceiptsAndAuthorMails,
+  lockPendingOutcomeLines,
+  lockPendingReceipt,
   pendingAuthorMails,
   pendingOutcomeLines,
   pendingReceipts,
@@ -53,6 +56,13 @@ export const DISPATCH_INTERVAL_MS = 10 * MINUTE_MS;
 const DUE_AFTER_MS = 15 * MINUTE_MS;
 /** How many pending receipts one round sends. */
 const RECEIPTS_PER_ROUND = 100;
+/**
+ * How many suspect cases one round asks the media module what they reach: one query a case, and a report of child sexual
+ * abuse material needs no account, so a flood of them could hold the round's first step for minutes. The oldest cases
+ * are read first; any beyond this count as calling, unread, which only repeats an alert that a case read later may ask for
+ * anyway.
+ */
+export const URGENT_REACH_PER_ROUND = 200;
 /** How long a cut-off's marker is kept: two days, so a marker is still there for every round of its own day. */
 const MARKER_TTL_MS = 2 * DAY_MS;
 /** How long the question "is the marker set?" holds the key when the process dies between asking and letting go. */
@@ -137,18 +147,26 @@ export function stillCalls(item: UrgentItemRow, reach: { served: number; newestS
 
 /**
  * The open cases that hold an unanswered item of the urgent lane which is older than 15 minutes and still calls for
- * someone. What a case reaches is read once for a case, and only for a case that holds a suspect item. An alert fails
- * open: a case whose reach cannot be read counts as calling, and the failure is logged with the case's id, so one case
- * that keeps failing never silences the lane.
+ * someone. What a case reaches is read once for a case, and only for a case that holds a suspect item, for at most
+ * `limit` cases, the oldest first. An alert fails open: a case whose reach cannot be read counts as calling, and the
+ * failure is logged with the case's id, so one case that keeps failing never silences the lane; so does a suspect case
+ * beyond the limit, unread.
  */
-export async function casesCalling(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, now: Date): Promise<string[]> {
+export async function casesCalling(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, now: Date, limit = URGENT_REACH_PER_ROUND): Promise<string[]> {
   const items = await urgentItems(deps.apiDb, new Date(now.getTime() - DUE_AFTER_MS));
   const reaches = new Map<string, { served: number; newestServedAt: Date | null }>();
   const calling = new Set<string>();
+  // Every read counts toward the limit, one that fails too.
+  let reads = 0;
   for (const item of items) {
     if (calling.has(item.caseId)) continue;
     let reach = reaches.get(item.caseId) ?? null;
     if (item.suspect && reach === null) {
+      if (reads >= limit) {
+        calling.add(item.caseId);
+        continue;
+      }
+      reads++;
       try {
         reach = await deps.media.reach({ type: item.targetType, id: item.targetId });
       } catch (err) {
@@ -277,7 +295,11 @@ function logUnsent(deps: Pick<ModerationDeps, "log">, err: unknown, step: string
  *     later rounds a folded receipt goes only with its own contact's retried lines, so an address gets one update a day.
  *   - Signed in, they go as one update per account. An item whose reporter was forgotten has nobody to mail.
  * Each line and each carried receipt records its result only while it is still pending. Where the relay could not take a
- * mail nothing is recorded, and the next round sends it again.
+ * mail nothing is recorded, and the next round sends it again. The rows a mail's result is recorded on are taken before
+ * it is sent, in the transaction that records it (beginMailRecord): a database that cannot write refuses that, and
+ * nothing is sent, so a line is never mailed round after round for want of a record. The signed-out updates are one call
+ * to the auth module, which groups the contacts by address, so their rows are taken and recorded in one transaction,
+ * each part's record in a savepoint of its own; each account's update has a transaction of its own.
  */
 async function outcomeMails(deps: ModerationDeps, report: DispatchReport): Promise<void> {
   const q = deps.apiDb;
@@ -335,33 +357,58 @@ async function outcomeMails(deps: ModerationDeps, report: DispatchReport): Promi
     for (const [contactId, notice] of folded) if (!byContact.has(contactId)) await withReceipt(contactId, { ref: notice.ref, lines: [] });
   }
   if (parts.length > 0) {
-    let results = new Map<string, NotifierUpdateResult>();
-    try {
-      results = await deps.auth.mailNotifierUpdates(parts);
-    } catch (err) {
-      logUnsent(deps, err, "outcomes", { contacts: String(parts.length) });
-    }
-    for (const part of parts) {
-      const state = RECORDED[results.get(part.contactId) ?? "unavailable"];
-      if (state === null) continue;
-      try {
-        await recordOutcomeMails(q, byContact.get(part.contactId)?.items ?? [], state);
+    // A transaction that fails before its mail (its rows could not be taken) has sent nothing; the round goes on.
+    await q.transaction(async (tx) => {
+      await beginMailRecord(tx);
+      // Every line's row and every carried receipt's notice, before anything is sent; what another sender recorded
+      // meanwhile is left out of the mail.
+      const locked = await lockPendingOutcomeLines(tx, [...byContact.values()].flatMap((part) => part.items));
+      const sending: NotifierUpdatePart[] = [];
+      for (const part of parts) {
         const notice = carried.get(part.contactId);
-        if (notice) await recordCarriedReceipt(q, notice.id, state);
-        if (state === "sent") report.outcomeMails++;
-      } catch (err) {
-        logUnsent(deps, err, "outcomes", { contactId: part.contactId });
+        if (notice && !(await lockPendingReceipt(tx, notice.id, true))) carried.delete(part.contactId);
+        const items = byContact.get(part.contactId)?.items ?? [];
+        const lines = part.lines.filter((_, index) => locked.has(items[index]!));
+        const receipt = carried.has(part.contactId) ? part.receipt : undefined;
+        if (lines.length > 0 || receipt) sending.push({ contactId: part.contactId, ref: part.ref, lines, ...(receipt ? { receipt } : {}) });
       }
-    }
+      if (sending.length === 0) return;
+      let results = new Map<string, NotifierUpdateResult>();
+      try {
+        results = await deps.auth.mailNotifierUpdates(sending);
+      } catch (err) {
+        logUnsent(deps, err, "outcomes", { contacts: String(sending.length) });
+      }
+      for (const part of sending) {
+        const state = RECORDED[results.get(part.contactId) ?? "unavailable"];
+        if (state === null) continue;
+        try {
+          await tx.transaction(async (sp) => {
+            await recordOutcomeMails(sp, (byContact.get(part.contactId)?.items ?? []).filter((id) => locked.has(id)), state);
+            const notice = carried.get(part.contactId);
+            if (notice) await recordCarriedReceipt(sp, notice.id, state);
+          });
+          if (state === "sent") report.outcomeMails++;
+        } catch (err) {
+          logUnsent(deps, err, "outcomes", { contactId: part.contactId });
+        }
+      }
+    }).catch((err: unknown) => logUnsent(deps, err, "outcomes", { contacts: String(parts.length) }));
   }
 
-  // Signed in: one update per account, through the account's own address.
+  // Signed in: one update per account, through the account's own address, each in a transaction of its own.
   for (const [accountId, update] of byAccount) {
     try {
-      const state = RECORDED[await deps.auth.mailAccount(accountId, { template: "notice_update", lines: update.lines })];
-      if (state === null) continue;
-      await recordOutcomeMails(q, update.items, state);
-      if (state === "sent") report.outcomeMails++;
+      await q.transaction(async (tx) => {
+        await beginMailRecord(tx);
+        const locked = await lockPendingOutcomeLines(tx, update.items);
+        const lines = update.lines.filter((_, index) => locked.has(update.items[index]!));
+        if (lines.length === 0) return;
+        const state = RECORDED[await deps.auth.mailAccount(accountId, { template: "notice_update", lines })];
+        if (state === null) return;
+        await recordOutcomeMails(tx, update.items.filter((id) => locked.has(id)), state);
+        if (state === "sent") report.outcomeMails++;
+      });
     } catch (err) {
       // The rows are the items: the account is the reporter, whom no log line names.
       logUnsent(deps, err, "outcomes", { itemIds: update.items });

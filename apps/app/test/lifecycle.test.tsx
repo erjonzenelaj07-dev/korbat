@@ -172,6 +172,12 @@ describe("the settings forms", () => {
     expect(firstStatement(profile, "HandleSection", "change")).toBe("if (!ready || busy) return;");
   });
 
+  test("the deletion screen says what deleting removes and what korbat keeps for a case, in the sentence the deletion mails say", () => {
+    const section = block(account, "DeleteSection");
+    expect(section).toContain("{ACCOUNT_DELETION_WORDS}");
+    expect(section).not.toMatch(/for good|are gone|removes your posts and images/);
+  });
+
   test("the account's own address is refused in its own words, without asking the API", () => {
     const email = block(account, "EmailSection");
     expect(email).toContain("const current = email.trim().toLowerCase() === me.user.email.toLowerCase();");

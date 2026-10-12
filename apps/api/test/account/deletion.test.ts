@@ -26,9 +26,9 @@ interface LogLine {
  * fake knows one account whose handle is "ada" and keeps deleted_at and purged_at per account; the
  * social fake keeps which profiles were purged and can be told to fail once for an account, before its
  * transaction does anything or at its commit (which puts back the image rows the transaction took, as a
- * rollback would); the media fake holds image ids per owner and hands them out once. Every call is
- * logged in order, the commit of the social purge's transaction included, and the transaction it opens
- * is a sentinel the media fake must be handed.
+ * rollback would); the media fake holds image ids per owner and hands them out once, and can be told to
+ * fail a request for files once. Every call is logged in order, the commit of the social purge's
+ * transaction included, and the transaction it opens is a sentinel the media fake must be handed.
  */
 function harness() {
   let t = T0;
@@ -38,6 +38,8 @@ function harness() {
   const purgedProfiles = new Map<string, Date>();
   const failing = new Set<string>();
   const failingCommit = new Set<string>();
+  /** When set, the next request for files fails, as it does while the uploads volume cannot be written. */
+  const failingRequest = { once: false };
   const images = new Map<string, string[]>();
   const requested: string[][] = [];
   const started: { session: Session; ctx: RequestContext }[] = [];
@@ -100,6 +102,10 @@ function harness() {
       },
       requestDeletion: async (ids) => {
         calls.push(`media.requestDeletion(${ids.length})`);
+        if (failingRequest.once) {
+          failingRequest.once = false;
+          throw new Error("EROFS: the uploads volume cannot be written");
+        }
         requested.push([...ids]);
       },
       exportImages: async () => [],
@@ -136,6 +142,7 @@ function harness() {
     purgedProfiles,
     failing,
     failingCommit,
+    failingRequest,
     images,
     requested,
     started,
@@ -159,14 +166,14 @@ describe("account deletion: the flows", () => {
     expect(h.calls).toEqual(["auth.startDeletion"]);
   });
 
-  test("confirming runs the auth confirmation, then the social purge with the media detach and the file deletion requests inside its transaction, then the auth purge, in that order", async () => {
+  test("confirming runs the auth confirmation, then the social purge with the media detach inside its transaction, then, after its commit, the file deletion requests, then the auth purge, in that order", async () => {
     const h = harness();
     const [imageA, imageB] = [randomUUID(), randomUUID()];
     const ada = h.account({ images: [imageA, imageB] });
     await confirmDeletion(h.deps, ada.session, { flowId: "f", code: "123456", handle: "Ada" });
-    expect(h.calls).toEqual(["auth.confirmDeletion", "social.purgeProfile", "media.purgeOwner", "media.requestDeletion(2)", "social.commit", "auth.finishPurge"]);
-    // The image rows go in the social purge's own transaction, and their files are asked for by id before it commits,
-    // so no run can commit the rows away and then stop before asking.
+    expect(h.calls).toEqual(["auth.confirmDeletion", "social.purgeProfile", "media.purgeOwner", "social.commit", "media.requestDeletion(2)", "auth.finishPurge"]);
+    // The image rows go in the social purge's own transaction, and their files are asked for only once it has committed,
+    // for exactly the rows it deleted: a transaction that does not commit has asked for nothing.
     expect(h.seenTx).toEqual([h.tx]);
     expect(h.requested).toEqual([[imageA, imageB]]);
     expect(h.purgedProfiles.get(ada.userId)).toEqual(h.now());
@@ -210,26 +217,38 @@ describe("account deletion: the flows", () => {
     h.calls.length = 0;
     h.advance(60_000);
     await purge(h.deps, ada.userId);
-    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(0)", "social.commit", "auth.finishPurge"]);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "social.commit", "media.requestDeletion(0)", "auth.finishPurge"]);
     expect(h.requested).toEqual([[expect.any(String)], []]);
     expect({ ...h.users.get(ada.userId)!, profilePurgedAt: h.purgedProfiles.get(ada.userId) }).toEqual(first);
   });
 
-  test("a purge whose transaction fails at the commit has already asked for the files; the next run finds the rows again and asks for the same ids", async () => {
+  test("a purge whose transaction fails at the commit has asked for no file: its rows are back, a report may keep them, and only the run that commits asks", async () => {
     const h = harness();
     const [imageA, imageB] = [randomUUID(), randomUUID()];
     const ada = h.account({ deletedAt: new Date(T0 - 60_000), images: [imageA, imageB] });
     h.failingCommit.add(ada.userId);
     await expect(purge(h.deps, ada.userId)).rejects.toThrow(/commit/);
-    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(2)", "social.rollback"]);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "social.rollback"]);
+    expect(h.requested).toEqual([]);
     expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
-    // The requests are one per id, so asking again for the same ids changes nothing on disk.
     await purge(h.deps, ada.userId);
-    expect(h.requested).toEqual([
-      [imageA, imageB],
-      [imageA, imageB],
-    ]);
+    expect(h.requested).toEqual([[imageA, imageB]]);
     expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
+  });
+
+  test("a request for files that fails after the commit is logged with the account and does not keep the purge from finishing: the media module still owes it", async () => {
+    const h = harness();
+    const ada = h.account({ deletedAt: new Date(T0 - 60_000), images: [randomUUID(), randomUUID()] });
+    h.failingRequest.once = true;
+    await purge(h.deps, ada.userId);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "social.commit", "media.requestDeletion(2)", "auth.finishPurge"]);
+    expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
+    const errors = h.lines.filter((line) => line.level >= 50);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.userId).toBe(ada.userId);
+    expect(errors[0]!.msg).toMatch(/files .* could not be requested/);
+    // A rerun finds no row left, so nothing here asks again: the request is the media module's to repeat.
+    expect(h.requested).toEqual([]);
   });
 });
 
@@ -300,7 +319,7 @@ describe("the purge and the reports the account sent (3c design, section 7.10)",
     const h = withModeration();
     const ada = h.account({ deletedAt: new Date(T0 - 60_000), images: [randomUUID()] });
     await purge(h.deps, ada.userId);
-    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(1)", "social.commit", "moderation.forgetAccount", "auth.finishPurge"]);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "social.commit", "media.requestDeletion(1)", "moderation.forgetAccount", "auth.finishPurge"]);
     expect(h.forgotten).toEqual([ada.userId]);
     expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
   });
@@ -310,7 +329,7 @@ describe("the purge and the reports the account sent (3c design, section 7.10)",
     const ada = h.account({ deletedAt: new Date(T0 - 60_000) });
     h.failingForget.add(ada.userId);
     await expect(purge(h.deps, ada.userId)).rejects.toThrow(/forgetting/);
-    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "media.requestDeletion(0)", "social.commit", "moderation.forgetAccount"]);
+    expect(h.calls).toEqual(["social.purgeProfile", "media.purgeOwner", "social.commit", "media.requestDeletion(0)", "moderation.forgetAccount"]);
     expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
     expect(await h.deps.auth.pendingPurges()).toEqual([ada.userId]);
     // The job's next round: the same steps, and this time the account is purged.
@@ -323,7 +342,7 @@ describe("the purge and the reports the account sent (3c design, section 7.10)",
     const h = withModeration();
     const ada = h.account();
     await confirmDeletion(h.deps, ada.session, { flowId: "f", code: "123456", handle: "ada" });
-    expect(h.calls).toEqual(["auth.confirmDeletion", "social.purgeProfile", "media.purgeOwner", "media.requestDeletion(0)", "social.commit", "moderation.forgetAccount", "auth.finishPurge"]);
+    expect(h.calls).toEqual(["auth.confirmDeletion", "social.purgeProfile", "media.purgeOwner", "social.commit", "media.requestDeletion(0)", "moderation.forgetAccount", "auth.finishPurge"]);
     expect(h.forgotten).toEqual([ada.userId]);
   });
 });

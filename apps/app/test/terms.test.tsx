@@ -80,7 +80,7 @@ function numbersTable(c: Contracts): { constant: string; section: string; phrase
     // The same period seen from a decision to take no action: the months of the re-examination's window, and these days.
     { constant: "RETENTION.intakeDays", section: "Your data", phrase: `at most about ${count(c.APPEAL_MONTHS + Math.ceil(R.intakeDays / 30), "month")} after a decision to take no action` },
     { constant: "RETENTION.resetValueDays", section: "Appeals", phrase: `for at least ${count(R.resetValueDays, "day")} after a reset that is lifted or ends` },
-    { constant: "RETENTION.evidenceHours", section: "Your data", phrase: `${count(R.evidenceHours, "hour")} after the case closes` },
+    { constant: "RETENTION.evidenceHours", section: "Your data", phrase: `when the case closes, or ${count(R.evidenceHours, "hour")} after its newest copy if that is later` },
     { constant: "RETENTION.statementMonths", section: "Your data", phrase: `for ${count(R.statementMonths, "month")} after its deletion` },
     { constant: "RETENTION.accessLogMonths", section: "Your data", phrase: `is kept for ${count(R.accessLogMonths, "month")}` },
     { constant: "RETENTION.contactMonths", section: "Your data", phrase: `deleted ${count(R.contactMonths, "month")} after the last day korbat still owed` },
@@ -239,6 +239,8 @@ describe("the terms' sections", () => {
         "korbat asks another moderator than the one who decided to take it when it has one",
         "says so and can be asked again",
         'this is what "illegality not evident" means',
+        "An outcome changed on review or by a correction is final within korbat, and everyone whose report it answered is told.",
+        "For a notice that something is illegal, korbat sends its decisions by email once a day when you gave an email or sent it from an account. Every decision on a report is shown under Settings, Cases, Your reports, or on the report's own page.",
       ],
       "How moderators decide": [
         "A moderator, never a program, decides every case.",
@@ -266,12 +268,17 @@ describe("the terms' sections", () => {
         "the appeal waits, without a time limit, and its screen says so",
         "A review keeps the decision, lifts part of it or lifts all of it, and never adds to it.",
         "A decision reversed in full can no longer be appealed, since nothing of it remains.",
-        "is final within korbat, and everyone whose report it answered is told",
+        "A decision that a correction changed in part can still be appealed for what remains of it; an answer to your appeal is final within korbat.",
         "An appeal of a seal waits, without a time limit, for the assessment of the authority korbat reported the images to.",
         "You can also go to court, or complain to the Digital Services Coordinator of the EU country where you live.",
       ],
     };
     for (const [title, sentences] of Object.entries(said)) for (const sentence of sentences) expect(bodyOf(terms, title), `${title}: ${sentence}`).toContain(sentence);
+    // What the code does not do is not said: a decision a correction changed in part is still open to appeal, a report on a
+    // rule gets no mail, and a case's copies are not kept a day past the close of a case that took longer than a day.
+    expect(bodyOf(terms, "Appeals")).not.toContain("by a correction is final within korbat");
+    expect(bodyOf(terms, "Reports and notices")).not.toContain("korbat sends its decisions on reports by email once a day");
+    expect(bodyOf(terms, "Your data")).not.toContain("after the case closes");
   });
 });
 

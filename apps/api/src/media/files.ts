@@ -95,7 +95,7 @@ export function createMediaFiles(options: MediaFilesOptions) {
     /** Creates the uploads volume's directories and forgets bodies a crash left half received. */
     async prepare(): Promise<void> {
       await rm(uploads.tmp, { recursive: true, force: true });
-      for (const dir of [uploads.tmp, uploads.incoming, uploads.deletions]) await mkdir(dir, { recursive: true });
+      for (const dir of [uploads.tmp, uploads.incoming, uploads.deletions, uploads.owed]) await mkdir(dir, { recursive: true });
     },
 
     /**
@@ -180,6 +180,33 @@ export function createMediaFiles(options: MediaFilesOptions) {
     /** Asks the worker to delete images. The request is an empty file named after the id. */
     async requestDeletion(ids: readonly string[]): Promise<void> {
       for (const id of ids) await (await open(uploads.deletion(id), "w")).close();
+    },
+
+    /**
+     * Notes that a request to delete these images is owed: an empty file named after each id, in a directory the worker
+     * never reads. Whoever deletes image rows in a transaction writes this inside it, before the commit, and writes the
+     * request itself only after the commit: a transaction that does not commit has then asked the worker for nothing
+     * (its rows are back, and a report may freeze them the next moment), and a commit whose request is lost or cannot
+     * be written leaves the note, from which the request is written later. Where the note cannot be written this throws,
+     * the caller's transaction fails with it, and no row goes whose files could not be found again.
+     */
+    async oweDeletion(ids: readonly string[]): Promise<void> {
+      for (const id of ids) await (await open(uploads.owedDeletion(id), "w")).close();
+    },
+
+    /** The deletions that are owed, each with the age of its note. */
+    async owedDeletions(now: number): Promise<{ id: string; ageMs: number }[]> {
+      const found: { id: string; ageMs: number }[] = [];
+      for (const id of (await namesIn(uploads.owed)).filter(isMediaId)) {
+        const stats = await stat(uploads.owedDeletion(id)).catch(() => null);
+        if (stats) found.push({ id, ageMs: now - stats.mtimeMs });
+      }
+      return found;
+    },
+
+    /** Removes the notes of these ids: their request stands, or their rows turned out to be kept. */
+    async settleOwed(ids: readonly string[]): Promise<void> {
+      for (const id of ids) await rm(uploads.owedDeletion(id), { force: true });
     },
 
     /** Ids with a deletion request. */

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ExportFormat } from "../src/index";
+import { ACCOUNT_DELETION_WORDS, ExportFormat } from "../src/index";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const at = "2026-09-24T10:00:00.000Z";
@@ -81,6 +81,15 @@ const full = {
     ],
   },
 };
+
+describe("what deleting an account removes, and what korbat keeps", () => {
+  test("one sentence, word for word, that the deletion screen and both deletion mails say: nothing in it says that everything is gone for good", () => {
+    expect(ACCOUNT_DELETION_WORDS).toBe(
+      "Your posts, images and profile are removed from korbat for everyone, but where a post or your profile was reported or restricted, korbat keeps its copy for that case for the periods in its terms (Terms, Your data).",
+    );
+    expect(ACCOUNT_DELETION_WORDS).not.toMatch(/for good|gone/);
+  });
+});
 
 describe("export format", () => {
   test("a complete export parses unchanged, and every list may be empty", () => {

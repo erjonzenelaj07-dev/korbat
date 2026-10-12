@@ -22,13 +22,40 @@ const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const read = (file: string) => readFileSync(`${SRC}/${file}`, "utf8");
 
 describe("what the author's reads may name", () => {
-  // Whatever the author sees is built from these three files, and none of them can reach a report: not who sent it, not
-  // what it said, not how many there were. A statement names its source as a category only.
-  const FILES = ["moderation/author.ts", "moderation/author-repo.ts", "moderation/statement.ts"];
+  // Whatever the author sees is built from these four files: the author's routes and their queries, the statement of
+  // reasons and its queries. None of them can reach a report: not who sent it, not what it said, not how many there were.
+  // A statement names its source as a category only.
+  const FILES = ["moderation/author.ts", "moderation/author-repo.ts", "moderation/statement.ts", "moderation/statement-repo.ts"];
   const REPORT_NAMES = /\b(intakes|intakeItems|intake_items)\b/;
+  /**
+   * The one read of a report table on the author's path, in the query of the measures a final decision ended: whether the
+   * decision answered the case's suspect items that stood when a seal was taken while deciding, which says whether that
+   * seal ended with it. It answers true or false of the case's own items, and reads no word, sender or count of a report.
+   */
+  const EXCEPTION = "exists (select 1 from intake_items x where x.case_id = d.case_id and x.suspect and x.answered_by = d.id and x.created_at <= i.decided_at)";
+  /** The names a file imports from a module of its own folder, sorted, without `type`. */
+  const importedFrom = (file: string, from: string): string[] =>
+    [...read(file).matchAll(/import (?:type )?\{([^}]*)\} from "([^"]+)";/g)]
+      .filter((found) => found[2] === from)
+      .flatMap((found) => found[1]!.split(",").map((name) => name.trim().replace(/^type /, "")))
+      .filter((name) => name.length > 0)
+      .sort();
 
-  test("the author's reads and the statement's data never name the tables of reports and notices", () => {
-    for (const file of FILES) expect(REPORT_NAMES.test(read(file)), file).toBe(false);
+  test("the author's reads and the statement's data never name the tables of reports and notices, but for one pinned read", () => {
+    for (const file of FILES) expect(REPORT_NAMES.test(read(file).replace(EXCEPTION, "")), file).toBe(false);
+    // The exception stands once, in the query of the measures a final decision ended, and nowhere else.
+    const queries = read("moderation/statement-repo.ts");
+    expect(queries.split(EXCEPTION).length - 1).toBe(1);
+    const ended = queries.slice(queries.indexOf("export async function endedMeasures"));
+    expect(ended.indexOf(EXCEPTION)).toBeGreaterThan(0);
+    expect(ended.indexOf(EXCEPTION)).toBeLessThan(ended.indexOf(String.fromCharCode(10) + "}"));
+  });
+
+  test("the scan catches a report's count added to the statement's data, beside the pinned read", () => {
+    const queries = read("moderation/statement-repo.ts");
+    const counted = queries.replace("select d.id, d.case_id,", "select d.id, (select count(*) from intake_items n where n.case_id = d.case_id) as reports, d.case_id,");
+    expect(counted).not.toBe(queries);
+    expect(REPORT_NAMES.test(counted.replace(EXCEPTION, ""))).toBe(true);
   });
 
   test("the scan catches each name, in a query, through the query builder and in a comment", () => {
@@ -42,6 +69,12 @@ describe("what the author's reads may name", () => {
   test("the reporter's list is read in a file of its own, which the author's reads do not import", () => {
     expect(read("moderation/author.ts")).not.toMatch(/from "\.\/(reports|intake|repo)"/);
     expect(read("moderation/author-repo.ts")).not.toMatch(/from "\.\/(reports|intake)"/);
+    // The statement takes its data from its own queries, and from the module's queries only what records its mail; its
+    // queries take only the module's helpers.
+    expect(read("moderation/statement.ts")).not.toMatch(/from "\.\/(reports|intake)"/);
+    expect(read("moderation/statement-repo.ts")).not.toMatch(/from "\.\/(reports|intake)"/);
+    expect(importedFrom("moderation/statement.ts", "./repo")).toEqual(["MailState", "beginMailRecord", "lockPendingAuthorMail", "recordAuthorMail"]);
+    expect(importedFrom("moderation/statement-repo.ts", "./repo")).toEqual(["Runner", "TargetType", "iso", "rows"]);
   });
 });
 

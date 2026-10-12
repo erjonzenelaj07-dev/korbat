@@ -3,15 +3,18 @@ import type { DbTx } from "@korbat/db";
 import { VARIANTS } from "@korbat/media-protocol";
 import type { MediaDeps } from "./context";
 import type { StoredFile } from "./files";
+import { owedLate, requestOwed } from "./owed";
 import type { CaseReach, HeldImage, HoldPair } from "./repo";
 import { RECONCILE_MAX_ORPHANS } from "./sweeper";
 import { WEBP_HEADER_BYTES, webpSize } from "./webp";
 
 /**
  * How many image rows one call of dropDisposable deletes at most: half of what the reconcile pass deletes without
- * MEDIA_RECONCILE=force. The files of a batch are requested after its commit, so a crash in between loses one batch's
- * requests; with other deletions' requests lost in the same crash, those files still stay within what one reconcile
- * pass removes by itself (3c design, section 5).
+ * MEDIA_RECONCILE=force. The files of a batch are requested after its commit; a batch notes inside its transaction that
+ * they are owed, so a crash in between, or a request that cannot be written, loses nothing: the note is what the request
+ * is written from later. Should the notes be lost as well (an uploads volume put back from an older copy), one batch's
+ * files, with other deletions' lost in the same way, still stay within what one reconcile pass removes by itself (3c
+ * design, section 5).
  */
 export const DISPOSAL_BATCH = RECONCILE_MAX_ORPHANS / 2;
 
@@ -44,18 +47,37 @@ export interface MediaForCases {
   reach(target: { type: "post" | "account"; id: string }): Promise<CaseReach>;
   /**
    * Deletes, in the caller's transaction, at most DISPOSAL_BATCH image rows that nothing retains and that their post's
-   * deletion, their owner's purge or an erasure left behind, the lowest ids first, and answers their ids. The caller
-   * asks for their files with requestDeletion after its commit, and calls again until fewer than a batch came back.
+   * deletion, their owner's purge or an erasure left behind, the lowest ids first, and answers their ids. Still inside
+   * that transaction it notes that their files are owed a request: where the note cannot be written this throws, the
+   * transaction fails, and no row is gone whose files could not be found again. The caller asks for the files with
+   * requestDeletion after its commit, and calls again until fewer than a batch came back.
    */
   dropDisposable(tx: DbTx): Promise<string[]>;
-  /** How many rows the disposal should have taken more than a day ago. */
+  /**
+   * How many erasures of images are late: the rows the disposal should have taken more than a day ago, and the files of
+   * rows that are gone whose request has been owed for longer than a round of the retention job.
+   */
   overdueDeletions(): Promise<number>;
-  /** Asks the worker to delete the files of these images. Called after the commit of the transaction that deleted their rows. */
+  /**
+   * Asks the worker to delete the files of these images, and settles what was owed for them. Called after the commit of
+   * the transaction that deleted their rows. When it throws, the deletion stays owed.
+   */
   requestDeletion(ids: readonly string[]): Promise<void>;
+  /**
+   * Asks again for the files of every row that is gone and whose request was never written, whoever deleted the row
+   * (a batch of the disposal, or the account's purge), and answers how many are still owed afterwards. The disposal calls
+   * it before its first batch of a round and takes none while the answer is not zero.
+   */
+  requestOwed(): Promise<number>;
 }
 
-/** The moderation module's interface over this module's dependencies, as createMedia hands it out; the tests build it the same way. */
-export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log">): MediaForCases {
+/**
+ * The moderation module's interface over this module's dependencies, as createMedia hands it out; the tests build it the
+ * same way. The clock is read only for the age of what is owed; without one it is the machine's.
+ */
+export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log"> & { now?: () => Date }): MediaForCases {
+  const nowMs = () => (deps.now?.() ?? new Date()).getTime();
+
   /**
    * Why a file of the store is not the image its row describes, or null when it is. The store is written by the worker,
    * which runs the decoder, so the bytes are not trusted: the console is given a file only when its first bytes are those
@@ -99,8 +121,16 @@ export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log">): 
     },
 
     reach: (target) => deps.repo.reach(target),
-    dropDisposable: (tx) => deps.repo.dropDisposable(tx, DISPOSAL_BATCH),
-    overdueDeletions: () => deps.repo.overdueDeletions(),
-    requestDeletion: (ids) => deps.files.requestDeletion(ids),
+    async dropDisposable(tx) {
+      const ids = await deps.repo.dropDisposable(tx, DISPOSAL_BATCH);
+      await deps.files.oweDeletion(ids);
+      return ids;
+    },
+    overdueDeletions: async () => (await deps.repo.overdueDeletions()) + (await owedLate(deps, nowMs())),
+    async requestDeletion(ids) {
+      await deps.files.requestDeletion(ids);
+      await deps.files.settleOwed(ids);
+    },
+    requestOwed: async () => (await requestOwed(deps, nowMs())).owed,
   };
 }

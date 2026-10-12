@@ -921,7 +921,8 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     const confirm = composer.getByRole("button", { name: "Confirm with your staff key" });
     // A moderator's own page again: no outcome of an admin's is on it that this person may not take.
     expect(await composer.getByLabel(COMPOSER_OUTCOMES.not_evident, { exact: true }).count()).toBe(0);
-    await composer.getByLabel(MEASURES.withhold.label, { exact: true }).check();
+    // One image withheld while deciding: a measure that still stands once another staff member has hidden the post.
+    await composer.getByLabel(MEASURES.withhold_media.label, { exact: true }).check();
     await composer.getByLabel("Facts").fill(TYPED_CHANGED_FACTS);
     await composer.getByLabel("Reason", { exact: true }).fill(REASON);
     await arrived(() => requests("POST", "/texts").length === 1, "the facts saved when their field lost focus");
@@ -948,14 +949,17 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await arrived(() => requests("GET", "").length === read + 1, "the case read again");
     await shown(page.getByText("; version 2", { exact: false }));
     expect(await texts()).toContain(OTHER_STAFF);
+    // The case hides the post now: a second withhold of the post is not offered, and the image measure changes nothing now.
+    await shown(composer.getByText(COMPOSER.alreadyHidden));
+    expect(await composer.getByLabel(MEASURES.withhold.label, { exact: true }).count()).toBe(0);
     await shown(composer.getByText(COMPOSER.noEffect));
-    expect(await composer.locator(".frame.preview p.frame-text").first().textContent()).toBe(`${STATEMENT_WORDS.done.withhold("2026-09-30 12:00 UTC")} ${STATEMENT_WORDS.already("post")}`);
+    expect(await composer.locator(".frame.preview p.frame-text").first().textContent()).toBe(`${STATEMENT_WORDS.done.withhold_media("2026-09-30 12:00 UTC")} ${STATEMENT_WORDS.already("image")}`);
     // The refusal's words stay, the reason's own refusal is gone now that it is saved, and the draft is as its person left it.
     await shown(composer.getByRole("alert").filter({ hasText: messageFor("case_changed") }));
     expect(await composer.getByRole("alert").filter({ hasText: NOTE_WORDS.rate_limited }).count()).toBe(0);
     expect(await composer.getByLabel("Facts").inputValue()).toBe(TYPED_CHANGED_FACTS);
     expect(await composer.getByLabel("Reason", { exact: true }).inputValue()).toBe(REASON);
-    expect(await composer.getByLabel(MEASURES.withhold.label, { exact: true }).isChecked()).toBe(true);
+    expect(await composer.getByLabel(MEASURES.withhold_media.label, { exact: true }).isChecked()).toBe(true);
     expect(requests("GET", "")).toHaveLength(read + 1);
     await clean();
 
@@ -972,7 +976,7 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     ]);
     expect(fixtures.state.decisions.at(-1)).toMatchObject({
       caseId: CASE_CHANGED,
-      params: { kind: "interim", stateVersion: 2, throughSeq: 0, outcome: "restricted", ground: "incompatible", ruleId: "R1", actions: [{ kind: "withhold", mediaId: null }], factsDigest: mine[0]!.digest, reasonDigest: mine[1]!.digest, legalReferenceDigest: null },
+      params: { kind: "interim", stateVersion: 2, throughSeq: 0, outcome: "restricted", ground: "incompatible", ruleId: "R1", actions: [{ kind: "withhold_media", mediaId: IMAGE_ONE }], factsDigest: mine[0]!.digest, reasonDigest: mine[1]!.digest, legalReferenceDigest: null },
     });
     await shown(page.getByText("; version 3", { exact: false }));
     expect(await page.getByRole("region", { name: "Decide" }).getByRole("alert").count()).toBe(0);

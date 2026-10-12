@@ -86,6 +86,23 @@ export const STATEMENT_WORDS = {
     own_initiative: "found by a moderator",
   },
   automation: "No automated means were used to find this or to decide it.",
+  /**
+   * The rule or the law, worded by what korbat knows when it decides. A decision that seals rests on a report that nobody
+   * at korbat has checked against the images, since nobody opens them, so it says what the step rests on and never that
+   * the rule is broken or the content illegal. A decision taken while deciding says what korbat is checking. Only a final
+   * restriction without a seal states a finding. A review or a correction names the ground of the decision it is about.
+   */
+  ground: {
+    sealRule: (id: string, title: string, text: string) => `This step rests on korbat rule ${id}, "${title}": ${text}`,
+    sealLaw: (reference: string) => `This step rests on the law: ${reference}`,
+    checkingRule: (id: string, title: string, text: string) => `korbat is checking this against korbat rule ${id}, "${title}": ${text}`,
+    checkingLaw: (reference: string) => `korbat is checking whether this is illegal. The law in question: ${reference}`,
+    breaks: (id: string, title: string, text: string) => `It breaks korbat rule ${id}, "${title}": ${text}`,
+    illegal: (reference: string) => `korbat found it illegal. The law it rests on: ${reference}`,
+    restedOnRule: (id: string, title: string, text: string) => `That decision rested on korbat rule ${id}, "${title}": ${text}`,
+    restedOnLaw: (reference: string) => `That decision rested on the law: ${reference}`,
+    referenceErased: "its reference was erased under korbat's retention rules.",
+  },
 } as const;
 
 const W = STATEMENT_WORDS;
@@ -150,17 +167,25 @@ function endedParagraph(input: StatementInput): string {
   return parts.join(" ");
 }
 
-/** The rule or the law a decision rests on. `own` words it for the decision itself, otherwise for the decision a review or a correction is about. */
-function groundParagraph(ground: { ground: StatementInput["ground"]; ruleId: string | null; legalReference: string | null }, rulesVersion: number, own: boolean): string | null {
+/**
+ * How a ground is worded (STATEMENT_WORDS.ground): for the decision a review or a correction is about; for a decision
+ * that seals; for one taken while deciding; or for a final restriction without a seal, the only one that states a finding.
+ */
+type GroundForm = "about" | "seal" | "deciding" | "found";
+
+/** The rule or the law a decision rests on, in the form that fits what the decision is. */
+function groundParagraph(ground: { ground: StatementInput["ground"]; ruleId: string | null; legalReference: string | null }, rulesVersion: number, form: GroundForm): string | null {
+  const G = W.ground;
   if (ground.ground === "illegal") {
-    const reference = ground.legalReference ?? "its reference was erased under korbat's retention rules.";
-    return own ? `korbat found it illegal. The law it rests on: ${reference}` : `That decision rested on the law: ${reference}`;
+    const reference = ground.legalReference ?? G.referenceErased;
+    return form === "about" ? G.restedOnLaw(reference) : form === "seal" ? G.sealLaw(reference) : form === "deciding" ? G.checkingLaw(reference) : G.illegal(reference);
   }
   if (ground.ground === "incompatible" && ground.ruleId !== null) {
     const rule = getRule(ground.ruleId, rulesVersion);
     // A decision records the version it was made under, and every version is kept: one that is missing is never rendered as another.
     if (!rule) throw new Error(`a statement cites ${ground.ruleId} of rulebook version ${rulesVersion}, which this package does not hold`);
-    return `${own ? "It breaks" : "That decision rested on"} korbat rule ${rule.id}, "${rule.title}": ${rule.text}`;
+    const words = form === "about" ? G.restedOnRule : form === "seal" ? G.sealRule : form === "deciding" ? G.checkingRule : G.breaks;
+    return words(rule.id, rule.title, rule.text);
   }
   return null;
 }
@@ -201,7 +226,8 @@ export function statementParagraphs(input: StatementInput): string[] {
 
   // The rule or the law: the decision's own, or for a review or a correction the reviewed decision's, from that decision's
   // row and in the wording of the rulebook that decision was made under.
-  const ground = about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, false) : groundParagraph(input, input.rulesVersion, true);
+  const form: GroundForm = about ? "about" : input.measures.some((measure) => measure.kind === "seal_media") ? "seal" : input.kind === "interim" ? "deciding" : "found";
+  const ground = about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, form) : groundParagraph(input, input.rulesVersion, form);
   if (ground !== null) paragraphs.push(ground);
 
   // The facts and the reason, while korbat keeps them.
