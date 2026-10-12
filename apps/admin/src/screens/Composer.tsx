@@ -24,6 +24,9 @@ import {
   reviewable,
   sealOffered,
   snapshotImages,
+  standingStrikeOf,
+  strikeCarriesStanding,
+  strikeLine,
   statementSent,
   suspectOpen,
   throughSeqOf,
@@ -32,7 +35,7 @@ import {
   type DraftTextKind,
   type StaffRole,
 } from "../compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, REVIEW_OUTCOMES } from "../messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, REVIEW_OUTCOMES, STANDING_WORDS } from "../messages";
 import { dateTime, UserText } from "../ui";
 import { categoryLabel } from "../words";
 
@@ -160,6 +163,20 @@ function Confirm({ props, onCancel }: { props: ComposerViewProps; onCancel?: () 
   );
 }
 
+/**
+ * 3e (design, section 8.7): beside a correction or a review of a decision whose strike stands, that the strike falls only
+ * with its whole finding, and, when a suspension or termination that stands rests on it, what reversing it does.
+ */
+function StrikeNotes({ decision }: { decision: CaseDecision }) {
+  if (standingStrikeOf(decision) === undefined) return null;
+  return (
+    <>
+      <p className="hint">{STANDING_WORDS.reviewStrike}</p>
+      {strikeCarriesStanding(decision) ? <p className="notice">{STANDING_WORDS.reviewRests}</p> : null}
+    </>
+  );
+}
+
 /** A correction of one decision: what of it to lift, the reason, and the preview. */
 function CorrectionView(props: ComposerViewProps) {
   const { view, role, draft } = props;
@@ -200,6 +217,7 @@ function CorrectionView(props: ComposerViewProps) {
           </li>
         ))}
       </ul>
+      <StrikeNotes decision={decision} />
       <TextField id="compose-review-reason" label="Reason of the correction" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
       <Preview view={view} draft={draft} now={props.now} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
@@ -268,6 +286,7 @@ function ReviewView(props: ComposerViewProps) {
           </li>
         ))}
       </ul>
+      <StrikeNotes decision={decision} />
       <TextField id="compose-review-reason" label="Reason of the review" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
       <Preview view={view} draft={draft} now={props.now} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
@@ -346,6 +365,8 @@ export function ComposerView(shown: ComposerViewProps) {
   // Under the facts and under the reason: on a case with an unanswered suspect item, never to say what the images are;
   // then the rule on personal data, with where the text goes. The texts of a decision without a measure never reach its author.
   const underTexts = [...(suspect.length > 0 ? [COMPOSER.neverWrite] : []), restricts ? COMPOSER.personalData : `${COMPOSER_WORDS.personalDataRule} ${COMPOSER_WORDS.staysInRecord}`];
+  // 3e: the strike line on a post case, under "Restrict".
+  const strike = strikeLine(view, draft);
 
   return (
     <section className="panel composer" aria-labelledby="composer-title">
@@ -379,6 +400,8 @@ export function ComposerView(shown: ComposerViewProps) {
               <input type="radio" name="compose-kind" checked={kind === each} disabled={props.busy} onChange={() => props.onChange({ kind: each, actions: [] })} /> <span>{COMPOSER_KINDS[each]}</span>
             </label>
           ))}
+          {/* 3e (design, section 8.2): not a choice; the console signs the strike exactly when this says it is given. */}
+          {strike === null ? null : <p className="hint">{strike === "due" ? STANDING_WORDS.strike.due : STANDING_WORDS.strike.none[strike]}</p>}
         </fieldset>
       ) : null}
 

@@ -188,8 +188,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the statement of reasons
       ground: null,
       ruleId: null,
       facts: null,
-      measures: [],
-      reversals: [{ kind: "restore", mediaId: null, resetDecisionId: null, oldValueKept: false, resetRuleId: null }],
+      // 3e: a full reversal of a removal that gave a strike also overrules the strike (the console and the fixtures sign it).
+      reversals: [
+        { kind: "restore", mediaId: null, resetDecisionId: null, oldValueKept: false, resetRuleId: null },
+        { kind: "overrule", mediaId: null, resetDecisionId: null, oldValueKept: false, resetRuleId: null },
+      ],
       reviewed: { kind: "final", ground: "incompatible", ruleId: "R6", rulesVersion: first.statement.rulesVersion, decidedAt: first.statement.decidedAt },
     });
     expect(statementParagraphs(second.statement).join("\n")).toContain("That decision rested on korbat rule R6");

@@ -3,7 +3,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import type { AuthorCaseRow, ReportItem, ReportRow } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
-import { DecisionsList, ReportsList } from "@/components/moderation/CasesLists";
+import { DecisionsList, ReportsList, StandingBlock } from "@/components/moderation/CasesLists";
 import { SettingsNav } from "@/components/SettingsNav";
 import { ErrorText, TextButton } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
@@ -35,6 +35,8 @@ export default function Cases() {
   const [decisions, setDecisions] = useState<Pages<AuthorCaseRow>>(EMPTY);
   const [reports, setReports] = useState<Pages<ReportRow>>(EMPTY);
   const [mailStopped, setMailStopped] = useState(false);
+  // 3e: how many of the account's strikes count now, as every page of "About you" says.
+  const [activeStrikes, setActiveStrikes] = useState(0);
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
 
@@ -43,6 +45,7 @@ export default function Cases() {
     setDecisions((current) => ({ ...current, busy: true, error: null }));
     try {
       const page = await moderation.cases(cursor);
+      setActiveStrikes(page.activeStrikes);
       setDecisions((current) => ({ rows: cursor ? [...current.rows, ...page.decisions] : page.decisions, next: page.nextCursor, loaded: true, busy: false, error: null }));
     } catch (err) {
       setDecisions((current) => ({ ...current, busy: false, error: errorMessage(err) }));
@@ -107,6 +110,7 @@ export default function Cases() {
             ))}
           </View>
         </View>
+        {tab === "about" && decisions.loaded ? <StandingBlock activeStrikes={activeStrikes} /> : null}
         {tab === "about" && decisions.loaded ? <DecisionsList decisions={decisions.rows} /> : null}
         {tab === "reports" && reports.loaded ? <ReportsList page={{ reports: reports.rows, reportMailStopped: mailStopped }} onResume={() => void resume()} onReexamine={reexamine} busy={resuming} error={resumeError} /> : null}
         <View className="px-4 pb-10">

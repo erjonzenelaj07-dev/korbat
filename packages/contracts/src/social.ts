@@ -116,9 +116,11 @@ export type QuotedPost = z.infer<typeof QuotedPost>;
 /**
  * The decision behind the state of the viewer's own withheld or removed post (3c design, sections 5 and 7.6): the decision
  * of the strongest post measure in force, by its id, the rule it cites (null for a decision on the law), whether it rests
- * on the law, and whether korbat is still deciding. The app shows it as the chip that links to the statement.
+ * on the law, and whether korbat is still deciding. The app shows it as the chip that links to the statement. `strikeUntil`
+ * (3e design, section 10.2) is the end of counting of the strike the post's decision gave, while that strike stands and
+ * still counts; null otherwise.
  */
-export const PostModeration = z.object({ decisionId: z.uuid(), ruleId: z.enum(RULE_IDS).nullable(), legal: z.boolean(), interim: z.boolean() });
+export const PostModeration = z.object({ decisionId: z.uuid(), ruleId: z.enum(RULE_IDS).nullable(), legal: z.boolean(), interim: z.boolean(), strikeUntil: z.iso.datetime().nullable() });
 export type PostModeration = z.infer<typeof PostModeration>;
 
 export const PostView = z.object({

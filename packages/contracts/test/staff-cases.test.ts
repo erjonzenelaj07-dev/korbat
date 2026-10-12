@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   CaseSnapshot,
+  CaseDecisionAction,
   CaseView,
   FINDING_CATEGORIES,
   ErasureOverdue,
@@ -36,6 +37,8 @@ const POST = "7e2d9a10-6c3b-4f5e-8a21-0d4c7b9e1f36";
 const OTHER = "5b0e4a52-3c1d-4f6e-9a8b-7c6d5e4f3a2b";
 const HEX = "ab".repeat(32);
 const TIME = "2026-10-04T08:15:30.123Z";
+/** The seven members of 3e on a ledger row of 3c, where each is null. */
+const NO_STANDING_COLUMNS = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null } as const;
 
 describe("FindingRequest", () => {
   const finding = { target: { kind: "post", id: POST }, ground: "rule", ruleId: "R1", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC" };
@@ -266,7 +269,7 @@ describe("the case answer", () => {
         reason: "why",
         legalReference: null,
         actions: [
-          { id: CASE, kind: "seal_media", mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: { posts: 1, images: 1, deletedPosts: 0, list: [{ postId: POST, createdAt: TIME, images: 1 }] } },
+          { id: CASE, kind: "seal_media", mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: { posts: 1, images: 1, deletedPosts: 0, list: [{ postId: POST, createdAt: TIME, images: 1 }] }, ...NO_STANDING_COLUMNS },
         ],
       },
     ],
@@ -278,6 +281,9 @@ describe("the case answer", () => {
       { at: TIME, event: "item", refId: OTHER, seq: 1, intakeKind: "user", ruleId: null, allegesIllegal: true, csam: true, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: TIME, event: "decision", refId: OTHER, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: "interim", outcome: "restricted", staffHandle: "mod_anna", result: null },
     ],
+    strikeDue: { due: true, why: "due" },
+    authorStanding: { activeStrikes: "0", suspensionsInYear: "0", now: "none" },
+    standing: null,
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {
@@ -292,6 +298,46 @@ describe("the case answer", () => {
     expect(CaseView.safeParse({ ...view, target: { type: "post", id: POST, link: `https://korbat.example/post/${POST}`, authorHandle: null, state: null, level: null } }).success).toBe(true);
   });
 
+
+  test("3e: a post case carries whether a strike is due and the author's standing in bands; an account case the account's standing", () => {
+    for (const why of ["due", "already_struck", "before_last_strike"] as const) expect(CaseView.safeParse({ ...view, strikeDue: { due: why === "due", why } }).success, why).toBe(true);
+    expect(CaseView.safeParse({ ...view, strikeDue: { due: true, why: "maybe" } }).success).toBe(false);
+    expect(CaseView.safeParse({ ...view, authorStanding: { activeStrikes: "3", suspensionsInYear: "0", now: "none" } }).success).toBe(false);
+    expect(CaseView.safeParse({ ...view, authorStanding: { activeStrikes: "3_or_more", suspensionsInYear: "2_or_more", now: "terminated" } }).success).toBe(true);
+    const standing = {
+      activeStrikes: 3,
+      strikes: [{ decisionId: OTHER, caseId: CASE, ruleId: "R3", decidedAt: TIME, countsUntil: TIME }],
+      ladderRule: "R3",
+      suspensionsInYear: 0,
+      lastSuspendedOn: null,
+      maxDays: 3,
+      mayTerminate: false,
+      live: false,
+      openReports: true,
+      atOnce: ["threat"],
+      flood: { posts: 2, from: TIME, to: TIME },
+      seal: { decidedOn: "2026-10-01" },
+    };
+    const account = { ...view, target: { type: "account", id: POST, handle: "now_named", displayName: "A name", bio: "A bio", deleted: false }, suspicion: null, snapshots: [], items: [], decisions: [], strikeDue: null, authorStanding: null, standing };
+    expect(CaseView.parse(account).standing).toEqual(standing);
+    expect(CaseView.safeParse({ ...account, standing: { ...standing, maxDays: 31 } }).success).toBe(false);
+    expect(CaseView.safeParse({ ...account, standing: { ...standing, atOnce: ["ladder"] } }).success).toBe(false);
+    // Each member is always there: on the other kind of case it is null.
+    const { standing: _standing, ...without } = account;
+    expect(CaseView.safeParse(without).success).toBe(false);
+  });
+
+  test("3e: a ledger row carries its days, whether it is announced, its basis, what it rests on, its earliest start, its end of counting and its period", () => {
+    const action = view.decisions[0]!.actions[0]!;
+    const strike = { ...action, kind: "strike", sealed: null, countsUntil: TIME };
+    const suspend = { ...action, kind: "suspend", sealed: null, days: 3, announced: true, basis: "strikes", restsOn: [OTHER], earliestStart: TIME, period: { startsAt: null, endsAt: null, state: "unfixed" } };
+    for (const row of [strike, suspend]) expect(CaseDecisionAction.parse(row)).toEqual(row);
+    expect(CaseDecisionAction.safeParse({ ...suspend, basis: "ladder" }).success).toBe(false);
+    expect(CaseDecisionAction.safeParse({ ...suspend, period: { ...suspend.period, state: "paused" } }).success).toBe(false);
+    expect(CaseDecisionAction.safeParse({ ...suspend, days: 0 }).success).toBe(false);
+    const { period: _period, ...withoutPeriod } = suspend;
+    expect(CaseDecisionAction.safeParse(withoutPeriod).success).toBe(false);
+  });
   test("a withheld snapshot carries its id, time and digest and no content, whatever the answer held", () => {
     const withheld = CaseSnapshot.parse({ ...shown, withheld: true });
     expect(Object.keys(withheld).sort()).toEqual(["digest", "id", "takenAt", "withheld"]);

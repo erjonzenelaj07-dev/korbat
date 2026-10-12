@@ -5,6 +5,7 @@ import {
   MEASURE_KINDS,
   RULE_DEFAULT_CATEGORY,
   SEAL_DRAFTS,
+  STANDING_RULES,
   compareDecisionActions,
   sealFactsDraft,
   snapshotDigest,
@@ -18,6 +19,7 @@ import {
   type CaseSnapshot,
   type CaseView,
   type DecisionActionParams,
+  type MeasureTarget,
   type MeasureKind,
   type ReversalKind,
   type RuleId,
@@ -259,6 +261,56 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
   return strong || (action.kind === "withhold_media" && held.some((measure) => measure.kind === "withhold_media")) ? "already" : null;
 }
 
+/**
+ * The targets whose measures a correction or a review lifts one by one, each with its own reversal (3c's). A strike falls
+ * only with its whole finding: the console adds its overruling to a full reversal (overruleOf) and never offers it alone.
+ * 3e's standing measures get their controls from the tasks that build their screens.
+ */
+const ONE_BY_ONE: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio"];
+
+/** Whether a decision's action is a measure that a correction or a review lifts one by one. */
+const liftsOneByOne = (action: { kind: ActionKind }): boolean => MEASURES[action.kind].lifts === null && ONE_BY_ONE.includes(MEASURES[action.kind].target);
+
+/** The strike a decision gave that stands (no overruling reversed it): what a full reversal of that decision overrules. */
+export const standingStrikeOf = (decision: CaseDecision): CaseDecisionAction | undefined => decision.actions.find((action) => action.kind === "strike" && action.inForce);
+
+/** The overruling a reversal of a decision carries: one when it reverses the decision whole and the decision's strike stands. */
+function overruleOf(decision: CaseDecision | undefined, reversesWhole: boolean): DecisionActionParams[] {
+  return decision && reversesWhole && standingStrikeOf(decision) ? [{ kind: "overrule", mediaId: null }] : [];
+}
+
+/**
+ * The strike line under "Restrict" (3e design, section 8.2), by its key in STANDING_WORDS.strike, or null where the page
+ * shows none: on an account case, and for an outcome that restricts nothing. It is not a choice: "due" is exactly when the
+ * console signs a strike, and the database refuses any other list (strike_mismatch). A decision answers a report of child
+ * sexual abuse material when it considers an unanswered suspect item, as a final decision considers every one.
+ */
+export type StrikeLine = "due" | "interim" | "law" | "r2" | "already" | "before";
+export function strikeLine(view: CaseView, draft: CaseDraft): StrikeLine | null {
+  if (view.strikeDue === null || (draft.kind !== "interim" && draft.kind !== "final") || draft.outcome !== "restricted") return null;
+  if (draft.kind === "interim") return "interim";
+  if (draft.ground === "illegal") return "law";
+  if (draft.ruleId === "R2" || suspectOpen(view).length > 0) return "r2";
+  if (view.strikeDue.due) return "due";
+  return view.strikeDue.why === "already_struck" ? "already" : "before";
+}
+
+/** The strike a decision's params carry: one exactly when the strike line says it is due. */
+const strikeOf = (view: CaseView, draft: CaseDraft): DecisionActionParams[] => (strikeLine(view, draft) === "due" ? [{ kind: "strike", mediaId: null }] : []);
+
+/** A day, in milliseconds: a strike counts STANDING_RULES.strikeDays of them from its decision. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The strikes the author would have with this one, for the preview's sentence: the band's lower bound plus this strike.
+ * The page reads the author's standing in bands (D 8), so for "3 or more" it says 4; the statement the author gets holds
+ * the database's count.
+ */
+const ACTIVE_THEN: Record<NonNullable<CaseView["authorStanding"]>["activeStrikes"], number> = { "0": 1, "1": 2, "2": 3, "3_or_more": 4 };
+
+/** Whether a suspension or termination that stands rests on the reviewed decision's strike: [review.rests]. */
+export const strikeCarriesStanding = (decision: CaseDecision | undefined): boolean => (decision ? (standingStrikeOf(decision)?.restedOnBy ?? []).length > 0 : false);
+
 /** The reversal that lifts a measure. */
 function reversalOf(action: { kind: ActionKind; mediaId: string | null }): DecisionActionParams {
   const target = MEASURES[action.kind].target;
@@ -379,7 +431,7 @@ export function withSeal(view: CaseView, draft: CaseDraft): CaseDraft {
 export function correctable(_view: CaseView, decision: CaseDecision, role: StaffRole): { label: string; measures: CaseDecisionAction[] } | null {
   if ((decision.kind !== "interim" && decision.kind !== "final") || decision.outcome !== "restricted") return null;
   if (decision.needsAdmin && role !== "admin") return null;
-  const measures = decision.actions.filter((action) => MEASURES[action.kind].lifts === null && action.inForce && (role === "admin" || action.kind !== "seal_media"));
+  const measures = decision.actions.filter((action) => liftsOneByOne(action) && action.inForce && (role === "admin" || action.kind !== "seal_media"));
   if (measures.length === 0) return null;
   return { label: decision.kind === "interim" ? COMPOSER.liftLabel : COMPOSER.correctLabel, measures };
 }
@@ -414,7 +466,7 @@ export function correctionChoices(view: CaseView, draft: CaseDraft, role: StaffR
 export function reviewable(view: CaseView, decision: CaseDecision): { appeal: CaseAppeal; measures: CaseDecisionAction[] } | null {
   const appeal = view.appeals.find((filed) => filed.decisionId === decision.id && filed.result === null);
   if (!appeal || !appeal.mayReview || decision.kind !== "final" || decision.outcome !== "restricted") return null;
-  return { appeal, measures: decision.actions.filter((action) => MEASURES[action.kind].lifts === null && action.inForce) };
+  return { appeal, measures: decision.actions.filter((action) => liftsOneByOne(action) && action.inForce) };
 }
 
 /** The draft of a review of one decision's appeal: the decision kept, nothing lifted, and no reason written. */
@@ -486,7 +538,8 @@ export function reviewParamsOf(view: CaseView, draft: CaseDraft, digests: Review
     rulesVersion: decision.rulesVersion,
     redressVersion: REDRESS_VERSION,
     category: decision.category,
-    actions: [...draft.actions].sort(compareDecisionActions),
+    // 3e: a review that reverses the decision whole overrules the strike it gave, which the person never chooses.
+    actions: [...draft.actions, ...overruleOf(decision, reviewOutcomeOf(view, draft) === "reversed")].sort(compareDecisionActions),
     reasonDigest: digests.reason,
   });
 }
@@ -576,7 +629,7 @@ export const statementSent = (input: StatementInput): boolean => input.kind === 
 /** Whether a correction that lifts these leaves nothing of its decision in force: then it reverses the decision, else part of it. */
 function reversesAll(view: CaseView, draft: CaseDraft): boolean {
   const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
-  const inForce = (decision?.actions ?? []).filter((action) => MEASURES[action.kind].lifts === null && action.inForce);
+  const inForce = (decision?.actions ?? []).filter((action) => liftsOneByOne(action) && action.inForce);
   return inForce.every((action) => holds(draft, reversalOf(action)));
 }
 
@@ -604,8 +657,9 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
       reason: text("review_reason"),
       source: corrected.source,
       measures: [],
-      reversals: draft.actions.map((reversal) => {
-        const lifted = corrected.actions.find((action) => sameAction(reversalOf(action), reversal));
+      // 3e: a full reversal also overrules the decision's strike, as the params will carry it.
+      reversals: [...draft.actions, ...overruleOf(corrected, draft.kind === "review" ? reviewOutcomeOf(view, draft) === "reversed" : reversesAll(view, draft))].map((reversal) => {
+        const lifted = corrected.actions.find((action) => liftsOneByOne(action) && sameAction(reversalOf(action), reversal));
         return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET) };
       }),
       endedMeasures: [],
@@ -636,7 +690,18 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
         mediaId: action.mediaId,
         noEffect: noEffectOf(view, action, draft.kind === "final" ? "final" : "interim"),
         sealed: action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedImages: 0 } : null,
-      })),
+      }))
+      // 3e: the strike the params will carry, until when it counts (decided now) and the strikes that count with it.
+      .concat(
+        strikeOf(view, draft).map(() => ({
+          kind: "strike" as MeasureKind,
+          mediaId: null,
+          noEffect: null,
+          sealed: null,
+          endsAt: new Date(now.getTime() + STANDING_RULES.strikeDays * DAY_MS).toISOString(),
+          activeThen: ACTIVE_THEN[view.authorStanding?.activeStrikes ?? "0"],
+        })),
+      ),
     reversals: draft.actions.filter((action) => MEASURES[action.kind].lifts !== null).map((action) => ({ kind: action.kind as ReversalKind, mediaId: action.mediaId, ...NO_RESET })),
     endedMeasures: endedBy(view, draft),
     reviewed: null,
@@ -681,11 +746,14 @@ export interface DecisionDigests {
 export function decisionParamsOf(view: CaseView, draft: CaseDraft, digests: DecisionDigests): CaseDecidedParams {
   const newest = view.snapshots[0];
   if (!newest) throw new Error("a decision names a snapshot of its case: the case holds none");
-  const actions = [...draft.actions].sort(compareDecisionActions);
-  const shared = { stateVersion: view.stateVersion, snapshotId: newest.id, snapshotDigest: digests.snapshot, redressVersion: REDRESS_VERSION, actions };
-  if (draft.kind === "correction") {
-    const corrected = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
-    if (!corrected) throw new Error("a correction's draft names a decision of the case");
+  const corrected = draft.kind === "correction" ? view.decisions.find((decided) => decided.id === draft.reviewsDecisionId) : undefined;
+  if (draft.kind === "correction" && !corrected) throw new Error("a correction's draft names a decision of the case");
+  // 3e: the strike the case answer says is due, and the overruling of a full correction, are the console's to add: the
+  // person never chooses either. Marks and the withdrawal for another measure come with the tasks that build them.
+  const added = draft.kind === "correction" ? overruleOf(corrected, reversesAll(view, draft)) : strikeOf(view, draft);
+  const actions = [...draft.actions, ...added].sort(compareDecisionActions);
+  const shared = { stateVersion: view.stateVersion, snapshotId: newest.id, snapshotDigest: digests.snapshot, redressVersion: REDRESS_VERSION, actions, unfounded: [], replaced: false };
+  if (draft.kind === "correction" && corrected) {
     return CaseDecidedParams.parse({
       ...shared,
       kind: "correction",

@@ -1,7 +1,8 @@
-import type { ExportFormat } from "@korbat/contracts";
+import type { ExportFormat, RuleId } from "@korbat/contracts";
 import { exportedDecisions } from "./author";
 import type { ModerationDeps } from "./context";
 import { exportedReports } from "./reports";
+import { exportedStrikes } from "./standing-repo";
 
 /**
  * The moderation member of an account's data export (3c design, section 7.11), which the account module writes last in
@@ -16,6 +17,8 @@ export type ModerationExport = ExportFormat["moderation"];
 
 /** ModerationForAccount.exportFor: both lists for one account, read before the archive's first byte. */
 export async function exportFor(deps: Pick<ModerationDeps, "apiDb" | "social" | "config">, userId: string): Promise<ModerationExport> {
+  // 3e: the strikes the account was given, from the ledger (W.8).
+  const strikes = (await exportedStrikes(deps.apiDb, userId)).map((strike) => ({ ...strike, ruleId: strike.ruleId as RuleId }));
   const [decisions, reports] = await Promise.all([exportedDecisions(deps, userId), exportedReports(deps, userId)]);
-  return { decisions, reports };
+  return { decisions, reports, strikes };
 }

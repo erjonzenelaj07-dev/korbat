@@ -1,7 +1,7 @@
 import { MEASURES, RETENTION, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
 // The rulebooks and the redress texts live in the index, which re-exports this module: the two import each other, and
 // each uses the other's functions only when called, never while it loads.
-import { getRedress, getRule } from "./index";
+import { getRedress, getRule, type RedressTexts } from "./index";
 
 /**
  * The statement of reasons (3c design, section 10), as one pure function of a decision's data: the author's screen, the
@@ -86,6 +86,15 @@ export const STATEMENT_WORDS = {
     own_initiative: "found by a moderator",
   },
   automation: "No automated means were used to find this or to decide it.",
+  // 3e (design, section 18, W.2): the strike, the overruling of one, and what the software did for a decision that gives one.
+  /** A strike: until when it counts, and how many of the account's strikes counted with it when it was decided. */
+  strike: (endsAt: string, activeThen: number) =>
+    `This decision gives your account a strike. It counts until ${endsAt}. With it your account had ${activeThen} active ${activeThen === 1 ? "strike" : "strikes"} when this was decided. korbat's rules fix when a decision gives a strike; the moderator does not choose it.`,
+  /** A strike whose decision's other measures all changed nothing: the content was already not shown, or deleted. */
+  strikeAnyway: "The strike counts although the post was already not shown or deleted: what counts is the breach.",
+  overruled: "korbat overruled the strike that decision gave. It no longer counts.",
+  automationStrike:
+    "No automated means were used to find this or to decide that it breaks the rule. That the decision gives a strike follows from korbat's published rule, which its software applies.",
   /**
    * The rule or the law, worded by what korbat knows when it decides. A decision that seals rests on a report that nobody
    * at korbat has checked against the images, since nobody opens them, so it says what the step rests on and never that
@@ -117,10 +126,32 @@ function fieldSentence(field: Field, reset: { oldValueKept: boolean; resetRuleId
   return parts.join(" ");
 }
 
+/** The kinds of 3e whose sentences this version of the package does not hold yet: none is rendered as another one. */
+const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting", "lift_suspension", "unretire_handle", "lift_reporting"];
+
+/**
+ * A strike, as a paragraph: that the decision gives one, until when it counts and how many counted with it; that it
+ * counts although the post was already not shown or deleted, when every other measure of the decision changed nothing;
+ * then the prior warning of what strikes lead to, from the decision's own redress version.
+ */
+function strikeParagraph(input: StatementInput, measure: StatementInput["measures"][number], redress: RedressTexts): string {
+  if (measure.endsAt === undefined || measure.endsAt === null || measure.activeThen === undefined || measure.activeThen === null) {
+    throw new Error("a statement's strike names its end of counting and the strikes active then: the decision's data holds neither");
+  }
+  const parts: string[] = [W.strike(utcMinute(measure.endsAt), measure.activeThen)];
+  const others = input.measures.filter((other) => other.kind !== "strike");
+  if (others.length > 0 && others.every((other) => other.noEffect !== null)) parts.push(W.strikeAnyway);
+  // Redress version 1 has no prior warning, and no decision under it holds a strike.
+  if (redress.strikeNext !== undefined) parts.push(redress.strikeNext);
+  return parts.join(" ");
+}
+
 /** One measure, as a paragraph: what was done, then that it changed nothing when it did not. */
-function measureParagraph(input: StatementInput, measure: StatementInput["measures"][number]): string {
+function measureParagraph(input: StatementInput, measure: StatementInput["measures"][number], redress: RedressTexts): string {
   const post = input.post === null ? null : utcMinute(input.post.createdAt);
   const deciding = input.kind === "interim";
+  if (UNWORDED.includes(measure.kind)) throw new Error(`a statement's ${measure.kind} is not worded in this version of @korbat/rules`);
+  if (measure.kind === "strike") return strikeParagraph(input, measure, redress);
   const field = fieldOf(measure.kind);
   if (measure.kind === "seal_media") {
     const sealed = measure.sealed ?? { posts: 0, images: 0, deletedImages: 0 };
@@ -149,6 +180,8 @@ function measureParagraph(input: StatementInput, measure: StatementInput["measur
 
 /** One reversal, as a paragraph. A lifted restriction of a post or an image names the post. */
 function reversalParagraph(input: StatementInput, reversal: StatementInput["reversals"][number]): string {
+  if (UNWORDED.includes(reversal.kind)) throw new Error(`a statement's ${reversal.kind} is not worded in this version of @korbat/rules`);
+  if (reversal.kind === "overrule") return W.overruled;
   const field = fieldOf(reversal.kind);
   if (field !== null) return `${W.liftedField(field)} ${fieldSentence(field, reversal)}`;
   if (reversal.kind === "unseal_media") return W.unsealed;
@@ -209,7 +242,7 @@ export function statementParagraphs(input: StatementInput): string[] {
     if (input.kind === "review") paragraphs.push(W.reviewed(decided, input.outcome === "kept" ? "kept" : input.outcome === "partly_reversed" ? "partly_reversed" : "reversed"));
     else paragraphs.push(input.reviewed.kind === "interim" ? W.interimLifted(decided) : W.corrected(decided, input.outcome === "partly_reversed"));
   }
-  for (const measure of input.measures) paragraphs.push(measureParagraph(input, measure));
+  for (const measure of input.measures) paragraphs.push(measureParagraph(input, measure, redress));
   for (const reversal of input.reversals) paragraphs.push(reversalParagraph(input, reversal));
   if (input.endedMeasures.length > 0) paragraphs.push(endedParagraph(input));
   if (paragraphs.length === 0) paragraphs.push(W.noAction);
@@ -222,7 +255,8 @@ export function statementParagraphs(input: StatementInput): string[] {
 
   // How it came to korbat, for a decision of its own; a review or a correction is korbat's own second look.
   if (!about) paragraphs.push(sourceSentence(input.source));
-  paragraphs.push(W.automation);
+  // A decision that gives a strike says what the software did: it applied korbat's published rule of when one is given.
+  paragraphs.push(input.measures.some((measure) => measure.kind === "strike") ? W.automationStrike : W.automation);
 
   // The rule or the law: the decision's own, or for a review or a correction the reviewed decision's, from that decision's
   // row and in the wording of the rulebook that decision was made under.

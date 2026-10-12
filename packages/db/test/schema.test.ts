@@ -46,9 +46,10 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 39 tables in total", () => {
-    // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables.
-    expect(tables.length).toBe(39);
+  test("there are 42 tables in total", () => {
+    // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
+    // three: suspension_replies, unfounded_marks and report_tallies.
+    expect(tables.length).toBe(42);
   });
   test("the tables 3c retired are gone, with their enums and the reputation column", () => {
     for (const name of ["reports", "strikes", "transparency_log"]) expect(byName.has(name), name).toBe(false);
@@ -133,7 +134,10 @@ describe("account lifecycle 1b", () => {
   test("handle_history reserves every lowercase handle a profile ever had, and goes with the profile", () => {
     const cfg = byName.get("handle_history")!;
     expect(cfg.schema).toBeUndefined(); // public
-    expect(cfg.columns.map((c) => c.name)).toEqual(["handle_lower", "profile_id", "changed_at"]);
+    // retired_at (3e design, section 6.1): set only by a retirement in the ledger, forced null at insert.
+    expect(cfg.columns.map((c) => c.name)).toEqual(["handle_lower", "profile_id", "changed_at", "retired_at"]);
+    expect(cfg.columns.find((c) => c.name === "retired_at")?.notNull).toBe(false);
+    expect(cfg.columns.find((c) => c.name === "retired_at")?.hasDefault).toBe(false);
     expect(cfg.columns.find((c) => c.name === "handle_lower")?.primary).toBe(true);
     expect(cfg.columns.find((c) => c.name === "profile_id")?.notNull).toBe(true);
     expect(cfg.columns.find((c) => c.name === "changed_at")?.notNull).toBe(true);
@@ -754,20 +758,37 @@ describe("moderation cases 3c", () => {
       ["reverses_action_id", "uuid", false],
       ["no_effect", "text", false],
       ["created_at", "timestamp with time zone", true],
+      // 3e (design, section 6.1): three the key signs, four the trigger forces.
+      ["days", "smallint", false],
+      ["announced", "boolean", false],
+      ["basis", "text", false],
+      ["rests_on", "uuid[]", false],
+      ["starts_at", "timestamp with time zone", false],
+      ["ends_at", "timestamp with time zone", false],
+      ["replaced", "boolean", false],
     ]);
-    // None of the forced columns has a default: the trigger of 0016 alone fills them.
-    for (const name of ["subject_account_id", "post_id", "reverses_action_id", "no_effect", "created_at"]) expect(column("decision_actions", name)?.hasDefault, name).toBe(false);
+    // None of the forced columns has a default: the triggers of 0016 and 0021 alone fill them.
+    for (const name of ["subject_account_id", "post_id", "reverses_action_id", "no_effect", "created_at", "days", "announced", "basis", "rests_on", "starts_at", "ends_at", "replaced"]) {
+      expect(column("decision_actions", name)?.hasDefault, name).toBe(false);
+    }
     const once = byName.get("decision_actions")!.uniqueConstraints.map((u) => [u.getName(), u.columns.map((c) => c.name), u.nullsNotDistinct]);
     expect(once).toEqual([["decision_actions_once", ["decision_id", "kind", "media_id"], true]]);
     const reversed = index("decision_actions", "decision_actions_reversed_once");
     expect(reversed?.unique).toBe(true);
     expect(indexColumns(reversed)).toEqual(["reverses_action_id"]);
     expect(predicate(reversed)).toBe("reverses_action_id is not null");
-    expect(checks("decision_actions")).toEqual(["decision_actions_no_effect"]);
+    expect(checks("decision_actions")).toEqual(["decision_actions_announced", "decision_actions_basis", "decision_actions_days", "decision_actions_no_effect"]);
+    // Each check names columns only: no value of action_kind, which a check may not name in the migration that adds it.
+    expect(checkSql("decision_actions", "decision_actions_days")).toBe(`"decision_actions"."days" between 1 and 30`);
+    expect(checkSql("decision_actions", "decision_actions_basis")).toBe(
+      `"decision_actions"."basis" in ('strikes', 'threat', 'terrorist', 'flood', 'protective', 'threat_repeat', 'ladder_end', 'reports')`,
+    );
+    expect(checkSql("decision_actions", "decision_actions_announced")).toBe(`"decision_actions"."announced" is null or "decision_actions"."basis" is not null`);
     expect(foreignKeys("decision_actions")).toEqual({
       decision_id: { table: "decisions", columns: ["id"], onDelete: "restrict" },
       reverses_action_id: { table: "decision_actions", columns: ["id"], onDelete: "no action" },
     });
+    // 3c's seven measures and five reversals, then 3e's six measures and four reversals, in the order the migration adds them.
     expect(schema.actionKind.enumValues).toEqual([
       "withhold",
       "remove",
@@ -781,7 +802,110 @@ describe("moderation cases 3c", () => {
       "restore_media",
       "restore_display_name",
       "restore_bio",
+      "strike",
+      "suspend",
+      "terminate",
+      "retire_handle",
+      "warn_reporting",
+      "restrict_reporting",
+      "overrule",
+      "lift_suspension",
+      "unretire_handle",
+      "lift_reporting",
     ]);
+  });
+
+  test("profiles gain the three columns standing_apply derives, null by default, and one interval at most", () => {
+    for (const name of ["suspended_from", "suspended_until", "reports_restricted_until"]) {
+      expect(column("profiles", name)?.getSQLType(), name).toBe("timestamp with time zone");
+      expect(column("profiles", name)?.notNull, name).toBe(false);
+      expect(column("profiles", name)?.hasDefault, name).toBe(false);
+    }
+    expect(byName.get("profiles")!.checks.map((c) => c.name).sort()).toEqual(["profiles_counts_nonnegative", "profiles_suspended"]);
+    expect(checkSql("profiles", "profiles_suspended")).toBe(
+      `("profiles"."suspended_from" is null) = ("profiles"."suspended_until" is null) and "profiles"."suspended_from" < "profiles"."suspended_until"`,
+    );
+  });
+
+  test("posts gain the three columns of Explore's resume rule, with their index", () => {
+    for (const name of ["hidden_at", "restored_at", "explore_from"]) {
+      expect(column("posts", name)?.getSQLType(), name).toBe("timestamp with time zone");
+      expect(column("posts", name)?.notNull, name).toBe(false);
+      expect(column("posts", name)?.hasDefault, name).toBe(false);
+    }
+    const idx = index("posts", "posts_explore_from_idx");
+    expect(idx?.unique).toBe(false);
+    expect(indexColumns(idx)).toEqual(["explore_from"]);
+    expect(predicate(idx)).toBe("explore_from is not null");
+  });
+
+  test("suspension_replies: one reply a standing measure, its statement held to its digest, and the replies waiting", () => {
+    expect(shape("suspension_replies")).toEqual([
+      ["action_id", "uuid", true],
+      ["account_id", "uuid", true],
+      ["statement", "text", false],
+      ["statement_salt", "text", false],
+      ["statement_digest", "text", false],
+      ["filed_at", "timestamp with time zone", true],
+      ["on_time", "boolean", true],
+      ["answered_by", "uuid", false],
+      ["answered_at", "timestamp with time zone", false],
+      ["erased_at", "timestamp with time zone", false],
+    ]);
+    expect(column("suspension_replies", "action_id")?.primary).toBe(true);
+    expect(foreignKeys("suspension_replies")).toEqual({
+      action_id: { table: "decision_actions", columns: ["id"], onDelete: "restrict" },
+      account_id: { table: "profiles", columns: ["id"], onDelete: "restrict" },
+      answered_by: { table: "decisions", columns: ["id"], onDelete: "no action" },
+    });
+    expect(checks("suspension_replies")).toEqual(["suspension_replies_statement", "suspension_replies_statement_len"]);
+    // The same three states as an appeal's statement, under the reply's own names.
+    expect(checkSql("suspension_replies", "suspension_replies_statement").replaceAll("suspension_replies", "appeals")).toBe(checkSql("appeals", "appeals_statement"));
+    const pending = index("suspension_replies", "suspension_replies_pending_idx");
+    expect(indexColumns(pending)).toEqual(["filed_at"]);
+    expect(predicate(pending)).toBe("answered_by is null");
+    expect(policies("suspension_replies")).toEqual([["suspension_replies_api_all", "all", apiRole]]);
+  });
+
+  test("unfounded_marks: one mark an item, with its reporter, its report and the decision that set or withdrew it", () => {
+    expect(shape("unfounded_marks")).toEqual([
+      ["item_id", "uuid", true],
+      ["decision_id", "uuid", true],
+      ["account_id", "uuid", true],
+      ["intake_id", "uuid", true],
+      ["reported_at", "timestamp with time zone", true],
+      ["marked_at", "timestamp with time zone", true],
+      ["withdrawn_by", "uuid", false],
+      ["withdrawn_at", "timestamp with time zone", false],
+    ]);
+    expect(column("unfounded_marks", "item_id")?.primary).toBe(true);
+    expect(foreignKeys("unfounded_marks")).toEqual({
+      item_id: { table: "intake_items", columns: ["id"], onDelete: "restrict" },
+      decision_id: { table: "decisions", columns: ["id"], onDelete: "restrict" },
+      intake_id: { table: "intakes", columns: ["id"], onDelete: "restrict" },
+      withdrawn_by: { table: "decisions", columns: ["id"], onDelete: "no action" },
+    });
+    expect(indexColumns(index("unfounded_marks", "unfounded_marks_account_idx"))).toEqual(["account_id", "reported_at"]);
+    expect(checks("unfounded_marks")).toEqual([]);
+    expect(policies("unfounded_marks")).toEqual([["unfounded_marks_api_all", "all", apiRole]]);
+  });
+
+  test("report_tallies: one row an account and day, which the API role may only read", () => {
+    expect(shape("report_tallies")).toEqual([
+      ["account_id", "uuid", true],
+      ["day", "date", true],
+      ["reports", "integer", true],
+    ]);
+    expect(byName.get("report_tallies")!.primaryKeys.map((k) => k.columns.map((c) => c.name))).toEqual([["account_id", "day"]]);
+    expect(foreignKeys("report_tallies")).toEqual({});
+    expect(policies("report_tallies")).toEqual([["report_tallies_api_select", "select", apiRole]]);
+  });
+
+  test("no table of 3e has a column named like an email or an address", () => {
+    for (const name of ["suspension_replies", "unfounded_marks", "report_tallies"]) {
+      expect(byName.get(name)?.enableRLS, name).toBe(true);
+      for (const c of byName.get(name)!.columns) expect(c.name, `${name}.${c.name}`).not.toMatch(/email|address/i);
+    }
   });
 
   test("seal_posts lists the posts of a seal with their image counts, keyed by measure and post", () => {

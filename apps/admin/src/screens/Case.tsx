@@ -15,7 +15,7 @@ import type { StaffApi } from "../api";
 import { afterRefusal, COMPOSER, confirmDecision, confirmWhileBusy, correctionDraft, decidedNotice, newDraft, offeredDraft, openCorrection, openReview, reviewDraft, saveDraftText, withSavedTexts, withSeal, type CaseDraft, type DraftTextKind, type StaffRole } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS } from "../messages";
+import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { revealWithKey } from "../step-up";
@@ -559,6 +559,7 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
                       ? ": ended with the admin's answer"
                       : ": ended with the case's decision"}
               {action.noEffect === null ? "" : "; changed nothing when imposed"}
+              {action.kind === "strike" && action.countsUntil !== null ? `; counts until ${dateTime(action.countsUntil)}` : ""}
               {action.kind === "reset_display_name" || action.kind === "reset_bio" ? "; written once; the field as it reads now is shown above" : ""}
               {action.sealed === null ? null : <SealList sealed={action.sealed} />}
             </li>
@@ -596,6 +597,26 @@ function historyWords(entry: CaseHistoryEntry): string {
   }
 }
 
+/**
+ * The author's standing on a post case (3e design, section 8.2), above the evidence and in bands, as D 8 words a
+ * reporter's summary: so that the moderator knows what a strike here leads to, never as a reason to find a breach.
+ */
+function AuthorStandingBands({ view }: { view: CaseView }) {
+  const standing = view.authorStanding;
+  if (standing === null) return null;
+  return (
+    <section className="panel standing" aria-labelledby="standing-title">
+      <h3 id="standing-title">The author's standing</h3>
+      <ul className="plain">
+        <li>{STANDING_WORDS.bands.activeStrikes[standing.activeStrikes]}</li>
+        <li>{STANDING_WORDS.bands.suspensionsInYear[standing.suspensionsInYear]}</li>
+        <li>{STANDING_WORDS.bands.now[standing.now]}</li>
+      </ul>
+      <p className="hint">{STANDING_WORDS.postStanding}</p>
+    </section>
+  );
+}
+
 export function CaseScreenView(props: CaseScreenViewProps) {
   const { view, busy, notice, error, note } = props;
   return (
@@ -617,6 +638,7 @@ export function CaseScreenView(props: CaseScreenViewProps) {
       ) : null}
       {view.lane === 0 ? <p className="banner art18">{ART_18_BANNER}</p> : null}
       <SuspectBanner view={view} onOpenCase={props.onOpenCase} />
+      <AuthorStandingBands view={view} />
 
       <h3>Evidence</h3>
       <Target view={view} />

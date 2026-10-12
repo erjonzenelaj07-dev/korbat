@@ -66,6 +66,8 @@ vi.setConfig({ testTimeout: 90_000 });
 const SEAL_WHILE_DECIDING = { kind: "interim", ruleId: "R2", actions: [act("seal_media")] } as const;
 const SEAL_FOR_GOOD = { kind: "final", ruleId: "R2", actions: [act("seal_media")] } as const;
 const NO_SEAL = { kind: "final", outcome: "no_violation" } as const;
+/** 3e: the standing columns of an action that is no standing measure and no strike, as the case answer carries them. */
+const NO_STANDING = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null } as const;
 
 /**
  * The queue and the case, for staff (3c design, section 7.3), against the real database: the case answer with its
@@ -349,7 +351,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
           expect.objectContaining({ id: seal, kind: "interim", outcome: "restricted", ruleId: "R2", category: MINORS, suspect: true, unseen: false, needsAdmin: false, staffHandle: await handleOf(tx, mod.id) }),
         ]);
         expect(sealedView.decisions[0]!.actions).toEqual([
-          { id: expect.any(String), kind: "seal_media", mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: { posts: 1, images: 2, deletedPosts: 0, list: [{ postId: quoted.postId, createdAt: expect.any(String), images: 2 }] } },
+          { id: expect.any(String), kind: "seal_media", mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, ...NO_STANDING, sealed: { posts: 1, images: 2, deletedPosts: 0, list: [{ postId: quoted.postId, createdAt: expect.any(String), images: 2 }] } },
         ]);
         expect(sealedView.decisions[0]!.facts).toEqual(expect.stringContaining("facts"));
 

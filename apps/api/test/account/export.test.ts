@@ -256,6 +256,7 @@ function harness() {
     decidedBy: "a staff member the export must never name",
   } satisfies ModerationExport["decisions"][number] & { decidedBy: string };
   const moderation: ModerationExport = {
+    strikes: [],
     reports: [
       {
         items: [
@@ -503,6 +504,8 @@ function expectedModeration(h: Harness) {
         ],
       },
     ],
+    // 3e (W.8): the strikes the account was given, after its reports.
+    strikes: [],
   };
 }
 
@@ -648,11 +651,11 @@ describe("building the export", () => {
     expect(h.asked).toEqual([h.userId]);
   });
 
-  test("an account module built without the moderation module still writes the member, with two empty lists", async () => {
+  test("an account module built without the moderation module still writes the member, with three empty lists", async () => {
     const h = harness();
     const deps: AccountDeps = { ...h.deps, moderation: undefined };
     const text = (await collect(exportJson(await buildExport(deps, h.userId, h.currentSession, h.now())))).join("");
-    expect(text).toBe(JSON.stringify({ ...expectedDocument(h), moderation: { decisions: [], reports: [] } }, null, 2));
+    expect(text).toBe(JSON.stringify({ ...expectedDocument(h), moderation: { decisions: [], reports: [], strikes: [] } }, null, 2));
     expect(() => ExportFormat.parse(JSON.parse(text))).not.toThrow();
     expect(h.asked).toEqual([]);
   });

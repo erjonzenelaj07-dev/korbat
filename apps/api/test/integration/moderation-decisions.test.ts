@@ -893,7 +893,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the decision triggers", 
 
         const removal = await decideIn(tx, mod, r.caseId, { kind: "final", actions: [act("remove_media", one), act("remove_media", two)] });
         const correct = (outcome: "reversed" | "partly_reversed", actions: DecisionInput["actions"]) => detail({ kind: "correction", reviewsDecisionId: removal, outcome, actions });
-        expect(await correct("reversed", [])).toMatch(/^reversed: a reversing decision holds at least one reversal/);
+        // 3e: the fixture signs the overruling of a full reversal's strike; left out here, the correction holds no reversal at all.
+        expect(await detail({ kind: "correction", reviewsDecisionId: removal, outcome: "reversed", actions: [], overrule: false })).toMatch(/^reversed: a reversing decision holds at least one reversal/);
         expect(await correct("partly_reversed", [])).toMatch(/^reversed: /);
         expect(await correct("reversed", [act("restore_media", one)])).toMatch(/^reversed: a measure of the reviewed decision is still in force/);
         expect(await correct("partly_reversed", [act("restore_media", one), act("restore_media", two)])).toMatch(/^partly_reversed: /);
@@ -935,7 +936,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the decision triggers", 
         // Something done while deciding about a deleted post can never take effect: it is recorded without a mail.
         expect(await decisionRow(tx, onDeleted)).toMatchObject({ author_mail: "none" });
         const finalOnDeleted = await decideIn(tx, mod, gone.caseId, { kind: "final", actions: [act("remove"), act("remove_media", gone.mediaIds[0]!)] });
-        expect((await actionsOf(tx, finalOnDeleted)).map((a) => a.no_effect)).toEqual(["deleted", "deleted"]);
+        // 3e: the strike it gave counts although the post is deleted: a strike never has a no_effect.
+        expect((await actionsOf(tx, finalOnDeleted)).map((a) => [a.kind, a.no_effect])).toEqual([
+          ["remove", "deleted"],
+          ["remove_media", "deleted"],
+          ["strike", null],
+        ]);
         expect(await decisionRow(tx, finalOnDeleted)).toMatchObject({ author_mail: "pending", ended_interim: false });
         // The deletion is terminal: the level follows the ledger, the state stays.
         expect(await postRow(tx, gone.postId)).toEqual({ state: "deleted_by_author", level: "removed", erased: false });
@@ -1180,7 +1186,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the decision triggers", 
           ground: "incompatible",
           ruleId: "R3",
           rulesVersion: 1,
-          redressVersion: 2,
+          // A version other than the one the decision was made under (3e raised the current one to 2).
+          redressVersion: 1,
           category: TC,
           categoryKeyword: null,
           factsDigest: hex64(),

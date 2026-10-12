@@ -1,4 +1,4 @@
-import type { AppealsReviewedParams, CaseDecision, ItemOutcome, ModerationErrorCode, ReviewerState, StaffErrorCode } from "@korbat/contracts";
+import { STANDING_RULES, type AppealsReviewedParams, type AuthorStanding, type CaseDecision, type ItemOutcome, type ModerationErrorCode, type ReviewerState, type StaffErrorCode } from "@korbat/contracts";
 
 /**
  * The console's own words for every code it can receive (3a design, section 10) and for every outcome it shows (3c
@@ -20,6 +20,58 @@ export const STAFF_MESSAGES: Record<StaffErrorCode, string> = {
   staff_step_up_required: "Confirm this with your staff key.",
   staff_step_up_invalid: "That confirmation was for another action, was already used or could not be checked. Try again.",
 };
+
+/**
+ * 3e (design, section 8.3): the two sentences that also word a code of the moderation table, the standing measure that
+ * is already in the way and a termination under R2.
+ */
+const STANDING_CONFLICT =
+  'Not open: a suspension or termination of this account already stands and has not ended. To change it, lift it first with a correction of its decision. If it is announced and has not started, and an admin must take a measure at once, use "Withdraw it for another measure" on that decision: the person is then told that korbat withdrew it for another measure, not that their reply succeeded.';
+const STANDING_TERMINATE_R2 =
+  "No termination under R2: korbat's staff do not open images reported this way, so korbat has not assessed them and nothing is established. A protective suspension is the most a sealed report allows.";
+
+/**
+ * The console's sentences about an account's standing (3e design, section 8), each under the design's key. Every number
+ * in one is printed from STANDING_RULES or from the answer, never typed, so that a table test can hold them.
+ */
+export const STANDING_WORDS = {
+  /** 8.2: the line under "Restrict" of "Decide the case" on a post case. It is not a choice. */
+  strike: {
+    due: "This decision gives a strike: it restricts a post under a korbat rule, and the post was made after its author was told of their newest strike, or they have none. You do not choose this. It counts also when the post is already removed or deleted.",
+    none: {
+      interim: "No strike: a measure taken while deciding never gives one.",
+      law: "No strike: a decision on the law alone never gives one.",
+      r2: "No strike: a decision under R2, or one that answers a report of child sexual abuse material, never gives one.",
+      already: "No strike: this post already carries a strike that stands.",
+      before: "No strike: the author posted this before they were told of their newest strike, so it is no repeat after that warning.",
+    },
+  },
+  /** 8.2: the author's standing above the evidence of a post case, in bands. */
+  bands: {
+    activeStrikes: { "0": "Active strikes: none", "1": "Active strikes: 1", "2": "Active strikes: 2", "3_or_more": "Active strikes: 3 or more" } satisfies Record<AuthorStanding["activeStrikes"], string>,
+    suspensionsInYear: {
+      "0": `Suspensions decided in the last ${STANDING_RULES.ladderMemoryDays} days: none`,
+      "1": `Suspensions decided in the last ${STANDING_RULES.ladderMemoryDays} days: 1`,
+      "2_or_more": `Suspensions decided in the last ${STANDING_RULES.ladderMemoryDays} days: 2 or more`,
+    } satisfies Record<AuthorStanding["suspensionsInYear"], string>,
+    now: {
+      none: "Now: no measure",
+      announced: "Now: a suspension is announced",
+      suspended: "Now: suspended",
+      terminated: "Now: terminated, waiting for deletion",
+    } satisfies Record<AuthorStanding["now"], string>,
+  },
+  /** [post.standing] */
+  postStanding: "Decide this post on what it says. The author's standing never makes a post a breach; it is shown so that you know what a strike here leads to.",
+  /** 8.7: [review.strike], beside a review or a correction of a decision that gave a strike that stands. */
+  reviewStrike: "A strike falls only with its whole finding: the console adds its overruling when you choose Reverse, and never with Reverse in part.",
+  /** 8.7: [review.rests], when a suspension that stands rests on the reviewed decision's strike. */
+  reviewRests: `A suspension of this account rests on this strike. If you reverse this decision and fewer than ${STANDING_RULES.ladderStrikes} of its strikes then stand, the suspension loses its basis when you confirm: one that has not started will not start, one that runs ends, and one that has already ended no longer counts toward a later suspension. This decision's statement says which. A reply to it that nobody answered is answered by your decision.`,
+  /** 8.3: [conflict] */
+  conflict: STANDING_CONFLICT,
+  /** 8.3: [terminate.r2] */
+  terminateR2: STANDING_TERMINATE_R2,
+} as const;
 
 /**
  * The moderation codes the console can meet (3c design, sections 8 and 10): those of the case routes, of a decision, of
@@ -45,6 +97,13 @@ export const CONSOLE_MODERATION_CODES = [
   "invalid_decision",
   "image_refused",
   "reveal_refused",
+  // 3e (design, section 8.9): the first three are the ones the composer meets; the other two cannot reach the console
+  // today and are worded so that the table has an entry for each code of the type.
+  "strike_mismatch",
+  "standing_conflict",
+  "ground_not_established",
+  "reply_not_open",
+  "reporting_restricted",
 ] as const satisfies readonly ModerationErrorCode[];
 export type ConsoleModerationCode = (typeof CONSOLE_MODERATION_CODES)[number];
 
@@ -69,6 +128,11 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
   invalid_decision: "This decision cannot stand as it is.",
   image_refused: "That image is not shown.",
   reveal_refused: "Nobody can be revealed for this item: it names no sender, or its sender's name is no longer kept.",
+  strike_mismatch: "The strike rule changed for this post since this page read it. Read the case again and decide again.",
+  standing_conflict: STANDING_CONFLICT,
+  ground_not_established: STANDING_TERMINATE_R2,
+  reply_not_open: "This measure takes no reply: it has ended or was lifted.",
+  reporting_restricted: "That account's reports under the rules are restricted.",
 };
 
 /**

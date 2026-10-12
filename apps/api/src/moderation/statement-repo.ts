@@ -93,6 +93,9 @@ export interface StatementActionRow {
   sealedImages: number;
   /** The seal's images on posts their author had deleted by the time it was recorded: nothing later is read. */
   sealedDeletedImages: number;
+  /** A strike's end of counting, and the strikes of its account that stood and counted at its decision's time, this one included. */
+  endsAt: string | null;
+  activeThen: number | null;
 }
 
 /** A decision's measures and reversals, in the ledger's order of kinds. */
@@ -104,7 +107,12 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
                (select count(*)::int from seal_posts s where s.action_id = a.id) as sealed_posts,
                (select coalesce(sum(s.images), 0)::int from seal_posts s where s.action_id = a.id) as sealed_images,
                (select coalesce(sum(s.images), 0)::int from seal_posts s join posts p on p.id = s.post_id
-                 where s.action_id = a.id and p.state = 'deleted_by_author' and p.deleted_at <= a.created_at) as sealed_deleted
+                 where s.action_id = a.id and p.state = 'deleted_by_author' and p.deleted_at <= a.created_at) as sealed_deleted,
+               case when a.kind = 'strike' then ${iso("a.ends_at")} end as ends_at,
+               -- What the ledger held at the decision's time, never later: a strike that counted then, and was not overruled by then.
+               case when a.kind = 'strike' then (select count(*)::int from decision_actions s
+                     where s.subject_account_id = a.subject_account_id and s.kind = 'strike' and s.created_at <= a.created_at and s.ends_at > a.created_at
+                       and not exists (select 1 from decision_actions r where r.reverses_action_id = s.id and r.created_at <= a.created_at)) end as active_then
           from decision_actions a join decisions d on d.id = a.decision_id
           left join decision_actions l on l.id = a.reverses_action_id
           left join decisions ld on ld.id = l.decision_id
@@ -119,6 +127,8 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
     sealedPosts: row.sealed_posts as number,
     sealedImages: row.sealed_images as number,
     sealedDeletedImages: row.sealed_deleted as number,
+    endsAt: row.ends_at as string | null,
+    activeThen: row.active_then as number | null,
   }));
 }
 

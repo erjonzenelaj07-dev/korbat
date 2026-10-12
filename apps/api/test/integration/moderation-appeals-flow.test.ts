@@ -146,7 +146,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals and reviews, fro
 
     // The console: the appeal waits, the moderator who removed the post may not review it, anyone else may.
     const rowFor = async (staff: RealStaff) => (await appealsList(w.deps, staff.session)).appeals.find((row) => row.decisionId === r.decisionId);
-    expect(await rowFor(mod2)).toMatchObject({ caseId: r.caseId, ruleId: "R1", legal: false, actions: ["remove"], deadline: until, reviewer: "available", needsAdmin: false, mayReview: true });
+    // 3e: the removal under a rule gave the post its strike, which the row lists among the decision's actions.
+    expect(await rowFor(mod2)).toMatchObject({ caseId: r.caseId, ruleId: "R1", legal: false, actions: ["remove", "strike"], deadline: until, reviewer: "available", needsAdmin: false, mayReview: true });
     expect((await rowFor(mod))!.mayReview).toBe(false);
     expect(JSON.stringify(await appealsList(w.deps, mod2.session))).not.toContain("film");
     expect(await overview(w.deps, mod2.session)).toMatchObject({ appealsWaiting: waiting + 1 });

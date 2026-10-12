@@ -215,8 +215,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     const created = (await w.apiDb.execute<{ at: string }>(sql`select to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at from posts where id = ${postId}::uuid`))[0]!.at;
     expect(page.nextCursor).toBeNull();
     expect(page.decisions).toEqual([
-      { id: final, kind: "final", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["remove"], endedInterim: true, ruleId: "R3", legal: false, appealUntil: expect.any(String), appeal: null, reversedOn: null },
-      { id: interim, kind: "interim", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["withhold"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, appeal: null, reversedOn: null },
+      // 3e: the removal under R3 gives the post its strike, listed with the day it stops counting.
+      { id: final, kind: "final", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["remove", "strike"], endedInterim: true, ruleId: "R3", legal: false, appealUntil: expect.any(String), appeal: null, reversedOn: null, strike: { countsUntil: expect.any(String), overruledAt: null } },
+      { id: interim, kind: "interim", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["withhold"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, appeal: null, reversedOn: null, strike: null },
     ]);
     expect(page.decisions.map((row) => row.id)).not.toContain(silent);
     expect((await casesOf(stranger.b)).decisions).toEqual([]);
@@ -228,7 +229,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     expect(view).toMatchObject({ id: final, kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R3", source: "report", post: { id: postId, createdAt: created }, reversedOn: null });
     expect(view.appealUntil).toBe(appealDeadline(decidedAt).toISOString());
     expect(page.decisions[0]!.appealUntil).toBe(view.appealUntil);
-    expect(view.measures).toMatchObject([{ kind: "remove", mediaId: null, sealed: null }]);
+    // 3e: the removal gave a strike, with the day it stops counting and the strikes that counted then.
+    expect(view.measures).toMatchObject([
+      { kind: "remove", mediaId: null, sealed: null },
+      { kind: "strike", mediaId: null, sealed: null, endsAt: page.decisions[0]!.strike!.countsUntil, activeThen: 1 },
+    ]);
     expect(view.endedMeasures).toEqual([{ kind: "withhold", mediaId: null, resetDecisionId: null, oldValueKept: false, resetRuleId: null }]);
     expect(view.content).toEqual({ kind: "post", body: "the reported words", deletedByAuthor: false, images: [], imageCount: 0, imagesHidden: null });
     // It renders as the mail did: the app calls the same function on the same data.
@@ -246,7 +251,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     }
 
     // The post's chip names the removal, to its author alone.
-    expect((await postOf(author.b, postId)).moderation).toEqual({ decisionId: final, ruleId: "R3", legal: false, interim: false });
+    expect((await postOf(author.b, postId)).moderation).toEqual({ decisionId: final, ruleId: "R3", legal: false, interim: false, strikeUntil: page.decisions[0]!.strike!.countsUntil });
     const whole = JSON.stringify([page, view, whileDeciding, await postOf(author.b, postId), w.mailer.to(author.email, "moderation_decision")]);
     for (const secret of [reporter.handle, reporter.id, explanation, first.ref]) expect(whole.includes(secret), secret).toBe(false);
     // And no member of the answers could carry a report, its sender or a count of them: the source is a category.
@@ -340,7 +345,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     const notice = await sent(notices.illegal([postTarget(postId)], { email: w.address() }));
     const removal = await decided(moderator, notice.caseId, { kind: "final", ground: "illegal", actions: [act("remove")] });
     expect((await decisionOf(author.b, removal)).appealUntil).not.toBeNull();
-    expect((await postOf(author.b, postId)).moderation).toEqual({ decisionId: removal, ruleId: null, legal: true, interim: false });
+    // 3e: a removal on the ground of the law gives no strike.
+    expect((await postOf(author.b, postId)).moderation).toEqual({ decisionId: removal, ruleId: null, legal: true, interim: false, strikeUntil: null });
     const correction = await decided(moderator, notice.caseId, { kind: "correction", reviewsDecisionId: removal, actions: [act("restore")] });
 
     const page = await casesOf(author.b);
@@ -404,7 +410,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     await decided(moderator, one.caseId, { kind: "final", ruleId: "R1", actions: [act("remove")] });
     const two = await sent(notices.rule([postTarget(twice)], { ruleId: "R3" }));
     const newer = await decided(moderator, two.caseId, { kind: "final", ruleId: "R3", actions: [act("remove")] });
-    expect((await postOf(author.b, twice)).moderation).toEqual({ decisionId: newer, ruleId: "R3", legal: false, interim: false });
+    // 3e: the post got its one strike from the R1 removal; the newer removal gives none, so its chip names no strike.
+    expect((await postOf(author.b, twice)).moderation).toEqual({ decisionId: newer, ruleId: "R3", legal: false, interim: false, strikeUntil: null });
     // A withhold while a third case is decided does not take the chip from the removal.
     const three = await sent(notices.rule([postTarget(twice)], { ruleId: "R6" }));
     await decided(moderator, three.caseId, { kind: "interim", ruleId: "R6", actions: [act("withhold")] });
@@ -414,7 +421,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     const fine = await newPostRow(w.apiDb, author.id);
     const list = await read(author.b, `/api/profiles/${author.handle}/posts?limit=50`, TimelinePage);
     const listed = new Map(list.items.map((item) => [item.post.id, item.post]));
-    expect(listed.get(held)?.moderation).toEqual({ decisionId: withhold, ruleId: "R4", legal: false, interim: true });
+    expect(listed.get(held)?.moderation).toEqual({ decisionId: withhold, ruleId: "R4", legal: false, interim: true, strikeUntil: null });
     expect(listed.get(twice)?.moderation).toMatchObject({ decisionId: newer });
     expect("moderation" in listed.get(fine)!).toBe(false);
   });

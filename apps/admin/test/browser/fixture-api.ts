@@ -10,6 +10,7 @@ import {
   IdentityRevealRequest,
   MEASURES,
   RULE_DEFAULT_CATEGORY,
+  STANDING_RULES,
   STAFF_AUDIT_PAGE_SIZE,
   STAFF_STEP_UP_CHALLENGE,
   StaffEnrollOptionsRequest,
@@ -54,15 +55,18 @@ import {
   CASE_POST,
   CASE_QUOTED,
   CASE_SEALABLE,
+  CASE_STRIKE,
   frozenCase,
   LONGEST_EXPLANATION,
   LONGEST_NOTE,
   LOOKALIKE,
+  NO_STANDING,
   overview,
   plainCase,
   postCase,
   QUEUE_ROWS,
   sealableCase,
+  strikeCase,
 } from "../case-fixtures";
 import { HOSTILE } from "../fixtures";
 
@@ -326,13 +330,36 @@ function ceremonyChallenge(purpose: "staff_signin" | "staff_register", binding: 
  * The status the API answers each moderation refusal the fixtures use with (apps/api/src/moderation/context.ts); the
  * unit test that holds the staff statuses to the API's source holds these too.
  */
-export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, text_quotes_user: 422, rate_limited: 429, image_refused: 404, staff_recused: 403, case_changed: 409, snapshot_mismatch: 409, reviewer_conflict: 403 } as const;
+export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, text_quotes_user: 422, rate_limited: 429, image_refused: 404, staff_recused: 403, case_changed: 409, snapshot_mismatch: 409, reviewer_conflict: 403, strike_mismatch: 409 } as const;
 
 /** The kinds of text a decision or a correction names: the ones a case's answer hands back as drafts while no decision has named them. */
 const DRAFT_KINDS: readonly string[] = ["facts", "reason", "legal_reference", "review_reason"];
 
 /** What an item reads once a decision answered it. */
 const ITEM_OUTCOMES = { restricted: { incompatible: "restricted_rule", illegal: "restricted_legal" }, no_violation: "no_violation", not_evident: "not_evident" } as const;
+
+/**
+ * 3e (design, sections 7.4 and 7.11): what the database holds a decision's strike and its overruling to, as a problem's
+ * words or null. A final restriction under a korbat rule other than R2 that answers no suspect item gives a strike
+ * exactly when the case's answer said one is due; a correction or a review overrules the strike of the decision it
+ * reverses exactly when it reverses that decision whole, and never signs a strike.
+ */
+function strikeProblem(view: CaseView, kind: string, outcome: string, ground: string | null, ruleId: string | null, actions: readonly { kind: string }[], reviewed: CaseDecision | undefined): string | null {
+  const strikes = actions.some((action) => action.kind === "strike");
+  const overrules = actions.some((action) => action.kind === "overrule");
+  if (kind === "correction" || kind === "review") {
+    if (strikes) return "a strike signed with a reversal";
+    const standing = reviewed?.actions.some((action) => action.kind === "strike" && action.inForce) ?? false;
+    return overrules !== (standing && outcome === "reversed") ? "an overruling that the reversal does not bear out" : null;
+  }
+  if (overrules) return "an overruling signed with a decision that reverses nothing";
+  const suspect = view.items.some((item) => item.outcome === null && item.suspect);
+  const due = kind === "final" && outcome === "restricted" && ground === "incompatible" && ruleId !== "R2" && !suspect && (view.strikeDue?.due ?? false);
+  return strikes !== due ? "a strike the case's answer did not say is due, or none where it said one is" : null;
+}
+
+/** The author's band of active strikes once a decision gave one more. */
+const NEXT_BAND = { "0": "1", "1": "2", "2": "3_or_more", "3_or_more": "3_or_more" } as const;
 
 /**
  * The case as a confirmed decision leaves it, changed in place: the decision with its measures in the case's list and
@@ -351,11 +378,13 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
         lifted.inForce = false;
         lifted.liftedBy = id;
       }
-      return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null };
+      return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null, ...NO_STANDING };
     }
     const reach = view.suspicion?.reach ?? { posts: 0, images: 0 };
     const sealed = action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedPosts: 0, list: [] } : null;
-    return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed };
+    // 3e: a strike counts STANDING_RULES.strikeDays from its decision, and nothing rests on it yet.
+    const strike = action.kind === "strike" ? { countsUntil: new Date(Date.parse(at) + STANDING_RULES.strikeDays * 86_400_000).toISOString(), restedOnBy: [] } : {};
+    return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed, ...NO_STANDING, ...strike };
   });
   const suspect = view.items.some((item) => item.outcome === null && item.suspect);
   view.decisions = [
@@ -389,6 +418,11 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
   ];
   view.history = [...view.history, { at, event: "decision", refId: id, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: params.kind, outcome: params.outcome, staffHandle, result: null }];
   view.stateVersion += 1;
+  // 3e: the post now carries a strike that stands, and its author has one more.
+  if (actions.some((action) => action.kind === "strike")) {
+    view.strikeDue = { due: false, why: "already_struck" };
+    if (view.authorStanding) view.authorStanding = { ...view.authorStanding, activeStrikes: NEXT_BAND[view.authorStanding.activeStrikes] };
+  }
   if (actions.some((action) => action.kind === "seal_media") && view.suspicion) view.suspicion = { ...view.suspicion, reach: { ...view.suspicion.reach, sealed: view.suspicion.reach.images, served: 0 } };
   if (params.kind !== "final" || (params.outcome !== "restricted" && params.outcome !== "no_violation" && params.outcome !== "not_evident")) return;
   const outcome = params.outcome === "restricted" ? ITEM_OUTCOMES.restricted[params.ground ?? "incompatible"] : ITEM_OUTCOMES[params.outcome];
@@ -416,7 +450,7 @@ function applyReview(view: CaseView, reviewed: CaseDecision, params: AppealsRevi
       lifted.inForce = false;
       lifted.liftedBy = id;
     }
-    return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null };
+    return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null, ...NO_STANDING };
   });
   view.decisions = [
     ...view.decisions,
@@ -502,6 +536,8 @@ export function createFixtureApi() {
       [CASE_CHANGED, plainCase(CASE_CHANGED, "f5d8e7da-4906-48da-91e6-25c413a8f7e1")],
       [CASE_DRAFTS, plainCase(CASE_DRAFTS, "f5d8e7da-4906-48da-91e6-25c413a8f7e2")],
       [CASE_APPEALED, appealedCase()],
+      // 3e: the case of the run that signs a strike.
+      [CASE_STRIKE, strikeCase()],
     ]),
     /** The role the signed-in person holds: a moderator, unless a step of the walk makes them an admin. */
     role: "moderator" as StaffMe["role"],
@@ -875,10 +911,16 @@ export function createFixtureApi() {
         throw new Refusal(MODERATION_REFUSAL_STATUS.text_not_found, "text_not_found");
       }
       // A review lifts what is still in force of the reviewed decision, and its answer says how much.
-      const inForce = reviewed.actions.filter((action) => MEASURES[action.kind].lifts === null && action.inForce).length;
-      const lifted = params.actions.length;
+      // 3e: the strike is not lifted one by one: it is overruled with the whole finding, and only then.
+      const inForce = reviewed.actions.filter((action) => MEASURES[action.kind].lifts === null && action.kind !== "strike" && action.inForce).length;
+      const lifted = params.actions.filter((action) => action.kind !== "overrule").length;
       if ((params.outcome === "kept" && lifted !== 0) || (params.outcome === "reversed" && lifted !== inForce) || (params.outcome === "partly_reversed" && (lifted === 0 || lifted >= inForce))) {
         problem(`${what}: an answer that its reversals do not bear out`);
+        throw new Refusal(422, "invalid_decision");
+      }
+      const strikeIssue = strikeProblem(found, "review", params.outcome, null, null, params.actions, reviewed);
+      if (strikeIssue !== null) {
+        problem(`${what}: ${strikeIssue}`);
         throw new Refusal(422, "invalid_decision");
       }
       saved.used = true;
@@ -980,6 +1022,12 @@ export function createFixtureApi() {
         if (!newest || params.snapshotId !== newest.id || params.snapshotDigest !== shownDigest) {
           problem(`${what}: a snapshot that is not the case's newest as the page was shown it`);
           throw new Refusal(MODERATION_REFUSAL_STATUS.snapshot_mismatch, "snapshot_mismatch");
+        }
+        // 3e: the strike and its overruling, as the database holds them to the case's answer and the corrected decision.
+        const strikeIssue = strikeProblem(found, params.kind, params.outcome, params.ground, params.ruleId, params.actions, found.decisions.find((decided) => decided.id === params.reviewsDecisionId));
+        if (strikeIssue !== null) {
+          problem(`${what}: ${strikeIssue}`);
+          throw params.kind === "correction" ? new Refusal(422, "invalid_decision") : new Refusal(MODERATION_REFUSAL_STATUS.strike_mismatch, "strike_mismatch");
         }
         // Each text the decision names: one the page saved on this case, of its kind, not yet used, and never a digest this server made up.
         const named = [
@@ -1170,6 +1218,9 @@ export function createFixtureApi() {
         factsDigest: hex64(),
         reasonDigest: hex64(),
         legalReferenceDigest: null,
+        // 3e: every decision's params carry the marks and the withdrawal; this one sets neither.
+        unfounded: [],
+        replaced: false,
       });
       applyDecision(found, params, { facts: "The post repeats one link in every reply.", reason: "That is spam, which rule R6 names.", legalReference: null }, OTHER_STAFF);
       if (found.target.type === "post") found.target = { ...found.target, state: "withheld", level: "withheld" };

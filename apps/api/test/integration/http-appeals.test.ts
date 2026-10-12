@@ -242,7 +242,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals, reviews and re-
     expect(listed.headers.get("cache-control")).toBe("no-store");
     const page = await parsed(listed, 200, AppealsPage);
     const row = page.appeals.find((appeal) => appeal.decisionId === removal)!;
-    expect(row).toMatchObject({ caseId: r.caseId, ruleId: "R1", actions: ["remove"], reviewer: "available", needsAdmin: false, mayReview: true });
+    // 3e: the removal under R1 gave the post a strike, listed among the actions the appeal is against.
+    expect(row).toMatchObject({ caseId: r.caseId, ruleId: "R1", actions: ["remove", "strike"], reviewer: "available", needsAdmin: false, mayReview: true });
     expect(JSON.stringify(page)).not.toContain("Please look again");
     expect((await parsed(await moderator.b.fetch("/api/staff/appeals", { headers: MARKED }), 200, AppealsPage)).appeals.find((appeal) => appeal.id === row.id)!.mayReview).toBe(false);
     // The home screen counts them, with the person's own number.
@@ -279,7 +280,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals, reviews and re-
     await settle();
     expect(after).toMatchObject({ id: r.caseId, target: { type: "post", id: r.postId, state: "visible", level: "visible" } });
     const reviewRow = after.decisions.at(-1)!;
-    expect(reviewRow).toMatchObject({ kind: "review", outcome: "reversed", reviewsDecisionId: removal, needsAdmin: false, actions: [{ kind: "restore" }] });
+    // 3e: the review reverses the removal whole, so it also overrules the strike the removal gave.
+    expect(reviewRow).toMatchObject({ kind: "review", outcome: "reversed", reviewsDecisionId: removal, needsAdmin: false, actions: [{ kind: "overrule" }, { kind: "restore" }] });
     expect(after.appeals).toEqual([expect.objectContaining({ id: row.id, result: "reversed", answeredBy: reviewRow.id, reviewer: null, mayReview: false })]);
     // The appeal is answered: another review finds none pending, and the list no longer holds it.
     expect(await refused(await review(admin, removal))).toEqual([409, "case_changed"]);

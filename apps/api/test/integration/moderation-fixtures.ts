@@ -4,7 +4,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { sql, type SQL } from "drizzle-orm";
 import pino from "pino";
-import { RULE_DEFAULT_CATEGORY, compareDecisionActions, textDigest, type ActionKind, type AppealsReviewedParams, type CaseDecidedParams, type RuleId, type TdbCategory } from "@korbat/contracts";
+import {
+  RULE_DEFAULT_CATEGORY,
+  TIMED_KINDS,
+  compareDecisionActions,
+  textDigest,
+  type ActionKind,
+  type AppealsReviewedParams,
+  type CaseDecidedParams,
+  type RuleId,
+  type TdbCategory,
+  type TimedKind,
+} from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../../src/auth";
@@ -425,7 +436,8 @@ export interface DecisionInput {
   ruleId?: RuleId | null;
   category?: TdbCategory;
   categoryKeyword?: "KEYWORD_TERRORIST_CONTENT" | null;
-  actions?: readonly { kind: ActionKind; mediaId?: string | null }[];
+  /** A suspension's, a termination's and a restriction of reporting's days and whether it is announced go with it. */
+  actions?: readonly { kind: ActionKind; mediaId?: string | null; days?: number | null; announced?: boolean }[];
   /** For a final decision the case's newest item unless said. */
   throughSeq?: number;
   /** The case's version now unless said. */
@@ -439,14 +451,60 @@ export interface DecisionInput {
   legalReferenceDigest?: string | null;
   rulesVersion?: number;
   redressVersion?: number;
+  /**
+   * 3e (design, section 12): a final restriction signs the strike the database computes (strike_due, asked with leave_out
+   * null, as the console asks it), and a correction that reverses a decision whole signs the overruling of its strike.
+   * `strike` and `overrule` set either by hand, for the tests of the database's refusals; left out, the fixture asks.
+   */
+  strike?: boolean;
+  overrule?: boolean;
+  /** The items the decision marks "manifestly unfounded"; [] unless said. */
+  unfounded?: readonly string[];
+  /** Whether a correction withdraws an announced measure for another; false unless said. */
+  replaced?: boolean;
 }
 
 /** A measure on the post, the account's field or the case's images; an image measure with its image. */
 export const act = (kind: ActionKind, mediaId: string | null = null) => ({ kind, mediaId });
 
+/** A suspension, a termination or a restriction of reporting with its days (null for a termination) and whether it is announced. */
+export const timed = (kind: "suspend" | "terminate" | "restrict_reporting", days: number | null, announced: boolean) => ({ kind, mediaId: null, days, announced });
+
+/** An action entry in the shape the params sign: the three timed kinds carry their days and whether they are announced. */
+function signedAction(action: { kind: ActionKind; mediaId?: string | null; days?: number | null; announced?: boolean }): CaseDecidedParams["actions"][number] {
+  if ((TIMED_KINDS as readonly string[]).includes(action.kind)) {
+    return { kind: action.kind as TimedKind, mediaId: null, days: action.days ?? null, announced: action.announced ?? false };
+  }
+  return { kind: action.kind as Exclude<ActionKind, TimedKind>, mediaId: action.mediaId ?? null };
+}
+
+/**
+ * Whether the database gives a strike to a final restriction of this case on this ground and rule that answers the
+ * items through `throughSeq`: strike_due with leave_out null, asked with the suspicion the decision will rest on (an
+ * answered item that is suspect), as the console asks it with the case answer's strikeDue.
+ */
+export async function strikeDueFor(db: Runner, caseId: string, ground: "incompatible" | "illegal" | null, ruleId: string | null, throughSeq: number): Promise<boolean> {
+  const [row] = await db.execute<{ due: boolean }>(
+    sql`select public.strike_due(${caseId}::uuid, ${ground}::decision_ground, ${ruleId}::text,
+                 exists (select 1 from intake_items i join cases c on c.id = i.case_id
+                          where i.case_id = ${caseId}::uuid and i.suspect and i.seq > c.answered_seq and i.seq <= ${throughSeq}::int), null) as due`,
+  );
+  return row?.due ?? false;
+}
+
+/** Whether a decision holds a strike that no overruling reversed: a correction or a review that reverses it whole signs its overruling. */
+export async function holdsStandingStrike(db: Runner, decisionId: string): Promise<boolean> {
+  const [row] = await db.execute<{ held: boolean }>(
+    sql`select exists (select 1 from decision_actions a where a.decision_id = ${decisionId}::uuid and a.kind = 'strike'
+                         and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)) as held`,
+  );
+  return row?.held ?? false;
+}
+
 /**
  * The params of a decision on the case as the console builds them: the case's version, the range a final decision
- * answers, the newest snapshot with its digest, the digests of freshly saved texts, and the actions in their one order.
+ * answers, the newest snapshot with its digest, the digests of freshly saved texts, the actions in their one order with
+ * the strike or the overruling the database expects, and 3e's two members.
  */
 export async function decisionParams(db: Runner, staff: { id: string }, caseId: string, input: DecisionInput = {}): Promise<CaseDecidedParams> {
   const kind = input.kind ?? "interim";
@@ -463,11 +521,18 @@ export async function decisionParams(db: Runner, staff: { id: string }, caseId: 
     category = input.category ?? corrected?.category ?? category;
     rulesVersion = input.rulesVersion ?? corrected?.rules_version ?? rulesVersion;
   }
+  const throughSeq = input.throughSeq ?? (kind === "final" ? current.intake_seq : 0);
+  const actions = (input.actions ?? []).map(signedAction);
+  // The strike of a final restriction, exactly when the database gives one; the overruling of a full reversal's strike.
+  const strike = input.strike ?? (kind === "final" && outcome === "restricted" && (await strikeDueFor(db, caseId, groundOf, ruleId, throughSeq)));
+  if (strike && !actions.some((action) => action.kind === "strike")) actions.push({ kind: "strike", mediaId: null });
+  const overrule = input.overrule ?? (kind === "correction" && outcome === "reversed" && !!input.reviewsDecisionId && (await holdsStandingStrike(db, input.reviewsDecisionId)));
+  if (overrule && !actions.some((action) => action.kind === "overrule")) actions.push({ kind: "overrule", mediaId: null });
   const text = async (given: string | null | undefined, needed: boolean, textKind: string) => (given !== undefined ? given : needed ? await saveText(db, caseId, staff.id, textKind) : null);
   return {
     kind,
     stateVersion: input.stateVersion ?? current.state_version,
-    throughSeq: input.throughSeq ?? (kind === "final" ? current.intake_seq : 0),
+    throughSeq,
     reviewsDecisionId: input.reviewsDecisionId ?? null,
     snapshotId: input.snapshotId ?? snapshot.id,
     snapshotDigest: input.snapshotDigest ?? snapshot.digest,
@@ -478,10 +543,12 @@ export async function decisionParams(db: Runner, staff: { id: string }, caseId: 
     redressVersion: input.redressVersion ?? REDRESS_VERSION,
     category,
     categoryKeyword: input.categoryKeyword ?? null,
-    actions: (input.actions ?? []).map((action) => ({ kind: action.kind, mediaId: action.mediaId ?? null })).sort(compareDecisionActions),
+    actions: actions.sort(compareDecisionActions),
     factsDigest: await text(input.factsDigest, outcome === "restricted", "facts"),
     reasonDigest: await text(input.reasonDigest, outcome === "restricted" || kind === "correction", kind === "correction" ? "review_reason" : "reason"),
     legalReferenceDigest: await text(input.legalReferenceDigest, groundOf === "illegal", "legal_reference"),
+    unfounded: [...(input.unfounded ?? [])].sort(),
+    replaced: input.replaced ?? false,
   };
 }
 
@@ -541,7 +608,8 @@ export async function decideWith(tx: DbTx, staff: TestStaff, caseId: string, par
   const { session, confirmed } = madeUpConfirmation(staff, caseId, params);
   try {
     return await tx.transaction(async (sp) => {
-      const outcome = await decide(moderationDeps(sp), session, confirmed, { requestId: `req-${randomUUID()}` });
+      // The fixtures lift the routes' list of kinds (3e design, section 7.1 item 2): the database's rules are tested below the routes.
+      const outcome = await decide(moderationDeps(sp), session, confirmed, { requestId: `req-${randomUUID()}` }, { allKinds: true });
       if (typeof outcome === "string") throw new Error(`the decision was not recorded: ${outcome}`);
       await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck immediate`);
       await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck deferred`);
@@ -610,6 +678,8 @@ export interface ReviewInput {
   rulesVersion?: number;
   redressVersion?: number;
   category?: TdbCategory;
+  /** 3e: a review that reverses the decision whole signs the overruling of its strike unless said. */
+  overrule?: boolean;
 }
 
 /**
@@ -624,14 +694,19 @@ export async function reviewParams(db: Runner, staff: { id: string }, decisionId
   if (!reviewed) throw new Error("the review names a decision that does not exist");
   const current = await readCase(db, reviewed.case_id);
   const snapshot = input.snapshotId !== undefined && input.snapshotDigest !== undefined ? { id: input.snapshotId, digest: input.snapshotDigest } : await newestSnapshot(db, reviewed.case_id);
-  const actions = (input.actions ?? []).map((action) => ({ kind: action.kind, mediaId: action.mediaId ?? null })).sort(compareDecisionActions);
+  const actions = (input.actions ?? []).map(signedAction);
+  const outcome = input.outcome ?? (actions.length > 0 ? "reversed" : "kept");
+  // A strike falls only with its whole finding: a review that reverses the decision overrules the strike it gave.
+  const overrule = input.overrule ?? (outcome === "reversed" && (await holdsStandingStrike(db, decisionId)));
+  if (overrule && !actions.some((action) => action.kind === "overrule")) actions.push({ kind: "overrule", mediaId: null });
+  actions.sort(compareDecisionActions);
   return {
     stateVersion: input.stateVersion ?? current.state_version,
     // A review without a pending appeal is built all the same, so that a test can see who refuses it.
     appealId: input.appealId ?? reviewed.appeal_id ?? randomUUID(),
     snapshotId: snapshot.id,
     snapshotDigest: snapshot.digest,
-    outcome: input.outcome ?? (actions.length > 0 ? "reversed" : "kept"),
+    outcome,
     rulesVersion: input.rulesVersion ?? reviewed.rules_version,
     redressVersion: input.redressVersion ?? REDRESS_VERSION,
     category: input.category ?? reviewed.category,
@@ -650,7 +725,7 @@ export async function reviewWith(tx: DbTx, staff: TestStaff, decisionId: string,
   const asReview: StaffStepUpConfirmed = { ...confirmed, action: "appeals_reviewed", target: { type: "decision", id: decisionId }, params };
   try {
     return await tx.transaction(async (sp) => {
-      const outcome = await review(moderationDeps(sp), session, asReview, { requestId: `req-${randomUUID()}` });
+      const outcome = await review(moderationDeps(sp), session, asReview, { requestId: `req-${randomUUID()}` }, { allKinds: true });
       if (typeof outcome === "string") throw new Error(`the review was not recorded: ${outcome}`);
       await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck immediate`);
       await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck deferred`);
@@ -767,6 +842,11 @@ export async function inForce(db: Runner, where: { caseId?: string; postId?: str
  * trigger and the foreign keys ask for (removeFixtures says why). Both ids are uuid[] parameters.
  */
 async function removeCasesIn(tx: DbTx, caseIds: SQL, intakeIds: SQL): Promise<void> {
+  // 3e: the marks and the replies go first; a mark names an item, a reply its measure and its answering decision.
+  await tx.execute(sql`delete from unfounded_marks where intake_id = any(${intakeIds}) or item_id in (select i.id from intake_items i where i.case_id = any(${caseIds}))
+                         or decision_id in (select d.id from decisions d where d.case_id = any(${caseIds})) or withdrawn_by in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
+  await tx.execute(sql`delete from suspension_replies where action_id in (select a.id from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = any(${caseIds}))
+                         or answered_by in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
   await tx.execute(sql`delete from intake_items where case_id = any(${caseIds}) or intake_id = any(${intakeIds})`);
   await tx.execute(sql`update media_holds set released_at = now() where case_id = any(${caseIds}) and released_at is null`);
   await tx.execute(sql`delete from media_holds where case_id = any(${caseIds})`);
@@ -801,6 +881,8 @@ export async function removeDecided(migrateDb: Db, postIds: readonly string[], s
       union select n.id from intakes n where n.finding_by = any(${uuids(staffIds)})`);
     await removeCasesIn(tx, caseIds, uuids(intakes.map((row) => row.id)));
     await tx.execute(sql`select public.moderation_apply(${uuids(postIds)}, true)`);
+    // And their authors' standing, which a decision removed with its case may have held.
+    await tx.execute(sql`select public.standing_apply(p.author_id) from posts p where p.id = any(${uuids(postIds)})`);
     await tx.execute(sql`delete from profiles where id = any(${uuids(staffIds)})`);
   });
 }
@@ -829,6 +911,10 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
       select distinct i.intake_id as id from intake_items i where i.case_id = any(${caseIds})
       union select n.id from intakes n where n.reporter_id = any(${profiles}) or n.finding_by = any(${profiles})`);
     const intakeIds = uuids(intakes.map((row) => row.id));
+    // 3e: what these accounts hold in the tables of account sanctions, before their cases and their profiles.
+    await tx.execute(sql`delete from unfounded_marks where account_id = any(${profiles})`);
+    await tx.execute(sql`delete from report_tallies where account_id = any(${profiles})`);
+    await tx.execute(sql`delete from suspension_replies where account_id = any(${profiles})`);
     await removeCasesIn(tx, caseIds, intakeIds);
     await tx.execute(sql`delete from post_media where owner_id = any(${profiles})`);
     await tx.execute(sql`delete from posts where author_id = any(${profiles})`);
@@ -838,7 +924,7 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
 
 /** How many rows each table that these suites write holds. A suite reads it before its first test and after its last. */
 export async function rowCounts(db: Runner): Promise<Record<string, number>> {
-  const tables = ["cases", "intakes", "intake_items", "media_holds", "evidence_snapshots", "staff_texts", "case_access_log", "decisions", "decision_actions", "seal_posts", "appeals", "post_media", "posts", "profiles"];
+  const tables = ["cases", "intakes", "intake_items", "media_holds", "evidence_snapshots", "staff_texts", "case_access_log", "decisions", "decision_actions", "seal_posts", "appeals", "suspension_replies", "unfounded_marks", "report_tallies", "post_media", "posts", "profiles"];
   const columns = tables.map((table) => `(select count(*)::int from public.${table}) as ${table}`).join(", ");
   const [row] = await db.execute<Record<string, number>>(sql.raw(`select ${columns}`));
   return { ...row! };
@@ -890,4 +976,31 @@ export function gate(): { open: () => void; opened: Promise<void> } {
     open = resolve;
   });
   return { open, opened };
+}
+
+/**
+ * Moves an account's standing back in time by the interval (3e design, section 12), as the migrator, and derives its
+ * standing again: the only way a test meets a start, an end, an expiry, the frame of 90 days or finality after six
+ * months, since the predicate reads the clock, every time is forced by a trigger, and no configuration shortens a number of
+ * standing_rules(). It moves the decisions of every case about the account or its posts (their times, their notice
+ * mail's time) with their ledger rows (created_at, starts_at, ends_at), the appeals of those decisions, the account's
+ * replies, the marks of the reports it sent, and its posts, so that a post made before or after a decision stays so (the
+ * strike rule and the second threat compare the two). The interval is PostgreSQL's, such as "91 days". It commits.
+ */
+export async function ageStandingForTest(migrateDb: Db, accountId: string, interval: string): Promise<void> {
+  await migrateDb.transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '10s'`);
+    const by = sql`${interval}::interval`;
+    const account = sql`${accountId}::uuid`;
+    const decisions = sql`(select d.id from decisions d join cases c on c.id = d.case_id
+                            where (c.target_type = 'account' and c.target_id = ${account})
+                               or (c.target_type = 'post' and c.target_id in (select p.id from posts p where p.author_id = ${account})))`;
+    await tx.execute(sql`update decisions set decided_at = decided_at - ${by}, informed_at = informed_at - ${by}, author_mail_at = author_mail_at - ${by} where id in ${decisions}`);
+    await tx.execute(sql`update decision_actions set created_at = created_at - ${by}, starts_at = starts_at - ${by}, ends_at = ends_at - ${by} where decision_id in ${decisions}`);
+    await tx.execute(sql`update appeals set filed_at = filed_at - ${by}, answered_at = answered_at - ${by} where decision_id in ${decisions}`);
+    await tx.execute(sql`update suspension_replies set filed_at = filed_at - ${by}, answered_at = answered_at - ${by}, erased_at = erased_at - ${by} where account_id = ${account}`);
+    await tx.execute(sql`update unfounded_marks set reported_at = reported_at - ${by}, marked_at = marked_at - ${by}, withdrawn_at = withdrawn_at - ${by} where account_id = ${account}`);
+    await tx.execute(sql`update posts set created_at = created_at - ${by}, deleted_at = deleted_at - ${by} where author_id = ${account}`);
+    await tx.execute(sql`select public.standing_apply(${account})`);
+  });
 }

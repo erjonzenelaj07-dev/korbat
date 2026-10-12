@@ -10,6 +10,7 @@ import { clampRatio } from "@/components/social/MediaGrid";
 import { API_BASE } from "@/lib/api";
 import { appealWaitWords, dailyLimitFailure, utcMinute } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
+import { strikeLine } from "@/lib/standing";
 
 const Line = ({ children, strong = false }: { children: string; strong?: boolean }) => <Text className={`mt-3 text-base leading-6 ${strong ? "font-semibold text-zinc-100" : "text-zinc-200"}`}>{children}</Text>;
 const Note = ({ children }: { children: string }) => <Text className="mt-3 text-sm leading-5 text-zinc-400">{children}</Text>;
@@ -175,6 +176,8 @@ export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppea
 
       <Section title={DECISION_WORDS.statement}>
         {paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}
+        {/* 3e (design, section 9.2): where the strike this decision gave stands now, read fresh. */}
+        {view.strike ? <Line strong>{strikeLine(view.strike)}</Line> : null}
         {resets.map((decisionId) => (
           <Link key={decisionId} href={`/settings/cases/${decisionId}`} asChild>
             <Pressable className="mt-3 self-start">

@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { CaseDecidedParams } from "@korbat/contracts";
+import { CaseDecidedParams, MEASURE_KINDS, REVERSAL_KINDS, type ActionKind } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { staffAlert } from "./alerts";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { appendConfirmedAudit, caseTarget, handleOf, insertAction, insertDecision, raisedMessage, recentDecisionsBy } from "./repo";
+import { appendConfirmedAudit, caseTarget, handleOf, insertAction, insertDecision, insertMarks, raisedDetail, raisedMessage, recentDecisionsBy } from "./repo";
 import { decisionStatement, sendStatement } from "./statement";
 
 /**
@@ -18,6 +18,33 @@ import { decisionStatement, sendStatement } from "./statement";
 
 /** A decision that committed, or why none did: the confirming account or key ended, or the challenge's time ran out. */
 export type DecideOutcome = { decisionId: string } | "ended" | "late";
+
+/**
+ * The kinds of the ledger the decide and review routes accept (3e design, section 7.1 item 2). The params' schema knows
+ * all 22 kinds from the first task of 3e on; this list holds 3c's twelve and a strike with its overruling, and each later
+ * task of 3e adds the kinds whose flow it builds, so no route records a measure whose flow is not built yet. Any other
+ * kind is refused before the transaction (invalid_decision), as are a correction that keeps its decision, a non-empty
+ * list of marks and a `replaced` until the tasks that open them.
+ */
+export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([...MEASURE_KINDS.slice(0, 7), ...REVERSAL_KINDS.slice(0, 5), "strike", "overrule"]);
+
+/**
+ * How the module's own tests reach the database's rules below the routes: `allKinds` lifts the routes' list of kinds and
+ * the outcomes and members not open yet, so that a test stores every kind of 3e as a route will once its task is built.
+ * The routes never pass it.
+ */
+export interface DecideOptions {
+  allKinds?: boolean;
+}
+
+/** The route's refusal of what it does not accept yet; nothing when the options lift the list. */
+export function refuseUnopened(params: { actions: readonly { kind: ActionKind }[]; outcome: string; kind?: string; unfounded?: readonly string[]; replaced?: boolean }, options: DecideOptions): void {
+  if (options.allKinds) return;
+  if (params.actions.some((action) => !ROUTE_KINDS.has(action.kind))) throw new ModerationError("invalid_decision");
+  // A correction that keeps its decision answers a reply or withdraws marks: neither exists before its task.
+  if (params.kind === "correction" && params.outcome === "kept") throw new ModerationError("invalid_decision");
+  if ((params.unfounded ?? []).length > 0 || params.replaced === true) throw new ModerationError("invalid_decision");
+}
 
 /**
  * The lock waits one decision may meet: the subject's profile, the case, the deciding account's row, the cap's advisory
@@ -141,7 +168,13 @@ export async function recordConfirmed(
       const refusal = raisedMessage(err);
       if (refusal === "staff_confirmation_ended") return "ended";
       if (refusal === "staff_confirmation_late") return "late";
-      if (refusal !== null && isModerationErrorCode(refusal)) throw new ModerationError(refusal);
+      if (refusal !== null && isModerationErrorCode(refusal)) {
+        // A trigger's detail names the rule that did not hold (3e: a basis, the days, open_reports). It is logged and kept
+        // on the error for the module's own tests; no answer carries it.
+        const detail = raisedDetail(err);
+        if (detail !== null) deps.log.info({ refusal, detail }, "moderation: a confirmed decision was refused");
+        throw Object.assign(new ModerationError(refusal), { detail });
+      }
       if (!isDeadlock(err) && !isLockNotAvailable(err)) throw err;
       if (attempt > 1 || confirmed.expiresAt.getTime() - deps.now().getTime() <= RETRY_MARGIN_MS) return "late";
     }
@@ -158,7 +191,7 @@ export async function recordConfirmed(
  * database refuses such a seal itself, as its row joins the ledger (case_changed, with nothing stored); the console reads
  * the case again, and the person confirms again in a transaction that begins after the report.
  */
-export async function decide(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome> {
+export async function decide(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }, options: DecideOptions = {}): Promise<DecideOutcome> {
   // A confirmation of anything else never decides a case: that would be a wiring fault, not a refusal.
   if (confirmed.action !== "case_decided" || confirmed.target.type !== "case" || confirmed.keyId !== session.keyId) {
     throw new Error("a decision needs a step-up that confirmed it");
@@ -167,6 +200,7 @@ export async function decide(deps: ModerationDeps, session: ActiveStaffSession, 
   // A decision is made under the texts the API serves now: the redress texts always, and the rulebook unless it is a
   // correction, which carries the version of the decision it corrects.
   if (params.redressVersion !== REDRESS_VERSION || (params.kind !== "correction" && params.rulesVersion !== RULES_VERSION)) throw new ModerationError("invalid_decision");
+  refuseUnopened(params, options);
 
   const caseId = confirmed.target.id;
   const target = await caseTarget(deps.apiDb, caseId);
@@ -176,6 +210,8 @@ export async function decide(deps: ModerationDeps, session: ActiveStaffSession, 
 
   return recordConfirmed(deps, session, confirmed, ctx, subject, async (tx, decisionId) => {
     await insertDecision(tx, { id: decisionId, caseId, decidedBy: session.userId, params });
-    for (const action of params.actions) await insertAction(tx, decisionId, action);
+    // The marks come after the decision's row, whose trigger answered the items, and before its measures.
+    await insertMarks(tx, decisionId, params.unfounded);
+    for (const action of params.actions) await insertAction(tx, decisionId, action, params.replaced);
   });
 }

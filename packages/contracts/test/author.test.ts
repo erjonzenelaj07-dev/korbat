@@ -44,22 +44,22 @@ const post = (extra: Record<string, unknown> = {}) => ({
 
 describe("the chip's facts on a post", () => {
   test("a post may carry the decision behind its state: its id, the rule or the law, and whether korbat is still deciding", () => {
-    const chip = { decisionId: id(2), ruleId: "R3", legal: false, interim: false };
+    const chip = { decisionId: id(2), ruleId: "R3", legal: false, interim: false, strikeUntil: null };
     expect(PostView.parse(post({ moderation: chip })).moderation).toEqual(chip);
-    expect(PostView.parse(post({ moderation: { decisionId: id(2), ruleId: null, legal: true, interim: true } })).moderation).toEqual({ decisionId: id(2), ruleId: null, legal: true, interim: true });
+    expect(PostView.parse(post({ moderation: { decisionId: id(2), ruleId: null, legal: true, interim: true, strikeUntil: null } })).moderation).toEqual({ decisionId: id(2), ruleId: null, legal: true, interim: true, strikeUntil: null });
     expect(PostView.parse(post()).moderation).toBeUndefined();
     for (const ruleId of ["R1", "R2", "R3", "R4", "R5", "R6"]) expect(PostView.safeParse(post({ moderation: { ...chip, ruleId } })).success, ruleId).toBe(true);
   });
 
   test("anything else in its place is refused", () => {
-    const chip = { decisionId: id(2), ruleId: "R3", legal: false, interim: false };
+    const chip = { decisionId: id(2), ruleId: "R3", legal: false, interim: false, strikeUntil: null };
     for (const moderation of [{ ...chip, ruleId: "R7" }, { ...chip, decisionId: "no id" }, { ...chip, legal: "yes" }, { decisionId: id(2), ruleId: "R3", legal: false }, null]) {
       expect(PostView.safeParse(post({ moderation })).success, JSON.stringify(moderation)).toBe(false);
     }
   });
 
   test("a quoted embed carries none: the chip belongs to the card of the post itself", () => {
-    const quoted = QuotedPost.parse(post({ moderation: { decisionId: id(2), ruleId: "R3", legal: false, interim: false } }));
+    const quoted = QuotedPost.parse(post({ moderation: { decisionId: id(2), ruleId: "R3", legal: false, interim: false, strikeUntil: null } }));
     expect("moderation" in quoted).toBe(false);
   });
 });
@@ -101,23 +101,23 @@ describe("an item's words from the status answer's item", () => {
 });
 
 describe("the author's list of decisions", () => {
-  const row = { id: id(3), kind: "final", outcome: "restricted", decidedOn: "2026-10-04", post: { id: id(1), createdAt: TIME }, actions: ["remove"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, appeal: null };
+  const row = { id: id(3), kind: "final", outcome: "restricted", decidedOn: "2026-10-04", post: { id: id(1), createdAt: TIME }, actions: ["remove"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, appeal: null, strike: null };
 
   test("a page holds decisions, each with its day, what it did, the post's time for a decision about a post, the rule or the law and where its appeal stands", () => {
-    const page = { decisions: [row, { ...row, id: id(4), kind: "interim", post: null, actions: ["reset_bio", "seal_media"], ruleId: null, legal: true, appealUntil: null }], nextCursor: "abc" };
+    const page = { decisions: [row, { ...row, id: id(4), kind: "interim", post: null, actions: ["reset_bio", "seal_media"], ruleId: null, legal: true, appealUntil: null }], nextCursor: "abc", activeStrikes: 0 };
     expect(AuthorCasesPage.parse(page)).toEqual(page);
-    expect(AuthorCasesPage.parse({ decisions: [{ ...row, kind: "correction", outcome: "reversed", actions: ["restore"], ruleId: null, appealUntil: null, reversedOn: null }], nextCursor: null }).decisions[0]!.actions).toEqual(["restore"]);
-    expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, decidedOn: TIME }], nextCursor: null }).success).toBe(false);
-    expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, actions: ["delete"] }], nextCursor: null }).success).toBe(false);
+    expect(AuthorCasesPage.parse({ decisions: [{ ...row, kind: "correction", outcome: "reversed", actions: ["restore"], ruleId: null, appealUntil: null, reversedOn: null }], nextCursor: null, activeStrikes: 0 }).decisions[0]!.actions).toEqual(["restore"]);
+    expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, decidedOn: TIME }], nextCursor: null, activeStrikes: 0 }).success).toBe(false);
+    expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, actions: ["delete"] }], nextCursor: null, activeStrikes: 0 }).success).toBe(false);
   });
 
   test("a row says where the author's appeal of the decision stands: none, pending, or its answer", () => {
     for (const appeal of [null, "pending", "kept", "partly_reversed", "reversed"]) {
-      expect(AuthorCasesPage.parse({ decisions: [{ ...row, appealUntil: null, appeal }], nextCursor: null }).decisions[0]!.appeal, String(appeal)).toBe(appeal);
+      expect(AuthorCasesPage.parse({ decisions: [{ ...row, appealUntil: null, appeal }], nextCursor: null, activeStrikes: 0 }).decisions[0]!.appeal, String(appeal)).toBe(appeal);
     }
-    expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, appeal: "answered" }], nextCursor: null }).success).toBe(false);
+    expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, appeal: "answered" }], nextCursor: null, activeStrikes: 0 }).success).toBe(false);
     const { appeal: _appeal, ...without } = row;
-    expect(AuthorCasesPage.safeParse({ decisions: [without], nextCursor: null }).success).toBe(false);
+    expect(AuthorCasesPage.safeParse({ decisions: [without], nextCursor: null, activeStrikes: 0 }).success).toBe(false);
   });
 
   test("its query takes an optional cursor and nothing else", () => {
@@ -150,7 +150,7 @@ describe("one decision as its author reads it", () => {
     reviewed: null,
   };
   const image = { id: id(7), alt: "a picture", width: 800, height: 600, small: `/api/media/${id(7)}/small.webp`, large: `/api/media/${id(7)}/large.webp` };
-  const view = { id: id(3), ...statement, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, content: { kind: "post", body: "the words", deletedByAuthor: false, images: [image], imageCount: 1, imagesHidden: null }, appeal: null };
+  const view = { id: id(3), ...statement, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, content: { kind: "post", body: "the words", deletedByAuthor: false, images: [image], imageCount: 1, imagesHidden: null }, appeal: null, strike: null };
 
   test("it is the statement's data with what the author's screen adds: where the appeal stands and the content actioned", () => {
     expect(DecisionView.parse(view)).toEqual(view);

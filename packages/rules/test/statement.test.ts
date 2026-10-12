@@ -77,7 +77,7 @@ describe("statementParagraphs", () => {
   });
 
   test("an old statement renders with the rulebook it was made under", () => {
-    for (const version of [1, 2] as const) {
+    for (const version of [1, 2, 3] as const) {
       for (const rule of RULEBOOKS[version]) {
         const out = text(statement({ ruleId: rule.id as StatementInput["ruleId"], rulesVersion: version }));
         expect(out, `${rule.id} v${version}`).toContain(`It breaks korbat rule ${rule.id}, "${rule.title}": ${rule.text}`);
@@ -144,7 +144,8 @@ describe("statementParagraphs", () => {
       { ground: "illegal" as const, ruleId: null, legalReference: "Section 130 of the criminal code." },
     ];
     for (const kind of ["interim", "final"] as const) {
-      for (const measureKind of MEASURE_KINDS) {
+      // 3c's seven measures; 3e's are held to their own sentences below and in later tasks.
+      for (const measureKind of MEASURE_KINDS.slice(0, 7)) {
         if (!MEASURES[measureKind][kind]) continue;
         for (const ground of grounds) {
           for (const rulesVersion of [1, 2]) {
@@ -452,7 +453,8 @@ describe("statementParagraphs", () => {
 
   test("every reversal kind has its sentence", () => {
     const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R1" as const, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
-    for (const kind of REVERSAL_KINDS) {
+    // 3c's five reversals; the overruling of a strike has its own test below.
+    for (const kind of REVERSAL_KINDS.slice(0, 5)) {
       const account = MEASURES[kind].target === "display_name" || MEASURES[kind].target === "bio";
       const out = statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: account ? null : POST, measures: [], reversals: [reversal(kind)], reviewed }));
       expect(out[1], kind).toMatch(/korbat lifted (this restriction|the seal on these images|the reset of your (display name|bio))\./);
@@ -466,6 +468,83 @@ describe("statementParagraphs", () => {
   });
 });
 
+
+describe("3e: the strike's sentences (design, section 18, W.2 and W.3)", () => {
+  const ENDS = "2027-01-02T09:30:15.250Z";
+  const strike = (more: Partial<DecisionStatement["measures"][number]> = {}) => measure("strike", { endsAt: ENDS, activeThen: 2, ...more });
+  /** A final removal under R3 that gives a strike, made under rulebook 3 and redress 2. */
+  const struck = (more: Partial<StatementInput> = {}) => statement({ ruleId: "R3", rulesVersion: 3, redressVersion: 2, measures: [measure("remove"), strike()], ...more });
+  const appeal2 = (decidedAt: string) => REDRESS_TEXTS[2].appeal.replace("{deadline}", `${appealDeadline(new Date(decidedAt)).toISOString().slice(0, 10)} ${appealDeadline(new Date(decidedAt)).toISOString().slice(11, 16)} UTC`);
+
+  test("the words, each a constant", () => {
+    expect(W.strike("2027-01-02 09:30 UTC", 2)).toBe(
+      "This decision gives your account a strike. It counts until 2027-01-02 09:30 UTC. With it your account had 2 active strikes when this was decided. korbat's rules fix when a decision gives a strike; the moderator does not choose it.",
+    );
+    expect(W.strike("2027-01-02 09:30 UTC", 1)).toContain("With it your account had 1 active strike when this was decided.");
+    expect(W.strikeAnyway).toBe("The strike counts although the post was already not shown or deleted: what counts is the breach.");
+    expect(W.overruled).toBe("korbat overruled the strike that decision gave. It no longer counts.");
+    expect(W.automationStrike).toBe(
+      "No automated means were used to find this or to decide that it breaks the rule. That the decision gives a strike follows from korbat's published rule, which its software applies.",
+    );
+  });
+
+  test("a removal that gives a strike, paragraph by paragraph: the strike follows the removal with the prior warning, and the automation sentence says what the software did", () => {
+    expect(statementParagraphs(struck())).toEqual([
+      `korbat removed your post of ${POST_TIME}: other people can no longer see it.`,
+      `${W.strike("2027-01-02 09:30 UTC", 2)} ${REDRESS_TEXTS[2].strikeNext}`,
+      "This applies everywhere korbat is available and has no end date.",
+      "korbat decided this following a report by another user.",
+      W.automationStrike,
+      `It breaks korbat rule R3, "${getRule("R3", 3)!.title}": ${getRule("R3", 3)!.text}`,
+      "The facts: The post shows explicit sexual acts.",
+      "korbat's reasons: That is content whose primary purpose is sexual arousal.",
+      appeal2(DECIDED),
+    ]);
+    // The six elements of Article 17(3) are all there; a decision without a strike keeps 3c's automation sentence.
+    expect(statementParagraphs(statement({ rulesVersion: 3, redressVersion: 2 }))).toContain(W.automation);
+    expect(statementParagraphs(struck())).not.toContain(W.automation);
+  });
+
+  test("a strike whose other measures all changed nothing still counts, and says so", () => {
+    const out = statementParagraphs(struck({ measures: [measure("remove", { noEffect: "deleted" }), strike()] }));
+    expect(out[1]).toBe(`${W.strike("2027-01-02 09:30 UTC", 2)} ${W.strikeAnyway} ${REDRESS_TEXTS[2].strikeNext}`);
+    // One measure that changed something: no such sentence.
+    const mixed = statementParagraphs(struck({ measures: [measure("remove", { noEffect: "already" }), measure("remove_media"), strike()] }));
+    expect(mixed.join("\n")).not.toContain(W.strikeAnyway);
+  });
+
+  test("the overruling of a strike in a correction or a review that reverses the decision", () => {
+    const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R3" as const, rulesVersion: 3, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    for (const kind of ["correction", "review"] as const) {
+      const out = statementParagraphs(statement({ kind, outcome: "reversed", ground: null, ruleId: null, facts: null, rulesVersion: 3, redressVersion: 2, measures: [], reversals: [reversal("restore"), reversal("overrule")], reviewed }));
+      expect(out, kind).toContain(W.overruled);
+      expect(out.at(-1), kind).toBe(REDRESS_TEXTS[2].notAppealable);
+    }
+  });
+
+  test("a strike without its end of counting is not rendered as another statement; a kind of 3e that is not worded yet is not rendered at all", () => {
+    expect(() => statementParagraphs(struck({ measures: [measure("remove"), strike({ endsAt: null })] }))).toThrow(/strike/);
+    expect(() => statementParagraphs(struck({ post: null, measures: [measure("suspend")] }))).toThrow(/suspend/);
+    const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R3" as const, rulesVersion: 3, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    expect(() => statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, measures: [], reversals: [reversal("lift_suspension")], reviewed }))).toThrow(/lift_suspension/);
+  });
+
+  test("a statement under redress version 1 and rulebook version 2 renders as it did", () => {
+    expect(statementParagraphs(statement())).toEqual([
+      `korbat removed your post of ${POST_TIME}: other people can no longer see it.`,
+      "This applies everywhere korbat is available and has no end date.",
+      "korbat decided this following a report by another user.",
+      "No automated means were used to find this or to decide it.",
+      `It breaks korbat rule R1, "No sexual or pornographic content": ${getRule("R1", 2)!.text}`,
+      "The facts: The post shows explicit sexual acts.",
+      "korbat's reasons: That is content whose primary purpose is sexual arousal.",
+      appeal(DECIDED),
+    ]);
+    // Rulebook 3's R6 is rendered as version 3 words it, version 2's as version 2 does.
+    expect(text(statement({ ruleId: "R6", rulesVersion: 3 }))).toContain("Sending report after report that is plainly unfounded is not allowed either");
+    expect(text(statement({ ruleId: "R6", rulesVersion: 2 }))).not.toContain("Sending report after report");
+  });
+});
 describe("the package", () => {
   test("its index re-exports the statement and its words: the index is the package's only door", () => {
     expect(typeof statementParagraphs).toBe("function");

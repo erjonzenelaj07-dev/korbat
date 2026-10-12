@@ -57,6 +57,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         mediaId: action.mediaId,
         noEffect: action.noEffect,
         sealed: action.kind === "seal_media" ? { posts: action.sealedPosts, images: action.sealedImages, deletedImages: action.sealedDeletedImages } : null,
+        // 3e: what the ledger fixed for good about a strike, so its statement reads as it was sent.
+        ...(action.kind === "strike" ? { endsAt: action.endsAt, activeThen: action.activeThen } : {}),
       })),
     reversals: actions
       .filter((action) => MEASURES[action.kind].lifts !== null)

@@ -6,7 +6,7 @@ import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { authorDecisionView, decodeListCursor, encodeListCursor } from "./author";
 import { reviewerOf } from "./cases";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { recordConfirmed, type DecideOutcome } from "./decide";
+import { recordConfirmed, refuseUnopened, type DecideOptions, type DecideOutcome } from "./decide";
 import { countOrRefuse, saltedStatement } from "./intake";
 import { insertAction, insertAppeal, insertReview, pendingAppeals, raisedMessage, reviewedDecision, violatedUniqueConstraint } from "./repo";
 
@@ -122,13 +122,15 @@ export async function appealsList(deps: Pick<ModerationDeps, "apiDb">, session: 
  * After the commit the transaction's own last step does what it does for every decision: the statement's mail, the
  * count of the person's decisions, and the mail to every staff account when the review lifted a seal.
  */
-export async function review(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome> {
+export async function review(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }, options: DecideOptions = {}): Promise<DecideOutcome> {
   // A confirmation of anything else never reviews an appeal: that would be a wiring fault, not a refusal.
   if (confirmed.action !== "appeals_reviewed" || confirmed.target.type !== "decision" || confirmed.keyId !== session.keyId) {
     throw new Error("a review needs a step-up that confirmed it");
   }
   const params = AppealsReviewedParams.parse(confirmed.params);
   if (params.redressVersion !== REDRESS_VERSION) throw new ModerationError("invalid_decision");
+  // The routes' one list of the kinds they accept (3e design, section 7.1 item 2).
+  refuseUnopened(params, options);
 
   const reviewsDecisionId = confirmed.target.id;
   const reviewed = await reviewedDecision(deps.apiDb, reviewsDecisionId);

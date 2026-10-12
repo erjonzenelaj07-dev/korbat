@@ -75,7 +75,7 @@ const iso = (at: Date): string => at.toISOString();
 const isoOrNull = (at: Date | null): string | null => (at ? at.toISOString() : null);
 
 /** What an account module built without the moderation module writes: the member is part of the format, so it is always there. */
-const NO_MODERATION: ModerationExport = { decisions: [], reports: [] };
+const NO_MODERATION: ModerationExport = { decisions: [], reports: [], strikes: [] };
 
 /**
  * Reads what is needed before the first byte: the account's facts, sessions, devices and events (one
@@ -245,6 +245,8 @@ function moderationMember(moderation: ModerationExport): ModerationExport {
       explanation: report.explanation,
       items: report.items.map((item) => ({ position: item.position, link: item.link, reexamines: item.reexamines, outcome: item.outcome, outcomeText: item.outcomeText, reexaminationOpen: item.reexaminationOpen })),
     })),
+    // 3e (W.8): the strikes the account was given.
+    strikes: moderation.strikes.map((strike) => ({ decisionId: strike.decisionId, postId: strike.postId, ruleId: strike.ruleId, givenAt: strike.givenAt, countsUntil: strike.countsUntil, overruledAt: strike.overruledAt })),
   };
 }
 

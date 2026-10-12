@@ -251,9 +251,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js enroll and keys
       // What an API under an attacker's control could do: its roles may lock any table they can update, and keys is the
       // runbook's own check against such an API, so it must never wait without limit.
       const { user } = await staffWithHandle();
+      // 3e (design, section 6.1): the API role holds UPDATE on eleven columns of profiles and no table-wide right, so it can
+      // no longer take the table's ACCESS EXCLUSIVE lock at all; the read on the API's role is stalled by the migrator here.
+      const refused = await withLockTimeout(apiDb, (tx) => tx.execute(sql`lock table public.profiles in access exclusive mode`)).then(
+        () => null,
+        (err: unknown) => (err as { cause?: { code?: string } }).cause?.code ?? (err as { code?: string }).code ?? String(err),
+      );
+      expect(refused).toBe("42501");
       for (const [db, table] of [
         [authDb, sql`auth.users`],
-        [apiDb, sql`public.profiles`],
+        [migrateDb, sql`public.profiles`],
       ] as const) {
         let release!: () => void;
         const released = new Promise<void>((resolve) => (release = resolve));

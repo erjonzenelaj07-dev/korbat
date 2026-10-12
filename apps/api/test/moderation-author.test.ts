@@ -201,7 +201,7 @@ describe("a post's chip in its view", () => {
 
   test("the viewer's own withheld and removed posts carry the decision the moderation module names, asked once for the page", async () => {
     const rows = [row(1, ME, "withheld"), row(2, ME, "removed"), row(3, ME, "visible"), row(4, OTHER, "visible")];
-    const chips = { [id(1)]: { decisionId: id(51), ruleId: "R4" as const, legal: false, interim: true }, [id(2)]: { decisionId: id(52), ruleId: null, legal: true, interim: false } };
+    const chips = { [id(1)]: { decisionId: id(51), ruleId: "R4" as const, legal: false, interim: true, strikeUntil: null }, [id(2)]: { decisionId: id(52), ruleId: null, legal: true, interim: false, strikeUntil: null } };
     const s = source(rows, chips);
     const views = await loadPostViews(s.view, ME, rows.map((r) => r.id));
     expect(s.asked).toEqual([{ viewer: ME, postIds: [id(1), id(2)] }]);
@@ -228,7 +228,7 @@ describe("a post's chip in its view", () => {
 
   test("a restricted post the module names no decision for carries no chip, and a quoted embed never carries one", async () => {
     const rows = [row(1, ME, "removed"), row(2, ME, "visible", { quoteOfId: id(3) }), row(3, ME, "withheld")];
-    const s = source(rows, { [id(3)]: { decisionId: id(53), ruleId: "R1", legal: false, interim: true } });
+    const s = source(rows, { [id(3)]: { decisionId: id(53), ruleId: "R1", legal: false, interim: true, strikeUntil: null } });
     const views = await loadPostViews(s.view, ME, [id(1), id(2)]);
     const first = views.get(id(1))!;
     const second = views.get(id(2))!;

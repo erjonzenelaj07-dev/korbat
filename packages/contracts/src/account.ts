@@ -112,6 +112,13 @@ const ExportedReport = z.object({
 });
 
 /**
+ * A strike the account was given (3e design, section 18, W.8): the decision that gave it, the post it was given for, the
+ * rule, when it was given, until when it counts, and when it was overruled (null while it stands). Strikes from posts are
+ * the account's own data; nothing here names another person.
+ */
+const ExportedStrike = z.object({ decisionId: z.uuid(), postId: z.uuid(), ruleId: z.enum(RULE_IDS), givenAt: at, countsUntil: at, overruledAt: at.nullable() });
+
+/**
  * export.json inside the data export archive (1b design, section 7.5): everything the account owns, and
  * nothing about other people beyond the handle they had at export time.
  */
@@ -171,8 +178,8 @@ export const ExportFormat = z.object({
    * What korbat's moderation holds for the account (3c design, section 7.11): the decisions about it that its Cases screen
    * lists, newest first, and its own reports and notices, newest first. Never another person's report, a reporter, a
    * notifier or a staff member. Added to korbat-export-1 without a new format name, last in the document: a reader that
-   * does not know the member loses nothing by skipping it.
+   * does not know the member loses nothing by skipping it. `strikes` (3e) lists the account's strikes, newest first.
    */
-  moderation: z.object({ decisions: z.array(ExportedDecision), reports: z.array(ExportedReport) }),
+  moderation: z.object({ decisions: z.array(ExportedDecision), reports: z.array(ExportedReport), strikes: z.array(ExportedStrike) }),
 });
 export type ExportFormat = z.infer<typeof ExportFormat>;

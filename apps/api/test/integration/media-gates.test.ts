@@ -554,7 +554,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
 
         // The rule case is decided on its copy: the removal changes nothing, the post being deleted, and says so.
         const removal = await decideIn(w.tx, mod, rule.caseId, { kind: "final", ruleId: "R1", actions: [act("remove")] });
-        expect((await actionsOf(w.tx, removal)).map((action) => [action.kind, action.no_effect])).toEqual([["remove", "deleted"]]);
+        // 3e: the strike it gives counts all the same (a strike never has a no_effect): what counts is the breach.
+        expect((await actionsOf(w.tx, removal)).map((action) => [action.kind, action.no_effect])).toEqual([
+          ["remove", "deleted"],
+          ["strike", null],
+        ]);
         expect(statementParagraphs((await decisionStatement(w.tx as unknown as Db, removal))!.statement)[0]).toContain(STATEMENT_WORDS.deletedPost);
         // Its mail finds nobody: the auth module answers no_address for an account that is gone.
         expect(await sendStatement({ apiDb: w.tx as unknown as Db, auth: { mailAccount: async () => "no_address" } as never }, removal)).toBe("no_address");

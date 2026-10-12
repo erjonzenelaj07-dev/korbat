@@ -39,9 +39,19 @@ export const posts = pgTable(
     moderationLevel: moderationLevel("moderation_level").notNull().default("visible"),
     /** Set, one way, when the R4 redaction erased the post's content; written only by a migrator-owned function. */
     erasedAt: ts("erased_at"),
+    /**
+     * Explore's resume rule (3e design, sections 6.1 and 6.4): when the post last left the level visible, when it last came
+     * back, and the time its age and window are counted from after its hidden spans. Outside the API's column grants; a
+     * later migration gives them their one writer, moderation_apply.
+     */
+    hiddenAt: ts("hidden_at"),
+    restoredAt: ts("restored_at"),
+    exploreFrom: ts("explore_from"),
   },
   (t) => [
     index("posts_author_created_idx").on(t.authorId, t.createdAt),
+    /** Explore's restored posts. */
+    index("posts_explore_from_idx").on(t.exploreFrom).where(sql`explore_from is not null`),
     index("posts_created_id_idx").on(t.createdAt, t.id),
     /** A thread's replies in order, and every lookup by parent. */
     index("posts_reply_to_created_idx").on(t.replyToId, t.createdAt, t.id),

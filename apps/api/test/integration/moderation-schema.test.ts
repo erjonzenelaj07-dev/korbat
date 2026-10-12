@@ -150,8 +150,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect((await updatableColumns("korbat_api", "public.post_media")).sort()).toEqual([...COLUMN_UPDATES.post_media!].sort());
     });
 
-    test("profiles: everything but DELETE and TRUNCATE", async () => {
-      expect(await tablePrivileges("korbat_api", "public.profiles")).toEqual(["SELECT", "INSERT", "UPDATE"]);
+    test("profiles: SELECT and INSERT, and since 3e UPDATE of the eleven columns the API writes, never DELETE or TRUNCATE", async () => {
+      // 3e (design, section 6.1): the table's UPDATE became column grants, so the three derived columns stay the database's.
+      expect(await tablePrivileges("korbat_api", "public.profiles")).toEqual(["SELECT", "INSERT"]);
+      expect(await updatableColumns("korbat_api", "public.profiles")).toHaveLength(11);
     });
 
     test("it has no access to the auth schema, nor to any of the four new auth tables", async () => {
@@ -432,10 +434,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         { name: "auth.staff_link_counts", owner: "korbat_migrate", definer: true, config: auth, api: false, auth: true, pub: false },
         { name: "auth.users_deleted_mark", owner: "korbat_migrate", definer: false, config: auth, api: false, auth: false, pub: false },
       ]);
-      // Everything the API role may call of what the migrator owns, in both schemas, after the last migration of 3c (design, section 11).
+      // Everything the API role may call of what the migrator owns, in both schemas, after the last migration of 3c (design,
+      // section 11), and the five of 3e's standing ledger: the constants, a basis, the strike rule, the appeal's start and the terminations due.
       const callable = all.filter((f) => f.owner === "korbat_migrate" && f.api).map((f) => f.name);
       expect(callable).toEqual([
         "public.appeal_deadline",
+        "public.appeal_informed_at",
         "public.appeal_reviewer_state",
         "public.append_confirmed_audit",
         "public.case_evidence_due_at",
@@ -453,7 +457,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.review_needs_admin",
         "public.snapshot_withheld",
         "public.staff_case_conflict",
+        "public.standing_basis_broken_at",
+        "public.standing_rules",
+        "public.strike_due",
         "public.sweep_staff_texts",
+        "public.terminations_due",
       ]);
     });
 
@@ -604,6 +612,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         decision_actions_recheck: "AFTER INSERT ON public.decision_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
         decisions_apply: "AFTER INSERT ON public.decisions FOR EACH ROW",
         decisions_check: "AFTER INSERT ON public.decisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
+        // 3e: a statement mail's outcome moves one way, and fixes the start of an announced measure.
+        decisions_mail_forward: "BEFORE UPDATE OF author_mail, author_mail_at ON public.decisions FOR EACH ROW",
+        decisions_mail_standing: expect.stringMatching(/^AFTER UPDATE OF author_mail ON public[.]decisions FOR EACH ROW WHEN /),
         decisions_record: "BEFORE INSERT ON public.decisions FOR EACH ROW",
         posts_guard_insert: "BEFORE INSERT ON public.posts FOR EACH ROW",
         // Only a statement that names one of the three columns and changes one meets the guard: a counter's update never does.
@@ -623,7 +634,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const [view] = await apiDb.execute<{ options: string[] | null; definition: string }>(sql`select c.reloptions as options, pg_get_viewdef(c.oid) as definition from pg_class c where c.oid = 'public.measures_in_force'::regclass`);
       expect(view!.options).toEqual(["security_invoker=true"]);
       const measures = ACTION_KINDS.filter((kind) => MEASURES[kind].lifts === null);
-      const named = [...view!.definition.matchAll(/'([a-z_]+)'::action_kind/g)].map((m) => m[1]);
+      // 3e: the view names its kinds as text (enum-literals.test.ts: a value 3e added cannot be an enum literal in the
+      // migration that adds it), and the seal's own literal as the enum; both forms are read.
+      const named = [...view!.definition.matchAll(/'([a-z_]+)'::(?:action_kind|text)/g)].map((m) => m[1]);
       expect([...new Set(named)].sort()).toEqual([...measures].sort());
       // No value of post_state: a migration that adds one cannot change what "in force" means.
       expect(view!.definition).not.toMatch(/post_state/);

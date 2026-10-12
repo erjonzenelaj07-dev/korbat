@@ -1,7 +1,20 @@
 import { z } from "zod";
 import { DisplayName, OpaqueId, Role } from "./auth";
 import { hex, sha256, sortedJson } from "./canonical";
-import { ACTION_KINDS, DECISION_KEYWORDS, MEASURES, REVEAL_REASON_CATEGORIES, RULE_IDS, TDB_CATEGORIES, compareDecisionActions, type ActionKind, type DecisionActionParams } from "./moderation";
+import {
+  ACTION_KINDS,
+  DECISION_KEYWORDS,
+  MEASURES,
+  REVEAL_REASON_CATEGORIES,
+  RULE_IDS,
+  STANDING_DAYS,
+  TDB_CATEGORIES,
+  TIMED_KINDS,
+  UNFOUNDED_MAX,
+  compareDecisionActions,
+  type ActionKind,
+  type DecisionActionParams,
+} from "./moderation";
 import { AuthenticationResponseJSON, PasskeyOptionsResponse, RegistrationResponseJSON } from "./passkeys";
 
 // The staff console (3a design, section 10). The console talks only to /api/staff/* on its own origin, and parses every
@@ -160,30 +173,62 @@ const Counter = z.number().int().min(0).max(2_147_483_647);
 /** The version of the rulebook or of the redress texts: a whole number from 1 that PostgreSQL's smallint holds. */
 const TextVersion = z.number().int().min(1).max(32_767);
 
-/** One measure or reversal: its kind and, for an image measure, the image, as a lower-case uuid (an image id's own schema lower-cases, which a param must not). */
-const DecisionAction = z.strictObject({ kind: z.enum(ACTION_KINDS), mediaId: LowerCaseUuid.nullable() });
+/**
+ * One measure or reversal, in one of two strict shapes (3e design, section 10.4). For every kind but three: its kind and,
+ * for an image measure, the image, as a lower-case uuid (an image id's own schema lower-cases, which a param must not).
+ */
+const PlainAction = z.strictObject({ kind: z.enum(ACTION_KINDS).exclude(TIMED_KINDS), mediaId: LowerCaseUuid.nullable() });
+
+/**
+ * A suspension, a termination or a restriction of reporting: also its days (a whole number from 1 to 30, null on a
+ * termination) and whether it is announced with the reply window, so that the key signs both and the database compares
+ * both with its ledger row.
+ */
+const TimedAction = z.strictObject({ kind: z.enum(TIMED_KINDS), mediaId: z.null(), days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(), announced: z.boolean() });
+
+const DecisionAction = z.union([PlainAction, TimedAction]);
 
 const isReversal = (kind: ActionKind) => MEASURES[kind].lifts !== null;
+
+/** The six measures of 3e: each only in a final decision that restricts. */
+const MEASURES_OF_3E: readonly ActionKind[] = ["strike", "suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting"];
+
+type SignedAction = DecisionActionParams & { days?: number | null; announced?: boolean };
 
 /**
  * What is wrong with a decision's list of actions, or nothing: they come in the one order compareDecisionActions gives,
  * without repeats; only an image measure names an image, and it must; at most one of them acts on the post itself
- * (a seal acts on images and may stand beside it), and at most one seals; and a correction or a review lifts, never restricts.
+ * (a seal acts on images and may stand beside it), and at most one seals; and a correction or a review lifts, never
+ * restricts. And for 3e's kinds: a termination has no days, a suspension and a restriction of reporting have theirs, a
+ * restriction of reporting is never announced, and a decision holds at most one suspension or termination.
  */
-function actionProblems(actions: readonly DecisionActionParams[], reversalsOnly: boolean): string[] {
+function actionProblems(actions: readonly SignedAction[], reversalsOnly: boolean): string[] {
   const problems: string[] = [];
   if (actions.some((action, i) => i > 0 && compareDecisionActions(actions[i - 1]!, action) >= 0)) problems.push("the actions are sorted by kind and then by image, without repeats");
   if (actions.some((action) => (MEASURES[action.kind].target === "image") !== (action.mediaId !== null))) problems.push("an image measure names its image, and no other kind names one");
   if (actions.filter((action) => action.kind === "withhold" || action.kind === "remove").length > 1) problems.push("a decision holds at most one measure on the post itself");
   if (actions.filter((action) => action.kind === "seal_media").length > 1) problems.push("a decision holds at most one seal");
   if (reversalsOnly && actions.some((action) => !isReversal(action.kind))) problems.push("a correction or a review holds reversals only");
+  const daysWrong = (action: SignedAction) =>
+    (action.kind === "terminate" && action.days !== null) || ((action.kind === "suspend" || action.kind === "restrict_reporting") && (action.days === null || action.days === undefined));
+  if (actions.some(daysWrong)) problems.push("a termination names no days, a suspension and a restriction of reporting name theirs");
+  if (actions.some((action) => action.kind === "restrict_reporting" && action.announced !== false)) problems.push("a restriction of reporting starts at once: it is never announced");
+  if (actions.filter((action) => action.kind === "suspend" || action.kind === "terminate").length > 1) problems.push("a decision holds at most one suspension or termination");
   return problems;
 }
+
+/** Whether a list of ids is sorted, as text, without repeats. */
+const sortedUnique = (ids: readonly string[]) => ids.every((id, i) => i === 0 || ids[i - 1]! < id);
 
 /**
  * POST /api/staff/cases/:case/decisions: a decision taken while deciding (interim), one that decides the case (final) or
  * a correction of either. `stateVersion` is the case's version the console showed, `throughSeq` the last item a final
- * decision answers, and the snapshot is named with the digest the console computed from what it displayed.
+ * decision answers, and the snapshot is named with the digest the console computed from what it displayed. Two members of
+ * 3e are always present (3e design, section 10.4): `unfounded`, the items a decision that found no breach marks
+ * "manifestly unfounded" (lower-case uuids, sorted, without repeats; [] when none), and `replaced`, true only on a
+ * correction that withdraws an announced suspension that has not started, to make room for another measure. A correction
+ * may also keep the decision: the database decides from the corrected decision which of its two uses it is (a reply
+ * answered, or a decision's marks withdrawn) and refuses one that is neither.
  */
 export const CaseDecidedParams = z
   .strictObject({
@@ -193,7 +238,7 @@ export const CaseDecidedParams = z
     reviewsDecisionId: LowerCaseUuid.nullable(),
     snapshotId: LowerCaseUuid,
     snapshotDigest: Sha256Hex,
-    outcome: z.enum(["restricted", "no_violation", "not_evident", "partly_reversed", "reversed"]),
+    outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
     ground: z.enum(["incompatible", "illegal"]).nullable(),
     ruleId: z.enum(RULE_IDS).nullable(),
     rulesVersion: TextVersion,
@@ -204,10 +249,12 @@ export const CaseDecidedParams = z
     factsDigest: Sha256Hex.nullable(),
     reasonDigest: Sha256Hex.nullable(),
     legalReferenceDigest: Sha256Hex.nullable(),
+    unfounded: z.array(LowerCaseUuid).max(UNFOUNDED_MAX),
+    replaced: z.boolean(),
   })
   .superRefine((params, ctx) => {
     const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
-    const outcomes = { interim: ["restricted"], final: ["restricted", "no_violation", "not_evident"], correction: ["partly_reversed", "reversed"] } as const;
+    const outcomes = { interim: ["restricted"], final: ["restricted", "no_violation", "not_evident"], correction: ["kept", "partly_reversed", "reversed"] } as const;
     if (!(outcomes[params.kind] as readonly string[]).includes(params.outcome)) refuse("outcome", "a decision of this kind does not have this outcome");
     if (params.kind === "interim" && params.throughSeq !== 0) refuse("throughSeq", "a decision taken while deciding answers no item");
     if ((params.kind === "correction") !== (params.reviewsDecisionId !== null)) refuse("reviewsDecisionId", "a correction, and only a correction, names the decision it corrects");
@@ -225,12 +272,27 @@ export const CaseDecidedParams = z
       if (params.reasonDigest === null) refuse("reasonDigest", "a correction carries its reason");
     }
     for (const problem of actionProblems(params.actions, params.kind === "correction")) refuse("actions", problem);
+    // 3e's refinements; the triggers check each again.
+    if (params.actions.some((action) => MEASURES_OF_3E.includes(action.kind)) && !(params.kind === "final" && params.outcome === "restricted")) {
+      refuse("actions", "a measure of 3e is taken only by a final decision that restricts");
+    }
+    if (params.actions.some((action) => action.kind === "strike") && (params.ground !== "incompatible" || params.ruleId === "R2")) {
+      refuse("actions", "a strike goes only with a korbat rule other than R2");
+    }
+    if (params.outcome === "kept" && params.actions.length > 0) refuse("actions", "a kept correction holds no action");
+    if (params.actions.some((action) => action.kind === "overrule") && params.outcome !== "reversed") refuse("actions", "a strike is overruled only with its whole finding: the outcome is reversed");
+    if (params.unfounded.length > 0 && !(params.kind === "final" && params.outcome === "no_violation")) refuse("unfounded", "only a final decision that finds no breach marks reports");
+    if (!sortedUnique(params.unfounded)) refuse("unfounded", "the marked items are sorted, without repeats");
+    if (params.replaced && !(params.kind === "correction" && params.actions.some((action) => action.kind === "lift_suspension"))) {
+      refuse("replaced", "only a correction that lifts a suspension withdraws it for another measure");
+    }
   });
 export type CaseDecidedParams = z.infer<typeof CaseDecidedParams>;
 
 /**
  * POST /api/staff/decisions/:decision/review: the answer to the author's one appeal of the decision. It keeps the decision
- * or lifts measures of it, never restricts, and always gives its reason.
+ * or lifts measures of it, never restricts, and always gives its reason. A review withdraws no mark and replaces no
+ * measure; it overrules a strike only when it reverses the decision whole.
  */
 export const AppealsReviewedParams = z
   .strictObject({
@@ -247,6 +309,9 @@ export const AppealsReviewedParams = z
   })
   .superRefine((params, ctx) => {
     for (const problem of actionProblems(params.actions, true)) ctx.addIssue({ code: "custom", path: ["actions"], message: problem });
+    if (params.actions.some((action) => action.kind === "overrule") && params.outcome !== "reversed") {
+      ctx.addIssue({ code: "custom", path: ["actions"], message: "a strike is overruled only with its whole finding: the outcome is reversed" });
+    }
   });
 export type AppealsReviewedParams = z.infer<typeof AppealsReviewedParams>;
 

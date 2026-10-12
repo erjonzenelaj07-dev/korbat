@@ -380,10 +380,14 @@ describe("the params the key confirms", () => {
       actions: [
         { kind: "remove", mediaId: null },
         { kind: "remove_media", mediaId: IMAGE_ONE },
+        // 3e: the case answer says a strike is due, so the console adds it; the person never chooses it.
+        { kind: "strike", mediaId: null },
       ],
       factsDigest: "aa".repeat(32),
       reasonDigest: "bb".repeat(32),
       legalReferenceDigest: null,
+      unfounded: [],
+      replaced: false,
     });
     // A decision on the law names no rule, carries its reference's digest and, when ticked, the terrorist-content keyword.
     const law = decisionParamsOf(view, { ...draft, ground: "illegal", category: "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY", terrorist: true, actions: [{ kind: "remove", mediaId: null }] }, { snapshot: digest, facts: "aa".repeat(32), reason: "bb".repeat(32), legalReference: "cc".repeat(32) });

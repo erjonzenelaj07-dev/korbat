@@ -36,6 +36,15 @@ export function raisedMessage(err: unknown): string | null {
   return raised?.code === "P0001" && typeof raised.message === "string" ? raised.message : null;
 }
 
+/**
+ * The detail a trigger raised beside its code (3e's refusals name the rule that did not hold: a basis, a number of days,
+ * open_reports), or null. It is for the module's own log and tests: no answer carries it.
+ */
+export function raisedDetail(err: unknown): string | null {
+  const raised = driverError(err) as { code: string; detail?: unknown } | null;
+  return raised?.code === "P0001" && typeof raised.detail === "string" ? raised.detail : null;
+}
+
 /** True for a serialization failure (SQLSTATE 40001): the attach trigger raises it when an item's case closed in between. */
 export function isSerializationFailure(err: unknown): boolean {
   return driverError(err)?.code === "40001";
@@ -557,9 +566,27 @@ export async function insertDecision(tx: DbTx, row: { id: string; caseId: string
   );
 }
 
-/** One measure or reversal of a decision. Its target, the measure it lifts and whether it changes anything are the triggers'. */
-export async function insertAction(tx: DbTx, decisionId: string, action: { kind: ActionKind; mediaId: string | null }): Promise<void> {
-  await tx.execute(sql`insert into decision_actions (decision_id, kind, media_id) values (${decisionId}::uuid, ${action.kind}::action_kind, ${action.mediaId}::uuid)`);
+/**
+ * One measure or reversal of a decision. Its target, the measure it lifts and whether it changes anything are the
+ * triggers'. The three columns of 3e that the key signs go as signed (3e design, section 7.1 item 5): `days` and
+ * `announced` of a suspension, a termination or a restriction of reporting, and the decision's `replaced` on its
+ * lift_suspension; the trigger clears each on a kind that does not take it, and forces every other column of 3e.
+ */
+export async function insertAction(tx: DbTx, decisionId: string, action: { kind: ActionKind; mediaId: string | null; days?: number | null; announced?: boolean }, replaced = false): Promise<void> {
+  await tx.execute(
+    sql`insert into decision_actions (decision_id, kind, media_id, days, announced, replaced)
+        values (${decisionId}::uuid, ${action.kind}::action_kind, ${action.mediaId}::uuid, ${action.days ?? null}::smallint, ${action.announced ?? null}::boolean,
+                ${action.kind === "lift_suspension" ? replaced : null}::boolean)`,
+  );
+}
+
+/**
+ * The marks "manifestly unfounded" a decision signs (3e design, section 7.1 item 4): one row an item, inserted after the
+ * decision's row and before its measures. Its trigger forces the reporter, the report and the times, and refuses an item
+ * the decision did not answer; the API role may insert only from the migration of the reporting counts on.
+ */
+export async function insertMarks(tx: DbTx, decisionId: string, itemIds: readonly string[]): Promise<void> {
+  for (const itemId of itemIds) await tx.execute(sql`insert into unfounded_marks (item_id, decision_id) values (${itemId}::uuid, ${decisionId}::uuid)`);
 }
 
 /**

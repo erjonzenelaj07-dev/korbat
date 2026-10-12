@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, index, integer, jsonb, pgEnum, pgPolicy, pgTable, primaryKey, smallint, text, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, index, integer, jsonb, pgEnum, pgPolicy, pgTable, primaryKey, smallint, text, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { postMedia, postState } from "./content";
 import { apiRole, fullAccess, ts, xid8 } from "./helpers";
 import { profiles } from "./identity";
@@ -19,7 +19,11 @@ export const decisionKind = pgEnum("decision_kind", ["interim", "final", "review
 export const decisionOutcome = pgEnum("decision_outcome", ["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]);
 export const decisionGround = pgEnum("decision_ground", ["incompatible", "illegal"]);
 export const decisionSource = pgEnum("decision_source", ["notice", "report", "own_initiative"]);
-/** The seven measures, then the five reversals. The view measures_in_force (migration 0015) names the measures. */
+/**
+ * 3c's seven measures and five reversals, then 3e's six measures and four reversals (3e design, section 6.1), in the order
+ * the migrations added them. The view measures_in_force names the measures. A value of 3e is named as an enum literal
+ * only inside a PL/pgSQL body: anywhere else in the migration that adds it, it compares as text (enum-literals.test.ts).
+ */
 export const actionKind = pgEnum("action_kind", [
   "withhold",
   "remove",
@@ -33,7 +37,23 @@ export const actionKind = pgEnum("action_kind", [
   "restore_media",
   "restore_display_name",
   "restore_bio",
+  "strike",
+  "suspend",
+  "terminate",
+  "retire_handle",
+  "warn_reporting",
+  "restrict_reporting",
+  "overrule",
+  "lift_suspension",
+  "unretire_handle",
+  "lift_reporting",
 ]);
+
+/**
+ * What a standing measure or a restriction of reporting rests on (3e design, section 6.1), forced by the ledger's check
+ * trigger. Written from the contracts' STANDING_BASES, which a test holds the migrated CHECK to.
+ */
+const STANDING_BASES = ["strikes", "threat", "terrorist", "flood", "protective", "threat_repeat", "ladder_end", "reports"];
 export const appealResult = pgEnum("appeal_result", ["kept", "partly_reversed", "reversed"]);
 export const staffTextKind = pgEnum("staff_text_kind", ["facts", "reason", "legal_reference", "review_reason", "reveal_reason", "note", "seal_declined"]);
 export const accessKind = pgEnum("access_kind", ["case_opened", "image_viewed", "identity_revealed"]);
@@ -384,9 +404,29 @@ export const decisionActions = pgTable(
     noEffect: text("no_effect"),
     /** Forced. */
     createdAt: ts("created_at").notNull(),
+    // 3e (design, section 6.1). The API supplies days, announced and replaced, which the key signs; the check trigger forces
+    // the other four and clears all seven on the kinds that do not take them.
+    /** The length of a suspend or a restrict_reporting, 1 to 30; null on a terminate. */
+    days: smallint("days"),
+    /** On a standing measure: announced with the reply window, or taken at once. Always false on a restrict_reporting. */
+    announced: boolean("announced"),
+    /** Forced: what the measure rests on, one of eight words. */
+    basis: text("basis"),
+    /** Forced: the decisions it rests on; null when it rests on none. */
+    restsOn: uuid("rests_on").array(),
+    /** Forced: the decision's time for a measure taken at once; that time plus the reply window for an announced one. */
+    startsAt: ts("starts_at"),
+    /** Forced: a strike's and a warning's last moment of counting. */
+    endsAt: ts("ends_at"),
+    /** On a lift_suspension only: the correction withdraws an announced measure that had not started, to make room for another. */
+    replaced: boolean("replaced"),
   },
   (t) => [
     check("decision_actions_no_effect", sql`${t.noEffect} in ('already', 'deleted')`),
+    // Each names columns only, never a value of action_kind: a check may not name a value its own migration adds.
+    check("decision_actions_days", sql`${t.days} between 1 and 30`),
+    check("decision_actions_basis", sql`${t.basis} in (${listOf(STANDING_BASES)})`),
+    check("decision_actions_announced", sql`${t.announced} is null or ${t.basis} is not null`),
     // Nulls not distinct: a decision holds a measure without an image (a post measure, a seal, a field reset) once too.
     unique("decision_actions_once").on(t.decisionId, t.kind, t.mediaId).nullsNotDistinct(),
     /** A measure is lifted at most once. */
@@ -601,4 +641,90 @@ export const mediaHolds = pgTable(
     index("media_holds_case_idx").on(t.caseId).where(sql`released_at is null`),
     fullAccess("media_holds_api_all", apiRole),
   ],
+).enableRLS();
+
+// ---------------------------------------------------------------- account sanctions (3e design, section 6.1)
+
+/**
+ * A person's reply to a standing measure (a suspend or a terminate), one a measure. The API role may only insert and read;
+ * the triggers of 3e's standing_ledger migration check the reply, force the columns marked forced, and derive the
+ * account's standing again. The answering decision and its time are written only by the ledger's triggers.
+ */
+export const suspensionReplies = pgTable(
+  "suspension_replies",
+  {
+    actionId: uuid("action_id")
+      .primaryKey()
+      .references(() => decisionActions.id, { onDelete: "restrict" }),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "restrict" }),
+    /** Optional and free of form, with the salt and digest the server made (the contracts' textDigest). */
+    statement: text("statement"),
+    statementSalt: text("statement_salt"),
+    statementDigest: text("statement_digest"),
+    /** Forced: clock_timestamp(), read after the profile's lock. */
+    filedAt: ts("filed_at").notNull(),
+    /** Forced: filed before the measure's start, or while it had none. */
+    onTime: boolean("on_time").notNull(),
+    /** Forced null at insert: the decision that answered the reply. */
+    answeredBy: uuid("answered_by").references((): AnyPgColumn => decisions.id),
+    answeredAt: ts("answered_at"),
+    erasedAt: ts("erased_at"),
+  },
+  (t) => [
+    check("suspension_replies_statement_len", sql`char_length(${t.statement}) <= 2000`),
+    // The three states of an appeal's statement: none; held to its digest; erased, the digest kept.
+    check(
+      "suspension_replies_statement",
+      sql`(${t.statement} is null) = (${t.statementSalt} is null) and (${t.statement} is null or (${t.erasedAt} is null and ${t.statementSalt} ~ '^[0-9a-f]{64}$' and ${t.statementDigest} is not null and ${t.statementDigest} = encode(sha256(convert_to('korbat.text.v1', 'UTF8') || decode('0a', 'hex') || decode(${t.statementSalt}, 'hex') || convert_to(${t.statement}, 'UTF8')), 'hex'))) and (${t.statement} is not null or ${t.statementDigest} is null or ${t.erasedAt} is not null) and (${t.statementDigest} is null or ${t.statementDigest} ~ '^[0-9a-f]{64}$')`,
+    ),
+    /** The replies waiting for an answer, oldest first. */
+    index("suspension_replies_pending_idx").on(t.filedAt).where(sql`answered_by is null`),
+    fullAccess("suspension_replies_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * A moderator's mark "manifestly unfounded" on an answered item of a signed-in person's rule report, one an item. The
+ * API role holds no write on it until the migration of the reporting counts grants INSERT together with the trigger that
+ * checks every mark; the reporter, the report and its time are forced, and a withdrawal is written only by the ledger's
+ * triggers.
+ */
+export const unfoundedMarks = pgTable(
+  "unfounded_marks",
+  {
+    itemId: uuid("item_id")
+      .primaryKey()
+      .references(() => intakeItems.id, { onDelete: "restrict" }),
+    /** The decision that set the mark. */
+    decisionId: uuid("decision_id")
+      .notNull()
+      .references((): AnyPgColumn => decisions.id, { onDelete: "restrict" }),
+    /** Forced: the reporter. No foreign key: the counts go with the account through the retention functions. */
+    accountId: uuid("account_id").notNull(),
+    /** Forced: the report the item came in, the unit the counts count. */
+    intakeId: uuid("intake_id")
+      .notNull()
+      .references(() => intakes.id, { onDelete: "restrict" }),
+    /** Forced: that report's received_at. */
+    reportedAt: ts("reported_at").notNull(),
+    /** Forced: now(). */
+    markedAt: ts("marked_at").notNull(),
+    /** Forced null at insert: the correction that withdrew the mark, and when. */
+    withdrawnBy: uuid("withdrawn_by").references((): AnyPgColumn => decisions.id),
+    withdrawnAt: ts("withdrawn_at"),
+  },
+  (t) => [index("unfounded_marks_account_idx").on(t.accountId, t.reportedAt), fullAccess("unfounded_marks_api_all", apiRole)],
+).enableRLS();
+
+/** How many rule reports an account sent on a UTC day. Written only by a migrator-owned trigger on intakes; the API role reads it. */
+export const reportTallies = pgTable(
+  "report_tallies",
+  {
+    accountId: uuid("account_id").notNull(),
+    day: date("day").notNull(),
+    reports: integer("reports").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.accountId, t.day] }), pgPolicy("report_tallies_api_select", { for: "select", to: apiRole, using: sql`true` })],
 ).enableRLS();

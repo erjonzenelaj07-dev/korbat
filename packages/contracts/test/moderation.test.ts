@@ -7,9 +7,11 @@ import {
   DAILY_LIMITS,
   DECISION_KEYWORDS,
   MEASURES,
+  MEASURE_KINDS,
   ModerationErrorCode,
   NOTICE_LIMITS,
   RETENTION,
+  REVERSAL_KINDS,
   REVEAL_REASON_CATEGORIES,
   RULE_DEFAULT_CATEGORY,
   RULE_IDS,
@@ -19,6 +21,7 @@ import {
   TDB_CATEGORIES,
   TDB_FORM_CATEGORIES,
   TEXT_DIGEST_TAG,
+  TIMED_KINDS,
   appealDeadline,
   compareDecisionActions,
   laneFor,
@@ -178,7 +181,7 @@ describe("the measures", () => {
   const measures = kinds.filter((kind) => MEASURES[kind].lifts === null);
   const reversals = kinds.filter((kind) => MEASURES[kind].lifts !== null);
 
-  test("every action kind has an entry: the seven measures, then the five reversals", () => {
+  test("every action kind has an entry: 3c's seven measures and five reversals, then 3e's six measures and four reversals", () => {
     expect(kinds).toEqual([
       "withhold",
       "remove",
@@ -192,19 +195,35 @@ describe("the measures", () => {
       "restore_media",
       "restore_display_name",
       "restore_bio",
+      "strike",
+      "suspend",
+      "terminate",
+      "retire_handle",
+      "warn_reporting",
+      "restrict_reporting",
+      "overrule",
+      "lift_suspension",
+      "unretire_handle",
+      "lift_reporting",
     ]);
     expect(ACTION_KINDS).toEqual(kinds);
-    expect(measures).toEqual(kinds.slice(0, 7));
-    expect(reversals).toEqual(kinds.slice(7));
+    expect(ACTION_KINDS).toHaveLength(22);
+    expect(measures).toEqual([...kinds.slice(0, 7), ...kinds.slice(12, 18)]);
+    expect(reversals).toEqual([...kinds.slice(7, 12), ...kinds.slice(18)]);
+    expect(MEASURE_KINDS).toEqual(measures);
+    expect(MEASURE_KINDS).toHaveLength(13);
+    expect(REVERSAL_KINDS).toEqual(reversals);
+    expect(REVERSAL_KINDS).toHaveLength(9);
   });
 
-  test("a post or one image is withheld only while deciding and removed only when the case is decided; a seal and a reset are either", () => {
+  test("a post or one image is withheld only while deciding and removed only when the case is decided; a seal and a reset are either; 3e's measures only when it is decided", () => {
     const when = (kind: ActionKind) => [MEASURES[kind].interim, MEASURES[kind].final];
     expect(when("withhold")).toEqual([true, false]);
     expect(when("withhold_media")).toEqual([true, false]);
     expect(when("remove")).toEqual([false, true]);
     expect(when("remove_media")).toEqual([false, true]);
     for (const kind of ["seal_media", "reset_display_name", "reset_bio"] as const) expect(when(kind), kind).toEqual([true, true]);
+    for (const kind of ["strike", "suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting"] as const) expect(when(kind), kind).toEqual([false, true]);
     // A reversal is neither: which decision may hold one is the reversed measure's matter.
     for (const kind of reversals) expect(when(kind), kind).toEqual([false, false]);
   });
@@ -223,6 +242,16 @@ describe("the measures", () => {
       restore_media: "image",
       restore_display_name: "display_name",
       restore_bio: "bio",
+      strike: "account",
+      suspend: "account",
+      terminate: "account",
+      retire_handle: "handle",
+      warn_reporting: "reporting",
+      restrict_reporting: "reporting",
+      overrule: "account",
+      lift_suspension: "account",
+      unretire_handle: "handle",
+      lift_reporting: "reporting",
     });
     expect(Object.fromEntries(reversals.map((kind) => [kind, MEASURES[kind].lifts]))).toEqual({
       restore: ["withhold", "remove"],
@@ -230,14 +259,21 @@ describe("the measures", () => {
       restore_media: ["withhold_media", "remove_media"],
       restore_display_name: ["reset_display_name"],
       restore_bio: ["reset_bio"],
+      overrule: ["strike"],
+      lift_suspension: ["suspend", "terminate"],
+      unretire_handle: ["retire_handle"],
+      lift_reporting: ["warn_reporting", "restrict_reporting"],
     });
-    // Every measure can be lifted, by exactly one kind of reversal.
+    // Every measure can be lifted, by exactly one kind of reversal, of the measure's own target.
     for (const measure of measures) expect(reversals.filter((kind) => (MEASURES[kind].lifts as readonly ActionKind[]).includes(measure)), measure).toHaveLength(1);
+    for (const kind of reversals) for (const lifted of MEASURES[kind].lifts as readonly ActionKind[]) expect(MEASURES[lifted].target, kind).toBe(MEASURES[kind].target);
+    // Only the three timed kinds sign their days and whether they are announced.
+    expect(TIMED_KINDS).toEqual(["suspend", "terminate", "restrict_reporting"]);
   });
 
   test("each has a label of its own: the composer's words where the composer names the measure", () => {
     // The first seven and "Lift the seal" are the words of the decision composer; the composer, the statement and the
-    // terms all take them from here.
+    // terms all take them from here. 3e's are W.1's.
     expect(Object.fromEntries(kinds.map((kind) => [kind, MEASURES[kind].label]))).toEqual({
       withhold: "Withhold the post",
       remove: "Remove",
@@ -251,6 +287,16 @@ describe("the measures", () => {
       restore_media: "Lift the restriction of one image",
       restore_display_name: "Lift the reset of the display name",
       restore_bio: "Lift the reset of the bio",
+      strike: "Strike",
+      suspend: "Suspend the account",
+      terminate: "Terminate the account",
+      retire_handle: "Retire the handle",
+      warn_reporting: "Warn about reporting",
+      restrict_reporting: "Restrict reporting",
+      overrule: "Overrule the strike",
+      lift_suspension: "Lift the suspension",
+      unretire_handle: "Give the handle back",
+      lift_reporting: "Lift the reporting measure",
     });
     const labels = kinds.map((kind) => MEASURES[kind].label);
     expect(new Set(labels).size).toBe(labels.length);
@@ -313,6 +359,11 @@ describe("moderation error codes", () => {
       "text_quotes_user",
       "image_refused",
       "reveal_refused",
+      "reporting_restricted",
+      "reply_not_open",
+      "strike_mismatch",
+      "standing_conflict",
+      "ground_not_established",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

@@ -171,9 +171,94 @@ export const RETENTION = {
   mailGiveUpDays: 5,
 } as const;
 
+// ---------------------------------------------------------------- account sanctions (3e design, section 10.1)
+
+/**
+ * The numbers of account sanctions, the same as the SQL function standing_rules() returns, which a database test compares
+ * member by member: every function and view of the standing ledger reads its numbers from there, and every word of the
+ * console and the app from here. Each is a cautious default without a source of its own, flagged for the owner (3e
+ * design, section 2): one line to change in each place.
+ */
+export const STANDING_RULES = {
+  /** How long a strike counts. */
+  strikeDays: 90,
+  /** The active strikes that open the ladder. */
+  ladderStrikes: 3,
+  /** The most days of the first, second and third suspension of the ladder. */
+  ladderDays: [3, 7, 30],
+  /** How long a suspension of the ladder counts toward the next rung. */
+  ladderMemoryDays: 365,
+  /** The reply window, from the moment korbat's own relay accepted the notice mail, and never less from the decision. */
+  replyWindowHours: 168,
+  /** The window, from the decision, when the relay refused the address or the mail was given up. */
+  undeliveredHours: 336,
+  /** The most days of a suspension at once, by its ground. */
+  threatDays: 30,
+  terroristDays: 30,
+  floodDays: 7,
+  protectiveDays: 14,
+  /** The count without which no flood is found: a condition, never the finding. */
+  floodPosts: 20,
+  floodMinutes: 60,
+  /** The most age of the decision a threat or terrorist suspension rests on, and of the seal for good a protective one rests on. */
+  basisAgeDays: 30,
+  /** The frame of the reporting counts, by the day a report was sent, and a warning's time of counting. */
+  reportFrameDays: 90,
+  /** The warning's threshold: marked reports, and their share of the rule reports sent. */
+  reportWarnMarks: 5,
+  reportWarnShare: 0.5,
+  /** The restriction's threshold, in marked reports sent after the warning, and its most days. */
+  reportRestrictMarks: 3,
+  reportRestrictDays: 30,
+} as const;
+
+/** What a standing measure or a restriction of reporting rests on, as the ledger's check trigger forces it. The migration's CHECK list is written from it. */
+export const STANDING_BASES = ["strikes", "threat", "terrorist", "flood", "protective", "threat_repeat", "ladder_end", "reports"] as const;
+export type StandingBasis = (typeof STANDING_BASES)[number];
+
+/** The bounds of `days` on a suspension and a restriction of reporting. */
+export const STANDING_DAYS = { min: 1, max: 30 } as const;
+
+/** The most characters of a reply to a standing measure: the bound of an appeal's statement. */
+export const REPLY_TEXT_MAX = 2000;
+
+/** The most items one decision marks "manifestly unfounded" (a default, flagged with the other numbers). */
+export const UNFOUNDED_MAX = 100;
+
+/**
+ * The composer's drafts of the facts of a standing measure or a reporting measure, and the reason of a protective
+ * suspension (3e design, section 18, W.5). The console fills each placeholder in braces from the case answer it read, and
+ * a draft that holds a count says when it was counted: the key signs the text, and the database checks its own numbers at
+ * the commit. The moderator may edit them; they write the reason, except a protective suspension's.
+ */
+export const STANDING_DRAFTS = {
+  facts: {
+    strikes:
+      "When this was written the account had {activeStrikes} active strikes. Each was given by a decision that found a breach of a korbat rule in a post, and each of those decisions was sent to the account with its reasons.",
+    ladder_end:
+      "When this was written the account had been suspended {n} times in the last {ladderMemoryDays} days, the last time by korbat's decision of {day}, and had {activeStrikes} active strikes again, one of them given since.",
+    threat: "A final decision of korbat found a direct threat of violence in a post of this account.",
+    terrorist: "A final decision of korbat found terrorist content in a post of this account.",
+    threat_repeat: "A final decision of korbat found a direct threat of violence in a post that this account made after korbat had suspended it for an earlier threat.",
+    flood: "The account made {posts} posts between {from} and {to}.",
+    protective:
+      "On {sealedOn} an admin of korbat decided to keep images of this account sealed, after they were reported as possible child sexual abuse material. korbat's staff do not open images reported this way, so korbat has not assessed them.",
+    warn: "In the {frameDays} days up to {readDay} the account sent {reports} reports under korbat's rules. A moderator marked {unfounded} of them as manifestly unfounded: {marked}.",
+    restrict: "Of the reports the account sent between korbat's warning of {warnedOn} and {readDay}, a moderator marked {marksSince} as manifestly unfounded: {marked}.",
+  },
+  reason: {
+    protective:
+      "An admin found the report credible enough to keep the images sealed and to report them to the police, who can assess them. korbat makes no finding that this account broke the law or a korbat rule. It stops the account from writing for a short, fixed time.",
+  },
+} as const;
+
 // ---------------------------------------------------------------- measures
 
-/** The ledger's kinds, in the order of the database's action_kind: the seven measures, then the five reversals. */
+/**
+ * The ledger's kinds, in the order of the database's action_kind: 3c's seven measures and five reversals, then 3e's six
+ * measures (a strike, a suspension, a termination, a retired handle, a warning about reporting and a restriction of it)
+ * and four reversals (3e design, section 10.1).
+ */
 export const ACTION_KINDS = [
   "withhold",
   "remove",
@@ -187,11 +272,24 @@ export const ACTION_KINDS = [
   "restore_media",
   "restore_display_name",
   "restore_bio",
+  "strike",
+  "suspend",
+  "terminate",
+  "retire_handle",
+  "warn_reporting",
+  "restrict_reporting",
+  "overrule",
+  "lift_suspension",
+  "unretire_handle",
+  "lift_reporting",
 ] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 
-/** What a measure acts on: a post, one image of it, every image its case reaches, or one of an account's two fields. */
-export type MeasureTarget = "post" | "image" | "images" | "display_name" | "bio";
+/**
+ * What a measure acts on: a post, one image of it, every image its case reaches, one of an account's two fields, the
+ * account itself (a strike, a suspension or a termination), its handle, or its reports under the rules.
+ */
+export type MeasureTarget = "post" | "image" | "images" | "display_name" | "bio" | "account" | "handle" | "reporting";
 
 export interface MeasureSpec {
   /** A decision taken while deciding (interim) may hold it. */
@@ -223,13 +321,42 @@ export const MEASURES = {
   restore_media: { interim: false, final: false, lifts: ["withhold_media", "remove_media"], target: "image", label: "Lift the restriction of one image" },
   restore_display_name: { interim: false, final: false, lifts: ["reset_display_name"], target: "display_name", label: "Lift the reset of the display name" },
   restore_bio: { interim: false, final: false, lifts: ["reset_bio"], target: "bio", label: "Lift the reset of the bio" },
+  // 3e (design, section 18, W.1). Each measure of 3e is taken only when the case is decided, and none while deciding.
+  strike: { interim: false, final: true, lifts: null, target: "account", label: "Strike" },
+  suspend: { interim: false, final: true, lifts: null, target: "account", label: "Suspend the account" },
+  terminate: { interim: false, final: true, lifts: null, target: "account", label: "Terminate the account" },
+  retire_handle: { interim: false, final: true, lifts: null, target: "handle", label: "Retire the handle" },
+  warn_reporting: { interim: false, final: true, lifts: null, target: "reporting", label: "Warn about reporting" },
+  restrict_reporting: { interim: false, final: true, lifts: null, target: "reporting", label: "Restrict reporting" },
+  overrule: { interim: false, final: false, lifts: ["strike"], target: "account", label: "Overrule the strike" },
+  lift_suspension: { interim: false, final: false, lifts: ["suspend", "terminate"], target: "account", label: "Lift the suspension" },
+  unretire_handle: { interim: false, final: false, lifts: ["retire_handle"], target: "handle", label: "Give the handle back" },
+  lift_reporting: { interim: false, final: false, lifts: ["warn_reporting", "restrict_reporting"], target: "reporting", label: "Lift the reporting measure" },
 } as const satisfies Record<ActionKind, MeasureSpec>;
 
-/** The seven measures and the five reversals, each list in the ledger's order: what a statement's data keeps apart. */
-export const MEASURE_KINDS = ["withhold", "remove", "seal_media", "withhold_media", "remove_media", "reset_display_name", "reset_bio"] as const satisfies readonly ActionKind[];
+/** The thirteen measures and the nine reversals, each list in the ledger's order: what a statement's data keeps apart. */
+export const MEASURE_KINDS = [
+  "withhold",
+  "remove",
+  "seal_media",
+  "withhold_media",
+  "remove_media",
+  "reset_display_name",
+  "reset_bio",
+  "strike",
+  "suspend",
+  "terminate",
+  "retire_handle",
+  "warn_reporting",
+  "restrict_reporting",
+] as const satisfies readonly ActionKind[];
 export type MeasureKind = (typeof MEASURE_KINDS)[number];
-export const REVERSAL_KINDS = ["restore", "unseal_media", "restore_media", "restore_display_name", "restore_bio"] as const satisfies readonly ActionKind[];
+export const REVERSAL_KINDS = ["restore", "unseal_media", "restore_media", "restore_display_name", "restore_bio", "overrule", "lift_suspension", "unretire_handle", "lift_reporting"] as const satisfies readonly ActionKind[];
 export type ReversalKind = (typeof REVERSAL_KINDS)[number];
+
+/** The three kinds whose action entry also signs `days` and `announced` (3e design, section 10.4). */
+export const TIMED_KINDS = ["suspend", "terminate", "restrict_reporting"] as const satisfies readonly ActionKind[];
+export type TimedKind = (typeof TIMED_KINDS)[number];
 
 /**
  * The console's fixed drafts of the facts and the reason of a seal (3c design, section 10). Nobody at korbat opens images
@@ -266,10 +393,16 @@ export function sealFactsDraft(target: "post" | "account", items: readonly { sou
   return SEAL_DRAFTS.facts[`${from}_${about}`];
 }
 
-/** One measure or reversal as a decision's confirmed params name it: its kind, and for an image measure the image. */
+/**
+ * One measure or reversal as a decision's confirmed params name it: its kind, and for an image measure the image; for a
+ * suspension, a termination and a restriction of reporting also its days and whether it is announced (3e design,
+ * section 10.4).
+ */
 export interface DecisionActionParams {
   kind: ActionKind;
   mediaId: string | null;
+  days?: number | null;
+  announced?: boolean;
 }
 
 /**
@@ -324,6 +457,13 @@ export const ModerationErrorCode = z.enum([
   "text_quotes_user",
   "image_refused",
   "reveal_refused",
+  // 3e (design, section 10.5): a rule report of an account whose reports are restricted, a reply to a measure that takes
+  // none, a decision whose strike is missing or not due, a second standing measure, and a termination under R2.
+  "reporting_restricted",
+  "reply_not_open",
+  "strike_mismatch",
+  "standing_conflict",
+  "ground_not_established",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -903,6 +1043,68 @@ export type RevealResponse = z.infer<typeof RevealResponse>;
 const UtcDay = z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "must be a UTC day");
 const Count = z.number().int().nonnegative();
 const LaneNumber = z.union([z.literal(0), z.literal(1), z.literal(2)]);
+
+// ---------------------------------------------------------------- account sanctions: what staff read (3e design, section 10.3)
+
+/**
+ * Where a standing measure stands now: `unfixed` (it has no start yet, since korbat does not know what became of its
+ * notice mail), `announced` (its start is fixed and ahead), `held` (a reply filed before the start waits for an answer),
+ * `running`, `ended`; and, once it stopped early, `never` (lifted before it started), `lifted`, or `basis_ended` (a
+ * decision it rested on was reversed).
+ */
+export const PERIOD_STATES = ["unfixed", "announced", "held", "running", "ended", "never", "lifted", "basis_ended"] as const;
+export type PeriodState = (typeof PERIOD_STATES)[number];
+
+/** A standing measure's start and end as they stand, each null while not fixed (the end of a termination too), and its state. */
+export const MeasurePeriod = z.object({ startsAt: z.iso.datetime().nullable(), endsAt: z.iso.datetime().nullable(), state: z.enum(PERIOD_STATES) });
+export type MeasurePeriod = z.infer<typeof MeasurePeriod>;
+
+/**
+ * On a post case: whether a final restriction of this case on a korbat rule other than R2, resting on no suspect item,
+ * gives a strike, as the database's strike_due answers it, and why not: the post already carries a strike that stands, or
+ * it was made before its author was told of their newest strike. The database's own answer at the commit decides.
+ */
+export const StrikeDue = z.object({ due: z.boolean(), why: z.enum(["due", "already_struck", "before_last_strike"]) });
+export type StrikeDue = z.infer<typeof StrikeDue>;
+
+/** On a post case: the author's standing in bands, so that the moderator knows what a strike here leads to. */
+export const AuthorStanding = z.object({
+  activeStrikes: z.enum(["0", "1", "2", "3_or_more"]),
+  suspensionsInYear: z.enum(["0", "1", "2_or_more"]),
+  now: z.enum(["none", "announced", "suspended", "terminated"]),
+});
+export type AuthorStanding = z.infer<typeof AuthorStanding>;
+
+/** The grounds of a suspension at once, and the termination at once for a second threat. */
+export const AT_ONCE_GROUNDS = ["threat", "terrorist", "flood", "protective", "threat_repeat"] as const;
+export type AtOnceGround = (typeof AT_ONCE_GROUNDS)[number];
+
+/**
+ * On an account case: the account's standing, read from the same views the ledger's triggers read, as an aid to the
+ * console; the database decides at the commit. `strikes` are the active strikes, oldest first; `ladderRule` the rule of
+ * the newest; `suspensionsInYear` the suspensions of the ladder that stand with their basis, decided in the last
+ * ladderMemoryDays, and `lastSuspendedOn` the day of the newest of them; `maxDays` the rung an announced suspension would
+ * take now, null when none can be announced; `mayTerminate` whether a termination can be announced; `live` whether a
+ * suspension or termination stands and has not ended, one with no start included; `openReports` whether the case holds an
+ * unanswered item of a user's report, which holds the ladder's, the protective and the reporting measures back; `atOnce`
+ * the grounds the database would accept now; `flood` the account's posts of the last floodMinutes and the interval they
+ * were counted in; `seal` the day of the seal for good a protective suspension would rest on now.
+ */
+export const CaseStanding = z.object({
+  activeStrikes: Count,
+  strikes: z.array(z.object({ decisionId: z.uuid(), caseId: z.uuid(), ruleId: z.enum(RULE_IDS), decidedAt: z.iso.datetime(), countsUntil: z.iso.datetime() })),
+  ladderRule: z.enum(RULE_IDS).nullable(),
+  suspensionsInYear: Count,
+  lastSuspendedOn: UtcDay.nullable(),
+  maxDays: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(),
+  mayTerminate: z.boolean(),
+  live: z.boolean(),
+  openReports: z.boolean(),
+  atOnce: z.array(z.enum(AT_ONCE_GROUNDS)),
+  flood: z.object({ posts: Count, from: z.iso.datetime(), to: z.iso.datetime() }),
+  seal: z.object({ decidedOn: UtcDay }).nullable(),
+});
+export type CaseStanding = z.infer<typeof CaseStanding>;
 const TargetKind = z.enum(["post", "account"]);
 const StoredPostState = z.enum(["visible", "withheld", "removed", "deleted_by_author"]);
 
@@ -1073,6 +1275,25 @@ export const CaseDecisionAction = z.object({
       list: z.array(z.object({ postId: z.uuid(), createdAt: z.iso.datetime(), images: z.number().int().positive() })).max(SEAL_LIST_MAX),
     })
     .nullable(),
+  // 3e (design, section 10.3): the ledger row's own columns, each null on a kind that does not take it.
+  /** A suspension's or a restriction of reporting's days. */
+  days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(),
+  /** A standing measure announced with the reply window, or taken at once. */
+  announced: z.boolean().nullable(),
+  basis: z.enum(STANDING_BASES).nullable(),
+  /** The decisions the measure rests on. */
+  restsOn: z.array(z.uuid()).nullable(),
+  /** A standing measure's earliest start, as its statement names it. */
+  earliestStart: z.iso.datetime().nullable(),
+  /** A strike's and a warning's last moment of counting. */
+  countsUntil: z.iso.datetime().nullable(),
+  /** A standing measure's period as it stands now. */
+  period: MeasurePeriod.nullable(),
+  /**
+   * On a strike: the kinds of the standing measures of the account that rest on this strike's decision and stand (not
+   * lifted, their basis whole), so that a review says [review.rests] before the key is asked; null on any other kind.
+   */
+  restedOnBy: z.array(z.enum(["suspend", "terminate"])).nullable(),
 });
 export type CaseDecisionAction = z.infer<typeof CaseDecisionAction>;
 
@@ -1245,6 +1466,11 @@ export const CaseView = z.object({
   notes: z.array(CaseStaffText),
   sealsDeclined: z.array(CaseStaffText),
   history: z.array(CaseHistoryEntry),
+  // 3e (design, section 10.3): on a post case the strike's answer and the author's standing in bands, on an account case
+  // the account's standing; each null on the other kind of case.
+  strikeDue: StrikeDue.nullable(),
+  authorStanding: AuthorStanding.nullable(),
+  standing: CaseStanding.nullable(),
 });
 export type CaseView = z.infer<typeof CaseView>;
 
@@ -1258,6 +1484,12 @@ export const StatementMeasure = z.object({
   noEffect: z.enum(["already", "deleted"]).nullable(),
   /** For a seal: the posts and images its list held when it was recorded, and how many of those images were on posts their author had deleted by then. */
   sealed: z.object({ posts: Count, images: Count, deletedImages: Count }).nullable(),
+  // 3e (design, section 10.2): what the ledger fixes for good about a measure of 3e, so a statement reads as it was sent.
+  // Absent on 3c's measures.
+  /** A strike's last moment of counting. */
+  endsAt: z.iso.datetime().nullable().optional(),
+  /** On a strike: the account's strikes that stood and counted at the decision's time, this one included. */
+  activeThen: Count.nullable().optional(),
 });
 export type StatementMeasure = z.infer<typeof StatementMeasure>;
 
@@ -1348,12 +1580,21 @@ export const AuthorCaseRow = z.object({
   appealUntil: z.iso.datetime().nullable(),
   reversedOn: UtcDay.nullable(),
   appeal: z.enum(["pending", "kept", "partly_reversed", "reversed"]).nullable(),
+  /** The strike the decision gave (3e design, section 10.2): until when it counts, and when it was overruled; null for a decision without one. */
+  strike: z.object({ countsUntil: z.iso.datetime(), overruledAt: z.iso.datetime().nullable() }).nullable(),
 });
 export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 
-/** GET /api/moderation/cases: the decisions about the viewer's account, newest first. */
-export const AuthorCasesPage = z.object({ decisions: z.array(AuthorCaseRow).max(AUTHOR_CASES_PAGE_SIZE), nextCursor: z.string().nullable() });
+/**
+ * GET /api/moderation/cases: the decisions about the viewer's account, newest first, and how many strikes of the account
+ * count now (active_strikes), which the block "Your standing" above the list prints.
+ */
+export const AuthorCasesPage = z.object({ decisions: z.array(AuthorCaseRow).max(AUTHOR_CASES_PAGE_SIZE), nextCursor: z.string().nullable(), activeStrikes: Count });
 export type AuthorCasesPage = z.infer<typeof AuthorCasesPage>;
+
+/** A strike as its decision's screen shows it: until when it counts, whether it still counts, ran out or was overruled, and when. */
+export const DecisionStrike = z.object({ countsUntil: z.iso.datetime(), state: z.enum(["counts", "expired", "overruled"]), overruledAt: z.iso.datetime().nullable() });
+export type DecisionStrike = z.infer<typeof DecisionStrike>;
 
 export const AuthorCasesQuery = z.object({ cursor: ListCursor.optional() });
 export type AuthorCasesQuery = z.infer<typeof AuthorCasesQuery>;
@@ -1425,6 +1666,8 @@ export const DecisionView = DecisionStatement.extend({
   reversedOn: UtcDay.nullable(),
   content: DecisionContent,
   appeal: DecisionAppeal.nullable(),
+  /** The strike the decision gave, read fresh (3e design, section 10.2); null for a decision without one. */
+  strike: DecisionStrike.nullable(),
 });
 export type DecisionView = z.infer<typeof DecisionView>;
 

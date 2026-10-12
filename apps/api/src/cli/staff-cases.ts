@@ -212,7 +212,9 @@ interface NamingRow {
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const actionKey = (action: { kind: unknown; mediaId: unknown }) => `${String(action.kind)}:${action.mediaId === null || action.mediaId === undefined ? "" : String(action.mediaId)}`;
+/** An action as the key signed it and as the ledger holds it: its kind, its image, and (3e) the days and whether it was announced. */
+const actionKey = (action: { kind: unknown; mediaId: unknown; days?: unknown; announced?: unknown }) =>
+  [action.kind, action.mediaId, action.days, action.announced].map((part) => (part === null || part === undefined ? "" : String(part))).join(":");
 
 /**
  * text-verify (3c design, section 7.13), read-only on the API's role. audit-verify proves that the record was not
@@ -224,7 +226,9 @@ const actionKey = (action: { kind: unknown; mediaId: unknown }) => `${String(act
  *      snapshot. A text or a snapshot that is missing was removed around the erasures, which keep each row and its digest.
  *   2. Every decision is named by exactly one such row, written by the deciding account on the decision's case (for a
  *      review, on the reviewed decision), whose params equal the decision's own columns and whose actions equal its
- *      ledger rows as a set. A row that names a decision korbat does not hold is reported too.
+ *      ledger rows as a set (3e: with each row's days and whether it was announced; the marks the decision set equal the
+ *      params' `unfounded`, and a withdrawal for another measure its `replaced`). A row that names a decision korbat does
+ *      not hold is reported too.
  *   3. Every post's level and every image's state equal what the ledger of measures gives, worked out here from the
  *      ledger's rows, the cases' closures, the items and the erasure marks, as the database's own writer derives them;
  *      and every post a seal in force lists still has the number of image rows the seal recorded.
@@ -304,13 +308,15 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
   let decisions = 0;
   const seen = new Set<string>();
   for (let after: string | null = null; ; ) {
-    const page: { id: string; d: Record<string, unknown>; actions: { kind: string; mediaId: string | null }[] }[] = await rowsOf(
+    const page: { id: string; d: Record<string, unknown>; actions: { kind: string; mediaId: string | null; days: number | null; announced: boolean | null }[]; marks: string[]; replaced: boolean }[] = await rowsOf(
       q,
       sql`select d.id, to_jsonb(d) as d,
-                 coalesce((select jsonb_agg(jsonb_build_object('kind', a.kind, 'mediaId', a.media_id)) from decision_actions a where a.decision_id = d.id), '[]'::jsonb) as actions
+                 coalesce((select jsonb_agg(jsonb_build_object('kind', a.kind, 'mediaId', a.media_id, 'days', a.days, 'announced', a.announced)) from decision_actions a where a.decision_id = d.id), '[]'::jsonb) as actions,
+                 coalesce((select jsonb_agg(m.item_id) from unfounded_marks m where m.decision_id = d.id), '[]'::jsonb) as marks,
+                 exists (select 1 from decision_actions a where a.decision_id = d.id and a.replaced) as replaced
             from decisions d where ${after === null ? sql`true` : sql`d.id > ${after}::uuid`} order by d.id limit ${PAGE}`,
     );
-    for (const { id, d, actions } of page) {
+    for (const { id, d, actions, marks, replaced } of page) {
       decisions++;
       seen.add(id);
       const named = naming.get(id) ?? [];
@@ -331,10 +337,18 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
       if (row.actorId !== d.decided_by) differing.push("actor");
       if (row.action !== (review ? "appeals_reviewed" : "case_decided") || row.targetType !== (review ? "decision" : "case") || row.targetId !== (review ? d.reviews_decision_id : d.case_id)) differing.push("target");
       for (const key of new Set([...Object.keys(expected), ...Object.keys(row.params)])) {
-        if (key !== "actions" && (expected[key] ?? null) !== (row.params[key] ?? null)) differing.push(key);
-        if (key !== "actions" && !(key in expected)) differing.push(key);
+        if (key === "actions" || key === "unfounded" || key === "replaced") continue;
+        if ((expected[key] ?? null) !== (row.params[key] ?? null)) differing.push(key);
+        if (!(key in expected)) differing.push(key);
       }
-      const recorded = Array.isArray(row.params.actions) ? row.params.actions.filter(isObject).map((a) => actionKey({ kind: a.kind, mediaId: a.mediaId })) : null;
+      // 3e: the marks the decision set, as the sorted item ids its params signed, and whether it withdrew a suspension for
+      // another measure; a review signs neither, and a row signed before 3e lacks both, which reads as none and false.
+      if (!review) {
+        const signed = row.params.unfounded === undefined ? "" : Array.isArray(row.params.unfounded) ? row.params.unfounded.map(String).sort().join("|") : null;
+        if (signed !== [...marks].sort().join("|")) differing.push("unfounded");
+        if ((row.params.replaced ?? false) !== replaced) differing.push("replaced");
+      }
+      const recorded = Array.isArray(row.params.actions) ? row.params.actions.filter(isObject).map((a) => actionKey({ kind: a.kind, mediaId: a.mediaId, days: a.days, announced: a.announced })) : null;
       if (recorded === null || [...recorded].sort().join("|") !== actions.map(actionKey).sort().join("|")) differing.push("actions");
       if (differing.length > 0) problem("decision", id, `it differs from the audit row at place ${row.place} that names it: ${[...new Set(differing)].sort().join(", ")}`);
     }

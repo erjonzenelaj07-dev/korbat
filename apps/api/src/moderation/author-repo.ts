@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { ActionKind, PostModeration, RuleId } from "@korbat/contracts";
+import type { ActionKind, DecisionStrike, PostModeration, RuleId } from "@korbat/contracts";
 import { iso, rows, type Runner } from "./repo";
 
 /**
@@ -39,6 +39,17 @@ const reversedOn = sql`case when d.kind = 'final' and d.outcome = 'restricted'
              then (select ${day("max(r.created_at)")} from decision_actions a join decision_actions r on r.reverses_action_id = a.id where a.decision_id = d.id) end`;
 
 /**
+ * The strike decision `d` gave (3e design, section 10.2), read fresh: its end of counting, when it was overruled, and
+ * whether it counts now, ran out or was overruled; all null for a decision without one.
+ */
+const strikeColumns = sql`(select ${iso("a.ends_at")} from decision_actions a where a.decision_id = d.id and a.kind = 'strike') as strike_until,
+               (select ${iso("r.created_at")} from decision_actions a join decision_actions r on r.reverses_action_id = a.id
+                 where a.decision_id = d.id and a.kind = 'strike') as strike_overruled_at,
+               (select case when exists (select 1 from decision_actions r where r.reverses_action_id = a.id) then 'overruled'
+                            when a.ends_at <= clock_timestamp() then 'expired' else 'counts' end
+                  from decision_actions a where a.decision_id = d.id and a.kind = 'strike') as strike_state`;
+
+/**
  * The cases about an account: the account's own, and those about the posts it wrote. A post keeps its author through its
  * deletion and the account's purge, so a decision stays with the account it was about.
  */
@@ -65,6 +76,8 @@ export interface AuthorDecisionRow {
   reversedOn: string | null;
   /** Where the author's appeal of the decision stands: pending, or its result; null when they filed none. */
   appeal: "pending" | "kept" | "partly_reversed" | "reversed" | null;
+  /** The strike the decision gave: until when it counts and when it was overruled; null for a decision without one. */
+  strike: { countsUntil: string; overruledAt: string | null } | null;
 }
 
 /**
@@ -81,7 +94,8 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                coalesce((select array_agg(a.kind::text order by a.kind, a.media_id) from decision_actions a where a.decision_id = d.id), '{}') as actions,
                d.ended_interim, d.rule_id, d.ground is not distinct from 'illegal' as legal,
                ${appealUntil} as appeal_until, ${reversedOn} as reversed_on,
-               (select coalesce(ap.result::text, 'pending') from appeals ap where ap.decision_id = d.id) as appeal
+               (select coalesce(ap.result::text, 'pending') from appeals ap where ap.decision_id = d.id) as appeal,
+               ${strikeColumns}
           from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
          where d.author_mail <> 'none'
            ${after === null ? sql`` : sql`and (d.decided_at, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
@@ -101,6 +115,7 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
     appealUntil: row.appeal_until as string | null,
     reversedOn: row.reversed_on as string | null,
     appeal: row.appeal as AuthorDecisionRow["appeal"],
+    strike: row.strike_until === null ? null : { countsUntil: row.strike_until as string, overruledAt: row.strike_overruled_at as string | null },
   }));
 }
 
@@ -142,6 +157,8 @@ export interface AuthorDecisionFacts {
   postDeleted: boolean;
   postErased: boolean;
   sealed: boolean;
+  /** The strike the decision gave, read fresh: until when it counts, whether it still does, and when it was overruled. */
+  strike: DecisionStrike | null;
 }
 
 /**
@@ -161,7 +178,8 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
                         where rc.target_type = c.target_type and rc.target_id = c.target_id and r.redacted_at is not null) as redacted,
                s.body, s.media::text as media, coalesce(s.handle, s.author_handle) as handle, s.display_name, s.bio,
                coalesce(p.state = 'deleted_by_author', false) as post_deleted, coalesce(p.erased_at is not null, false) as post_erased,
-               (c.target_type = 'post' and exists (select 1 from seal_posts sp join measures_in_force m on m.id = sp.action_id where sp.post_id = c.target_id)) as sealed
+               (c.target_type = 'post' and exists (select 1 from seal_posts sp join measures_in_force m on m.id = sp.action_id where sp.post_id = c.target_id)) as sealed,
+               ${strikeColumns}
           from decisions d
           join cases c on c.id = d.case_id
           join evidence_snapshots s on s.id = d.snapshot_id
@@ -199,6 +217,10 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
     postDeleted: row.post_deleted as boolean,
     postErased: row.post_erased as boolean,
     sealed: row.sealed as boolean,
+    strike:
+      row.strike_until === null
+        ? null
+        : { countsUntil: row.strike_until as string, state: row.strike_state as DecisionStrike["state"], overruledAt: row.strike_overruled_at as string | null },
   };
 }
 
@@ -211,9 +233,12 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
 export async function chipFacts(q: Runner, accountId: string, postIds: readonly string[]): Promise<Map<string, PostModeration>> {
   const facts = new Map<string, PostModeration>();
   if (postIds.length === 0) return facts;
-  const found = await rows<{ post_id: string; decision_id: string; rule_id: string | null; legal: boolean; interim: boolean }>(
+  const found = await rows<{ post_id: string; decision_id: string; rule_id: string | null; legal: boolean; interim: boolean; strike_until: string | null }>(
     q,
-    sql`select p.id as post_id, f.decision_id, f.rule_id, f.legal, f.interim
+    sql`select p.id as post_id, f.decision_id, f.rule_id, f.legal, f.interim,
+               -- 3e: the strike of the chip's decision while it stands and still counts.
+               (select ${iso("a.ends_at")} from decision_actions a where a.decision_id = f.decision_id and a.kind = 'strike' and a.ends_at > clock_timestamp()
+                   and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)) as strike_until
           from posts p
           cross join lateral (
             (select d.id as decision_id, d.rule_id, d.ground is not distinct from 'illegal' as legal, d.kind = 'interim' as interim, 0 as source,
@@ -230,6 +255,6 @@ export async function chipFacts(q: Runner, accountId: string, postIds: readonly 
           ) f
          where p.id = any(${`{${postIds.join(",")}}`}::uuid[]) and p.author_id = ${accountId}::uuid and p.moderation_level in ('withheld', 'removed')`,
   );
-  for (const row of found) facts.set(row.post_id, { decisionId: row.decision_id, ruleId: row.rule_id as RuleId | null, legal: row.legal, interim: row.interim });
+  for (const row of found) facts.set(row.post_id, { decisionId: row.decision_id, ruleId: row.rule_id as RuleId | null, legal: row.legal, interim: row.interim, strikeUntil: row.strike_until });
   return facts;
 }

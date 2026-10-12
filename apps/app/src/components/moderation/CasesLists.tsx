@@ -4,6 +4,7 @@ import { MEASURES, type AuthorCaseRow, type ReportItem, type ReportsPage } from 
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
 import { CASES_WORDS } from "@/lib/moderation-words";
+import { CASE_ROW_WORDS, rowStrike, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
 
 /**
@@ -11,9 +12,10 @@ import { ItemLines } from "./ItemLines";
  * took no action. A review that kept the decision is worded by its outcome first: it lifts nothing, and the restriction
  * it answered stands.
  */
-function done(row: AuthorCaseRow): string {
+function done(row: AuthorCaseRow, now: Date): string {
   if (row.kind === "review" && row.outcome === "kept") return CASES_WORDS.keptDecision;
-  const labels: string[] = row.actions.map((kind) => MEASURES[kind].label);
+  // 3e (design, section 9.4): a strike is named with where it stands, and its overruling in the row's own words.
+  const labels: string[] = row.actions.map((kind) => (kind === "strike" && row.strike ? rowStrike(row.strike, now) : kind === "overrule" ? CASE_ROW_WORDS.overrule : MEASURES[kind].label));
   if (row.endedInterim) labels.push(CASES_WORDS.ended);
   return labels.length > 0 ? labels.join(", ") : CASES_WORDS.noAction;
 }
@@ -31,7 +33,7 @@ function kindWords(row: AuthorCaseRow): string | null {
  * row is a link to the decision's screen and says what it is about (the post, by its creation time, or the profile), the
  * decision's day, what was done, the rule or the law, and where its appeal stands.
  */
-export function DecisionsList({ decisions }: { decisions: readonly AuthorCaseRow[] }) {
+export function DecisionsList({ decisions, now = new Date() }: { decisions: readonly AuthorCaseRow[]; now?: Date }) {
   if (decisions.length === 0) return <Text className="px-4 py-8 text-base text-zinc-400">{CASES_WORDS.noDecisions}</Text>;
   return (
     <View>
@@ -45,7 +47,7 @@ export function DecisionsList({ decisions }: { decisions: readonly AuthorCaseRow
                 {CASES_WORDS.decidedOn(row.decidedOn)}
                 {kind ? ` (${kind})` : ""}
               </Text>
-              <Text className="mt-1 text-sm leading-5 text-zinc-200">{done(row)}</Text>
+              <Text className="mt-1 text-sm leading-5 text-zinc-200">{done(row, now)}</Text>
               {row.ruleId || row.legal ? <Text className="mt-1 text-sm text-zinc-300">{row.ruleId ? CASES_WORDS.rule(row.ruleId) : CASES_WORDS.law}</Text> : null}
               {row.appealUntil ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.appealOpen(utcMinute(row.appealUntil))}</Text> : null}
               {row.appeal ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.appealState[row.appeal]}</Text> : null}
@@ -54,6 +56,21 @@ export function DecisionsList({ decisions }: { decisions: readonly AuthorCaseRow
           </Link>
         );
       })}
+    </View>
+  );
+}
+
+/**
+ * "Your standing" (3e design, section 9.4), above "About you": how many of the account's strikes count now, and what that
+ * many leads to. The lines of a suspension and of the reporting measures come with the tasks that build them.
+ */
+export function StandingBlock({ activeStrikes }: { activeStrikes: number }) {
+  return (
+    <View className="border-b border-zinc-800 px-4 pb-4 pt-3">
+      <Text accessibilityRole="header" aria-level={2} className="text-base font-semibold text-zinc-50">
+        {STANDING_TEXTS.cases.title}
+      </Text>
+      <Text className="mt-1 text-sm leading-5 text-zinc-200">{activeStrikes > 0 ? STANDING_TEXTS.cases.strikes(activeStrikes) : STANDING_TEXTS.cases.none}</Text>
     </View>
   );
 }

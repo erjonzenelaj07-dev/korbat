@@ -252,7 +252,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals and reviews in t
         const caseId = (await intake(tx, ground.rule((await profile(tx)).id), aPost(postId))).items[0]!.caseId!;
         const both = await decideIn(tx, mod, caseId, { kind: "final", actions: [act("remove"), act("remove_media", imageId)] });
         await decideIn(tx, admin, caseId, { kind: "correction", outcome: "partly_reversed", reviewsDecisionId: both, actions: [act("restore")] });
-        expect(await inForce(tx, { caseId })).toEqual([`remove_media:${imageId}`]);
+        // 3e: the strike stays with the part of the finding that stands.
+        expect(await inForce(tx, { caseId })).toEqual([`remove_media:${imageId}`, "strike"]);
         expect(await appealRefusal(tx, both, authorId)).toBeNull();
       });
     });
@@ -518,7 +519,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals and reviews in t
           deadline: expect.any(String),
           ruleId: "R1",
           legal: false,
-          actions: ["remove"],
+          actions: ["remove", "strike"],
           reviewer: "available",
           needsAdmin: false,
           mayReview: true,
@@ -574,8 +575,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals and reviews in t
         // "Kept" lifts nothing, "reversed" leaves nothing, "partly reversed" leaves something: each is held to the ledger.
         expect(await refusalDetail(reviewIn(tx, mod2, removal, { outcome: "kept", actions: [act("restore")] }))).toBe("kept: a review that keeps the decision holds no measure and no reversal.");
         expect(await refusalDetail(reviewIn(tx, mod2, removal, { outcome: "reversed", actions: [act("restore")] }))).toBe("reversed: a measure of the reviewed decision is still in force.");
-        expect(await refusalDetail(reviewIn(tx, mod2, removal, { outcome: "partly_reversed", actions: [act("restore"), act("restore_media", imageId)] }))).toBe("partly_reversed: no measure of the reviewed decision is left in force.");
-        expect(await refusalDetail(reviewIn(tx, mod2, removal, { outcome: "reversed", actions: [] }))).toBe("reversed: a reversing decision holds at least one reversal.");
+        // 3e: the strike falls only with its whole finding, so a reversal "in part" that leaves nothing but the strike is refused.
+        expect(await refusalDetail(reviewIn(tx, mod2, removal, { outcome: "partly_reversed", actions: [act("restore"), act("restore_media", imageId)] }))).toBe("partly_reversed: no measure of the reviewed decision but its strike is left in force.");
+        expect(await refusalDetail(reviewIn(tx, mod2, removal, { outcome: "reversed", actions: [], overrule: false }))).toBe("reversed: a reversing decision holds at least one reversal.");
 
         const review = await reviewIn(tx, mod2, removal, { outcome: "partly_reversed", actions: [act("restore")] });
         expect(await actionsOf(tx, review)).toEqual([expect.objectContaining({ kind: "restore", post_id: postId, no_effect: null })]);
@@ -584,7 +586,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals and reviews in t
         // The post is shown again, its image stays removed, and the report's sender is told the new outcome at the next release.
         expect(await postRow(tx, postId)).toMatchObject({ state: "visible", level: "visible" });
         expect(await imageStates(tx, [imageId])).toEqual(["removed"]);
-        expect(await inForce(tx, { caseId })).toEqual([`remove_media:${imageId}`]);
+        // 3e: the strike stays with the part of the finding that stands.
+        expect(await inForce(tx, { caseId })).toEqual([`remove_media:${imageId}`, "strike"]);
         const [item] = await tx.execute<{ pending: boolean }>(sql`select revision_pending_at = now() as pending from intake_items where case_id = ${caseId}::uuid`);
         expect(item!.pending).toBe(true);
         const [appeal] = await tx.execute<{ result: string; answered_by: string }>(sql`select result, answered_by from appeals where decision_id = ${removal}::uuid`);

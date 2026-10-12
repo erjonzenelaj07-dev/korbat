@@ -18,6 +18,7 @@ import {
 import type { Rule } from "@korbat/rules";
 import { api, ApiError, errorMessage } from "./api";
 import { CHIP_WORDS, DAILY_LIMIT_WORDS, DECISION_WORDS, REPORT_WORDS } from "./moderation-words";
+import { STANDING_TEXTS } from "./standing";
 
 /**
  * Reports, notices and moderation cases in the app (3c design, section 9): the calls, and the rules the screens share.
@@ -312,7 +313,9 @@ export function appealWaitWords(view: Pick<DecisionView, "measures" | "appeal">)
 export function chipText(decision: PostModeration): string {
   const state = decision.interim ? CHIP_WORDS.underReview : CHIP_WORDS.removed;
   const ground = decision.legal ? CHIP_WORDS.illegal : decision.ruleId;
-  return ground ? `${state}: ${ground}` : state;
+  const chip = ground ? `${state}: ${ground}` : state;
+  // 3e (design, section 9.4): a removed post's chip names its strike while the strike stands and counts.
+  return decision.strikeUntil ? STANDING_TEXTS.chip(chip, decision.strikeUntil) : chip;
 }
 
 /** A time as korbat's statements print it: the date and the minute in UTC. */

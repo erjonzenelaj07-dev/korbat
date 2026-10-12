@@ -306,6 +306,9 @@ describe("the step-up actions of moderation cases", () => {
     factsDigest: hex,
     reasonDigest: hex,
     legalReferenceDigest: null,
+    // 3e: always present (design, section 10.4).
+    unfounded: [] as string[],
+    replaced: false,
   };
   const final = { ...interim, kind: "final", throughSeq: 3, actions: [{ kind: "remove", mediaId: null }] };
   const noAction = { ...final, outcome: "no_violation", ground: null, ruleId: null, actions: [], factsDigest: null, reasonDigest: null };
@@ -463,6 +466,67 @@ describe("the step-up actions of moderation cases", () => {
     expect(reviewed.parse({ ...review, outcome: "partly_reversed", actions: [{ kind: "restore_media", mediaId: image }, { kind: "unseal_media", mediaId: null }] }).actions).toHaveLength(2);
   });
 
+  // ---------------------------------------------------------------- 3e (design, section 10.4)
+  const accountFinal = { ...final, ruleId: "R1" };
+  const suspendAction = (days: number | null, announced: boolean) => ({ kind: "suspend", mediaId: null, days, announced });
+
+  test("3e: an action entry is one of two strict shapes, and the three timed kinds sign their days and whether they are announced", () => {
+    const announced = { ...accountFinal, actions: [suspendAction(3, true)] };
+    expect(decided.parse(announced)).toEqual(announced);
+    expect(decided.parse({ ...accountFinal, actions: [{ kind: "terminate", mediaId: null, days: null, announced: false }] }).actions).toHaveLength(1);
+    expect(decided.parse({ ...accountFinal, ruleId: "R6", actions: [{ kind: "restrict_reporting", mediaId: null, days: 30, announced: false }] }).actions).toHaveLength(1);
+    // A timed kind in the plain shape, and a plain kind in the timed one, are refused.
+    expect(refused(decided, { ...accountFinal, actions: [{ kind: "suspend", mediaId: null }] })).toBe(true);
+    expect(refused(decided, { ...accountFinal, actions: [{ kind: "remove", mediaId: null, days: 3, announced: true }] })).toBe(true);
+    // days is a whole number from 1 to 30, null only on a termination; a restriction of reporting is never announced.
+    for (const days of [0, 31, 1.5]) expect(refused(decided, { ...accountFinal, actions: [suspendAction(days, true)] }), String(days)).toBe(true);
+    expect(refused(decided, { ...accountFinal, actions: [suspendAction(null, true)] })).toBe(true);
+    expect(refused(decided, { ...accountFinal, actions: [{ kind: "terminate", mediaId: null, days: 3, announced: true }] })).toBe(true);
+    expect(refused(decided, { ...accountFinal, ruleId: "R6", actions: [{ kind: "restrict_reporting", mediaId: null, days: 3, announced: true }] })).toBe(true);
+    expect(refused(decided, { ...accountFinal, actions: [{ kind: "suspend", mediaId: image, days: 3, announced: true }] })).toBe(true);
+    // At most one suspension or termination.
+    expect(refused(decided, { ...accountFinal, actions: [suspendAction(3, true), { kind: "terminate", mediaId: null, days: null, announced: true }] })).toBe(true);
+  });
+
+  test("3e: the six measures only in a final restriction, a strike only on a korbat rule other than R2, an overruling only with a full reversal", () => {
+    expect(decided.parse({ ...final, actions: [{ kind: "remove", mediaId: null }, { kind: "strike", mediaId: null }] }).actions).toHaveLength(2);
+    expect(refused(decided, { ...interim, actions: [{ kind: "strike", mediaId: null }] })).toBe(true);
+    expect(refused(decided, { ...noAction, actions: [{ kind: "retire_handle", mediaId: null }] })).toBe(true);
+    expect(refused(decided, { ...legal, actions: [{ kind: "remove", mediaId: null }, { kind: "strike", mediaId: null }] })).toBe(true);
+    expect(refused(decided, { ...final, ruleId: "R2", category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS", actions: [{ kind: "remove", mediaId: null }, { kind: "strike", mediaId: null }] })).toBe(true);
+    const overruling = { ...correction, actions: [{ kind: "overrule", mediaId: null }, { kind: "restore", mediaId: null }] };
+    expect(decided.parse(overruling).actions).toHaveLength(2);
+    expect(refused(decided, { ...overruling, outcome: "partly_reversed" })).toBe(true);
+    expect(reviewed.parse({ ...review, actions: overruling.actions }).actions).toHaveLength(2);
+    expect(refused(reviewed, { ...review, outcome: "partly_reversed", actions: overruling.actions })).toBe(true);
+    // A review and a correction hold the four new reversals, never a new measure.
+    expect(refused(reviewed, { ...review, actions: [{ kind: "strike", mediaId: null }] })).toBe(true);
+    expect(reviewed.parse({ ...review, actions: [{ kind: "lift_suspension", mediaId: null }] }).actions).toHaveLength(1);
+  });
+
+  test("3e: a correction may keep the decision with no action; unfounded only on a final no-breach decision, sorted; replaced only with a lift", () => {
+    const kept = { ...correction, outcome: "kept", actions: [] };
+    expect(decided.parse(kept).outcome).toBe("kept");
+    expect(refused(decided, { ...kept, actions: [{ kind: "restore", mediaId: null }] })).toBe(true);
+    expect(refused(decided, { ...final, outcome: "kept" })).toBe(true);
+    const [first, second] = [uuid, "6f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a"].sort();
+    expect(decided.parse({ ...noAction, unfounded: [first, second] }).unfounded).toEqual([first, second]);
+    expect(refused(decided, { ...noAction, unfounded: [second, first] })).toBe(true);
+    expect(refused(decided, { ...noAction, unfounded: [first, first] })).toBe(true);
+    expect(refused(decided, { ...noAction, unfounded: [first!.toUpperCase()] })).toBe(true);
+    expect(refused(decided, { ...final, unfounded: [first] })).toBe(true);
+    expect(refused(decided, { ...noAction, unfounded: Array.from({ length: 101 }, (_, i) => `${String(i).padStart(8, "0")}-8d4a-4c1e-9b2a-6f0e5d4c3b2a`) })).toBe(true);
+    const withdrawn = { ...correction, actions: [{ kind: "lift_suspension", mediaId: null }], replaced: true };
+    expect(decided.parse(withdrawn).replaced).toBe(true);
+    expect(refused(decided, { ...correction, replaced: true })).toBe(true);
+    expect(refused(decided, { ...accountFinal, actions: [suspendAction(3, true)], replaced: true })).toBe(true);
+    // Both members are always present: a decision without them is refused.
+    const { unfounded: _u, ...withoutMarks } = interim;
+    const { replaced: _r, ...withoutReplaced } = interim;
+    expect(refused(decided, withoutMarks)).toBe(true);
+    expect(refused(decided, withoutReplaced)).toBe(true);
+  });
+
   test("identity_revealed takes a reason category and the digest of the saved reason, never the reason", () => {
     expect(revealed.parse(reveal)).toEqual(reveal);
     everyFieldRequired(revealed, reveal);
@@ -511,6 +575,9 @@ describe("the step-up actions of moderation cases", () => {
       case "nullable":
       case "optional":
         return strings(def.innerType, path);
+      // 3e: an action entry is one of two shapes, each walked; a boolean and a null carry no text.
+      case "union":
+        return (def.options as unknown[]).flatMap((option) => strings(option, path));
       case "string": {
         const checks = ((def.checks as { _zod: { def: { format?: string; pattern?: RegExp } } }[] | undefined) ?? []).map((check) => check._zod.def);
         return [{ path, format: def.format as string | undefined, patterns: checks.filter((check) => check.format === "regex").map((check) => String(check.pattern)) }];
@@ -518,6 +585,8 @@ describe("the step-up actions of moderation cases", () => {
       case "enum":
       case "literal":
       case "number":
+      case "boolean":
+      case "null":
         return [];
       default:
         // A kind of member this walk does not know could carry free text: it fails the test until it is listed above.
@@ -534,7 +603,7 @@ describe("the step-up actions of moderation cases", () => {
       expect(free(spec.targetId), action).toEqual([]);
     }
     // What the walk finds in the decision's params: ids and digests, nothing else.
-    expect(strings(decided).map((s) => s.path)).toEqual(["$.reviewsDecisionId", "$.snapshotId", "$.snapshotDigest", "$.actions[].mediaId", "$.factsDigest", "$.reasonDigest", "$.legalReferenceDigest"]);
+    expect(strings(decided).map((s) => s.path)).toEqual(["$.reviewsDecisionId", "$.snapshotId", "$.snapshotDigest", "$.actions[].mediaId", "$.factsDigest", "$.reasonDigest", "$.legalReferenceDigest", "$.unfounded[]"]);
     expect(strings(revealed).map((s) => s.path)).toEqual(["$.reasonDigest"]);
   });
 

@@ -188,6 +188,16 @@ ${META}if :delete
 -- The intakes these cases' items belong to: those that lose every item go with them.
 create temp table emptied_intakes on commit drop as
   select distinct i.intake_id as id from public.intake_items i where i.case_id in (select id from doomed_cases);
+-- 3e: the rows of the standing ledger go first: the marks on these cases' items or by their decisions, the replies to
+-- their measures, and the doomed accounts' own marks, replies and daily report tallies.
+delete from public.unfounded_marks
+  where item_id in (select i.id from public.intake_items i where i.case_id in (select id from doomed_cases))
+     or decision_id in (select d.id from public.decisions d where d.case_id in (select id from doomed_cases))
+     or account_id in (select id from doomed);
+delete from public.suspension_replies
+  where action_id in (select a.id from public.decision_actions a join public.decisions d on d.id = a.decision_id where d.case_id in (select id from doomed_cases))
+     or account_id in (select id from doomed);
+delete from public.report_tallies where account_id in (select id from doomed);
 -- The items first: deleting an unanswered suspect item is what ends its freeze.
 delete from public.intake_items where case_id in (select id from doomed_cases);
 -- A hold is released before it is deleted: the release's trigger takes the image's hold_until back, a delete would not.

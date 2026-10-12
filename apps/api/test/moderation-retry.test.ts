@@ -115,6 +115,8 @@ describe("a confirmed decision's transaction is run once more only when it chang
     factsDigest: null,
     reasonDigest: null,
     legalReferenceDigest: null,
+    unfounded: [],
+    replaced: false,
   };
   const now = new Date("2026-10-04T12:00:00.000Z");
   /** A confirmation of the params whose challenge has this many seconds left. */

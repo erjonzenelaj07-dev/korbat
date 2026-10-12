@@ -8,7 +8,7 @@ import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, PROTECTION_LIFTED_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES } from "../../src/messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, PROTECTION_LIFTED_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
@@ -17,6 +17,7 @@ import { clockTime } from "../../src/ui";
 import { consoleSiteHeadersFromCaddyfile } from "../caddyfile";
 import {
   APPEAL_ONE,
+  APPEAL_STRUCK,
   CASE_ACCOUNT,
   CASE_ADMIN,
   CASE_APPEALED,
@@ -27,8 +28,11 @@ import {
   CASE_POST,
   CASE_QUOTED,
   CASE_SEALABLE,
+  CASE_STRIKE,
+  CASE_STRUCK,
   DECISION_APPEALED,
   DECISION_ONE,
+  DECISION_STRUCK,
   IMAGE_ONE,
   IMAGE_TWO,
   ITEM_REPORTER,
@@ -36,6 +40,7 @@ import {
   LONGEST_NOTE,
   LOOKALIKE,
   POST_ID,
+  struckCase,
 } from "../case-fixtures";
 import { HOSTILE } from "../fixtures";
 import {
@@ -90,6 +95,10 @@ import { inspect, userTexts, watch, type Watcher } from "./watch";
  * as CI does with the runner's.
  */
 const CHANNEL = process.env.KORBAT_BROWSER_CHANNEL || "chromium";
+
+/** 3e: what the two runs of Task 1 type: the facts of a removal that gives a strike, and the reason of a review that overrules one. */
+const STRIKE_FACTS = `The post sells followers again ${HOSTILE.img}`;
+const OVERRULE_REASON = `The post quotes the offer to report it ${HOSTILE.quote}`;
 
 let out = "";
 let site: ConsoleSiteServer | undefined;
@@ -729,7 +738,8 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     expect(fixtures.state.decisions).toHaveLength(2);
     expect(fixtures.state.decisions[1]).toMatchObject({
       caseId: CASE_POST,
-      params: { kind: "final", stateVersion: 4, throughSeq: 2, reviewsDecisionId: null, outcome: "restricted", ground: "incompatible", ruleId: "R1", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", categoryKeyword: null, actions: [{ kind: "remove", mediaId: null }], factsDigest: facts!.digest, reasonDigest: reason!.digest, legalReferenceDigest: null },
+      // 3e: the case answer says a strike is due, so the key confirmed it with the removal.
+      params: { kind: "final", stateVersion: 4, throughSeq: 2, reviewsDecisionId: null, outcome: "restricted", ground: "incompatible", ruleId: "R1", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", categoryKeyword: null, actions: [{ kind: "remove", mediaId: null }, { kind: "strike", mediaId: null }], factsDigest: facts!.digest, reasonDigest: reason!.digest, legalReferenceDigest: null },
     });
     // The answer is the case as it now stands: closed, with nothing more to decide on it.
     await shown(page.getByText("; closed ", { exact: false }));
@@ -1147,6 +1157,89 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await page.getByRole("link", { name: "Appeals" }).click();
     await shown(page.locator("table.queue tbody tr").first());
     expect(await page.locator("table.queue tbody tr").count()).toBe(1);
+    await clean();
+  });
+
+  // ---------------------------------------------------------------- 3e, Task 1 (design, section 8.10)
+
+  test("a post decision signs the strike the case answer says is due: the author's standing in bands above the evidence, the strike line under Restrict, the preview's strike, and the key confirming the removal with its strike", async () => {
+    const before = await signatures();
+    await page.goto(`${origin}/cases/${CASE_STRIKE}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    // The author's standing, in bands, above the evidence, and why it is shown.
+    const standing = page.getByRole("region", { name: "The author's standing" });
+    await shown(standing);
+    for (const words of [STANDING_WORDS.bands.activeStrikes["2"], STANDING_WORDS.bands.suspensionsInYear["1"], STANDING_WORDS.bands.now.none, STANDING_WORDS.postStanding]) await shown(standing.getByText(words, { exact: true }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    const confirm = composer.getByRole("button", { name: "Confirm with your staff key" });
+    // While deciding no strike is given; deciding the case under the report's rule gives one, which is no choice.
+    await shown(composer.getByText(STANDING_WORDS.strike.none.interim, { exact: true }));
+    await composer.getByLabel(COMPOSER_KINDS.final).check();
+    await shown(composer.getByText(STANDING_WORDS.strike.due, { exact: true }));
+    expect(await composer.getByText(STANDING_WORDS.strike.none.interim, { exact: true }).count()).toBe(0);
+    expect(await composer.getByLabel(MEASURES.strike.label, { exact: true }).count()).toBe(0);
+    await composer.getByLabel(MEASURES.remove.label, { exact: true }).check();
+    await composer.getByLabel("Facts").fill(STRIKE_FACTS);
+    await composer.getByLabel("Reason", { exact: true }).fill("It sells followers, which the rule names.");
+    await composer.getByLabel("Reason", { exact: true }).press("Tab");
+    await arrived(() => fixtures.state.texts.filter((text) => text.caseId === CASE_STRIKE).length === 2, "both texts saved when their fields lost focus");
+    // The preview tells the strike as its author will read it: the third active strike, the band's two and this one.
+    const preview = composer.locator(".frame.preview p.frame-text");
+    const told = (await preview.allTextContents()).join(" ");
+    expect(told).toContain("This decision gives your account a strike.");
+    expect(told).toContain("With it your account had 3 active strikes when this was decided.");
+    expect(await preview.allTextContents()).toContain(STATEMENT_WORDS.automationStrike);
+    expect(await inspect(page)).toEqual([]);
+    await confirm.click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    // What the key confirmed: the removal and the strike, which the page added because the answer said it was due.
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({
+      caseId: CASE_STRIKE,
+      params: { kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R1", actions: [{ kind: "remove", mediaId: null }, { kind: "strike", mediaId: null }], unfounded: [], replaced: false },
+    });
+    // The case as the answer gave it: the strike in force with the day it stops counting, and the band one higher.
+    await shown(page.getByText(`${MEASURES.strike.label}: in force; counts until`, { exact: false }));
+    await shown(standing.getByText(STANDING_WORDS.bands.activeStrikes["3_or_more"], { exact: true }));
+    await texts();
+    await clean();
+  });
+
+  test("a review that reverses a decision whose strike carries a suspension: [review.strike] and [review.rests] beside the reversals, the overruling the page adds to Reverse, and the strike lifted", async () => {
+    // The case is put in place by this run, so that the appeals listed before it stay as they were.
+    fixtures.state.cases.set(CASE_STRUCK, struckCase());
+    const before = await signatures();
+    const reviews = fixtures.state.reviews.length;
+    await page.goto(`${origin}/cases/${CASE_STRUCK}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    await shown(page.getByText(`${MEASURES.strike.label}: in force; counts until`, { exact: false }));
+    await page.getByRole("button", { name: APPEAL_WORDS.reviewLabel }).click();
+    const review = page.getByRole("region", { name: COMPOSER.reviewLabel });
+    await shown(review);
+    // The strike is never offered on its own; the two sentences say what reversing this decision does to it.
+    await shown(review.getByText(STANDING_WORDS.reviewStrike, { exact: true }));
+    await shown(review.getByText(STANDING_WORDS.reviewRests, { exact: true }));
+    expect(await review.getByLabel(MEASURES.overrule.label, { exact: true }).count()).toBe(0);
+    const confirm = review.getByRole("button", { name: "Confirm with your staff key" });
+    await review.getByLabel("Reason of the review").fill(OVERRULE_REASON);
+    await review.getByLabel(REVIEW_OUTCOMES.reversed, { exact: true }).check();
+    expect(await review.getByLabel(MEASURES.restore.label).isChecked()).toBe(true);
+    expect(await confirm.isDisabled()).toBe(false);
+    // The preview tells the overruling with the restoration.
+    expect(await review.locator(".frame.preview p.frame-text").allTextContents()).toContain(STATEMENT_WORDS.overruled);
+    expect(await inspect(page)).toEqual([]);
+    await confirm.click();
+    await shown(page.getByText(COMPOSER.reviewed));
+    expect(await signatures()).toBe(before + 1);
+    expect(fixtures.state.reviews).toHaveLength(reviews + 1);
+    expect(fixtures.state.reviews.at(-1)).toMatchObject({
+      decisionId: DECISION_STRUCK,
+      params: { appealId: APPEAL_STRUCK, outcome: "reversed", rulesVersion: 3, actions: [{ kind: "overrule", mediaId: null }, { kind: "restore", mediaId: null }] },
+    });
+    // The answer: the removal and the strike lifted by the review.
+    await shown(page.getByText(`${MEASURES.remove.label}: lifted by the decision of`, { exact: false }));
+    await shown(page.getByText(`${MEASURES.strike.label}: lifted by the decision of`, { exact: false }));
+    expect(await texts()).toContain(HOSTILE.script);
     await clean();
   });
 

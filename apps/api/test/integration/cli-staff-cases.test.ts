@@ -387,7 +387,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, l
         expect(shown).toMatchObject({ erasedOn: null, withheld: false, content: { body: "a post" } });
         expect(shown.content!.media).toEqual(p.mediaIds.map((id) => ({ id, state: "sealed" })));
         // The decisions with their statement's data and texts, and the author's own appeal with its statement.
-        expect(byId.get(threat.caseId)!.decisions).toMatchObject([{ id: removal, kind: "final", outcome: "restricted", rule: "R5", measures: [{ kind: "remove", image: null, noEffect: null }], facts: expect.any(String), reason: expect.any(String), legalReference: null }]);
+        // 3e: the removal under R5 gave the post its strike, which the draft lists among the decision's measures.
+        expect(byId.get(threat.caseId)!.decisions).toMatchObject([{ id: removal, kind: "final", outcome: "restricted", rule: "R5", measures: [{ kind: "remove", image: null, noEffect: null }, { kind: "strike", image: null, noEffect: null }], facts: expect.any(String), reason: expect.any(String), legalReference: null }]);
         expect(byId.get(threat.caseId)!.appeals).toMatchObject([{ decisionId: removal, statement: "It was a joke.", result: null }]);
         expect(byId.get(suspect.caseId)!.decisions).toMatchObject([{ kind: "interim", rule: "R2", measures: [{ kind: "seal_media" }] }]);
 

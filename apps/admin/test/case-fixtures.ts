@@ -123,6 +123,9 @@ export function postSnapshot(overrides: Partial<Extract<CaseSnapshot, { withheld
   };
 }
 
+/** 3e: the standing columns of a ledger row that is no standing measure and no strike, as the case answer carries them. */
+export const NO_STANDING = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null } as const;
+
 export function decision(overrides: Partial<CaseDecision> = {}): CaseDecision {
   return {
     id: DECISION_ONE,
@@ -148,7 +151,7 @@ export function decision(overrides: Partial<CaseDecision> = {}): CaseDecision {
     facts: "The post offers followers for money.",
     reason: HOSTILE.long,
     legalReference: null,
-    actions: [{ id: "aebfc0d1-e2f3-4405-a671-9cadbecfd0e1", kind: "withhold", mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: null }],
+    actions: [{ id: "aebfc0d1-e2f3-4405-a671-9cadbecfd0e1", kind: "withhold", mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: null, ...NO_STANDING }],
     ...overrides,
   };
 }
@@ -176,6 +179,10 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     drafts: [],
     notes: [{ id: "bfc0d1e2-f304-4516-b782-adbecfd0e1f2", staffHandle: HOSTILE.quote, createdAt: "2026-10-01T08:30:00.000Z", text: LONGEST_NOTE }],
     sealsDeclined: [],
+    // 3e: a post case says whether a final restriction under a rule gives a strike, and the author's standing in bands.
+    strikeDue: { due: true, why: "due" },
+    authorStanding: { activeStrikes: "1", suspensionsInYear: "0", now: "none" },
+    standing: null,
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },
@@ -220,6 +227,7 @@ export function frozenCase(overrides: Partial<CaseView> = {}): CaseView {
             reversesActionId: null,
             liftedBy: null,
             sealed: { posts: 501, images: 730, deletedPosts: 3, list: [{ postId: POST_ID, createdAt: "2026-09-30T12:00:00.000Z", images: 2 }] },
+            ...NO_STANDING,
           },
         ],
       }),
@@ -235,6 +243,9 @@ export function accountCase(overrides: Partial<CaseView> = {}): CaseView {
     id: CASE_ACCOUNT,
     lane: 0,
     imagesAllowed: false,
+    // 3e: an account case has no strike line and no bands; its standing comes with the account case's composer (Task 3).
+    strikeDue: null,
+    authorStanding: null,
     target: { type: "account", id: ACCOUNT_ID, handle: HOSTILE.script, displayName: LOOKALIKE.label, bio: `${HOSTILE.url} ${LOOKALIKE.address}`, deleted: false },
     suspicion: { open: true, reach: { posts: 0, images: 0, sealed: 0, served: 0, newestPostOn: null }, earlier: { target: { count: 0, lastOn: null, imagesOpenedOn: null }, author: { count: 0, lastOn: null } } },
     snapshots: [
@@ -327,6 +338,58 @@ export function appealedCase(): CaseView {
     decisions: [removal],
     appeals: [{ id: APPEAL_ONE, decisionId: DECISION_APPEALED, filedAt: "2026-10-03T10:00:00.000Z", statement: HOSTILE.img, answeredAt: null, result: null, answeredBy: null, reviewer: "available", needsAdmin: false, mayReview: true }],
     notes: [],
+  });
+}
+
+// 3e (design, section 8.10): the cases of Task 1's two browser runs.
+export const CASE_STRIKE = "1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9";
+export const CASE_STRUCK = "2b3c4d5e-6f70-4182-93a4-b5c6d7e8f90a";
+export const DECISION_STRUCK = "3c4d5e6f-7081-4293-a4b5-c6d7e8f90a1b";
+export const APPEAL_STRUCK = "4d5e6f70-8192-43a4-b5c6-d7e8f90a1b2c";
+export const ITEM_STRIKE = "5e6f7081-92a3-44b5-86d7-e8f90a1b2c3d";
+export const ITEM_STRUCK = "6f708192-a3b4-45c6-97e8-f90a1b2c3d4e";
+
+/**
+ * 3e: a fresh case about a post whose author has two active strikes and one suspension in the year: a final removal under
+ * its report's rule gives a strike, which the case answer says is due.
+ */
+export function strikeCase(): CaseView {
+  return postCase({ id: CASE_STRIKE, stateVersion: 1, intakeSeq: 1, items: [item({ id: ITEM_STRIKE })], decisions: [], notes: [], history: [], authorStanding: { activeStrikes: "2", suspensionsInYear: "1", now: "none" } });
+}
+
+/**
+ * 3e: a closed case about a post whose final removal under R1, by a staff member with a hostile handle, gave a strike
+ * that an announced suspension of the author rests on; the author appealed, and the reading person may review it.
+ */
+export function struckCase(): CaseView {
+  const removal = decision({
+    id: DECISION_STRUCK,
+    kind: "final",
+    rulesVersion: 3,
+    redressVersion: 2,
+    staffHandle: HOSTILE.quote,
+    throughSeq: 1,
+    answersFromSeq: 1,
+    facts: "The post offers followers for money.",
+    reason: "That is spam.",
+    actions: [
+      { ...decision().actions[0]!, id: "708192a3-b4c5-46d7-a8f9-0a1b2c3d4e5f", kind: "remove" },
+      { ...decision().actions[0]!, id: "8192a3b4-c5d6-47e8-b90a-1b2c3d4e5f60", kind: "strike", countsUntil: "2026-12-30T09:00:00.000Z", restedOnBy: ["suspend"] },
+    ],
+  });
+  return postCase({
+    id: CASE_STRUCK,
+    intakeSeq: 1,
+    answeredSeq: 1,
+    closedAt: "2026-10-01T09:00:00.000Z",
+    target: { type: "post", id: POST_ID, link: `http://localhost:8081/post/${POST_ID}`, authorHandle: HOSTILE.bidi, state: "removed", level: "removed" },
+    items: [item({ id: ITEM_STRUCK, outcome: "restricted_rule", answeredBy: DECISION_STRUCK })],
+    decisions: [removal],
+    appeals: [{ id: APPEAL_STRUCK, decisionId: DECISION_STRUCK, filedAt: "2026-10-03T10:00:00.000Z", statement: HOSTILE.script, answeredAt: null, result: null, answeredBy: null, reviewer: "available", needsAdmin: false, mayReview: true }],
+    notes: [],
+    history: [],
+    strikeDue: { due: false, why: "already_struck" },
+    authorStanding: { activeStrikes: "3_or_more", suspensionsInYear: "0", now: "announced" },
   });
 }
 

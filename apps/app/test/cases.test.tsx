@@ -22,7 +22,7 @@ import {
 } from "@korbat/contracts";
 import { REDRESS_TEXTS, STATEMENT_WORDS, getRule, statementParagraphs } from "@korbat/rules";
 import NoticePage from "../src/app/notice/[ref]";
-import { DecisionsList, ReportsList } from "../src/components/moderation/CasesLists";
+import { DecisionsList, ReportsList, StandingBlock } from "../src/components/moderation/CasesLists";
 import { DecisionDetail } from "../src/components/moderation/DecisionDetail";
 import { NoticeNotFound, NoticeStatusView } from "../src/components/moderation/NoticeStatusView";
 import { SettingsNav } from "../src/components/SettingsNav";
@@ -32,6 +32,7 @@ import { MediaViewerContent } from "../src/components/social/MediaViewer";
 import { PostCard } from "../src/components/social/PostCard";
 import { chipText, fragmentToken, itemRedress, utcMinute } from "../src/lib/moderation";
 import { CASES_WORDS, CHIP_WORDS, DECISION_WORDS, STATUS_WORDS } from "../src/lib/moderation-words";
+import { CASE_ROW_WORDS, STANDING_TEXTS, standingDay, standingTime } from "../src/lib/standing";
 
 /**
  * The notice status page, the cases screens and the decision screen, the chips and the labels in the web app (3c design,
@@ -298,6 +299,7 @@ describe("Cases, under Settings", () => {
     appealUntil: "2027-04-05T10:00:00.000Z",
     reversedOn: null,
     appeal: null,
+    strike: null,
     ...extra,
   });
 
@@ -405,6 +407,7 @@ describe("a decision's screen", () => {
     reversedOn: null,
     content: { kind: "post", body: "the words that were judged", deletedByAuthor: false, images: [image(7)], imageCount: 1, imagesHidden: null },
     appeal: null,
+    strike: null,
     ...extra,
   });
   const screen = (extra: Partial<DecisionView> = {}) => html(<DecisionDetail view={view(extra)} />);
@@ -542,19 +545,29 @@ describe("the chips and the labels", () => {
 
   test("the chip's four texts: under review or removed, under a rule or as illegal content", () => {
     expect(CHIP_WORDS).toEqual({ underReview: "Under review", removed: "Removed", illegal: "illegal content" });
-    const decision = { decisionId: id(3), ruleId: "R4" as const, legal: false, interim: true };
+    const decision = { decisionId: id(3), ruleId: "R4" as const, legal: false, interim: true, strikeUntil: null };
     expect(chipText(decision)).toBe("Under review: R4");
     expect(chipText({ ...decision, ruleId: null, legal: true })).toBe("Under review: illegal content");
     expect(chipText({ ...decision, ruleId: "R3", interim: false })).toBe("Removed: R3");
     expect(chipText({ ...decision, ruleId: null, legal: true, interim: false })).toBe("Removed: illegal content");
   });
 
+  test("3e: a removed post's chip names its strike while the strike stands and counts, with the day it stops counting", () => {
+    const until = "2027-01-10T09:00:00.000Z";
+    const decision = { decisionId: id(3), ruleId: "R3" as const, legal: false, interim: false, strikeUntil: until };
+    expect(chipText(decision)).toBe(`Removed: R3, strike until ${standingDay(until)}`);
+    expect(chipText({ ...decision, strikeUntil: null })).toBe("Removed: R3");
+    session.state = me(id(900));
+    const removed = textOf(html(<PostCard post={post({ moderation: decision })} />));
+    expect(removed).toContain(STANDING_TEXTS.chip("Removed: R3", until));
+  });
+
   test("the author's own withheld or removed post shows the chip as a link to the decision's statement, amber while korbat decides and red once removed", () => {
     session.state = me(id(900));
-    const removed = html(<PostCard post={post({ moderation: { decisionId: id(3), ruleId: "R3", legal: false, interim: false } })} />);
+    const removed = html(<PostCard post={post({ moderation: { decisionId: id(3), ruleId: "R3", legal: false, interim: false, strikeUntil: null } })} />);
     expect(textOf(removed)).toContain("Removed: R3");
     expect(hrefs(removed)).toContain(`/settings/cases/${id(3)}`);
-    const held = html(<PostCard post={post({ state: "withheld", moderation: { decisionId: id(4), ruleId: null, legal: true, interim: true } })} />);
+    const held = html(<PostCard post={post({ state: "withheld", moderation: { decisionId: id(4), ruleId: null, legal: true, interim: true, strikeUntil: null } })} />);
     expect(textOf(held)).toContain("Under review: illegal content");
     expect(hrefs(held)).toContain(`/settings/cases/${id(4)}`);
     // The colours are class names, which a render without the style compiler does not carry: they are read from the source.
@@ -594,5 +607,86 @@ describe("the chips and the labels", () => {
     const others = textOf(html(<MediaGrid media={[hidden, { ...hidden, id: id(2) }]} postId={id(1)} />));
     expect(count(others, HIDDEN_IMAGE)).toBe(2);
     expect(others).not.toMatch(/Under review|Removed/);
+  });
+});
+
+describe("3e: strikes on Cases and on the decision's screen (design, sections 9.2 and 9.4)", () => {
+  const COUNTS = "2027-01-10T09:00:00.000Z";
+  const row = (extra: Partial<AuthorCaseRow> = {}): AuthorCaseRow => ({
+    id: id(3),
+    kind: "final",
+    outcome: "restricted",
+    decidedOn: "2026-10-12",
+    post: { id: id(1), createdAt: TIME },
+    actions: ["remove", "strike"],
+    endedInterim: false,
+    ruleId: "R3",
+    legal: false,
+    appealUntil: null,
+    reversedOn: null,
+    appeal: null,
+    strike: { countsUntil: COUNTS, overruledAt: null },
+    ...extra,
+  });
+  const list = (extra: Partial<AuthorCaseRow>, now = new Date("2026-10-12T10:00:00.000Z")) => textOf(html(<DecisionsList decisions={[row(extra)]} now={now} />));
+
+  test("the numbers of the sentences are STANDING_RULES', and a time names the device's minute and the UTC one", () => {
+    expect(STANDING_TEXTS.cases.strikes(2)).toBe("Active strikes: 2 of 3. At 3, a moderator may announce a suspension; you would be told first and could reply.");
+    expect(STANDING_TEXTS.cases.none).toBe("You have no active strikes.");
+    expect(standingTime("2026-10-16T14:05:00.000Z").endsWith("(14:05 UTC)")).toBe(true);
+    expect(standingTime("2026-10-16T14:05:00.000Z").startsWith(standingDay("2026-10-16T14:05:00.000Z"))).toBe(true);
+  });
+
+  test("Your standing stands above About you: the active strikes and what that many leads to, or that there are none", () => {
+    expect(textOf(html(<StandingBlock activeStrikes={0} />))).toBe(`${STANDING_TEXTS.cases.title} ${STANDING_TEXTS.cases.none}`);
+    expect(textOf(html(<StandingBlock activeStrikes={2} />))).toContain(STANDING_TEXTS.cases.strikes(2));
+    const screen = read("app", "settings", "cases", "index.tsx");
+    expect(screen).toContain("setActiveStrikes(page.activeStrikes)");
+    expect(screen.indexOf("<StandingBlock")).toBeLessThan(screen.indexOf("<DecisionsList"));
+  });
+
+  test("a row names the strike after the post measure, with where it stands, and an overruling in its own words", () => {
+    expect(list({})).toContain(`Remove, ${CASE_ROW_WORDS.strike} (${CASE_ROW_WORDS.counts(COUNTS)})`);
+    expect(list({}, new Date("2027-02-01T00:00:00.000Z"))).toContain(`${CASE_ROW_WORDS.strike} (${CASE_ROW_WORDS.expired})`);
+    expect(list({ strike: { countsUntil: COUNTS, overruledAt: "2026-10-20T08:00:00.000Z" } })).toContain(`${CASE_ROW_WORDS.strike} (${CASE_ROW_WORDS.overruled})`);
+    expect(list({ kind: "correction", outcome: "reversed", actions: ["overrule", "restore"], strike: null })).toContain(`${CASE_ROW_WORDS.overrule}, ${MEASURES.restore.label}`);
+  });
+
+  test("the decision's screen says where its strike stands now, below the statement", () => {
+    const view: DecisionView = {
+      id: id(3),
+      kind: "final",
+      outcome: "restricted",
+      ground: "incompatible",
+      ruleId: "R3",
+      rulesVersion: 3,
+      redressVersion: 2,
+      legalReference: null,
+      facts: "The post attacks a group for its religion.",
+      reason: "That is an attack on people, not on an idea.",
+      source: "report",
+      decidedAt: TIME,
+      post: { id: id(1), createdAt: "2026-09-01T08:30:00.000Z" },
+      measures: [
+        { kind: "remove", mediaId: null, noEffect: null, sealed: null },
+        { kind: "strike", mediaId: null, noEffect: null, sealed: null, endsAt: COUNTS, activeThen: 1 },
+      ],
+      reversals: [],
+      endedMeasures: [],
+      reviewed: null,
+      appealUntil: "2027-04-04T10:00:00.000Z",
+      reversedOn: null,
+      content: { kind: "post", body: "the words that were judged", deletedByAuthor: false, images: [], imageCount: 0, imagesHidden: null },
+      appeal: null,
+      strike: { countsUntil: COUNTS, state: "counts", overruledAt: null },
+    };
+    const screen = (strike: DecisionView["strike"]) => textOf(html(<DecisionDetail view={{ ...view, strike }} />));
+    const counting = screen(view.strike);
+    expect(counting).toContain(STANDING_TEXTS.strike.counts(COUNTS));
+    expect(counting).toContain("This decision gives your account a strike.");
+    expect(counting.indexOf("This decision gives your account a strike.")).toBeLessThan(counting.indexOf(STANDING_TEXTS.strike.counts(COUNTS)));
+    expect(screen({ countsUntil: COUNTS, state: "expired", overruledAt: null })).toContain(STANDING_TEXTS.strike.expired(COUNTS));
+    expect(screen({ countsUntil: COUNTS, state: "overruled", overruledAt: "2026-10-20T08:00:00.000Z" })).toContain(STANDING_TEXTS.strike.overruled("2026-10-20T08:00:00.000Z"));
+    expect(screen(null)).not.toContain("Strike:");
   });
 });

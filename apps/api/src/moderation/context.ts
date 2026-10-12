@@ -39,6 +39,12 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   text_quotes_user: 422,
   image_refused: 404,
   reveal_refused: 422,
+  // 3e (design, section 10.5).
+  reporting_restricted: 403,
+  reply_not_open: 422,
+  strike_mismatch: 409,
+  standing_conflict: 409,
+  ground_not_established: 422,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -79,6 +85,12 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   // One answer for every image that is not shown, whatever the reason: sealed, frozen, erased, or not of this case.
   image_refused: "That image is not shown.",
   reveal_refused: "Nobody can be revealed for this item.",
+  // 3e: one sentence each, for the person or for staff as the code concerns them; the console and the app word them again.
+  reporting_restricted: "Your reports under korbat's rules are restricted for now. Notices of illegal content stay open to you.",
+  reply_not_open: "This measure takes no reply: it has ended, was lifted, or has a reply already.",
+  strike_mismatch: "The strike rule changed for this post since the case was read. Read it again and decide again.",
+  standing_conflict: "A suspension or termination of this account already stands and has not ended.",
+  ground_not_established: "No termination can rest on a report of images that korbat has not assessed.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.

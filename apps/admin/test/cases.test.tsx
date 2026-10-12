@@ -34,6 +34,7 @@ import {
   ITEM_REPORTER,
   ITEM_SUSPECT,
   LOOKALIKE,
+  NO_STANDING,
   overview,
   postCase,
   postSnapshot,
@@ -727,7 +728,7 @@ describe("the case page", () => {
 
   test("the decisions: a measure in force, one a later decision lifted, one that ended with the case's decision, a seal that ended with the admin's answer, and beside a field reset that it was written once", () => {
     const LIFTING = "0f1e2d3c-4b5a-4968-8776-5a4b3c2d1e0f";
-    const action = (id: string, kind: CaseView["decisions"][number]["actions"][number]["kind"], more: Partial<CaseView["decisions"][number]["actions"][number]> = {}) => ({ id, kind, mediaId: null, noEffect: null, inForce: false, reversesActionId: null, liftedBy: null, sealed: null, ...more });
+    const action = (id: string, kind: CaseView["decisions"][number]["actions"][number]["kind"], more: Partial<CaseView["decisions"][number]["actions"][number]> = {}) => ({ id, kind, mediaId: null, noEffect: null, inForce: false, reversesActionId: null, liftedBy: null, sealed: null, ...NO_STANDING, ...more });
     const WITHHOLD = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
     const out = page(
       accountCase({

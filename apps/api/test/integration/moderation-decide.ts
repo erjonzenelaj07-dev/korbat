@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { beforeAll, expect, test } from "vitest";
-import type { AppealsReviewedParams, CaseDecidedParams } from "@korbat/contracts";
+import type { AppealsReviewedParams, CaseDecidedParams, RuleId } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db } from "@korbat/db";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../../src/auth";
 import { createAuthRepo } from "../../src/auth/repo";
@@ -10,11 +10,12 @@ import { verifyStepUp } from "../../src/auth/staff/step-up";
 import { loadConfig } from "../../src/config";
 import { MemoryStore, type RateLimitStore } from "../../src/middleware/rate-limit";
 import { createModeration, type DecideOutcome } from "../../src/moderation";
+import { decide, type DecideOptions } from "../../src/moderation/decide";
 import { recordIntake } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { flowHarness } from "./flow-harness";
-import { act, casesMedia, decisionParams, ground, moderationCounts, noAuthForModeration, removeDecided, reviewParams, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
+import { act, casesMedia, decisionParams, ground, moderationCounts, newPostRow, noAuthForModeration, removeDecided, reviewParams, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { TEST_CONSOLE, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 import { signedIn, stepUpAssertion } from "./staff-step-up";
@@ -47,7 +48,7 @@ export interface DeciderWorld {
   /** A verified confirmation of exactly these params, by the member's own key in the member's session. */
   confirm(member: RealStaff, caseId: string, params: CaseDecidedParams): Promise<StaffStepUpConfirmed>;
   /** A whole confirmed decision on the case: the params as the console builds them, the confirmation, and decide. */
-  decideAs(member: RealStaff, caseId: string, input?: DecisionInput): Promise<DecideOutcome>;
+  decideAs(member: RealStaff, caseId: string, input?: DecisionInput, options?: DecideOptions): Promise<DecideOutcome>;
   /** A verified confirmation of exactly this review of the decision, by the member's own key in the member's session. */
   confirmReview(member: RealStaff, decisionId: string, params: AppealsReviewedParams): Promise<StaffStepUpConfirmed>;
   /** A whole confirmed review of the decision's pending appeal: the params as the console builds them, the confirmation, and review. */
@@ -107,9 +108,12 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     return verifyStepUp(h.deps, member.session, request, stepUp, { ...h.ctx, requestId: `req-${randomUUID()}` });
   }
 
-  async function decideAs(member: RealStaff, caseId: string, input: DecisionInput = {}): Promise<DecideOutcome> {
+  async function decideAs(member: RealStaff, caseId: string, input: DecisionInput = {}, options: DecideOptions = {}): Promise<DecideOutcome> {
     const params = await decisionParams(apiDb, member, caseId, input);
-    const outcome = await moderation.forStaff.decide(member.session, await confirm(member, caseId, params), { requestId: `req-${randomUUID()}` });
+    const confirmed = await confirm(member, caseId, params);
+    const ctx = { requestId: `req-${randomUUID()}` };
+    // With allKinds the module's own decide is called below the route, as decideWith does: the routes' list of kinds is lifted.
+    const outcome = options.allKinds ? await decide(moderation.deps, member.session, confirmed, ctx, options) : await moderation.forStaff.decide(member.session, confirmed, ctx);
     // What a decision starts after its commit (the statement's mail, the staff alerts) has ended before the test goes on.
     await moderation.settle();
     return outcome;
@@ -184,6 +188,31 @@ export async function decideForTest(apiDb: Db, postId: string, state: "withheld"
   const recorded = await recordIntake(w.moderation.deps, { ground: ground.finding(staff.id, "R1"), live: [{ type: "post", id: postId, position: 1 }] });
   const caseId = recorded.items[0]!.caseId!;
   decided(await w.decideAs(staff, caseId, state === "withheld" ? { kind: "interim", actions: [act("withhold")] } : { kind: "final", actions: [act("remove")] }), `the decision that makes the post ${state}`);
+}
+
+/**
+ * Gives an account `n` strikes the way strikes come about (3e design, section 12): for each, a post the account makes
+ * now, an admin's own finding on it under the rule, and a final removal through the decide route's own code, which signs
+ * the strike the database computes. Each decision commits, and so is told to the account, before its next post is made,
+ * so each post is newer than the newest strike and each removal gives one. Answers the decisions, oldest first; fails when
+ * one gave no strike. closeDecisions removes what it committed, as for decideForTest; the account's posts stay.
+ */
+export async function strikeForTest(apiDb: Db, accountId: string, n: number, rule: RuleId = "R1"): Promise<string[]> {
+  world ??= deciderWorld(apiDb);
+  admin ??= world.staff("admin");
+  const [w, staff] = [world, await admin];
+  const decisions: string[] = [];
+  for (let i = 0; i < n; i++) {
+    // Made in a statement of its own after the previous decision committed: later than the time that decision was told.
+    const postId = await newPostRow(apiDb, accountId, { createdAt: sql`clock_timestamp()`, body: `a post that breaks ${rule}` });
+    decidedPosts.add(postId);
+    const recorded = await recordIntake(w.moderation.deps, { ground: ground.finding(staff.id, rule), live: [{ type: "post", id: postId, position: 1 }] });
+    const id = decided(await w.decideAs(staff, recorded.items[0]!.caseId!, { kind: "final", ruleId: rule, actions: [act("remove")] }), "a removal that gives a strike");
+    const [struck] = await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from decision_actions where decision_id = ${id}::uuid and kind = 'strike'`);
+    if (struck!.n !== 1) throw new Error("strikeForTest: the removal gave no strike");
+    decisions.push(id);
+  }
+  return decisions;
 }
 
 /**

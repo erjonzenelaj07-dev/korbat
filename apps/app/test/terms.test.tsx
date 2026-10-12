@@ -129,6 +129,8 @@ function measuresSentence(t: TermsModule, lead: string): string {
 const LEADS = { interim: "While korbat decides a case:", final: "When the case is decided:", either: "While it decides or when the case is decided:", lifted: "A later decision can lift each of them again:" };
 /** The labels a sentence of the measures' paragraph quotes, in order. */
 const labelsIn = (sentence: string): string[] => [...sentence.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+/** 3e: the measures the terms list until Task 7 of 3e writes the standing measures' sections (W.7): 3c's, by their target. */
+const listedIn = (c: Contracts, kind: contracts.ActionKind): boolean => ["post", "image", "images", "display_name", "bio"].includes(c.MEASURES[kind].target);
 
 /** What the tables below hold of the terms, read with the constants and the rulebook they were built from. */
 function holds(t: TermsModule, c: Contracts, r: Rules): void {
@@ -145,9 +147,9 @@ function holds(t: TermsModule, c: Contracts, r: Rules): void {
   expect(text["Your data"]).toContain(`under rule R4 (${ruleName(r4)})`);
   expect(text["Appeals"]).toContain(`under rule R4 (${ruleName(r4)})`);
   // Every measure's label, in the sentence its two marks put it in; every reversal's in the last one.
-  const kinds = { interim: c.MEASURE_KINDS.filter((kind) => c.MEASURES[kind].interim && !c.MEASURES[kind].final), final: c.MEASURE_KINDS.filter((kind) => !c.MEASURES[kind].interim && c.MEASURES[kind].final), either: c.MEASURE_KINDS.filter((kind) => c.MEASURES[kind].interim && c.MEASURES[kind].final) };
+  const kinds = { interim: c.MEASURE_KINDS.filter((kind) => listedIn(c, kind) && c.MEASURES[kind].interim && !c.MEASURES[kind].final), final: c.MEASURE_KINDS.filter((kind) => listedIn(c, kind) && !c.MEASURES[kind].interim && c.MEASURES[kind].final), either: c.MEASURE_KINDS.filter((kind) => listedIn(c, kind) && c.MEASURES[kind].interim && c.MEASURES[kind].final) };
   for (const group of ["interim", "final", "either"] as const) expect(labelsIn(measuresSentence(t, LEADS[group])), group).toEqual(kinds[group].map((kind) => c.MEASURES[kind].label));
-  expect(labelsIn(measuresSentence(t, LEADS.lifted))).toEqual(c.REVERSAL_KINDS.map((kind) => c.MEASURES[kind].label));
+  expect(labelsIn(measuresSentence(t, LEADS.lifted))).toEqual(c.REVERSAL_KINDS.filter((kind) => listedIn(c, kind)).map((kind) => c.MEASURES[kind].label));
   // Every outcome's phrase, each in a paragraph of its own that says what it means.
   const answers = paragraphsOf(t, "Reports and notices").filter((paragraph) => paragraph.startsWith('"'));
   expect(answers.map((paragraph) => paragraph.slice(1, paragraph.indexOf('": ')))).toEqual(outcomePhrases(c).map(quoted));
@@ -306,9 +308,9 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     const text = moderationText(terms);
     const all = Object.values(text).join(" ");
     for (const absent of [/\bstrikes?\b/i, /retire/i, /suspen/i, /preserv/i, /\bban(s|ned)?\b/i]) expect(absent.test(all), String(absent)).toBe(false);
-    // The quoted labels are the ledger's twelve kinds and nothing else.
+    // The quoted labels are the ledger's twelve kinds of 3c and nothing else (3e: Task 7 lists the standing measures).
     const labels = Object.values(LEADS).flatMap((lead) => labelsIn(measuresSentence(terms, lead)));
-    expect([...labels].sort()).toEqual(Object.values(contracts.MEASURES).map((spec) => spec.label).sort());
+    expect([...labels].sort()).toEqual(contracts.ACTION_KINDS.filter((kind) => listedIn(contracts, kind)).map((kind) => contracts.MEASURES[kind].label).sort());
     // Every run of digits outside the rulebook's own texts, a rule's number and the Regulation's articles is a constant's.
     const values = new Set<string>();
     const collect = (value: unknown): void => {

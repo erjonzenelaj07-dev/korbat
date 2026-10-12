@@ -8,6 +8,7 @@ import {
   SUSPECT_EARLIER_MONTHS,
   reporterLabel,
   type CaseDecision,
+  type CaseDecisionAction,
   type CaseHistoryEntry,
   type CaseItem,
   type CaseSnapshot,
@@ -32,6 +33,8 @@ import { alertUrgentLane, staffAlert } from "./alerts";
 import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
+import { authorStanding, caseStanding, strikeDue } from "./standing";
+import { standingColumns } from "./standing-repo";
 import {
   appealCounts,
   caseActions,
@@ -416,10 +419,13 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   );
 
   const actions = await caseActions(q, row.id);
+  // The columns of 3e of every ledger row of the case, with a standing measure's period as it stands now.
+  const columns = await standingColumns(q, row.id);
   const decisions: CaseDecision[] = [];
   for (const decision of await caseDecisions(q, row.id)) {
     const own: CaseDecision["actions"] = [];
     for (const action of actions.filter((candidate) => candidate.decisionId === decision.id)) {
+      const more = columns.get(action.id);
       own.push({
         id: action.id,
         kind: action.kind,
@@ -430,6 +436,14 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
         liftedBy: action.liftedBy,
         // A seal's list is the database's, written when the seal was recorded: text for the report to the police.
         sealed: action.kind === "seal_media" ? await sealCovers(q, action.id, SEAL_LIST_MAX) : null,
+        days: more?.days ?? null,
+        announced: more?.announced ?? null,
+        basis: (more?.basis ?? null) as CaseDecisionAction["basis"],
+        restsOn: more?.restsOn ?? null,
+        earliestStart: more?.earliestStart ?? null,
+        countsUntil: more?.countsUntil ?? null,
+        period: (more?.period ?? null) as CaseDecisionAction["period"],
+        restedOnBy: (more?.restedOnBy ?? null) as CaseDecisionAction["restedOnBy"],
       });
     }
     decisions.push({
@@ -481,6 +495,11 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     notes: texts.filter((text) => text.kind === "note").map(staffText),
     sealsDeclined: texts.filter((text) => text.kind === "seal_declined").map(staffText),
     history: (await caseHistory(q, row.id)) as CaseHistoryEntry[],
+    // 3e: on a post case whether a final restriction gives a strike and its author's standing in bands (the author of a
+    // post that is gone has none to show); on an account case the account's standing.
+    strikeDue: row.targetType === "post" ? await strikeDue(q, row.id) : null,
+    authorStanding: row.targetType === "post" && authorId !== null ? await authorStanding(q, authorId) : null,
+    standing: row.targetType === "account" ? await caseStanding(q, row.id, row.targetId) : null,
   };
 }
 

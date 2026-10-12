@@ -77,6 +77,7 @@ const view = (extra: Partial<DecisionView> = {}): DecisionView => ({
   reversedOn: null,
   content: { kind: "post", body: "the words that were judged", deletedByAuthor: false, images: [], imageCount: 0, imagesHidden: null },
   appeal: null,
+  strike: null,
   ...extra,
 });
 const pending = (extra: Partial<Extract<DecisionAppeal, { state: "pending" }>> = {}): DecisionAppeal => ({ state: "pending", filedAt: "2026-10-06T09:00:00.000Z", reviewer: "available", needsAdmin: false, ...extra });
@@ -203,7 +204,7 @@ describe("the appeal on a decision's screen", () => {
   });
 
   test("About you says where the appeal of each decision stands", () => {
-    const row = (extra: Partial<AuthorCaseRow>): AuthorCaseRow => ({ id: id(3), kind: "final", outcome: "restricted", decidedOn: "2026-10-04", post: { id: id(1), createdAt: TIME }, actions: ["remove"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, reversedOn: null, appeal: null, ...extra });
+    const row = (extra: Partial<AuthorCaseRow>): AuthorCaseRow => ({ id: id(3), kind: "final", outcome: "restricted", decidedOn: "2026-10-04", post: { id: id(1), createdAt: TIME }, actions: ["remove"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, reversedOn: null, appeal: null, strike: null, ...extra });
     const list = (extra: Partial<AuthorCaseRow>) => textOf(html(<DecisionsList decisions={[row(extra)]} />));
     expect(CASES_WORDS.appealState).toEqual({ pending: "Your appeal waits for a reviewer", kept: "Your appeal was answered: korbat kept its decision", partly_reversed: "Your appeal was answered: korbat reversed part of its decision", reversed: "Your appeal was answered: korbat reversed its decision" });
     for (const state of ["pending", "kept", "partly_reversed", "reversed"] as const) expect(list({ appeal: state }), state).toContain(CASES_WORDS.appealState[state]);

@@ -13,7 +13,9 @@ import {
   SUSPECT_OUTCOME_PHRASES,
   UNSEEN_NO_ACTION,
   type ItemOutcome,
+  type ActionKind,
   type MeasureKind,
+  type MeasureTarget,
 } from "@korbat/contracts";
 import { RULES, RULES_VERSION } from "@korbat/rules";
 import { numberWord } from "./moderation-words";
@@ -60,8 +62,16 @@ const R4 = (() => {
   return `rule ${rule.id} (${ruleName(rule)})`;
 })();
 
+/**
+ * 3e: the terms list 3c's measures, those of a post, its images and a profile's fields, until Task 7 of 3e writes the
+ * sections "Strikes" and "Suspension and termination" (design, W.7) and lists the standing measures with them.
+ */
+const LISTED_TARGETS: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio"];
+const listed = (kind: ActionKind): boolean => LISTED_TARGETS.includes(MEASURES[kind].target);
+type ListedMeasure = Exclude<MeasureKind, "strike" | "suspend" | "terminate" | "retire_handle" | "warn_reporting" | "restrict_reporting">;
+
 /** What each measure does, beside its label. A measure added to the ledger does not compile until it is explained here. */
-const MEASURE_MEANINGS: Record<MeasureKind, string> = {
+const MEASURE_MEANINGS: Record<ListedMeasure, string> = {
   withhold: "the post is hidden from other people; you still see it",
   remove: "the post is removed for other people; it stays in your own view while you keep it",
   seal_media: "the images the case covers are shown to nobody, you included",
@@ -72,12 +82,12 @@ const MEASURE_MEANINGS: Record<MeasureKind, string> = {
 };
 
 /** The measures of one sentence, each by the label its decision records and what it does. */
-const measureList = (kinds: readonly MeasureKind[]): string => kinds.map((kind) => `"${MEASURES[kind].label}" (${MEASURE_MEANINGS[kind]})`).join("; ");
+const measureList = (kinds: readonly ListedMeasure[]): string => kinds.map((kind) => `"${MEASURES[kind].label}" (${MEASURE_MEANINGS[kind]})`).join("; ");
 // The ledger's own two marks sort the measures into the three sentences.
-const WHILE_DECIDING = MEASURE_KINDS.filter((kind) => MEASURES[kind].interim && !MEASURES[kind].final);
-const WHEN_DECIDED = MEASURE_KINDS.filter((kind) => !MEASURES[kind].interim && MEASURES[kind].final);
-const EITHER = MEASURE_KINDS.filter((kind) => MEASURES[kind].interim && MEASURES[kind].final);
-const LIFTED = REVERSAL_KINDS.map((kind) => `"${MEASURES[kind].label}"`).join("; ");
+const WHILE_DECIDING = MEASURE_KINDS.filter((kind): kind is ListedMeasure => listed(kind) && MEASURES[kind].interim && !MEASURES[kind].final);
+const WHEN_DECIDED = MEASURE_KINDS.filter((kind): kind is ListedMeasure => listed(kind) && !MEASURES[kind].interim && MEASURES[kind].final);
+const EITHER = MEASURE_KINDS.filter((kind): kind is ListedMeasure => listed(kind) && MEASURES[kind].interim && MEASURES[kind].final);
+const LIFTED = REVERSAL_KINDS.filter(listed).map((kind) => `"${MEASURES[kind].label}"`).join("; ");
 
 /** What each outcome of a report means. An outcome added to the contracts does not compile until it is explained here. */
 const OUTCOME_MEANINGS: Record<ItemOutcome, string> = {

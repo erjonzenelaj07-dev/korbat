@@ -41,6 +41,8 @@ const page = { limit: 50 };
 describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () => {
   let apiDb: Db;
   let authDb: Db;
+  /** 3e: profiles.created_at is no longer the API role's to write (migration 0020 grants it the columns it writes), so the migrator ages the profile. */
+  let migrateDb: Db;
   let authRepo: AuthRepo;
   let h: FlowHarness;
   let m: MediaHarness;
@@ -50,6 +52,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     const config = loadConfig();
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     authRepo = createAuthRepo(authDb);
     h = flowHarness(authRepo, { profiles: createProfileStore(apiDb) });
     m = await mediaHarness(apiDb);
@@ -64,7 +67,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
   });
   afterAll(async () => {
     m.cleanup();
-    await Promise.all([closeDb(apiDb), closeDb(authDb)]);
+    await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
   });
 
   const deps = (): AccountDeps => ({
@@ -93,7 +96,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     const handle = newHandle();
     const created = await createProfileStore(apiDb).create({ id: owner.user.id, handle, displayName: "Owner" });
     expect(created.ok).toBe(true);
-    await apiDb.update(profiles).set({ createdAt: new Date(Date.now() - 3 * 24 * 60 * 60_000) }).where(eq(profiles.id, owner.user.id));
+    await migrateDb.update(profiles).set({ createdAt: new Date(Date.now() - 3 * 24 * 60 * 60_000) }).where(eq(profiles.id, owner.user.id));
     return { ...owner, handle };
   }
 

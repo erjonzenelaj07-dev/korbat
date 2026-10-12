@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ACCOUNT_DELETION_WORDS, ExportFormat } from "../src/index";
+import { ACCOUNT_DELETION_WORDS, ExportFormat, MEASURE_KINDS } from "../src/index";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const at = "2026-09-24T10:00:00.000Z";
@@ -79,6 +79,8 @@ const full = {
         ],
       },
     ],
+    // 3e: the strikes the account was given, newest first.
+    strikes: [{ decisionId: id(10), postId: id(1), ruleId: "R3", givenAt: at, countsUntil: "2027-01-01T00:00:00.000Z", overruledAt: null }],
   },
 };
 
@@ -108,7 +110,7 @@ describe("export format", () => {
       devices: [],
       events: [],
       missingMedia: [],
-      moderation: { decisions: [], reports: [] },
+      moderation: { decisions: [], reports: [], strikes: [] },
     };
     expect(ExportFormat.parse(empty)).toEqual(empty);
   });
@@ -180,8 +182,8 @@ describe("the export's moderation member", () => {
   const [report] = full.moderation.reports;
   const [released, waiting] = report!.items;
   const withModeration = (moderation: unknown) => ExportFormat.safeParse({ ...full, moderation }).success;
-  const withDecision = (change: Record<string, unknown>) => withModeration({ decisions: [{ ...decision, ...change }], reports: [] });
-  const withReport = (change: Record<string, unknown>) => withModeration({ decisions: [], reports: [{ ...report, ...change }] });
+  const withDecision = (change: Record<string, unknown>) => withModeration({ decisions: [{ ...decision, ...change }], reports: [], strikes: [] });
+  const withReport = (change: Record<string, unknown>) => withModeration({ decisions: [], reports: [{ ...report, ...change }], strikes: [] });
   const withItem = (change: Record<string, unknown>) => withReport({ items: [{ ...released, ...change }] });
 
   test("is part of korbat-export-1 since 3c, the last member of the document: always present, with its two lists, either of which may be empty", () => {
@@ -191,9 +193,10 @@ describe("the export's moderation member", () => {
     expect(withModeration(undefined)).toBe(false);
     expect(withModeration({ decisions: [] })).toBe(false);
     expect(withModeration({ reports: [] })).toBe(false);
-    expect(withModeration({ decisions: [], reports: [] })).toBe(true);
-    expect(withModeration({ decisions: [decision], reports: [] })).toBe(true);
-    expect(withModeration({ decisions: [], reports: [report] })).toBe(true);
+    expect(withModeration({ decisions: [], reports: [] })).toBe(false);
+    expect(withModeration({ decisions: [], reports: [], strikes: [] })).toBe(true);
+    expect(withModeration({ decisions: [decision], reports: [], strikes: [] })).toBe(true);
+    expect(withModeration({ decisions: [], reports: [report], strikes: [] })).toBe(true);
   });
 
   test("a decision carries its day, the post it concerns, its kind, outcome, ground, rule and rules version, its measures with whether each changed anything, its reversals, the texts still held and where the appeal stands", () => {
@@ -214,10 +217,12 @@ describe("the export's moderation member", () => {
     expect(withDecision({ ruleId: "R7" })).toBe(false);
     expect(withDecision({ rulesVersion: 0 })).toBe(false);
     expect(withDecision({ rulesVersion: undefined })).toBe(false);
-    // The seven measures and nothing else; a reversal is no measure, and a measure no reversal.
-    for (const kind of ["withhold", "remove", "seal_media", "withhold_media", "remove_media", "reset_display_name", "reset_bio"]) expect(withDecision({ measures: [{ kind, mediaId: null, noEffect: null }] }), kind).toBe(true);
+    // The thirteen measures (3c's seven and 3e's six) and nothing else; a reversal is no measure, and a measure no reversal.
+    for (const kind of MEASURE_KINDS) expect(withDecision({ measures: [{ kind, mediaId: null, noEffect: null }] }), kind).toBe(true);
     expect(withDecision({ measures: [{ kind: "restore", mediaId: null, noEffect: null }] })).toBe(false);
-    expect(withDecision({ measures: [{ kind: "strike", mediaId: null, noEffect: null }] })).toBe(false);
+    expect(withDecision({ measures: [{ kind: "overrule", mediaId: null, noEffect: null }] })).toBe(false);
+    expect(withDecision({ reversals: [{ kind: "strike", mediaId: null }] })).toBe(false);
+    expect(withDecision({ reversals: [{ kind: "overrule", mediaId: null }] })).toBe(true);
     for (const noEffect of ["already", "deleted", null]) expect(withDecision({ measures: [{ kind: "remove", mediaId: null, noEffect }] }), String(noEffect)).toBe(true);
     expect(withDecision({ measures: [{ kind: "remove", mediaId: null, noEffect: "no" }] })).toBe(false);
     expect(withDecision({ measures: [{ kind: "remove", mediaId: null }] })).toBe(false);
@@ -243,7 +248,7 @@ describe("the export's moderation member", () => {
 
   test("a decision is read with its own members and no more: nothing of who reported, who decided or how many reports there were is part of the format", () => {
     const extra = { ...decision, decidedBy: id(20), staffHandle: "mod_one", reporterId: id(21), reporterHandle: "grace", reports: 3, source: "report", caseId: id(22) };
-    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [extra], reports: [] } });
+    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [extra], reports: [], strikes: [] } });
     expect(parsed.moderation.decisions).toEqual([decision]);
   });
 
@@ -261,7 +266,7 @@ describe("the export's moderation member", () => {
     expect(withReport({ explanation: undefined })).toBe(false);
     expect(withReport({ items: undefined })).toBe(false);
     // Read with its own members and no more.
-    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], reports: [{ ...report, reporterId: id(1), contactId: id(23), lookupHash: "f".repeat(64), token: "secret" }] } });
+    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], strikes: [], reports: [{ ...report, reporterId: id(1), contactId: id(23), lookupHash: "f".repeat(64), token: "secret" }] } });
     expect(parsed.moderation.reports).toEqual([report]);
   });
 
@@ -282,7 +287,7 @@ describe("the export's moderation member", () => {
     expect(withReport({ items: [{ ...waiting, reexaminationOpen: false }] })).toBe(false);
     expect(withReport({ items: [{ ...waiting, outcomeText: "no action" }] })).toBe(false);
     // An item is read with its own members and no more: the list's id of an item is not part of the export.
-    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], reports: [{ ...report, items: [{ ...released, id: id(24), caseId: id(25), answeredBy: id(26) }] }] } });
+    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], strikes: [], reports: [{ ...report, items: [{ ...released, id: id(24), caseId: id(25), answeredBy: id(26) }] }] } });
     expect(parsed.moderation.reports[0]!.items).toEqual([released]);
   });
 });

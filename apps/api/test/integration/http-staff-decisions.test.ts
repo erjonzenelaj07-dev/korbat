@@ -279,7 +279,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
       expect(taken.view.closedAt).not.toBeNull();
       expect(taken.view.decisions.map((each) => [each.kind, each.actions.map((action) => [action.kind, action.inForce])])).toEqual([
         ["interim", [["withhold", false]]],
-        ["final", [["remove", true]]],
+        // 3e: the removal under R5 gives a strike, which the console signed as the case answer said it was due.
+        ["final", [["remove", true], ["strike", true]]],
       ]);
       // A case nobody has: the params are the console's, the id is not.
       const params = await decisionParams(apiDb, admin, caseId, { kind: "correction", reviewsDecisionId: taken.decisionId, actions: [act("restore")] });

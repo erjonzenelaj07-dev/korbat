@@ -13,6 +13,7 @@ import {
 import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
+import { activeStrikesOf } from "./standing-repo";
 
 /**
  * What the author of a post or the holder of an account reads about korbat's decisions on it (3c design, sections 7.6 and
@@ -73,9 +74,12 @@ export async function authorCases(deps: Pick<ModerationDeps, "apiDb">, viewer: s
       appealUntil: row.appealUntil,
       reversedOn: row.reversedOn,
       appeal: row.appeal,
+      strike: row.strike,
     })),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > AUTHOR_CASES_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,
+    // The block "Your standing" above the list: the strikes that count now.
+    activeStrikes: await activeStrikesOf(deps.apiDb, viewer),
   };
 }
 
@@ -138,6 +142,7 @@ export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb">, vi
     reversedOn: facts.reversedOn,
     content: contentOf(facts),
     appeal: facts.appeal === null ? null : await appealOf(deps, facts.appeal),
+    strike: facts.strike,
   };
 }
 
