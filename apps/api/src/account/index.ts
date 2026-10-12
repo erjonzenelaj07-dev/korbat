@@ -23,7 +23,7 @@ export interface CreateAccountOptions {
   auth: AuthForAccount;
   social: SocialForAccount;
   media: MediaForAccount;
-  /** The moderation module's interface for this one: moderation.forAccount. Without it the purge forgets no report's sender. */
+  /** The moderation module's interface for this one: moderation.forAccount. Without it the purge forgets no report's sender, and the export's moderation member is empty. */
   moderation?: ModerationForAccount;
   /** The auth module's requireSession: an onboarded account with CSRF and Origin checked. */
   requireSession: MiddlewareHandler<AppEnv>;

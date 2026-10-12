@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { Platform, Role } from "./auth";
+import { ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REVERSAL_KINDS, RULE_IDS, TDB_CATEGORIES } from "./moderation";
 
 const at = z.iso.datetime();
+/** A UTC day, as the list of decisions shows one. */
+const day = z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "must be a UTC day");
 
 /** Something the account did to a post (a like, a repost, a bookmark), and when. */
 const PostRef = z.object({ postId: z.uuid(), at });
@@ -33,6 +36,79 @@ const ExportedPasskey = z.object({
   synced: z.boolean(),
   /** The label of the device that added it; null once that device is gone. */
   createdOn: z.string().nullable(),
+});
+
+/**
+ * A decision about the account or one of its posts, as the export lists it (3c design, section 7.11): one of the decisions
+ * the Cases screen lists, which are those its author was told of, with what its statement of reasons tells.
+ *   - `decidedOn` is the decision's UTC day, as the list shows it; `postId` the entry of `posts` a decision about a post
+ *     concerns, null for a decision about the account's display name or bio.
+ *   - `ground` and `ruleId` name the law or the rule it rests on, and `rulesVersion` the version of the rulebook it was
+ *     made under.
+ *   - `measures` are what it imposed, each with `noEffect` set when it changed nothing anyone saw (the content was already
+ *     not shown, or already deleted); `reversals` what it lifted. An image measure names the account's own image.
+ *   - `facts`, `reason` and `legalReference` are the statement's texts while korbat holds them; null for a text the
+ *     decision never had, one that was erased, and the facts and the reason of a decision that restricted nothing.
+ *   - `appeal` is where the account's appeal of the decision stands; null when it filed none.
+ * It names its source nowhere: no report, no reporter, no notifier and no staff member is part of it.
+ */
+const ExportedDecision = z.object({
+  id: z.uuid(),
+  decidedOn: day,
+  postId: z.uuid().nullable(),
+  kind: z.enum(["interim", "final", "review", "correction"]),
+  outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
+  ground: z.enum(["incompatible", "illegal"]).nullable(),
+  ruleId: z.enum(RULE_IDS).nullable(),
+  rulesVersion: z.number().int().positive(),
+  measures: z.array(z.object({ kind: z.enum(MEASURE_KINDS), mediaId: z.uuid().nullable(), noEffect: z.enum(["already", "deleted"]).nullable() })),
+  reversals: z.array(z.object({ kind: z.enum(REVERSAL_KINDS), mediaId: z.uuid().nullable() })),
+  facts: z.string().nullable(),
+  reason: z.string().nullable(),
+  legalReference: z.string().nullable(),
+  appeal: z
+    .discriminatedUnion("state", [
+      z.object({ state: z.literal("pending"), result: z.null() }),
+      z.object({ state: z.literal("answered"), result: z.enum(["kept", "partly_reversed", "reversed"]) }),
+    ])
+    .nullable(),
+});
+
+/**
+ * One item of a report in its sender's export: its place in the report, its korbat address (an account's under the handle
+ * the report named, never a later one) and whether it is the re-examination of the item before it. `outcome`, its words
+ * as the list of reports reads them (`outcomeText`) and whether a re-examination can still be asked for
+ * (`reexaminationOpen`) are told together, once the daily release has shown the outcome; until then all three are null,
+ * whether or not a moderator has decided, as on the list and on the report's page.
+ */
+const ExportedReportItem = z
+  .object({
+    position: z.number().int().min(1).max(20),
+    link: z.string(),
+    reexamines: z.boolean(),
+    outcome: z.enum(ITEM_OUTCOMES).nullable(),
+    outcomeText: z.string().nullable(),
+    reexaminationOpen: z.boolean().nullable(),
+  })
+  .refine((item) => (item.outcome === null) === (item.outcomeText === null) && (item.outcome === null) === (item.reexaminationOpen === null), {
+    message: "an outcome, its words and whether a re-examination is open are told together or not at all",
+  });
+
+/**
+ * A report or a notice the account sent, while korbat keeps its record (3c design, sections 6.6 and 7.11): its reference,
+ * when korbat received it, whether it said that something breaks a rule or is illegal, the rule it cited (always for a
+ * report on a rule, optionally for a notice of illegality), its Transparency Database category, and the sender's own
+ * explanation. A report on the path for child sexual abuse material records no sender, the account included, so it is in
+ * nobody's export.
+ */
+const ExportedReport = z.object({
+  ref: NoticeRef,
+  receivedAt: at,
+  ground: z.enum(["rule", "illegal"]),
+  ruleId: z.enum(RULE_IDS).nullable(),
+  category: z.enum(TDB_CATEGORIES),
+  explanation: z.string().nullable(),
+  items: z.array(ExportedReportItem),
 });
 
 /**
@@ -82,5 +158,12 @@ export const ExportFormat = z.object({
   events: z.array(z.object({ type: z.string(), at })),
   /** Ids of ready images whose file was not on disk when the archive was written. */
   missingMedia: z.array(z.string()),
+  /**
+   * What korbat's moderation holds for the account (3c design, section 7.11): the decisions about it that its Cases screen
+   * lists, newest first, and its own reports and notices, newest first. Never another person's report, a reporter, a
+   * notifier or a staff member. Added to korbat-export-1 without a new format name, last in the document: a reader that
+   * does not know the member loses nothing by skipping it.
+   */
+  moderation: z.object({ decisions: z.array(ExportedDecision), reports: z.array(ExportedReport) }),
 });
 export type ExportFormat = z.infer<typeof ExportFormat>;

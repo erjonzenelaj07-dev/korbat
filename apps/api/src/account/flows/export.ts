@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { Platform } from "@korbat/contracts";
 import type { AccountExport } from "../../auth";
+import type { ModerationExport } from "../../moderation";
 import type { ProfileExport } from "../../social";
 import { AccountError, type AccountDeps } from "../context";
 import type { OpenFile, ZipWriter } from "../zip";
@@ -22,10 +23,10 @@ export function exportFilename(handle: string, now: Date): string {
 }
 
 /**
- * What the archive is written from. The account's own facts and the profile are read before the first
- * byte; the profile's lists are read page by page while export.json is written, and the images, each
- * behind the media module's checked open, go first, so `missingMedia` is complete by the time the JSON
- * that lists it is written.
+ * What the archive is written from. The account's own facts, the profile and the moderation member are
+ * read before the first byte; the profile's lists are read page by page while export.json is written,
+ * and the images, each behind the media module's checked open, go first, so `missingMedia` is complete
+ * by the time the JSON that lists it is written.
  */
 export interface ExportPlan {
   exportedAt: Date;
@@ -33,6 +34,8 @@ export interface ExportPlan {
   currentSession: string;
   account: AccountExport;
   profile: ProfileExport;
+  /** The decisions about the account that it was told of and its own reports, as the moderation module hands them over (3c design, section 7.11). */
+  moderation: ModerationExport;
   images: { id: string; open: OpenFile }[];
   /** The images whose file the checked open refused or could not find, filled while the images are written. */
   missingMedia: string[];
@@ -71,16 +74,26 @@ export async function giveBackExport(deps: AccountDeps, userId: string, log: Log
 const iso = (at: Date): string => at.toISOString();
 const isoOrNull = (at: Date | null): string | null => (at ? at.toISOString() : null);
 
+/** What an account module built without the moderation module writes: the member is part of the format, so it is always there. */
+const NO_MODERATION: ModerationExport = { decisions: [], reports: [] };
+
 /**
  * Reads what is needed before the first byte: the account's facts, sessions, devices and events (one
- * read, bounded by the 90 days of events), the profile's own fields, and the list of images. The three
- * modules are asked at once. `currentSession` is the handle of the session asking, which marks its
- * entry among the sessions. `pageSize` is how many rows of each profile list are read at a time; tests
- * lower it.
+ * read, bounded by the 90 days of events), the profile's own fields, the list of images, and the
+ * moderation member (the decisions the account was told of and its own reports, both short lists). The
+ * four modules are asked at once, so a read that fails costs the owner nothing: no byte was sent yet.
+ * `currentSession` is the handle of the session asking, which marks its entry among the sessions.
+ * `pageSize` is how many rows of each profile list are read at a time; tests lower it.
  */
 export async function buildExport(deps: AccountDeps, userId: string, currentSession: string, now: Date, pageSize?: number): Promise<ExportPlan> {
-  const [account, profile, images] = await Promise.all([deps.auth.exportAccount(userId), deps.social.exportProfile(userId, pageSize), deps.media.exportImages(userId)]);
-  return { exportedAt: now, currentSession, account, profile, images, missingMedia: [] };
+  const [account, profile, images, moderation] = await Promise.all([
+    deps.auth.exportAccount(userId),
+    deps.social.exportProfile(userId, pageSize),
+    deps.media.exportImages(userId),
+    // The server always hands the moderation module over; a test of the other members may leave it out.
+    deps.moderation ? deps.moderation.exportFor(userId) : NO_MODERATION,
+  ]);
+  return { exportedAt: now, currentSession, account, profile, moderation, images, missingMedia: [] };
 }
 
 /** A list member of export.json, read in pages and written one element at a time. */
@@ -190,6 +203,9 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
     ["events", inMemory(account.events, (event) => ({ type: event.type, at: iso(event.at) }))],
     // Complete by now: the images were written before the JSON.
     ["missingMedia", inMemory(plan.missingMedia, (id) => id)],
+    // Last, where the format added it (3c). Each entry is written member by member in the format's order, so the bytes
+    // do not depend on how the moderation module builds its objects, and nothing beyond the format is ever written.
+    ["moderation", moderationMember(plan.moderation)],
   ];
 
   yield "{\n";
@@ -199,6 +215,37 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
     else yield indented(JSON.stringify(value, null, 2), "  ");
   }
   yield "\n}";
+}
+
+/** The moderation member with every entry's members in the order of the format (ExportFormat in the contracts). */
+function moderationMember(moderation: ModerationExport): ModerationExport {
+  return {
+    decisions: moderation.decisions.map((decision) => ({
+      id: decision.id,
+      decidedOn: decision.decidedOn,
+      postId: decision.postId,
+      kind: decision.kind,
+      outcome: decision.outcome,
+      ground: decision.ground,
+      ruleId: decision.ruleId,
+      rulesVersion: decision.rulesVersion,
+      measures: decision.measures.map((measure) => ({ kind: measure.kind, mediaId: measure.mediaId, noEffect: measure.noEffect })),
+      reversals: decision.reversals.map((reversal) => ({ kind: reversal.kind, mediaId: reversal.mediaId })),
+      facts: decision.facts,
+      reason: decision.reason,
+      legalReference: decision.legalReference,
+      appeal: decision.appeal === null ? null : decision.appeal.state === "pending" ? { state: "pending", result: null } : { state: "answered", result: decision.appeal.result },
+    })),
+    reports: moderation.reports.map((report) => ({
+      ref: report.ref,
+      receivedAt: report.receivedAt,
+      ground: report.ground,
+      ruleId: report.ruleId,
+      category: report.category,
+      explanation: report.explanation,
+      items: report.items.map((item) => ({ position: item.position, link: item.link, reexamines: item.reexamines, outcome: item.outcome, outcomeText: item.outcomeText, reexaminationOpen: item.reexaminationOpen })),
+    })),
+  };
 }
 
 /** A top-level member's array, as JSON.stringify writes it at that depth: "[]" when empty, else one element per line group. */

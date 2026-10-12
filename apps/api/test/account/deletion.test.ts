@@ -288,6 +288,10 @@ describe("the purge and the reports the account sent (3c design, section 7.10)",
         if (failing.delete(userId)) throw new Error("the forgetting failed");
         forgotten.push(userId);
       },
+      // The export's side of the interface is not exercised by the purge; test/account/export.test.ts covers it.
+      exportFor: async () => {
+        throw new Error("not exercised by the deletion");
+      },
     };
     return { ...h, forgotten, failingForget: failing };
   }

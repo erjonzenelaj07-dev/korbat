@@ -6,6 +6,8 @@
  * 2. The staff console's site (--console): its page answers with the console's CSP, exactly, and
  *    Cache-Control: no-store, no-transform. /api/staff/me answers 404 on the app's site, from Caddy itself,
  *    and, signed out, 401 staff_session_required on the console's, so the API has the console on there.
+ *    The console's case routes (the overview, the queue, a case, the appeals) answer the same two ways, and
+ *    the console's site answers the app's own moderation routes with 404 itself.
  * 3. Signed out, Explore answers a page that parses; its ranking is computed within a minute (the refresh
  *    job runs a round at start), and by the answer's own Date header it is less than 11 minutes old.
  * 4. Password sign-in for an unknown email returns invalid_credentials (argon2 runs inside the image).
@@ -22,13 +24,25 @@
  *     restarted, and its memory peak is printed. Run it after every sharp upgrade.
  * 13. The grant-role CLI makes it a moderator, and its session stops working.
  * 14. A second throwaway account (the first one's session is gone by now, and a deleted account could not
- *     be granted a role) edits its bio, changes its handle, downloads its export as a ZIP, posts, and
+ *     be granted a role) edits its bio, changes its handle, reports the first account's post under a rule
+ *     (its own list of reports shows the report undecided, and no decision is about it), downloads its
+ *     export as a ZIP whose export.json ends with the moderation member holding that report, posts, and
  *     deletes itself with a code read from Mailpit and its handle typed; afterwards its profile is not
  *     found, its session is gone, and its post has left the Latest timeline.
+ * 15. Signed out, a notice that the first account's post is illegal is taken through the app's site with the
+ *     human check: it answers a reference and a token. The status page opens with that token and shows the
+ *     post's link, undecided, and the contact as given; another token finds no notice. The receipt arrives in
+ *     Mailpit under the reference, and the token in its link opens the same page with the address not yet
+ *     confirmed. Nothing here decides the case: a decision needs a staff key.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
  * Tries a Turnstile refusal again for up to a minute, since outbound calls can stall. Prints no codes or tokens.
+ *
+ * Every run leaves its first account, by then a moderator, and one open case on that account's post, in the lane
+ * that is read last, with a report and a notice that no run can decide. One network may run it five times an hour
+ * and twenty times a day: its two sign-ups count against the hourly sign-up limit, and its signed-out notice
+ * against the limits of reports sent without an account.
  *
  * Usage, from the repo root:
  *   node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --console http://localhost:8090 \
@@ -73,6 +87,8 @@ requireLocalDocker();
 
 /** The sharp the worker depends on, so the test images come from the same library that will read them. */
 const sharp = createRequire(new URL("../apps/worker/package.json", import.meta.url))("sharp");
+/** The fflate the API depends on: the export's archive is opened with the library the API's own tests open it with. */
+const { strFromU8, unzipSync } = createRequire(new URL("../apps/api/package.json", import.meta.url))("fflate");
 
 /** Cloudflare's test secret accepts any token. */
 const TURNSTILE_TOKEN = "XXXX.DUMMY.TOKEN.XXXX";
@@ -102,6 +118,9 @@ async function api(path, { json, token, method } = {}) {
   return { status: res.status, body, summary: `HTTP ${res.status}${body?.error?.code ? ` ${body.error.code}` : ""}` };
 }
 
+/** What a failed human check answers: the sign-in routes' code, and the code of a report sent signed out. */
+const HUMAN_CHECK_REFUSALS = ["turnstile_failed", "human_check_failed"];
+
 /**
  * Cloudflare's siteverify is a call across the internet, and the API fails closed when it stalls past
  * five seconds. On Docker Desktop, containers' outbound calls stall for up to half a minute right after a
@@ -111,7 +130,7 @@ async function api(path, { json, token, method } = {}) {
 async function withTurnstile(path, json) {
   const deadline = Date.now() + 60_000;
   let result = await api(path, { json });
-  while (result.body?.error?.code === "turnstile_failed" && Date.now() < deadline) {
+  while (HUMAN_CHECK_REFUSALS.includes(result.body?.error?.code) && Date.now() < deadline) {
     console.log(`info ${path}: Turnstile could not be verified; trying again in 5 s`);
     await new Promise((resolve) => setTimeout(resolve, 5000));
     result = await api(path, { json });
@@ -278,6 +297,28 @@ async function consoleSite() {
 
   const onConsole = await getJson(`${consoleBase}/api/staff/me`);
   check("signed out, the console's site answers /api/staff/me with 401 staff_session_required", onConsole.status === 401 && onConsole.body?.error?.code === "staff_session_required", onConsole.summary);
+
+  // The console's case routes (3c design, section 12) stand behind the same two doors: the overview, the queue, a case
+  // and the appeals. The staff session is asked for before anything of the request is read, so a case that does not
+  // exist answers like the others.
+  const caseRoutes = ["/api/staff/overview", "/api/staff/queue", `/api/staff/cases/${randomUUID()}`, "/api/staff/appeals"];
+  const answers = (list) => list.map((answer, index) => `${caseRoutes[index]}: ${answer.summary}`).join("; ");
+  const casesOnApp = await Promise.all(caseRoutes.map((path) => getJson(`${base}${path}`)));
+  check(
+    "the app's site refuses the console's case routes itself, with 404",
+    casesOnApp.every((answer) => answer.status === 404 && answer.body?.error?.code === "not_found" && answer.body.error.requestId === undefined),
+    answers(casesOnApp),
+  );
+  const casesOnConsole = await Promise.all(caseRoutes.map((path) => getJson(`${consoleBase}${path}`)));
+  check(
+    "signed out, the console's site answers its case routes with 401 staff_session_required",
+    casesOnConsole.every((answer) => answer.status === 401 && answer.body?.error?.code === "staff_session_required"),
+    answers(casesOnConsole),
+  );
+  // And the other way round: the console's site proxies the staff API and nothing else, so the app's own moderation
+  // routes are answered there by Caddy, never by the API.
+  const appRoute = await getJson(`${consoleBase}/api/moderation/cases`);
+  check("the console's site refuses the app's moderation routes itself, with 404", appRoute.status === 404 && appRoute.body?.error?.code === "not_found" && appRoute.body.error.requestId === undefined, appRoute.summary);
 }
 
 /**
@@ -332,11 +373,120 @@ async function emailCode(to, subject) {
   throw new Error(`no code email to ${to} arrived in Mailpit`);
 }
 
+/** A notice's public reference: N- and ten base32 characters. */
+const NOTICE_REF = /^N-[A-Z2-7]{10}$/;
+
+/** One line about a report's items as a status answer or a list gives them: how many, and each one's link and outcome. */
+const itemsSummary = (items) => (Array.isArray(items) ? `${items.length} item(s): ${items.map((item) => `${item?.link} -> ${item?.outcome}`).join(", ")}` : "no items");
+/** Whether these are exactly one item, about this post by its korbat link, with no outcome shown yet. */
+const onePostUndecided = (items, postId) => Array.isArray(items) && items.length === 1 && typeof items[0]?.link === "string" && items[0].link.endsWith(`/post/${postId}`) && items[0].outcome === null;
+
+/**
+ * A report under a rule from a signed-in account (3c design, sections 7.1, 7.6 and 12), about another account's post:
+ * it needs no human check and answers a reference without a token, since the account's own list follows it. That list
+ * then shows the report with its one item undecided, and the account's list of decisions is empty. Answers the
+ * reference, or null when the report was not taken.
+ */
+async function signedInReport(postId, token) {
+  const reported = await api("/api/notices", { json: { ground: "rule", ruleId: "R6", targets: [{ kind: "post", id: postId }], explanation: "Sent by the smoke test." }, token });
+  const ref = reported.body?.ref;
+  if (!check("a signed-in report under a rule is taken: a reference and no token", reported.status === 201 && NOTICE_REF.test(ref ?? "") && reported.body.token === undefined, reported.summary)) return null;
+  const reports = await api("/api/moderation/reports", { token });
+  const mine = reports.body?.reports?.[0];
+  check("the account's list of reports shows it, undecided", reports.status === 200 && mine?.ref === ref && onePostUndecided(mine.items, postId), `${reports.summary}, ${itemsSummary(mine?.items)}`);
+  const cases = await api("/api/moderation/cases", { token });
+  check("no decision is about the account", cases.status === 200 && Array.isArray(cases.body?.decisions) && cases.body.decisions.length === 0 && cases.body.nextCursor === null, cases.summary);
+  return ref;
+}
+
+/**
+ * The export's moderation member (3c design, section 7.11), read from the archive itself: export.json's last member,
+ * with no decision about this account and the one report it sent, under its reference and its ground, its item
+ * undecided.
+ */
+function exportedModeration(archive, reportRef, postId) {
+  let document = null;
+  try {
+    document = JSON.parse(strFromU8(unzipSync(new Uint8Array(archive))["export.json"]));
+  } catch {
+    document = null;
+  }
+  const moderation = document?.moderation;
+  const last = document === null ? "export.json could not be read" : `last member ${Object.keys(document).at(-1)}`;
+  if (!check("export.json ends with the moderation member: its decisions and its reports", document !== null && Object.keys(document).at(-1) === "moderation" && Array.isArray(moderation?.decisions) && Array.isArray(moderation?.reports), last)) return;
+  const own = moderation.reports[0];
+  check(
+    "the export holds no decision and the account's one report, undecided",
+    reportRef !== null && moderation.decisions.length === 0 && moderation.reports.length === 1 && own?.ref === reportRef && own.ground === "rule" && own.ruleId === "R6" && onePostUndecided(own.items, postId) && own.items[0].reexaminationOpen === null,
+    `${moderation.decisions.length} decision(s), ${moderation.reports.length} report(s), ${itemsSummary(own?.items)}`,
+  );
+}
+
+/** The newest message to `to` in Mailpit whose subject is `subject`, read whole; null when none arrives within half a minute. */
+async function mailTo(to, subject) {
+  const query = encodeURIComponent(`to:"${to}"`);
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const list = await (await fetch(`${mailpit}/api/v1/search?query=${query}`)).json();
+    const found = list.messages?.find((message) => message.Subject === subject);
+    if (found) return (await fetch(`${mailpit}/api/v1/message/${found.ID}`)).json();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return null;
+}
+
+/**
+ * A notice sent signed out, through the app's site (3c design, sections 7.1, 7.2 and 12): an Article 16 notice that the
+ * first account's post is illegal, in a category of the lane that is read last, so that no urgent alert goes out, with a
+ * name and an address. The human check is Turnstile's, with the test secret that passes any token. It answers a
+ * reference and the notice's own token, which opens the status page; the receipt goes to the address at once, and the
+ * token in its link opens the same page and shows what korbat knows of the address. A token travels in a POST's body,
+ * never in an address.
+ */
+async function signedOutNotice(postId) {
+  const notifier = `notifier-${randomUUID()}@korbat.local`;
+  const notice = {
+    ground: "illegal",
+    category: "STATEMENT_CATEGORY_SCAMS_AND_FRAUD",
+    explanation: "Sent by the smoke test: nothing is wrong with this post.",
+    bonaFide: true,
+    name: "Smoke Test",
+    email: notifier,
+    targets: [{ kind: "post", id: postId }],
+    turnstileToken: TURNSTILE_TOKEN,
+  };
+  const sent = await withTurnstile("/api/notices", notice);
+  const ref = sent.body?.ref;
+  const token = sent.body?.token;
+  if (!check("signed out, a notice of illegality is taken through the app's site: a reference and a token", sent.status === 201 && NOTICE_REF.test(ref ?? "") && typeof token === "string" && token.length === 43, sent.summary)) return;
+
+  const status = await api("/api/notices/status", { json: { ref, token } });
+  check("its status page opens with the token and shows the post's link, undecided", status.status === 200 && status.body?.ref === ref && onePostUndecided(status.body.items, postId), `${status.summary}, ${itemsSummary(status.body?.items)}`);
+  // Opened with the notice's own token, the page says that a contact was given and nothing of what korbat knows about the address.
+  const contact = status.body?.contact;
+  check("the page says that a contact was given, and no more", contact?.given === true && contact.confirmed === null && contact.stopped === null, JSON.stringify(contact ?? null));
+  const other = await api("/api/notices/status", { json: { ref, token: randomBytes(32).toString("base64url") } });
+  check("another token finds no notice", other.status === 404 && other.body?.error?.code === "notice_not_found", other.summary);
+
+  const receipt = await mailTo(notifier, `korbat received your report ${ref}`);
+  if (!check("the receipt arrives in Mailpit under the notice's reference", receipt !== null && typeof receipt.Text === "string" && receipt.Text.includes(ref), receipt === null ? "no receipt within 30 s" : "a receipt without the reference")) return;
+  // The mail's link carries the contact's mail token in its fragment, which no server log sees.
+  const mailToken = /[/]notice[/]N-[A-Z2-7]{10}#t=([A-Za-z0-9_-]{43})/.exec(receipt.Text)?.[1];
+  if (!check("the receipt links to the notice's page with a token of its own", typeof mailToken === "string" && mailToken !== token)) return;
+  const byMail = await api("/api/notices/status", { json: { ref, token: mailToken } });
+  const known = byMail.body?.contact;
+  check(
+    "the mail's token opens the same page, with the address not yet confirmed and not stopped",
+    byMail.status === 200 && byMail.body?.ref === ref && onePostUndecided(byMail.body.items, postId) && known?.given === true && known.confirmed === false && known.stopped === false,
+    `${byMail.summary}, ${JSON.stringify(known ?? null)}`,
+  );
+}
+
 /**
  * A second account, since the first one's session is gone by now and a deleted account could not be
- * granted a role: the lifecycle of section 7 of the 1b design, end to end, on the bearer session.
+ * granted a role: the lifecycle of section 7 of the 1b design, end to end, on the bearer session. On its
+ * way it reports the first account's post, and its export shows that report.
  */
-async function accountLifecycle() {
+async function accountLifecycle(reportedPostId) {
   const email = `lifecycle-${randomUUID()}@korbat.local`;
   const handle = `life_${randomBytes(4).toString("hex")}`;
   const start = await withTurnstile("/api/auth/email/start", { email, turnstileToken: TURNSTILE_TOKEN, deviceId, platform: "ios" });
@@ -355,9 +505,11 @@ async function accountLifecycle() {
   const renamed = `${handle}_2`;
   const changed = await api("/api/me/handle", { json: { handle: renamed }, token });
   check("change the handle", changed.status === 200 && changed.body?.profile?.handle === renamed, changed.summary);
+  const reportRef = await signedInReport(reportedPostId, token);
   const exported = await send("/api/account/export", { method: "POST", token });
   const zip = exported.bytes[0] === 0x50 && exported.bytes[1] === 0x4b;
   check("the export is a ZIP", exported.status === 200 && exported.headers.get("content-type") === "application/zip" && zip, `HTTP ${exported.status}, ${exported.headers.get("content-type")}, ${exported.bytes.length} bytes`);
+  if (zip) exportedModeration(exported.bytes, reportRef, reportedPostId);
   const posted = await api("/api/posts", { json: { body: "a post that will not outlive its author" }, token });
   check("lifecycle: create a post", posted.status === 201 && typeof posted.body?.id === "string", posted.summary);
 
@@ -418,7 +570,11 @@ async function main() {
   const after = await api("/api/me", { token });
   check("the session stops working after the role change", after.status === 401, after.summary);
 
-  await accountLifecycle();
+  // The post both the signed-in report and the signed-out notice name: the first account's, which is still there.
+  const reportedPostId = created.body?.id;
+  if (!check("the first account's post can be reported", typeof reportedPostId === "string")) return;
+  await accountLifecycle(reportedPostId);
+  await signedOutNotice(reportedPostId);
 }
 
 try {

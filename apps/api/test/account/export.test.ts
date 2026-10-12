@@ -18,6 +18,7 @@ import type { AccountExport, AuthEventType, Session } from "../../src/auth";
 import type { AppEnv } from "../../src/env";
 import { createMediaFiles } from "../../src/media/files";
 import { MemoryStore } from "../../src/middleware/rate-limit";
+import type { ModerationExport } from "../../src/moderation";
 import type { ExportedPost } from "../../src/social";
 import type { HandleRefRow, PostRefRow } from "../../src/social/repo";
 
@@ -226,7 +227,54 @@ function harness() {
   const [postId, deletedId, likedId, bookmarkedId, imageA, imageB] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
   const events: RecordedEvent[] = [];
   const reads: string[] = [];
-  const failures = { exportAccount: 0 };
+  const failures = { exportAccount: 0, exportFor: 0 };
+  /** The accounts the moderation module was asked about, in order. */
+  const asked: string[] = [];
+  // What the moderation module hands over for the account: a removal of the post with its texts and an answered appeal,
+  // a correction about the account that carries no text, and one report with a released item and a waiting one. Every
+  // object's members stand in another order than the format's, and the first decision carries a member the format does
+  // not have: the account module writes the format's members in the format's order, and nothing else.
+  const [removalId, correctionId, reportedPost] = [randomUUID(), randomUUID(), randomUUID()];
+  const removal = {
+    appeal: { result: "kept", state: "answered" },
+    legalReference: null,
+    reason: "That is an attack on people for what they are.",
+    facts: "The post calls for a named group to be excluded.",
+    reversals: [],
+    measures: [
+      { noEffect: null, mediaId: null, kind: "remove" },
+      { noEffect: "already", mediaId: imageA, kind: "remove_media" },
+    ],
+    rulesVersion: 2,
+    ruleId: "R3",
+    ground: "incompatible",
+    outcome: "restricted",
+    kind: "final",
+    postId,
+    decidedOn: "2026-09-12",
+    id: removalId,
+    decidedBy: "a staff member the export must never name",
+  } satisfies ModerationExport["decisions"][number] & { decidedBy: string };
+  const moderation: ModerationExport = {
+    reports: [
+      {
+        items: [
+          { reexaminationOpen: true, outcomeText: "no action: korbat found no breach of its rules and nothing illegal.", outcome: "no_violation", reexamines: false, link: `http://localhost:8081/post/${reportedPost}`, position: 1 },
+          { reexaminationOpen: null, outcomeText: null, outcome: null, reexamines: false, link: "http://localhost:8081/u/bob", position: 2 },
+        ],
+        explanation: "It offers a fake giveaway.",
+        category: "STATEMENT_CATEGORY_SCAMS_AND_FRAUD",
+        ruleId: null,
+        ground: "illegal",
+        receivedAt: new Date(T0 - DAY_MS).toISOString(),
+        ref: "N-ABCDEFGH23",
+      },
+    ],
+    decisions: [
+      removal,
+      { appeal: null, legalReference: null, reason: null, facts: null, reversals: [{ mediaId: null, kind: "restore_bio" }], measures: [], rulesVersion: 2, ruleId: null, ground: null, outcome: "reversed", kind: "correction", postId: null, decidedOn: "2026-09-10", id: correctionId },
+    ],
+  };
   // The deletion side of the three interfaces is not exercised by the export; test/account/deletion.test.ts covers it.
   const notHere = async (): Promise<never> => {
     throw new Error("not exercised by the export");
@@ -317,12 +365,28 @@ function harness() {
       }),
     },
     media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images },
+    moderation: {
+      forgetAccount: notHere,
+      exportFor: async (id) => {
+        asked.push(id);
+        if (failures.exportFor > 0) {
+          failures.exportFor -= 1;
+          throw new Error("the API pool timed out");
+        }
+        return moderation;
+      },
+    },
     limits: new MemoryStore(() => t),
     log: silent,
     now: () => new Date(t),
   };
   return {
     deps,
+    moderation,
+    asked,
+    removalId,
+    correctionId,
+    reportedPost,
     userId,
     currentSession,
     otherSession,
@@ -395,6 +459,50 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
       { type: "signup", at: iso(T0 - 3 * DAY_MS) },
     ],
     missingMedia,
+    // Last, with every entry's members in the format's order, whatever order the moderation module handed them over in.
+    moderation: expectedModeration(h),
+  };
+}
+
+/** The moderation member as export.json holds it for the harness's account: the format's members, in the format's order. */
+function expectedModeration(h: Harness) {
+  return {
+    decisions: [
+      {
+        id: h.removalId,
+        decidedOn: "2026-09-12",
+        postId: h.postId,
+        kind: "final",
+        outcome: "restricted",
+        ground: "incompatible",
+        ruleId: "R3",
+        rulesVersion: 2,
+        measures: [
+          { kind: "remove", mediaId: null, noEffect: null },
+          { kind: "remove_media", mediaId: h.imageA, noEffect: "already" },
+        ],
+        reversals: [],
+        facts: "The post calls for a named group to be excluded.",
+        reason: "That is an attack on people for what they are.",
+        legalReference: null,
+        appeal: { state: "answered", result: "kept" },
+      },
+      { id: h.correctionId, decidedOn: "2026-09-10", postId: null, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, measures: [], reversals: [{ kind: "restore_bio", mediaId: null }], facts: null, reason: null, legalReference: null, appeal: null },
+    ],
+    reports: [
+      {
+        ref: "N-ABCDEFGH23",
+        receivedAt: iso(T0 - DAY_MS),
+        ground: "illegal",
+        ruleId: null,
+        category: "STATEMENT_CATEGORY_SCAMS_AND_FRAUD",
+        explanation: "It offers a fake giveaway.",
+        items: [
+          { position: 1, link: `http://localhost:8081/post/${h.reportedPost}`, reexamines: false, outcome: "no_violation", outcomeText: "no action: korbat found no breach of its rules and nothing illegal.", reexaminationOpen: true },
+          { position: 2, link: "http://localhost:8081/u/bob", reexamines: false, outcome: null, outcomeText: null, reexaminationOpen: null },
+        ],
+      },
+    ],
   };
 }
 
@@ -518,6 +626,35 @@ describe("building the export", () => {
     const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now(), 3);
     plan.missingMedia.push(h.imageA, h.imageB);
     expect((await collect(exportJson(plan))).join("")).toBe(JSON.stringify(expectedDocument(h, [h.imageA, h.imageB]), null, 2));
+  });
+
+  test("the moderation member is the document's last: read once, before the first byte, for the account that asks, and written with the format's members in the format's order and nothing else", async () => {
+    const h = harness();
+    const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
+    // Read with the account's own facts, before anything is written.
+    expect(h.asked).toEqual([h.userId]);
+    const text = (await collect(exportJson(plan))).join("");
+    const raw = JSON.parse(text) as Record<string, unknown>;
+    expect(Object.keys(raw).at(-1)).toBe("moderation");
+    expect(raw.moderation).toStrictEqual(expectedModeration(h));
+    // The contract reads it whole: nothing of it lies outside the format.
+    expect(ExportFormat.parse(raw).moderation).toStrictEqual(raw.moderation);
+    // Member for member in the format's order, though the module handed every object over in another one.
+    const NL = String.fromCharCode(10);
+    expect(text.endsWith(`,${NL}  "moderation": ${JSON.stringify(expectedModeration(h), null, 2).replaceAll(NL, `${NL}  `)}${NL}}`)).toBe(true);
+    // What the module's objects carry beyond the format is not written.
+    expect(text).not.toContain("decidedBy");
+    expect(text).not.toContain("a staff member the export must never name");
+    expect(h.asked).toEqual([h.userId]);
+  });
+
+  test("an account module built without the moderation module still writes the member, with two empty lists", async () => {
+    const h = harness();
+    const deps: AccountDeps = { ...h.deps, moderation: undefined };
+    const text = (await collect(exportJson(await buildExport(deps, h.userId, h.currentSession, h.now())))).join("");
+    expect(text).toBe(JSON.stringify({ ...expectedDocument(h), moderation: { decisions: [], reports: [] } }, null, 2));
+    expect(() => ExportFormat.parse(JSON.parse(text))).not.toThrow();
+    expect(h.asked).toEqual([]);
   });
 
   test("a large account's export.json comes in several pieces of at most 64 KiB of UTF-8", async () => {
@@ -918,6 +1055,22 @@ describe("the export route", () => {
     expect(Object.keys(unzipSync(new Uint8Array(await ok.arrayBuffer())))).toEqual(["export.json"]);
     expect(exported(h)).toBe(1);
     expect(await errorCode(await exportOf(a))).toBe("rate_limited");
+  });
+
+  test("a moderation read that fails before the first byte answers an error and gives the day's export back; the next export carries the member", async () => {
+    const h = harness();
+    const a = app(h);
+    h.failures.exportFor = 1;
+    const failed = await exportOf(a);
+    expect(failed.status).toBe(500);
+    expect(await errorCode(failed)).toBe("internal");
+    expect(exported(h)).toBe(0);
+    const ok = await exportOf(a);
+    expect(ok.status).toBe(200);
+    const json = JSON.parse(strFromU8(unzipSync(new Uint8Array(await ok.arrayBuffer()))["export.json"]!)) as { moderation: unknown };
+    expect(json.moderation).toStrictEqual(expectedModeration(h));
+    expect(exported(h)).toBe(1);
+    expect(h.asked).toEqual([h.userId, h.userId]);
   });
 
   test("a limit store that cannot give the export back is logged, and the build's own error is answered", async () => {

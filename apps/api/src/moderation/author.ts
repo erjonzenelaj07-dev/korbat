@@ -1,12 +1,24 @@
-import { AUTHOR_CASES_PAGE_SIZE, mediaPath, type AuthorCasesPage, type DecisionAppeal, type DecisionContent, type DecisionView, type PostModeration, type RuleId } from "@korbat/contracts";
-import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts } from "./author-repo";
+import {
+  AUTHOR_CASES_PAGE_SIZE,
+  mediaPath,
+  type AuthorCasesPage,
+  type DecisionAppeal,
+  type DecisionContent,
+  type DecisionStatement,
+  type DecisionView,
+  type ExportFormat,
+  type PostModeration,
+  type RuleId,
+} from "@korbat/contracts";
+import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
 
 /**
  * What the author of a post or the holder of an account reads about korbat's decisions on it (3c design, sections 7.6 and
  * 10): the list of decisions they were told of, one decision with its statement's data and the content it was made on,
- * and the facts behind the chip on their own post. Everything here is built from the author's queries and the statement's
+ * the same decisions as their export lists them (section 7.11), and the facts behind the chip on their own post.
+ * Everything here is built from the author's queries and the statement's
  * data, neither of which can reach a report: an author learns the source of a decision as a category, and nothing else
  * about who reported or how often.
  */
@@ -127,6 +139,64 @@ export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb">, vi
     content: contentOf(facts),
     appeal: facts.appeal === null ? null : await appealOf(deps, facts.appeal),
   };
+}
+
+// ---------------------------------------------------------------- the export's decisions
+
+/** A decision as the account's export lists it. */
+export type ExportedDecision = ExportFormat["moderation"]["decisions"][number];
+
+/** How many decisions the export reads at a time: one statement for the page, and then each decision's statement. */
+const EXPORT_PAGE_SIZE = 100;
+
+/**
+ * One decision as the export writes it (3c design, section 7.11), from the two things its author's screens are built
+ * from: its row in the list and its statement's data. So the entry holds what those screens show and nothing they do
+ * not: the facts and the reason of a decision that restricted nothing are not in the statement's data, and a text that
+ * was erased is null there. A statement names its source as a category; the entry does not carry even that.
+ */
+export function exportedDecision(row: Pick<AuthorDecisionRow, "id" | "decidedOn" | "post" | "appeal">, statement: DecisionStatement): ExportedDecision {
+  return {
+    id: row.id,
+    decidedOn: row.decidedOn,
+    // The entry of the export's `posts` a decision about a post concerns: a post keeps its row through its deletion.
+    postId: row.post?.id ?? null,
+    kind: statement.kind,
+    outcome: statement.outcome,
+    ground: statement.ground,
+    ruleId: statement.ruleId,
+    rulesVersion: statement.rulesVersion,
+    measures: statement.measures.map((measure) => ({ kind: measure.kind, mediaId: measure.mediaId, noEffect: measure.noEffect })),
+    reversals: statement.reversals.map((reversal) => ({ kind: reversal.kind, mediaId: reversal.mediaId })),
+    facts: statement.facts,
+    reason: statement.reason,
+    legalReference: statement.legalReference,
+    appeal: row.appeal === null ? null : row.appeal === "pending" ? { state: "pending", result: null } : { state: "answered", result: row.appeal },
+  };
+}
+
+/**
+ * The export's `decisions` (ModerationForAccount.exportFor): every decision about the account that its Cases screen
+ * lists, which are those its author was told of, newest first as the screen lists them. Read through the list's own
+ * query, a page at a time, and each decision's statement through the statement's own read, so no decision the author was
+ * not told of, and nothing a statement does not tell, can be in an export.
+ */
+export async function exportedDecisions(deps: Pick<ModerationDeps, "apiDb">, accountId: string): Promise<ExportedDecision[]> {
+  const exported: ExportedDecision[] = [];
+  let after: ListCursor | null = null;
+  for (;;) {
+    const page: AuthorDecisionRow[] = await authorDecisions(deps.apiDb, accountId, after, EXPORT_PAGE_SIZE);
+    for (const row of page) {
+      const found = await decisionStatement(deps.apiDb, row.id);
+      // A decision is a row for good: one the list has just named has a statement.
+      if (!found) throw new Error("a decision in its author's list has no statement");
+      exported.push(exportedDecision(row, found.statement));
+    }
+    const last = page.at(-1);
+    // A page that is not full is the last one.
+    if (page.length < EXPORT_PAGE_SIZE || !last) return exported;
+    after = { at: last.sortAt, id: last.id };
+  }
 }
 
 // ---------------------------------------------------------------- the chip

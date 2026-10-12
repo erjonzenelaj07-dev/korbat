@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import type { Db } from "@korbat/db";
 import { imageModerationStates } from "../media";
 import { accountLink, postLink } from "./links";
-import { iso, rows, type Runner } from "./repo";
+import { iso, noticeRecords, rows, type Runner } from "./repo";
 
 /**
  * The moderation part of an answer to a GDPR access request, drafted for the operator by `staff.js access-request` (3c
@@ -64,11 +64,8 @@ const groundOf = (row: { csam: boolean; alleges_illegal: boolean }) => (row.csam
 
 /** The notices and reports these intakes are, each with its items as their sender is shown them: for the requester's own reports, and for a notifier's. */
 async function noticesWhere(q: Runner, appOrigin: string, where: ReturnType<typeof sql>): Promise<Json[]> {
-  const intakes = await rows<{ id: string; ref: string; received_at: string; csam: boolean; alleges_illegal: boolean; rule_id: string | null; category: string; explanation: string | null; cited_law: string | null; erased: boolean }>(
-    q,
-    sql`select n.id, n.ref, ${iso("n.received_at")} as received_at, n.csam, n.alleges_illegal, n.rule_id, n.category, n.explanation, n.cited_law, n.erased_at is not null as erased
-          from intakes n where ${where} order by n.received_at, n.id`,
-  );
+  // The same read the sender's own export takes its reports' records from.
+  const intakes = await noticeRecords(q, where);
   if (intakes.length === 0) return [];
   const items = await rows<{ intake_id: string; position: number; target_type: "post" | "account"; target_id: string; named_handle: string | null; shown: string | null; reexamination: boolean; statement: string | null }>(
     q,
@@ -77,13 +74,13 @@ async function noticesWhere(q: Runner, appOrigin: string, where: ReturnType<type
   );
   return intakes.map((n) => ({
     ref: n.ref,
-    receivedAt: n.received_at,
-    ground: groundOf(n),
-    rule: n.rule_id,
+    receivedAt: n.receivedAt,
+    ground: groundOf({ csam: n.csam, alleges_illegal: n.allegesIllegal }),
+    rule: n.ruleId,
     category: n.category,
     // The sender's own words, while korbat still holds them.
     explanation: n.explanation,
-    citedLaw: n.cited_law,
+    citedLaw: n.citedLaw,
     recordErased: n.erased,
     items: items
       .filter((item) => item.intake_id === n.id)

@@ -410,6 +410,50 @@ export async function reporterNotices(q: Runner, reporterId: string, after: Repo
   });
 }
 
+/**
+ * What a report or a notice said, as far as korbat still holds it: its ground, its category, and its sender's own words,
+ * which an erasure of the record nulls. Its sender reads it in their export, and the operator in the draft of an answer
+ * to an access request; nobody else's surface is built from it.
+ */
+export interface NoticeRecord {
+  id: string;
+  ref: string;
+  /** As Date.prototype.toISOString writes it. */
+  receivedAt: string;
+  csam: boolean;
+  allegesIllegal: boolean;
+  ruleId: string | null;
+  category: string;
+  explanation: string | null;
+  citedLaw: string | null;
+  /** Whether the record was erased: its texts and who sent it are gone. */
+  erased: boolean;
+}
+
+/**
+ * The records of the notices `where` names (a condition on `intakes n`, written by the caller, never input), oldest
+ * first. One statement, shared by the export's reports and the access request's draft, so both read the same columns.
+ */
+export async function noticeRecords(q: Runner, where: ReturnType<typeof sql>): Promise<NoticeRecord[]> {
+  const found = await rows<{ id: string; ref: string; received_at: string; csam: boolean; alleges_illegal: boolean; rule_id: string | null; category: string; explanation: string | null; cited_law: string | null; erased: boolean }>(
+    q,
+    sql`select n.id, n.ref, ${iso("n.received_at")} as received_at, n.csam, n.alleges_illegal, n.rule_id, n.category, n.explanation, n.cited_law, n.erased_at is not null as erased
+          from intakes n where ${where} order by n.received_at, n.id`,
+  );
+  return found.map((row) => ({
+    id: row.id,
+    ref: row.ref,
+    receivedAt: row.received_at,
+    csam: row.csam,
+    allegesIllegal: row.alleges_illegal,
+    ruleId: row.rule_id,
+    category: row.category,
+    explanation: row.explanation,
+    citedLaw: row.cited_law,
+    erased: row.erased,
+  }));
+}
+
 /** What became of a receipt: the delivery states a send can end in. */
 export type ReceiptState = "sent" | "folded" | "suppressed" | "no_address" | "failed";
 

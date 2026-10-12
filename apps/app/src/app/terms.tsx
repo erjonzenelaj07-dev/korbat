@@ -3,7 +3,7 @@ import { ScrollView, Text, View } from "react-native";
 import { TextLink } from "@/components/ui";
 import { CONTACT_EMAIL, reportHref } from "@/lib/moderation";
 import { CONTACT_WORDS } from "@/lib/moderation-words";
-import { TERMS_SECTIONS, TERMS_VERSION } from "@/lib/terms";
+import { TERMS_SECTIONS, TERMS_VERSION, termsParagraphs } from "@/lib/terms";
 
 export default function Terms() {
   return (
@@ -18,7 +18,12 @@ export default function Terms() {
             <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-100">
               {section.title}
             </Text>
-            <Text className="mt-2 text-base leading-7 text-zinc-300">{section.body}</Text>
+            {/* A long section is several paragraphs; each is an element of its own, so a reader gets them apart. */}
+            {termsParagraphs(section.body).map((paragraph, index) => (
+              <Text key={index} className="mt-2 text-base leading-7 text-zinc-300">
+                {paragraph}
+              </Text>
+            ))}
           </View>
         ))}
         {/* Not one of the terms' sections: the users' contact address is the build's (3c design, section 9). */}

@@ -25,6 +25,7 @@ import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, tak
 import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
 import { createDispatchJob } from "./dispatch";
+import { exportFor, type ModerationExport } from "./export";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { reveal, type RevealOutcome } from "./reveal";
@@ -36,6 +37,7 @@ export type { AccountAccessDraft, ContactsAccessDraft } from "./access";
 export { ModerationError } from "./context";
 export type { ModerationDeps, ModerationErrorKind } from "./context";
 export type { DecideOutcome } from "./decide";
+export type { ModerationExport } from "./export";
 export type { RevealOutcome } from "./reveal";
 
 /** What the staff module needs from this one: the console's operations on cases, which its routes run behind the staff gate. */
@@ -91,13 +93,20 @@ export interface ModerationForSocial {
   authorFacts(viewer: string, postIds: readonly string[]): Promise<Map<string, PostModeration>>;
 }
 
-/**
- * What the account module needs from this one (3c design, sections 5 and 7.10): the purge's forgetting. It forgets that a
- * deleted account sent its reports: the account's id goes from its intakes and their items, which go on being processed.
- * The database acts only on an account whose auth row the take-down marked deleted, and changes nothing when run again.
- */
+/** What the account module needs from this one (3c design, sections 5, 7.10 and 7.11): the purge's forgetting, and the export's member. */
 export interface ModerationForAccount {
+  /**
+   * Forgets that a deleted account sent its reports: the account's id goes from its intakes and their items, which go on
+   * being processed. The database acts only on an account whose auth row the take-down marked deleted, and changes
+   * nothing when run again.
+   */
   forgetAccount(userId: string): Promise<void>;
+  /**
+   * The moderation member of the account's data export: the decisions about the account that its Cases screen lists and
+   * its own reports and notices while their records are kept, each as the account's own screens show it. Never another
+   * person's report, a reporter, a notifier or a staff member.
+   */
+  exportFor(userId: string): Promise<ModerationExport>;
 }
 
 export interface CreateModerationOptions {
@@ -156,6 +165,7 @@ export function createModeration(options: CreateModerationOptions) {
     forgetAccount: async (userId) => {
       await forgetReporter(deps.apiDb, userId);
     },
+    exportFor: (userId) => exportFor(deps, userId),
   };
   return {
     deps,
@@ -168,7 +178,7 @@ export function createModeration(options: CreateModerationOptions) {
     forStaff,
     /** The interface the social module's views use. */
     forSocial,
-    /** The interface the account module's purge uses. */
+    /** The interface the account module's purge and export use. */
     forAccount,
     /**
      * Resolves once every task a request started and did not wait for has ended: the mails after a report, a notice, a
