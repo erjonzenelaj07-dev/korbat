@@ -1,4 +1,5 @@
 import {
+  AppealsReviewedParams,
   CaseDecidedParams,
   MEASURES,
   MEASURE_KINDS,
@@ -10,6 +11,7 @@ import {
   staffTextProblem,
   textDigest,
   type ActionKind,
+  type CaseAppeal,
   type CaseDecision,
   type CaseDecisionAction,
   type CaseItem,
@@ -27,7 +29,7 @@ import { REDRESS_VERSION, RULES_VERSION, type StatementInput } from "@korbat/rul
 import type { StaffApi } from "./api";
 import { codeOf, COMPOSER_WORDS, describeError, messageFor, NOTE_WORDS } from "./messages";
 import { parseCaseId, type CaseId } from "./router";
-import { decideWithKey } from "./step-up";
+import { decideWithKey, reviewWithKey } from "./step-up";
 import { normalised, saveStaffText, type RandomBytes } from "./texts";
 import type { CredentialsLike } from "./webauthn";
 
@@ -55,13 +57,16 @@ export interface SavedText {
 /**
  * The composer's draft for one case, which the store keeps across a sign-in by the same handle: the kind of decision,
  * what it decides and does, each text as its person typed it, and the texts already saved. A correction names the
- * decision it corrects, and its actions are reversals; any other draft's are measures, and the lifts of withholds taken
- * while deciding.
+ * decision it corrects, and its actions are reversals; a review names the decision whose appeal it answers, says which
+ * of the three answers it gives (`review`), and its actions are reversals too; any other draft's are measures, and the
+ * lifts of withholds taken while deciding.
  */
 export interface CaseDraft {
   caseId: CaseId;
-  kind: "interim" | "final" | "correction";
+  kind: "interim" | "final" | "correction" | "review";
   reviewsDecisionId: string | null;
+  /** A review's answer, as its person chose it: keep the decision, reverse part of it, or reverse it. */
+  review?: AppealsReviewedParams["outcome"];
   outcome: "restricted" | "no_violation" | "not_evident";
   ground: "incompatible" | "illegal";
   ruleId: RuleId;
@@ -106,9 +111,11 @@ export const COMPOSER = {
     "A seal for good is lifted only on the authority's answer that the images are not child sexual abuse material. Say in the reason that the authority has answered, and the date of its answer. Never write its reference or anything that names a person: the reference stays in the operator's records, off the server.",
   previewNeedsMeasure: "The statement appears here once a measure is chosen.",
   incomplete:
-    "This decision is not complete yet: a restriction needs a measure, its facts and its reason, and on the law its legal reference; a correction needs something to lift and its reason; an answer to a report of child sexual abuse material needs its facts.",
+    "This decision is not complete yet: a restriction needs a measure, its facts and its reason, and on the law its legal reference; a correction needs something to lift and its reason; a review needs its reason, and lifts nothing when it keeps the decision, something when it reverses part, and everything still in force when it reverses; an answer to a report of child sexual abuse material needs its facts.",
   freshSnapshot: "The case's newest snapshot could not be shown, so a fresh one was taken and is shown above. Check it, then confirm again.",
   recorded: "The decision is recorded.",
+  reviewed: "The review is recorded: the appeal is answered, and its author is told.",
+  reviewLabel: "Review the appeal",
   leftForLater: (count: number) => `The reports on other grounds that arrived after the newest report of child sexual abuse material stay open (${count} ${count === 1 ? "item" : "items"}), to be judged with the images once the freeze has ended.`,
   arrivedSince: (count: number) => `${count === 1 ? "1 new item arrived" : `${count} new items arrived`} since this page read the case: ${count === 1 ? "it stays" : "they stay"} open.`,
   liftLabel: "Lift what was done while deciding",
@@ -295,10 +302,10 @@ function actionOffered(view: CaseView, role: StaffRole, kind: "interim" | "final
  *   - a kind, an outcome or the ground of the law that is not offered falls back to the first that is;
  *   - rule R2, on a case that holds no unanswered suspect item any more, gives way to the rule the composer opens with;
  *   - every action that the kind, the target, the shown snapshot or the role no longer offers is dropped.
- * What its person wrote is kept. A draft that needs no change is answered as it is, and so is a correction's.
+ * What its person wrote is kept. A draft that needs no change is answered as it is, and so is a correction's and a review's.
  */
 export function offeredDraft(view: CaseView, role: StaffRole, draft: CaseDraft): CaseDraft {
-  if (draft.kind === "correction") return draft;
+  if (draft.kind === "correction" || draft.kind === "review") return draft;
   const kinds = kindsOffered(view, role);
   let kind: "interim" | "final" = draft.outcome !== "restricted" && kinds.includes("final") ? "final" : draft.kind;
   if (!kinds.includes(kind)) kind = kinds[0] ?? kind;
@@ -368,6 +375,93 @@ export function correctionChoices(view: CaseView, draft: CaseDraft, role: StaffR
   const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
   const offered = decision ? correctable(view, decision, role) : null;
   return (offered?.measures ?? []).map((measure) => ({ measure, reversal: reversalOf(measure) }));
+}
+
+// ---------------------------------------------------------------- the review of an appeal
+
+/**
+ * What of a decision this person may review, or null: its pending appeal, when the API marked it as this person's to
+ * review (they made none of the case's decisions, opened no finding in it, are not close to anyone in it, and are an
+ * admin where the review needs one), with the decision's measures still in force, which are what a review may lift.
+ */
+export function reviewable(view: CaseView, decision: CaseDecision): { appeal: CaseAppeal; measures: CaseDecisionAction[] } | null {
+  const appeal = view.appeals.find((filed) => filed.decisionId === decision.id && filed.result === null);
+  if (!appeal || !appeal.mayReview || decision.kind !== "final" || decision.outcome !== "restricted") return null;
+  return { appeal, measures: decision.actions.filter((action) => MEASURES[action.kind].lifts === null && action.inForce) };
+}
+
+/** The draft of a review of one decision's appeal: the decision kept, nothing lifted, and no reason written. */
+export function reviewDraft(caseId: CaseId, view: CaseView, decision: CaseDecision, role: StaffRole): CaseDraft {
+  return { ...newDraft(caseId, view, role), kind: "review", reviewsDecisionId: decision.id, review: "kept", category: decision.category, actions: [] };
+}
+
+/** A review as "Review this appeal" opens it: with the review reason its person saved on this case before. */
+export function openReview(caseId: CaseId, view: CaseView, decision: CaseDecision, role: StaffRole): Promise<CaseDraft> {
+  return withSavedTexts(reviewDraft(caseId, view, decision, role), view.drafts);
+}
+
+/**
+ * The reversals a review's draft may hold: one for each measure of the reviewed decision that is still in force. A seal
+ * is lifted by an admin only, so to anyone else it is not among them, and nothing is offered at all once the appeal is
+ * answered or is not this person's to review.
+ */
+export function reviewChoices(view: CaseView, draft: CaseDraft, role: StaffRole): { measure: CaseDecisionAction; reversal: DecisionActionParams }[] {
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const offered = decision ? reviewable(view, decision) : null;
+  return (offered?.measures ?? []).filter((measure) => role === "admin" || measure.kind !== "seal_media").map((measure) => ({ measure, reversal: reversalOf(measure) }));
+}
+
+/** The answer a review's draft gives. */
+export const reviewOutcomeOf = (_view: CaseView, draft: CaseDraft): AppealsReviewedParams["outcome"] => draft.review ?? "kept";
+
+/**
+ * Whether a review's draft lifts what its answer says: nothing when it keeps the decision, every measure still in force
+ * when it reverses it, and some but not all of them when it reverses part. The database holds the same at commit.
+ */
+function reviewConsistent(view: CaseView, draft: CaseDraft): boolean {
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const offered = decision ? reviewable(view, decision) : null;
+  if (!offered) return false;
+  const all = offered.measures.map(reversalOf);
+  const lifted = draft.actions.filter((action) => all.some((reversal) => sameAction(reversal, action)));
+  if (lifted.length !== draft.actions.length) return false;
+  const outcome = reviewOutcomeOf(view, draft);
+  if (outcome === "kept") return lifted.length === 0;
+  if (outcome === "reversed") return all.length > 0 && lifted.length === all.length;
+  return lifted.length > 0 && lifted.length < all.length;
+}
+
+/** The digests a review's params carry: the shown snapshot's, and that of the review reason the console saved. */
+export interface ReviewDigests {
+  snapshot: string;
+  reason: string | null;
+}
+
+/**
+ * The params the key confirms for a review, built from what the page shows (3c design, section 7.7): the case's version,
+ * the decision's pending appeal, the newest snapshot by its id with the digest the console computed, the answer, the
+ * reviewed decision's category and rules version, the redress texts' version, the reversals in their one order and the
+ * digest of the saved reason. The contracts' schema refuses what cannot stand before any key is asked.
+ */
+export function reviewParamsOf(view: CaseView, draft: CaseDraft, digests: ReviewDigests): AppealsReviewedParams {
+  const newest = view.snapshots[0];
+  if (!newest) throw new Error("a review names a snapshot of its case: the case holds none");
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const offered = decision ? reviewable(view, decision) : null;
+  if (!decision || !offered) throw new Error("a review's draft names a decision of the case whose appeal this person may review");
+  return AppealsReviewedParams.parse({
+    stateVersion: view.stateVersion,
+    appealId: offered.appeal.id,
+    snapshotId: newest.id,
+    snapshotDigest: digests.snapshot,
+    outcome: reviewOutcomeOf(view, draft),
+    // A review carries the rulebook version and the category of the decision it reviews.
+    rulesVersion: decision.rulesVersion,
+    redressVersion: REDRESS_VERSION,
+    category: decision.category,
+    actions: [...draft.actions].sort(compareDecisionActions),
+    reasonDigest: digests.reason,
+  });
 }
 
 /** Whether a draft holds an action. */
@@ -468,13 +562,13 @@ function reversesAll(view: CaseView, draft: CaseDraft): boolean {
 export function previewOf(view: CaseView, draft: CaseDraft, now: Date): StatementInput {
   const text = (kind: DraftTextKind): string | null => (normalised(draft.written[kind]) === "" ? null : normalised(draft.written[kind]));
   const base = { redressVersion: REDRESS_VERSION, decidedAt: now.toISOString(), post: postOf(view) };
-  if (draft.kind === "correction") {
+  if (draft.kind === "correction" || draft.kind === "review") {
     const corrected = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
-    if (!corrected || (corrected.kind !== "interim" && corrected.kind !== "final")) throw new Error("a correction's draft names a decision of the case that restricts");
+    if (!corrected || (corrected.kind !== "interim" && corrected.kind !== "final")) throw new Error("a correction's or a review's draft names a decision of the case that restricts");
     return {
       ...base,
-      kind: "correction",
-      outcome: reversesAll(view, draft) ? "reversed" : "partly_reversed",
+      kind: draft.kind,
+      outcome: draft.kind === "review" ? reviewOutcomeOf(view, draft) : reversesAll(view, draft) ? "reversed" : "partly_reversed",
       ground: null,
       ruleId: null,
       rulesVersion: corrected.rulesVersion,
@@ -604,7 +698,7 @@ export function decisionParamsOf(view: CaseView, draft: CaseDraft, digests: Deci
 
 /** The texts whose fields a draft's decision has on the page, in the order they are saved. */
 export function textsOffered(draft: CaseDraft): DraftTextKind[] {
-  if (draft.kind === "correction") return ["review_reason"];
+  if (draft.kind === "correction" || draft.kind === "review") return ["review_reason"];
   return draft.outcome === "restricted" && draft.ground === "illegal" ? ["facts", "reason", "legal_reference"] : ["facts", "reason"];
 }
 
@@ -615,7 +709,7 @@ export function textsOffered(draft: CaseDraft): DraftTextKind[] {
  * facts what the answer rested on.
  */
 export function textsRequired(view: CaseView, draft: CaseDraft): DraftTextKind[] {
-  if (draft.kind === "correction" || draft.outcome === "restricted") return textsOffered(draft);
+  if (draft.kind === "correction" || draft.kind === "review" || draft.outcome === "restricted") return textsOffered(draft);
   return suspectOpen(view).length > 0 ? ["facts"] : [];
 }
 
@@ -623,6 +717,7 @@ export function textsRequired(view: CaseView, draft: CaseDraft): DraftTextKind[]
 export function complete(view: CaseView, draft: CaseDraft): boolean {
   if (textsRequired(view, draft).some((kind) => normalised(draft.written[kind]) === "")) return false;
   if (draft.kind === "correction") return draft.actions.length > 0;
+  if (draft.kind === "review") return reviewConsistent(view, draft);
   return draft.outcome !== "restricted" || draft.actions.some((action) => MEASURES[action.kind].lifts === null);
 }
 
@@ -719,7 +814,8 @@ export type ConfirmOutcome = { view: CaseView } | { fresh: CaseView; notice: str
  *      focus, or at an earlier try); the digest is the one computed here (saveStaffText refuses an answer that carries
  *      another), and `remember` is told of each save;
  *   4. the snapshot's digest is computed from what the page displayed;
- *   5. the params are built and checked, and the key confirms exactly them; the answer is the case as it now stands.
+ *   5. the params are built and checked, and the key confirms exactly them; the answer is the case as it now stands. A
+ *      review is confirmed as its own action, on the decision whose appeal it answers.
  * Nothing is thrown: a refusal comes back as the console's words for its code.
  */
 export async function confirmDecision(
@@ -751,6 +847,21 @@ export async function confirmDecision(
     // Saved just now, saved before, or left empty: an empty text has no digest.
     const digest = outcome?.saved.digest ?? (normalised(draft.written[kind]) === "" ? undefined : draft.texts[kind]?.digest);
     if (digest !== undefined) digests[kind] = digest;
+  }
+
+  if (draft.kind === "review") {
+    // A review is confirmed as the action of its own: on the decision it reviews, with its appeal among the params.
+    let reviewed: AppealsReviewedParams;
+    try {
+      reviewed = reviewParamsOf(view, draft, { snapshot: await shownSnapshotDigest(newest), reason: digests.review_reason ?? null });
+    } catch {
+      return { error: COMPOSER.incomplete, code: "incomplete" };
+    }
+    try {
+      return { view: await reviewWithKey(deps, caseId, draft.reviewsDecisionId ?? "", reviewed) };
+    } catch (err) {
+      return refusal(err);
+    }
   }
 
   let params: CaseDecidedParams;

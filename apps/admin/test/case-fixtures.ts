@@ -20,6 +20,9 @@ export const CASE_DECLINE = "8e617063-d29f-4163-8a7f-be5dac91807f";
 export const CASE_ADMIN = "b194a396-05c2-4496-bda2-e180dfc4b3ac";
 export const CASE_CHANGED = "c2a5b4a7-16d3-45a7-8eb3-f291e0d5c4bd";
 export const CASE_DRAFTS = "d3b6c5b8-27e4-46b8-9fc4-03a2f1e6d5ce";
+export const CASE_APPEALED = "e4c7d6c9-38f5-47c9-80d5-14b302f7e6df";
+export const DECISION_APPEALED = "f5d8e7da-4906-48da-91e6-25c413a8f7e0";
+export const APPEAL_ONE = "06e9f8eb-5a17-49eb-a2f7-36d524b90801";
 export const ACCOUNT_SEALABLE = "9f728174-e3a0-4274-9b80-cf6ebda2918a";
 export const ACCOUNT_DECLINE = "a0839285-f4b1-4385-ac91-d07fceb3a29b";
 export const POST_ID = "7e2d9a10-6c3b-4f5e-8a21-0d4c7b9e1f36";
@@ -309,6 +312,24 @@ export function plainCase(id: string, itemId: string): CaseView {
   return postCase({ id, stateVersion: 1, intakeSeq: 1, items: [item({ id: itemId })], decisions: [], notes: [], history: [] });
 }
 
+/**
+ * A closed case about a post whose final removal, by another staff member, its author appealed: the appeal waits, and
+ * the reading person may review it. The appellant's statement is a string no page may run.
+ */
+export function appealedCase(): CaseView {
+  const removal = decision({ id: DECISION_APPEALED, kind: "final", staffHandle: "mod_anna", throughSeq: 2, answersFromSeq: 1, facts: "The post offers followers for money.", reason: "That is spam.", actions: [{ ...decision().actions[0]!, id: "17fa09fc-6b28-4afc-b308-47e635ca1912", kind: "remove" }] });
+  return postCase({
+    id: CASE_APPEALED,
+    answeredSeq: 2,
+    closedAt: "2026-10-01T09:00:00.000Z",
+    target: { type: "post", id: POST_ID, link: `http://localhost:8081/post/${POST_ID}`, authorHandle: HOSTILE.bidi, state: "removed", level: "removed" },
+    items: [item({ outcome: "restricted_rule", answeredBy: DECISION_APPEALED })],
+    decisions: [removal],
+    appeals: [{ id: APPEAL_ONE, decisionId: DECISION_APPEALED, filedAt: "2026-10-03T10:00:00.000Z", statement: HOSTILE.img, answeredAt: null, result: null, answeredBy: null, reviewer: "available", needsAdmin: false, mayReview: true }],
+    notes: [],
+  });
+}
+
 export function queueRow(overrides: Partial<QueueRow> = {}): QueueRow {
   return {
     id: CASE_POST,
@@ -342,6 +363,8 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
       { lane: 2, open: 1, oldestAt: "2026-09-28T10:00:00.000Z" },
     ],
     appealsWaiting: 3,
+    appealsYouMayReview: 1,
+    appealsWithoutReviewer: 1,
     reveals: { total: 1, items: [{ at: "2026-09-30T10:00:00.000Z", handle: HOSTILE.script, caseId: CASE_POST }] },
     imagesToday: [{ handle: HOSTILE.img, count: 4 }],
     findingsToday: [{ handle: HOSTILE.bidi, count: 1 }],

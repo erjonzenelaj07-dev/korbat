@@ -1,13 +1,14 @@
 import { Image } from "expo-image";
+import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
-import type { DecisionContent, DecisionView } from "@korbat/contracts";
+import { STATEMENT_MAX, type DecisionAppeal, type DecisionContent, type DecisionStatement, type DecisionView } from "@korbat/contracts";
 import { statementParagraphs } from "@korbat/rules";
-import { Section } from "@/components/ui";
+import { Button, ErrorText, Field, Section } from "@/components/ui";
 import { SEALED_IMAGE } from "@/components/social/HiddenImage";
 import { clampRatio } from "@/components/social/MediaGrid";
-import { API_BASE } from "@/lib/api";
-import { utcMinute } from "@/lib/moderation";
+import { API_BASE, errorMessage } from "@/lib/api";
+import { appealWaitWords, utcMinute } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
 
 const Line = ({ children, strong = false }: { children: string; strong?: boolean }) => <Text className={`mt-3 text-base leading-6 ${strong ? "font-semibold text-zinc-100" : "text-zinc-200"}`}>{children}</Text>;
@@ -66,7 +67,7 @@ function Content({ content }: { content: DecisionContent }) {
 }
 
 /** The statement's paragraphs, or null when this build's rulebook does not hold the version the decision was made under: it is then never rendered as another. */
-function paragraphsOf(view: DecisionView): string[] | null {
+function paragraphsOf(view: DecisionStatement): string[] | null {
   try {
     return statementParagraphs(view);
   } catch {
@@ -75,13 +76,92 @@ function paragraphsOf(view: DecisionView): string[] | null {
 }
 
 /**
+ * The appeal's form (3c design, section 9): an optional statement, free of form, and the button. The request is a POST
+ * the screen sends; a refusal is worded under the button, and what was written stays.
+ */
+function AppealForm({ onAppeal }: { onAppeal: (statement: string) => Promise<void> }) {
+  const [statement, setStatement] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onAppeal(statement);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View>
+      <Note>{DECISION_WORDS.appealHint}</Note>
+      <Field label={DECISION_WORDS.appealStatement} value={statement} onChangeText={setStatement} multiline maxLength={STATEMENT_MAX} />
+      <Button label={DECISION_WORDS.appeal} onPress={() => void send()} busy={busy} />
+      <ErrorText message={error} />
+    </View>
+  );
+}
+
+/**
+ * An answered appeal: the day, and the statement of the decision that answered it (the review, or the correction that
+ * reversed everything before a review came), rendered as every statement is, with a link to that decision's own screen.
+ */
+function AppealAnswer({ appeal }: { appeal: Extract<DecisionAppeal, { state: "answered" }> }) {
+  const paragraphs = paragraphsOf(appeal.statement);
+  return (
+    <View>
+      <Line strong>{DECISION_WORDS.appealAnswered(appeal.answeredOn)}</Line>
+      <Note>{DECISION_WORDS.appealAnswer}</Note>
+      {paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}
+      <Link href={`/settings/cases/${appeal.answeredBy}`} asChild>
+        <Pressable className="mt-3 self-start">
+          <Text className="text-sm text-sky-400 underline">{DECISION_WORDS.answerScreen}</Text>
+        </Pressable>
+      </Link>
+    </View>
+  );
+}
+
+/**
+ * Where the appeal of a decision stands (3c design, sections 7.7 and 9), the first that applies: the answer to an appeal
+ * that was answered; for one that waits, that it waits for a reviewer, or why nobody at korbat can review it now; while
+ * none was filed, until when one can be, with the form when the screen can send it; or that a restriction reversed in
+ * full leaves nothing to appeal.
+ */
+function Appeal({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void> }) {
+  const { appeal } = view;
+  if (appeal?.state === "answered") return <AppealAnswer appeal={appeal} />;
+  if (appeal?.state === "pending") {
+    return (
+      <View>
+        <Line>{DECISION_WORDS.appealFiled(appeal.filedAt.slice(0, 10))}</Line>
+        <Line strong>{appealWaitWords(view) ?? DECISION_WORDS.appealWaiting}</Line>
+      </View>
+    );
+  }
+  if (view.appealUntil) {
+    return (
+      <View>
+        <Line>{DECISION_WORDS.appealUntil(utcMinute(view.appealUntil))}</Line>
+        {onAppeal ? <AppealForm onAppeal={onAppeal} /> : null}
+      </View>
+    );
+  }
+  return <Line>{DECISION_WORDS.reversed(view.reversedOn ?? "")}</Line>;
+}
+
+/**
  * One decision as its author reads it (3c design, section 9): the statement of reasons, rendered by the same function
  * that rendered its mail, from the same data; what the decision is about and the content it was made on; and where its
  * appeal stands. A decision that ends or lifts a field reset links the decision that reset the field while korbat still
- * keeps the old value there. An appeal is filed from here once korbat takes appeals; until then the screen says until
- * when one can be filed, or that a restriction reversed in full leaves nothing to appeal.
+ * keeps the old value there. With `onAppeal` a decision that can still be appealed carries the appeal's form.
  */
-export function DecisionDetail({ view }: { view: DecisionView }) {
+export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void> }) {
   const paragraphs = paragraphsOf(view);
   // The decisions whose screens still show a reset field's old value: of the resets this decision lifts, and of those that ended with it.
   const resets = [...new Set([...view.reversals, ...view.endedMeasures].flatMap((entry) => (entry.oldValueKept && entry.resetDecisionId ? [entry.resetDecisionId] : [])))];
@@ -108,9 +188,9 @@ export function DecisionDetail({ view }: { view: DecisionView }) {
         <Content content={view.content} />
       </Section>
 
-      {view.appealUntil || view.reversedOn ? (
+      {view.appeal || view.appealUntil || view.reversedOn ? (
         <Section title={DECISION_WORDS.appeal}>
-          <Line>{view.appealUntil ? DECISION_WORDS.appealUntil(utcMinute(view.appealUntil)) : DECISION_WORDS.reversed(view.reversedOn!)}</Line>
+          <Appeal view={view} onAppeal={onAppeal} />
         </Section>
       ) : null}
     </View>

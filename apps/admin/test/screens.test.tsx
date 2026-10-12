@@ -65,6 +65,8 @@ const QUIET: StaffOverview = {
     { lane: 2, open: 0, oldestAt: null },
   ],
   appealsWaiting: 0,
+  appealsYouMayReview: 0,
+  appealsWithoutReviewer: 0,
   reveals: { total: 0, items: [] },
   imagesToday: [],
   findingsToday: [],

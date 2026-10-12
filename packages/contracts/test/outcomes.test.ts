@@ -246,6 +246,8 @@ describe("the home screen's three lists of the path for child sexual abuse mater
   const overview = {
     lanes: [0, 1, 2].map((lane) => ({ lane, open: 0, oldestAt: null })),
     appealsWaiting: 0,
+    appealsYouMayReview: 0,
+    appealsWithoutReviewer: 0,
     reveals: { total: 0, items: [] },
     imagesToday: [],
     findingsToday: [],

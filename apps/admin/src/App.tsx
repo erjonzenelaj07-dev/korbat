@@ -5,6 +5,7 @@ import { Layout, Masthead } from "./Layout";
 import { describeError } from "./messages";
 import { NavLink } from "./nav";
 import type { ConsolePath } from "./router";
+import { Appeals } from "./screens/Appeals";
 import { Audit } from "./screens/Audit";
 import { CaseScreen } from "./screens/Case";
 import { Enroll } from "./screens/Enroll";
@@ -88,12 +89,7 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
       {route.name === "queue" ? <Queue api={api} onOpenCase={store.openCase} /> : null}
       {/* Keyed by the case: another case's page starts with nothing of this one's. */}
       {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} role={session.me.role} drafts={store.drafts} onOpenCase={store.openCase} /> : null}
-      {route.name === "appeals" ? (
-        <section aria-labelledby="appeals-title">
-          <h2 id="appeals-title">Appeals</h2>
-          <p>Appeals arrive later in sub-project 3c. The home page says how many wait.</p>
-        </section>
-      ) : null}
+      {route.name === "appeals" ? <Appeals api={api} onOpenCase={store.openCase} /> : null}
       {route.name === "unknown" ? (
         <section aria-labelledby="unknown-title">
           <h2 id="unknown-title">No such page</h2>

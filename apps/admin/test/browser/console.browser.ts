@@ -8,15 +8,17 @@ import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
-import { COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, PROTECTION_LIFTED_WORDS, STAFF_MESSAGES } from "../../src/messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, PROTECTION_LIFTED_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES } from "../../src/messages";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
 import { SIGN_IN_WINDOW_MS } from "../../src/signins";
 import { clockTime } from "../../src/ui";
 import { consoleSiteHeadersFromCaddyfile } from "../caddyfile";
 import {
+  APPEAL_ONE,
   CASE_ACCOUNT,
   CASE_ADMIN,
+  CASE_APPEALED,
   CASE_CHANGED,
   CASE_DECLINE,
   CASE_DRAFTS,
@@ -24,6 +26,7 @@ import {
   CASE_POST,
   CASE_QUOTED,
   CASE_SEALABLE,
+  DECISION_APPEALED,
   DECISION_ONE,
   IMAGE_ONE,
   IMAGE_TWO,
@@ -55,6 +58,7 @@ import {
   TYPED_KEY_NAME,
   TYPED_NOTE,
   TYPED_REASON,
+  TYPED_REVIEW_REASON,
   type FixtureApi,
 } from "./fixture-api";
 import { startConsoleSite, type ConsoleSiteServer } from "./server";
@@ -348,7 +352,9 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await shown(page.getByRole("heading", { name: "Home" }));
     await shown(page.getByText("Urgent: 2 cases, oldest", { exact: false }));
     await shown(page.getByText("Lane 1: no open case"));
-    await shown(page.getByText("3 appeals wait."));
+    // The appeal the fixtures' appealed case holds, which this person may review, and one nobody at korbat can review now.
+    await shown(page.getByText("2 appeals wait; you may review 1; 1 has no possible reviewer now."));
+    await shown(page.getByText(APPEAL_WORDS.reviewerRule));
     // The first list of the kind is the reveals'; the three lists of the path for child sexual abuse material follow it.
     const reveals = page.locator("ul.reveals").first();
     expect(await reveals.locator("li").count()).toBe(1);
@@ -1046,6 +1052,84 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await shown(page.locator("ul.signins"));
     await shown(page.locator("ul.keys"));
     await shown(page.getByRole("cell", { name: "This session" }));
+    await clean();
+  });
+
+  test("the appeals screen: the appeals that wait, each with its decision, the end of its appeal window and whether this person may review it, its case as its only link, and no statement", async () => {
+    await page.getByRole("link", { name: "Appeals" }).click();
+    await shown(page.getByRole("heading", { name: "Appeals" }));
+    const rows = page.locator("table.queue tbody tr");
+    await shown(rows.first());
+    expect(await rows.count()).toBe(2);
+    // The newest first: an appeal of a seal, which only an admin reviews, and which nobody at korbat can review now.
+    const sealed = await rows.nth(0).innerText();
+    for (const words of [MEASURES.seal_media.label, "under R2", APPEAL_WORDS.mayNotReview, APPEAL_WORDS.needsAdmin, APPEAL_WORDS.reviewer.none_single_staff]) expect(sealed, words).toContain(words);
+    // Then the appeal of the removal another staff member decided: this person may review it.
+    const removal = await rows.nth(1).innerText();
+    for (const words of [MEASURES.remove.label, "under R1", APPEAL_WORDS.mayReview]) expect(removal, words).toContain(words);
+    expect(removal).not.toContain(APPEAL_WORDS.needsAdmin);
+    // Each row's only link is its case in the console, and the list holds nothing the appellant wrote.
+    expect(await page.evaluate(`[...document.querySelectorAll("table.queue a")].map((link) => link.getAttribute("href"))`)).toEqual([`/cases/${CASE_FROZEN}`, `/cases/${CASE_APPEALED}`]);
+    expect(await page.locator("main").innerText()).not.toContain(HOSTILE.img);
+    await shown(page.getByText(APPEAL_WORDS.statementOnCase, { exact: false }));
+    await texts();
+    await clean();
+  });
+
+  test("a review with the key: the appellant's statement as text on the case, Keep, Reverse in part and Reverse, the reason saved as a review reason, the preview the review's statement, the key confirming exactly that review, and the appeal answered", async () => {
+    await page.locator("table.queue tbody tr").nth(1).getByRole("link", { name: "Open the case" }).click();
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    await shown(page.getByText("not answered yet", { exact: false }));
+    // What the appellant wrote is text in a frame of its own.
+    expect(await texts()).toContain(HOSTILE.img);
+    const before = await signatures();
+    const decisionsBefore = fixtures.state.decisions.length;
+    await page.getByRole("button", { name: APPEAL_WORDS.reviewLabel }).click();
+    const review = page.getByRole("region", { name: COMPOSER.reviewLabel });
+    await shown(review);
+    const confirm = review.getByRole("button", { name: "Confirm with your staff key" });
+    // "Keep" is chosen and lifts nothing; nothing is confirmed without a reason.
+    expect(await review.getByLabel(REVIEW_OUTCOMES.kept, { exact: true }).isChecked()).toBe(true);
+    expect(await confirm.isDisabled()).toBe(true);
+    await review.getByLabel("Reason of the review").fill(TYPED_REVIEW_REASON);
+    expect(await confirm.isDisabled()).toBe(false);
+    // A decision with one measure cannot be reversed in part: whatever is ticked, the answer does not stand.
+    await review.getByLabel(REVIEW_OUTCOMES.partly_reversed, { exact: true }).check();
+    expect(await confirm.isDisabled()).toBe(true);
+    await review.getByLabel(MEASURES.restore.label).check();
+    expect(await confirm.isDisabled()).toBe(true);
+    // "Reverse" lifts everything that is still in force, and says so by its ticked box.
+    await review.getByLabel(REVIEW_OUTCOMES.reversed, { exact: true }).check();
+    expect(await review.getByLabel(MEASURES.restore.label).isChecked()).toBe(true);
+    expect(await confirm.isDisabled()).toBe(false);
+    // The preview is the statement its author will receive: the review's lead, and what was typed as its reason.
+    const preview = review.locator(".frame.preview p.frame-text");
+    expect(await preview.first().textContent()).toBe(STATEMENT_WORDS.reviewed("2026-10-01 09:00 UTC", "reversed"));
+    expect(await preview.allTextContents()).toContain(`Why korbat changed it: ${TYPED_REVIEW_REASON}`);
+    expect(await inspect(page)).toEqual([]);
+    await confirm.click();
+    await shown(page.getByText(COMPOSER.reviewed));
+    expect(await signatures()).toBe(before + 1);
+    const reason = fixtures.state.texts.at(-1)!;
+    expect(reason).toMatchObject({ caseId: CASE_APPEALED, kind: "review_reason", text: TYPED_REVIEW_REASON });
+    // What the key confirmed is the review the page showed: of that decision, answering that appeal, with that reversal
+    // and the digest of the saved reason. No decision on the case was sent in its place.
+    expect(fixtures.state.reviews).toHaveLength(1);
+    expect(fixtures.state.reviews[0]).toMatchObject({
+      decisionId: DECISION_APPEALED,
+      params: { stateVersion: 3, appealId: APPEAL_ONE, outcome: "reversed", rulesVersion: 2, actions: [{ kind: "restore", mediaId: null }], reasonDigest: reason.digest },
+    });
+    expect(fixtures.state.decisions).toHaveLength(decisionsBefore);
+    // The case as the answer gave it: the next version, the removal lifted, the appeal answered, and nothing left to review.
+    await shown(page.getByText("version 4", { exact: false }));
+    await shown(page.getByText("answered: reversed", { exact: false }));
+    await shown(page.getByText(`${MEASURES.remove.label}: lifted by the decision of`, { exact: false }));
+    expect(await page.getByRole("button", { name: APPEAL_WORDS.reviewLabel }).count()).toBe(0);
+    expect(await texts()).toContain(TYPED_REVIEW_REASON);
+    // The appeals screen no longer lists it.
+    await page.getByRole("link", { name: "Appeals" }).click();
+    await shown(page.locator("table.queue tbody tr").first());
+    expect(await page.locator("table.queue tbody tr").count()).toBe(1);
     await clean();
   });
 

@@ -32,7 +32,7 @@ import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import {
-  appealsWaiting,
+  appealCounts,
   caseActions,
   caseAppeals,
   caseById,
@@ -150,15 +150,24 @@ async function openableCase(deps: Pick<ModerationDeps, "apiDb">, session: Active
 
 // ---------------------------------------------------------------- the overview
 
-/** GET /api/staff/overview: counts, times, staff handles and cases, for every staff member's home screen. */
-export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config">): Promise<StaffOverview> {
+/** The reading person as the review marks ask about them: the session's account, and whether its role is admin. */
+export const reviewerOf = (session: ActiveStaffSession) => ({ id: session.userId, admin: session.role === "admin" });
+
+/**
+ * GET /api/staff/overview: counts, times, staff handles and cases, for every staff member's home screen. One number is
+ * the reading person's own: how many of the waiting appeals they may review.
+ */
+export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config">, session: ActiveStaffSession): Promise<StaffOverview> {
   const q = deps.apiDb;
   const byLane = await openByLane(q);
   const today = await staffToday(q);
   const mails = await mailAndReleaseCounts(q, RETENTION.mailGiveUpDays);
+  const appeals = await appealCounts(q, reviewerOf(session));
   return {
     lanes: ([0, 1, 2] as const).map((lane) => byLane.find((row) => row.lane === lane) ?? { lane, open: 0, oldestAt: null }),
-    appealsWaiting: await appealsWaiting(q),
+    appealsWaiting: appeals.waiting,
+    appealsYouMayReview: appeals.mayReview,
+    appealsWithoutReviewer: appeals.withoutReviewer,
     reveals: await recentReveals(q, OVERVIEW_LIST_MAX),
     imagesToday: today.images,
     findingsToday: today.findings,
@@ -433,7 +442,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     snapshots: (await caseSnapshots(q, row.id)).map(snapshotView),
     items,
     decisions,
-    appeals: await caseAppeals(q, row.id),
+    appeals: await caseAppeals(q, row.id, reviewerOf(session)),
     drafts: (await ownDrafts(q, row.id, session.userId)) as StaffTextDraft[],
     notes: texts.filter((text) => text.kind === "note").map(staffText),
     sealsDeclined: texts.filter((text) => text.kind === "seal_declined").map(staffText),

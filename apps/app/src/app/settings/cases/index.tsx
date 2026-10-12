@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import type { AuthorCaseRow, ReportRow } from "@korbat/contracts";
+import type { AuthorCaseRow, ReportItem, ReportRow } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { DecisionsList, ReportsList } from "@/components/moderation/CasesLists";
 import { SettingsNav } from "@/components/SettingsNav";
@@ -81,6 +81,15 @@ export default function Cases() {
     }
   }
 
+  /**
+   * "Ask for a re-examination" of one item of the account's own reports, by its id; the list is then read again from
+   * its start. A refusal is thrown to the control that asked, which words it in place.
+   */
+  async function reexamine(item: ReportItem, statement: string) {
+    await moderation.reexamineOwn(item.id, statement);
+    await loadReports();
+  }
+
   const shown = tab === "about" ? decisions : reports;
   return (
     <AppShell>
@@ -99,7 +108,7 @@ export default function Cases() {
           </View>
         </View>
         {tab === "about" && decisions.loaded ? <DecisionsList decisions={decisions.rows} /> : null}
-        {tab === "reports" && reports.loaded ? <ReportsList page={{ reports: reports.rows, reportMailStopped: mailStopped }} onResume={() => void resume()} busy={resuming} error={resumeError} /> : null}
+        {tab === "reports" && reports.loaded ? <ReportsList page={{ reports: reports.rows, reportMailStopped: mailStopped }} onResume={() => void resume()} onReexamine={reexamine} busy={resuming} error={resumeError} /> : null}
         <View className="px-4 pb-10">
           <ErrorText message={shown.error} />
           {/* A first read that failed is asked again by hand; the tab does not ask in a loop. */}

@@ -152,7 +152,7 @@ describe("the console's words", () => {
   });
 
   test("the message table has one entry for every moderation code the console can meet, and the app's own codes are not among them", () => {
-    const appOnly = ["human_check_failed", "staff_cannot_report", "notice_not_found", "already_reported"];
+    const appOnly = ["human_check_failed", "staff_cannot_report", "notice_not_found", "already_reported", "appeal_not_open", "appeal_exists", "reexamination_not_open", "reexamination_exists"];
     expect([...CONSOLE_MODERATION_CODES, ...appOnly].sort()).toEqual([...ModerationErrorCode.options].sort());
     expect(Object.keys(MODERATION_MESSAGES).sort()).toEqual([...CONSOLE_MODERATION_CODES].sort());
     for (const code of CONSOLE_MODERATION_CODES) expect(messageFor(code).length, code).toBeGreaterThan(15);
@@ -321,7 +321,7 @@ describe("the home screen's overview", () => {
     expect(out).toContain("Urgent: 2 cases, oldest 14 minutes");
     expect(out).toContain("Lane 1: no open case");
     expect(out).toContain("Lane 2: 1 case, oldest 3 days");
-    expect(out).toContain("3 appeals wait.");
+    expect(out).toContain("3 appeals wait; you may review 1; 1 has no possible reviewer now.");
     expect(out).toContain("The emergency switch is off.");
     expect(out).toContain(`<bdi>${HOSTILE_ESCAPED.script}</bdi>`);
     expect(hrefs(out)).toEqual([`/cases/${CASE_POST}`]);
@@ -335,6 +335,8 @@ describe("the home screen's overview", () => {
   test("what waits too long is said only when it does: mails, the release, more reveals than the list holds, and the switch", () => {
     const busy = overview({
       appealsWaiting: 1,
+      appealsYouMayReview: 0,
+      appealsWithoutReviewer: 0,
       mailsWaiting: { receipts: 1, authorMails: 0, outcomes: 2 },
       mailsFailed: { receipts: 0, authorMails: 3, outcomes: 0 },
       releaseOverdue: 4,
@@ -342,7 +344,7 @@ describe("the home screen's overview", () => {
       reveals: { total: 140, items: Array.from({ length: 100 }, () => ({ at: "2026-09-30T10:00:00.000Z", handle: "mod_anna", caseId: CASE_POST })) },
     });
     const out = html(<OverviewView overview={busy} now={NOW} onOpenCase={noop} />);
-    expect(out).toContain("1 appeal waits.");
+    expect(out).toContain("1 appeal waits; you may review none.");
     expect(out).toContain("Mails waiting for more than an hour: 1 receipt, 0 statements to authors, 2 outcomes.");
     expect(out).toContain("Mails given up in the last 30 days: 0 receipts, 3 statements to authors, 0 outcomes.");
     // The count, and the runbook's sentence for it, in the words of the design's runbook bullet (section 13, Task 12(a)).
@@ -461,6 +463,7 @@ describe("the case page", () => {
       onDeclineClose: noop,
       onCancelCorrection: noop,
       onCorrect: noop,
+      onReview: noop,
     };
     const out = page(view, { compose });
     // The composer comes last, after the notes.

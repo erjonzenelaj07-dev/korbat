@@ -87,7 +87,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the path for child sexua
   const lifted = async (staff: RealStaff) => w.mailer.to((await w.repo.findUserById(staff.id))!.email, "moderation_csam_lifted").map((mail) => mail.data);
   /** The home screen's three lists of the path, each cut down to one case. */
   async function home(caseId: string) {
-    const overview = await w.moderation.forStaff.overview();
+    const overview = await w.moderation.forStaff.overview(admin.session);
     const of = <T extends { caseId: string }>(list: { items: T[] }) => list.items.filter((item) => item.caseId === caseId);
     return { protectionLifted: of(overview.protectionLifted), sealsDeclined: of(overview.sealsDeclined), interimSeals: of(overview.interimSeals), whole: JSON.stringify(overview) };
   }

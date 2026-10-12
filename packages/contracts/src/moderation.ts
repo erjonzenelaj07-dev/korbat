@@ -290,12 +290,12 @@ export type RevealReasonCategory = (typeof REVEAL_REASON_CATEGORIES)[number];
 // ---------------------------------------------------------------- errors
 
 /**
- * Every code the moderation flows put in ErrorEnvelope.error.code so far: what sending a report or a notice, reading its
- * status, taking it in and deciding a case raise, and what the console's case routes answer (a text that cannot be saved,
- * an image that is not shown, a source that cannot be revealed). The routes may also answer the shared invalid_request,
- * onboarding_required, not_found, rate_limited and service_unavailable, and the staff routes the staff codes. The codes
- * the database keeps to itself (moderation_column, quote_item_missing, read_committed_only) are not among them: no route
- * answers one.
+ * Every code the moderation flows put in ErrorEnvelope.error.code: what sending a report or a notice, reading its
+ * status, asking for a re-examination, appealing, taking a report in, deciding a case and reviewing an appeal raise, and
+ * what the console's case routes answer (a text that cannot be saved, an image that is not shown, a source that cannot
+ * be revealed). The routes may also answer the shared invalid_request, onboarding_required, not_found, rate_limited and
+ * service_unavailable, and the staff routes the staff codes. The codes the database keeps to itself (moderation_column,
+ * quote_item_missing, read_committed_only) are not among them: no route answers one.
  */
 export const ModerationErrorCode = z.enum([
   "notice_link_invalid",
@@ -304,11 +304,16 @@ export const ModerationErrorCode = z.enum([
   "staff_cannot_report",
   "notice_not_found",
   "already_reported",
+  "appeal_not_open",
+  "appeal_exists",
+  "reexamination_not_open",
+  "reexamination_exists",
   "case_changed",
   "case_closed",
   "staff_recused",
   "staff_target",
   "admin_required",
+  "reviewer_conflict",
   "decision_cap",
   "profile_changed",
   "snapshot_mismatch",
@@ -472,6 +477,42 @@ export type NoticeStatusRequest = z.infer<typeof NoticeStatusRequest>;
 /** The page's two buttons, for which only the token of a mail's link works: "I sent this", or "stop korbat's mails about reports to this address". */
 export const NoticeContactRequest = z.strictObject({ ref: NoticeRef, token: OpaqueId, choice: z.enum(["confirm", "stop"]) });
 export type NoticeContactRequest = z.infer<typeof NoticeContactRequest>;
+
+/**
+ * The longest statement an appeal or a request for a re-examination may carry, in characters as PostgreSQL's
+ * char_length counts them: what the CHECKs of `appeals` and `intake_items` hold.
+ */
+export const STATEMENT_MAX = 2000;
+
+/**
+ * What the person may add to an appeal or to a request for a re-examination: free of form and optional, under the
+ * rules of every free text of a notice. Left out when they wrote nothing.
+ */
+const Statement = noticeText(STATEMENT_MAX).optional();
+
+/**
+ * POST /api/notices/reexamine: a notifier asks korbat to decide an item of their notice again, with the notice's own
+ * token or the token of a mail's link, as for the status page. `position` is the item's place on that page, 1 to 20:
+ * an item korbat added for a quoted post is asked about like any other, by its own position.
+ */
+export const NoticeReexamineRequest = z.strictObject({ ref: NoticeRef, token: OpaqueId, position: z.number().int().min(1).max(20), statement: Statement });
+export type NoticeReexamineRequest = z.infer<typeof NoticeReexamineRequest>;
+
+/** POST /api/moderation/items/:item/reexamine: the same, for an item of a report the signed-in account sent, named by its id. */
+export const ReexamineRequest = z.strictObject({ statement: Statement });
+export type ReexamineRequest = z.infer<typeof ReexamineRequest>;
+
+/** POST /api/moderation/decisions/:id/appeal: the author's appeal of a final decision that restricts them. */
+export const AppealRequest = z.strictObject({ statement: Statement });
+export type AppealRequest = z.infer<typeof AppealRequest>;
+
+/**
+ * The answer to a request for a re-examination (201): the positions of the items that are now examined again, in
+ * order. One, or two when the item is a report of child sexual abuse material about a post that quotes another and the
+ * item korbat added for the quoted post could be examined again too: korbat then examines both.
+ */
+export const ReexamineResponse = z.object({ positions: z.array(z.number().int().min(1).max(20)).min(1).max(2) });
+export type ReexamineResponse = z.infer<typeof ReexamineResponse>;
 
 /** What an item's sender can be shown, as the database's item_outcome lists them. */
 export const ITEM_OUTCOMES = ["restricted_rule", "restricted_legal", "no_violation", "not_evident", "not_available", "partly_reversed", "reversed"] as const;
@@ -1068,7 +1109,22 @@ export const CaseDecision = z.object({
 });
 export type CaseDecision = z.infer<typeof CaseDecision>;
 
-/** The author's appeal of a decision of the case, with its statement while korbat keeps it, and its answer. */
+/**
+ * Whether anyone at korbat may review a pending appeal now, as the database answers it (appeal_reviewer_state):
+ * `available`; `none_single_staff` when korbat has at most one staff account that could (one admin, where the review
+ * needs an admin); `none_eligible` when it has more and each took part in the case or is too close to someone in it.
+ */
+export const REVIEWER_STATES = ["available", "none_single_staff", "none_eligible"] as const;
+export const ReviewerState = z.enum(REVIEWER_STATES);
+export type ReviewerState = z.infer<typeof ReviewerState>;
+
+/**
+ * The author's appeal of a decision of the case, with its statement while korbat keeps it, and its answer. For a pending
+ * appeal: `reviewer`, whether anyone may review it now; `needsAdmin`, whether its review is an admin's (the appealed
+ * decision cites R2 or sealed images); and `mayReview`, whether the reading person may review it: they made none of the
+ * case's decisions, opened no finding in it, are not close to anyone in it, and are an admin where one is needed. An
+ * answered appeal has no reviewer state and nobody may review it.
+ */
 export const CaseAppeal = z.object({
   id: z.uuid(),
   decisionId: z.uuid(),
@@ -1077,8 +1133,43 @@ export const CaseAppeal = z.object({
   answeredAt: z.iso.datetime().nullable(),
   result: z.enum(["kept", "partly_reversed", "reversed"]).nullable(),
   answeredBy: z.uuid().nullable(),
+  reviewer: ReviewerState.nullable(),
+  needsAdmin: z.boolean(),
+  mayReview: z.boolean(),
 });
 export type CaseAppeal = z.infer<typeof CaseAppeal>;
+
+/** How many appeals one page of the console's list holds. */
+export const APPEALS_PAGE_SIZE = 50;
+
+/**
+ * One pending appeal in the console's list: its case, the decision it appeals (when that was decided, the rule or the
+ * law it rests on, and what it did), when it was filed, and the end of the decision's appeal window. Then the three
+ * marks of CaseAppeal. No row carries the appellant's statement: the reviewer reads it on the case page, whose read is
+ * logged and counted.
+ */
+export const AppealRow = z.object({
+  id: z.uuid(),
+  caseId: z.uuid(),
+  decisionId: z.uuid(),
+  filedAt: z.iso.datetime(),
+  decidedAt: z.iso.datetime(),
+  deadline: z.iso.datetime(),
+  ruleId: z.enum(RULE_IDS).nullable(),
+  legal: z.boolean(),
+  actions: z.array(z.enum(ACTION_KINDS)),
+  reviewer: ReviewerState,
+  needsAdmin: z.boolean(),
+  mayReview: z.boolean(),
+});
+export type AppealRow = z.infer<typeof AppealRow>;
+
+/** GET /api/staff/appeals: the pending appeals, newest first. */
+export const AppealsPage = z.object({ appeals: z.array(AppealRow).max(APPEALS_PAGE_SIZE), nextCursor: z.string().nullable() });
+export type AppealsPage = z.infer<typeof AppealsPage>;
+
+export const AppealsQuery = z.object({ cursor: z.string().regex(/^[A-Za-z0-9_-]{1,400}$/).optional() });
+export type AppealsQuery = z.infer<typeof AppealsQuery>;
 
 /** A note on a case, or a recorded choice not to seal with its reason: who wrote it (a staff handle), when, and the text. */
 export const CaseStaffText = z.object({ id: z.uuid(), staffHandle: z.string(), createdAt: z.iso.datetime(), text: z.string() });
@@ -1241,7 +1332,8 @@ export const AUTHOR_CASES_PAGE_SIZE = 20;
  * `actions` are what the decision did, measures and reversals, in the ledger's order of kinds; `endedInterim` says that
  * what korbat did while deciding ended with it. `ruleId` and `legal` name the rule or the law it rests on (neither for a
  * decision without a ground). `appealUntil` is the end of the appeal's window while an appeal can still be filed, and
- * `reversedOn` the UTC day a final restriction was reversed in full; both null otherwise.
+ * `reversedOn` the UTC day a final restriction was reversed in full; both null otherwise. `appeal` is where the author's
+ * appeal of the decision stands: `pending`, or its answer; null when they filed none.
  */
 export const AuthorCaseRow = z.object({
   id: z.uuid(),
@@ -1255,6 +1347,7 @@ export const AuthorCaseRow = z.object({
   legal: z.boolean(),
   appealUntil: z.iso.datetime().nullable(),
   reversedOn: UtcDay.nullable(),
+  appeal: z.enum(["pending", "kept", "partly_reversed", "reversed"]).nullable(),
 });
 export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 
@@ -1299,23 +1392,55 @@ export const DecisionContent = z.discriminatedUnion("kind", [
 export type DecisionContent = z.infer<typeof DecisionContent>;
 
 /**
+ * The author's appeal as the decision's screen shows it (3c design, sections 7.7 and 10).
+ *   - `pending`: `reviewer` says whether anyone at korbat may review it now and, when nobody may, whether that is
+ *     because korbat has one moderator (or one admin); `needsAdmin` that its review is an admin's, which is true only
+ *     when the decision cites R2 or sealed images, both of which its author was told. Neither says who took part in
+ *     the case or why someone may not review it.
+ *   - `answered`: the result, the UTC day, and the answering decision with its statement's data, which the screen
+ *     renders as it renders every statement: the review, or the correction that reversed everything before a review.
+ */
+export const DecisionAppeal = z.discriminatedUnion("state", [
+  z.strictObject({ state: z.literal("pending"), filedAt: z.iso.datetime(), reviewer: ReviewerState, needsAdmin: z.boolean() }),
+  z.strictObject({
+    state: z.literal("answered"),
+    filedAt: z.iso.datetime(),
+    answeredOn: UtcDay,
+    result: z.enum(["kept", "partly_reversed", "reversed"]),
+    answeredBy: z.uuid(),
+    statement: DecisionStatement,
+  }),
+]);
+export type DecisionAppeal = z.infer<typeof DecisionAppeal>;
+
+/**
  * GET /api/moderation/decisions/:id: one decision as its author reads it (3c design, sections 7.6 and 10). It is the
  * statement's data, which the app renders with statementParagraphs exactly as the mail was rendered, and what the
- * author's screen adds: `appealUntil` and `reversedOn` as the list gives them, and the content actioned.
+ * author's screen adds: `appealUntil` and `reversedOn` as the list gives them, the content actioned, and `appeal`, the
+ * author's appeal of this decision (null when they filed none).
  */
 export const DecisionView = DecisionStatement.extend({
   id: z.uuid(),
   appealUntil: z.iso.datetime().nullable(),
   reversedOn: UtcDay.nullable(),
   content: DecisionContent,
+  appeal: DecisionAppeal.nullable(),
 });
 export type DecisionView = z.infer<typeof DecisionView>;
 
 /** How many reports one page of the reporter's list holds. */
 export const REPORTS_PAGE_SIZE = 20;
 
-/** One report or notice in its sender's list: its reference, when korbat received it, and its items as the status page gives them. */
-export const ReportRow = z.object({ ref: NoticeRef, receivedAt: z.string(), items: z.array(NoticeItemStatus) });
+/**
+ * One item of a report in its sender's own list: the item as the status page gives it, and its id, by which the signed-in
+ * sender asks for its re-examination. The status page, which anyone holding a link may open, names an item by its
+ * position and never carries an id.
+ */
+export const ReportItem = NoticeItemStatus.extend({ id: z.uuid() });
+export type ReportItem = z.infer<typeof ReportItem>;
+
+/** One report or notice in its sender's list: its reference, when korbat received it, and its items as the status page gives them, each with its id. */
+export const ReportRow = z.object({ ref: NoticeRef, receivedAt: z.string(), items: z.array(ReportItem) });
 export type ReportRow = z.infer<typeof ReportRow>;
 
 /**
@@ -1337,7 +1462,9 @@ const HandleCount = z.object({ handle: z.string(), count: Count });
 
 /**
  * GET /api/staff/overview: what the home screen shows every staff member. Per lane the open cases and since when the
- * oldest unanswered item waits; the appeals waiting; every reveal of a source in the last 30 days, newest first, with
+ * oldest unanswered item waits; the appeals waiting, how many of them the reading person may review
+ * (`appealsYouMayReview`, by CaseAppeal's rule) and how many no staff account may review now
+ * (`appealsWithoutReviewer`: the database's appeal_reviewer_state is not `available`); every reveal of a source in the last 30 days, newest first, with
  * its staff handle and its case; per staff handle the images viewed and the findings opened today (UTC); the mails
  * waiting for more than an hour and those given up in the last 30 days; the decided items the daily release has not
  * released after 26 hours; and whether the emergency switch is on. And, of the path for child sexual abuse material,
@@ -1349,6 +1476,8 @@ const HandleCount = z.object({ handle: z.string(), count: Count });
 export const StaffOverview = z.object({
   lanes: z.array(z.object({ lane: LaneNumber, open: Count, oldestAt: z.iso.datetime().nullable() })).length(3),
   appealsWaiting: Count,
+  appealsYouMayReview: Count,
+  appealsWithoutReviewer: Count,
   reveals: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid() })).max(OVERVIEW_LIST_MAX) }),
   imagesToday: z.array(HandleCount),
   findingsToday: z.array(HandleCount),

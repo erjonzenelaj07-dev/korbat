@@ -1,4 +1,4 @@
-import { STAFF_STEP_UP_CHALLENGE, StaffStepUpOptionsRequest, stepUpActionHash, stepUpBinding, type AuthenticationResponseJSON, type CaseDecidedParams, type IdentityRevealedParams } from "@korbat/contracts";
+import { STAFF_STEP_UP_CHALLENGE, StaffStepUpOptionsRequest, stepUpActionHash, stepUpBinding, type AppealsReviewedParams, type AuthenticationResponseJSON, type CaseDecidedParams, type IdentityRevealedParams } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
 import { messageFor } from "./messages";
 import { authenticationResponseToJSON, ceremonyFailure, fromBase64url, requestOptionsFromJSON, type CredentialsLike } from "./webauthn";
@@ -73,6 +73,14 @@ export function decisionAction(caseId: string, params: CaseDecidedParams): Staff
 }
 
 /**
+ * The action that reviews an appeal: the appealed decision's id as the target and, as params, the review as the review
+ * composer built it from what the page shows: the appeal, ids, enums, whole numbers and digests, never a text.
+ */
+export function reviewAction(decisionId: string, params: AppealsReviewedParams): StaffStepUpOptionsRequest {
+  return StaffStepUpOptionsRequest.parse({ action: "appeals_reviewed", target: { type: "decision", id: decisionId }, params });
+}
+
+/**
  * One action confirmed by the key (3c design, section 8): the session's handle read from a marked /me right before,
  * since the API binds the challenge to the session the request's cookie names, which another tab's sign-in may have
  * replaced since the page read its session; then options for exactly this action, asked right before the key (the API
@@ -125,4 +133,13 @@ export function revealWithKey(deps: { api: StaffApi; credentials: CredentialsLik
 export function decideWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, params: CaseDecidedParams) {
   const action = decisionAction(caseId, params);
   return confirmWithKey(deps, action, (stepUp) => deps.api.decide(action.target.id, { ...params, stepUp }, { activity: true }));
+}
+
+/**
+ * "Confirm with your staff key" in the review composer: the review of the decision's appeal, with exactly the params the
+ * page built. Answers the decision's case as it stands after the review, which must be the case the page shows.
+ */
+export function reviewWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, decisionId: string, params: AppealsReviewedParams) {
+  const action = reviewAction(decisionId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.review(caseId, action.target.id, { ...params, stepUp }, { activity: true }));
 }

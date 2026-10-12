@@ -7,6 +7,7 @@ import {
   NoticeResponse,
   NoticeStatus,
   NoticeTarget,
+  ReexamineResponse,
   ReportsPage,
   type CsamKeywordChoice,
   type NoticeItemStatus,
@@ -16,7 +17,7 @@ import {
 } from "@korbat/contracts";
 import type { Rule } from "@korbat/rules";
 import { api, ApiError, errorMessage } from "./api";
-import { CHIP_WORDS, REPORT_WORDS } from "./moderation-words";
+import { CHIP_WORDS, DECISION_WORDS, REPORT_WORDS } from "./moderation-words";
 
 /**
  * Reports, notices and moderation cases in the app (3c design, section 9): the calls, and the rules the screens share.
@@ -33,6 +34,15 @@ export const CONTACT_EMAIL = process.env.EXPO_PUBLIC_CONTACT_EMAIL ?? "";
 
 const query = (cursor?: string) => (cursor ? `?cursor=${encodeURIComponent(cursor)}` : "");
 
+/**
+ * What an appeal or a request for a re-examination carries of what its person typed: the statement, trimmed, when
+ * something was written, and nothing otherwise. It is optional and free of form.
+ */
+export function statementOf(written: string): { statement?: string } {
+  const statement = written.trim();
+  return statement.length > 0 ? { statement } : {};
+}
+
 /** The moderation endpoints the app calls, typed by the shared contracts. Cookies and CSRF are handled by `api`. */
 export const moderation = {
   /** One report or notice. Signed out it carries the human check's token; the answer's token is shown once. */
@@ -45,6 +55,12 @@ export const moderation = {
   decision: (id: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}`, { schema: DecisionView }),
   reports: (cursor?: string) => api(`/api/moderation/reports${query(cursor)}`, { schema: ReportsPage }),
   resumeReportMail: () => api("/api/moderation/report-mail/resume", { method: "POST" }),
+  /** The author's appeal of a decision about them. The answer is the decision as it now reads, with the appeal waiting. */
+  appeal: (id: string, statement: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}/appeal`, { json: statementOf(statement), schema: DecisionView }),
+  /** A re-examination of an item of a notice, asked with the status page's token, which travels in the body of a POST. */
+  reexamineNotice: (ref: string, token: string, position: number, statement: string) => api("/api/notices/reexamine", { json: { ref, token, position, ...statementOf(statement) }, schema: ReexamineResponse }),
+  /** A re-examination of an item of a report the signed-in account sent, named by the id its list carries. */
+  reexamineOwn: (itemId: string, statement: string) => api(`/api/moderation/items/${encodeURIComponent(itemId)}/reexamine`, { json: statementOf(statement), schema: ReexamineResponse }),
 };
 
 // ---------------------------------------------------------------- what a report is opened on
@@ -250,6 +266,38 @@ export function itemRedress(item: NoticeItemStatus): "waiting" | "final" | "reex
   if (item.changed || (item.reexamines && !unseenAnswer)) return "final";
   if (item.reexamination?.open) return "reexamination";
   return "courts";
+}
+
+/**
+ * Whether asking for a re-examination of the item at `index` examines another item too (3c design, section 7.2): the
+ * item is a report of child sexual abuse material that the sender named, and the item korbat added for the post it
+ * quotes can be examined again as well. korbat then examines both, and the page says so beside the control.
+ */
+export function quotedExaminedToo(items: readonly NoticeItemStatus[], index: number): boolean {
+  const item = items[index];
+  if (!item || !item.suspect || item.quotedBy !== null || !item.reexamination?.open) return false;
+  return items.some((other) => other.quotedBy === item.position && !other.reexamines && other.reexamination?.open === true);
+}
+
+// ---------------------------------------------------------------- the appeal's state
+
+/**
+ * What a pending appeal's line says on the decision's screen (3c design, section 7.7), from the decision's own data and
+ * the API's two answers about its review, which name nobody:
+ *   - an appeal of a decision that sealed images waits for the authorities' assessment, whoever could review it;
+ *   - otherwise, while someone at korbat may review it, it waits for a reviewer;
+ *   - when nobody may: for a review that is an admin's, that it waits for an admin, and that korbat has one while it
+ *     has one; else that korbat has one moderator, or that none who took no part in the case is available now. The last
+ *     gives no reason: a moderator may be unable to review through a relation to someone in the case.
+ */
+export function appealWaitWords(view: Pick<DecisionView, "measures" | "appeal">): string | null {
+  const appeal = view.appeal;
+  if (appeal === null || appeal.state !== "pending") return null;
+  const waits = DECISION_WORDS.appealWaits;
+  if (view.measures.some((measure) => measure.kind === "seal_media")) return waits.sealed;
+  if (appeal.reviewer === "available") return DECISION_WORDS.appealWaiting;
+  if (appeal.needsAdmin) return appeal.reviewer === "none_single_staff" ? `${waits.admin} ${waits.oneAdmin}` : waits.admin;
+  return waits[appeal.reviewer];
 }
 
 // ---------------------------------------------------------------- chips and times

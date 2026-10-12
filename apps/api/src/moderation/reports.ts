@@ -6,8 +6,8 @@ import { noticeItemsOf, reporterNotices } from "./repo";
 
 /**
  * The reporter's list (3c design, section 7.6): the reports and notices an account sent, while korbat keeps their
- * records, each item exactly as the status page gives it (the same function builds both), so the list, the page and the
- * mail tell the same at the same time and in the same words. A report on the path for child sexual abuse material is
+ * records, each item exactly as the status page gives it (the same function builds both) and with its id, so the list,
+ * the page and the mail tell the same at the same time and in the same words. A report on the path for child sexual abuse material is
  * stored without its sender and is therefore in nobody's list: whoever sent it follows it with the link they were shown.
  */
 
@@ -20,7 +20,8 @@ export async function reporterList(deps: Pick<ModerationDeps, "apiDb" | "auth" |
   const reports: ReportRow[] = [];
   for (const notice of page) {
     const rows: ReportRow["items"] = [];
-    for (const item of listedItems(items.get(notice.id) ?? [])) rows.push(await itemStatus(deps, item));
+    // Each item as the status page gives it, and its id, by which its sender asks for a re-examination.
+    for (const item of listedItems(items.get(notice.id) ?? [])) rows.push({ ...(await itemStatus(deps, item)), id: item.id });
     reports.push({ ref: notice.ref, receivedAt: notice.receivedAt, items: rows });
   }
   const last = page.at(-1);

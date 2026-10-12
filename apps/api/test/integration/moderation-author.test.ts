@@ -147,14 +147,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
 
   // ---------------------------------------------------------------- the routes
 
-  test("the four signed-in routes are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
+  test("the six signed-in routes are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
     const routes = app.routes.filter((route) => route.path.startsWith("/api/moderation") && route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
-    expect([...new Set(routes)].sort()).toEqual(["GET /api/moderation/cases", "GET /api/moderation/decisions/:id", "GET /api/moderation/reports", "POST /api/moderation/report-mail/resume"]);
+    expect([...new Set(routes)].sort()).toEqual([
+      "GET /api/moderation/cases",
+      "GET /api/moderation/decisions/:id",
+      "GET /api/moderation/reports",
+      "POST /api/moderation/decisions/:id/appeal",
+      "POST /api/moderation/items/:item/reexamine",
+      "POST /api/moderation/report-mail/resume",
+    ]);
+    // The session is asked for before anything of the request is read: the appeal and the re-examination refuse the
+    // same way with no body at all.
     const paths: [string, string | undefined][] = [
       ["/api/moderation/cases", undefined],
       [`/api/moderation/decisions/${randomUUID()}`, undefined],
       ["/api/moderation/reports", undefined],
       ["/api/moderation/report-mail/resume", "POST"],
+      [`/api/moderation/decisions/${randomUUID()}/appeal`, "POST"],
+      [`/api/moderation/items/${randomUUID()}/reexamine`, "POST"],
     ];
     const half = await signUp(false);
     for (const [path, method] of paths) {
@@ -204,8 +215,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     const created = (await w.apiDb.execute<{ at: string }>(sql`select to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at from posts where id = ${postId}::uuid`))[0]!.at;
     expect(page.nextCursor).toBeNull();
     expect(page.decisions).toEqual([
-      { id: final, kind: "final", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["remove"], endedInterim: true, ruleId: "R3", legal: false, appealUntil: expect.any(String), reversedOn: null },
-      { id: interim, kind: "interim", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["withhold"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, reversedOn: null },
+      { id: final, kind: "final", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["remove"], endedInterim: true, ruleId: "R3", legal: false, appealUntil: expect.any(String), appeal: null, reversedOn: null },
+      { id: interim, kind: "interim", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["withhold"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, appeal: null, reversedOn: null },
     ]);
     expect(page.decisions.map((row) => row.id)).not.toContain(silent);
     expect((await casesOf(stranger.b)).decisions).toEqual([]);
@@ -411,6 +422,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
   // ---------------------------------------------------------------- the reporter's list
 
   const waiting = { suspect: false, sealed: false, unseen: false, quotedBy: null, outcome: null, decidedOn: null, changed: false, reexamines: false, reexamination: null };
+  // In Your reports each item also carries its id, which is what "Ask for a re-examination" names there; the status
+  // page names an item by its position and carries none.
+  const reported = { ...waiting, id: expect.stringMatching(/^[0-9a-f-]{36}$/) };
 
   test("Your reports lists the account's own reports, newest first, each item under the link it named and silent until the daily release; then in the words of the mail, an account still under the handle the report named", async () => {
     const reporter = await signUp();
@@ -432,8 +446,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     const silent = await reportsOf(reporter.b);
     expect(silent).toEqual({
       reports: [
-        { ref: second.ref, receivedAt: expect.stringMatching(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{12}Z$/), items: [{ position: 1, link: `${origin}/post/${quoting}`, scope: null, ...waiting }] },
-        { ref: first.ref, receivedAt: expect.stringMatching(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{12}Z$/), items: [{ position: 1, link: `${origin}/post/${postId}`, scope: null, ...waiting }, { position: 2, link: `${origin}/u/${subject.handle}`, scope: "account", ...waiting }] },
+        { ref: second.ref, receivedAt: expect.stringMatching(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{12}Z$/), items: [{ position: 1, link: `${origin}/post/${quoting}`, scope: null, ...reported }] },
+        { ref: first.ref, receivedAt: expect.stringMatching(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{12}Z$/), items: [{ position: 1, link: `${origin}/post/${postId}`, scope: null, ...reported }, { position: 2, link: `${origin}/u/${subject.handle}`, scope: "account", ...reported }] },
       ],
       nextCursor: null,
       reportMailStopped: false,
@@ -454,13 +468,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     const rule = { id: "R3", title: getRule("R3")!.title };
     const until = expect.stringMatching(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/);
     expect(after.reports).toEqual([
-      { ref: second.ref, receivedAt: silent.reports[0]!.receivedAt, items: [{ ...waiting, position: 1, link: `${origin}/post/${quoting}`, scope: "quote", outcome: "not_evident", decidedOn: today(), reexamination: { open: true, until } }] },
+      { ref: second.ref, receivedAt: silent.reports[0]!.receivedAt, items: [{ ...reported, position: 1, link: `${origin}/post/${quoting}`, scope: "quote", outcome: "not_evident", decidedOn: today(), reexamination: { open: true, until } }] },
       {
         ref: first.ref,
         receivedAt: silent.reports[1]!.receivedAt,
         items: [
-          { ...waiting, position: 1, link: `${origin}/post/${postId}`, scope: null, outcome: "restricted_rule", decidedOn: today(), rule },
-          { ...waiting, position: 2, link: `${origin}/u/${subject.handle}`, scope: "account", outcome: "no_violation", decidedOn: today(), reexamination: { open: true, until } },
+          { ...reported, position: 1, link: `${origin}/post/${postId}`, scope: null, outcome: "restricted_rule", decidedOn: today(), rule },
+          { ...reported, position: 2, link: `${origin}/u/${subject.handle}`, scope: "account", outcome: "no_violation", decidedOn: today(), reexamination: { open: true, until } },
         ],
       },
     ]);

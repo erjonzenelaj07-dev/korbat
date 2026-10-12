@@ -8,7 +8,7 @@
  * only through the interfaces they export, never names an image row (the media module locks and holds a case's images for
  * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
-import type { CaseView, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse } from "@korbat/contracts";
+import type { AppealsPage, CaseView, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
@@ -19,6 +19,7 @@ import type { JobLock } from "../lib/jobs";
 import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
+import { appealsList, review, reviewedCase } from "./appeals";
 import { authorFacts } from "./author";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
@@ -42,8 +43,17 @@ export interface ModerationForStaff {
   decide(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome>;
   /** The case as the answer to a decision that has just committed on it: logged like every read, and never refused for the day's limit. */
   decidedCase(session: ActiveStaffSession, caseId: string): Promise<CaseView>;
-  /** What every staff member's home screen shows: counts, times, staff handles and cases. */
-  overview(): Promise<StaffOverview>;
+  /**
+   * Records the review a step-up confirmed: the answer to the one appeal of the decision the confirmation names, in one
+   * transaction with its audit row. "ended" and "late" as for a decision.
+   */
+  review(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome>;
+  /** The case of a reviewed decision as the answer to a review that has just committed on it, read as decidedCase reads. */
+  reviewedCase(session: ActiveStaffSession, decisionId: string): Promise<CaseView>;
+  /** A page of the pending appeals, newest first, each marked whether this person may review it; never a statement. */
+  appeals(session: ActiveStaffSession, cursor?: string): Promise<AppealsPage>;
+  /** What every staff member's home screen shows: counts, times, staff handles and cases, and how many appeals this person may review. */
+  overview(session: ActiveStaffSession): Promise<StaffOverview>;
   /** A page of the queue: open cases by lane and age, after the cursor when one is given. */
   queue(cursor?: string): Promise<QueuePage>;
   /** The case as staff read it. The read is logged, and held to the day's limit on different cases; a recused person is refused. */
@@ -113,7 +123,10 @@ export function createModeration(options: CreateModerationOptions) {
   const forStaff: ModerationForStaff = {
     decide: (session, confirmed, ctx) => decide(deps, session, confirmed, ctx),
     decidedCase: (session, caseId) => readDecidedCase(deps, session, caseId),
-    overview: () => overview(deps),
+    review: (session, confirmed, ctx) => review(deps, session, confirmed, ctx),
+    reviewedCase: async (session, decisionId) => readDecidedCase(deps, session, await reviewedCase(deps, decisionId)),
+    appeals: (session, cursor) => appealsList(deps, session, cursor),
+    overview: (session) => overview(deps, session),
     queue: (cursor) => queue(deps, cursor),
     caseView: (session, caseId) => readCase(deps, session, caseId),
     caseImage: (session, caseId, mediaId, size) => caseImage(deps, session, caseId, mediaId, size),
@@ -129,8 +142,8 @@ export function createModeration(options: CreateModerationOptions) {
   return {
     deps,
     /**
-     * The app's routes, mounted at /api: reports and notices, their status page and its contact buttons, and behind the
-     * session guard the account's own decisions and reports.
+     * The app's routes, mounted at /api: reports and notices, their status page with its contact buttons and its
+     * re-examinations, and behind the session guard the account's own decisions, appeals, reports and re-examinations.
      */
     routes: moderationRoutes(deps, options.requireSession ?? noSession),
     /** The interface the staff module uses. */

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import { NoticeRef, type NoticeStatus } from "@korbat/contracts";
+import { NoticeRef, type NoticeItemStatus, type NoticeStatus } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { NoticeNotFound, NoticeStatusView } from "@/components/moderation/NoticeStatusView";
 import { Button, ErrorText, Loading } from "@/components/ui";
@@ -60,6 +60,16 @@ export default function NoticePage() {
     }
   }
 
+  /**
+   * "Ask for a re-examination" of one item: a POST with the page's own token and the item's position, then the page again
+   * as the API now gives it. A refusal is thrown to the control that asked, which words it in place.
+   */
+  async function reexamine(item: NoticeItemStatus, statement: string) {
+    if (token === null) return;
+    await moderation.reexamineNotice(ref, token, item.position, statement);
+    await load(ref, token);
+  }
+
   if (shown.kind === "loading") return <Loading />;
   return (
     <AppShell>
@@ -78,7 +88,7 @@ export default function NoticePage() {
               />
             </>
           ) : null}
-          {shown.kind === "status" ? <NoticeStatusView status={shown.status} onContact={(choice) => void contact(choice)} busy={busy} error={error} /> : null}
+          {shown.kind === "status" ? <NoticeStatusView status={shown.status} onContact={(choice) => void contact(choice)} onReexamine={reexamine} busy={busy} error={error} /> : null}
         </View>
       </ScrollView>
     </AppShell>

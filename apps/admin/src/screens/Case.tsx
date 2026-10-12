@@ -12,10 +12,10 @@ import {
 } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { afterRefusal, COMPOSER, confirmDecision, confirmWhileBusy, correctionDraft, decidedNotice, newDraft, offeredDraft, openCorrection, saveDraftText, withSavedTexts, withSeal, type CaseDraft, type DraftTextKind, type StaffRole } from "../compose";
+import { afterRefusal, COMPOSER, confirmDecision, confirmWhileBusy, correctionDraft, decidedNotice, newDraft, offeredDraft, openCorrection, openReview, reviewDraft, saveDraftText, withSavedTexts, withSeal, type CaseDraft, type DraftTextKind, type StaffRole } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS } from "../messages";
+import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { revealWithKey } from "../step-up";
@@ -24,7 +24,7 @@ import { normalised, saveStaffText, type RandomBytes } from "../texts";
 import { dateTime, Loaded, UserText, type Loadable } from "../ui";
 import { categoryLabel, COLLAPSED_RULES, counted, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
 import type { CredentialsLike } from "../webauthn";
-import { ComposerView, CorrectControl, type ComposerViewProps } from "./Composer";
+import { ComposerView, CorrectControl, ReviewControl, type ComposerViewProps } from "./Composer";
 
 /**
  * The case page (3c design, sections 7.3 and 8): the header, the banners, the evidence with its images, the items with
@@ -159,7 +159,7 @@ export interface CaseScreenViewProps {
    * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
    * beside the decisions. Without it the page shows the case and decides nothing.
    */
-  compose?: Omit<ComposerViewProps, "view"> & { onCorrect(decision: CaseDecision): void };
+  compose?: Omit<ComposerViewProps, "view"> & { onCorrect(decision: CaseDecision): void; onReview(decision: CaseDecision): void };
 }
 
 /** Whether the target as it stands differs from the case's newest snapshot: then the moderator takes a fresh one before deciding. */
@@ -649,12 +649,24 @@ export function CaseScreenView(props: CaseScreenViewProps) {
           ))}
         </ul>
       )}
-      {view.appeals.map((appeal) => (
-        <div key={appeal.id} className="panel">
-          <p>{`The author appealed on ${dateTime(appeal.filedAt)}${appeal.result === null ? "; not answered yet" : `; answered: ${appeal.result.split("_").join(" ")}`}.`}</p>
-          {appeal.statement === null ? null : <Frame by="Written by the appellant" text={appeal.statement} />}
-        </div>
-      ))}
+      {view.appeals.map((appeal) => {
+        const appealed = view.decisions.find((decision) => decision.id === appeal.decisionId);
+        return (
+          <div key={appeal.id} className="panel">
+            <p>{`The author appealed${appealed ? ` the decision of ${dateTime(appealed.decidedAt)}` : ""} on ${dateTime(appeal.filedAt)}${appeal.result === null ? "; not answered yet" : `; answered: ${appeal.result.split("_").join(" ")}`}.`}</p>
+            {appeal.statement === null ? null : <Frame by="Written by the appellant" text={appeal.statement} />}
+            {/* A pending appeal says who may review it; the control stands only for the person the API marked. */}
+            {appeal.result !== null ? null : (
+              <>
+                {appeal.needsAdmin ? <p className="hint">{APPEAL_WORDS.needsAdmin}</p> : null}
+                {appeal.reviewer === null || appeal.reviewer === "available" ? null : <p className="notice">{APPEAL_WORDS.reviewer[appeal.reviewer]}</p>}
+                {appeal.mayReview ? null : <p className="hint">{APPEAL_WORDS.mayNotReview}</p>}
+                {props.compose === undefined || !appealed ? null : <ReviewControl view={view} decision={appealed} disabled={props.compose.busy} onReview={props.compose.onReview} />}
+              </>
+            )}
+          </div>
+        );
+      })}
 
       <h3>History</h3>
       <ol className="history">
@@ -719,7 +731,7 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
   // and a sign-in by the same handle; the page keeps its own copy to draw.
   const [draft, setDraft] = useState<CaseDraft | null>(() => drafts.get(id));
   const draftNow = useRef<CaseDraft | null>(draft);
-  /** The decision's draft that a correction took the place of, to come back to when the correction is put away. */
+  /** The decision's draft that a correction or a review took the place of, to come back to when that is put away. */
   const beforeCorrection = useRef<CaseDraft | null>(null);
   const [composing, setComposing] = useState(false);
   const [composeError, setComposeError] = useState<string | null>(null);
@@ -903,7 +915,7 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
       draftNow.current = newDraft(id, now, role);
       setDraft(draftNow.current);
       setTextErrors({});
-      setNotice(decidedNotice(shown, now, sent.kind === "final"));
+      setNotice(sent.kind === "review" ? COMPOSER.reviewed : decidedNotice(shown, now, sent.kind === "final"));
     });
   };
 
@@ -952,11 +964,22 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
           onCorrect: (decision) => {
             setComposeError(null);
             setTextErrors({});
-            if (draftNow.current !== null && draftNow.current.kind !== "correction") beforeCorrection.current = draftNow.current;
+            if (draftNow.current !== null && draftNow.current.kind !== "correction" && draftNow.current.kind !== "review") beforeCorrection.current = draftNow.current;
             const opened = correctionDraft(id, value, decision, role);
             keep(opened);
             // The reason its person saved for a correction on this case before comes back with it, unless they have typed since.
             void openCorrection(id, value, decision, role).then((restored) => {
+              if (alive.current && draftNow.current === opened) keep(restored);
+            });
+          },
+          onReview: (decision) => {
+            setComposeError(null);
+            setTextErrors({});
+            if (draftNow.current !== null && draftNow.current.kind !== "correction" && draftNow.current.kind !== "review") beforeCorrection.current = draftNow.current;
+            const opened = reviewDraft(id, value, decision, role);
+            keep(opened);
+            // As for a correction: a review reason saved on this case before comes back, unless its person has typed since.
+            void openReview(id, value, decision, role).then((restored) => {
               if (alive.current && draftNow.current === opened) keep(restored);
             });
           },

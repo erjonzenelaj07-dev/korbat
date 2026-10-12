@@ -119,8 +119,8 @@ describe("the key is asked only after the console checked what it is asked to si
     const stepUp = readFileSync(path.join(SRC, "step-up.ts"), "utf8");
     expect(stepUp.match(/credentials\.get\(/g)).toHaveLength(1);
     expect(stepUp).toMatch(/export async function confirmWithKey</);
-    // The revocation of a session, the reveal and the decision are callers of it; none asks the key itself.
-    expect(stepUp.match(/confirmWithKey\(deps, action,/g)).toHaveLength(3);
+    // The revocation of a session, the reveal, the decision and the review are callers of it; none asks the key itself.
+    expect(stepUp.match(/confirmWithKey\(deps, action,/g)).toHaveLength(4);
   });
 
   test("navigator.credentials is called only by the three ceremonies, each of which checks its challenge first", () => {

@@ -147,7 +147,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: revealing who sent a rep
       const { deps, mailed } = world(tx);
       const r = await reported(tx);
       const reason = await savedReason(deps, mod, r.caseId);
-      const start = (await overview(deps)).reveals.total;
+      const start = (await overview(deps, sessionOf(mod))).reveals.total;
 
       expect(await revealAs(deps, mod, r.itemId, reason.digest, "abuse_of_reporting")).toEqual({ handle: r.reporter.handle, name: null });
 
@@ -162,7 +162,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: revealing who sent a rep
 
       await deps.background.settle();
       expect(mailed).toEqual([{ template: "moderation_reveal", handle: await handleOf(tx, mod.id), at: expect.any(Date), count: 1, limit: 10 }]);
-      const seen = await overview(deps);
+      const seen = await overview(deps, sessionOf(mod));
       expect(seen.reveals.total).toBe(start + 1);
       expect(seen.reveals.items[0]).toEqual({ at: expect.any(String), handle: await handleOf(tx, mod.id), caseId: r.caseId });
       const history = (await readCase(deps, sessionOf(other), r.caseId)).history.filter((entry) => entry.event === "reveal");

@@ -295,7 +295,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the decision triggers", 
   });
 
   describe("the kind and its outcomes", () => {
-    test("an interim decision restricts, a final one restricts or finds no breach, each on an open case; a review waits for appeals", async () => {
+    test("an interim decision restricts, a final one restricts or finds no breach, each on an open case; a review is not for whoever decided in the case", async () => {
       await inWorld(async (tx) => {
         const r = await reportedPost(tx);
         const refused = { code: "P0001", message: "invalid_decision" };
@@ -305,7 +305,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the decision triggers", 
         const removal = await decideIn(tx, mod, r.caseId, { kind: "final", actions: [act("remove")] });
         expect(await within(tx, (sp) => rawDecision(sp, mod, r.caseId, { kind: "interim", actions: [act("withhold")] }))).toEqual(refused);
         expect(await within(tx, (sp) => rawDecision(sp, mod, r.caseId, { kind: "final", outcome: "no_violation", throughSeq: 1 }))).toEqual(refused);
-        // A review of that removal, well formed and with its appeal, is refused by the trigger itself until appeals arrive.
+        // A review of that removal, well formed and with its appeal, by the moderator who removed the post: the trigger
+        // itself refuses it, since nobody reviews a case they decided in (migration 0017; its own tests cover reviews).
         const [appeal] = await tx.execute<{ id: string }>(sql`insert into appeals (decision_id, appellant_account_id, filed_at) values (${removal}::uuid, ${r.authorId}::uuid, now()) returning id`);
         const review = await decisionParams(tx, mod, r.caseId, { kind: "correction", reviewsDecisionId: removal, actions: [act("restore")] });
         const asReview = () =>
@@ -316,8 +317,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the decision triggers", 
               values (gen_random_uuid(), ${r.caseId}::uuid, 'review', ${removal}::uuid, ${appeal!.id}::uuid, ${review.stateVersion}, 0, 'kept', ${review.rulesVersion}, ${review.redressVersion}, ${review.category},
                       ${review.snapshotId}::uuid, ${review.snapshotDigest}, ${review.reasonDigest}, ${mod.id}::uuid)`),
           );
-        expect(await pgError(asReview())).toEqual(refused);
-        expect(await refusalDetail(asReview())).toBe("A review waits for the migration that brings appeals.");
+        expect(await pgError(asReview())).toEqual({ code: "P0001", message: "reviewer_conflict" });
         expect(await refusal(decideIn(tx, mod, r.caseId, { kind: "correction", reviewsDecisionId: removal, actions: [act("restore")] }))).toBeNull();
       });
     });

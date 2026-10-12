@@ -1,4 +1,5 @@
 import {
+  AppealsPage,
   AuditPage,
   CaseView,
   ErrorEnvelope,
@@ -17,6 +18,7 @@ import {
   StaffStepUpOptionsResponse,
   StaffTextSaved,
   StaffTextsResponse,
+  type AppealReviewRequest,
   type CaseDecisionRequest,
   type FindingRequest,
   type IdentityRevealRequest,
@@ -219,6 +221,17 @@ export function createStaffApi(deps: StaffApiDeps) {
     decide: async (caseId: string, body: CaseDecisionRequest, call: Call = {}) => {
       if (!isLowerUuid(caseId)) throw new ApiError(0, "invalid_request");
       return sameCase(caseId, await request("POST", `/api/staff/cases/${caseId}/decisions`, CaseView, call, body));
+    },
+    /** A page of the pending appeals, newest first. The cursor is one the API itself handed out, encoded. */
+    appeals: (cursor: string | null, call: Call = {}) => request("GET", `/api/staff/appeals${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, AppealsPage, call),
+    /**
+     * The review of the appeal of a decision, with the key's confirmation: the decision must already be the lower-case
+     * uuid the step-up confirmed, since it is the action's target. The answer is the decision's case as it now stands,
+     * and it must be the case of the page that asked.
+     */
+    review: async (caseId: string, decisionId: string, body: AppealReviewRequest, call: Call = {}) => {
+      if (!isLowerUuid(caseId) || !isLowerUuid(decisionId)) throw new ApiError(0, "invalid_request");
+      return sameCase(caseId, await request("POST", `/api/staff/decisions/${decisionId}/review`, CaseView, call, body));
     },
     /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {

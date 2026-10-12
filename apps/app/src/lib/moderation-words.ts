@@ -133,6 +133,11 @@ export const STATUS_WORDS = {
   reexaminationLabel: "Re-examination",
   /** Beside an item whose answer can still be examined again: what that is, and until when. */
   reexaminationOpen: (until: string) => `A moderator decides it again as a new report. You can ask once for each item, within six months of being told, until ${until}.`,
+  /** The control beside such an item: its button, its optional statement, and what it says once asked. */
+  reexamine: "Ask for a re-examination",
+  reexamineStatement: "Anything you want the moderator to know (optional)",
+  /** Beside the control of a report of child sexual abuse material whose added item can be examined again too. */
+  reexamineBoth: "korbat examines the post it quotes again as well.",
   /** Beside an outcome a review or a correction changed, and a re-examination's answer. */
   final: `This is final within korbat. You can also ${OUTSIDE_KORBAT}`,
   /** Beside any other decided outcome that cannot be examined again. */
@@ -165,6 +170,13 @@ export const CASES_WORDS = {
   review: "the answer to your appeal",
   correction: "a correction by korbat",
   appealOpen: (until: string) => `You can appeal until ${until}`,
+  /** Where the author's appeal of a decision stands, in the list. */
+  appealState: {
+    pending: "Your appeal waits for a reviewer",
+    kept: "Your appeal was answered: korbat kept its decision",
+    partly_reversed: "Your appeal was answered: korbat reversed part of its decision",
+    reversed: "Your appeal was answered: korbat reversed its decision",
+  },
   reversed: (day: string) => `Reversed in full on ${day}`,
   more: "Show more",
   report: (ref: string, time: string) => `Report ${ref}, sent on ${time}`,
@@ -192,6 +204,22 @@ export const DECISION_WORDS = {
   resetDecision: "The decision that reset it",
   appeal: "Appeal",
   appealUntil: (until: string) => `You can appeal this decision until ${until}.`,
+  /** The appeal's form: a statement is optional and free of form. */
+  appealHint: "Tell us anything you want the reviewer to know. You do not need to cite rules or law.",
+  appealStatement: "Your appeal (optional)",
+  appealFiled: (day: string) => `You appealed on ${day}.`,
+  /** A pending appeal: that it waits for a reviewer, or, when nobody at korbat can review it now, why. */
+  appealWaiting: "Waiting for a reviewer",
+  appealWaits: {
+    none_single_staff: "Your appeal waits for a moderator who did not take part in the decision. korbat has one moderator at the moment.",
+    none_eligible: "Your appeal waits for a moderator who took no part in this case. None is available now; your appeal stays open until one is.",
+    admin: "Your appeal waits for an admin who did not take part in the decision.",
+    oneAdmin: "korbat has one admin at the moment.",
+    sealed: "Sealed images are reviewed once the authorities have assessed them. Your appeal stays open until then.",
+  },
+  appealAnswered: (day: string) => `Answered on ${day}`,
+  appealAnswer: "The answer to your appeal",
+  answerScreen: "This answer on a screen of its own",
   reversed: (day: string) => `Reversed in full on ${day}: nothing of this decision is in force, so there is nothing to appeal.`,
   notFound: "That decision does not exist, or it is not about your account.",
   /** A statement is never rendered with another version of the rules than the one it was made under. */

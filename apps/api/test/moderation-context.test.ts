@@ -3,7 +3,7 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import { ModerationError, isModerationErrorCode, moderationErrorMessage } from "../src/moderation/context";
 
 describe("the moderation module's refusals", () => {
-  test("each of the twenty-one codes this module raises answers with the status the design gives it (3c design, section 10)", () => {
+  test("each of the twenty-six codes this module raises answers with the status the design gives it (3c design, section 10)", () => {
     const statuses = {
       notice_link_invalid: 422,
       notice_link_offsite: 422,
@@ -11,11 +11,16 @@ describe("the moderation module's refusals", () => {
       staff_cannot_report: 403,
       notice_not_found: 404,
       already_reported: 409,
+      appeal_not_open: 422,
+      appeal_exists: 409,
+      reexamination_not_open: 422,
+      reexamination_exists: 409,
       case_changed: 409,
       case_closed: 409,
       staff_recused: 403,
       staff_target: 403,
       admin_required: 403,
+      reviewer_conflict: 403,
       decision_cap: 429,
       profile_changed: 409,
       snapshot_mismatch: 409,
@@ -50,6 +55,16 @@ describe("the moderation module's refusals", () => {
     expect(moderationErrorMessage("staff_recused")).not.toMatch(/report/i);
     expect(moderationErrorMessage("image_refused")).toBe("That image is not shown.");
     expect(moderationErrorMessage("reveal_refused")).not.toMatch(/@|https?:/);
+  });
+
+  test("the words of an appeal and of a re-examination are written for the person asking, and give one answer for every reason it is not open", () => {
+    expect(moderationErrorMessage("appeal_not_open")).toBe("This decision cannot be appealed now.");
+    expect(moderationErrorMessage("appeal_exists")).toBe("You have already appealed this decision.");
+    expect(moderationErrorMessage("reexamination_not_open")).toBe("A re-examination cannot be asked for this item now.");
+    expect(moderationErrorMessage("reexamination_exists")).toBe("A re-examination of this item has already been asked for.");
+    // The reviewer's own refusal names their part in the case, never anyone else's.
+    expect(moderationErrorMessage("reviewer_conflict")).toBe("You cannot review this appeal: you took part in its case.");
+    expect(moderationErrorMessage("reviewer_conflict")).not.toMatch(/report/i);
   });
 
   test("the words of the notice routes are written for the person reporting, and the human check names no address", () => {

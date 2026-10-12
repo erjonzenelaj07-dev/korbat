@@ -45,7 +45,7 @@ const COLUMN_UPDATES: Record<string, string[]> = {
 const READ_ONLY = ["moderation_limits", "seal_posts"];
 
 /**
- * Migrations 0014 to 0016 (3c design, sections 6.1, 6.2 and 6.5) against the real database: what the API role holds and
+ * Migrations 0014 to 0017 (3c design, sections 6.1 to 6.3 and 6.5) against the real database: what the API role holds and
  * does not hold, which columns the database forces whatever an insert supplies, the CHECKs against the contracts'
  * constants, who owns and may call each function, and which functions alone name the freeze, write a seal's list and
  * write the moderation columns. Statements run as korbat_api, the role the running API
@@ -362,6 +362,41 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const callable = (await functions()).filter((f) => f.name.startsWith("public.") && f.api).map((f) => f.name.slice(7));
       expect(callable).toEqual(expect.arrayContaining(["append_confirmed_audit", "release_outcomes", "snapshot_withheld", "staff_case_conflict"]));
       for (const name of ["moderation_apply", "item_current_outcome", "account_is_staff", "staff_party_conflict"]) expect(callable, name).not.toContain(name);
+    });
+
+    test("the migrator owns the three functions of 0017; the API role may call the two that answer who reviews, and the three it replaced keep their owner and grants", async () => {
+      const pub = ["search_path=public, pg_temp"];
+      // [definer, EXECUTE for the API role]. The appeal's trigger function fires for every role and nobody calls it.
+      const expected: Record<string, [boolean, boolean]> = {
+        appeal_reviewer_state: [true, true],
+        appeals_check: [true, false],
+        review_needs_admin: [true, true],
+        // Replaced by 0017 with CREATE OR REPLACE, which keeps what 0016 gave them.
+        decision_actions_apply: [true, false],
+        decisions_apply: [true, false],
+        decisions_record: [true, false],
+      };
+      const names = Object.keys(expected);
+      const rows = (await functions()).filter((f) => f.name.startsWith("public.") && names.includes(f.name.slice(7)));
+      expect(rows.map((f) => f.name.slice(7)).sort()).toEqual([...names].sort());
+      for (const f of rows) {
+        const [definer, api] = expected[f.name.slice(7)]!;
+        expect({ name: f.name, owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }).toEqual({ name: f.name, owner: "korbat_migrate", definer, config: pub, api, auth: false, pub: false });
+      }
+      // The replaced functions are the new ones: a review is accepted, an appeal is answered, and a seal is asked of the view.
+      const definition = (name: string) => rows.find((f) => f.name === `public.${name}`)!.definition;
+      expect(definition("decisions_record")).toMatch(/reviewer_conflict/);
+      expect(definition("decisions_record")).not.toMatch(/waits for the migration/);
+      expect(definition("decisions_apply")).toMatch(/UPDATE public\.appeals/);
+      expect(definition("decision_actions_apply")).toMatch(/measures_in_force m WHERE m\.id = NEW\.id/);
+      // review_needs_admin reads the decision and its ledger, never the freeze.
+      expect(definition("review_needs_admin")).not.toMatch(/frozen|intake_items|cases/);
+    });
+
+    test("the appeal's trigger is on its table, before the insert", async () => {
+      const rows = await apiDb.execute<{ name: string; definition: string }>(sql`
+        select t.tgname::text as name, pg_get_triggerdef(t.oid) as definition from pg_trigger t where not t.tgisinternal and t.tgrelid = 'public.appeals'::regclass order by 1`);
+      expect(rows.map((row) => [row.name, row.definition.replace(/^CREATE (CONSTRAINT )?TRIGGER \S+ /, "").replace(/ EXECUTE FUNCTION .*$/, "")])).toEqual([["appeals_check", "BEFORE INSERT ON public.appeals FOR EACH ROW"]]);
     });
 
     test("every function the migrator owns in the two schemas pins its search path and is closed to PUBLIC", async () => {

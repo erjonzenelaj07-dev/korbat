@@ -3,17 +3,23 @@ import { sql } from "drizzle-orm";
 import {
   CSAM_KEYWORDS,
   CSAM_NOTICE_MAX_ACCOUNTS,
+  DAILY_LIMITS,
   NOTICE_LIMITS,
+  appealDeadline,
   laneFor,
   snapshotDigest,
+  textDigest,
   type ItemOutcome,
   type Lane,
   type NoticeContactRequest,
   type NoticeItemStatus,
+  type NoticeReexamineRequest,
   type NoticeRequest,
   type NoticeResponse,
   type NoticeStatus,
   type NoticeStatusRequest,
+  type ReexamineRequest,
+  type ReexamineResponse,
   type RuleId,
   type TdbCategory,
 } from "@korbat/contracts";
@@ -28,23 +34,30 @@ import { alertUrgentLane } from "./alerts";
 import { ModerationError, type ModerationDeps } from "./context";
 import { accountLink, parseLink, postLink } from "./links";
 import {
+  addedItemOpen,
   alreadyReported,
   insertIntake,
   insertItem,
   insertSnapshot,
   isSerializationFailure,
   latestSnapshot,
+  newestItemAt,
   noticeById,
   noticeByRef,
   noticeItems,
   openCase,
+  raisedMessage,
   recordReceipt,
+  reporterItem,
   snapshotTime,
   targetKey,
   violatedUniqueConstraint,
+  type ItemRow,
   type NoticeItemRow,
   type NoticeRow,
   type ReceiptState,
+  type ReexaminedItemRow,
+  type SaltedText,
 } from "./repo";
 
 /**
@@ -74,13 +87,20 @@ export interface IntakeGround {
   bonaFide: boolean;
 }
 
-/** A target that is live: a post by its id, or an account by its id with the handle it was named by. `position` is its place among the targets named, from 1. */
+/** For a target of a re-examination: the item that is examined again, and what its sender added to the request. */
+export type Reexamines = NonNullable<ItemRow["reexamines"]>;
+
+/**
+ * A target that is live: a post by its id, or an account by its id with the handle it was named by. `position` is its
+ * place among the targets named, from 1. With `reexamines` its item is a re-examination, which takes its position from
+ * the item it examines again.
+ */
 export type LiveTarget =
-  | { type: "post"; id: string; position: number; mediaId?: string | null }
-  | { type: "account"; id: string; position: number; namedHandle: string };
+  | { type: "post"; id: string; position: number; mediaId?: string | null; reexamines?: Reexamines }
+  | { type: "account"; id: string; position: number; namedHandle: string; reexamines?: Reexamines };
 
 /** A target with nothing live: a link to a post that names no row or a deleted one, or a handle that names no account. It is stored as answered at once. */
-export type DeadTarget = { type: "post"; id: string; position: number } | { type: "account"; position: number; namedHandle: string };
+export type DeadTarget = { type: "post"; id: string; position: number; reexamines?: Reexamines } | { type: "account"; position: number; namedHandle: string; reexamines?: Reexamines };
 
 export interface IntakeRequest {
   ground: IntakeGround;
@@ -208,6 +228,29 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
   const intakeId = await insertIntake(tx, { ...ground, ref, lookupHash: token === null ? null : createHash("sha256").update(token).digest("hex") });
   const lane = laneFor({ ruleId: ground.ruleId, allegesIllegal: ground.allegesIllegal, csam: ground.csam, category: ground.category });
 
+  // 3. to 5.
+  const items = await attachTargets(deps, tx, { intakeId, lane, suspect, live: request.live, dead: request.dead ?? [] });
+  return { intakeId, ref, token, suspect, items };
+}
+
+/** What a transaction attaches to an intake: its targets, the lane a new item goes to, and whether its items are suspect. */
+interface AttachRequest {
+  intakeId: string;
+  lane: Lane;
+  suspect: boolean;
+  live: readonly LiveTarget[];
+  dead: readonly DeadTarget[];
+}
+
+/**
+ * Steps 3 to 5 of an intake's transaction, which a re-examination runs too, for an intake that exists: each live
+ * target's open case with its item, the captures, the one hold, the snapshots, and an item without a case for each
+ * target with nothing live. An item that is a re-examination takes its position and its lane from the item it examines
+ * again, whatever this request says, so each recorded item carries what the database answered.
+ */
+async function attachTargets(deps: ModerationDeps, tx: DbTx, request: AttachRequest): Promise<RecordedItem[]> {
+  const { intakeId, lane, suspect } = request;
+
   // 3. First every case with its item, in the targets' order.
   const items: RecordedItem[] = [];
   const cases = new Map<LiveTarget, string>();
@@ -226,8 +269,9 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
       lane,
       mediaId: target.type === "post" ? (target.mediaId ?? null) : null,
       namedHandle: target.type === "account" ? target.namedHandle.toLowerCase() : null,
+      reexamines: target.reexamines,
     });
-    items.push({ id: item.id, position: target.position, targetType: target.type, targetId: target.id, caseId, seq: item.seq, lane });
+    items.push({ id: item.id, position: item.position, targetType: target.type, targetId: target.id, caseId, seq: item.seq, lane: item.lane });
   }
 
   // Then the captures: every post in id order under a share lock, and every account's fields. The time is the
@@ -301,8 +345,9 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
   }
 
   // 5. An account's link that names nothing gets an id that names nothing either, whether or not a profile holds or once
-  // held the handle: no stored id ties an old handle to its account.
-  for (const target of request.dead ?? []) {
+  // held the handle: no stored id ties an old handle to its account. (A re-examination's item takes its target from the
+  // item it examines again, whatever is written here.)
+  for (const target of request.dead) {
     const targetId = target.type === "post" ? target.id : randomUUID();
     const item = await insertItem(tx, {
       intakeId,
@@ -313,11 +358,12 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
       lane,
       mediaId: null,
       namedHandle: target.type === "account" ? target.namedHandle.toLowerCase() : null,
+      reexamines: target.reexamines,
     });
-    items.push({ id: item.id, position: target.position, targetType: target.type, targetId, caseId: null, seq: null, lane });
+    items.push({ id: item.id, position: item.position, targetType: target.type, targetId, caseId: null, seq: null, lane: item.lane });
   }
   items.sort((a, b) => a.position - b.position);
-  return { intakeId, ref, token, suspect, items };
+  return items;
 }
 
 export type SnapshotContent = Omit<Parameters<typeof insertSnapshot>[1], "salt" | "digest">;
@@ -715,6 +761,20 @@ export function listedItems(items: readonly NoticeItemRow[]): NoticeItemRow[] {
 }
 
 /**
+ * The notice a reference and a token open: the token is the notice's own, shown once on screen, or the mail token of its
+ * contact, which only the auth module can compare. Anything else is notice_not_found, in the same words whether the
+ * reference names no notice or the token is wrong. `byMail` says which token it was.
+ */
+async function noticeFor(deps: Pick<ModerationDeps, "apiDb" | "auth">, request: { ref: string; token: string }): Promise<{ notice: NoticeRow; byMail: boolean }> {
+  const notice = await noticeByRef(deps.apiDb, request.ref);
+  if (!notice) throw new ModerationError("notice_not_found");
+  const own = notice.lookupHash !== null && sameDigest(notice.lookupHash, createHash("sha256").update(request.token).digest("hex"));
+  const byMail = !own && notice.contactId !== null && (await deps.auth.notifierMailTokenMatches(notice.contactId, request.token));
+  if (!own && !byMail) throw new ModerationError("notice_not_found");
+  return { notice, byMail };
+}
+
+/**
  * The notifier's status page (3c design, section 7.2): the notice whose reference matches and whose token this is, either
  * the notice's own, shown once on screen, or the mail token of its contact, which the receipt's link carries. Anything
  * else is notice_not_found. With the notice's own token the contact's `confirmed` and `stopped` are null, so the answer
@@ -722,11 +782,7 @@ export function listedItems(items: readonly NoticeItemRow[]): NoticeItemRow[] {
  */
 export async function noticeStatus(deps: Pick<ModerationDeps, "apiDb" | "auth" | "social" | "limits" | "config">, request: NoticeStatusRequest, netHash: string): Promise<NoticeStatus> {
   await countOrRefuse(deps, `notice-status:${netHash}`, HOUR_MS, STATUS_READS_PER_HOUR);
-  const notice = await noticeByRef(deps.apiDb, request.ref);
-  if (!notice) throw new ModerationError("notice_not_found");
-  const own = notice.lookupHash !== null && sameDigest(notice.lookupHash, createHash("sha256").update(request.token).digest("hex"));
-  const byMail = !own && notice.contactId !== null && (await deps.auth.notifierMailTokenMatches(notice.contactId, request.token));
-  if (!own && !byMail) throw new ModerationError("notice_not_found");
+  const { notice, byMail } = await noticeFor(deps, request);
 
   const items: NoticeItemStatus[] = [];
   for (const item of listedItems(await noticeItems(deps.apiDb, notice.id))) items.push(await itemStatus(deps, item));
@@ -749,4 +805,162 @@ export async function noticeContact(deps: Pick<ModerationDeps, "apiDb" | "auth" 
   if (!notice || notice.contactId === null) throw new ModerationError("notice_not_found");
   const done = request.choice === "confirm" ? await deps.auth.confirmNotifier(notice.contactId, request.token) : await deps.auth.stopNotifier(notice.contactId, request.token);
   if (!done) throw new ModerationError("notice_not_found");
+}
+
+// ---------------------------------------------------------------- re-examination
+
+/**
+ * Whether the target of an item is live now, by the one liveness rule of every intake (section 7.1, step 3), asked about
+ * the item's own target: a post by its id; an account by the handle the item was named by, and only when that handle
+ * still names the item's own account. An account that gave the handle up names nothing on any ground but the path for
+ * child sexual abuse material, where the handle history keeps it; and a handle that someone else holds now is never a
+ * way to another account's case.
+ */
+async function itemTargetLive(deps: Pick<ModerationDeps, "social">, item: ReexaminedItemRow): Promise<boolean> {
+  if (item.targetType === "post") return (await liveTarget(deps, { type: "post", id: item.targetId, mediaId: null }, item.suspect)) !== null;
+  if (item.namedHandle === null) return false;
+  const found = await liveTarget(deps, { type: "account", handle: item.namedHandle }, item.suspect);
+  return found !== null && found.id === item.targetId;
+}
+
+/** One item of a re-examination's request as a target of the transaction: live, or with nothing live. */
+async function reexaminationTarget(deps: Pick<ModerationDeps, "social">, item: ReexaminedItemRow, statement: SaltedText | null): Promise<{ live: LiveTarget } | { dead: DeadTarget }> {
+  const reexamines: Reexamines = { itemId: item.id, statement };
+  const live = await itemTargetLive(deps, item);
+  if (item.targetType === "post") {
+    return live ? { live: { type: "post", id: item.targetId, position: item.position, reexamines } } : { dead: { type: "post", id: item.targetId, position: item.position, reexamines } };
+  }
+  const namedHandle = item.namedHandle ?? "";
+  return live ? { live: { type: "account", id: item.targetId, position: item.position, namedHandle, reexamines } } : { dead: { type: "account", position: item.position, namedHandle, reexamines } };
+}
+
+/**
+ * Files a re-examination of an item (3c design, section 7.2): a new item of the same notice on the same target, whose
+ * `reexamines_item_id` is the item, decided and told like any item. It runs the transaction every intake runs, for an
+ * intake that exists:
+ *   - the target's liveness by the one rule; a target with nothing live gets an item without a case, answered at once;
+ *   - a signed-in reporter's profile row FOR KEY SHARE, refusing a missing or deleted account, as at intake;
+ *   - the target's open case, or a new one, a snapshot when the case has none, and the holds;
+ *   - the attach trigger decides, under the notice's lock and against the clock read then, whether the item may be
+ *     examined again now, and takes its target, position and lane from it: reexamination_not_open otherwise. The unique
+ *     index refuses a second re-examination of one item: reexamination_exists.
+ * A re-examination of a report of child sexual abuse material about a post that quotes another examines the item korbat
+ * added for the quoted post again too, in the same transaction, when that item can be examined again now: the database
+ * holds that rule at commit (quote_item_missing). Should the daily release open the added item between this function's
+ * read and its commit, the commit fails that way and the whole is run once more, which then reads the item as open.
+ *
+ * It is run again, as an intake is, when a case closed in between, on a deadlock and on a lock timeout, up to three
+ * times; when the last run fails the same way the answer is case_closed. Answers the items it stored, by position.
+ */
+export async function recordReexamination(deps: ModerationDeps, item: ReexaminedItemRow, statement: SaltedText | null): Promise<RecordedItem[]> {
+  let quoteRetried = false;
+  for (let attempt = 0; ; attempt++) {
+    // The statement belongs to the item that was asked about; the added item's re-examination carries none.
+    const targets = [await reexaminationTarget(deps, item, statement)];
+    if (item.suspect && item.targetType === "post" && item.position <= 10) {
+      const added = await addedItemOpen(deps.apiDb, { intakeId: item.intakeId, targetId: item.targetId });
+      if (added) targets.push(await reexaminationTarget(deps, added, null));
+    }
+    const live = targets.flatMap((target) => ("live" in target ? [target.live] : []));
+    const dead = targets.flatMap((target) => ("dead" in target ? [target.dead] : []));
+    try {
+      return await deps.apiDb.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('lock_timeout', ${`${LOCK_TIMEOUT_MS}ms`}::text, true)`);
+        if (item.reporterId !== null) await deps.social.lockAccounts(tx, [item.reporterId], "key share", true);
+        // The lane is the examined item's, which the trigger copies: the one given here is never stored.
+        return attachTargets(deps, tx, { intakeId: item.intakeId, lane: 2, suspect: item.suspect, live, dead });
+      });
+    } catch (err) {
+      const refusal = raisedMessage(err);
+      if (refusal === "reexamination_not_open") throw new ModerationError("reexamination_not_open");
+      if (violatedUniqueConstraint(err) === "intake_items_reexamines_once") throw new ModerationError("reexamination_exists");
+      if (refusal === "quote_item_missing" && !quoteRetried) {
+        quoteRetried = true;
+        continue;
+      }
+      const startOver = err instanceof StartOver || isSerializationFailure(err) || isDeadlock(err) || isLockNotAvailable(err);
+      if (!startOver) throw err;
+      if (attempt >= RETRIES) throw new ModerationError("case_closed");
+    }
+  }
+}
+
+/**
+ * What follows a re-examination's commit, and is not waited for: the urgent lane's alert when an item went into lane 0,
+ * as for any such item, and the day the notice's contact is forgotten, which moves to six months from now, since korbat
+ * owes the notifier another answer. A failure of either is logged: the dispatch job repeats the alert and moves the date.
+ */
+function afterReexamination(deps: ModerationDeps, item: ReexaminedItemRow, recorded: readonly RecordedItem[]): void {
+  const urgent = recorded.some((stored) => stored.caseId !== null && stored.lane === 0);
+  deps.background.start(async () => {
+    if (urgent) {
+      try {
+        await alertUrgentLane(deps);
+      } catch (err) {
+        deps.log.error({ err, intakeId: item.intakeId }, "re-examination: the urgent lane's alert failed; the dispatch job repeats it");
+      }
+    }
+    if (item.contactId !== null) {
+      try {
+        await deps.auth.forgetNotifierAfter([item.contactId], appealDeadline(deps.now()));
+      } catch (err) {
+        deps.log.warn({ err, intakeId: item.intakeId }, "re-examination: the day the notifier's contact is forgotten was not moved; the next daily dispatch moves it");
+      }
+    }
+  });
+}
+
+/**
+ * The part every request for a re-examination shares, once its item is found: the statement's salt and digest, the
+ * transaction, and what follows the commit. A request that failed through no fault of its sender (its case kept
+ * changing until the last retry, or a failure no rule of the module names) gives its hit on the day's limit back.
+ */
+async function reexamine(deps: ModerationDeps, item: ReexaminedItemRow, statement: string | undefined, limitKey: string): Promise<ReexamineResponse> {
+  let recorded: RecordedItem[];
+  try {
+    recorded = await recordReexamination(deps, item, await saltedStatement(statement));
+  } catch (err) {
+    if (!(err instanceof ModerationError) || err.code === "case_closed") {
+      await deps.limits.release(limitKey).catch((failure: unknown) => deps.log.warn({ err: failure }, "re-examination: a limit hit of a request that could not be saved could not be given back"));
+    }
+    throw err;
+  }
+  afterReexamination(deps, item, recorded);
+  return { positions: recorded.map((stored) => stored.position) };
+}
+
+/** A statement of an appeal or of a request for a re-examination as it is stored: with a salt of the server's own and the digest over the salt and the text. */
+export async function saltedStatement(text: string | undefined): Promise<SaltedText | null> {
+  if (text === undefined) return null;
+  const salt = randomBytes(32).toString("hex");
+  return { text, salt, digest: await textDigest(salt, text) };
+}
+
+/**
+ * POST /api/notices/reexamine: a notifier asks for a re-examination of an item of their notice, with either token, as
+ * for the status page. At most five a day from one network, counted before the token is looked at, so the route is no
+ * faster way to try tokens than the status page. A re-examination shares its position with the item it examines again,
+ * so the request names the newest item at that position: what the page shows last there. A position that holds no item
+ * is reexamination_not_open, as an item that cannot be examined again is.
+ */
+export async function reexamineNotice(deps: ModerationDeps, request: NoticeReexamineRequest, netHash: string): Promise<ReexamineResponse> {
+  const key = `reexamine:day:net:${netHash}`;
+  await countOrRefuse(deps, key, DAY_MS, DAILY_LIMITS.reexaminations);
+  const { notice } = await noticeFor(deps, request);
+  const item = await newestItemAt(deps.apiDb, notice.id, request.position);
+  if (!item) throw new ModerationError("reexamination_not_open");
+  return reexamine(deps, item, request.statement, key);
+}
+
+/**
+ * POST /api/moderation/items/:item/reexamine: a signed-in reporter asks for a re-examination of an item of a report of
+ * their own, named by the id their list gives. At most five a day for one account. An item that is not theirs, or whose
+ * record no longer names them, is not_found.
+ */
+export async function reexamineOwnItem(deps: ModerationDeps, viewer: string, itemId: string, request: ReexamineRequest): Promise<ReexamineResponse> {
+  const key = `reexamine:day:account:${viewer}`;
+  await countOrRefuse(deps, key, DAY_MS, DAILY_LIMITS.reexaminations);
+  const item = await reporterItem(deps.apiDb, viewer, itemId);
+  if (!item) throw new ModerationError("not_found");
+  return reexamine(deps, item, request.statement, key);
 }

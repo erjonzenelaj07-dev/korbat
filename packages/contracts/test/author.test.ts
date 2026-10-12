@@ -4,12 +4,15 @@ import {
   ALREADY_NOT_SHOWN,
   AuthorCasesPage,
   AuthorCasesQuery,
+  DecisionAppeal,
   DecisionView,
   NoticeItemStatus,
   OUTCOME_PHRASES,
   PostView,
   QuotedPost,
   REPORTS_PAGE_SIZE,
+  REVIEWER_STATES,
+  ReportItem,
   ReportsPage,
   ReportsQuery,
   SUSPECT_OUTCOME_PHRASES,
@@ -98,7 +101,7 @@ describe("an item's words from the status answer's item", () => {
 });
 
 describe("the author's list of decisions", () => {
-  const row = { id: id(3), kind: "final", outcome: "restricted", decidedOn: "2026-10-04", post: { id: id(1), createdAt: TIME }, actions: ["remove"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null };
+  const row = { id: id(3), kind: "final", outcome: "restricted", decidedOn: "2026-10-04", post: { id: id(1), createdAt: TIME }, actions: ["remove"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, appeal: null };
 
   test("a page holds decisions, each with its day, what it did, the post's time for a decision about a post, the rule or the law and where its appeal stands", () => {
     const page = { decisions: [row, { ...row, id: id(4), kind: "interim", post: null, actions: ["reset_bio", "seal_media"], ruleId: null, legal: true, appealUntil: null }], nextCursor: "abc" };
@@ -106,6 +109,15 @@ describe("the author's list of decisions", () => {
     expect(AuthorCasesPage.parse({ decisions: [{ ...row, kind: "correction", outcome: "reversed", actions: ["restore"], ruleId: null, appealUntil: null, reversedOn: null }], nextCursor: null }).decisions[0]!.actions).toEqual(["restore"]);
     expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, decidedOn: TIME }], nextCursor: null }).success).toBe(false);
     expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, actions: ["delete"] }], nextCursor: null }).success).toBe(false);
+  });
+
+  test("a row says where the author's appeal of the decision stands: none, pending, or its answer", () => {
+    for (const appeal of [null, "pending", "kept", "partly_reversed", "reversed"]) {
+      expect(AuthorCasesPage.parse({ decisions: [{ ...row, appealUntil: null, appeal }], nextCursor: null }).decisions[0]!.appeal, String(appeal)).toBe(appeal);
+    }
+    expect(AuthorCasesPage.safeParse({ decisions: [{ ...row, appeal: "answered" }], nextCursor: null }).success).toBe(false);
+    const { appeal: _appeal, ...without } = row;
+    expect(AuthorCasesPage.safeParse({ decisions: [without], nextCursor: null }).success).toBe(false);
   });
 
   test("its query takes an optional cursor and nothing else", () => {
@@ -138,7 +150,7 @@ describe("one decision as its author reads it", () => {
     reviewed: null,
   };
   const image = { id: id(7), alt: "a picture", width: 800, height: 600, small: `/api/media/${id(7)}/small.webp`, large: `/api/media/${id(7)}/large.webp` };
-  const view = { id: id(3), ...statement, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, content: { kind: "post", body: "the words", deletedByAuthor: false, images: [image], imageCount: 1, imagesHidden: null } };
+  const view = { id: id(3), ...statement, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, content: { kind: "post", body: "the words", deletedByAuthor: false, images: [image], imageCount: 1, imagesHidden: null }, appeal: null };
 
   test("it is the statement's data with what the author's screen adds: where the appeal stands and the content actioned", () => {
     expect(DecisionView.parse(view)).toEqual(view);
@@ -161,19 +173,40 @@ describe("one decision as its author reads it", () => {
     }
   });
 
+  test("the appeal is none, pending with who may review it as two answers that name nobody, or answered with the answering decision's statement", () => {
+    const pending = { state: "pending", filedAt: TIME, reviewer: "none_single_staff", needsAdmin: true };
+    const answered = { state: "answered", filedAt: TIME, answeredOn: "2026-10-09", result: "kept", answeredBy: id(9), statement: { ...statement, kind: "review", outcome: "kept" } };
+    for (const appeal of [pending, { ...pending, reviewer: "available", needsAdmin: false }, { ...pending, reviewer: "none_eligible" }, answered, { ...answered, result: "partly_reversed" }, { ...answered, result: "reversed" }]) {
+      expect(DecisionView.parse({ ...view, appealUntil: null, appeal }).appeal, JSON.stringify(appeal).slice(0, 60)).toEqual(appeal);
+    }
+    expect(DecisionAppeal.parse(pending)).toEqual(pending);
+    expect(REVIEWER_STATES).toEqual(["available", "none_single_staff", "none_eligible"]);
+    // Each state is a strict shape: nothing of who took part in the case, and no answer without its statement.
+    for (const appeal of [{ ...pending, reviewer: "nobody" }, { ...pending, decidedBy: "mod_anna" }, { ...pending, mayReview: false }, { ...answered, statement: undefined }, { ...answered, result: "pending" }, { ...answered, answeredOn: TIME }, { state: "none" }]) {
+      expect(DecisionView.safeParse({ ...view, appeal }).success, JSON.stringify(appeal).slice(0, 60)).toBe(false);
+    }
+    const { appeal: _appeal, ...without } = view;
+    expect(DecisionView.safeParse(without).success).toBe(false);
+  });
+
   test("an image of the content carries what the app's own image route needs, and nothing of an image that is not shown", () => {
     expect(DecisionView.safeParse({ ...view, content: { ...view.content, images: [{ id: id(7), alt: "a picture" }] } }).success).toBe(false);
   });
 });
 
 describe("the reporter's list", () => {
-  const item = { position: 1, link: "http://localhost:8081/u/ada", scope: "account", suspect: false, sealed: false, unseen: false, quotedBy: null, outcome: null, decidedOn: null, changed: false, reexamines: false, reexamination: null };
+  const item = { id: id(5), position: 1, link: "http://localhost:8081/u/ada", scope: "account", suspect: false, sealed: false, unseen: false, quotedBy: null, outcome: null, decidedOn: null, changed: false, reexamines: false, reexamination: null };
 
-  test("a page holds the account's reports, each with its reference, its time and its items in the status page's shape, and says whether korbat's report mails to the account are stopped", () => {
+  test("a page holds the account's reports, each with its reference, its time and its items in the status page's shape with their ids, and says whether korbat's report mails to the account are stopped", () => {
     const page = { reports: [{ ref: "N-ABCDEFGH23", receivedAt: TIME, items: [item, { ...item, position: 2, outcome: "no_violation", decidedOn: "2026-10-04", reexamination: { open: true, until: "2027-04-04T07:00:00.000Z" } }] }], nextCursor: null, reportMailStopped: true };
     expect(ReportsPage.parse(page)).toEqual(page);
     expect(ReportsPage.safeParse({ ...page, reportMailStopped: undefined }).success).toBe(false);
     expect(ReportsPage.safeParse({ ...page, reports: [{ ref: "nope", receivedAt: TIME, items: [] }] }).success).toBe(false);
+    // An item of the list carries its id, by which its sender asks for a re-examination; the status page's item never does.
+    const { id: _id, ...asOnThePage } = item;
+    expect(ReportsPage.safeParse({ ...page, reports: [{ ref: "N-ABCDEFGH23", receivedAt: TIME, items: [asOnThePage] }] }).success).toBe(false);
+    expect(ReportItem.parse(item)).toEqual(item);
+    expect(Object.keys(NoticeItemStatus.shape)).not.toContain("id");
     expect(REPORTS_PAGE_SIZE).toBe(20);
     expect(ReportsPage.safeParse({ ...page, reports: Array.from({ length: REPORTS_PAGE_SIZE + 1 }, () => page.reports[0]) }).success).toBe(false);
   });

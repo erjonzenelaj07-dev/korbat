@@ -626,7 +626,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         expect(await view(deps, mod, randomUUID(), p.mediaIds[0]!)).toBe("not_found");
         expect(await accessRows(tx, mod.id, "image_viewed")).toBe(2);
         // The overview counts the day's views by staff handle.
-        expect((await overview(deps)).imagesToday).toContainEqual({ handle: await handleOf(tx, mod.id), count: 2 });
+        expect((await overview(deps, sessionOf(mod))).imagesToday).toContainEqual({ handle: await handleOf(tx, mod.id), count: 2 });
       });
     });
 
@@ -1062,7 +1062,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         await deps.background.settle();
         expect(mailed).toEqual([]);
         // The overview counts the day's findings by staff handle.
-        const today = (await overview(deps)).findingsToday;
+        const today = (await overview(deps, sessionOf(mod))).findingsToday;
         expect(today).toContainEqual({ handle: await handleOf(tx, mod.id), count: 2 });
         expect(today).toContainEqual({ handle: await handleOf(tx, other.id), count: 2 });
       });
@@ -1139,7 +1139,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         expect(await findingsOf(tx, mod.id)).toBe(1);
         const [items] = await tx.execute<{ n: number }>(sql`select count(*)::int as n from intake_items i join intakes k on k.id = i.intake_id where k.finding_by = ${mod.id}::uuid`);
         expect(items!.n).toBe(2);
-        expect((await overview(deps)).findingsToday).toContainEqual({ handle: await handleOf(tx, mod.id), count: 1 });
+        expect((await overview(deps, sessionOf(mod))).findingsToday).toContainEqual({ handle: await handleOf(tx, mod.id), count: 1 });
       });
     });
 
@@ -1162,7 +1162,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         expect(await refusal(openFinding(deps, sessionOf(mod), finding({ kind: "link", url: "https://elsewhere.example/post/x" })))).toBe("notice_link_offsite");
         expect(await findingsOf(tx, mod.id)).toBe(2);
         await openFinding(deps, sessionOf(other), finding({ kind: "post", id: posts[2]!.postId }));
-        const today = (await overview(deps)).findingsToday;
+        const today = (await overview(deps, sessionOf(mod))).findingsToday;
         expect(today).toContainEqual({ handle: await handleOf(tx, mod.id), count: 2 });
         expect(today).toContainEqual({ handle: await handleOf(tx, other.id), count: 1 });
       }, migrateDb);
@@ -1285,7 +1285,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
           [signedOut3, true],
           [fresh2, true],
         ]);
-        expect((await overview(world(tx, switchedOn).deps)).deferUnproven).toBe(true);
+        expect((await overview(world(tx, switchedOn).deps, sessionOf(mod))).deferUnproven).toBe(true);
       }, migrateDb);
     });
   });
@@ -1294,7 +1294,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
     test("per lane the open cases and the oldest unanswered item; the appeals waiting; mails waiting for more than an hour and those given up; decided items the release has not released after 26 hours; and the emergency switch", async () => {
       await inWorld(async (tx) => {
         const { deps } = world(tx);
-        const start = await overview(deps);
+        const start = await overview(deps, sessionOf(mod));
         expect(StaffOverview.safeParse(start).success).toBe(true);
         expect(start.lanes.map((row) => row.lane)).toEqual([0, 1, 2]);
         expect(start.deferUnproven).toBe(false);
@@ -1307,7 +1307,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         const decision = await decideIn(tx, mod, noticed.items[0]!.caseId!, { kind: "final", actions: [act("remove")] });
         await tx.execute(sql`update intakes set received_at = now() - interval '2 hours' where id = ${noticed.intakeId}::uuid`);
         await tx.execute(sql`update decisions set decided_at = now() - interval '30 hours' where id = ${decision}::uuid`);
-        let seen = await overview(deps);
+        let seen = await overview(deps, sessionOf(mod));
         expect(seen.lanes[0]).toMatchObject({ lane: 0, open: start.lanes[0]!.open + 1 });
         expect(Date.parse(seen.lanes[0]!.oldestAt!)).toBeLessThan(Date.now() - 399 * 24 * 3600_000);
         expect(seen.mailsWaiting).toEqual({ receipts: start.mailsWaiting.receipts + 1, authorMails: start.mailsWaiting.authorMails + 1, outcomes: start.mailsWaiting.outcomes });
@@ -1318,16 +1318,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         await tx.execute(sql`update intake_items set outcome_sent_at = now() - interval '3 hours', shown_outcome = outcome where id = ${noticed.items[0]!.id}::uuid`);
         await tx.execute(sql`update intakes set receipt = 'failed' where id = ${noticed.intakeId}::uuid`);
         await tx.execute(sql`update decisions set author_mail = 'failed' where id = ${decision}::uuid`);
-        seen = await overview(deps);
+        seen = await overview(deps, sessionOf(mod));
         expect(seen.mailsWaiting).toEqual({ receipts: start.mailsWaiting.receipts, authorMails: start.mailsWaiting.authorMails, outcomes: start.mailsWaiting.outcomes + 1 });
         expect(seen.mailsFailed).toEqual({ receipts: start.mailsFailed.receipts + 1, authorMails: start.mailsFailed.authorMails + 1, outcomes: start.mailsFailed.outcomes });
         expect(seen.releaseOverdue).toBe(start.releaseOverdue);
         // A mail given up more than 30 days ago is no longer counted.
         await tx.execute(sql`update decisions set decided_at = now() - interval '40 days' where id = ${decision}::uuid`);
-        expect((await overview(deps)).mailsFailed.authorMails).toBe(start.mailsFailed.authorMails);
+        expect((await overview(deps, sessionOf(mod))).mailsFailed.authorMails).toBe(start.mailsFailed.authorMails);
         // An appeal nobody has answered waits.
         await tx.execute(sql`insert into appeals (decision_id, appellant_account_id, filed_at) select d.id, p.author_id, now() from decisions d join cases c on c.id = d.case_id join posts p on p.id = c.target_id where d.id = ${decision}::uuid`);
-        expect((await overview(deps)).appealsWaiting).toBe(start.appealsWaiting + 1);
+        expect((await overview(deps, sessionOf(mod))).appealsWaiting).toBe(start.appealsWaiting + 1);
         expect((await readCase(deps, sessionOf(admin), noticed.items[0]!.caseId!)).appeals).toEqual([expect.objectContaining({ decisionId: decision, statement: null, answeredAt: null, result: null })]);
       }, migrateDb);
     });
@@ -1336,7 +1336,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
       await inWorld(async (tx) => {
         const { deps } = world(tx);
         expect(OVERVIEW_LIST_MAX).toBe(100);
-        const start = (await overview(deps)).reveals;
+        const start = (await overview(deps, sessionOf(mod))).reveals;
         const [first, second] = [(await report(tx, aPost((await imagePost(tx, 0)).postId))).caseId, (await report(tx, aPost((await imagePost(tx, 0)).postId))).caseId];
         // One more than the list holds, written as the migrator: the database stamps each row with the transaction's time.
         const more = OVERVIEW_LIST_MAX + 1;
@@ -1344,7 +1344,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
           sql`insert into case_access_log (staff_id, case_id, kind) select ${mod.id}::uuid, ${first}::uuid, 'identity_revealed'::access_kind from generate_series(1, ${more}::int) returning id::text as id`,
         );
         expect(rows).toHaveLength(more);
-        let seen = (await overview(deps)).reveals;
+        let seen = (await overview(deps, sessionOf(mod))).reveals;
         expect(StaffOverview.shape.reveals.safeParse(seen).success).toBe(true);
         expect(seen.total).toBe(start.total + more);
         expect(seen.items).toHaveLength(OVERVIEW_LIST_MAX);
@@ -1356,14 +1356,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         await tx.execute(sql`update case_access_log set at = now() + interval '1 minute' where id = ${newest}::bigint`);
         await tx.execute(sql`update case_access_log set at = now() - interval '29 days' where id = ${rows[0]!.id}::bigint`);
         await tx.execute(sql`update case_access_log set at = now() - interval '30 days 1 minute' where id = ${rows[1]!.id}::bigint`);
-        seen = (await overview(deps)).reveals;
+        seen = (await overview(deps, sessionOf(mod))).reveals;
         expect(seen.total).toBe(start.total + more);
         expect(seen.items[0]).toEqual({ at: expect.any(String), handle: await handleOf(tx, other.id), caseId: second });
         expect(seen.items.map((item) => item.at)).toEqual([...seen.items.map((item) => item.at)].sort().reverse());
         // With the list cut to this test's cases: every row of the last 30 days but the one moved out of it.
         await tx.execute(sql`update case_access_log set at = now() - interval '31 days' where kind = 'identity_revealed' and case_id <> all(${`{${first},${second}}`}::uuid[])`);
         await tx.execute(sql`delete from case_access_log where kind = 'identity_revealed' and case_id = ${first}::uuid and id > ${rows[49]!.id}::bigint`);
-        seen = (await overview(deps)).reveals;
+        seen = (await overview(deps, sessionOf(mod))).reveals;
         expect(seen.total).toBe(50);
         expect(seen.items).toHaveLength(50);
         expect(seen.items.at(-1)).toMatchObject({ caseId: first, handle: await handleOf(tx, mod.id) });

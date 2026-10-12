@@ -1,4 +1,4 @@
-import type { CaseDecision, ItemOutcome, ModerationErrorCode, StaffErrorCode } from "@korbat/contracts";
+import type { AppealsReviewedParams, CaseDecision, ItemOutcome, ModerationErrorCode, ReviewerState, StaffErrorCode } from "@korbat/contracts";
 
 /**
  * The console's own words for every code it can receive (3a design, section 10) and for every outcome it shows (3c
@@ -23,7 +23,8 @@ export const STAFF_MESSAGES: Record<StaffErrorCode, string> = {
 
 /**
  * The moderation codes the console can meet (3c design, sections 8 and 10): those of the case routes, of a decision, of
- * a finding's link and of a reveal. The codes of the app's own report form never reach the console.
+ * a review, of a finding's link and of a reveal. The codes of the app's own report form, appeal and re-examination never
+ * reach the console.
  */
 export const CONSOLE_MODERATION_CODES = [
   "notice_link_invalid",
@@ -33,6 +34,7 @@ export const CONSOLE_MODERATION_CODES = [
   "staff_recused",
   "staff_target",
   "admin_required",
+  "reviewer_conflict",
   "decision_cap",
   "profile_changed",
   "snapshot_mismatch",
@@ -56,6 +58,7 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
     "You cannot open or decide this case: an account linked to you takes part in it, or follows, blocks, mutes or replied to someone who does, or the post replies to or quotes a post of an account linked to you. Another staff member must handle it.",
   staff_target: "A final decision cannot restrict a staff account: staff are disciplined by demotion. A measure taken while deciding can.",
   admin_required: "Only an admin can take this decision.",
+  reviewer_conflict: "You cannot review this appeal: you made a decision in its case, or opened a finding in it. Another staff member must review it.",
   decision_cap: "You have reached the limit on decisions one staff account may confirm for now. Try again later.",
   profile_changed: "The profile changed since the snapshot was taken. Take a fresh snapshot and decide again.",
   snapshot_mismatch: "The snapshot is not the one this case holds. Read the case again.",
@@ -121,6 +124,33 @@ export const DECISION_OUTCOMES: Record<CaseDecision["outcome"], string> = {
   partly_reversed: "reversed in part",
   reversed: "reversed",
 };
+
+/** The three answers a review gives, as the review composer names them. */
+export const REVIEW_OUTCOMES: Record<AppealsReviewedParams["outcome"], string> = {
+  kept: "Keep",
+  partly_reversed: "Reverse in part",
+  reversed: "Reverse",
+};
+
+/**
+ * The words beside an appeal, on the appeals screen and on the case page (3c design, section 7.7): whether the reading
+ * person may review it, whether its review is an admin's, and whether anyone at korbat may review it now. None of them
+ * says who took part in the case or who reported in it.
+ */
+export const APPEAL_WORDS = {
+  mayReview: "You may review it.",
+  mayNotReview: "You may not review it: a reviewer made none of the case's decisions, opened no finding in it, and is not close to anyone in it.",
+  needsAdmin: "Its review is an admin's.",
+  reviewer: {
+    available: "A reviewer is available.",
+    none_single_staff: "It has no possible reviewer now: korbat has one staff account that could review it, and that one took part in the case.",
+    none_eligible: "It has no possible reviewer now: every staff account that could review it took part in the case or is close to someone in it.",
+  } satisfies Record<ReviewerState, string>,
+  statementOnCase: "What the appellant wrote is read on the case's page.",
+  reviewerRule: "Appeals need a reviewer who made none of the case's decisions and opened no finding in it.",
+  reviewLabel: "Review this appeal",
+  notYours: "This appeal is answered, or is not yours to review.",
+} as const;
 
 /** What a decision that lifted the protection of reported images did, as the home screen's list words it. */
 export const PROTECTION_LIFTED_WORDS: Record<"unsealed" | "dismissed", string> = {

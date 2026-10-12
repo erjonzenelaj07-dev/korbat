@@ -1,16 +1,19 @@
-import { AuthorCasesQuery, NoticeContactRequest, NoticeRequest, NoticeStatusRequest, ReportsQuery } from "@korbat/contracts";
+import { AppealRequest, AuthorCasesQuery, NoticeContactRequest, NoticeReexamineRequest, NoticeRequest, NoticeStatusRequest, ReexamineRequest, ReportsQuery } from "@korbat/contracts";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
+import { fileAppeal } from "./appeals";
 import { authorCases, authorDecisionView } from "./author";
 import type { ModerationDeps } from "./context";
-import { noticeContact, noticeStatus, submitNotice, type NoticeSender } from "./intake";
+import { noticeContact, noticeStatus, reexamineNotice, reexamineOwnItem, submitNotice, type NoticeSender } from "./intake";
 import { reporterList, resumeReportMail } from "./reports";
 
 /** A decision's id in the lower case PostgreSQL returns. */
 const DecisionParam = z.object({ id: z.uuid().transform((id) => id.toLowerCase()) });
+/** An item's id, the same way. */
+const ItemParam = z.object({ item: z.uuid().transform((id) => id.toLowerCase()) });
 
 /**
  * The guard the signed-in routes stand behind when the module is built without the server's: it refuses every request.
@@ -24,14 +27,15 @@ export const noSession: MiddlewareHandler<AppEnv> = async (c) => c.json(errorBod
  * section 5). Handlers only validate, call a flow and shape the response; a flow's refusal is a ModerationError, which
  * the app's error handler turns into the shared envelope.
  *
- * The three routes under `/api/notices` take a request with or without a session. Signed out, such a request passes
+ * The four routes under `/api/notices` take a request with or without a session. Signed out, such a request passes
  * session resolution with its Origin checked and no CSRF token, since there is no cookie to ride on; signed in from a
  * browser, it carries the token as every cookie request does. The status page's tokens travel in the body of a POST, so
  * no address, and no server log, ever holds one.
  *
- * The four routes under `/api/moderation` are the signed-in account's own (section 7.6). `guard` is the auth module's
- * requireSession: an onboarded account, with CSRF and Origin already checked for cookie sessions. Each answers only for
- * the session's account: the decisions about it, and the reports it sent.
+ * The six routes under `/api/moderation` are the signed-in account's own (sections 7.6 and 7.7). `guard` is the auth
+ * module's requireSession: an onboarded account, with CSRF and Origin already checked for cookie sessions. Each answers
+ * only for the session's account: the decisions about it and its appeal of one, and the reports it sent and its request
+ * to have one of their items examined again.
  */
 export function moderationRoutes(deps: ModerationDeps, guard: MiddlewareHandler<AppEnv>) {
   const r = new Hono<AppEnv>();
@@ -49,13 +53,23 @@ export function moderationRoutes(deps: ModerationDeps, guard: MiddlewareHandler<
     await noticeContact(deps, c.req.valid("json"), netHash(c));
     return c.body(null, 204);
   });
+  // A notifier asks korbat to decide an item of their notice again, with either token, as for the status page.
+  r.post("/notices/reexamine", validate("json", NoticeReexamineRequest), async (c) => c.json(await reexamineNotice(deps, c.req.valid("json"), netHash(c)), 201));
 
   // The decisions about the account that its author was told of, newest first.
   r.get("/moderation/cases", guard, validate("query", AuthorCasesQuery), async (c) => c.json(await authorCases(deps, me(c), c.req.valid("query").cursor)));
   // One of them, with its statement's data and the content it was made on; not_found for anyone but its subject.
   r.get("/moderation/decisions/:id", guard, validate("param", DecisionParam), async (c) => c.json(await authorDecisionView(deps, me(c), c.req.valid("param").id)));
+  // The author's appeal of one of them: the database decides whether it is open. It answers the decision as it now reads.
+  r.post("/moderation/decisions/:id/appeal", guard, validate("param", DecisionParam), validate("json", AppealRequest), async (c) =>
+    c.json(await fileAppeal(deps, me(c), c.req.valid("param").id, c.req.valid("json")), 201),
+  );
   // The reports and notices the account sent, each item as its status page would give it.
   r.get("/moderation/reports", guard, validate("query", ReportsQuery), async (c) => c.json(await reporterList(deps, me(c), c.req.valid("query").cursor)));
+  // A re-examination of one of their items, named by the id that list gives.
+  r.post("/moderation/items/:item/reexamine", guard, validate("param", ItemParam), validate("json", ReexamineRequest), async (c) =>
+    c.json(await reexamineOwnItem(deps, me(c), c.req.valid("param").item, c.req.valid("json")), 201),
+  );
   // Lifts a stop of korbat's report mails to the account's address; the same answer whether or not there was one.
   r.post("/moderation/report-mail/resume", guard, async (c) => {
     await resumeReportMail(deps, me(c));

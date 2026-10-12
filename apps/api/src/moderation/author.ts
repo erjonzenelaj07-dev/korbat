@@ -1,5 +1,5 @@
-import { AUTHOR_CASES_PAGE_SIZE, mediaPath, type AuthorCasesPage, type DecisionContent, type DecisionView, type PostModeration, type RuleId } from "@korbat/contracts";
-import { authorDecision, authorDecisions, chipFacts, type AuthorDecisionFacts } from "./author-repo";
+import { AUTHOR_CASES_PAGE_SIZE, mediaPath, type AuthorCasesPage, type DecisionAppeal, type DecisionContent, type DecisionView, type PostModeration, type RuleId } from "@korbat/contracts";
+import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts } from "./author-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
 
@@ -60,6 +60,7 @@ export async function authorCases(deps: Pick<ModerationDeps, "apiDb">, viewer: s
       legal: row.legal,
       appealUntil: row.appealUntil,
       reversedOn: row.reversedOn,
+      appeal: row.appeal,
     })),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > AUTHOR_CASES_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,
@@ -94,6 +95,22 @@ function contentOf(facts: AuthorDecisionFacts): DecisionContent {
 }
 
 /**
+ * The author's appeal as their screen shows it (3c design, section 7.7). A pending appeal says whether anyone may review
+ * it now and whether its review is an admin's, in the database's own two answers, which name nobody. An answered one
+ * carries the statement of the decision that answered it: the review, or the correction that reversed everything before
+ * a review came, read as every statement is and so told to the author in the same words as its mail.
+ */
+async function appealOf(deps: Pick<ModerationDeps, "apiDb">, appeal: AuthorAppealFacts): Promise<DecisionAppeal> {
+  if (appeal.answeredBy === null || appeal.result === null || appeal.answeredOn === null) {
+    // An appeal that is not answered always has a reviewer state: the database answers null only for an answered one.
+    return { state: "pending", filedAt: appeal.filedAt, reviewer: appeal.reviewer ?? "none_eligible", needsAdmin: appeal.needsAdmin };
+  }
+  const answer = await decisionStatement(deps.apiDb, appeal.answeredBy);
+  if (!answer) throw new Error("an appeal is answered by a decision that does not exist");
+  return { state: "answered", filedAt: appeal.filedAt, answeredOn: appeal.answeredOn, result: appeal.result, answeredBy: appeal.answeredBy, statement: answer.statement };
+}
+
+/**
  * GET /api/moderation/decisions/:id: one decision as its author reads it, or not_found: for an id that names no
  * decision, for a decision about someone else, and for one its author was not told of.
  */
@@ -102,7 +119,14 @@ export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb">, vi
   if (!facts) throw new ModerationError("not_found");
   const found = await decisionStatement(deps.apiDb, decisionId);
   if (!found) throw new ModerationError("not_found");
-  return { id: decisionId, ...found.statement, appealUntil: facts.appealUntil, reversedOn: facts.reversedOn, content: contentOf(facts) };
+  return {
+    id: decisionId,
+    ...found.statement,
+    appealUntil: facts.appealUntil,
+    reversedOn: facts.reversedOn,
+    content: contentOf(facts),
+    appeal: facts.appeal === null ? null : await appealOf(deps, facts.appeal),
+  };
 }
 
 // ---------------------------------------------------------------- the chip

@@ -4,8 +4,9 @@ import { iso, rows, type Runner } from "./repo";
 
 /**
  * The queries the author's surfaces are built from (3c design, sections 5, 7.6 and 11): the list of decisions about an
- * account, one decision's gate with the content it was made on, and the chip's facts on the author's own posts. They read
- * decisions, their ledger, cases, snapshots and the author's own posts and nothing else: no query here can reach who
+ * account, one decision's gate with the content it was made on and where its appeal stands, and the chip's facts on the
+ * author's own posts. They read decisions, their ledger, cases, snapshots, the author's own appeals and posts, and the
+ * database's two answers about who may review an appeal, and nothing else: no query here can reach who
  * reported, what a report said or how many there were, and a test refuses the names of those tables in this file.
  */
 
@@ -62,6 +63,8 @@ export interface AuthorDecisionRow {
   legal: boolean;
   appealUntil: string | null;
   reversedOn: string | null;
+  /** Where the author's appeal of the decision stands: pending, or its result; null when they filed none. */
+  appeal: "pending" | "kept" | "partly_reversed" | "reversed" | null;
 }
 
 /**
@@ -77,7 +80,8 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                (select ${iso("p.created_at")} from posts p where c.target_type = 'post' and p.id = c.target_id) as post_created_at,
                coalesce((select array_agg(a.kind::text order by a.kind, a.media_id) from decision_actions a where a.decision_id = d.id), '{}') as actions,
                d.ended_interim, d.rule_id, d.ground is not distinct from 'illegal' as legal,
-               ${appealUntil} as appeal_until, ${reversedOn} as reversed_on
+               ${appealUntil} as appeal_until, ${reversedOn} as reversed_on,
+               (select coalesce(ap.result::text, 'pending') from appeals ap where ap.decision_id = d.id) as appeal
           from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
          where d.author_mail <> 'none'
            ${after === null ? sql`` : sql`and (d.decided_at, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
@@ -96,7 +100,22 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
     legal: row.legal as boolean,
     appealUntil: row.appeal_until as string | null,
     reversedOn: row.reversed_on as string | null,
+    appeal: row.appeal as AuthorDecisionRow["appeal"],
   }));
+}
+
+/**
+ * The author's appeal of a decision. While it is pending: whether anyone at korbat may review it now, as the database
+ * answers it in one word that names nobody, and whether its review is an admin's. Once answered: its result, the UTC day
+ * and the decision that answered it.
+ */
+export interface AuthorAppealFacts {
+  filedAt: string;
+  reviewer: "available" | "none_single_staff" | "none_eligible" | null;
+  needsAdmin: boolean;
+  result: "kept" | "partly_reversed" | "reversed" | null;
+  answeredOn: string | null;
+  answeredBy: string | null;
 }
 
 /** What the author's view of one decision adds to its statement: where its appeal stands, and its snapshot with what decides whether and how it is shown. */
@@ -105,6 +124,8 @@ export interface AuthorDecisionFacts {
   targetId: string;
   appealUntil: string | null;
   reversedOn: string | null;
+  /** Null when the author filed no appeal of this decision. */
+  appeal: AuthorAppealFacts | null;
   /** The database's one predicate by which a snapshot's content is withheld wherever it would be shown. */
   withheld: boolean;
   erased: boolean;
@@ -132,6 +153,9 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
   const [row] = await rows<Record<string, unknown>>(
     q,
     sql`select c.target_type, c.target_id, ${appealUntil} as appeal_until, ${reversedOn} as reversed_on,
+               ap.id as appeal_id, ${iso("ap.filed_at")} as appeal_filed_at, public.appeal_reviewer_state(ap.id) as appeal_reviewer,
+               public.review_needs_admin(d.id) as appeal_needs_admin, ap.result as appeal_result, ${day("ap.answered_at")} as appeal_answered_on,
+               ap.answered_by as appeal_answered_by,
                public.snapshot_withheld(d.snapshot_id) as withheld, s.erased_at is not null as erased, ${day("s.erased_at")} as erased_on,
                exists (select 1 from decisions r join cases rc on rc.id = r.case_id
                         where rc.target_type = c.target_type and rc.target_id = c.target_id and r.redacted_at is not null) as redacted,
@@ -142,6 +166,7 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
           join cases c on c.id = d.case_id
           join evidence_snapshots s on s.id = d.snapshot_id
           left join posts p on c.target_type = 'post' and p.id = c.target_id
+          left join appeals ap on ap.decision_id = d.id
          where d.id = ${decisionId}::uuid and d.author_mail <> 'none'
            and case when c.target_type = 'post' then p.author_id = ${accountId}::uuid else c.target_id = ${accountId}::uuid end`,
   );
@@ -151,6 +176,17 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
     targetId: row.target_id as string,
     appealUntil: row.appeal_until as string | null,
     reversedOn: row.reversed_on as string | null,
+    appeal:
+      row.appeal_id === null
+        ? null
+        : {
+            filedAt: row.appeal_filed_at as string,
+            reviewer: row.appeal_reviewer as AuthorAppealFacts["reviewer"],
+            needsAdmin: row.appeal_needs_admin as boolean,
+            result: row.appeal_result as AuthorAppealFacts["result"],
+            answeredOn: row.appeal_answered_on as string | null,
+            answeredBy: row.appeal_answered_by as string | null,
+          },
     withheld: row.withheld as boolean,
     erased: row.erased as boolean,
     erasedOn: row.erased_on as string | null,

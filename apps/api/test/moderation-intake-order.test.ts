@@ -62,7 +62,10 @@ function recording(openCases: Record<string, (string | null)[]>) {
         events.push(`read ${String(params[0])} ${target}`);
         return answer === null || answer === undefined ? [] : [{ id: answer }];
       }
-      if (statement.startsWith("insert into intake_items")) return events.push(`item ${String(params[2])} ${String(params[3])} in ${String(params[1])}`), [{ id: randomUUID(), seq: 1 }];
+      // The insert answers the position and the lane the database stored: for an item that is no re-examination, the ones it was given.
+      if (statement.startsWith("insert into intake_items")) {
+        return events.push(`item ${String(params[2])} ${String(params[3])} in ${String(params[1])}`), [{ id: randomUUID(), seq: 1, position: Number(params[4]), lane: Number(params[5]) }];
+      }
       if (statement.startsWith("select to_char(")) return events.push("time"), [{ at: TAKEN }];
       if (statement.startsWith("select display_name, bio, handle from evidence_snapshots")) return [];
       if (statement.startsWith("insert into evidence_snapshots")) {

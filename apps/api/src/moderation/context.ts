@@ -19,11 +19,16 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   staff_cannot_report: 403,
   notice_not_found: 404,
   already_reported: 409,
+  appeal_not_open: 422,
+  appeal_exists: 409,
+  reexamination_not_open: 422,
+  reexamination_exists: 409,
   case_changed: 409,
   case_closed: 409,
   staff_recused: 403,
   staff_target: 403,
   admin_required: 403,
+  reviewer_conflict: 403,
   decision_cap: 429,
   profile_changed: 409,
   snapshot_mismatch: 409,
@@ -41,8 +46,8 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   service_unavailable: 503,
 };
 
-// Those of the notice routes, and the first three after them, are written for the person reporting; the rest for staff,
-// whose console words them again for the screen. A recusal's words never say whether the conflict concerns the case's
+// Those of the notice routes, of the appeal and of the re-examination are written for the person reporting or reported; the
+// rest for staff, whose console words them again for the screen. A recusal's words never say whether the conflict concerns the case's
 // subject or someone who reported. The human check's names no contact address: the API holds none, and the
 // app words that code itself.
 const MESSAGES: Record<ModerationErrorKind, string> = {
@@ -52,11 +57,17 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   staff_cannot_report: "A staff account does not send reports. Open a finding in the staff console instead.",
   notice_not_found: "No report matches that reference and link.",
   already_reported: "You already reported this; it is being looked at.",
+  // One answer for every appeal that is not open: the decision cannot be appealed, its time has passed, or nothing of it is in force.
+  appeal_not_open: "This decision cannot be appealed now.",
+  appeal_exists: "You have already appealed this decision.",
+  reexamination_not_open: "A re-examination cannot be asked for this item now.",
+  reexamination_exists: "A re-examination of this item has already been asked for.",
   case_changed: "The case changed since it was opened. Open it again.",
   case_closed: "The case changed at that moment. Try again.",
   staff_recused: "You cannot act on this case: you, or an account close to you, are a party to it.",
   staff_target: "A final decision cannot restrict a staff account. Staff are disciplined by demotion.",
   admin_required: "Only an admin can take this decision.",
+  reviewer_conflict: "You cannot review this appeal: you took part in its case.",
   decision_cap: "You have reached the limit on decisions for now. Try again later.",
   profile_changed: "The profile changed since the snapshot was taken. Take a fresh snapshot and decide again.",
   snapshot_mismatch: "The snapshot is not the one this case holds.",

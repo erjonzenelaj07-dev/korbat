@@ -85,6 +85,11 @@ const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "unauthenti
   already_reported: "You already reported this; it is being looked at.",
   staff_cannot_report: "A staff account does not send reports. Open a finding in the staff console instead.",
   notice_not_found: "We could not find a report with this link.",
+  // Appeals and re-examination (3c design, section 9): one answer for every reason one is not open.
+  appeal_not_open: "This decision cannot be appealed now.",
+  appeal_exists: "You have already appealed this decision.",
+  reexamination_not_open: "A re-examination cannot be asked for this item now.",
+  reexamination_exists: "A re-examination of this item has already been asked for.",
   unauthenticated: "Sign in to continue.",
   invalid_request: "Some details are missing or invalid.",
   not_found: "That no longer exists.",

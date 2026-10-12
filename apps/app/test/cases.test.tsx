@@ -296,6 +296,7 @@ describe("Cases, under Settings", () => {
     legal: false,
     appealUntil: "2027-04-05T10:00:00.000Z",
     reversedOn: null,
+    appeal: null,
     ...extra,
   });
 
@@ -328,8 +329,8 @@ describe("Cases, under Settings", () => {
 
   const reports = (extra: Partial<ReportsPage> = {}): ReportsPage => ({
     reports: [
-      { ref: "N-ABCDEFGH23", receivedAt: TIME, items: [item({ link: `${APP}/u/old_handle`, scope: "account", outcome: "no_violation", reexamination: { open: true, until: UNTIL } }), { ...waiting, position: 2 }] },
-      { ref: "N-BCDEFGH234", receivedAt: TIME, items: [item({ outcome: "not_evident", unseen: true, reexamination: { open: true, until: UNTIL } })] },
+      { ref: "N-ABCDEFGH23", receivedAt: TIME, items: [{ ...item({ link: `${APP}/u/old_handle`, scope: "account", outcome: "no_violation", reexamination: { open: true, until: UNTIL } }), id: id(21) }, { ...waiting, position: 2, id: id(22) }] },
+      { ref: "N-BCDEFGH234", receivedAt: TIME, items: [{ ...item({ outcome: "not_evident", unseen: true, reexamination: { open: true, until: UNTIL } }), id: id(23) }] },
     ],
     nextCursor: null,
     reportMailStopped: false,
@@ -390,6 +391,7 @@ describe("a decision's screen", () => {
     appealUntil: "2027-04-04T10:00:00.000Z",
     reversedOn: null,
     content: { kind: "post", body: "the words that were judged", deletedByAuthor: false, images: [image(7)], imageCount: 1, imagesHidden: null },
+    appeal: null,
     ...extra,
   });
   const screen = (extra: Partial<DecisionView> = {}) => html(<DecisionDetail view={view(extra)} />);

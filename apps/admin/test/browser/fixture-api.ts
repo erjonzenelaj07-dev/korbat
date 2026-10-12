@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  AppealReviewRequest,
   CaseDecidedParams,
   CaseDecisionRequest,
   CEREMONY_CHALLENGE,
@@ -21,6 +22,9 @@ import {
   stepUpActionHash,
   stepUpBinding,
   textDigest,
+  type AppealRow,
+  type AppealsPage,
+  type AppealsReviewedParams,
   type AuditEntry,
   type AuditPage,
   type CaseDecision,
@@ -39,8 +43,10 @@ import {
   ACCOUNT_DECLINE,
   ACCOUNT_SEALABLE,
   adminCase,
+  appealedCase,
   CASE_ACCOUNT,
   CASE_ADMIN,
+  CASE_APPEALED,
   CASE_CHANGED,
   CASE_DECLINE,
   CASE_DRAFTS,
@@ -73,6 +79,11 @@ import { HOSTILE } from "../fixtures";
  * of what the page was shown, recomputed here, and each text it names is one the page saved on that case. The case is
  * then changed as the decision says, and answered as it now stands.
  *
+ * A review (section 7.7) is checked the same way: the assertion was made over a challenge bound to exactly this review of
+ * exactly this decision, its appeal is the decision's pending one, its snapshot the case's newest as shown, and its
+ * reason one the page saved on that case. The appeals' list answers what waits in the fixtures' cases, without a
+ * statement.
+ *
  * A text is saved without the key (section 7.4), also when its field loses focus: every save is kept, so the walk counts
  * them, and a case's answer carries the person's saved texts that no decision has named yet, as the API's does, so that a
  * reload brings them back. A step of the walk can have the next save refused, a case decided by another staff member
@@ -104,6 +115,7 @@ export const FORGED_REASON = "A reason this server wrote in the person's name.";
 /** What the walk types into the composer: the reason of a correction, the facts of a decision, and why it does not seal. Each holds markup. */
 export const TYPED_REASON = `The withhold was taken on the wrong post ${HOSTILE.img}`;
 export const TYPED_FACTS = `The post offers followers for money ${HOSTILE.quote}`;
+export const TYPED_REVIEW_REASON = `The rule does not cover a quotation ${HOSTILE.quote}`;
 export const TYPED_DECLINE = `The report repeats one that was answered ${HOSTILE.script}`;
 /** The facts of an admin's answer without a measure, of a decision on a case that changed, and of a draft a reload brings back. Each holds markup. */
 export const TYPED_ADMIN_FACTS = `The report's words give no concrete reason to believe it ${HOSTILE.img}`;
@@ -133,6 +145,7 @@ export const HOSTILE_TEXTS = [
     TYPED_NOTE,
     REVEALED_HANDLE,
     TYPED_REASON,
+    TYPED_REVIEW_REASON,
     TYPED_FACTS,
     TYPED_DECLINE,
     TYPED_ADMIN_FACTS,
@@ -313,7 +326,7 @@ function ceremonyChallenge(purpose: "staff_signin" | "staff_register", binding: 
  * The status the API answers each moderation refusal the fixtures use with (apps/api/src/moderation/context.ts); the
  * unit test that holds the staff statuses to the API's source holds these too.
  */
-export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, text_quotes_user: 422, rate_limited: 429, image_refused: 404, staff_recused: 403, case_changed: 409, snapshot_mismatch: 409 } as const;
+export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, text_quotes_user: 422, rate_limited: 429, image_refused: 404, staff_recused: 403, case_changed: 409, snapshot_mismatch: 409, reviewer_conflict: 403 } as const;
 
 /** The kinds of text a decision or a correction names: the ones a case's answer hands back as drafts while no decision has named them. */
 const DRAFT_KINDS: readonly string[] = ["facts", "reason", "legal_reference", "review_reason"];
@@ -388,6 +401,62 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
   if (view.target.type === "post" && actions.some((action) => action.kind === "remove")) view.target = { ...view.target, state: "removed", level: "removed" };
 }
 
+/**
+ * The case as a confirmed review leaves it, changed in place: the review with its reversals in the case's list and
+ * history, the measures it lifts no longer in force, the appeal answered, the next version, and a post whose removal was
+ * lifted shown again.
+ */
+function applyReview(view: CaseView, reviewed: CaseDecision, params: AppealsReviewedParams, reason: string, staffHandle: string): void {
+  const at = new Date().toISOString();
+  const id = randomUUID();
+  const actions: CaseDecision["actions"] = params.actions.map((action) => {
+    const lifts: readonly string[] = MEASURES[action.kind].lifts ?? [];
+    const lifted = reviewed.actions.find((held) => held.inForce && lifts.includes(held.kind) && held.mediaId === action.mediaId);
+    if (lifted) {
+      lifted.inForce = false;
+      lifted.liftedBy = id;
+    }
+    return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null };
+  });
+  view.decisions = [
+    ...view.decisions,
+    {
+      id,
+      kind: "review",
+      outcome: params.outcome,
+      ground: null,
+      ruleId: null,
+      rulesVersion: params.rulesVersion,
+      redressVersion: params.redressVersion,
+      category: params.category,
+      categoryKeyword: null,
+      source: reviewed.source,
+      decidedAt: at,
+      staffHandle,
+      throughSeq: 0,
+      answersFromSeq: null,
+      reviewsDecisionId: reviewed.id,
+      snapshotId: params.snapshotId,
+      suspect: reviewed.suspect,
+      unseen: false,
+      needsAdmin: false,
+      endedInterim: false,
+      facts: null,
+      reason,
+      legalReference: null,
+      actions,
+    },
+  ];
+  view.appeals = view.appeals.map((appeal) => (appeal.id === params.appealId ? { ...appeal, answeredAt: at, result: params.outcome, answeredBy: id, reviewer: null, mayReview: false } : appeal));
+  view.history = [
+    ...view.history,
+    { at, event: "decision", refId: id, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: "review", outcome: params.outcome, staffHandle, result: null },
+    { at, event: "appeal_answered", refId: params.appealId, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: params.outcome },
+  ];
+  view.stateVersion += 1;
+  if (view.target.type === "post" && actions.some((action) => action.kind === "restore")) view.target = { ...view.target, state: "visible", level: "visible" };
+}
+
 /** `raw` answers bytes of this type in place of JSON: an image. */
 type Answer = { status: number; body?: unknown; raw?: { type: string; bytes: Buffer }; headers?: Record<string, string | string[]> };
 
@@ -432,11 +501,14 @@ export function createFixtureApi() {
       [CASE_ADMIN, adminCase()],
       [CASE_CHANGED, plainCase(CASE_CHANGED, "f5d8e7da-4906-48da-91e6-25c413a8f7e1")],
       [CASE_DRAFTS, plainCase(CASE_DRAFTS, "f5d8e7da-4906-48da-91e6-25c413a8f7e2")],
+      [CASE_APPEALED, appealedCase()],
     ]),
     /** The role the signed-in person holds: a moderator, unless a step of the walk makes them an admin. */
     role: "moderator" as StaffMe["role"],
     /** Every decision the key confirmed: the case and the params, as the page sent them. */
     decisions: [] as { caseId: string; params: CaseDecidedParams }[],
+    /** Every review the key confirmed: the reviewed decision and the params, as the page sent them. */
+    reviews: [] as { decisionId: string; params: AppealsReviewedParams }[],
     /** Every image the page asked for, by its path, in order. */
     imageRequests: [] as string[],
     /**
@@ -574,6 +646,35 @@ export function createFixtureApi() {
     return { ...view, drafts: drafts.map((draft) => (draft === last ? { ...draft, text: FORGED_DRAFT } : draft)) };
   }
 
+  /**
+   * The appeals of the fixtures' cases that no review has answered, newest first, as the list's route answers them: each
+   * with its case, its decision and the marks the case's own answer carries, and never the appellant's statement.
+   */
+  function pendingAppeals(): AppealRow[] {
+    const rows: AppealRow[] = [];
+    for (const view of state.cases.values()) {
+      for (const appeal of view.appeals) {
+        const decided = view.decisions.find((found) => found.id === appeal.decisionId);
+        if (appeal.result !== null || appeal.reviewer === null || !decided) continue;
+        rows.push({
+          id: appeal.id,
+          caseId: view.id,
+          decisionId: decided.id,
+          filedAt: appeal.filedAt,
+          decidedAt: decided.decidedAt,
+          deadline: iso(Date.parse(decided.decidedAt) + 182 * 24 * HOUR),
+          ruleId: decided.ruleId,
+          legal: decided.ground === "illegal",
+          actions: decided.actions.map((action) => action.kind),
+          reviewer: appeal.reviewer,
+          needsAdmin: appeal.needsAdmin,
+          mayReview: appeal.mayReview,
+        });
+      }
+    }
+    return rows.sort((a, b) => (a.filedAt < b.filedAt ? 1 : -1));
+  }
+
   function parse<T>(schema: z.ZodType<T>, body: unknown, what: string): T {
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
@@ -673,13 +774,15 @@ export function createFixtureApi() {
       "POST /api/staff/step-up/options",
       "GET /api/staff/overview",
       "GET /api/staff/queue",
+      "GET /api/staff/appeals",
       "POST /api/staff/findings",
     ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
     const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts|decisions))?$/.exec(url.pathname);
     const image = req.method === "GET" ? IMAGE_PATH.exec(url.pathname) : null;
     const reveal = req.method === "POST" ? /^\/api\/staff\/items\/([0-9a-f-]{36})\/reveal$/.exec(url.pathname) : null;
-    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal) throw new Refusal(404, "not_found");
+    const review = req.method === "POST" ? /^\/api\/staff\/decisions\/([0-9a-f-]{36})\/review$/.exec(url.pathname) : null;
+    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
     // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
@@ -693,9 +796,14 @@ export function createFixtureApi() {
           .filter((decided) => decided.kind === "interim" && decided.staffHandle === PERSON_HANDLE)
           .flatMap((decided) => decided.actions.filter((action) => action.kind === "seal_media" && action.inForce).map((action) => ({ at: decided.decidedAt, handle: decided.staffHandle, caseId: view.id, posts: action.sealed?.posts ?? 0, images: action.sealed?.images ?? 0 }))),
       );
+      // The appeals: those of the fixtures' cases that still wait, and one more that nobody at korbat can review now.
+      const waiting = pendingAppeals().length + 1;
       return {
         status: 200,
         body: overview({
+          appealsWaiting: waiting,
+          appealsYouMayReview: pendingAppeals().filter((row) => row.mayReview).length,
+          appealsWithoutReviewer: 1,
           reveals: { total: 1 + state.reveals.length, items: [{ at: iso(now - 26 * HOUR), handle: HOSTILE.script, caseId: CASE_POST }] },
           protectionLifted: { total: 1, items: [{ at: iso(now - 3 * HOUR), handle: HOSTILE.img, caseId: CASE_FROZEN, kind: "dismissed" }] },
           sealsDeclined: { total: declined.length, items: declined },
@@ -709,6 +817,72 @@ export function createFixtureApi() {
       if (cursor !== null && cursor !== "second-page") throw new Refusal(400, "invalid_request");
       const page: QueuePage = cursor === null ? { cases: QUEUE_ROWS.slice(0, 2), nextCursor: "second-page" } : { cases: QUEUE_ROWS.slice(2), nextCursor: null };
       return { status: 200, body: page };
+    }
+    if (key === "GET /api/staff/appeals") {
+      // One page: what waits in the fixtures' cases, newest first, and an appeal of a seal that only an admin reviews and
+      // that korbat's one admin took part in, so that the list shows each mark.
+      if (url.searchParams.get("cursor") !== null) throw new Refusal(400, "invalid_request");
+      const unreviewable: AppealRow = {
+        id: "28a1b20d-7c39-4b0d-84a9-58f746db2a23",
+        caseId: CASE_FROZEN,
+        decisionId: "39b2c31e-8d4a-4c1e-95ba-69a857ec3b34",
+        filedAt: iso(now - 30 * HOUR),
+        decidedAt: iso(now - 9 * 24 * HOUR),
+        deadline: iso(now + 170 * 24 * HOUR),
+        ruleId: "R2",
+        legal: false,
+        actions: ["seal_media"],
+        reviewer: "none_single_staff",
+        needsAdmin: true,
+        mayReview: false,
+      };
+      return { status: 200, body: { appeals: [unreviewable, ...pendingAppeals()], nextCursor: null } satisfies AppealsPage };
+    }
+    if (review) {
+      const what = "POST /api/staff/decisions/:decision/review";
+      const decisionId = review[1]!;
+      const { stepUp, ...params } = parse(AppealReviewRequest, body, what);
+      const found = [...state.cases.values()].find((view) => view.decisions.some((decided) => decided.id === decisionId));
+      const reviewed = found?.decisions.find((decided) => decided.id === decisionId);
+      if (!found || !reviewed) throw new Refusal(404, "not_found");
+      // The assertion: by the session's own key, over a challenge issued for exactly this review of exactly this decision.
+      const issued = clientData(stepUp.response.clientDataJSON, "webauthn.get", "step_up", "staff_step_up_invalid");
+      const hash = await stepUpActionHash({ action: "appeals_reviewed", target: { type: "decision", id: decisionId }, params });
+      if (issued.target !== decisionId || issued.hash !== hash || stepUp.id !== session.credentialId) {
+        problem(`${what}: an assertion for ${String(issued.target)} from ${stepUp.id}, over ${issued.hash === hash ? "these" : "other"} params`);
+        throw refuse("staff_step_up_invalid");
+      }
+      if (params.stateVersion !== found.stateVersion) throw new Refusal(MODERATION_REFUSAL_STATUS.case_changed, "case_changed");
+      const appeal = found.appeals.find((filed) => filed.decisionId === decisionId && filed.result === null);
+      // The appeal the key confirmed is the decision's pending one, and this person is one the case's answer let review it.
+      if (!appeal || appeal.id !== params.appealId) throw new Refusal(MODERATION_REFUSAL_STATUS.case_changed, "case_changed");
+      if (!appeal.mayReview) {
+        problem(`${what}: a review by someone the case's answer did not mark as its reviewer`);
+        throw new Refusal(MODERATION_REFUSAL_STATUS.reviewer_conflict, "reviewer_conflict");
+      }
+      const [newest] = found.snapshots;
+      const shownDigest = !newest || newest.withheld ? null : await snapshotDigest({ ...newest });
+      if (!newest || params.snapshotId !== newest.id || params.snapshotDigest !== shownDigest) {
+        problem(`${what}: a snapshot that is not the case's newest as the page was shown it`);
+        throw new Refusal(MODERATION_REFUSAL_STATUS.snapshot_mismatch, "snapshot_mismatch");
+      }
+      // The reason: one the page saved on this case as a review reason, not yet used, and never a digest this server made up.
+      const saved = state.texts.find((text) => text.caseId === found.id && text.kind === "review_reason" && text.digest === params.reasonDigest && !text.used);
+      if (!saved || state.forgedDigests.includes(params.reasonDigest)) {
+        problem(`${what}: a review reason the page did not save on this case`);
+        throw new Refusal(MODERATION_REFUSAL_STATUS.text_not_found, "text_not_found");
+      }
+      // A review lifts what is still in force of the reviewed decision, and its answer says how much.
+      const inForce = reviewed.actions.filter((action) => MEASURES[action.kind].lifts === null && action.inForce).length;
+      const lifted = params.actions.length;
+      if ((params.outcome === "kept" && lifted !== 0) || (params.outcome === "reversed" && lifted !== inForce) || (params.outcome === "partly_reversed" && (lifted === 0 || lifted >= inForce))) {
+        problem(`${what}: an answer that its reversals do not bear out`);
+        throw new Refusal(422, "invalid_decision");
+      }
+      saved.used = true;
+      state.reviews.push({ decisionId, params });
+      applyReview(found, reviewed, params, saved.text, PERSON_HANDLE);
+      return { status: 201, body: caseAnswer(found) };
     }
     if (key === "POST /api/staff/findings") {
       const finding = parse(FindingRequest, body, key);
@@ -867,11 +1041,13 @@ export function createFixtureApi() {
           ? [...state.cases.values()].some((view) => view.items.some((item) => item.id === action.target.id))
           : action.action === "case_decided"
             ? state.cases.has(action.target.id)
-            : state.sessions.has(action.target.id);
+            : action.action === "appeals_reviewed"
+              ? [...state.cases.values()].some((view) => view.decisions.some((decided) => decided.id === action.target.id))
+              : state.sessions.has(action.target.id);
       if (!known) throw new Refusal(404, "not_found");
       // The page builds a reveal's or a decision's params from the digests it computed itself: one a save's answer carried never gets here.
       const decided = action.action === "case_decided" ? CaseDecidedParams.parse(action.params) : null;
-      const underDigests = decided ? [decided.factsDigest, decided.reasonDigest, decided.legalReferenceDigest] : action.action === "identity_revealed" ? [action.params.reasonDigest] : [];
+      const underDigests = decided ? [decided.factsDigest, decided.reasonDigest, decided.legalReferenceDigest] : action.action === "identity_revealed" || action.action === "appeals_reviewed" ? [action.params.reasonDigest] : [];
       if (underDigests.some((digest) => typeof digest === "string" && state.forgedDigests.includes(digest))) problem(`${key}: an action under a digest the page did not compute`);
       state.stepUpOptionsServed += 1;
       // The mismatched case: an API that asks the key to confirm the revocation of this very session instead of the one

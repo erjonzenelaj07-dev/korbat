@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { ActionKind, CaseDecidedParams, Lane, StaffStoredAssertion } from "@korbat/contracts";
+import type { ActionKind, AppealsReviewedParams, CaseDecidedParams, Lane, StaffStoredAssertion } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 
 /**
@@ -94,6 +94,13 @@ export async function openCase(tx: DbTx, targetType: TargetType, targetId: strin
   return open?.id ?? null;
 }
 
+/** A free text someone outside korbat wrote, with the salt and the digest the server made for it. */
+export interface SaltedText {
+  text: string;
+  salt: string;
+  digest: string;
+}
+
 /** One target of an intake. With a case the attach trigger numbers it into the case; without one it is stored as answered at once, not available. */
 export interface ItemRow {
   intakeId: string;
@@ -106,15 +113,24 @@ export interface ItemRow {
   mediaId: string | null;
   /** For an account, the handle as it was named, in lower case. */
   namedHandle: string | null;
+  /**
+   * For a re-examination: the item it examines again, and what its sender added. The attach trigger then decides whether
+   * that item may be examined again now, and takes the target, the handle, the position and the lane from it whatever
+   * this row says.
+   */
+  reexamines?: { itemId: string; statement: SaltedText | null };
 }
 
-export async function insertItem(tx: DbTx, row: ItemRow): Promise<{ id: string; seq: number | null }> {
-  const [inserted] = await rows<{ id: string; seq: number | null }>(
+/** Stores one item. Answers its id, its number in its case, and the position and the lane the database gave it. */
+export async function insertItem(tx: DbTx, row: ItemRow): Promise<{ id: string; seq: number | null; position: number; lane: Lane }> {
+  const statement = row.reexamines?.statement ?? null;
+  const [inserted] = await rows<{ id: string; seq: number | null; position: number; lane: Lane }>(
     tx,
-    sql`insert into intake_items (intake_id, case_id, target_type, target_id, position, lane, media_id, named_handle, outcome)
+    sql`insert into intake_items (intake_id, case_id, target_type, target_id, position, lane, media_id, named_handle, outcome, reexamines_item_id, statement, statement_salt, statement_digest)
         values (${row.intakeId}::uuid, ${row.caseId}::uuid, ${row.targetType}::moderation_target, ${row.targetId}::uuid, ${row.position}::smallint, ${row.lane}::smallint,
-                ${row.mediaId}::uuid, ${row.namedHandle}, ${row.caseId === null ? "not_available" : null}::item_outcome)
-        returning id, seq`,
+                ${row.mediaId}::uuid, ${row.namedHandle}, ${row.caseId === null ? "not_available" : null}::item_outcome,
+                ${row.reexamines?.itemId ?? null}::uuid, ${statement?.text ?? null}, ${statement?.salt ?? null}, ${statement?.digest ?? null})
+        returning id, seq, position, lane`,
   );
   return inserted!;
 }
@@ -176,6 +192,8 @@ export async function noticeById(q: Runner, intakeId: string): Promise<NoticeRow
 
 /** One item of a notice as its sender may read it: nothing of the case, the decision's reasons or the target's content. */
 export interface NoticeItemRow {
+  /** The item's id: only the signed-in sender's own list carries it; the status page names an item by its position. */
+  id: string;
   position: number;
   targetType: TargetType;
   targetId: string;
@@ -227,6 +245,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
   const byNotice = new Map<string, NoticeItemRow[]>(intakeIds.map((id) => [id, []]));
   if (intakeIds.length === 0) return byNotice;
   const found = await rows<{
+    id: string;
     intake_id: string;
     position: number;
     target_type: TargetType;
@@ -250,7 +269,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
     in_window: boolean;
   }>(
     q,
-    sql`select i.intake_id, i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
+    sql`select i.id, i.intake_id, i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
                i.outcome_sent_at is not null as released, i.shown_outcome,
                to_char(coalesce(d.decided_at, i.created_at) at time zone 'UTC', 'YYYY-MM-DD') as decided_on,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
@@ -267,6 +286,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
          order by i.intake_id, (case when i.position > 10 then i.position - 10 else i.position end), (i.position > 10), i.created_at, i.id`,
   );
   const itemOf = (row: (typeof found)[number]): NoticeItemRow => ({
+    id: row.id,
     position: row.position,
     targetType: row.target_type,
     targetId: row.target_id,
@@ -295,6 +315,73 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
 /** One notice's items, in the order its page lists them. */
 export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeItemRow[]> {
   return (await noticeItemsOf(q, [intakeId])).get(intakeId) ?? [];
+}
+
+/** An item as the re-examination route needs it: what it is about, and whose notice it belongs to. */
+export interface ReexaminedItemRow {
+  id: string;
+  intakeId: string;
+  position: number;
+  targetType: TargetType;
+  targetId: string;
+  namedHandle: string | null;
+  suspect: boolean;
+  /** The id under which the auth module keeps the notice's contact, whose day of forgetting a re-examination moves. */
+  contactId: string | null;
+  /** The signed-in reporter, while the notice's record still names one. */
+  reporterId: string | null;
+}
+
+type ReexaminedColumns = { id: string; intake_id: string; position: number; target_type: TargetType; target_id: string; named_handle: string | null; suspect: boolean; contact_id: string | null; reporter_id: string | null };
+const reexaminedColumns = sql`i.id, i.intake_id, i.position, i.target_type, i.target_id, i.named_handle, i.suspect, n.contact_id, n.reporter_id`;
+const reexaminedOf = (row: ReexaminedColumns | undefined): ReexaminedItemRow | null =>
+  row
+    ? { id: row.id, intakeId: row.intake_id, position: row.position, targetType: row.target_type, targetId: row.target_id, namedHandle: row.named_handle, suspect: row.suspect, contactId: row.contact_id, reporterId: row.reporter_id }
+    : null;
+
+/**
+ * The newest item at this position of a notice, or null. A re-examination shares its position with the item it examines
+ * again, so the newest one is what the status page shows last there, and what a further request is about.
+ */
+export async function newestItemAt(q: Runner, intakeId: string, position: number): Promise<ReexaminedItemRow | null> {
+  return reexaminedOf(
+    (
+      await rows<ReexaminedColumns>(
+        q,
+        sql`select ${reexaminedColumns} from intake_items i join intakes n on n.id = i.intake_id
+             where i.intake_id = ${intakeId}::uuid and i.position = ${position}::smallint order by i.created_at desc, i.id desc limit 1`,
+      )
+    )[0],
+  );
+}
+
+/** The item with this id when it belongs to a report or a notice this account sent and korbat still keeps that link; null otherwise. */
+export async function reporterItem(q: Runner, reporterId: string, itemId: string): Promise<ReexaminedItemRow | null> {
+  return reexaminedOf((await rows<ReexaminedColumns>(q, sql`select ${reexaminedColumns} from intake_items i join intakes n on n.id = i.intake_id where i.id = ${itemId}::uuid and n.reporter_id = ${reporterId}::uuid`))[0]);
+}
+
+/**
+ * For a suspect item about a post that quotes another: the item korbat added to the same notice for the quoted post, when
+ * that item can be examined again now (a moderator answered it without action, the answer is released, its window is
+ * open by the database's clock, and nobody asked yet). Null otherwise. The database's check at commit asks the same of
+ * the same rows (intake_items_quote), so a release that lands between this read and the commit is met there.
+ */
+export async function addedItemOpen(q: Runner, origin: { intakeId: string; targetId: string }): Promise<ReexaminedItemRow | null> {
+  return reexaminedOf(
+    (
+      await rows<ReexaminedColumns>(
+        q,
+        sql`select ${reexaminedColumns}
+              from posts p
+              join intake_items i on i.intake_id = ${origin.intakeId}::uuid and i.target_type = 'post' and i.target_id = p.quote_of_id and i.reexamines_item_id is null and i.position > 10
+              join intakes n on n.id = i.intake_id
+             where p.id = ${origin.targetId}::uuid
+               and i.answered_by is not null and i.outcome in ('no_violation', 'not_evident') and i.outcome_sent_at is not null
+               and clock_timestamp() < public.appeal_deadline(i.outcome_sent_at)
+               and not exists (select 1 from intake_items r where r.reexamines_item_id = i.id)`,
+      )
+    )[0],
+  );
 }
 
 /** Where a page of the reporter's list starts: after this notice, by its time (to the microsecond, as text) and id. */
@@ -432,12 +519,27 @@ export async function insertAction(tx: DbTx, decisionId: string, action: { kind:
 }
 
 /**
- * Whether the seal a decision has just recorded is in force, asked of the view itself, inside the decision's transaction:
- * the one definition of which measures stand, never a copy of its clause.
+ * A review's row: the answer to the appeal of the decision it names, from the params the reviewer's key confirmed. Its
+ * appeal is the database's to set (the reviewed decision's one pending appeal, under the case's lock), and so is
+ * everything else the row holds beyond these columns: a review states no ground of its own.
  */
-export async function sealInForce(tx: DbTx, decisionId: string): Promise<boolean> {
-  const [row] = await rows<{ held: boolean }>(tx, sql`select exists (select 1 from measures_in_force m where m.decision_id = ${decisionId}::uuid and m.kind = 'seal_media') as held`);
-  return row!.held;
+export async function insertReview(tx: DbTx, row: { id: string; caseId: string; reviewsDecisionId: string; decidedBy: string; params: AppealsReviewedParams }): Promise<void> {
+  const p = row.params;
+  await tx.execute(
+    sql`insert into decisions (id, case_id, kind, reviews_decision_id, seen_state_version, outcome, rules_version, redress_version, category, snapshot_id, snapshot_digest, reason_digest, decided_by)
+        values (${row.id}::uuid, ${row.caseId}::uuid, 'review', ${row.reviewsDecisionId}::uuid, ${p.stateVersion}::int, ${p.outcome}::decision_outcome,
+                ${p.rulesVersion}::smallint, ${p.redressVersion}::smallint, ${p.category}, ${p.snapshotId}::uuid, ${p.snapshotDigest}, ${p.reasonDigest}, ${row.decidedBy}::uuid)`,
+  );
+}
+
+/** The decision a review names: its case with the case's target, and its pending appeal, if it has one. Null when no decision has the id. */
+export async function reviewedDecision(q: Runner, decisionId: string): Promise<{ caseId: string; target: { type: TargetType; id: string }; pendingAppealId: string | null } | null> {
+  const [row] = await rows<{ case_id: string; target_type: TargetType; target_id: string; appeal_id: string | null }>(
+    q,
+    sql`select d.case_id, c.target_type, c.target_id, (select a.id from appeals a where a.decision_id = d.id and a.answered_by is null) as appeal_id
+          from decisions d join cases c on c.id = d.case_id where d.id = ${decisionId}::uuid`,
+  );
+  return row ? { caseId: row.case_id, target: { type: row.target_type, id: row.target_id }, pendingAppealId: row.appeal_id } : null;
 }
 
 /**
@@ -983,14 +1085,135 @@ export async function sealCovers(q: Runner, actionId: string, max: number): Prom
   return { posts: counts!.posts, images: counts!.images, deletedPosts: counts!.deleted_posts, list: list.map((row) => ({ postId: row.post_id, createdAt: row.created_at, images: row.images })) };
 }
 
-/** The appeals of the case's decisions, oldest first; a statement is null when there was none or it was erased. */
-export async function caseAppeals(q: Runner, caseId: string): Promise<{ id: string; decisionId: string; filedAt: string; statement: string | null; answeredAt: string | null; result: "kept" | "partly_reversed" | "reversed" | null; answeredBy: string | null }[]> {
-  const found = await rows<{ id: string; decision_id: string; filed_at: string; statement: string | null; answered_at: string | null; result: "kept" | "partly_reversed" | "reversed" | null; answered_by: string | null }>(
+// ---------------------------------------------------------------- appeals
+
+/** A staff account as the review marks ask about it: its id, and whether its role is admin. */
+export interface Reviewer {
+  id: string;
+  admin: boolean;
+}
+
+/**
+ * Whether this person may review the pending appeal `a` of decision `d` (3c design, section 7.7): they made none of the
+ * case's decisions and opened no finding in it, which is the rule the database refuses a review by; the database's
+ * recusal check over the case's subject and everyone who reported in it finds nothing; and they are an admin where the
+ * review needs one. The answer is one boolean, and says nothing of which of these it turned on.
+ */
+const mayReview = (person: Reviewer) => sql`(a.answered_by is null
+    and not exists (select 1 from decisions x where x.case_id = d.case_id and x.decided_by = ${person.id}::uuid)
+    and not exists (select 1 from intake_items i join intakes n on n.id = i.intake_id where i.case_id = d.case_id and n.finding_by = ${person.id}::uuid)
+    and not public.staff_case_conflict(${person.id}::uuid, d.case_id, true)
+    and (${person.admin}::boolean or not public.review_needs_admin(d.id)))`;
+
+export type ReviewerStateRow = "available" | "none_single_staff" | "none_eligible";
+type AppealResult = "kept" | "partly_reversed" | "reversed";
+
+/** An appeal of a decision of a case, as the case page reads it. */
+export interface CaseAppealRow {
+  id: string;
+  decisionId: string;
+  filedAt: string;
+  statement: string | null;
+  answeredAt: string | null;
+  result: AppealResult | null;
+  answeredBy: string | null;
+  /** Whether anyone may review it now; null once it is answered. */
+  reviewer: ReviewerStateRow | null;
+  needsAdmin: boolean;
+  mayReview: boolean;
+}
+
+/**
+ * The appeals of the case's decisions, oldest first; a statement is null when there was none or it was erased. Each
+ * carries the database's two answers about its review and whether the reading person may review it.
+ */
+export async function caseAppeals(q: Runner, caseId: string, person: Reviewer): Promise<CaseAppealRow[]> {
+  const found = await rows<{ id: string; decision_id: string; filed_at: string; statement: string | null; answered_at: string | null; result: AppealResult | null; answered_by: string | null; reviewer: ReviewerStateRow | null; needs_admin: boolean; may_review: boolean }>(
     q,
-    sql`select a.id, a.decision_id, ${iso("a.filed_at")} as filed_at, a.statement, ${iso("a.answered_at")} as answered_at, a.result, a.answered_by
+    sql`select a.id, a.decision_id, ${iso("a.filed_at")} as filed_at, a.statement, ${iso("a.answered_at")} as answered_at, a.result, a.answered_by,
+               public.appeal_reviewer_state(a.id) as reviewer, public.review_needs_admin(d.id) as needs_admin, ${mayReview(person)} as may_review
           from appeals a join decisions d on d.id = a.decision_id where d.case_id = ${caseId}::uuid order by a.filed_at, a.id`,
   );
-  return found.map((row) => ({ id: row.id, decisionId: row.decision_id, filedAt: row.filed_at, statement: row.statement, answeredAt: row.answered_at, result: row.result, answeredBy: row.answered_by }));
+  return found.map((row) => ({
+    id: row.id,
+    decisionId: row.decision_id,
+    filedAt: row.filed_at,
+    statement: row.statement,
+    answeredAt: row.answered_at,
+    result: row.result,
+    answeredBy: row.answered_by,
+    reviewer: row.reviewer,
+    needsAdmin: row.needs_admin,
+    mayReview: row.may_review,
+  }));
+}
+
+/** A pending appeal as the console's list shows it: never its statement. */
+export interface PendingAppealRow {
+  id: string;
+  caseId: string;
+  decisionId: string;
+  filedAt: string;
+  /** When it was filed, to the microsecond, as text: what the next page starts after. */
+  sortAt: string;
+  decidedAt: string;
+  deadline: string;
+  ruleId: string | null;
+  legal: boolean;
+  actions: ActionKind[];
+  reviewer: ReviewerStateRow;
+  needsAdmin: boolean;
+  mayReview: boolean;
+}
+
+/**
+ * The pending appeals, newest first, after the cursor when one is given: each with its case, the decision it appeals and
+ * the three marks of its review. The list reads no statement, so nobody reads what an appellant wrote without opening
+ * the case, whose read is logged and counted.
+ */
+export async function pendingAppeals(q: Runner, person: Reviewer, after: { at: string; id: string } | null, limit: number): Promise<PendingAppealRow[]> {
+  const found = await rows<Record<string, unknown>>(
+    q,
+    sql`select a.id, d.case_id, a.decision_id, ${iso("a.filed_at")} as filed_at,
+               to_char(a.filed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as sort_at,
+               ${iso("d.decided_at")} as decided_at, ${iso("public.appeal_deadline(d.informed_at)")} as deadline,
+               d.rule_id, d.ground is not distinct from 'illegal' as legal,
+               coalesce((select array_agg(x.kind::text order by x.kind, x.media_id) from decision_actions x where x.decision_id = d.id), '{}') as actions,
+               public.appeal_reviewer_state(a.id) as reviewer, public.review_needs_admin(d.id) as needs_admin, ${mayReview(person)} as may_review
+          from appeals a join decisions d on d.id = a.decision_id
+         where a.answered_by is null
+           ${after === null ? sql`` : sql`and (a.filed_at, a.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
+         order by a.filed_at desc, a.id desc limit ${limit}::int`,
+  );
+  return found.map((row) => ({
+    id: row.id as string,
+    caseId: row.case_id as string,
+    decisionId: row.decision_id as string,
+    filedAt: row.filed_at as string,
+    sortAt: row.sort_at as string,
+    decidedAt: row.decided_at as string,
+    deadline: row.deadline as string,
+    ruleId: row.rule_id as string | null,
+    legal: row.legal as boolean,
+    actions: row.actions as ActionKind[],
+    reviewer: row.reviewer as ReviewerStateRow,
+    needsAdmin: row.needs_admin as boolean,
+    mayReview: row.may_review as boolean,
+  }));
+}
+
+/**
+ * The appeal's row. The trigger decides whether an appeal of this decision is open now, under the case's lock, and
+ * stamps the row; the statement, when there is one, comes with the salt and the digest the server made. Answers its id.
+ */
+export async function insertAppeal(tx: DbTx, row: { decisionId: string; appellantId: string; statement: SaltedText | null }): Promise<string> {
+  const [inserted] = await rows<{ id: string }>(
+    tx,
+    sql`insert into appeals (decision_id, appellant_account_id, statement, statement_salt, statement_digest)
+        values (${row.decisionId}::uuid, ${row.appellantId}::uuid, ${row.statement?.text ?? null}, ${row.statement?.salt ?? null}, ${row.statement?.digest ?? null})
+        returning id`,
+  );
+  return inserted!.id;
 }
 
 /** The case's notes and its recorded choices not to seal, oldest first, each with its writer's handle. Erased ones are gone with their text. */
@@ -1244,10 +1467,19 @@ export async function openByLane(q: Runner): Promise<{ lane: Lane; open: number;
   return found.map((row) => ({ lane: row.lane, open: row.open, oldestAt: row.oldest }));
 }
 
-/** The appeals no review has answered yet. */
-export async function appealsWaiting(q: Runner): Promise<number> {
-  const [row] = await rows<{ n: number }>(q, sql`select count(*)::int as n from appeals where answered_by is null`);
-  return row!.n;
+/**
+ * The pending appeals as the home screen counts them: how many wait, how many of them this person may review, and how
+ * many no staff account may review now (the database's appeal_reviewer_state is not `available`).
+ */
+export async function appealCounts(q: Runner, person: Reviewer): Promise<{ waiting: number; mayReview: number; withoutReviewer: number }> {
+  const [row] = await rows<{ waiting: number; may_review: number; without_reviewer: number }>(
+    q,
+    sql`select count(*)::int as waiting,
+               (count(*) filter (where ${mayReview(person)}))::int as may_review,
+               (count(*) filter (where public.appeal_reviewer_state(a.id) is distinct from 'available'))::int as without_reviewer
+          from appeals a join decisions d on d.id = a.decision_id where a.answered_by is null`,
+  );
+  return { waiting: row!.waiting, mayReview: row!.may_review, withoutReviewer: row!.without_reviewer };
 }
 
 /** The reveals of the last 30 days, newest first, at most `max`, with how many there are in all: time, staff handle and case. */

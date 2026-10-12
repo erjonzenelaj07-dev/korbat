@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { beforeAll, expect, test } from "vitest";
-import type { CaseDecidedParams } from "@korbat/contracts";
+import type { AppealsReviewedParams, CaseDecidedParams } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db } from "@korbat/db";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../../src/auth";
 import { createAuthRepo } from "../../src/auth/repo";
@@ -14,7 +14,7 @@ import { recordIntake } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { flowHarness } from "./flow-harness";
-import { act, casesMedia, decisionParams, ground, moderationCounts, noAuthForModeration, removeDecided, uuids, type DecisionInput, type TestStaff } from "./moderation-fixtures";
+import { act, casesMedia, decisionParams, ground, moderationCounts, noAuthForModeration, removeDecided, reviewParams, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { TEST_CONSOLE, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 import { signedIn, stepUpAssertion } from "./staff-step-up";
@@ -48,6 +48,10 @@ export interface DeciderWorld {
   confirm(member: RealStaff, caseId: string, params: CaseDecidedParams): Promise<StaffStepUpConfirmed>;
   /** A whole confirmed decision on the case: the params as the console builds them, the confirmation, and decide. */
   decideAs(member: RealStaff, caseId: string, input?: DecisionInput): Promise<DecideOutcome>;
+  /** A verified confirmation of exactly this review of the decision, by the member's own key in the member's session. */
+  confirmReview(member: RealStaff, decisionId: string, params: AppealsReviewedParams): Promise<StaffStepUpConfirmed>;
+  /** A whole confirmed review of the decision's pending appeal: the params as the console builds them, the confirmation, and review. */
+  reviewAs(member: RealStaff, decisionId: string, input?: ReviewInput): Promise<DecideOutcome>;
   /** Removes the staff profiles this world made (their decisions, findings and texts must be gone by then) and closes its pools. */
   close(options?: { keepStaff?: boolean }): Promise<void>;
 }
@@ -111,6 +115,21 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     return outcome;
   }
 
+  async function confirmReview(member: RealStaff, decisionId: string, params: AppealsReviewedParams): Promise<StaffStepUpConfirmed> {
+    sync();
+    const request = { action: "appeals_reviewed" as const, target: { type: "decision" as const, id: decisionId }, params };
+    const stepUp = await stepUpAssertion(h, member.soft, member.credentialId, member.session, request, { counter: ++member.counter });
+    return verifyStepUp(h.deps, member.session, request, stepUp, { ...h.ctx, requestId: `req-${randomUUID()}` });
+  }
+
+  async function reviewAs(member: RealStaff, decisionId: string, input: ReviewInput = {}): Promise<DecideOutcome> {
+    const params = await reviewParams(apiDb, member, decisionId, input);
+    const outcome = await moderation.forStaff.review(member.session, await confirmReview(member, decisionId, params), { requestId: `req-${randomUUID()}` });
+    // As after a decision: what the review started after its commit has ended before the test goes on.
+    await moderation.settle();
+    return outcome;
+  }
+
   async function close(options: { keepStaff?: boolean } = {}): Promise<void> {
     try {
       if (!options.keepStaff && members.length > 0) await migrateDb.execute(sql`delete from profiles where id = any(${uuids(members.map((member) => member.id))})`);
@@ -119,7 +138,7 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     }
   }
 
-  return { authDb, migrateDb, moderation, staff, confirm, decideAs, close };
+  return { authDb, migrateDb, moderation, staff, confirm, decideAs, confirmReview, reviewAs, close };
 }
 
 // ---------------------------------------------------------------- decideForTest

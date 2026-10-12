@@ -1,7 +1,7 @@
 import { OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { describeError, PROTECTION_LIFTED_WORDS } from "../messages";
+import { APPEAL_WORDS, describeError, PROTECTION_LIFTED_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { readSignInsAtOpening } from "../signins";
@@ -59,11 +59,23 @@ export const releaseOverdue = (n: number): string => `Decisions not released aft
 
 /**
  * What every staff member sees of the cases (3c design, section 8): the lanes with their open cases and how long the
- * oldest has waited, the appeals waiting, every reveal of a source in the last 30 days with its staff handle and its
+ * oldest has waited, the appeals waiting (with those this person may review and those nobody may review now), every reveal of a source in the last 30 days with its staff handle and its
  * case, the decisions that lifted the protection of reported images, the recorded choices not to seal and the seals
  * taken while deciding that are in force, what each staff account viewed and opened today, the mails that wait or were
  * given up, and the emergency switch. Counts, times, handles and case links only.
  */
+/**
+ * The home screen's appeals line (3c design, section 8): how many wait, how many of them the reading person may review,
+ * and how many no staff account may review now.
+ */
+export function appealsLine(overview: Pick<StaffOverview, "appealsWaiting" | "appealsYouMayReview" | "appealsWithoutReviewer">): string {
+  const { appealsWaiting: waiting, appealsYouMayReview: yours, appealsWithoutReviewer: without } = overview;
+  if (waiting === 0) return "No appeal waits.";
+  const parts = [waiting === 1 ? "1 appeal waits" : `${waiting} appeals wait`, `you may review ${yours === 0 ? "none" : yours}`];
+  if (without > 0) parts.push(`${without} ${without === 1 ? "has" : "have"} no possible reviewer now`);
+  return `${parts.join("; ")}.`;
+}
+
 export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOverview; now: number; onOpenCase(id: CaseId): void }) {
   const { reveals, mailsWaiting, mailsFailed } = overview;
   const waiting = mailsWaiting.receipts + mailsWaiting.authorMails + mailsWaiting.outcomes;
@@ -77,7 +89,8 @@ export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOve
           <li key={lane.lane}>{`${LANE_NAMES[lane.lane]}: ${lane.open === 0 || lane.oldestAt === null ? "no open case" : `${counted(lane.open, "case", "cases")}, oldest ${waited(lane.oldestAt, now)}`}`}</li>
         ))}
       </ul>
-      <p>{overview.appealsWaiting === 1 ? "1 appeal waits." : `${overview.appealsWaiting} appeals wait.`}</p>
+      <p>{appealsLine(overview)}</p>
+      {overview.appealsWaiting > 0 ? <p className="hint">{APPEAL_WORDS.reviewerRule}</p> : null}
       <p>{overview.deferUnproven ? "The emergency switch is on: cases whose unanswered items all come from unproven sources are listed after the others of their lane." : "The emergency switch is off."}</p>
       {overview.releaseOverdue > 0 ? (
         <p role="alert" className="error">

@@ -40,6 +40,15 @@ export default function Decision() {
     };
   }, [id]);
 
+  /**
+   * "Appeal": a POST for the decision in the address, with what its author wrote, if anything. The answer is the
+   * decision as it now reads, with the appeal waiting, and the screen shows that. A refusal is thrown to the form, which
+   * words it in place and keeps what was written.
+   */
+  async function appeal(statement: string) {
+    setShown({ kind: "decision", view: await moderation.appeal(id, statement) });
+  }
+
   return (
     <AppShell>
       <ScrollView contentContainerClassName="px-4 pb-16 pt-4">
@@ -51,7 +60,7 @@ export default function Decision() {
           {shown.kind === "loading" ? <Loading /> : null}
           {shown.kind === "missing" ? <ErrorText message={DECISION_WORDS.notFound} /> : null}
           {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
-          {shown.kind === "decision" ? <DecisionDetail view={shown.view} /> : null}
+          {shown.kind === "decision" ? <DecisionDetail view={shown.view} onAppeal={appeal} /> : null}
           <TextLink label={DECISION_WORDS.back} href="/settings/cases" />
         </View>
       </ScrollView>

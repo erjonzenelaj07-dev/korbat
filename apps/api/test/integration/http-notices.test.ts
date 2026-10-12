@@ -83,10 +83,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices over
     return { author, postId: await newPostRow(w.apiDb, author.id) };
   }
 
-  test("the three routes are the module's whole surface under /api/notices, each a POST: nothing acts when an address is merely opened", async () => {
+  test("the four routes are the module's whole surface under /api/notices, each a POST: nothing acts when an address is merely opened", async () => {
     const routes = w.app.routes.filter((route) => route.path.startsWith("/api/notices") && route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
-    expect([...new Set(routes)].sort()).toEqual(["POST /api/notices", "POST /api/notices/contact", "POST /api/notices/status"]);
-    for (const path of ["/api/notices", "/api/notices/status", "/api/notices/contact", "/api/notices/N-ABCDEFGH23"]) {
+    expect([...new Set(routes)].sort()).toEqual(["POST /api/notices", "POST /api/notices/contact", "POST /api/notices/reexamine", "POST /api/notices/status"]);
+    for (const path of ["/api/notices", "/api/notices/status", "/api/notices/contact", "/api/notices/reexamine", "/api/notices/N-ABCDEFGH23"]) {
       const res = await w.app.request(path);
       expect(res.status, path).toBe(404);
       expect((await error(res)).code, path).toBe("not_found");

@@ -285,7 +285,7 @@ describe("the reasons for revealing a source", () => {
 });
 
 describe("moderation error codes", () => {
-  test("are the codes the notice routes, the intake, the decision and the console's case routes raise", () => {
+  test("are the codes the notice routes, the appeal, the re-examination, the intake, the decision, the review and the console's case routes raise", () => {
     expect(ModerationErrorCode.options).toEqual([
       "notice_link_invalid",
       "notice_link_offsite",
@@ -293,11 +293,16 @@ describe("moderation error codes", () => {
       "staff_cannot_report",
       "notice_not_found",
       "already_reported",
+      "appeal_not_open",
+      "appeal_exists",
+      "reexamination_not_open",
+      "reexamination_exists",
       "case_changed",
       "case_closed",
       "staff_recused",
       "staff_target",
       "admin_required",
+      "reviewer_conflict",
       "decision_cap",
       "profile_changed",
       "snapshot_mismatch",

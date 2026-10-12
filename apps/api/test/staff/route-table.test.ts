@@ -7,6 +7,7 @@ import pino from "pino";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
+  AppealsPage,
   AuditEntry,
   AuditPage,
   CaseView,
@@ -267,7 +268,7 @@ function memberNames(schema: unknown, path = ""): string[] {
 }
 
 describe("the staff routes in the route table (3a design, section 11)", () => {
-  test("are exactly the staff module's: the gate, sign-in, enrolment, the person's own reads, sign-out, step-up, the confirmed revocation, the confirmed decision, and the console's reads and writes on cases", () => {
+  test("are exactly the staff module's: the gate, sign-in, enrolment, the person's own reads, sign-out, step-up, the confirmed revocation, the confirmed decision and review, and the console's reads and writes on cases and appeals", () => {
     const { app } = build();
     expect(distinct(app.routes.filter((r) => isStaffPath(r.path)))).toEqual(
       [
@@ -284,6 +285,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/step-up/options",
         "DELETE /api/staff/sessions/:handle",
         "POST /api/staff/cases/:case/decisions",
+        "GET /api/staff/appeals",
+        "POST /api/staff/decisions/:decision/review",
         "GET /api/staff/overview",
         "GET /api/staff/queue",
         "GET /api/staff/cases/:case",
@@ -305,6 +308,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
     expect(stepUps).toEqual({
       "DELETE /api/staff/sessions/:handle": "staff_session_revoked",
       "POST /api/staff/cases/:case/decisions": "case_decided",
+      "POST /api/staff/decisions/:decision/review": "appeals_reviewed",
       "POST /api/staff/items/:item/reveal": "identity_revealed",
     });
     // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
@@ -455,7 +459,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
     const { app } = build();
     // The path parameters under /api/staff are a staff session's handle, which the revocation takes only from the
     // person's own sessions (the step-up suites show another account's is not found), a case's id, an image's id with its
-    // size, and an item's id: a case, an image of its post and an item of a notice, never an account.
+    // size, an item's id and a decision's id: a case, an image of its post, an item of a notice and the decision an appeal
+    // is about, never an account.
     const parameters = distinct(app.routes.filter((r) => isStaffPath(r.path) && r.path.includes(":")));
     expect(parameters).toEqual([
       "DELETE /api/staff/sessions/:handle",
@@ -465,6 +470,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/cases/:case/decisions",
       "POST /api/staff/cases/:case/snapshots",
       "POST /api/staff/cases/:case/texts",
+      "POST /api/staff/decisions/:decision/review",
       "POST /api/staff/items/:item/reveal",
     ]);
     const answers = {
@@ -484,6 +490,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       StaffSnapshotTaken,
       FindingResponse,
       RevealResponse,
+      AppealsPage,
     };
     const members = Object.entries(answers).flatMap(([name, schema]) => memberNames(schema).map((member) => `${name}.${member}`));
     // The walk read every member of every answer: none is of a kind it has not been taught, behind which a name could hide.
@@ -501,6 +508,11 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
     expect(members).toContain("CaseView.snapshots.authorHandle");
     expect(members).toContain("CaseView.target.displayName");
     expect(members).toContain("StaffOverview.reveals.items.handle");
+    // The appeals: the list's rows and the case's appeals carry the marks of their review, and the list no statement.
+    expect(members).toContain("AppealsPage.appeals.mayReview");
+    expect(members).toContain("CaseView.appeals.needsAdmin");
+    expect(members).toContain("StaffOverview.appealsWithoutReviewer");
+    expect(members.filter((member) => member.startsWith("AppealsPage.") && /statement|appellant/i.test(member))).toEqual([]);
     // People are handles and a source is a summary: no answer has a member for a reporter, a notifier or a contact.
     expect(members.filter((member) => /[.](reporter|notifier|contact)(Id)?$/i.test(member))).toEqual([]);
     expect(memberNames(z.object({ list: z.array(z.object({ inner: z.object({ email: z.string() }).nullable() })) }))).toEqual(["list", "list.inner", "list.inner.email"]);

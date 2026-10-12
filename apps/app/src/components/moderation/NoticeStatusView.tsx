@@ -1,5 +1,5 @@
 import { Text, View } from "react-native";
-import type { NoticeStatus } from "@korbat/contracts";
+import type { NoticeItemStatus, NoticeStatus } from "@korbat/contracts";
 import { Body, Button, ErrorText, TextLink, Title } from "@/components/ui";
 import { messageFor } from "@/lib/api";
 import { utcMinute } from "@/lib/moderation";
@@ -11,16 +11,29 @@ import { ItemLines } from "./ItemLines";
  * once released. The contact's part shows only when the page was opened from a mail's link: the answer then carries
  * whether the address is confirmed or stopped, and the page offers "I sent this" and "stop", each a button that posts with
  * the same token, never a link that acts when it is merely opened. A stopped address reads so, with the one button that
- * undoes it. Opened from the link shown on screen, the answer says neither, and the page shows no contact buttons.
+ * undoes it. Opened from the link shown on screen, the answer says neither, and the page shows no contact buttons. With
+ * `onReexamine` each item whose answer can still be examined again carries "Ask for a re-examination".
  */
-export function NoticeStatusView({ status, onContact, busy = false, error = null }: { status: NoticeStatus; onContact?: (choice: "confirm" | "stop") => void; busy?: boolean; error?: string | null }) {
+export function NoticeStatusView({
+  status,
+  onContact,
+  onReexamine,
+  busy = false,
+  error = null,
+}: {
+  status: NoticeStatus;
+  onContact?: (choice: "confirm" | "stop") => void;
+  onReexamine?: (item: NoticeItemStatus, statement: string) => Promise<void>;
+  busy?: boolean;
+  error?: string | null;
+}) {
   const contact = status.contact !== null && status.contact.confirmed !== null && status.contact.stopped !== null ? status.contact : null;
   return (
     <View>
       <Title>{STATUS_WORDS.title}</Title>
       <Body>{STATUS_WORDS.reference(status.ref)}</Body>
       <Body>{STATUS_WORDS.received(utcMinute(status.receivedAt))}</Body>
-      <ItemLines items={status.items} />
+      <ItemLines items={status.items} onReexamine={onReexamine} />
       {contact ? (
         <View className="mt-8">
           <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-100">

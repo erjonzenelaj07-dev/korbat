@@ -312,6 +312,13 @@ export const CaseDecisionRequest = CaseDecidedParams.extend({ stepUp: Authentica
 export type CaseDecisionRequest = z.infer<typeof CaseDecisionRequest>;
 
 /**
+ * POST /api/staff/decisions/:decision/review: the action's params with the step-up assertion added as `stepUp`. The
+ * route answers 201 with the case as it now stands (CaseView), as a decision's does.
+ */
+export const AppealReviewRequest = AppealsReviewedParams.extend({ stepUp: AuthenticationResponseJSON });
+export type AppealReviewRequest = z.infer<typeof AppealReviewRequest>;
+
+/**
  * Which ceremony a WebAuthn challenge was issued for: its second byte, in either layout below. A challenge answers only
  * the ceremony it names. The API's codec writes these codes, and the console checks them before it asks for the key, so
  * no challenge of one ceremony is ever signed in another.

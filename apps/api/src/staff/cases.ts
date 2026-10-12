@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import { FindingRequest, MEDIA_SIZES, MediaId, QueueQuery, StaffTextSaveRequest } from "@korbat/contracts";
+import { AppealsQuery, FindingRequest, MEDIA_SIZES, MediaId, QueueQuery, StaffTextSaveRequest } from "@korbat/contracts";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { AuthError, type ActiveStaffSession, type AuthForStaff, type StaffStepUpConfirmed } from "../auth";
@@ -38,8 +38,8 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
     return confirmed;
   };
 
-  // The home screen's numbers, the same for every staff member.
-  routes.get("/overview", auth.requireStaff, async (c) => c.json(await moderation.overview()));
+  // The home screen's numbers, the same for every staff member but one: how many appeals this person may review.
+  routes.get("/overview", auth.requireStaff, async (c) => c.json(await moderation.overview(staffSession(c))));
 
   // Open cases by lane and age. The console refreshes it without the activity mark.
   routes.get("/queue", auth.requireStaff, validate("query", QueueQuery), async (c) => c.json(await moderation.queue(c.req.valid("query").cursor)));
@@ -91,6 +91,25 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
       if (outcome === "ended") throw new AuthError("staff_session_required", 401);
       if (outcome === "late") throw new AuthError("challenge_expired", 400);
       return c.json(await moderation.decidedCase(staffSession(c), confirmedStepUp(c).target.id), 201);
+    },
+  );
+
+  // The pending appeals, newest first, each marked whether this person may review it. No row carries the appellant's
+  // statement: it is read on the case page, whose read is logged and counted.
+  routes.get("/appeals", auth.requireStaff, validate("query", AppealsQuery), async (c) => c.json(await moderation.appeals(staffSession(c), c.req.valid("query").cursor)));
+
+  // The review of an appeal: the path's decision is the action's target (the decision that was appealed), and the body
+  // is the action's params with the assertion as `stepUp`. The review commits with its audit row or not at all, and an
+  // ended confirmation and a late one answer as a decision's do. The answer is the decision's case as it now stands.
+  routes.post(
+    "/decisions/:decision/review",
+    auth.requireStaff,
+    auth.requireStaffStepUp("appeals_reviewed", (c) => c.req.param("decision")),
+    async (c) => {
+      const outcome = await moderation.review(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId") });
+      if (outcome === "ended") throw new AuthError("staff_session_required", 401);
+      if (outcome === "late") throw new AuthError("challenge_expired", 400);
+      return c.json(await moderation.reviewedCase(staffSession(c), confirmedStepUp(c).target.id), 201);
     },
   );
 

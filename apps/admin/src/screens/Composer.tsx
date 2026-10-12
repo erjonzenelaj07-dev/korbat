@@ -1,4 +1,4 @@
-import { FINDING_CATEGORIES, MEASURES, RULE_DEFAULT_CATEGORY, type CaseDecision, type CaseView, type DecisionActionParams, type MeasureKind, type RuleId, type TdbCategory } from "@korbat/contracts";
+import { FINDING_CATEGORIES, MEASURES, RULE_DEFAULT_CATEGORY, type AppealsReviewedParams, type CaseDecision, type CaseView, type DecisionActionParams, type MeasureKind, type RuleId, type TdbCategory } from "@korbat/contracts";
 import { RULES, statementParagraphs, type StatementInput } from "@korbat/rules";
 import {
   COMPOSER,
@@ -17,6 +17,9 @@ import {
   outcomesListed,
   previewOf,
   previewable,
+  reviewChoices,
+  reviewOutcomeOf,
+  reviewable,
   sealOffered,
   snapshotImages,
   statementSent,
@@ -27,7 +30,7 @@ import {
   type DraftTextKind,
   type StaffRole,
 } from "../compose";
-import { COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS } from "../messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, REVIEW_OUTCOMES } from "../messages";
 import { dateTime, UserText } from "../ui";
 import { categoryLabel } from "../words";
 
@@ -36,7 +39,7 @@ import { categoryLabel } from "../words";
  * measures this target and kind allow; the category; the facts and the reason; and the preview, which is the statement
  * exactly as its author will receive it. What it offers follows the case and the person's role; the database checks
  * every rule again when the key has confirmed. A correction ("Lift what was done while deciding", "Correct this
- * decision") takes the composer's place while it is open.
+ * decision") takes the composer's place while it is open, and so does the review of an appeal ("Review this appeal").
  */
 
 /** "Do not seal now": the reason as typed, and what became of saving it. */
@@ -77,7 +80,7 @@ export interface ComposerViewProps {
  */
 function Preview({ view, draft, now }: Pick<ComposerViewProps, "view" | "draft" | "now">) {
   // A restriction without a measure has no statement yet: the page says so rather than show one that restricts nothing.
-  if (draft.kind !== "correction" && draft.outcome === "restricted" && !draft.actions.some((action) => MEASURES[action.kind].lifts === null)) {
+  if (draft.kind !== "correction" && draft.kind !== "review" && draft.outcome === "restricted" && !draft.actions.some((action) => MEASURES[action.kind].lifts === null)) {
     return <p className="hint">{COMPOSER.previewNeedsMeasure}</p>;
   }
   if (!previewable(view)) return <p className="hint">{COMPOSER_WORDS.previewAfterSnapshot}</p>;
@@ -202,6 +205,74 @@ function CorrectionView(props: ComposerViewProps) {
   );
 }
 
+const REVIEW_ANSWERS: AppealsReviewedParams["outcome"][] = ["kept", "partly_reversed", "reversed"];
+
+/**
+ * The review of an appeal (3c design, section 8): Keep, Reverse in part or Reverse; the reversals of the decision's
+ * measures that are still in force; the reason; and the preview of the review's statement. A review only lifts. "Keep"
+ * lifts nothing and "Reverse" everything still in force, so the page sets those itself; "Reverse in part" is chosen
+ * measure by measure. Once the appeal is answered, or for a person the API did not mark as its reviewer, nothing is
+ * offered but the way back.
+ */
+function ReviewView(props: ComposerViewProps) {
+  const { view, role, draft } = props;
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const offered = decision ? reviewable(view, decision) : null;
+  if (!decision || offered === null) {
+    return (
+      <section className="panel composer" aria-labelledby="composer-title">
+        <h3 id="composer-title">{COMPOSER.reviewLabel}</h3>
+        <p>{APPEAL_WORDS.notYours}</p>
+        <div className="actions">
+          <button type="button" onClick={props.onCancelCorrection}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+  const choices = reviewChoices(view, draft, role);
+  const answer = reviewOutcomeOf(view, draft);
+  // "Keep" lifts nothing and "Reverse" everything still in force; a part keeps what was chosen while it is one, and starts empty otherwise.
+  const partial = draft.actions.length > 0 && draft.actions.length < choices.length;
+  const choose = (next: AppealsReviewedParams["outcome"]) => props.onChange({ review: next, actions: next === "reversed" ? choices.map((choice) => choice.reversal) : next === "partly_reversed" && partial ? draft.actions : [] });
+  return (
+    <section className="panel composer" aria-labelledby="composer-title">
+      <h3 id="composer-title">{COMPOSER.reviewLabel}</h3>
+      <p>{`The decision of ${dateTime(decision.decidedAt)}. A review keeps it or lifts measures of it, and never adds one.`}</p>
+      <fieldset>
+        <legend>Answer</legend>
+        {REVIEW_ANSWERS.map((option) => (
+          <label key={option}>
+            <input type="radio" name="compose-review" checked={answer === option} disabled={props.busy} onChange={() => choose(option)} /> <span>{REVIEW_OUTCOMES[option]}</span>
+          </label>
+        ))}
+      </fieldset>
+      <ul className="plain">
+        {choices.map(({ measure, reversal }) => (
+          <li key={measure.id}>
+            <label>
+              {/* What "Keep" and "Reverse" lift follows from the answer: only a part is chosen measure by measure. */}
+              <input type="checkbox" checked={holds(draft, reversal)} disabled={props.busy || answer !== "partly_reversed"} onChange={(event) => props.onChange({ actions: toggled(draft, reversal, event.target.checked) })} />{" "}
+              <span>{MEASURES[reversal.kind].label}</span>
+              {measure.mediaId === null ? null : (
+                <>
+                  {" "}
+                  <code>{measure.mediaId}</code>
+                </>
+              )}
+            </label>
+            {reversal.kind === "unseal_media" ? <p className="notice">{COMPOSER.sealForGood}</p> : null}
+          </li>
+        ))}
+      </ul>
+      <TextField id="compose-review-reason" label="Reason of the review" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
+      <Preview view={view} draft={draft} now={props.now} />
+      <Confirm props={props} onCancel={props.onCancelCorrection} />
+    </section>
+  );
+}
+
 /** One measure's checkbox, with the image it names for an image measure, and the sentence that it changes nothing now when it would not. */
 function Measure({ measure, props, images }: { measure: MeasureKind; props: ComposerViewProps; images: string[] }) {
   const { view, draft } = props;
@@ -243,6 +314,7 @@ function Measure({ measure, props, images }: { measure: MeasureKind; props: Comp
 export function ComposerView(shown: ComposerViewProps) {
   const { view, role } = shown;
   if (shown.draft.kind === "correction") return <CorrectionView {...shown} />;
+  if (shown.draft.kind === "review") return <ReviewView {...shown} />;
   // What the draft holds is shown as far as it is offered, and that is what the key confirms.
   const draft = offeredDraft(view, role, shown.draft);
   const props: ComposerViewProps = { ...shown, draft };
@@ -472,6 +544,16 @@ export function CorrectControl({ view, decision, role, disabled, onCorrect }: { 
   return (
     <button type="button" onClick={() => onCorrect(decision)} disabled={disabled}>
       {offered.label}
+    </button>
+  );
+}
+
+/** Beside a pending appeal: "Review this appeal", for the person the API marked as one who may review it. */
+export function ReviewControl({ view, decision, disabled, onReview }: { view: CaseView; decision: CaseDecision; disabled: boolean; onReview(decision: CaseDecision): void }) {
+  if (reviewable(view, decision) === null) return null;
+  return (
+    <button type="button" onClick={() => onReview(decision)} disabled={disabled}>
+      {APPEAL_WORDS.reviewLabel}
     </button>
   );
 }

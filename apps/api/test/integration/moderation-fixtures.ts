@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { sql, type SQL } from "drizzle-orm";
 import pino from "pino";
-import { RULE_DEFAULT_CATEGORY, compareDecisionActions, textDigest, type ActionKind, type CaseDecidedParams, type RuleId, type TdbCategory } from "@korbat/contracts";
+import { RULE_DEFAULT_CATEGORY, compareDecisionActions, textDigest, type ActionKind, type AppealsReviewedParams, type CaseDecidedParams, type RuleId, type TdbCategory } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../../src/auth";
@@ -13,6 +13,7 @@ import { mediaForCases, type MediaForCases } from "../../src/media";
 import { createMediaFiles } from "../../src/media/files";
 import { createMediaRepo } from "../../src/media/repo";
 import { MemoryStore } from "../../src/middleware/rate-limit";
+import { review } from "../../src/moderation/appeals";
 import { ModerationError, createBackground, isModerationErrorCode, type ModerationDeps } from "../../src/moderation/context";
 import { decide } from "../../src/moderation/decide";
 import { recordIntake, type IntakeGround, type IntakeRecorded, type LiveTarget } from "../../src/moderation/intake";
@@ -517,6 +518,114 @@ export async function decideIn(tx: DbTx, staff: TestStaff, caseId: string, input
   return decideWith(tx, staff, caseId, await decisionParams(tx, staff, caseId, input));
 }
 
+// ---------------------------------------------------------------- appeals and reviews
+
+/**
+ * The author's appeal of a decision, as the appeal route inserts it: the decision, the appellant and, when one is given,
+ * the statement with a salt and a digest. The trigger of migration 0017 decides whether it is open. Answers its id.
+ */
+export async function appealOf(db: Runner, decisionId: string, appellantId: string, statement?: string): Promise<string> {
+  const salt = statement === undefined ? null : hex64();
+  const digest = statement === undefined || salt === null ? null : await textDigest(salt, statement);
+  const [row] = await db.execute<{ id: string }>(
+    sql`insert into appeals (decision_id, appellant_account_id, statement, statement_salt, statement_digest)
+        values (${decisionId}::uuid, ${appellantId}::uuid, ${orNull(statement, "text")}, ${orNull(salt, "text")}, ${orNull(digest, "text")}) returning id`,
+  );
+  return row!.id;
+}
+
+/** An appeal's row as the triggers left it. */
+export interface AppealRow {
+  id: string;
+  decision_id: string;
+  appellant_account_id: string;
+  statement: string | null;
+  answered_by: string | null;
+  result: string | null;
+  answered_at: string | null;
+  erased_at: string | null;
+}
+
+export async function appealRow(db: Runner, id: string): Promise<AppealRow> {
+  const [row] = await db.execute<AppealRow & Record<string, unknown>>(sql`select * from appeals where id = ${id}::uuid`);
+  return row!;
+}
+
+/** What a test says about a review; everything left out is filled in from the reviewed decision and its case as the console would. */
+export interface ReviewInput {
+  /** `kept` without reversals, `reversed` with them, unless said. */
+  outcome?: AppealsReviewedParams["outcome"];
+  actions?: readonly { kind: ActionKind; mediaId?: string | null }[];
+  stateVersion?: number;
+  /** The reviewed decision's pending appeal unless said. */
+  appealId?: string;
+  snapshotId?: string;
+  snapshotDigest?: string;
+  /** A fresh review reason is saved unless a digest is given. */
+  reasonDigest?: string;
+  rulesVersion?: number;
+  redressVersion?: number;
+  category?: TdbCategory;
+}
+
+/**
+ * The params of a review of the decision as the console builds them: the case's version, the decision's pending appeal,
+ * the newest snapshot with its digest, the reviewed decision's category and rules version, the digest of a freshly
+ * saved review reason, and the reversals in their one order.
+ */
+export async function reviewParams(db: Runner, staff: { id: string }, decisionId: string, input: ReviewInput = {}): Promise<AppealsReviewedParams> {
+  const [reviewed] = await db.execute<{ case_id: string; category: TdbCategory; rules_version: number; appeal_id: string | null }>(
+    sql`select d.case_id, d.category, d.rules_version, (select a.id from appeals a where a.decision_id = d.id and a.answered_by is null) as appeal_id from decisions d where d.id = ${decisionId}::uuid`,
+  );
+  if (!reviewed) throw new Error("the review names a decision that does not exist");
+  const current = await readCase(db, reviewed.case_id);
+  const snapshot = input.snapshotId !== undefined && input.snapshotDigest !== undefined ? { id: input.snapshotId, digest: input.snapshotDigest } : await newestSnapshot(db, reviewed.case_id);
+  const actions = (input.actions ?? []).map((action) => ({ kind: action.kind, mediaId: action.mediaId ?? null })).sort(compareDecisionActions);
+  return {
+    stateVersion: input.stateVersion ?? current.state_version,
+    // A review without a pending appeal is built all the same, so that a test can see who refuses it.
+    appealId: input.appealId ?? reviewed.appeal_id ?? randomUUID(),
+    snapshotId: snapshot.id,
+    snapshotDigest: snapshot.digest,
+    outcome: input.outcome ?? (actions.length > 0 ? "reversed" : "kept"),
+    rulesVersion: input.rulesVersion ?? reviewed.rules_version,
+    redressVersion: input.redressVersion ?? REDRESS_VERSION,
+    category: input.category ?? reviewed.category,
+    actions,
+    reasonDigest: input.reasonDigest ?? (await saveText(db, reviewed.case_id, staff.id, "review_reason")),
+  };
+}
+
+/**
+ * A review inside a transaction that the test rolls back, through the module's own review, with a made-up confirmation
+ * of exactly these params, and its check at commit made to run right after, as decideWith does for a decision. Answers
+ * the review's id; a refusal is thrown as the module throws it, with the detail the database gave.
+ */
+export async function reviewWith(tx: DbTx, staff: TestStaff, decisionId: string, params: AppealsReviewedParams): Promise<string> {
+  const { session, confirmed } = madeUpConfirmation(staff, decisionId, params as unknown as CaseDecidedParams);
+  const asReview: StaffStepUpConfirmed = { ...confirmed, action: "appeals_reviewed", target: { type: "decision", id: decisionId }, params };
+  try {
+    return await tx.transaction(async (sp) => {
+      const outcome = await review(moderationDeps(sp), session, asReview, { requestId: `req-${randomUUID()}` });
+      if (typeof outcome === "string") throw new Error(`the review was not recorded: ${outcome}`);
+      await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck immediate`);
+      await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck deferred`);
+      return outcome.decisionId;
+    });
+  } catch (err) {
+    const refused = raised(err);
+    if (!(err instanceof ModerationError) && refused?.code === "P0001" && isModerationErrorCode(refused.message)) {
+      throw Object.assign(new ModerationError(refused.message), { detail: refused.detail });
+    }
+    throw err;
+  }
+}
+
+/** The same, with the params filled in from the reviewed decision as the console would build them. */
+export async function reviewIn(tx: DbTx, staff: TestStaff, decisionId: string, input: ReviewInput = {}): Promise<string> {
+  return reviewWith(tx, staff, decisionId, await reviewParams(tx, staff, decisionId, input));
+}
+
 /** The code a flow or a statement was refused with, or null when it went through: a module's error code, or what the database raised. */
 export async function refusal(promise: PromiseLike<unknown>): Promise<string | null> {
   try {
@@ -620,6 +729,10 @@ async function removeCasesIn(tx: DbTx, caseIds: SQL, intakeIds: SQL): Promise<vo
   await tx.execute(sql`delete from seal_posts where action_id in (select a.id from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = any(${caseIds}))`);
   await tx.execute(sql`delete from decision_actions where decision_id in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
   await tx.execute(sql`delete from staff_texts where case_id = any(${caseIds})`);
+  // An answered appeal and its review name each other: the answer is taken off the appeal, the reviews go, then the
+  // appeals, then the decisions they appealed.
+  await tx.execute(sql`update appeals set answered_by = null, result = null, answered_at = null where decision_id in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
+  await tx.execute(sql`delete from decisions where case_id = any(${caseIds}) and kind = 'review'`);
   await tx.execute(sql`delete from appeals where decision_id in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
   await tx.execute(sql`delete from decisions where case_id = any(${caseIds})`);
   await tx.execute(sql`delete from evidence_snapshots where case_id = any(${caseIds})`);
