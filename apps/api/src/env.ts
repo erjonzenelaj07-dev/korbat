@@ -17,5 +17,7 @@ export type AppEnv = {
     /** The client address as TRUST_PROXY says to read it, and its keyed hash: the only form limits and audit rows hold. */
     clientIp: string;
     clientIpHash: string;
+    /** The keyed hash of the client's network: its IPv4 address, or the first 64 bits of its IPv6 address. Limits that count per network use it. */
+    clientNetHash: string;
   };
 };

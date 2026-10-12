@@ -41,6 +41,7 @@ function build(consoleOrigin: string | undefined, probe = false) {
     AUTH_HMAC_KEY: key,
     IP_HASH_KEY: key,
     TOTP_ENC_KEY: `v1:${key}`,
+    NOTIFIER_ENC_KEY: `v1:${key}`,
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
     SMTP_URL: "smtp://localhost:1025",
     MAIL_FROM: "korbat <no-reply@korbat.local>",
@@ -59,7 +60,7 @@ function build(consoleOrigin: string | undefined, probe = false) {
   const apiDb = createDb(config.DATABASE_URL_API, { max: 1 });
   // The media module's interface for cases, over volumes nothing here creates: no route of this test reads an image.
   const media = mediaForCases({ repo: createMediaRepo(apiDb), files: createMediaFiles({ uploadsDir: "no-uploads", storeDir: "no-store", log: logger }), log: logger });
-  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media, config, logger });
+  const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media, rateLimitStore: new MemoryStore(), config, logger });
   const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
   const app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   const seen: { session: unknown; method: string; path: string }[] = [];

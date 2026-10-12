@@ -75,7 +75,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
     // challenge's expiry, which the auth module's clock sets.
     const clock = () => Date.now() + skewMs;
     auth = createAuth({ config, logger, authDb, kv: new MemoryKv(clock), mailer: new MemoryMailer(), profiles: createProfileStore(apiDb), now: () => new Date(clock()) });
-    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: casesMedia(apiDb), config, logger });
+    const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: casesMedia(apiDb), rateLimitStore: new MemoryStore(), config, logger });
     deps = moderation.deps;
     // The staff routes get the moderation module through a wrapper that counts the route's calls and lets a test act
     // inside the request, between the step-up's verification and the decision's own transaction.

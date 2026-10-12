@@ -47,7 +47,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the enrolment routes ove
     repo = createAuthRepo(authDb);
     mailer = new MemoryMailer();
     const auth = createAuth({ config, logger, authDb, kv: new MemoryKv(), mailer, profiles: createProfileStore(apiDb) });
-    const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: casesMedia(apiDb), config, logger });
+    const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: casesMedia(apiDb), rateLimitStore: new MemoryStore(), config, logger });
     const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
     app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, staff });
   });

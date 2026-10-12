@@ -285,8 +285,13 @@ describe("the reasons for revealing a source", () => {
 });
 
 describe("moderation error codes", () => {
-  test("are the codes the intake and the decision raise", () => {
+  test("are the codes the notice routes, the intake and the decision raise", () => {
     expect(ModerationErrorCode.options).toEqual([
+      "notice_link_invalid",
+      "notice_link_offsite",
+      "human_check_failed",
+      "staff_cannot_report",
+      "notice_not_found",
       "already_reported",
       "case_changed",
       "case_closed",

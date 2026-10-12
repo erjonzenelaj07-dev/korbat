@@ -5,6 +5,9 @@ import {
   devices,
   emailCodePurpose,
   emailCodes,
+  notifierConfirmations,
+  notifierContacts,
+  notifierSuppressions,
   passkeys,
   sessions,
   staffEnrollments,
@@ -30,6 +33,8 @@ export type AuthEventType = (typeof authEventType.enumValues)[number];
 export type EmailCodePurpose = (typeof emailCodePurpose.enumValues)[number];
 export type UserRole = (typeof userRole.enumValues)[number];
 export type PasskeyRow = typeof passkeys.$inferSelect;
+/** What a signed-out notifier gave, as stored: every `Enc` column a ciphertext under the notifier key. */
+export type NotifierContactRow = typeof notifierContacts.$inferSelect;
 /** A passkey with the label of the device that added it, null once that device is gone. */
 export type PasskeyListRow = PasskeyRow & { createdOn: string | null };
 /** What a registration stores of a verified passkey; the id, the last use and the suspicion are the row's own. */
@@ -1333,6 +1338,102 @@ export function createAuthRepo(db: Db) {
       });
     },
 
+    // ------------------------------------------------------------ notifiers (3c design, section 6.1)
+
+    /**
+     * Stores what a signed-out notifier gave to be told about their notice, already encrypted, under the id the
+     * moderation module chose and wrote on the notice. The role may never update any of it but the day it is forgotten.
+     */
+    async createNotifierContact(input: { id: string; nameEnc: string | null; emailEnc: string | null; emailHash: string | null; mailTokenEnc: string | null; forgetAfter: Date }): Promise<void> {
+      await db.insert(notifierContacts).values(input);
+    },
+
+    async findNotifierContact(id: string): Promise<NotifierContactRow | undefined> {
+      const [row] = await db.select().from(notifierContacts).where(eq(notifierContacts.id, id)).limit(1);
+      return row;
+    },
+
+    /** What is known of these contacts without opening a ciphertext: whether a name and an address were given, and the address's hash. */
+    async notifierContactFacts(ids: readonly string[]): Promise<{ id: string; named: boolean; contactGiven: boolean; emailHash: string | null }[]> {
+      if (ids.length === 0) return [];
+      return db
+        .select({ id: notifierContacts.id, named: sql<boolean>`${notifierContacts.nameEnc} is not null`, contactGiven: sql<boolean>`${notifierContacts.emailEnc} is not null`, emailHash: notifierContacts.emailHash })
+        .from(notifierContacts)
+        .where(inArray(notifierContacts.id, [...ids]));
+    },
+
+    /** The contacts that gave this address, oldest first: the command line's read for an access request. */
+    async notifierContactsByEmailHash(emailHash: string): Promise<NotifierContactRow[]> {
+      return db.select().from(notifierContacts).where(eq(notifierContacts.emailHash, emailHash)).orderBy(asc(notifierContacts.createdAt), asc(notifierContacts.id));
+    },
+
+    /** Which of these address hashes hold a confirmation that has not run out. */
+    async confirmedNotifierHashes(hashes: readonly string[], now: Date): Promise<Set<string>> {
+      if (hashes.length === 0) return new Set();
+      const rows = await db
+        .select({ emailHash: notifierConfirmations.emailHash })
+        .from(notifierConfirmations)
+        .where(and(inArray(notifierConfirmations.emailHash, [...hashes]), gt(notifierConfirmations.expiresAt, now)));
+      return new Set(rows.map((row) => row.emailHash));
+    },
+
+    /** Which of these address hashes asked korbat to stop its report mails. */
+    async suppressedNotifierHashes(hashes: readonly string[]): Promise<Set<string>> {
+      if (hashes.length === 0) return new Set();
+      const rows = await db.select({ emailHash: notifierSuppressions.emailHash }).from(notifierSuppressions).where(inArray(notifierSuppressions.emailHash, [...hashes]));
+      return new Set(rows.map((row) => row.emailHash));
+    },
+
+    /**
+     * Records an address as confirmed until `expiresAt` and lifts any stop of it, in one transaction: whoever holds a
+     * mail korbat sent there said "I sent this", which also means they want its mails.
+     */
+    async confirmNotifierAddress(emailHash: string, now: Date, expiresAt: Date): Promise<void> {
+      await db.transaction(async (tx) => {
+        await tx
+          .insert(notifierConfirmations)
+          .values({ emailHash, confirmedAt: now, expiresAt })
+          .onConflictDoUpdate({ target: notifierConfirmations.emailHash, set: { confirmedAt: now, expiresAt } });
+        await tx.delete(notifierSuppressions).where(eq(notifierSuppressions.emailHash, emailHash));
+      });
+    },
+
+    /** Records that an address asked korbat to stop its report mails; a second stop changes nothing. The role cannot update the row. */
+    async suppressNotifierAddress(emailHash: string): Promise<void> {
+      await db.insert(notifierSuppressions).values({ emailHash }).onConflictDoNothing();
+    },
+
+    /** Lifts a stop; true when there was one. */
+    async liftNotifierSuppression(emailHash: string): Promise<boolean> {
+      const rows = await db.delete(notifierSuppressions).where(eq(notifierSuppressions.emailHash, emailHash)).returning({ emailHash: notifierSuppressions.emailHash });
+      return rows.length > 0;
+    },
+
+    /** Moves the day these contacts are forgotten: the one column of a contact the role may update. */
+    async setNotifierForgetAfter(ids: readonly string[], at: Date): Promise<void> {
+      if (ids.length === 0) return;
+      await db.update(notifierContacts).set({ forgetAfter: at }).where(inArray(notifierContacts.id, [...ids]));
+    },
+
+    /** How many contacts were to be forgotten, and confirmations had run out, before `before`: what a janitor that ran would have removed. */
+    async countNotifierRowsDue(before: Date): Promise<number> {
+      const [row] = (await db.execute(
+        sql`select (select count(*) from auth.notifier_contacts where forget_after < ${before.toISOString()}::timestamptz)
+                 + (select count(*) from auth.notifier_confirmations where expires_at < ${before.toISOString()}::timestamptz) as due`,
+      )) as unknown as { due: string | number }[];
+      return Number(row?.due ?? 0);
+    },
+
+    /** The address of every live staff account: not deleted, and a moderator or an admin. */
+    async liveStaffAddresses(): Promise<string[]> {
+      const rows = await db
+        .select({ email: users.email })
+        .from(users)
+        .where(and(isNull(users.deletedAt), ne(users.role, "user")))
+        .orderBy(asc(users.createdAt), asc(users.id));
+      return rows.map((row) => row.email);
+    },
+
     // ------------------------------------------------------------ events
 
     async appendEvent(input: {
@@ -1405,6 +1506,18 @@ export function createAuthRepo(db: Db) {
         .set({ ipHash: null })
         .where(and(sql`${devices.ipHash} is not null`, lt(devices.lastSeenAt, before)))
         .returning({ id: devices.id });
+      return rows.length;
+    },
+
+    /** Notifier contacts whose day to be forgotten lies before `before` (3c design, section 6.1): the name, the address and the mail token go with the row. */
+    async purgeNotifierContacts(before: Date): Promise<number> {
+      const rows = await db.delete(notifierContacts).where(lt(notifierContacts.forgetAfter, before)).returning({ id: notifierContacts.id });
+      return rows.length;
+    },
+
+    /** Confirmations of a notifier's address that ran out before `before`: an address is confirmed for 30 days. */
+    async purgeNotifierConfirmations(before: Date): Promise<number> {
+      const rows = await db.delete(notifierConfirmations).where(lt(notifierConfirmations.expiresAt, before)).returning({ emailHash: notifierConfirmations.emailHash });
       return rows.length;
     },
 

@@ -25,6 +25,11 @@ describe("mail templates", () => {
       removeUrl: "http://localhost:8081/passkey-remove/ghi",
       browser: "Firefox on Linux",
       names: '"Blue key", "Red key"',
+      ref: "N-ABCDEFGH23",
+      items: "http://localhost:8081/post/0190f3a2-7c1e-7b1a-9f00-0123456789ab",
+      pageUrl: "http://localhost:8081/notice/N-ABCDEFGH23#t=mail-token",
+      termsUrl: "http://localhost:8081/terms",
+      oldest: "2026-10-04 06:59 UTC",
     };
     for (const template of [
       "sign_in_code",
@@ -52,6 +57,8 @@ describe("mail templates", () => {
       "staff_session_started",
       "staff_key_suspect",
       "staff_keys_revoked",
+      "notice_received",
+      "moderation_urgent",
     ] as const) {
       const r = renderTemplate(template, data);
       expect(r.subject.length, template).toBeGreaterThan(5);
@@ -234,6 +241,79 @@ describe("mail templates", () => {
       expect(() => renderTemplate("staff_session_started", { name: "Blue key", time: "2026-10-01 09:31 UTC" })).toThrow(/browser/);
       expect(() => renderTemplate("staff_key_suspect", {})).toThrow(/name/);
       expect(() => renderTemplate("staff_keys_revoked", { time: "2026-10-01 09:32 UTC" })).toThrow(/names/);
+    });
+  });
+
+  describe("the moderation mails of reports and notices (3c design, section 7.15)", () => {
+    const LAST_USER = "korbat staff never ask for your password or a code, and korbat does not read replies to this email.";
+    const LAST_STAFF = "korbat never puts a link in a staff email.";
+    const POST_LINK = "http://localhost:8081/post/0190f3a2-7c1e-7b1a-9f00-0123456789ab";
+    const ACCOUNT_LINK = "http://localhost:8081/u/ada";
+    const received = { ref: "N-ABCDEFGH23", time: "2026-10-04 06:59 UTC", items: `${POST_LINK}, ${ACCOUNT_LINK}`, termsUrl: "http://localhost:8081/terms" };
+    const paragraphs = (text: string) => text.trimEnd().split("\n\n");
+
+    test("notice_received to a signed-out notifier: the reference, the time, the links, and the page with the mail token in its fragment", () => {
+      const pageUrl = "http://localhost:8081/notice/N-ABCDEFGH23#t=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+      const r = renderTemplate("notice_received", { ...received, pageUrl });
+      expect(r.subject).toBe("korbat received your report N-ABCDEFGH23");
+      expect(paragraphs(r.text)).toEqual([
+        `korbat received your report N-ABCDEFGH23 at 2026-10-04 06:59 UTC. It names: ${POST_LINK}, ${ACCOUNT_LINK}.`,
+        "A moderator decides each item that names something on korbat; a link that names nothing is answered automatically. You get one email with every decision, at most once a day.",
+        `To see where your report stands, ask for a re-examination of a decision, confirm that you sent it, or stop korbat's emails about reports to this address, open this page: ${pageUrl}`,
+        "How korbat handles reports, and what it keeps: http://localhost:8081/terms.",
+        LAST_USER,
+      ]);
+      // The page link stands at the end of its paragraph, so nothing after it can be taken for a part of the token.
+      expect(r.text).toMatch(/#t=A{43}$/m);
+      expect(r.html).not.toMatch(/<img|<a |href=/);
+    });
+
+    test("notice_received to an account: no page link, and where to follow the report in the app", () => {
+      const r = renderTemplate("notice_received", received);
+      expect(paragraphs(r.text)).toEqual([
+        `korbat received your report N-ABCDEFGH23 at 2026-10-04 06:59 UTC. It names: ${POST_LINK}, ${ACCOUNT_LINK}.`,
+        "A moderator decides each item that names something on korbat; a link that names nothing is answered automatically. You get one email with every decision, at most once a day.",
+        "You can follow it in korbat under Settings, Cases, Your reports.",
+        "How korbat handles reports, and what it keeps: http://localhost:8081/terms.",
+        LAST_USER,
+      ]);
+      expect(r.text).not.toMatch(/[/]notice[/]|#t=/);
+    });
+
+    test("notice_received carries only what korbat generated, and needs each of its fields", () => {
+      expect(() => renderTemplate("notice_received", { ...received, ref: "" })).toThrow(/ref/);
+      for (const key of ["ref", "time", "items", "termsUrl"] as const) {
+        const { [key]: _left, ...rest } = received;
+        expect(() => renderTemplate("notice_received", rest), key).toThrow(new RegExp(key));
+      }
+      // A report's words have no field to travel in: a member the template does not know is not printed.
+      const r = renderTemplate("notice_received", { ...received, explanation: "the notifier's own words", name: "Ada" });
+      expect(r.text).not.toMatch(/the notifier's own words|Ada/);
+    });
+
+    test("moderation_urgent gives the count and the oldest time, no link and no content, and says it is the only alert", () => {
+      const r = renderTemplate("moderation_urgent", { count: "3", oldest: "2026-10-04 06:59 UTC" });
+      expect(r.subject).toBe("korbat: a case is waiting in the urgent lane");
+      expect(paragraphs(r.text)).toEqual([
+        "3 cases in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) are waiting; the oldest since 2026-10-04 06:59 UTC.",
+        "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only alert.",
+        LAST_STAFF,
+      ]);
+      expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
+      expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+      // One case reads as one: the only case is the oldest, so the sentence gives its time alone.
+      const one = renderTemplate("moderation_urgent", { count: "1", oldest: "2026-10-04 06:59 UTC" });
+      expect(one.subject).toBe("korbat: a case is waiting in the urgent lane");
+      expect(paragraphs(one.text)).toEqual([
+        "1 case in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) is waiting, since 2026-10-04 06:59 UTC.",
+        "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only alert.",
+        LAST_STAFF,
+      ]);
+      for (const count of ["2", "10", "11", "21"]) {
+        expect(renderTemplate("moderation_urgent", { count, oldest: "2026-10-04 06:59 UTC" }).text, count).toContain(`${count} cases in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) are waiting; the oldest since 2026-10-04 06:59 UTC.`);
+      }
+      expect(() => renderTemplate("moderation_urgent", { count: "3" })).toThrow(/oldest/);
+      expect(() => renderTemplate("moderation_urgent", { oldest: "2026-10-04 06:59 UTC" })).toThrow(/count/);
     });
   });
 

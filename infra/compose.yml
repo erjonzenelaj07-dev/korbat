@@ -108,6 +108,9 @@ services:
       IP_HASH_KEY: ${API_IP_HASH_KEY:?set API_IP_HASH_KEY in infra/.env}
       TOTP_ENC_KEY: ${API_TOTP_ENC_KEY:?set API_TOTP_ENC_KEY in infra/.env}
       TOTP_ENC_KEYS_PREVIOUS: ${API_TOTP_ENC_KEYS_PREVIOUS:-}
+      # Encrypts a signed-out notifier's name and address; earlier keys stay accepted for decryption.
+      NOTIFIER_ENC_KEY: ${API_NOTIFIER_ENC_KEY:?set API_NOTIFIER_ENC_KEY in infra/.env}
+      NOTIFIER_ENC_KEYS_PREVIOUS: ${API_NOTIFIER_ENC_KEYS_PREVIOUS:-}
       TURNSTILE_SECRET_KEY: ${API_TURNSTILE_SECRET_KEY:?set API_TURNSTILE_SECRET_KEY in infra/.env}
       SMTP_URL: ${API_SMTP_URL:?set API_SMTP_URL in infra/.env}
       MAIL_FROM: ${API_MAIL_FROM:?set API_MAIL_FROM in infra/.env}
@@ -125,6 +128,9 @@ services:
       # answers 404. The migrate service gets the same two values for `staff.js enroll`.
       CONSOLE_ORIGIN: ${API_CONSOLE_ORIGIN:-}
       CONSOLE_RP_ID: ${API_CONSOLE_RP_ID:-}
+      # Moderation: the UTC hour of the daily release of decisions to those who reported, and the queue's emergency switch.
+      MODERATION_DISPATCH_HOUR: ${API_MODERATION_DISPATCH_HOUR:-7}
+      MODERATION_DEFER_UNPROVEN: ${API_MODERATION_DEFER_UNPROVEN:-off}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

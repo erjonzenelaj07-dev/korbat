@@ -13,6 +13,11 @@ export function ipHash(key: Buffer, ip: string): string {
   return hmacHex(key, `ip:${ip}`);
 }
 
+/** The network a client is on, as client-ip.ts names it: what the limits that count per network are keyed by. */
+export function netHash(key: Buffer, network: string): string {
+  return hmacHex(key, `net:${network}`);
+}
+
 export function emailHash(key: Buffer, email: string): string {
   return hmacHex(key, `email:${email.trim().toLowerCase()}`);
 }

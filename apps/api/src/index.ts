@@ -55,8 +55,9 @@ const stopSweeper = media.startSweeper(jobLock);
 const stopJanitor = auth.startJanitor(jobLock);
 
 // Moderation cases: the module owns its tables on the API's role and reaches the social module through an interface of
-// that module's own, built over the same pool, and the image rows through the media module's interface for cases.
-const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: media.forCases, config, logger });
+// that module's own, built over the same pool, the image rows through the media module's interface for cases, and a
+// notifier's contact and every mail through the auth module's. Its limits count in the store the per-IP limit uses.
+const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, rateLimitStore, config, logger });
 
 const social = createSocial({
   apiDb,
@@ -104,6 +105,7 @@ const app = createApp({
   media,
   account,
   staff,
+  moderation,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {

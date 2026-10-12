@@ -515,6 +515,8 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     ipHashKey: Buffer.alloc(32, 4),
     totpKey: parseVersionedKey(`v1:${Buffer.alloc(32, 5).toString("base64")}`),
     totpPreviousKeys: [],
+    notifierKey: parseVersionedKey(`v1:${Buffer.alloc(32, 6).toString("base64")}`),
+    notifierPreviousKeys: [],
     termsVersion: TEST_TERMS,
     trustProxy: "none",
     verifyProvider: "dev",

@@ -3,8 +3,13 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import { ModerationError, isModerationErrorCode, moderationErrorMessage } from "../src/moderation/context";
 
 describe("the moderation module's refusals", () => {
-  test("each of the twelve codes this module raises answers with the status the design gives it (3c design, section 10)", () => {
+  test("each of the seventeen codes this module raises answers with the status the design gives it (3c design, section 10)", () => {
     const statuses = {
+      notice_link_invalid: 422,
+      notice_link_offsite: 422,
+      human_check_failed: 403,
+      staff_cannot_report: 403,
+      notice_not_found: 404,
       already_reported: 409,
       case_changed: 409,
       case_closed: 409,
@@ -32,5 +37,16 @@ describe("the moderation module's refusals", () => {
     expect(isModerationErrorCode("staff_confirmation_late")).toBe(false);
     // The module's own answers beside them.
     expect([new ModerationError("not_found").status, new ModerationError("invalid_request").status]).toEqual([404, 400]);
+    // A session that has not finished onboarding is refused as requireSession refuses it, in the same words.
+    expect(new ModerationError("onboarding_required")).toMatchObject({ status: 403, message: "Choose a handle to finish setting up your account." });
+    expect([new ModerationError("rate_limited").status, new ModerationError("service_unavailable").status]).toEqual([429, 503]);
+  });
+
+  test("the words of the notice routes are written for the person reporting, and the human check names no address", () => {
+    expect(moderationErrorMessage("human_check_failed")).toBe("We could not verify that you are human. Try again.");
+    expect(moderationErrorMessage("already_reported")).toBe("You already reported this; it is being looked at.");
+    for (const code of ["notice_link_invalid", "notice_link_offsite", "human_check_failed", "staff_cannot_report", "notice_not_found"] as const) {
+      expect(moderationErrorMessage(code), code).not.toMatch(/@|https?:/);
+    }
   });
 });

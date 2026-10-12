@@ -40,6 +40,7 @@ function build() {
     AUTH_HMAC_KEY: key,
     IP_HASH_KEY: key,
     TOTP_ENC_KEY: `v1:${key}`,
+    NOTIFIER_ENC_KEY: `v1:${key}`,
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
     SMTP_URL: "smtp://localhost:1025",
     MAIL_FROM: "korbat <no-reply@korbat.local>",
@@ -81,9 +82,9 @@ function build() {
     rateLimitStore,
     logger,
   });
-  const moderation = createModeration({ apiDb, social: socialForModeration(apiDb), media: media.forCases, config, logger });
+  const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, rateLimitStore, config, logger });
   const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
-  const app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, staff });
+  const app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, staff, moderation });
   // What the staff module mounts at /api/staff, as createApp mounts it.
   const staffOwn = staff.routes(CONSOLE_ORIGIN).routes.map((r) => ({ method: r.method, path: `/api/staff${r.path}` }));
   return { app, staffOwn };

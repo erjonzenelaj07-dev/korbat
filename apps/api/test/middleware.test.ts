@@ -7,7 +7,7 @@ import { observability } from "../src/middleware/observability";
 import { noStore, securityHeaders } from "../src/middleware/security-headers";
 import { MemoryStore, rateLimit } from "../src/middleware/rate-limit";
 import { validate } from "../src/lib/validate";
-import { clientIdentity, resolveClientIp } from "../src/auth/client-ip";
+import { clientIdentity, clientNetwork, resolveClientIp } from "../src/auth/client-ip";
 
 const silent = pino({ level: "silent" });
 
@@ -126,6 +126,49 @@ describe("client identity", () => {
   test("missing headers fall back down the list", () => {
     const c = { req: { header: () => undefined } } as unknown as Parameters<typeof resolveClientIp>[0];
     for (const trust of ["cloudflare", "caddy", "none"] as const) expect(resolveClientIp(c, trust)).toBe("direct");
+  });
+
+  describe("the network an address belongs to, for the limits that count per network (3c design, section 7.1)", () => {
+    test("an IPv4 address is its own network; an IPv6 address is its first 64 bits, however it is written", () => {
+      expect(clientNetwork("203.0.113.9")).toBe("203.0.113.9");
+      expect(clientNetwork("2001:db8:1234:5678:9abc:def0:1234:5678")).toBe("2001:db8:1234:5678::/64");
+      expect(clientNetwork("2001:db8:1234:5678::1")).toBe("2001:db8:1234:5678::/64");
+      expect(clientNetwork("2001:DB8:1234:5678:FFFF:FFFF:FFFF:FFFF")).toBe("2001:db8:1234:5678::/64");
+      // Leading zeros and the compressed form name the same network.
+      expect(clientNetwork("2001:0db8:0000:0000:0000:0000:0000:0001")).toBe("2001:db8:0:0::/64");
+      expect(clientNetwork("2001:db8::1")).toBe("2001:db8:0:0::/64");
+      expect(clientNetwork("::1")).toBe("0:0:0:0::/64");
+      expect(clientNetwork("fe80::1%eth0")).toBe("fe80:0:0:0::/64");
+      // Another /64 is another network.
+      expect(clientNetwork("2001:db8:1234:5679::1")).toBe("2001:db8:1234:5679::/64");
+    });
+    test("an IPv4 address written as an IPv6 one counts as the IPv4 address it is", () => {
+      expect(clientNetwork("::ffff:203.0.113.9")).toBe("203.0.113.9");
+      expect(clientNetwork("::FFFF:203.0.113.9")).toBe("203.0.113.9");
+    });
+    test("what is no address is taken as it is, so a request without one still has a bucket", () => {
+      expect(clientNetwork("direct")).toBe("direct");
+      expect(clientNetwork("not an address")).toBe("not an address");
+    });
+    test("the middleware sets its keyed hash beside the address's: one hash for a whole /64, another for the next, never the network itself", async () => {
+      const netOf = async (ip: string, ipHashKey = key) => {
+        const app = base().use(clientIdentity({ trust: "cloudflare", ipHashKey })).get("/x", (c) => c.json({ hash: c.get("clientIpHash"), net: c.get("clientNetHash") }));
+        return (await (await app.request("/x", { headers: { "cf-connecting-ip": ip } })).json()) as { hash: string; net: string };
+      };
+      const [one, two, next] = [await netOf("2001:db8:1234:5678::1"), await netOf("2001:db8:1234:5678:aaaa:bbbb:cccc:dddd"), await netOf("2001:db8:1234:5679::1")];
+      expect(one.net).toMatch(/^[0-9a-f]{64}$/);
+      expect(two.net).toBe(one.net);
+      expect(next.net).not.toBe(one.net);
+      // The address's own hash still tells the two addresses apart.
+      expect(two.hash).not.toBe(one.hash);
+      expect(one.net).not.toBe(one.hash);
+      expect((await netOf("2001:db8:1234:5678::1", Buffer.alloc(32, 2))).net).not.toBe(one.net);
+      const v4 = await netOf("203.0.113.9");
+      expect(v4.net).toMatch(/^[0-9a-f]{64}$/);
+      expect(v4.net).not.toBe(v4.hash);
+      expect((await netOf("::ffff:203.0.113.9")).net).toBe(v4.net);
+      expect((await netOf("203.0.113.10")).net).not.toBe(v4.net);
+    });
   });
 });
 

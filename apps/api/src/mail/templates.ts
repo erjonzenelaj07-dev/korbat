@@ -174,7 +174,38 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
         `These staff keys of your korbat staff account were revoked at ${need(data, "time")}: ${need(data, "names")}. They can no longer open the console, and every staff session they opened has ended.`,
         "If you expected this, there is nothing to do. If not, ask the operator why.",
       ]);
+    case "notice_received":
+      // The receipt of a report or a notice (3c design, section 7.15). `items` is the list of korbat links the report
+      // named, as the sender joins them: built from parsed ids, an account's from the handle as it was named. With
+      // `pageUrl` it goes to a signed-out notifier's address, and the link's fragment holds that contact's mail token,
+      // which no server log sees; without it, to an account, whose reports are in the app.
+      return userMail(`korbat received your report ${need(data, "ref")}`, [
+        `korbat received your report ${need(data, "ref")} at ${need(data, "time")}. It names: ${need(data, "items")}.`,
+        "A moderator decides each item that names something on korbat; a link that names nothing is answered automatically. You get one email with every decision, at most once a day.",
+        data.pageUrl
+          ? `To see where your report stands, ask for a re-examination of a decision, confirm that you sent it, or stop korbat's emails about reports to this address, open this page: ${data.pageUrl}`
+          : "You can follow it in korbat under Settings, Cases, Your reports.",
+        `How korbat handles reports, and what it keeps: ${need(data, "termsUrl")}.`,
+      ]);
+    case "moderation_urgent": {
+      // The alert for the urgent lane (3c design, section 7.12): counts and times only, to every staff account. A single
+      // case is its own oldest, so its sentence gives one time and is worded for one.
+      const lane = "in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm)";
+      return staffMail("korbat: a case is waiting in the urgent lane", [
+        need(data, "count") === "1" ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.` : `${need(data, "count")} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
+        "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only alert.",
+      ]);
+    }
   }
+}
+
+/**
+ * A moderation mail to a user: plain paragraphs as every mail, closed by the sentence that korbat's staff ask for
+ * nothing by mail, so a message that asks for a password or a code, or for an answer, is known for a fake (3c design,
+ * section 7.15).
+ */
+function userMail(subject: string, paragraphs: string[]): RenderedMail {
+  return build(subject, [...paragraphs, "korbat staff never ask for your password or a code, and korbat does not read replies to this email."]);
 }
 
 /**

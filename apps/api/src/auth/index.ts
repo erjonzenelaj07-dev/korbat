@@ -26,6 +26,28 @@ import { clientIdentity } from "./client-ip";
 import { authConfigFrom, type AuthDeps, type ProfileStore, type RequestContext, type StaffRequestContext } from "./context";
 import { confirmDeletion, finishPurge, startDeletion } from "./flows/deletion";
 import { exportAccount, type AccountExport } from "./flows/export";
+import {
+  accountReportMailStopped,
+  confirmNotifier,
+  findNotifierContacts,
+  forgetNotifierAfter,
+  mailAccount,
+  mailNotifier,
+  mailStaff,
+  notifierFacts,
+  notifierMailTokenMatches,
+  notifierName,
+  overdueContacts,
+  resumeAccountReportMail,
+  stopNotifier,
+  storeNotifierContact,
+  type AccountMailResult,
+  type AccountMessage,
+  type NotifierFacts,
+  type NotifierMailResult,
+  type NotifierMessage,
+  type StaffMessage,
+} from "./flows/notifiers";
 import { redisKv, type KeyValueStore } from "./kv";
 import { createLockout } from "./lockout";
 import { requireFreshAuth, requireOnboarding, requireSession, requireStrongFreshAuth, resolveSession } from "./middleware";
@@ -48,6 +70,7 @@ import { vonageProvider } from "./verify/vonage";
 
 export type { ProfileStore, RequestContext, StaffRequestContext } from "./context";
 export type { AccountExport } from "./flows/export";
+export type { AccountMailResult, AccountMessage, NoticeReceivedMessage, NotifierFacts, NotifierMailResult, NotifierMessage, StaffMessage } from "./flows/notifiers";
 export type { AuthEventType, UserRole } from "./repo";
 export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
@@ -132,6 +155,51 @@ export interface AuthForStaff {
   revokeSession(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: StaffRequestContext): Promise<boolean>;
 }
 
+/**
+ * What the moderation module needs from this one (3c design, section 5): the human check of a signed-out notice, a
+ * signed-out notifier's contact, which is stored here, encrypted, out of the API role's reach, and every mail to an
+ * account, a notifier or staff. The moderation module names a contact by the id it chose and an account by its id; it
+ * never sees an address or a mail token, and a message is a typed union over the templates, so no caller passes free
+ * text. `mailNotifier` and `mailAccount` answer "refused" when the relay refused the recipient for good and throw
+ * MailUnavailable for any other failure, so the caller records the one and tries the other again.
+ */
+export interface AuthForModeration {
+  /** Turnstile's answer for the token of a signed-out notice; every failure is false. */
+  verifyHuman(token: string): Promise<boolean>;
+  /** Stores a signed-out notifier's name and address under the id the notice carries, with a fresh mail token when an address is given. */
+  storeNotifierContact(contactId: string, contact: { name?: string; email?: string }): Promise<void>;
+  /**
+   * Sends a signed-out notifier's receipt, with its page link. "suppressed" for a stopped address, "folded" for a
+   * second receipt in 24 hours to an address that is not confirmed, "no_address" for a contact without one, "forgotten"
+   * for an id no contact has (it was never stored, or the janitor has deleted it).
+   */
+  mailNotifier(contactId: string, message: NotifierMessage): Promise<NotifierMailResult>;
+  /** Sends a report mail to an account's own address, with neither the cap nor a confirmation; "suppressed" when that address said stop, "no_address" for a deleted account. */
+  mailAccount(userId: string, message: AccountMessage): Promise<AccountMailResult>;
+  /** Sends a staff alert to every live staff account, best effort; answers how many addresses the relay took, and never throws for a failed send. */
+  mailStaff(message: StaffMessage): Promise<number>;
+  /** For each id, whether a contact has it, whether a name and an address were given, and whether the address is confirmed or stopped. */
+  notifierFacts(contactIds: readonly string[]): Promise<Map<string, NotifierFacts>>;
+  /** The name a notifier gave, or null: for a confirmed reveal only. */
+  notifierName(contactId: string): Promise<string | null>;
+  /** Whether the token is the contact's mail token, compared in constant time; false when it has none. */
+  notifierMailTokenMatches(contactId: string, token: string): Promise<boolean>;
+  /** With the contact's mail token: the address is confirmed for 30 days and any stop of it lifted. False for any other token. */
+  confirmNotifier(contactId: string, token: string): Promise<boolean>;
+  /** With the contact's mail token: no more report mails to the address. False for any other token. */
+  stopNotifier(contactId: string, token: string): Promise<boolean>;
+  /** Whether the account's own address said stop. */
+  accountReportMailStopped(userId: string): Promise<boolean>;
+  /** Lifts a stop of the account's own address; true when there was one. */
+  resumeAccountReportMail(userId: string): Promise<boolean>;
+  /** Sets the day each of these contacts is forgotten. */
+  forgetNotifierAfter(contactIds: readonly string[], at: Date): Promise<void>;
+  /** Command line only: the contacts that gave an address, with the names they gave, for an access request. */
+  findNotifierContacts(email: string): Promise<{ id: string; name: string | null }[]>;
+  /** How many contacts and confirmations should have been removed more than a day ago: a count only. */
+  overdueContacts(): Promise<number>;
+}
+
 export interface CreateAuthOptions {
   config: Config;
   logger: Logger;
@@ -214,6 +282,23 @@ export function createAuth(options: CreateAuthOptions) {
     requireStaffStepUp: (action, target) => requireStaffStepUp(deps, action, target),
     revokeSession: (session, confirmed, ctx) => revokeStaffSession(deps, session, confirmed, ctx),
   };
+  const forModeration: AuthForModeration = {
+    verifyHuman: (token) => deps.turnstile.verify(token),
+    storeNotifierContact: (contactId, contact) => storeNotifierContact(deps, contactId, contact),
+    mailNotifier: (contactId, message) => mailNotifier(deps, contactId, message),
+    mailAccount: (userId, message) => mailAccount(deps, userId, message),
+    mailStaff: (message) => mailStaff(deps, message),
+    notifierFacts: (contactIds) => notifierFacts(deps, contactIds),
+    notifierName: (contactId) => notifierName(deps, contactId),
+    notifierMailTokenMatches: (contactId, token) => notifierMailTokenMatches(deps, contactId, token),
+    confirmNotifier: (contactId, token) => confirmNotifier(deps, contactId, token),
+    stopNotifier: (contactId, token) => stopNotifier(deps, contactId, token),
+    accountReportMailStopped: (userId) => accountReportMailStopped(deps, userId),
+    resumeAccountReportMail: (userId) => resumeAccountReportMail(deps, userId),
+    forgetNotifierAfter: (contactIds, at) => forgetNotifierAfter(deps, contactIds, at),
+    findNotifierContacts: (email) => findNotifierContacts(deps, email),
+    overdueContacts: () => overdueContacts(deps),
+  };
   return {
     deps,
     routes: authRoutes(deps),
@@ -223,7 +308,9 @@ export function createAuth(options: CreateAuthOptions) {
     forAccount,
     /** The interface the staff module uses. */
     forStaff,
-    /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it. */
+    /** The interface the moderation module uses. */
+    forModeration,
+    /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it, and its network with it. */
     clientIdentity: clientIdentity({ trust: deps.config.trustProxy, ipHashKey: deps.config.ipHashKey }),
     resolveSession: resolveSession(deps),
     requireSession,
@@ -235,7 +322,7 @@ export function createAuth(options: CreateAuthOptions) {
     requireStaff: staffGuard,
     /** A fresh confirmation by the staff session's key, bound to the action a route is about to execute (3a design, section 7). */
     requireStaffStepUp: forStaff.requireStaffStepUp,
-    /** Starts the retention pass (dead codes, old sessions and staff sessions, spent enrolment links, device address hashes, old events) and returns the function that stops it. */
+    /** Starts the retention pass (dead codes, old sessions and staff sessions, spent enrolment links, device address hashes, old events, forgotten notifier contacts and their confirmations) and returns the function that stops it. */
     startJanitor: (lock: JobLock) => createJanitor(deps, lock).start(),
   };
 }

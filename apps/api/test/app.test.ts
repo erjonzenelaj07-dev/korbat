@@ -26,6 +26,7 @@ const config = loadConfig({
   AUTH_HMAC_KEY: key,
   IP_HASH_KEY: key,
   TOTP_ENC_KEY: `v1:${key}`,
+  NOTIFIER_ENC_KEY: `v1:${key}`,
   TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
   SMTP_URL: "smtp://localhost:1025",
   MAIL_FROM: "korbat <no-reply@korbat.local>",

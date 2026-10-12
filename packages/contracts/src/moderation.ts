@@ -1,10 +1,14 @@
 import { z } from "zod";
+import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
+import { MediaId } from "./media";
+import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
 // the mails and the terms share. Each is the one source its words and numbers are taken from. This module imports
 // nothing from staff.ts, and the index evaluates it first, so staff.ts can read these constants while it loads; an import
-// the other way round would be a cycle that fails at load.
+// the other way round would be a cycle that fails at load. For the same reason it imports nothing from social.ts, whose
+// shapes may come to name this module's constants: what a notice needs of a post's id and of a handle is written here.
 
 // ---------------------------------------------------------------- rules, categories and keywords
 
@@ -245,12 +249,18 @@ export type RevealReasonCategory = (typeof REVEAL_REASON_CATEGORIES)[number];
 // ---------------------------------------------------------------- errors
 
 /**
- * Every code the moderation flows put in ErrorEnvelope.error.code so far: what taking in a report and deciding a case
- * raise. The routes may also answer the shared invalid_request, not_found, rate_limited and service_unavailable, and the
- * staff routes the staff codes. The codes the database keeps to itself (moderation_column, quote_item_missing,
- * read_committed_only) are not among them: no route answers one.
+ * Every code the moderation flows put in ErrorEnvelope.error.code so far: what sending a report or a notice, reading its
+ * status, taking it in and deciding a case raise. The routes may also answer the shared invalid_request,
+ * onboarding_required, not_found, rate_limited and service_unavailable, and the staff routes the staff codes. The codes
+ * the database keeps to itself (moderation_column, quote_item_missing, read_committed_only) are not among them: no route
+ * answers one.
  */
 export const ModerationErrorCode = z.enum([
+  "notice_link_invalid",
+  "notice_link_offsite",
+  "human_check_failed",
+  "staff_cannot_report",
+  "notice_not_found",
   "already_reported",
   "case_changed",
   "case_closed",
@@ -265,6 +275,207 @@ export const ModerationErrorCode = z.enum([
   "invalid_decision",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
+
+// ---------------------------------------------------------------- reports and notices
+
+/**
+ * The rules a report or a notice may cite. R2 is offered nowhere: a report of child sexual abuse material goes a path of
+ * its own, which records no sender, and only a moderator's finding cites R2 (the database refuses a user's intake that
+ * does).
+ */
+export const REPORT_RULE_IDS = ["R1", "R3", "R4", "R5", "R6"] as const satisfies readonly RuleId[];
+export type ReportRuleId = (typeof REPORT_RULE_IDS)[number];
+
+/** How many characters the name a signed-out notifier gives may have. */
+export const NOTICE_NAME_MAX = 100;
+
+/** Any control character but the line feed. */
+const TEXT_CONTROL = /[^\P{Cc}\n]/u;
+/** Any control character at all: a name is one line. */
+const LINE_CONTROL = /\p{Cc}/u;
+
+const NOT_WELL_FORMED = { message: "half of a surrogate pair is not text" };
+const NO_CONTROL = { message: "control characters are not allowed" };
+const NO_FORMAT = { message: "invisible direction and spacing characters are not allowed" };
+const SOME_TEXT = { message: "some text is needed" };
+
+/**
+ * A free text of a notice. The server stores it as it was written or refuses it, and never changes it: a well-formed
+ * string with some text in it, no control character but the line feed, none of the invisible direction and spacing
+ * characters, and at most `max` characters as PostgreSQL's char_length counts them, which is what the tables' CHECKs hold.
+ */
+const noticeText = (max: number) =>
+  z
+    .string()
+    // A character outside the basic plane is two UTF-16 units, so this bound never refuses what the count below accepts.
+    .max(2 * max)
+    .refine(isWellFormed, NOT_WELL_FORMED)
+    .refine((text) => !TEXT_CONTROL.test(text), NO_CONTROL)
+    .refine((text) => !FORBIDDEN_FORMAT.test(text), NO_FORMAT)
+    .refine((text) => text.trim().length > 0, SOME_TEXT)
+    .refine((text) => Array.from(text).length <= max, { message: `at most ${max} characters` });
+
+/** The name a signed-out notifier may give: one line under the same rules. */
+const NotifierName = z
+  .string()
+  .max(2 * NOTICE_NAME_MAX)
+  .refine(isWellFormed, NOT_WELL_FORMED)
+  .refine((name) => !LINE_CONTROL.test(name), NO_CONTROL)
+  .refine((name) => !FORBIDDEN_FORMAT.test(name), NO_FORMAT)
+  .refine((name) => name.trim().length > 0, SOME_TEXT)
+  .refine((name) => Array.from(name).length <= NOTICE_NAME_MAX, { message: `at most ${NOTICE_NAME_MAX} characters` });
+
+/** A post's id in the lower case PostgreSQL returns, so an id written in any case names the same row. */
+const TargetPostId = z.uuid().transform((id) => id.toLowerCase());
+
+/** A handle as a notice names it: an optional leading @, then the 3 to 20 characters handles may contain, kept in lower case. */
+const TargetHandle = z
+  .string()
+  .trim()
+  .regex(/^@?[A-Za-z0-9_]{3,20}$/)
+  .transform((value) => value.replace(/^@/, "").toLowerCase());
+
+/**
+ * A link as a notice gives it: an http or https address of at most 300 characters, kept as written. Whether it is an
+ * address of this korbat, and of what, the route decides.
+ */
+const TargetLink = z.url({ protocol: /^https?$/ }).max(300);
+
+/**
+ * What a report or a notice names: a post by its id, optionally with the one of its images that is meant; an account by
+ * its handle; or a korbat link, which the server parses. Nothing else can be named, and nothing can be attached.
+ */
+export const NoticeTarget = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("post"), id: TargetPostId, mediaId: MediaId.optional() }),
+  z.strictObject({ kind: z.literal("account"), handle: TargetHandle }),
+  z.strictObject({ kind: z.literal("link"), url: TargetLink }),
+]);
+export type NoticeTarget = z.infer<typeof NoticeTarget>;
+
+const NoticeTargets = z.array(NoticeTarget).min(1).max(NOTICE_LIMITS.maxTargets);
+const ReportRule = z.enum(REPORT_RULE_IDS);
+
+/** The categories an illegal-ground notice may carry: the 14 the form shows, and "not specified" for someone who is not sure. */
+const NoticeCategory = z.enum([...TDB_FORM_CATEGORIES, "STATEMENT_CATEGORY_NOT_SPECIFIED_NOTICE"] as const);
+
+/** The four choices of the path for child sexual abuse material. */
+const CsamChoice = z.enum(Object.keys(CSAM_KEYWORDS) as [CsamKeywordChoice, ...CsamKeywordChoice[]]);
+
+/**
+ * One report or notice, by its ground. Each ground is a strict shape, so a member that belongs to another ground is
+ * refused rather than ignored:
+ *   - `rule`: it breaks a korbat rule (any but R2), with an optional explanation;
+ *   - `illegal`: an Art. 16 notice that it is illegal, with the category, the explanation and the statement of good
+ *     faith the Article asks for, optionally the law, a rule it also breaks and, from someone signed out, a name and an
+ *     address (a signed-in sender's contact is their account, and the route refuses either from them);
+ *   - `csam`: the path for child sexual abuse material, which asks no name or address and records no sender; its
+ *     explanation and statement are optional, and it names at most CSAM_NOTICE_MAX_ACCOUNTS accounts, counted by the
+ *     handles as named (the route counts again once the links are parsed).
+ * `turnstileToken` is the human check of a signed-out sender; a signed-in sender's is ignored.
+ */
+export const NoticeRequest = z.discriminatedUnion("ground", [
+  z.strictObject({
+    ground: z.literal("rule"),
+    ruleId: ReportRule,
+    targets: NoticeTargets,
+    explanation: noticeText(NOTICE_LIMITS.explanationMax).optional(),
+    turnstileToken: TurnstileToken.optional(),
+  }),
+  z.strictObject({
+    ground: z.literal("illegal"),
+    targets: NoticeTargets,
+    category: NoticeCategory,
+    citedLaw: noticeText(NOTICE_LIMITS.citedLawMax).optional(),
+    explanation: noticeText(NOTICE_LIMITS.explanationMax),
+    bonaFide: z.literal(true),
+    ruleId: ReportRule.optional(),
+    name: NotifierName.optional(),
+    email: Email.optional(),
+    turnstileToken: TurnstileToken.optional(),
+  }),
+  z
+    .strictObject({
+      ground: z.literal("csam"),
+      targets: NoticeTargets,
+      keyword: CsamChoice,
+      explanation: noticeText(NOTICE_LIMITS.explanationMax).optional(),
+      bonaFide: z.boolean().optional(),
+      turnstileToken: TurnstileToken.optional(),
+    })
+    .refine((notice) => new Set(notice.targets.flatMap((target) => (target.kind === "account" ? [target.handle] : []))).size <= CSAM_NOTICE_MAX_ACCOUNTS, {
+      message: `a notice of this kind names at most ${CSAM_NOTICE_MAX_ACCOUNTS} account`,
+      path: ["targets"],
+    }),
+]);
+export type NoticeRequest = z.infer<typeof NoticeRequest>;
+
+/** A notice's public reference: N- and ten base32 characters. */
+export const NoticeRef = z.string().regex(/^N-[A-Z2-7]{10}$/);
+
+/**
+ * The answer to a report or a notice. The token comes only with a notice sent signed out or on the path for child sexual
+ * abuse material: it opens the status page, and is shown once.
+ */
+export const NoticeResponse = z.object({ ref: NoticeRef, token: OpaqueId.optional() });
+export type NoticeResponse = z.infer<typeof NoticeResponse>;
+
+/** What the status page sends: the reference with the notice's own token, or with the token of a mail's link. */
+export const NoticeStatusRequest = z.strictObject({ ref: NoticeRef, token: OpaqueId });
+export type NoticeStatusRequest = z.infer<typeof NoticeStatusRequest>;
+
+/** The page's two buttons, for which only the token of a mail's link works: "I sent this", or "stop korbat's mails about reports to this address". */
+export const NoticeContactRequest = z.strictObject({ ref: NoticeRef, token: OpaqueId, choice: z.enum(["confirm", "stop"]) });
+export type NoticeContactRequest = z.infer<typeof NoticeContactRequest>;
+
+/** What an item's sender can be shown, as the database's item_outcome lists them. */
+export const ITEM_OUTCOMES = ["restricted_rule", "restricted_legal", "no_violation", "not_evident", "not_available", "partly_reversed", "reversed"] as const;
+export const ItemOutcome = z.enum(ITEM_OUTCOMES);
+export type ItemOutcome = z.infer<typeof ItemOutcome>;
+
+/**
+ * One item of a notice as its sender reads it. `link` is the item's korbat address, an account's built from the handle
+ * as the notice named it and never from the handle the profile holds now. `scope` says what the answer concerns
+ * (`account`, `quote`, `account_suspect`, or null). An item about an account carries its scope from the first moment,
+ * whatever the handle named: `account_suspect` when the item is suspect or, once released, when its answering decision
+ * sealed images, and `account` otherwise. `quote`, for a post that quotes another, comes only with the released outcome,
+ * so that before the release nothing tells a live target from a link that names nothing. The page and the app add the
+ * scope's sentence after every outcome but `not_available`. `quotedBy` is the position of the item this one was added for,
+ * when korbat added it for a quoted post. `outcome` and `decidedOn` (a UTC day) stay null until the outcome is released,
+ * and `sealed`, `unseen` and `reexamination` say nothing before that either: `sealed` that the answering decision sealed
+ * images, `unseen` that it was taken while nobody could open the post's images, `reexamination` whether a re-examination
+ * can still be asked for and until when (null for an item that cannot be re-examined). `changed` marks an outcome that a
+ * review or a correction changed, `reexamines` the item of a re-examination.
+ */
+export const NoticeItemStatus = z.object({
+  position: z.number().int().min(1).max(20),
+  link: z.string(),
+  scope: z.enum(["account", "quote", "account_suspect"]).nullable(),
+  suspect: z.boolean(),
+  sealed: z.boolean(),
+  unseen: z.boolean(),
+  quotedBy: z.number().int().min(1).max(10).nullable(),
+  outcome: ItemOutcome.nullable(),
+  decidedOn: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/).nullable(),
+  changed: z.boolean(),
+  reexamines: z.boolean(),
+  reexamination: z.object({ open: z.boolean(), until: z.string() }).nullable(),
+});
+export type NoticeItemStatus = z.infer<typeof NoticeItemStatus>;
+
+/**
+ * The status page's answer. `items` holds the items the notice named, by position, and an item korbat added for a
+ * quoted post directly after the item it was added for, from the first release that shows that item's outcome or its
+ * own: listed earlier, it would tell that the named post exists. `contact` is null for a notice that left no name or
+ * address; `confirmed` and `stopped` are null unless the request carried the token of a mail's link, so the answer to
+ * whoever typed an address never depends on what korbat knows about that address.
+ */
+export const NoticeStatus = z.object({
+  ref: NoticeRef,
+  receivedAt: z.string(),
+  items: z.array(NoticeItemStatus),
+  contact: z.object({ given: z.boolean(), confirmed: z.boolean().nullable(), stopped: z.boolean().nullable() }).nullable(),
+});
+export type NoticeStatus = z.infer<typeof NoticeStatus>;
 
 // ---------------------------------------------------------------- digests
 

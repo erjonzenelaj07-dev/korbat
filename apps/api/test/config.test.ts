@@ -12,6 +12,7 @@ const good = {
   AUTH_HMAC_KEY: key,
   IP_HASH_KEY: key,
   TOTP_ENC_KEY: `v1:${key}`,
+  NOTIFIER_ENC_KEY: `v1:${key}`,
   TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
   SMTP_URL: "smtp://localhost:1025",
   MAIL_FROM: "korbat <no-reply@korbat.local>",
@@ -38,12 +39,53 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...good, TOTP_ENC_KEY: key })).toThrow(/TOTP_ENC_KEY/);
     expect(() => loadConfig({ ...good, TOTP_ENC_KEY: `v1:${Buffer.alloc(33).toString("base64")}` })).toThrow(/TOTP_ENC_KEY/);
   });
+  test("the notifier key must be versioned and exactly 32 bytes, as the TOTP key is", () => {
+    expect(loadConfig(good).NOTIFIER_ENC_KEY).toBe(`v1:${key}`);
+    expect(() => loadConfig({ ...good, NOTIFIER_ENC_KEY: key })).toThrow(/NOTIFIER_ENC_KEY/);
+    expect(() => loadConfig({ ...good, NOTIFIER_ENC_KEY: `v1:${Buffer.alloc(33).toString("base64")}` })).toThrow(/NOTIFIER_ENC_KEY/);
+    expect(() => loadConfig({ ...good, NOTIFIER_ENC_KEY: "" })).toThrow(/NOTIFIER_ENC_KEY/);
+  });
+  test("previous notifier keys are optional, comma-separated and each versioned", () => {
+    expect(loadConfig(good).NOTIFIER_ENC_KEYS_PREVIOUS).toEqual([]);
+    expect(loadConfig({ ...good, NOTIFIER_ENC_KEYS_PREVIOUS: "" }).NOTIFIER_ENC_KEYS_PREVIOUS).toEqual([]);
+    expect(loadConfig({ ...good, NOTIFIER_ENC_KEYS_PREVIOUS: `v0:${key}, v1:${key}` }).NOTIFIER_ENC_KEYS_PREVIOUS).toEqual([`v0:${key}`, `v1:${key}`]);
+    expect(() => loadConfig({ ...good, NOTIFIER_ENC_KEYS_PREVIOUS: key })).toThrow(/NOTIFIER_ENC_KEYS_PREVIOUS/);
+  });
+  test("the auth configuration holds the notifier key and the keys it replaced, parsed", () => {
+    const older = Buffer.alloc(32, 9).toString("base64");
+    const auth = authConfigFrom(loadConfig({ ...good, NOTIFIER_ENC_KEY: `v2:${key}`, NOTIFIER_ENC_KEYS_PREVIOUS: `v1:${older}` }));
+    expect(auth.notifierKey).toEqual({ version: "v2", key: Buffer.alloc(32, 7) });
+    expect(auth.notifierPreviousKeys).toEqual([{ version: "v1", key: Buffer.alloc(32, 9) }]);
+    expect(authConfigFrom(loadConfig(good)).notifierPreviousKeys).toEqual([]);
+  });
+  describe("the moderation settings", () => {
+    test("MODERATION_DISPATCH_HOUR is an hour of the UTC day, 7 unless set; a blank value is the default", () => {
+      expect(loadConfig(good).MODERATION_DISPATCH_HOUR).toBe(7);
+      for (const blank of ["", "   "]) expect(loadConfig({ ...good, MODERATION_DISPATCH_HOUR: blank }).MODERATION_DISPATCH_HOUR, JSON.stringify(blank)).toBe(7);
+      for (const [written, hour] of [["0", 0], ["7", 7], ["23", 23], [" 12 ", 12]] as const) {
+        expect(loadConfig({ ...good, MODERATION_DISPATCH_HOUR: written }).MODERATION_DISPATCH_HOUR, written).toBe(hour);
+      }
+      for (const refused of ["24", "-1", "7.5", "yes"]) {
+        expect(() => loadConfig({ ...good, MODERATION_DISPATCH_HOUR: refused }), refused).toThrow(/MODERATION_DISPATCH_HOUR/);
+      }
+    });
+    test("MODERATION_DEFER_UNPROVEN is off unless set to on; a blank value is the default and nothing else is taken", () => {
+      expect(loadConfig(good).MODERATION_DEFER_UNPROVEN).toBe("off");
+      expect(loadConfig({ ...good, MODERATION_DEFER_UNPROVEN: "" }).MODERATION_DEFER_UNPROVEN).toBe("off");
+      expect(loadConfig({ ...good, MODERATION_DEFER_UNPROVEN: " " }).MODERATION_DEFER_UNPROVEN).toBe("off");
+      expect(loadConfig({ ...good, MODERATION_DEFER_UNPROVEN: "on" }).MODERATION_DEFER_UNPROVEN).toBe("on");
+      expect(loadConfig({ ...good, MODERATION_DEFER_UNPROVEN: "off" }).MODERATION_DEFER_UNPROVEN).toBe("off");
+      for (const refused of ["yes", "true", "1", "ON"]) {
+        expect(() => loadConfig({ ...good, MODERATION_DEFER_UNPROVEN: refused }), refused).toThrow(/MODERATION_DEFER_UNPROVEN/);
+      }
+    });
+  });
   test("SMTP_URL must be smtp or smtps", () => {
     expect(() => loadConfig({ ...good, SMTP_URL: "http://relay.example" })).toThrow(/SMTP_URL/);
     expect(loadConfig({ ...good, SMTP_URL: "smtps://user:pass@relay.example:465" }).SMTP_URL).toMatch(/^smtps:/);
   });
   test("every auth variable is required", () => {
-    for (const name of ["APP_ORIGIN", "AUTH_HMAC_KEY", "IP_HASH_KEY", "TOTP_ENC_KEY", "TURNSTILE_SECRET_KEY", "SMTP_URL", "MAIL_FROM", "TERMS_VERSION"]) {
+    for (const name of ["APP_ORIGIN", "AUTH_HMAC_KEY", "IP_HASH_KEY", "TOTP_ENC_KEY", "NOTIFIER_ENC_KEY", "TURNSTILE_SECRET_KEY", "SMTP_URL", "MAIL_FROM", "TERMS_VERSION"]) {
       const env: Record<string, string | undefined> = { ...good };
       delete env[name];
       expect(() => loadConfig(env), name).toThrow(new RegExp(name));

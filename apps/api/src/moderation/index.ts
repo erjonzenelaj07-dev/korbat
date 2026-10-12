@@ -6,16 +6,18 @@
  * items, cases, decisions and their ledger of measures, evidence snapshots and staff texts. It inserts rows; the database
  * checks them, derives every restriction from them and refuses at commit what cannot stand. It reaches the other modules
  * only through the interfaces they export, never names an image row (the media module locks and holds a case's images for
- * it), and never sees the auth schema.
+ * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
 import type { Db } from "@korbat/db";
 import type { Logger } from "pino";
-import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
+import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../auth";
 import type { Config } from "../config";
 import type { MediaForCases } from "../media";
+import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
-import type { ModerationDeps } from "./context";
+import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
+import { moderationRoutes } from "./routes";
 
 export { ModerationError } from "./context";
 export type { ModerationDeps, ModerationErrorKind } from "./context";
@@ -33,10 +35,14 @@ export interface ModerationForStaff {
 export interface CreateModerationOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
   apiDb: Db;
+  /** The auth module's interface for moderation: auth.forModeration. */
+  auth: AuthForModeration;
   /** The social module's interface for cases: socialForModeration(apiDb). */
   social: SocialForModeration;
   /** The media module's interface for cases: media.forCases. */
   media: MediaForCases;
+  /** What one sender may send, and the throttles of the staff alerts, count in the store the per-IP middleware uses. */
+  rateLimitStore: RateLimitStore;
   config: Config;
   logger: Logger;
   now?: () => Date;
@@ -45,8 +51,11 @@ export interface CreateModerationOptions {
 export function createModeration(options: CreateModerationOptions) {
   const deps: ModerationDeps = {
     apiDb: options.apiDb,
+    auth: options.auth,
     social: options.social,
     media: options.media,
+    limits: options.rateLimitStore,
+    background: createBackground(options.logger),
     config: options.config,
     log: options.logger,
     now: options.now ?? (() => new Date()),
@@ -56,8 +65,15 @@ export function createModeration(options: CreateModerationOptions) {
   };
   return {
     deps,
+    /** The app's routes, mounted at /api: reports and notices, their status page and its contact buttons. */
+    routes: moderationRoutes(deps),
     /** The interface the staff module uses. */
     forStaff,
+    /**
+     * Resolves once every task a request started and did not wait for has ended: the mails after a report or a notice.
+     * The tests await it; the server lets the tasks run.
+     */
+    settle: () => deps.background.settle(),
   };
 }
 

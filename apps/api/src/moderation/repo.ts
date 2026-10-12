@@ -119,6 +119,176 @@ export async function insertItem(tx: DbTx, row: ItemRow): Promise<{ id: string; 
   return inserted!;
 }
 
+// ---------------------------------------------------------------- reports and notices
+
+/** Ids as one uuid[] parameter. */
+const uuids = (ids: readonly string[]) => sql`${`{${ids.join(",")}}`}::uuid[]`;
+
+/** One target as a key of a set: its kind and its id. */
+export const targetKey = (target: { type: TargetType; id: string }) => `${target.type}:${target.id}`;
+
+/**
+ * Which of these targets the sender has reported already on this ground (alleging illegality or not): the target's open
+ * case holds an item of theirs that is no re-examination. The unique index the intake's transaction meets holds the same
+ * rule; this read lets a notice that names several targets drop the ones already reported instead of failing whole.
+ */
+export async function alreadyReported(q: Runner, reporterId: string, allegesIllegal: boolean, targets: readonly { type: TargetType; id: string }[]): Promise<Set<string>> {
+  if (targets.length === 0) return new Set();
+  const ids = (type: TargetType) => uuids(targets.filter((target) => target.type === type).map((target) => target.id));
+  const found = await rows<{ target_type: TargetType; target_id: string }>(
+    q,
+    sql`select c.target_type, c.target_id from cases c
+         where c.closed_at is null
+           and ((c.target_type = 'post' and c.target_id = any(${ids("post")})) or (c.target_type = 'account' and c.target_id = any(${ids("account")})))
+           and exists (select 1 from intake_items i
+                        where i.case_id = c.id and i.reporter_account_id = ${reporterId}::uuid and i.alleges_illegal = ${allegesIllegal}::boolean and i.reexamines_item_id is null)`,
+  );
+  return new Set(found.map((row) => targetKey({ type: row.target_type, id: row.target_id })));
+}
+
+/** A notice as the status page and its receipt need it: where it stands and whom its receipt goes to, never what it says. */
+export interface NoticeRow {
+  id: string;
+  ref: string;
+  /** The sha256 hex of the notice's own token; null for a report sent signed in on a rule or on the law. */
+  lookupHash: string | null;
+  contactId: string | null;
+  reporterId: string | null;
+  allegesIllegal: boolean;
+  /** As Date.prototype.toISOString writes it. */
+  receivedAt: string;
+  receipt: "pending" | "sent" | "folded" | "suppressed" | "no_address" | "none" | "failed";
+}
+
+const noticeColumns = sql`id, ref, lookup_hash, contact_id, reporter_id, alleges_illegal, ${iso("received_at")} as received_at, receipt`;
+type NoticeColumns = { id: string; ref: string; lookup_hash: string | null; contact_id: string | null; reporter_id: string | null; alleges_illegal: boolean; received_at: string; receipt: NoticeRow["receipt"] };
+const noticeOf = (row: NoticeColumns | undefined): NoticeRow | null =>
+  row ? { id: row.id, ref: row.ref, lookupHash: row.lookup_hash, contactId: row.contact_id, reporterId: row.reporter_id, allegesIllegal: row.alleges_illegal, receivedAt: row.received_at, receipt: row.receipt } : null;
+
+/** The notice with this public reference, or null. */
+export async function noticeByRef(q: Runner, ref: string): Promise<NoticeRow | null> {
+  return noticeOf((await rows<NoticeColumns>(q, sql`select ${noticeColumns} from intakes where ref = ${ref}`))[0]);
+}
+
+export async function noticeById(q: Runner, intakeId: string): Promise<NoticeRow | null> {
+  return noticeOf((await rows<NoticeColumns>(q, sql`select ${noticeColumns} from intakes where id = ${intakeId}::uuid`))[0]);
+}
+
+/** One item of a notice as its sender may read it: nothing of the case, the decision's reasons or the target's content. */
+export interface NoticeItemRow {
+  position: number;
+  targetType: TargetType;
+  targetId: string;
+  /** For an account, the handle as the notice named it. */
+  namedHandle: string | null;
+  /** False for a link that named nothing live: its item has no case and was answered at once. */
+  hasCase: boolean;
+  suspect: boolean;
+  /** Whether the daily release has shown the outcome; nothing below is told before it. */
+  released: boolean;
+  shownOutcome: string | null;
+  /** The UTC day of the answering decision, or of the item itself when it was answered without one. */
+  decidedOn: string;
+  /** Whether the answering decision holds a seal. */
+  sealed: boolean;
+  /** Whether the answering decision was taken while nobody could open the post's images. */
+  decisionUnseen: boolean;
+  changed: boolean;
+  reexamines: boolean;
+  /** A moderator's decision to take no action: the only answer a re-examination can be asked for. */
+  noAction: boolean;
+  reexamined: boolean;
+  /** The end of the re-examination window, as toISOString writes it; null before the release. */
+  until: string | null;
+  inWindow: boolean;
+}
+
+/**
+ * A notice's items in the order its page lists them: by position, an item korbat added for a quoted post (positions 11
+ * to 20) directly after the item it was added for, and a re-examination, which shares its item's position, after it.
+ * The window's end is the database's own appeal_deadline of the release, read against its clock, as the attach trigger
+ * reads it when a re-examination is filed.
+ */
+export async function noticeItems(q: Runner, intakeId: string): Promise<NoticeItemRow[]> {
+  const found = await rows<{
+    position: number;
+    target_type: TargetType;
+    target_id: string;
+    named_handle: string | null;
+    has_case: boolean;
+    suspect: boolean;
+    released: boolean;
+    shown_outcome: string | null;
+    decided_on: string;
+    sealed: boolean;
+    decision_unseen: boolean;
+    changed: boolean;
+    reexamines: boolean;
+    no_action: boolean;
+    reexamined: boolean;
+    until: string | null;
+    in_window: boolean;
+  }>(
+    q,
+    sql`select i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
+               i.outcome_sent_at is not null as released, i.shown_outcome,
+               to_char(coalesce(d.decided_at, i.created_at) at time zone 'UTC', 'YYYY-MM-DD') as decided_on,
+               exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
+               coalesce(d.unseen, false) as decision_unseen,
+               i.revised_sent_at is not null as changed,
+               i.reexamines_item_id is not null as reexamines,
+               (i.answered_by is not null and i.outcome in ('no_violation', 'not_evident')) as no_action,
+               exists (select 1 from intake_items r where r.reexamines_item_id = i.id) as reexamined,
+               ${iso("public.appeal_deadline(i.outcome_sent_at)")} as until,
+               coalesce(clock_timestamp() < public.appeal_deadline(i.outcome_sent_at), false) as in_window
+          from intake_items i left join decisions d on d.id = i.answered_by
+         where i.intake_id = ${intakeId}::uuid
+         order by (case when i.position > 10 then i.position - 10 else i.position end), (i.position > 10), i.created_at, i.id`,
+  );
+  return found.map((row) => ({
+    position: row.position,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    namedHandle: row.named_handle,
+    hasCase: row.has_case,
+    suspect: row.suspect,
+    released: row.released,
+    shownOutcome: row.shown_outcome,
+    decidedOn: row.decided_on,
+    sealed: row.sealed,
+    decisionUnseen: row.decision_unseen,
+    changed: row.changed,
+    reexamines: row.reexamines,
+    noAction: row.no_action,
+    reexamined: row.reexamined,
+    until: row.until,
+    inWindow: row.in_window,
+  }));
+}
+
+/** What became of a receipt: the delivery states a send can end in. */
+export type ReceiptState = "sent" | "folded" | "suppressed" | "no_address" | "failed";
+
+/**
+ * Records what became of a notice's receipt, only while it is still pending, so a late answer never overwrites one
+ * already recorded: the later writer waits for the first one's commit and then changes nothing. True when this call
+ * recorded it.
+ */
+export async function recordReceipt(q: Runner, intakeId: string, state: ReceiptState): Promise<boolean> {
+  const updated = await rows<{ id: string }>(
+    q,
+    sql`update intakes set receipt = ${state}::delivery_state, receipt_sent_at = case when ${state}::text = 'sent' then now() else receipt_sent_at end
+         where id = ${intakeId}::uuid and receipt = 'pending' returning id`,
+  );
+  return updated.length > 0;
+}
+
+/** The open cases in the urgent lane: how many, and since when the oldest of them has waited. One read of the queue's index. */
+export async function urgentWaiting(q: Runner): Promise<{ count: number; oldest: Date | null }> {
+  const [row] = await rows<{ n: number; oldest: string | null }>(q, sql`select count(*)::int as n, ${iso("min(oldest_open_at)")} as oldest from cases where closed_at is null and lane = 0`);
+  return { count: row!.n, oldest: row!.oldest === null ? null : new Date(row!.oldest) };
+}
+
 // ---------------------------------------------------------------- evidence
 
 /** The transaction's start to the millisecond, as the snapshots' trigger stamps a snapshot taken in it. */

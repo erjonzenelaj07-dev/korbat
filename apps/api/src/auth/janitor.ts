@@ -25,18 +25,38 @@ export interface JanitorReport {
   staffEnrollments: number;
   deviceIpHashes: number;
   events: number;
+  /** Notifier contacts whose day to be forgotten has passed (3c design, section 6.1). */
+  notifierContacts: number;
+  /** Confirmations of a notifier's address that ran out. */
+  notifierConfirmations: number;
 }
 
-/** One pass of retention. A plain function of the clock, so tests call it with whatever time they need. */
+/**
+ * One pass of retention. A plain function of the clock, so tests call it with whatever time they need. Each purge runs
+ * in a try of its own: one that throws is logged with its name and counts 0, and the round goes on, so a table that
+ * cannot be purged never keeps the others' rows past their time.
+ */
 export async function janitor(deps: AuthDeps, now: Date): Promise<JanitorReport> {
+  const purge = async (name: keyof JanitorReport, run: () => Promise<number>): Promise<number> => {
+    try {
+      return await run();
+    } catch (err) {
+      deps.log.error({ err, purge: name }, "auth janitor: purge failed");
+      return 0;
+    }
+  };
   const report: JanitorReport = {
-    emailCodes: await deps.repo.purgeEmailCodes(new Date(now.getTime() - EMAIL_CODE_RETENTION_MS)),
-    sessions: await deps.repo.purgeSessions(new Date(now.getTime() - SESSION_RETENTION_MS)),
+    emailCodes: await purge("emailCodes", () => deps.repo.purgeEmailCodes(new Date(now.getTime() - EMAIL_CODE_RETENTION_MS))),
+    sessions: await purge("sessions", () => deps.repo.purgeSessions(new Date(now.getTime() - SESSION_RETENTION_MS))),
     // Staff keys are never deleted: audit-verify checks old confirmations against them, and audit rows name them.
-    staffSessions: await deps.repo.purgeStaffSessions(new Date(now.getTime() - STAFF_SESSION_RETENTION_MS)),
-    staffEnrollments: await deps.repo.purgeStaffEnrollments(new Date(now.getTime() - STAFF_ENROLLMENT_RETENTION_MS)),
-    deviceIpHashes: await deps.repo.purgeDeviceIpHashes(new Date(now.getTime() - DEVICE_IP_RETENTION_DAYS * DAY)),
-    events: await deps.repo.purgeEvents(EVENT_RETENTION_DAYS),
+    staffSessions: await purge("staffSessions", () => deps.repo.purgeStaffSessions(new Date(now.getTime() - STAFF_SESSION_RETENTION_MS))),
+    staffEnrollments: await purge("staffEnrollments", () => deps.repo.purgeStaffEnrollments(new Date(now.getTime() - STAFF_ENROLLMENT_RETENTION_MS))),
+    deviceIpHashes: await purge("deviceIpHashes", () => deps.repo.purgeDeviceIpHashes(new Date(now.getTime() - DEVICE_IP_RETENTION_DAYS * DAY))),
+    events: await purge("events", () => deps.repo.purgeEvents(EVENT_RETENTION_DAYS)),
+    // A contact goes once its own day has passed, which the moderation module moves while the notice is owed something;
+    // a confirmation at the end of its 30 days. Neither has a grace period: the day itself is the published one.
+    notifierContacts: await purge("notifierContacts", () => deps.repo.purgeNotifierContacts(now)),
+    notifierConfirmations: await purge("notifierConfirmations", () => deps.repo.purgeNotifierConfirmations(now)),
   };
   if (Object.values(report).some((n) => n > 0)) deps.log.info(report, "auth janitor: rows purged");
   return report;

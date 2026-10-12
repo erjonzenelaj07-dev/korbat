@@ -6,13 +6,14 @@ import pino from "pino";
 import { RULE_DEFAULT_CATEGORY, compareDecisionActions, textDigest, type ActionKind, type CaseDecidedParams, type RuleId, type TdbCategory } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
-import type { ActiveStaffSession, StaffStepUpConfirmed } from "../../src/auth";
+import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../../src/auth";
 import type { AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { mediaForCases, type MediaForCases } from "../../src/media";
 import { createMediaFiles } from "../../src/media/files";
 import { createMediaRepo } from "../../src/media/repo";
-import { ModerationError, isModerationErrorCode, type ModerationDeps } from "../../src/moderation/context";
+import { MemoryStore } from "../../src/middleware/rate-limit";
+import { ModerationError, createBackground, isModerationErrorCode, type ModerationDeps } from "../../src/moderation/context";
 import { decide } from "../../src/moderation/decide";
 import { recordIntake, type IntakeGround, type IntakeRecorded, type LiveTarget } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
@@ -233,8 +234,35 @@ export async function postFrozen(db: Runner, postId: string): Promise<boolean> {
  * own transactions on what it is given, which on a transaction are savepoints, so the intake and the decision run their
  * real statements and nothing commits.
  */
-export function moderationDeps(db: Runner): ModerationDeps {
-  return { apiDb: db as Db, social: socialForModeration(db as Db), media: casesMedia(db), config: loadConfig(), log: pino({ level: "silent" }), now: () => new Date() };
+export function moderationDeps(db: Runner, overrides: Partial<ModerationDeps> = {}): ModerationDeps {
+  const log = pino({ level: "silent" });
+  return {
+    apiDb: db as Db,
+    auth: noAuthForModeration(),
+    social: socialForModeration(db as Db),
+    media: casesMedia(db),
+    limits: new MemoryStore(),
+    background: createBackground(log),
+    config: loadConfig(),
+    log,
+    now: () => new Date(),
+    ...overrides,
+  };
+}
+
+/**
+ * The auth module's interface for a test that stores no contact and sends no mail: every member throws, so a flow that
+ * reaches one fails its test instead of passing by accident. A test of the notice routes passes the real interface.
+ */
+export function noAuthForModeration(): AuthForModeration {
+  return new Proxy({} as AuthForModeration, {
+    get: (_target, member) =>
+      typeof member !== "string" || member === "then"
+        ? undefined
+        : () => {
+            throw new Error(`this test built the moderation module without the auth module, and ${member} was called`);
+          },
+  });
 }
 
 /**

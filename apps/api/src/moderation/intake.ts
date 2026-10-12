@@ -1,17 +1,54 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { laneFor, snapshotDigest, type Lane, type RuleId, type TdbCategory } from "@korbat/contracts";
+import {
+  CSAM_KEYWORDS,
+  CSAM_NOTICE_MAX_ACCOUNTS,
+  NOTICE_LIMITS,
+  laneFor,
+  snapshotDigest,
+  type ItemOutcome,
+  type Lane,
+  type NoticeContactRequest,
+  type NoticeItemStatus,
+  type NoticeRequest,
+  type NoticeResponse,
+  type NoticeStatus,
+  type NoticeStatusRequest,
+  type RuleId,
+  type TdbCategory,
+} from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
+import type { AccountMailResult, NotifierMailResult, Session } from "../auth";
 import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import type { HoldPair } from "../media";
 import type { CapturedPost, CapturedProfile } from "../social";
+import { alertUrgentLane } from "./alerts";
 import { ModerationError, type ModerationDeps } from "./context";
-import { insertIntake, insertItem, insertSnapshot, isSerializationFailure, latestSnapshot, openCase, snapshotTime, violatedUniqueConstraint } from "./repo";
+import { accountLink, parseLink, postLink } from "./links";
+import {
+  alreadyReported,
+  insertIntake,
+  insertItem,
+  insertSnapshot,
+  isSerializationFailure,
+  latestSnapshot,
+  noticeById,
+  noticeByRef,
+  noticeItems,
+  openCase,
+  recordReceipt,
+  snapshotTime,
+  targetKey,
+  violatedUniqueConstraint,
+  type NoticeItemRow,
+  type ReceiptState,
+} from "./repo";
 
 /**
- * Taking in a report, a notice or a moderator's own finding (3c design, section 7.1, step 4): one intake, one item for
- * each target it names, each item in exactly one open case, and the first copy of each target as evidence. The routes
- * that validate a request and resolve its targets come with the reports themselves; this is the transaction they run.
+ * Taking in a report, a notice or a moderator's own finding (3c design, section 7.1): one intake, one item for each
+ * target it names, each item in exactly one open case, and the first copy of each target as evidence. First the
+ * transaction every intake runs (step 4); below it what a report or a notice passes before it and what follows its
+ * commit (steps 1 to 3, 5 and 6), and the notifier's status page and contact (section 7.2).
  */
 
 /** What an intake alleges and who sent it: the ground's columns of the intake's row. */
@@ -307,4 +344,383 @@ async function storeSnapshot(tx: DbTx, takenAt: string, content: SnapshotContent
   });
   const stored = await insertSnapshot(tx, { ...content, salt, digest });
   if (stored.takenAt !== takenAt) throw new Error("a snapshot was stamped at another time than its digest covers");
+}
+
+// ---------------------------------------------------------------- reports and notices: POST /api/notices
+
+const HOUR_MS = 60 * 60_000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** How often one network may read a notice's status or use its contact buttons in an hour; the two routes share the count. */
+export const STATUS_READS_PER_HOUR = 30;
+
+/** Who sends a report or a notice: the session of a signed-in sender, or none, and the keyed hash of the network the request came from. */
+export interface NoticeSender {
+  session: Pick<Session, "userId" | "role" | "onboarded"> | null;
+  netHash: string;
+}
+
+/** A target as a report names it, once a link is parsed: a post by its id, or an account by a handle. */
+export type NamedTarget = { type: "post"; id: string; mediaId: string | null } | { type: "account"; handle: string };
+
+/**
+ * Counts one event in a window of the shared limit store and refuses it once the window is used up. An event that
+ * cannot be counted is refused too: the limits are what keeps one sender from flooding the queue.
+ */
+async function countOrRefuse(deps: Pick<ModerationDeps, "limits">, key: string, windowMs: number, max: number): Promise<void> {
+  let hit: { count: number; resetMs: number };
+  try {
+    hit = await deps.limits.hit(key, windowMs);
+  } catch {
+    throw new ModerationError("service_unavailable", 503, undefined, 30);
+  }
+  if (hit.count > max) throw new ModerationError("rate_limited", 429, undefined, Math.max(1, Math.ceil(hit.resetMs / 1000)));
+}
+
+/**
+ * Which targets are live is one rule for every route (3c design, section 7.1, step 3), and it reads no image.
+ *
+ * For a suspect intake (a report of child sexual abuse material, or a finding citing R2) a target is live while its row
+ * exists: a post in any state, one its author deleted or the purge blanked included, and an account whose profile row
+ * exists, purged or not, also under a handle it has left, which the handle history keeps reserved for it. So no such
+ * report about anything that exists is answered automatically: it waits for an admin, whatever is left of its target.
+ *
+ * For every other ground a post is live when it exists and its author has not deleted it, whatever its level, and an
+ * account when a profile holds the named handle now and is not deleted: an old handle names nothing, and repeated
+ * reports cannot keep content its author deleted, nor put deleted images before staff.
+ *
+ * Answers the target with its id, or null when it names nothing live.
+ */
+export async function liveTarget(deps: Pick<ModerationDeps, "social">, target: NamedTarget, suspect: boolean): Promise<{ type: "post" | "account"; id: string } | null> {
+  if (target.type === "post") {
+    const post = await deps.social.postRef(target.id);
+    if (!post) return null;
+    return suspect || post.state !== "deleted_by_author" ? { type: "post", id: target.id } : null;
+  }
+  const account = await deps.social.findAccountByHandle(target.handle, suspect);
+  return account ? { type: "account", id: account.id } : null;
+}
+
+/** A notice's targets, resolved: the live ones and those with nothing live, numbered from 1 in the order the notice named them. */
+export interface ResolvedTargets {
+  live: LiveTarget[];
+  dead: DeadTarget[];
+}
+
+/**
+ * Resolves a notice's targets, outside any transaction (3c design, section 7.1, step 3):
+ *   - a link is parsed into the post or the account it names, or refused;
+ *   - a notice on the path for child sexual abuse material that names more than CSAM_NOTICE_MAX_ACCOUNTS accounts is
+ *     refused, the accounts counted by the handles as named, before any is looked up, so the refusal says nothing about
+ *     which handles are live or name the same account;
+ *   - the targets are de-duplicated as named, a post by its id and an account by its handle: an account's link with
+ *     nothing live has no id to compare, and a stored id must never tie an old handle to its account;
+ *   - each is looked up by the one liveness rule;
+ *   - a signed-in sender's target that they have reported already on this ground is dropped (`skip`).
+ * What is left is numbered from 1 in the order named. The answer to the sender never says which targets were live.
+ */
+export async function resolveTargets(
+  deps: Pick<ModerationDeps, "social" | "config">,
+  request: Pick<NoticeRequest, "ground" | "targets">,
+  skip: (live: readonly { type: "post" | "account"; id: string }[]) => Promise<Set<string>> = async () => new Set(),
+): Promise<ResolvedTargets> {
+  const suspect = request.ground === "csam";
+  const named: NamedTarget[] = [];
+  for (const target of request.targets) {
+    const parsed = target.kind === "link" ? parseLink(deps.config.APP_ORIGIN, target.url) : target.kind === "post" ? { type: "post" as const, id: target.id } : { type: "account" as const, handle: target.handle };
+    if (parsed.type === "account") {
+      if (!named.some((seen) => seen.type === "account" && seen.handle === parsed.handle)) named.push(parsed);
+      continue;
+    }
+    const mediaId = target.kind === "post" ? (target.mediaId ?? null) : null;
+    const seen = named.find((earlier) => earlier.type === "post" && earlier.id === parsed.id);
+    // Named twice, the post is one target; the image one of the two pointed at is kept.
+    if (seen && seen.type === "post") seen.mediaId ??= mediaId;
+    else named.push({ type: "post", id: parsed.id, mediaId });
+  }
+  if (suspect && named.filter((target) => target.type === "account").length > CSAM_NOTICE_MAX_ACCOUNTS) throw new ModerationError("invalid_request");
+
+  const found = await Promise.all(named.map((target) => liveTarget(deps, target, suspect)));
+  const liveOnes = found.flatMap((target) => (target === null ? [] : [target]));
+  const skipped = liveOnes.length === 0 ? new Set<string>() : await skip(liveOnes);
+  const resolved: ResolvedTargets = { live: [], dead: [] };
+  const stored = new Set<string>();
+  let position = 0;
+  named.forEach((target, index) => {
+    const live = found[index] ?? null;
+    if (live !== null) {
+      // Dropped: already reported by this sender, or (on the path that looks up old handles) the same account as an earlier target.
+      if (skipped.has(targetKey(live)) || stored.has(targetKey(live))) return;
+      stored.add(targetKey(live));
+      position++;
+      if (target.type === "post") resolved.live.push({ type: "post", id: live.id, position, mediaId: target.mediaId });
+      else resolved.live.push({ type: "account", id: live.id, position, namedHandle: target.handle });
+      return;
+    }
+    position++;
+    if (target.type === "post") resolved.dead.push({ type: "post", id: target.id, position });
+    else resolved.dead.push({ type: "account", position, namedHandle: target.handle });
+  });
+  // Every target was live and reported already: there is nothing to store.
+  if (position === 0) throw new ModerationError("already_reported");
+  return resolved;
+}
+
+/** The ground's columns of a report or a notice, from the request and its sender. */
+function groundOf(request: NoticeRequest, reporterId: string | null, signedIn: boolean): IntakeGround {
+  const channel = signedIn ? "signed_in" : "signed_out";
+  const base = { kind: "user" as const, channel, findingBy: null, contactId: null } satisfies Partial<IntakeGround>;
+  switch (request.ground) {
+    case "rule":
+      // A rule-only report alleges no illegality: its category is the Transparency Database's for a breach of the terms.
+      return { ...base, reporterId, ruleId: request.ruleId, allegesIllegal: false, csam: false, category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", categoryKeyword: null, citedLaw: null, explanation: request.explanation ?? null, bonaFide: false };
+    case "illegal":
+      return {
+        ...base,
+        reporterId,
+        // A signed-out notifier's name and address go to the auth module under this id; the notice holds the id alone.
+        contactId: !signedIn && (request.name !== undefined || request.email !== undefined) ? randomUUID() : null,
+        ruleId: request.ruleId ?? null,
+        allegesIllegal: true,
+        csam: false,
+        category: request.category,
+        categoryKeyword: null,
+        citedLaw: request.citedLaw ?? null,
+        explanation: request.explanation,
+        bonaFide: true,
+      };
+    case "csam":
+      // An Art. 16 notice of illegal content that records no sender, whoever sent it: no account, no contact.
+      return {
+        ...base,
+        reporterId: null,
+        ruleId: null,
+        allegesIllegal: true,
+        csam: true,
+        category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS",
+        categoryKeyword: CSAM_KEYWORDS[request.keyword],
+        citedLaw: null,
+        explanation: request.explanation ?? null,
+        bonaFide: request.bonaFide ?? false,
+      };
+  }
+}
+
+/**
+ * One report or notice (3c design, section 7.1). In this order:
+ *   1. who may send it: a staff account reports only as its own finding, in the console; a session that has not finished
+ *      onboarding has no profile to report from and is refused, never treated as signed out; a signed-in sender leaves no
+ *      name or address, since their contact is their account;
+ *   2. the human check of a signed-out sender, then the limits: per network signed out, per account signed in;
+ *   3. the targets, resolved outside any transaction;
+ *   4. the intake's transaction; a request it could not save through no fault of its sender gives its limit hits back;
+ *   5. after its commit, a signed-out notifier's contact is stored by the auth module (a failure is logged: the notice
+ *      stands without it, and no contact can exist without its notice), and the mails are started without being waited
+ *      for: the urgent lane's alert first, then the receipt;
+ *   6. the answer: the reference, and the token of a notice sent signed out or on the path for child sexual abuse
+ *      material, which is shown once and is the only way to follow such a notice. A stalled relay never costs it.
+ */
+export async function submitNotice(deps: ModerationDeps, request: NoticeRequest, sender: NoticeSender): Promise<NoticeResponse> {
+  // 1.
+  const { session } = sender;
+  if (session !== null) {
+    if (session.role !== "user") throw new ModerationError("staff_cannot_report");
+    if (!session.onboarded) throw new ModerationError("onboarding_required");
+    if (request.ground === "illegal" && (request.name !== undefined || request.email !== undefined)) throw new ModerationError("invalid_request");
+  }
+
+  // 2. A signed-in sender's token is ignored. From here on the request is counted, whatever a later step says of its
+  // links or its targets: a sender cannot probe what exists without spending the hour.
+  const counted: string[] = [];
+  const count = async (key: string, windowMs: number, max: number) => {
+    await countOrRefuse(deps, key, windowMs, max);
+    counted.push(key);
+  };
+  if (session === null) {
+    if (request.turnstileToken === undefined || !(await deps.auth.verifyHuman(request.turnstileToken))) throw new ModerationError("human_check_failed");
+    await count(`notice:hour:net:${sender.netHash}`, HOUR_MS, NOTICE_LIMITS.signedOut.perHour);
+    await count(`notice:day:net:${sender.netHash}`, DAY_MS, NOTICE_LIMITS.signedOut.perDay);
+  } else {
+    await count(`notice:hour:account:${session.userId}`, HOUR_MS, NOTICE_LIMITS.signedIn.perHour);
+    await count(`notice:day:account:${session.userId}`, DAY_MS, NOTICE_LIMITS.signedIn.perDay);
+  }
+
+  // 3. On the path for child sexual abuse material nothing is matched against the session's account or its reports: every
+  // live target gets an item, so someone who sent a notice of illegality about a post can still report it this way.
+  const ground = groundOf(request, session?.userId ?? null, session !== null);
+  const reporterId = ground.reporterId;
+  const targets = await resolveTargets(deps, request, reporterId === null ? undefined : (live) => alreadyReported(deps.apiDb, reporterId, ground.allegesIllegal, live));
+
+  // 4. A request that fails here through no fault of its sender gives back what it took of their limits, since its answer
+  // tells them to send it again: its case kept changing until the last retry (case_closed), or the transaction failed in
+  // a way no rule of the module names. A refusal that is the sender's own (already reported, an account that is gone)
+  // stays counted.
+  let recorded: IntakeRecorded;
+  try {
+    recorded = await recordIntake(deps, { ground, live: targets.live, dead: targets.dead });
+  } catch (err) {
+    if (!(err instanceof ModerationError) || err.code === "case_closed") {
+      // The key holds the sender's network or account: the warning names neither.
+      for (const key of counted) await deps.limits.release(key).catch((failure: unknown) => deps.log.warn({ err: failure }, "notice: a limit hit of a request that could not be saved could not be given back"));
+    }
+    throw err;
+  }
+
+  // 5. The contact is stored before the answer; the mails are not waited for.
+  if (ground.contactId !== null && request.ground === "illegal") {
+    try {
+      await deps.auth.storeNotifierContact(ground.contactId, { name: request.name, email: request.email });
+    } catch (err) {
+      deps.log.error({ err, intakeId: recorded.intakeId }, "notice: the notifier's contact could not be stored; the notice stands without it");
+    }
+  }
+  const urgent = recorded.items.some((item) => item.caseId !== null && item.lane === 0);
+  deps.background.start(async () => {
+    if (urgent) {
+      try {
+        await alertUrgentLane(deps);
+      } catch (err) {
+        deps.log.error({ err, intakeId: recorded.intakeId }, "notice: the urgent lane's alert failed; the dispatch job repeats it");
+      }
+    }
+    await sendReceipt(deps, recorded.intakeId);
+  });
+
+  // 6.
+  return recorded.token === null ? { ref: recorded.ref } : { ref: recorded.ref, token: recorded.token };
+}
+
+/** What a mail's result is recorded as. A contact nobody has (never stored, or forgotten) has no address; a refused address is given up. */
+const RECEIPT_STATES: Record<NotifierMailResult | AccountMailResult, ReceiptState> = { sent: "sent", folded: "folded", suppressed: "suppressed", no_address: "no_address", forgotten: "no_address", refused: "failed" };
+
+/**
+ * Sends a notice's receipt and records what became of it: to a signed-out notifier's contact, or to the account behind a
+ * notice of illegality sent signed in. It is built from the stored notice alone, so a receipt sent later carries the
+ * same reference, time and links as one sent at once: the links of the items the sender named, in their order, an
+ * account's under the handle as named. A notice without a pending receipt sends nothing. A failure of the relay leaves
+ * the receipt pending, for the dispatch job to send; any other result is recorded, only while the receipt is still
+ * pending.
+ */
+export async function sendReceipt(deps: Pick<ModerationDeps, "apiDb" | "auth" | "config" | "log">, intakeId: string): Promise<ReceiptState | "pending" | "none"> {
+  const notice = await noticeById(deps.apiDb, intakeId);
+  if (!notice || notice.receipt !== "pending") return "none";
+  // The items the sender named: not those korbat added for a quoted post, and no re-examination, which shares its item's position.
+  const items = (await noticeItems(deps.apiDb, intakeId)).filter((item) => item.position <= 10 && !item.reexamines);
+  const message = { template: "notice_received" as const, ref: notice.ref, receivedAt: new Date(notice.receivedAt), items: items.map((item) => itemLink(deps, item)) };
+  let result: NotifierMailResult | AccountMailResult;
+  try {
+    if (notice.contactId !== null) result = await deps.auth.mailNotifier(notice.contactId, message);
+    else if (notice.reporterId !== null) result = await deps.auth.mailAccount(notice.reporterId, message);
+    // The reporter's link was forgotten with their account: there is nobody to mail.
+    else result = "no_address";
+  } catch (err) {
+    deps.log.warn({ err, intakeId }, "notice receipt: not sent; it stays pending for the next try");
+    return "pending";
+  }
+  await recordReceipt(deps.apiDb, intakeId, RECEIPT_STATES[result]);
+  return RECEIPT_STATES[result];
+}
+
+// ---------------------------------------------------------------- the notifier's status page and contact
+
+/** An item's korbat address: a post's from its id, an account's from the handle as the notice named it, never from the handle the profile holds now. */
+function itemLink(deps: Pick<ModerationDeps, "config">, item: Pick<NoticeItemRow, "targetType" | "targetId" | "namedHandle">): string {
+  return item.targetType === "post" ? postLink(deps.config.APP_ORIGIN, item.targetId) : accountLink(deps.config.APP_ORIGIN, item.namedHandle!);
+}
+
+/** Whether two hex digests are the same, compared in constant time. */
+function sameDigest(a: string, b: string): boolean {
+  const [left, right] = [Buffer.from(a, "hex"), Buffer.from(b, "hex")];
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+/**
+ * One item as its sender reads it (3c design, sections 7.2 and 10). Nothing of the outcome is told before the daily
+ * release: not the outcome or its day, not whether images were sealed or out of sight, not whether a re-examination can
+ * be asked for, so the page and the mail tell the same at the same time. And nothing before it tells whether the target
+ * was live: an item whose link named nothing reads exactly as one that waits for a moderator.
+ */
+async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">, item: NoticeItemRow): Promise<NoticeItemStatus> {
+  // "No action for now": a decision taken while nobody could open the post's images, on an item about a post that is not itself suspect.
+  const unseen = item.released && item.decisionUnseen && item.targetType === "post" && !item.suspect;
+  // What the answer concerns. Before the release the scope comes from what the notice named and from the item's suspect
+  // mark alone, never from what the target turned out to be: the page must not tell a live target from a link that names
+  // nothing, nor, on the path for child sexual abuse material, whether a handle names an account.
+  let scope: NoticeItemStatus["scope"] = null;
+  if (item.targetType === "account") {
+    // With or without a case: the answer concerns the images on the account's posts too when the item is suspect or,
+    // once released, when its decision sealed them. After "not available" the page and the app add no scope sentence.
+    scope = item.suspect || (item.released && item.sealed) ? "account_suspect" : "account";
+  } else if (item.released && item.hasCase && !item.suspect && (await deps.social.postRef(item.targetId))?.quoteOfId) {
+    // Whether a post quotes another can be read only from its row, so this scope comes with the released outcome and not
+    // before it. A suspect item about a quoting post has an item of its own for the quoted post, and no such scope.
+    scope = "quote";
+  }
+  // Only a moderator's decision to take no action can be examined again, once; an answer given with the images out of
+  // sight does not spend that, also when it answered a re-examination.
+  const reexaminable = item.released && item.noAction && (!item.reexamines || unseen);
+  return {
+    position: item.position,
+    link: itemLink(deps, item),
+    scope,
+    suspect: item.suspect,
+    sealed: item.released && item.sealed,
+    unseen,
+    quotedBy: item.position > 10 ? item.position - 10 : null,
+    outcome: item.released ? (item.shownOutcome as ItemOutcome) : null,
+    decidedOn: item.released ? item.decidedOn : null,
+    changed: item.changed,
+    reexamines: item.reexamines,
+    reexamination: reexaminable ? { open: !item.reexamined && item.inWindow, until: item.until! } : null,
+  };
+}
+
+/**
+ * The items the status page lists. An item korbat added for a quoted post (a position above 10) exists only where the
+ * named post exists and quotes another, so listing it at once would tell a live target from a link that names nothing.
+ * It is listed from the first release that shows an outcome of its pair: its origin's, after which it stands directly
+ * behind it, with its own outcome or waiting; or its own, since from the release an outcome shows on the page and its
+ * window to ask for a re-examination runs. Its origin's waiting past that same release already told that it names a row:
+ * a link to no row was answered by then. A re-examination is filed only on a released item, so it is always listed.
+ */
+function listedItems(items: readonly NoticeItemRow[]): NoticeItemRow[] {
+  const releasedOrigins = new Set(items.filter((item) => item.position <= 10 && !item.reexamines && item.released).map((item) => item.position));
+  return items.filter((item) => item.position <= 10 || item.reexamines || item.released || releasedOrigins.has(item.position - 10));
+}
+
+/**
+ * The notifier's status page (3c design, section 7.2): the notice whose reference matches and whose token this is, either
+ * the notice's own, shown once on screen, or the mail token of its contact, which the receipt's link carries. Anything
+ * else is notice_not_found. With the notice's own token the contact's `confirmed` and `stopped` are null, so the answer
+ * to whoever typed an address never depends on what korbat knows about that address.
+ */
+export async function noticeStatus(deps: Pick<ModerationDeps, "apiDb" | "auth" | "social" | "limits" | "config">, request: NoticeStatusRequest, netHash: string): Promise<NoticeStatus> {
+  await countOrRefuse(deps, `notice-status:${netHash}`, HOUR_MS, STATUS_READS_PER_HOUR);
+  const notice = await noticeByRef(deps.apiDb, request.ref);
+  if (!notice) throw new ModerationError("notice_not_found");
+  const own = notice.lookupHash !== null && sameDigest(notice.lookupHash, createHash("sha256").update(request.token).digest("hex"));
+  const byMail = !own && notice.contactId !== null && (await deps.auth.notifierMailTokenMatches(notice.contactId, request.token));
+  if (!own && !byMail) throw new ModerationError("notice_not_found");
+
+  const items: NoticeItemStatus[] = [];
+  for (const item of listedItems(await noticeItems(deps.apiDb, notice.id))) items.push(await itemStatus(deps, item));
+  let contact: NoticeStatus["contact"] = null;
+  if (notice.contactId !== null) {
+    const facts = (await deps.auth.notifierFacts([notice.contactId])).get(notice.contactId);
+    contact = { given: facts?.contactGiven ?? false, confirmed: byMail ? (facts?.confirmed ?? false) : null, stopped: byMail ? (facts?.suppressed ?? false) : null };
+  }
+  return { ref: notice.ref, receivedAt: notice.receivedAt, items, contact };
+}
+
+/**
+ * The status page's two buttons (3c design, section 7.2): "I sent this" and "stop korbat's emails about reports to this
+ * address". Only the contact's mail token works them: the notice's own token, a notice without a contact and a wrong
+ * token are all notice_not_found, so typing someone's address neither confirms it nor stops korbat's mail to it.
+ */
+export async function noticeContact(deps: Pick<ModerationDeps, "apiDb" | "auth" | "limits">, request: NoticeContactRequest, netHash: string): Promise<void> {
+  await countOrRefuse(deps, `notice-status:${netHash}`, HOUR_MS, STATUS_READS_PER_HOUR);
+  const notice = await noticeByRef(deps.apiDb, request.ref);
+  if (!notice || notice.contactId === null) throw new ModerationError("notice_not_found");
+  const done = request.choice === "confirm" ? await deps.auth.confirmNotifier(notice.contactId, request.token) : await deps.auth.stopNotifier(notice.contactId, request.token);
+  if (!done) throw new ModerationError("notice_not_found");
 }

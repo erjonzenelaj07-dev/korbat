@@ -20,6 +20,10 @@ export interface AuthConfig {
   totpKey: VersionedKey;
   /** Keys TOTP_ENC_KEY replaced; still accepted for decryption. */
   totpPreviousKeys: VersionedKey[];
+  /** Encrypts a signed-out notifier's name, address and mail token (3c design, section 6.1); see NOTIFIER_ENC_KEY in config.ts. */
+  notifierKey: VersionedKey;
+  /** Keys NOTIFIER_ENC_KEY replaced; still accepted for decryption. A contact is never encrypted again under the new key. */
+  notifierPreviousKeys: VersionedKey[];
   termsVersion: string;
   /** How the client address is read; see TRUST_PROXY in config.ts. */
   trustProxy: "cloudflare" | "caddy" | "none";
@@ -48,6 +52,8 @@ export function authConfigFrom(config: Config): AuthConfig {
     ipHashKey: decodeKey(config.IP_HASH_KEY),
     totpKey: parseVersionedKey(config.TOTP_ENC_KEY),
     totpPreviousKeys: config.TOTP_ENC_KEYS_PREVIOUS.map(parseVersionedKey),
+    notifierKey: parseVersionedKey(config.NOTIFIER_ENC_KEY),
+    notifierPreviousKeys: config.NOTIFIER_ENC_KEYS_PREVIOUS.map(parseVersionedKey),
     termsVersion: config.TERMS_VERSION,
     trustProxy: config.TRUST_PROXY,
     verifyProvider: config.VERIFY_PROVIDER,

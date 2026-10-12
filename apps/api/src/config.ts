@@ -117,6 +117,21 @@ const schema = z.object({
     .default("")
     .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean))
     .pipe(z.array(versionedKey)),
+  /**
+   * Encrypts what a signed-out notifier gave to be told about their notice: a name, an address and the token of the
+   * mails' link (3c design, section 6.1). Back it up as TOTP_ENC_KEY is: without it korbat can neither mail a notifier
+   * nor answer who sent a notice.
+   */
+  NOTIFIER_ENC_KEY: versionedKey,
+  /**
+   * Earlier notifier keys, comma-separated, still accepted for decryption. A contact is never re-encrypted, so a key
+   * stays here for as long as a contact it encrypted is kept.
+   */
+  NOTIFIER_ENC_KEYS_PREVIOUS: z
+    .string()
+    .default("")
+    .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean))
+    .pipe(z.array(versionedKey)),
   TURNSTILE_SECRET_KEY: z.string().min(1),
   SMTP_URL: smtpUrl,
   MAIL_FROM: mailFrom,
@@ -172,6 +187,17 @@ const schema = z.object({
    * hostname, so staff keys work on the console and nowhere else; a parent domain was declined (3a design, section 2).
    */
   CONSOLE_RP_ID: consoleRpIdSetting,
+  /**
+   * The hour of the UTC day (0 to 23) at which the day's decisions on reports and notices are released to those who sent
+   * them, in one batch (3c design, section 7.8): the batch hides the minute a decision landed. A blank value, as compose
+   * passes it, is the default.
+   */
+  MODERATION_DISPATCH_HOUR: blankAsUnset.pipe(z.coerce.number<string>().int().min(0).max(23).default(7)),
+  /**
+   * The published emergency switch of the queue (3c design, section 2): `on` sorts cases whose open items all come from
+   * unproven sources after the others of their lane, never below a less severe lane. `off` is the default.
+   */
+  MODERATION_DEFER_UNPROVEN: blankAsUnset.pipe(z.enum(["on", "off"]).default("off")),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS

@@ -12,7 +12,7 @@ import { MediaError, type Media } from "./media";
 import { observability } from "./middleware/observability";
 import { clientIpKey, rateLimit, type RateLimitStore } from "./middleware/rate-limit";
 import { noStore, securityHeaders } from "./middleware/security-headers";
-import { ModerationError } from "./moderation";
+import { ModerationError, type Moderation } from "./moderation";
 import { healthRoutes, type HealthChecks } from "./routes/health";
 import { SocialError, type Social } from "./social";
 import type { Staff } from "./staff";
@@ -43,11 +43,13 @@ export interface AppDeps {
   account?: Account;
   /** The staff console's API. Mounted only while CONSOLE_ORIGIN is set; optional as the other modules are. */
   staff?: Staff;
+  /** Reports and notices. Optional as the other modules are; the server always wires it, whether the console is on or off. */
+  moderation?: Moderation;
   /** Checks that report a part being down without marking the API unhealthy, the image worker for one. */
   advisoryChecks?: HealthChecks;
 }
 
-export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, advisoryChecks }: AppDeps) {
+export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks }: AppDeps) {
   const app = new Hono<AppEnv>();
 
   app.use(observability(logger));
@@ -73,6 +75,9 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   if (account) app.route("/api/account", account.routes);
   // The console is off while CONSOLE_ORIGIN is unset: nothing is mounted, and every staff path is the unknown route below.
   if (staff && config.CONSOLE_ORIGIN !== undefined) app.route("/api/staff", staff.routes(config.CONSOLE_ORIGIN));
+  // Reports and notices are taken, kept and given receipts whether or not the console is on: anyone may send one, signed
+  // in or not, so these routes stand after session resolution and behind no session guard of their own.
+  if (moderation) app.route("/api", moderation.routes);
   if (social) app.route("/api", social.routes);
 
   app.notFound((c) => c.json(errorBody("not_found", "No such route", c.get("requestId")), 404));

@@ -104,7 +104,8 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
     if (!insideAuth(path) && !AUTH_POOL_ALLOWED.has(path) && /\b(DATABASE_URL_AUTH|authDb)\b/.test(source)) {
       violations.push(`${path}: references the auth database pool`);
     }
-    if (!insideAuth(path) && !AUTH_KEYS_ALLOWED.has(path) && /\b(TOTP_ENC_KEY|AUTH_HMAC_KEY|IP_HASH_KEY)\b/.test(source)) {
+    // Each encryption key with the list of the keys it replaced: after a rotation those still open what was stored before it.
+    if (!insideAuth(path) && !AUTH_KEYS_ALLOWED.has(path) && /\b(TOTP_ENC_KEY|TOTP_ENC_KEYS_PREVIOUS|NOTIFIER_ENC_KEY|NOTIFIER_ENC_KEYS_PREVIOUS|AUTH_HMAC_KEY|IP_HASH_KEY)\b/.test(source)) {
       violations.push(`${path}: references an auth key`);
     }
     if (insideAuth(path)) {
@@ -391,6 +392,17 @@ describe("module boundaries", () => {
       { path: "profiles/store.ts", source: `export function f(authDb: Db) {}` },
       { path: "lib/hash.ts", source: `const key = config.IP_HASH_KEY;` },
       { path: "index.ts", source: `const k = config.AUTH_HMAC_KEY;` },
+      // The key a notifier's name and address are encrypted under is the auth module's too: the moderation module, which
+      // names contacts by their ids, never sees it.
+      { path: "moderation/intake.ts", source: `const key = deps.config.NOTIFIER_ENC_KEY;` },
+      // The keys a key replaced are guarded as the key is: a contact is never encrypted again, so after a rotation they are
+      // the only keys of every contact stored before it. The TOTP key's earlier keys likewise.
+      { path: "moderation/context.ts", source: `const older = config.NOTIFIER_ENC_KEYS_PREVIOUS;` },
+      { path: "staff/routes.ts", source: `const older = config.TOTP_ENC_KEYS_PREVIOUS;` },
+      // A longer name that only contains a key's name is not the key; config.ts and the auth module may name every key.
+      { path: "lib/names.ts", source: `const MY_NOTIFIER_ENC_KEY_NAME = 1; const NOTIFIER_ENC_KEYS = 2; const TOTP_ENC_KEYS_PREVIOUSLY = 3;` },
+      { path: "config.ts", source: `NOTIFIER_ENC_KEY: versionedKey, NOTIFIER_ENC_KEYS_PREVIOUS: z.string(), TOTP_ENC_KEYS_PREVIOUS: z.string(),` },
+      { path: "auth/context.ts", source: `notifierKey: parseVersionedKey(config.NOTIFIER_ENC_KEY), notifierPreviousKeys: config.NOTIFIER_ENC_KEYS_PREVIOUS.map(parseVersionedKey),` },
       // The staff command line may open the auth pool; another command line, or the staff module itself, may not.
       { path: "cli/other.ts", source: `const authDb = createDb(config.DATABASE_URL_AUTH);` },
       { path: "staff/audit.ts", source: `export function readKeys(authDb: Db) {}` },
@@ -400,6 +412,9 @@ describe("module boundaries", () => {
       "profiles/store.ts: references the auth database pool",
       "lib/hash.ts: references an auth key",
       "index.ts: references an auth key",
+      "moderation/intake.ts: references an auth key",
+      "moderation/context.ts: references an auth key",
+      "staff/routes.ts: references an auth key",
       "cli/other.ts: references the auth database pool",
       "staff/audit.ts: references the auth database pool",
     ]);
