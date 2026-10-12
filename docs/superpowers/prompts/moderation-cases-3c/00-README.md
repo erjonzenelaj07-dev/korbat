@@ -74,3 +74,27 @@ python docs/superpowers/prompts/moderation-cases-3c/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-12)
+
+The twelve prompts were replayed into this repository by the scratch tooling's `replay.py`. It ran each prompt's steps with no model session, through the same gated runner as the dry run. It ran in one attempt with no stop: every red step failed as recorded, every gate passed, and both stack rebuilds, in Tasks 10 and 11, ended with the smoke test passing through Caddy on the app's site and the console's.
+
+| Task | Commit |
+|---|---|
+| 1 | `6d58863` |
+| 2 | `548d3df` |
+| 3 | `5d2459f` |
+| 4 | `2b84510` |
+| 5 | `aaba76b` |
+| 6 | `d6a61d9` |
+| 7 | `cef6ac0` |
+| 8 | `49f99d3` |
+| 9 | `d5c0d5d` |
+| 10 | `c75279a` |
+| 11 | `eb87d88` |
+| 12 | `6f236b3` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree is byte-identical to the dry run's except eight drizzle files (migration 0014's SQL, the snapshots of 0014 to 0019 and the journal). Those end with a newline here and with none in the dry run, because drizzle writes none and the prompts' file blocks end every file with one; drizzle orders migrations by the journal's entries, so the newline changes nothing it does. `verify_prompts.py` reproduces all 286 files. The integration suite ends at 87 files and 1,111 tests, on a fresh database and on one upgraded from 0013 alike; the timing gate passed at its first try.
+- **The history between the design and Task 1.** The designs of 3e, 3f and 3d (`2b4b653`, `4bd1f81`, `f1d0e94`) were committed after the 3c design and before these prompts (`f26a7d2`), so Task 1's precondition, which names the prompts' commit, held. The dry run's clone had them only after its Task 12; the comparison above leaves `docs/superpowers` out for that reason.
+- **The gates of Tasks 1 to 3 were tightened after they ran.** Task 1's prompt gained the timing gate, and the integration gate of Tasks 1 to 3 gained `--retry=2` and the exclusion of the timing tests, after those tasks had run in the dry run; the replay ran the printed commands. The output printed for those gates is from the dry run's earlier form (and, for the timing gate, from Task 4's run of the identical command), as the section on what can differ says.
+- **The review that shaped Task 11.** After Task 10, one adversarial review read the built code through four lenses (who can see or do what; the database and concurrency; what people are told; the proofs and the failure paths), each with runs on the scratch test database. It found no leak and no access hole; it upheld one high finding (an intake that reaches two posts deadlocked with the author's delete of one), eight medium and nine low ones, and Task 11 fixes all but one low one, which is left for the owner (the console cannot say that an image row was already disposed).
