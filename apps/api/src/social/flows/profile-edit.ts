@@ -33,6 +33,10 @@ export async function editProfile(deps: SocialDeps, viewer: string, input: Profi
  * Moves the account to a new handle: the handle rules and the reserved list first, then the 30-day
  * cooldown, then the repository's transaction, which decides whether the handle is free. The handle
  * left behind stays reserved for this account, which may take it back after the next cooldown.
+ *
+ * 3e (design, section 7.10): a handle korbat retired is refused to everyone, its former holder included
+ * (handle_retired, 409), and the placeholder's prefix is in the reserved list. A retirement clears the
+ * change time when it swaps the handle, so the first change after it meets no cooldown.
  */
 export async function changeHandle(deps: SocialDeps, viewer: string, input: HandleChangeRequest): Promise<ProfileView> {
   const to = input.handle.toLowerCase();
@@ -48,7 +52,9 @@ export async function changeHandle(deps: SocialDeps, viewer: string, input: Hand
   }
   const result = await deps.repo.changeHandle(viewer, to, now);
   if (!result.ok) {
-    if (result.reason === "handle_taken") throw new SocialError("handle_taken", 409);
+    if (result.reason === "handle_taken" || result.reason === "handle_retired") throw new SocialError(result.reason, 409);
+    // The database's guard refused a placeholder's form that the handle rule let through: answered as that rule answers it.
+    if (result.reason === "handle_reserved") throw new SocialError("handle_reserved", 400);
     // The row changed under us (a second request of the same account) and already holds this handle.
     if (result.reason === "unchanged") throw new SocialError("invalid_request", 400, "That is already your handle.");
     throw new SocialError("not_found", 404);

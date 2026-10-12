@@ -717,7 +717,9 @@ export async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">
   if (item.targetType === "account") {
     // With or without a case: the answer concerns the images on the account's posts too when the item is suspect or,
     // once released, when its decision sealed them. After "not available" the page and the app add no scope sentence.
-    scope = item.suspect || (item.released && item.sealed) ? "account_suspect" : "account";
+    // 3e (7.11 item 7): once released, an item whose decision retired the handle reads that in place of the display name
+    // and bio; a suspect item keeps its own scope, which speaks of the images.
+    scope = item.suspect || (item.released && item.sealed) ? "account_suspect" : item.released && item.retired ? "account_retired" : "account";
   } else if (item.released && item.hasCase && !item.suspect && (await deps.social.postRef(item.targetId))?.quoteOfId) {
     // Whether a post quotes another can be read only from its row, so this scope comes with the released outcome and not
     // before it. A suspect item about a quoting post has an item of its own for the quoted post, and no such scope.

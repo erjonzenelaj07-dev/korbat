@@ -1,11 +1,13 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { handleHistory, profiles, type Db } from "@korbat/db";
-import { isUniqueViolation, type ProfileStore } from "../auth";
+import { handleRefusal, isUniqueViolation, type ProfileStore } from "../auth";
 
 /**
  * Public profiles through the korbat_api pool. Onboarding writes the profile and the reservation of
  * its handle in one transaction; the unique index on lower(handle) and the primary key of
- * handle_history decide races and refuse a handle another profile holds or ever held.
+ * handle_history decide races and refuse a handle another profile holds or ever held. A handle korbat retired (3e) is
+ * refused first, in the same transaction, with its own answer; the database's guard of handles refuses the same, and a
+ * placeholder's form, under a race or to a caller that skipped the handle rule, and is answered alike.
  */
 export function createProfileStore(apiDb: Db): ProfileStore {
   const columns = { id: profiles.id, handle: profiles.handle, displayName: profiles.displayName };
@@ -13,13 +15,22 @@ export function createProfileStore(apiDb: Db): ProfileStore {
     async create({ id, handle, displayName }) {
       try {
         const profile = await apiDb.transaction(async (tx) => {
+          // 3e: a retired handle is nobody's, so it is refused before the unique index would call it taken.
+          const [retired] = await tx
+            .select({ handle: handleHistory.handleLower })
+            .from(handleHistory)
+            .where(and(eq(handleHistory.handleLower, handle.toLowerCase()), isNotNull(handleHistory.retiredAt)))
+            .limit(1);
+          if (retired) return null;
           const [created] = await tx.insert(profiles).values({ id, handle, displayName }).returning(columns);
           // The handle chosen at onboarding is reserved like every later one (1b design, section 6); a row for it under another profile ends the transaction.
           await tx.insert(handleHistory).values({ handleLower: handle.toLowerCase(), profileId: id });
           return created!;
         });
-        return { ok: true, profile };
+        return profile === null ? { ok: false, reason: "handle_retired" } : { ok: true, profile };
       } catch (err) {
+        const guarded = handleRefusal(err);
+        if (guarded !== null) return { ok: false, reason: guarded };
         if (isUniqueViolation(err)) return { ok: false, reason: "handle_taken" };
         throw err;
       }

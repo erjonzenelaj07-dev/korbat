@@ -170,6 +170,8 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         handleHistory: [...profile.profile.handleHistory],
         // Last in the profile, where the format added it (2c); the member order is part of the bytes.
         showInExplore: profile.profile.showInExplore,
+        // After it, where 3e added it (W.8): the retired handles of the history, with when.
+        retiredHandles: profile.profile.retiredHandles.map((retired) => ({ handle: retired.handle, retiredAt: iso(retired.retiredAt) })),
       },
     ],
     [

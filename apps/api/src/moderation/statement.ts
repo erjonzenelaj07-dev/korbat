@@ -57,8 +57,11 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         mediaId: action.mediaId,
         noEffect: action.noEffect,
         sealed: action.kind === "seal_media" ? { posts: action.sealedPosts, images: action.sealedImages, deletedImages: action.sealedDeletedImages } : null,
-        // 3e: what the ledger fixed for good about a strike, so its statement reads as it was sent.
+        // 3e: what the ledger fixed for good about a strike, a standing measure and a retirement, so its statement reads as
+        // it was sent (a retirement's sentence reads its end from whether the decision suspends or terminates at once).
         ...(action.kind === "strike" ? { endsAt: action.endsAt, activeThen: action.activeThen } : {}),
+        ...(action.kind === "suspend" || action.kind === "terminate" ? { announced: action.announced } : {}),
+        ...(action.kind === "retire_handle" ? { handle: action.handle, placeholder: action.placeholder } : {}),
       })),
     reversals: actions
       .filter((action) => MEASURES[action.kind].lifts !== null)
@@ -66,6 +69,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         kind: action.kind as ReversalKind,
         mediaId: action.mediaId,
         ...(action.lifted === null ? { resetDecisionId: null, oldValueKept: false, resetRuleId: null } : resetFacts(action.kind, action.lifted)),
+        // 3e: the handle a reversal of a retirement gives back.
+        ...(action.kind === "unretire_handle" ? { handle: action.handle } : {}),
       })),
     endedMeasures: ended.map((measure) => ({ kind: measure.kind as MeasureKind, mediaId: measure.mediaId, ...resetFacts(measure.kind, measure) })),
     reviewed:

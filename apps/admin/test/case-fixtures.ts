@@ -1,4 +1,4 @@
-import type { CaseDecision, CaseItem, CaseSnapshot, CaseView, QueueRow, SourceSummary, StaffOverview } from "@korbat/contracts";
+import type { CaseDecision, CaseItem, CaseSnapshot, CaseStanding, CaseView, QueueRow, SourceSummary, StaffOverview } from "@korbat/contracts";
 import { HOSTILE } from "./fixtures";
 
 // Built from its char code: a right-to-left override, here where an address's host ends.
@@ -441,4 +441,48 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     interimSeals: { total: 0, items: [] },
     ...overrides,
   };
+}
+
+// 3e (design, section 8.3): a case about an account whose handle a report says impersonates someone.
+export const CASE_RETIRE = "7081a2b3-c4d5-46e7-88f9-0a1b2c3d4e5f";
+export const ITEM_RETIRE = "8192b3c4-d5e6-47f8-99a0-1b2c3d4e5f60";
+
+/** 3e: an account case's standing with nothing on the record: no strike, nothing live, and the snapshot's handle not retired. */
+export const NO_ACCOUNT_STANDING: CaseStanding = {
+  activeStrikes: 0,
+  strikes: [],
+  ladderRule: null,
+  suspensionsInYear: 0,
+  lastSuspendedOn: null,
+  maxDays: null,
+  mayTerminate: false,
+  live: false,
+  openReports: true,
+  atOnce: [],
+  flood: { posts: 0, from: "2026-10-01T08:00:00.000Z", to: "2026-10-01T09:00:00.000Z" },
+  seal: null,
+  snapshotHandleRetired: false,
+};
+
+/**
+ * 3e: an account's case in lane 2 that holds one rule report under R4 about its handle, unanswered, with a snapshot
+ * whose handle is the one the profile holds now unless told otherwise, and the account's standing. `live` is the handle
+ * the profile holds now; `snapped` the one the newest snapshot copied.
+ */
+export function retireCase(live = "Ada_L", snapped = "Ada_L", standing: Partial<CaseStanding> = {}): CaseView {
+  const base = accountCase();
+  const [copied] = base.snapshots;
+  if (!copied || copied.withheld) throw new Error("the account case's snapshot shows its content");
+  return accountCase({
+    id: CASE_RETIRE,
+    lane: 2,
+    stateVersion: 1,
+    intakeSeq: 1,
+    suspicion: null,
+    target: { type: "account", id: ACCOUNT_ID, handle: live, displayName: "Ada", bio: "", deleted: false },
+    snapshots: [{ ...copied, authorHandle: snapped, handle: snapped, displayName: "Ada", bio: "" }],
+    items: [item({ id: ITEM_RETIRE, ruleId: "R4", category: "STATEMENT_CATEGORY_DATA_PROTECTION_AND_PRIVACY_VIOLATIONS", link: "http://localhost:8081/u/ada_l" })],
+    history: [],
+    standing: { ...NO_ACCOUNT_STANDING, ...standing },
+  });
 }

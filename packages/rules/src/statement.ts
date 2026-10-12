@@ -95,6 +95,23 @@ export const STATEMENT_WORDS = {
   overruled: "korbat overruled the strike that decision gave. It no longer counts.",
   automationStrike:
     "No automated means were used to find this or to decide that it breaks the rule. That the decision gives a strike follows from korbat's published rule, which its software applies.",
+  // 3e (design, section 18, W.2): the retirement of a handle and its reversal.
+  /** The first sentence of a retirement: which handle, and that nobody can use it again. */
+  retireLead: (handle: string) => `korbat retired the handle @${handle}: nobody can use it again, you included.`,
+  /**
+   * A retirement that changed the profile: the handle, the placeholder, and when a new handle can be chosen without the
+   * usual wait, by the decision's own measures (retireEnd): at once; when a suspension the same decision takes at once
+   * ends; or not at all, after a termination taken at once, where the sentence ends after "instead".
+   */
+  retire: (handle: string, placeholder: string, end: RetireEnd) =>
+    `korbat retired the handle @${handle}: nobody can use it again, you included. If your profile still held it, it now shows @${placeholder} instead${
+      end === "none" ? "." : `, and you can choose a new handle in Settings, Profile, without the usual wait: ${end === "at_once" ? "at once" : "when that suspension ends"}.`
+    }`,
+  /** A retirement whose handle was already retired. */
+  retireAlready: "That handle was already retired, so this changes nothing now.",
+  /** The reversal of a retirement. */
+  unretired: (handle: string) =>
+    `korbat lifted the retirement of the handle @${handle}. If your profile still held the placeholder, it has the handle again. If you chose another handle since, you can change back to @${handle} at once in Settings, Profile. Nobody else could take it meanwhile.`,
   /**
    * The rule or the law, worded by what korbat knows when it decides. A decision that seals rests on a report that nobody
    * at korbat has checked against the images, since nobody opens them, so it says what the step rests on and never that
@@ -116,6 +133,19 @@ export const STATEMENT_WORDS = {
 
 const W = STATEMENT_WORDS;
 
+/**
+ * When the holder of a retired handle may choose a new one without the usual wait (3e design, W.2), read from the
+ * decision's own measures so that the sentence reads as it was sent: at once; after a suspension the same decision
+ * takes at once (a suspended account changes no handle); never after a termination taken at once. An announced
+ * suspension or termination has not started when the decision is sent, so the handle can be chosen at once.
+ */
+export type RetireEnd = "at_once" | "after_suspension" | "none";
+export function retireEnd(measures: readonly StatementInput["measures"][number][]): RetireEnd {
+  if (measures.some((measure) => measure.kind === "terminate" && measure.announced === false)) return "none";
+  if (measures.some((measure) => measure.kind === "suspend" && measure.announced === false)) return "after_suspension";
+  return "at_once";
+}
+
 /** The sentence that names the source: a notice or a report was followed, a moderator's finding was found. */
 const sourceSentence = (source: StatementInput["source"]): string => (source === "own_initiative" ? `What this decision is about was ${W.source.own_initiative}.` : `korbat decided this ${W.source[source]}.`);
 
@@ -127,7 +157,20 @@ function fieldSentence(field: Field, reset: { oldValueKept: boolean; resetRuleId
 }
 
 /** The kinds of 3e whose sentences this version of the package does not hold yet: none is rendered as another one. */
-const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting", "lift_suspension", "unretire_handle", "lift_reporting"];
+const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["suspend", "terminate", "warn_reporting", "restrict_reporting", "lift_suspension", "lift_reporting"];
+
+/**
+ * A retirement, as a paragraph. One that changed the profile names the handle, its placeholder and when a new handle can be
+ * chosen; one that changed nothing names the handle and why, and no placeholder, since none was written.
+ */
+function retireParagraph(input: StatementInput, measure: StatementInput["measures"][number]): string {
+  const { handle, placeholder } = measure;
+  if (handle === undefined || handle === null) throw new Error("a statement's retire_handle names the handle it retired: the decision's data holds none");
+  if (measure.noEffect === "already") return `${W.retireLead(handle)} ${W.retireAlready}`;
+  if (measure.noEffect === "deleted") return `${W.retireLead(handle)} ${W.deletedAccount}`;
+  if (placeholder === undefined || placeholder === null) throw new Error("a statement's retire_handle names the placeholder it gave: the decision's data holds none");
+  return W.retire(handle, placeholder, retireEnd(input.measures));
+}
 
 /**
  * A strike, as a paragraph: that the decision gives one, until when it counts and how many counted with it; that it
@@ -152,6 +195,7 @@ function measureParagraph(input: StatementInput, measure: StatementInput["measur
   const deciding = input.kind === "interim";
   if (UNWORDED.includes(measure.kind)) throw new Error(`a statement's ${measure.kind} is not worded in this version of @korbat/rules`);
   if (measure.kind === "strike") return strikeParagraph(input, measure, redress);
+  if (measure.kind === "retire_handle") return retireParagraph(input, measure);
   const field = fieldOf(measure.kind);
   if (measure.kind === "seal_media") {
     const sealed = measure.sealed ?? { posts: 0, images: 0, deletedImages: 0 };
@@ -182,6 +226,10 @@ function measureParagraph(input: StatementInput, measure: StatementInput["measur
 function reversalParagraph(input: StatementInput, reversal: StatementInput["reversals"][number]): string {
   if (UNWORDED.includes(reversal.kind)) throw new Error(`a statement's ${reversal.kind} is not worded in this version of @korbat/rules`);
   if (reversal.kind === "overrule") return W.overruled;
+  if (reversal.kind === "unretire_handle") {
+    if (reversal.handle === undefined || reversal.handle === null) throw new Error("a statement's unretire_handle names the handle it gives back: the decision's data holds none");
+    return W.unretired(reversal.handle);
+  }
   const field = fieldOf(reversal.kind);
   if (field !== null) return `${W.liftedField(field)} ${fieldSentence(field, reversal)}`;
   if (reversal.kind === "unseal_media") return W.unsealed;

@@ -444,6 +444,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
         countsUntil: more?.countsUntil ?? null,
         period: (more?.period ?? null) as CaseDecisionAction["period"],
         restedOnBy: (more?.restedOnBy ?? null) as CaseDecisionAction["restedOnBy"],
+        // 3e Task 2: a retirement names the handle it retired; no other row carries the member.
+        ...(more?.handle ? { handle: more.handle } : {}),
       });
     }
     decisions.push({

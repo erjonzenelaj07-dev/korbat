@@ -12,6 +12,9 @@ import { MemoryMailer } from "../../src/mail/memory";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { Browser, NativeClient } from "./http-client";
+import { leavesNoModerationRows } from "./moderation-decide";
+import { retireHandleForTest } from "./moderation-fixtures";
+import { newProfile } from "./social-fixtures";
 
 type App = ReturnType<typeof createApp>;
 
@@ -21,6 +24,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
   let config: Config;
   let authDb: Db;
   let apiDb: Db;
+  let migrateDb: Db;
   let auth: Auth;
   let app: App;
   const mailer = new MemoryMailer();
@@ -30,6 +34,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator can retire a handle, as a decision does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     auth = createAuth({
       config,
       logger,
@@ -43,7 +49,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     app = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth });
   });
   afterAll(async () => {
-    await Promise.all([closeDb(authDb), closeDb(apiDb)]);
+    await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
 
   async function signUp(b: Browser, platform: "web" | "ios" = "web") {
@@ -316,4 +322,26 @@ describe.skipIf(!process.env.INTEGRATION)("integration: auth over HTTP", () => {
     expect(body.error.code).toBe("invalid_code");
     expect(body.error.requestId).toBe(unknown.headers.get("x-request-id"));
   });
+
+  test("3e: onboarding refuses a handle korbat retired with handle_retired (409) and the placeholder's prefix with handle_reserved (400), and the account then chooses another", async () => {
+    const holder = await newProfile(apiDb);
+    const { handle } = await retireHandleForTest(migrateDb, holder.id);
+    const b = new Browser(app, config.APP_ORIGIN);
+    await signUp(b);
+    const retired = await b.fetch("/api/auth/onboarding/handle", { json: { handle: handle.toUpperCase(), displayName: "Late" } });
+    expect(retired.status).toBe(409);
+    expect(ErrorEnvelope.parse(await retired.json()).error).toMatchObject({ code: "handle_retired", message: "That handle was retired by korbat. Nobody can use it." });
+    for (const reserved of ["retired_0a1b2c3d4e5f", "retired_late"]) {
+      const refused = await b.fetch("/api/auth/onboarding/handle", { json: { handle: reserved, displayName: "Late" } });
+      expect(refused.status, reserved).toBe(400);
+      expect(ErrorEnvelope.parse(await refused.json()).error.code, reserved).toBe("handle_reserved");
+    }
+    expect(MeResponse.parse(await (await b.fetch("/api/me")).json()).profile).toBeNull();
+    const chosen = newHandle();
+    const onboarded = await b.fetch("/api/auth/onboarding/handle", { json: { handle: chosen, displayName: "Late" } });
+    expect(onboarded.status).toBe(200);
+    expect(MeResponse.parse(await (await b.fetch("/api/me")).json()).profile?.handle).toBe(chosen);
+  });
+
+  leavesNoModerationRows(() => apiDb);
 });

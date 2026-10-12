@@ -23,7 +23,7 @@ const full = {
       { name: "Security key", createdAt: at, lastUsedAt: null, synced: false, createdOn: null },
     ],
   },
-  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false },
+  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_l", retiredAt: at }] },
   posts: [
     { id: id(2), body: "first", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [{ id: id(3), file: `media/${id(3)}.webp`, altText: "a cat", width: 2048, height: 1536 }] },
     { id: id(4), body: "", createdAt: at, replyToId: id(2), quoteOfId: null, state: "deleted_by_author", deletedAt: at, media: [] },
@@ -134,6 +134,15 @@ describe("export format", () => {
     expect(ExportFormat.parse(full).profile.showInExplore).toBe(false);
     expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, showInExplore: undefined } }).success).toBe(false);
     expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, showInExplore: "off" } }).success).toBe(false);
+  });
+
+  test("the profile lists the account's own handles that korbat retired, each with when, beside the handle history (3e design, W.8)", () => {
+    // Added to korbat-export-1 last in the profile, as the Explore switch was: always there, empty when nothing is retired.
+    expect(ExportFormat.parse(full).profile.retiredHandles).toEqual([{ handle: "ada_l", retiredAt: at }]);
+    expect(ExportFormat.parse({ ...full, profile: { ...full.profile, retiredHandles: [] } }).profile.retiredHandles).toEqual([]);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, retiredHandles: undefined } }).success).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, retiredHandles: [{ handle: "ada_l", retiredAt: null }] } }).success).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, retiredHandles: [{ handle: "ada_l" }] } }).success).toBe(false);
   });
 
   test("the account's passkeys carry a name, their times, whether they are synced and where they were added, and nothing that identifies the key", () => {

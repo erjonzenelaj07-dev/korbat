@@ -317,6 +317,7 @@ describe("the case answer", () => {
       atOnce: ["threat"],
       flood: { posts: 2, from: TIME, to: TIME },
       seal: { decidedOn: "2026-10-01" },
+      snapshotHandleRetired: false,
     };
     const account = { ...view, target: { type: "account", id: POST, handle: "now_named", displayName: "A name", bio: "A bio", deleted: false }, suspicion: null, snapshots: [], items: [], decisions: [], strikeDue: null, authorStanding: null, standing };
     expect(CaseView.parse(account).standing).toEqual(standing);

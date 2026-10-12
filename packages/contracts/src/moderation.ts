@@ -680,6 +680,17 @@ export const ALREADY_NOT_SHOWN = "It was already not shown on korbat, so nothing
 /** After the outcome of an item about an account that is not suspect and whose answering decision sealed nothing. */
 export const ACCOUNT_ITEM_SCOPE = "This answer concerns the account's display name and bio. korbat decides about its posts and images in cases of their own and does not report those here.";
 
+/**
+ * 3e (design, section 10.1 and W.1): in place of ACCOUNT_ITEM_SCOPE, after the outcome of an item about an account whose
+ * answering decision holds an account measure of 3e. `retired` whenever that decision retires the handle, which anyone can
+ * see on the profile; `measure` otherwise (the suspensions and the termination taken at once, which Task 3 opens). Neither
+ * names a suspension, an access or a duration, so that nothing a reporter reads lets them follow the account's standing.
+ */
+export const ACCOUNT_MEASURE_SCOPE = {
+  retired: "korbat retired the handle.",
+  measure: "korbat took a measure on the account. It does not report here which, or for how long.",
+} as const;
+
 /** After the outcome of an item about a post that quotes another (never a suspect item, whose quoted post has an item of its own). */
 export const QUOTE_ITEM_SCOPE = "This answer concerns this post's own text and images. korbat decides about the post it quotes, shown inside its card, in a case of its own and does not report that here.";
 
@@ -723,7 +734,7 @@ export interface OutcomeWordsInput {
   /** Every measure of the answering decision changed nothing when it was imposed. */
   noEffect: boolean;
   /** What the answer concerns, as the status answer gives it. */
-  scope: "account" | "quote" | "account_suspect" | null;
+  scope: "account" | "quote" | "account_suspect" | "account_retired" | null;
 }
 
 const NO_ACTION: readonly ItemOutcome[] = ["no_violation", "not_evident"];
@@ -742,7 +753,8 @@ const sentence = (phrase: string): string => (phrase.endsWith(".") ? phrase : `$
  *     reversal and a link that named nothing on that path.
  *   - SUSPECT_NO_SEAL, after a suspect item's restriction that sealed nothing.
  *   - ALREADY_NOT_SHOWN, after a restricting outcome whose measures all changed nothing.
- *   - The scope's sentence, after every outcome but `not_available`.
+ *   - The scope's sentence, after every outcome but `not_available`; 3e's retired phrase only after a restricting one, since
+ *     a reversal's phrase says on its own that the handle was given back, and a sentence that it was retired would contradict it.
  * The text ends in one full stop.
  */
 export function outcomeWords(input: OutcomeWordsInput): string {
@@ -771,6 +783,7 @@ export function outcomeWords(input: OutcomeWordsInput): string {
     if (scope === "account") parts.push(ACCOUNT_ITEM_SCOPE);
     if (scope === "account_suspect") parts.push(ACCOUNT_SUSPECT_SCOPE);
     if (scope === "quote") parts.push(QUOTE_ITEM_SCOPE);
+    if (scope === "account_retired" && RESTRICTING.includes(outcome)) parts.push(ACCOUNT_MEASURE_SCOPE.retired);
   }
   return parts.join(" ");
 }
@@ -778,10 +791,11 @@ export function outcomeWords(input: OutcomeWordsInput): string {
 /**
  * One item of a notice as its sender reads it. `link` is the item's korbat address, an account's built from the handle
  * as the notice named it and never from the handle the profile holds now. `scope` says what the answer concerns
- * (`account`, `quote`, `account_suspect`, or null). An item about an account carries its scope from the first moment,
- * whatever the handle named: `account_suspect` when the item is suspect or, once released, when its answering decision
- * sealed images, and `account` otherwise. `quote`, for a post that quotes another, comes only with the released outcome,
- * so that before the release nothing tells a live target from a link that names nothing. The page and the app add the
+ * (`account`, `quote`, `account_suspect`, `account_retired`, or null). An item about an account carries its scope from
+ * the first moment, whatever the handle named: `account_suspect` when the item is suspect or, once released, when its
+ * answering decision sealed images; once released, `account_retired` (3e) when that decision retired the handle; and
+ * `account` otherwise. `quote`, for a post that quotes another, comes only with the released outcome, so that before
+ * the release nothing tells a live target from a link that names nothing. The page and the app add the
  * scope's sentence after every outcome but `not_available`. `quotedBy` is the position of the item this one was added for,
  * when korbat added it for a quoted post. `outcome` and `decidedOn` (a UTC day) stay null until the outcome is released,
  * and `sealed`, `unseen` and `reexamination` say nothing before that either: `sealed` that the answering decision sealed
@@ -795,7 +809,7 @@ export function outcomeWords(input: OutcomeWordsInput): string {
 export const NoticeItemStatus = z.object({
   position: z.number().int().min(1).max(20),
   link: z.string(),
-  scope: z.enum(["account", "quote", "account_suspect"]).nullable(),
+  scope: z.enum(["account", "quote", "account_suspect", "account_retired"]).nullable(),
   suspect: z.boolean(),
   sealed: z.boolean(),
   unseen: z.boolean(),
@@ -1103,6 +1117,11 @@ export const CaseStanding = z.object({
   atOnce: z.array(z.enum(AT_ONCE_GROUNDS)),
   flood: z.object({ posts: Count, from: z.iso.datetime(), to: z.iso.datetime() }),
   seal: z.object({ decidedOn: UtcDay }).nullable(),
+  /**
+   * 3e Task 2: the handle of the case's newest snapshot is retired already, so a retirement now would change nothing
+   * (no_effect `already`); the composer keeps the control open and says so.
+   */
+  snapshotHandleRetired: z.boolean(),
 });
 export type CaseStanding = z.infer<typeof CaseStanding>;
 const TargetKind = z.enum(["post", "account"]);
@@ -1294,6 +1313,11 @@ export const CaseDecisionAction = z.object({
    * lifted, their basis whole), so that a review says [review.rests] before the key is asked; null on any other kind.
    */
   restedOnBy: z.array(z.enum(["suspend", "terminate"])).nullable(),
+  /**
+   * 3e Task 2: on a retirement, the handle it retired, from its decision's snapshot in lower case, which the case page
+   * names and the preview of its reversal prints. Absent on every other kind.
+   */
+  handle: z.string().optional(),
 });
 export type CaseDecisionAction = z.infer<typeof CaseDecisionAction>;
 
@@ -1490,6 +1514,12 @@ export const StatementMeasure = z.object({
   endsAt: z.iso.datetime().nullable().optional(),
   /** On a strike: the account's strikes that stood and counted at the decision's time, this one included. */
   activeThen: Count.nullable().optional(),
+  /** On a suspension or a termination: whether it was announced with the reply window or taken at once. */
+  announced: z.boolean().nullable().optional(),
+  /** On a retirement: the handle of the decision's snapshot, in lower case, as the database retires it. */
+  handle: z.string().nullable().optional(),
+  /** On a retirement that changed the profile: the placeholder the profile got; null when the measure changed nothing. */
+  placeholder: z.string().nullable().optional(),
 });
 export type StatementMeasure = z.infer<typeof StatementMeasure>;
 
@@ -1501,7 +1531,13 @@ export type StatementMeasure = z.infer<typeof StatementMeasure>;
 const ResetFacts = { resetDecisionId: z.uuid().nullable(), oldValueKept: z.boolean(), resetRuleId: z.enum(RULE_IDS).nullable() };
 
 /** A reversal as a statement tells of it. The reset's facts are set only on the lifting of a field reset. */
-export const StatementReversal = z.object({ kind: z.enum(REVERSAL_KINDS), mediaId: z.uuid().nullable(), ...ResetFacts });
+export const StatementReversal = z.object({
+  kind: z.enum(REVERSAL_KINDS),
+  mediaId: z.uuid().nullable(),
+  ...ResetFacts,
+  /** 3e: on the reversal of a retirement, the handle it gives back, as the lifted decision's snapshot holds it, in lower case. */
+  handle: z.string().nullable().optional(),
+});
 export type StatementReversal = z.infer<typeof StatementReversal>;
 
 /** A measure taken while deciding that ended with the decision, without a reversal. The reset's facts are set only on a field reset. */

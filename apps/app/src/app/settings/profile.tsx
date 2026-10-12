@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { BIO_MAX_LENGTH, postLength, type MeResponse, type ProfileView } from "@korbat/contracts";
+import { BIO_MAX_LENGTH, isRetiredPlaceholder, postLength, type MeResponse, type ProfileView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { ReauthPanel, ReenrollNotice, useReauth } from "@/components/security/ReauthPanel";
 import { SettingsNav } from "@/components/SettingsNav";
@@ -8,6 +8,7 @@ import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/comp
 import { ApiError, errorMessage } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
+import { STANDING_TEXTS } from "@/lib/standing";
 
 /** The DisplayName contract's limit, in the code points the counter shows. */
 const DISPLAY_NAME_MAX = 50;
@@ -100,8 +101,12 @@ function ProfileForm({ handle, refresh }: { handle: string; refresh: Refresh }) 
   );
 }
 
-/** The handle and its 30-day rule. The change needs fresh authentication, so it runs through useReauth. */
-function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh: Refresh }) {
+/**
+ * The handle and its 30-day rule. The change needs fresh authentication, so it runs through useReauth. While the profile
+ * holds a placeholder (3e design, section 9.5) the section says that korbat retired the handle and that the wait does not
+ * apply: the retirement cleared the change time, so the form is open at once. Exported for the server-rendered check.
+ */
+export function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh: Refresh }) {
   const current = me.profile?.handle ?? "";
   const [handle, setHandle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -113,6 +118,8 @@ function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
   const until = refusedUntil ?? fromLastChange;
   const allowedAt = until !== null && until > Date.now() ? new Date(until) : null;
   const normalized = handle.trim().replace(/^@/, "").toLowerCase();
+  // Keyed on the placeholder's form alone; what /me says of a running suspension is Task 3's ([handle.retired.suspended]).
+  const retired = isRetiredPlaceholder(current.toLowerCase());
   const ready = normalized.length > 0 && normalized !== current.toLowerCase();
 
   // Enter in the field calls this as the button does, so the button's conditions come first.
@@ -140,7 +147,8 @@ function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
 
   return (
     <View>
-      <Body>Your handle is @{current}. You can change it once every 30 days. Handles you used before stay yours.</Body>
+      {retired ? <Notice message={STANDING_TEXTS.handle.retired} /> : null}
+      <Body>{STANDING_TEXTS.handle.standing(current)}</Body>
       {allowedAt ? <Text className="mt-2 text-sm text-amber-300">Your next change is allowed on {allowedAt.toLocaleDateString()}.</Text> : null}
       <Field label="New handle" autoCapitalize="none" autoComplete="username" placeholder="@yourname" value={handle} onChangeText={setHandle} onSubmitEditing={() => void change()} />
       <ErrorText message={error} />

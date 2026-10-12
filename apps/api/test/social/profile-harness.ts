@@ -34,6 +34,8 @@ export function profileHarness(start = 1_789_000_000_000) {
   const rows = new Map<string, ProfileRow>();
   /** handle_history: the lowercase handle and the profile it belongs to. */
   const history = new Map<string, string>();
+  /** 3e: the handles of the history that a retirement in the ledger keeps from everyone, their former holder included. */
+  const retired = new Set<string>();
   const events = recordingEvents();
   const repo = {
     async findProfileById(id: string): Promise<ProfileRow | null> {
@@ -51,6 +53,8 @@ export function profileHarness(start = 1_789_000_000_000) {
       const row = rows.get(id);
       if (!row) return { ok: false, reason: "not_found" };
       if (row.handle.toLowerCase() === to) return { ok: false, reason: "unchanged" };
+      // As the real claim statement: a retired handle is refused before anything else, to its former holder too.
+      if (retired.has(to)) return { ok: false, reason: "handle_retired" };
       const inUse = [...rows.values()].some((other) => other.id !== id && other.handle.toLowerCase() === to);
       if (inUse || (history.has(to) && history.get(to) !== id)) return { ok: false, reason: "handle_taken" };
       const from = row.handle;
@@ -73,9 +77,17 @@ export function profileHarness(start = 1_789_000_000_000) {
     deps,
     events: events.recorded,
     history,
+    retired,
     now: () => new Date(t),
     advance(ms: number) {
       t += ms;
+    },
+    /** 3e: what a retirement does to a profile that still holds the handle: the placeholder, and no change time. */
+    retire(id: string, placeholder: string): void {
+      const row = rows.get(id)!;
+      retired.add(row.handle.toLowerCase());
+      row.handle = placeholder;
+      row.handleChangedAt = null;
     },
     /** A profile as onboarding leaves it: the handle chosen then is in the history. */
     profile(handle: string): ProfileRow {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { MEASURES, MEASURE_KINDS, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
-import { REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, statementParagraphs, type StatementInput } from "../src/index";
+import { REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
 
 /**
  * The statement of reasons (3c design, section 10): one pure function renders it for the author's screen, the console's
@@ -545,6 +545,73 @@ describe("3e: the strike's sentences (design, section 18, W.2 and W.3)", () => {
     expect(text(statement({ ruleId: "R6", rulesVersion: 2 }))).not.toContain("Sending report after report");
   });
 });
+describe("3e: the retirement of a handle and its reversal (design, section 18, W.2)", () => {
+  const PLACEHOLDER = "retired_0a1b2c3d4e5f";
+  const retire = (more: Partial<DecisionStatement["measures"][number]> = {}) => measure("retire_handle", { handle: "ada_l", placeholder: PLACEHOLDER, ...more });
+  /** A final decision on an account case under R4 that retires the handle, made under rulebook 3 and redress 2. */
+  const retired = (more: Partial<StatementInput> = {}) => statement({ ruleId: "R4", rulesVersion: 3, redressVersion: 2, post: null, measures: [retire()], ...more });
+  const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R4" as const, rulesVersion: 3, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+  const timedMeasure = (kind: "suspend" | "terminate", announced: boolean) => measure(kind, { announced });
+
+  test("the words, each a constant: the three ends of the retirement, the one that changed nothing, and the handle given back", () => {
+    const lead = "korbat retired the handle @ada_l: nobody can use it again, you included.";
+    expect(W.retire("ada_l", PLACEHOLDER, "at_once")).toBe(
+      `${lead} If your profile still held it, it now shows @${PLACEHOLDER} instead, and you can choose a new handle in Settings, Profile, without the usual wait: at once.`,
+    );
+    expect(W.retire("ada_l", PLACEHOLDER, "after_suspension")).toBe(
+      `${lead} If your profile still held it, it now shows @${PLACEHOLDER} instead, and you can choose a new handle in Settings, Profile, without the usual wait: when that suspension ends.`,
+    );
+    expect(W.retire("ada_l", PLACEHOLDER, "none")).toBe(`${lead} If your profile still held it, it now shows @${PLACEHOLDER} instead.`);
+    expect(W.retireLead("ada_l")).toBe(lead);
+    expect(W.retireAlready).toBe("That handle was already retired, so this changes nothing now.");
+    expect(W.unretired("ada_l")).toBe(
+      "korbat lifted the retirement of the handle @ada_l. If your profile still held the placeholder, it has the handle again. If you chose another handle since, you can change back to @ada_l at once in Settings, Profile. Nobody else could take it meanwhile.",
+    );
+  });
+
+  test("the end of the sentence is read from the decision's own measures: at once, after a suspension taken at once, none with a termination taken at once", () => {
+    expect(retireEnd([retire()])).toBe("at_once");
+    expect(retireEnd([retire(), measure("reset_display_name")])).toBe("at_once");
+    // An announced suspension or termination has not started when the decision is sent: the handle can be chosen at once.
+    expect(retireEnd([retire(), timedMeasure("suspend", true)])).toBe("at_once");
+    expect(retireEnd([retire(), timedMeasure("terminate", true)])).toBe("at_once");
+    expect(retireEnd([retire(), timedMeasure("suspend", false)])).toBe("after_suspension");
+    expect(retireEnd([retire(), timedMeasure("terminate", false)])).toBe("none");
+  });
+
+  test("a final retirement, paragraph by paragraph: the handle and its placeholder, scope.final, 3c's automation sentence, the rule it breaks and the appeal", () => {
+    const out = statementParagraphs(retired());
+    expect(out[0]).toBe(W.retire("ada_l", PLACEHOLDER, "at_once"));
+    expect(out[1]).toBe(W.scope.final);
+    expect(out).toContain(W.automation);
+    expect(out).toContain(`It breaks korbat rule R4, "${getRule("R4", 3)!.title}": ${getRule("R4", 3)!.text}`);
+    expect(out.at(-1)).toBe(REDRESS_TEXTS[2].appeal.replace("{deadline}", `${appealDeadline(new Date(DECIDED)).toISOString().slice(0, 10)} ${appealDeadline(new Date(DECIDED)).toISOString().slice(11, 16)} UTC`));
+    // A reset of the display name after it is a paragraph of its own.
+    expect(statementParagraphs(retired({ measures: [measure("reset_display_name"), retire()] }))).toContain(`${W.done.reset("display_name", false)} ${W.resetOnce("display_name")}`);
+  });
+
+  test("a retirement that changed nothing names the handle and says why, without the placeholder: already retired, or the account deleted", () => {
+    expect(statementParagraphs(retired({ measures: [retire({ noEffect: "already" })] }))[0]).toBe(`${W.retireLead("ada_l")} ${W.retireAlready}`);
+    expect(statementParagraphs(retired({ measures: [retire({ noEffect: "deleted" })] }))[0]).toBe(`${W.retireLead("ada_l")} ${W.deletedAccount}`);
+  });
+
+  test("the handle given back, in a correction and in a review", () => {
+    for (const kind of ["correction", "review"] as const) {
+      const out = statementParagraphs(statement({ kind, outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, rulesVersion: 3, redressVersion: 2, measures: [], reversals: [reversal("unretire_handle", { handle: "ada_l" })], reviewed }));
+      expect(out[1], kind).toBe(W.unretired("ada_l"));
+      expect(out.at(-1), kind).toBe(REDRESS_TEXTS[2].notAppealable);
+    }
+  });
+
+  test("a retirement without its handle or its placeholder, and a reversal without its handle, are not rendered as another statement", () => {
+    expect(() => statementParagraphs(retired({ measures: [retire({ handle: null })] }))).toThrow(/retire_handle/);
+    expect(() => statementParagraphs(retired({ measures: [retire({ placeholder: undefined })] }))).toThrow(/retire_handle/);
+    // A retirement that changed nothing needs no placeholder.
+    expect(() => statementParagraphs(retired({ measures: [retire({ noEffect: "already", placeholder: null })] }))).not.toThrow();
+    expect(() => statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, measures: [], reversals: [reversal("unretire_handle")], reviewed }))).toThrow(/unretire_handle/);
+  });
+});
+
 describe("the package", () => {
   test("its index re-exports the statement and its words: the index is the package's only door", () => {
     expect(typeof statementParagraphs).toBe("function");

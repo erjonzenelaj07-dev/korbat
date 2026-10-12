@@ -13,6 +13,8 @@ import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { createSocial } from "../../src/social";
 import { Browser } from "./http-client";
+import { leavesNoModerationRows } from "./moderation-decide";
+import { retireHandleForTest } from "./moderation-fixtures";
 
 type App = ReturnType<typeof createApp>;
 
@@ -27,6 +29,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
   let config: Config;
   let authDb: Db;
   let apiDb: Db;
+  let migrateDb: Db;
   let auth: Auth;
   let app: App;
   const mailer = new MemoryMailer();
@@ -36,6 +39,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator can retire a handle, as a decision does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     const rateLimitStore = new MemoryStore();
     auth = createAuth({
       config,
@@ -51,7 +56,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social });
   });
   afterAll(async () => {
-    await Promise.all([closeDb(authDb), closeDb(apiDb)]);
+    await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
 
   /** A signed-in web account, onboarded unless told otherwise. */
@@ -150,4 +155,24 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
     // Editing the name or the bio needs a session but no fresh proof of a credential.
     expect((await bob.b.fetch("/api/me/profile", { method: "PATCH", json: { bio: "still allowed" } })).status).toBe(200);
   });
+
+  test("3e: a retired handle is refused with handle_retired (409) to its former holder and to anyone else, the placeholder's prefix with handle_reserved (400); after the retirement /me shows the placeholder and the first change has no wait", async () => {
+    const [ada, bob] = [await signUp(), await signUp()];
+    const { handle, placeholder } = await retireHandleForTest(migrateDb, ada.userId);
+    expect(handle).toBe(ada.handle);
+    expect(MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).profile).toMatchObject({ handle: placeholder, handleChangedAt: null });
+    for (const who of [ada, bob]) {
+      const refused = await who.b.fetch("/api/me/handle", { json: { handle: handle.toUpperCase() } });
+      expect(refused.status).toBe(409);
+      expect(ErrorEnvelope.parse(await refused.json()).error).toMatchObject({ code: "handle_retired", message: "That handle was retired by korbat. Nobody can use it." });
+    }
+    const reserved = await bob.b.fetch("/api/me/handle", { json: { handle: "retired_0a1b2c3d4e5f" } });
+    expect(reserved.status).toBe(400);
+    expect(await errorCode(reserved)).toBe("handle_reserved");
+    expect(await eventTypes(bob.userId)).not.toContain("handle_changed");
+    const fresh = newHandle();
+    expect(await profileOf(await ada.b.fetch("/api/me/handle", { json: { handle: fresh } }))).toMatchObject({ id: ada.userId, handle: fresh });
+  });
+
+  leavesNoModerationRows(() => apiDb);
 });

@@ -1,6 +1,6 @@
 import pino from "pino";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, OUTCOME_PHRASES, QUOTE_ITEM_SCOPE, SUSPECT_NO_SEAL, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ACCOUNT_MEASURE_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, OUTCOME_PHRASES, QUOTE_ITEM_SCOPE, SUSPECT_NO_SEAL, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION } from "@korbat/contracts";
 import { RULEBOOKS } from "@korbat/rules";
 import type { JobLock } from "../src/lib/jobs";
 import { MemoryStore } from "../src/middleware/rate-limit";
@@ -91,6 +91,7 @@ describe("one line of the daily update", () => {
     rulesVersion: 2,
     decisionUnseen: false,
     sealed: false,
+    retired: false,
     noEffect: false,
     quotes: false,
     ...over,
@@ -114,6 +115,19 @@ describe("one line of the daily update", () => {
     expect(line({ reexamined: true }).reexaminable).toBe(false);
     // An account's address is built from the handle as the notice named it.
     expect(line({ targetType: "account", namedHandle: "old_name" })).toMatchObject({ link: "http://localhost:8081/u/old_name", outcome: `${OUTCOME_PHRASES.no_violation}. ${ACCOUNT_ITEM_SCOPE}` });
+  });
+
+  test("3e: an item about an account that a retirement answered reads the retired phrase in place of ACCOUNT_ITEM_SCOPE (W.1); a suspect item keeps its own scope", () => {
+    const retired = { targetType: "account" as const, namedHandle: "imposter", shownOutcome: "restricted_rule", ruleId: "R4", rulesVersion: 3, retired: true };
+    const outcome = line(retired).outcome;
+    expect(outcome.startsWith("access restricted: it breaks korbat rule R4 (")).toBe(true);
+    expect(outcome.endsWith(`). ${ACCOUNT_MEASURE_SCOPE.retired}`)).toBe(true);
+    expect(outcome).not.toContain(ACCOUNT_ITEM_SCOPE);
+    // The handle given back: the reversal's phrase alone.
+    expect(line({ ...retired, shownOutcome: "reversed", changed: true }).outcome).toBe(`${OUTCOME_PHRASES.reversed}.`);
+    // A retirement never reaches an item about a post, and a suspect item about an account keeps its own scope.
+    expect(line({ retired: true }).outcome).toBe(`${OUTCOME_PHRASES.no_violation}.`);
+    expect(line({ ...retired, suspect: true }).outcome).toContain(ACCOUNT_SUSPECT_SCOPE);
   });
 
   test("a re-examination's answer, a changed outcome and a link that named nothing are each marked, and none can be re-examined", () => {

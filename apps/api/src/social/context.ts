@@ -6,8 +6,8 @@ import type { RateLimitStore } from "../middleware/rate-limit";
 import type { ModerationForSocial } from "../moderation";
 import type { SocialRepo } from "./repo";
 
-/** The handle codes onboarding answers with, which a handle change raises too, plus its cooldown. */
-type HandleErrorCode = Extract<AuthErrorCode, "handle_invalid" | "handle_reserved" | "handle_taken" | "handle_cooldown">;
+/** The handle codes onboarding answers with, which a handle change raises too, plus its cooldown and (3e) a retired handle. */
+type HandleErrorCode = Extract<AuthErrorCode, "handle_invalid" | "handle_reserved" | "handle_taken" | "handle_cooldown" | "handle_retired">;
 
 /** The social codes plus the shared ones the module also raises. */
 export type SocialErrorKind = SocialErrorCode | HandleErrorCode | "not_found" | "invalid_request" | "rate_limited" | "service_unavailable";
@@ -29,6 +29,8 @@ const MESSAGES: Record<SocialErrorKind, string> = {
   handle_reserved: "That handle is reserved.",
   handle_taken: "That handle is taken.",
   handle_cooldown: "Handles can change once every 30 days.",
+  // 3e (design, section 9.5): the auth module's words for the same code.
+  handle_retired: "That handle was retired by korbat. Nobody can use it.",
 };
 
 /** An expected, user-facing failure. The HTTP layer turns it into an ErrorEnvelope with this code and status. */

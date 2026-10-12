@@ -560,6 +560,7 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
                       : ": ended with the case's decision"}
               {action.noEffect === null ? "" : "; changed nothing when imposed"}
               {action.kind === "strike" && action.countsUntil !== null ? `; counts until ${dateTime(action.countsUntil)}` : ""}
+              {action.kind === "retire_handle" && action.handle !== undefined ? `; the handle @${action.handle}` : ""}
               {action.kind === "reset_display_name" || action.kind === "reset_bio" ? "; written once; the field as it reads now is shown above" : ""}
               {action.sealed === null ? null : <SealList sealed={action.sealed} />}
             </li>

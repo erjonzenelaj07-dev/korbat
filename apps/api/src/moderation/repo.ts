@@ -218,6 +218,8 @@ export interface NoticeItemRow {
   decidedOn: string;
   /** Whether the answering decision holds a seal. */
   sealed: boolean;
+  /** 3e: whether the answering decision retires the handle of the account the item is about. */
+  retired: boolean;
   /** Whether the answering decision was taken while nobody could open the post's images. */
   decisionUnseen: boolean;
   /** The rule the answering decision cites and the rulebook version it was made under; null without a decision or a rule. */
@@ -266,6 +268,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
     shown_outcome: string | null;
     decided_on: string;
     sealed: boolean;
+    retired: boolean;
     decision_unseen: boolean;
     rule_id: string | null;
     rules_version: number | null;
@@ -282,6 +285,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
                i.outcome_sent_at is not null as released, i.shown_outcome,
                to_char(coalesce(d.decided_at, i.created_at) at time zone 'UTC', 'YYYY-MM-DD') as decided_on,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
+               exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'retire_handle') as retired,
                coalesce(d.unseen, false) as decision_unseen,
                d.rule_id, d.rules_version, ${answerChangedNothing} as no_effect,
                i.revised_sent_at is not null as changed,
@@ -306,6 +310,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
     shownOutcome: row.shown_outcome,
     decidedOn: row.decided_on,
     sealed: row.sealed,
+    retired: row.retired,
     decisionUnseen: row.decision_unseen,
     ruleId: row.rule_id,
     rulesVersion: row.rules_version,
@@ -1774,6 +1779,8 @@ export interface OutcomeLineRow {
   decisionUnseen: boolean;
   /** The answering decision holds a seal. */
   sealed: boolean;
+  /** 3e: the answering decision retires the handle of the account the item is about. */
+  retired: boolean;
   /** Every measure of the answering decision changed nothing when it was imposed. */
   noEffect: boolean;
   /** For an item about a post: the post quotes another. */
@@ -1789,6 +1796,7 @@ export async function pendingOutcomeLines(q: Runner): Promise<OutcomeLineRow[]> 
                exists (select 1 from intake_items r where r.reexamines_item_id = i.id) as reexamined,
                d.rule_id, d.rules_version, coalesce(d.unseen, false) as decision_unseen,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
+               exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'retire_handle') as retired,
                ${answerChangedNothing} as no_effect,
                coalesce((select p.quote_of_id is not null from posts p where i.target_type = 'post' and p.id = i.target_id), false) as quotes
           from intake_items i join intakes n on n.id = i.intake_id left join decisions d on d.id = i.answered_by
@@ -1816,6 +1824,7 @@ export async function pendingOutcomeLines(q: Runner): Promise<OutcomeLineRow[]> 
     rulesVersion: row.rules_version as number | null,
     decisionUnseen: row.decision_unseen as boolean,
     sealed: row.sealed as boolean,
+    retired: row.retired as boolean,
     noEffect: row.no_effect as boolean,
     quotes: row.quotes as boolean,
   }));

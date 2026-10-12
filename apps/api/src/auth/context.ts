@@ -71,7 +71,12 @@ export function authConfigFrom(config: Config): AuthConfig {
 
 /** Public profiles live in the public schema, which the auth module cannot reach; the API supplies this. */
 export interface ProfileStore {
-  create(input: { id: string; handle: string; displayName: string }): Promise<{ ok: true; profile: Profile } | { ok: false; reason: "handle_taken" }>;
+  /**
+   * Writes the profile and the reservation of its handle. Refused with `handle_taken` when another profile holds or held the
+   * handle, `handle_retired` when korbat retired it (3e), and `handle_reserved` when the database's guard of handles
+   * refuses one of the placeholder's form that a caller let through.
+   */
+  create(input: { id: string; handle: string; displayName: string }): Promise<{ ok: true; profile: Profile } | { ok: false; reason: "handle_taken" | "handle_retired" | "handle_reserved" }>;
   /** The owner's view of their profile, which /me returns: the public facts plus the handle-change date, the badge and the Explore switch. */
   find(id: string): Promise<MeProfile | null>;
   /** Sets or clears the badge (profiles.verified_at), which the auth module decides but cannot write itself. */
@@ -150,6 +155,8 @@ const MESSAGES: Record<AuthErrorKind, string> = {
   passkey_suspended: "This passkey was switched off because a copy of it may exist. Remove it and add a new one.",
   passkey_not_found: "That passkey is gone.",
   challenge_expired: "That took too long. Try again.",
+  // 3e (design, section 9.5): a handle korbat retired, refused to everyone, its former holder included.
+  handle_retired: "That handle was retired by korbat. Nobody can use it.",
   invalid_request: "Some details are missing or invalid.",
   // The staff console's (3a design, section 10). Where only the operator can help, they say so; none sends the person to
   // a remedy the console does not have, which is why the staff flows never answer a passkey_* code.
@@ -186,6 +193,23 @@ export class AuthError extends Error {
     super(message);
     this.name = "AuthError";
   }
+}
+
+/**
+ * The code the database's guard of handles raised (3e design, section 6.2, profiles_handle_guard), however deeply the driver
+ * error is wrapped: `handle_retired` or `handle_reserved` under SQLSTATE P0001, else null. The flows check both first, to
+ * answer with a code; this is what a write that lost a race meets, and its caller answers the same.
+ */
+export function handleRefusal(err: unknown): "handle_retired" | "handle_reserved" | null {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "P0001") {
+      const message = (current as { message?: unknown }).message;
+      return message === "handle_retired" || message === "handle_reserved" ? message : null;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
 }
 
 /** True for a Postgres unique-constraint violation, however deeply the driver error is wrapped. */

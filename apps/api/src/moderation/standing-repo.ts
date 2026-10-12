@@ -150,6 +150,20 @@ export async function openReportsIn(q: Runner, caseId: string): Promise<boolean>
   return row?.open ?? false;
 }
 
+/**
+ * Whether the handle of the case's newest snapshot (the one a decision made now names) is retired: a retirement now would
+ * change nothing (decision_actions_check step 10, no_effect `already`), which the composer says beside its control.
+ */
+export async function snapshotHandleRetired(q: Runner, caseId: string): Promise<boolean> {
+  const [row] = await rows<{ retired: boolean }>(
+    q,
+    sql`select exists (select 1 from handle_history h
+                         where h.retired_at is not null
+                           and h.handle_lower = (select lower(s.handle) from evidence_snapshots s where s.case_id = ${caseId}::uuid order by s.taken_at desc, s.id desc limit 1)) as retired`,
+  );
+  return row?.retired ?? false;
+}
+
 /** A ledger row's columns of 3e, and for a standing measure where its period stands now. */
 export interface StandingColumns {
   days: number | null;
@@ -161,6 +175,8 @@ export interface StandingColumns {
   period: { startsAt: string | null; endsAt: string | null; state: string } | null;
   /** On a strike: the kinds of the standing measures that rest on its decision and stand (not lifted, basis whole). */
   restedOnBy: string[] | null;
+  /** On a retirement: the handle it retired, from its decision's snapshot in lower case (Task 2); null on every other kind. */
+  handle: string | null;
 }
 
 /**
@@ -180,6 +196,7 @@ export async function standingColumns(q: Runner, caseId: string): Promise<Map<st
     earliest_start: string | null;
     counts_until: string | null;
     rested_on_by: string[] | null;
+    handle: string | null;
     standing: boolean;
     starts_at: string | null;
     ends_at: string | null;
@@ -194,6 +211,7 @@ export async function standingColumns(q: Runner, caseId: string): Promise<Map<st
                   where m.kind in ('suspend', 'terminate') and a.decision_id = any(m.rests_on)
                     and not exists (select 1 from decision_actions x where x.reverses_action_id = m.id)
                     and public.standing_basis_broken_at(m.id) is null), '{}') end as rested_on_by,
+               case when a.kind = 'retire_handle' then (select lower(s.handle) from evidence_snapshots s where s.id = d.snapshot_id) end as handle,
                a.kind in ('suspend', 'terminate') as standing,
                ${iso("p.starts_at")} as starts_at, ${finite("p.ends_at")} as ends_at,
                case
@@ -222,6 +240,7 @@ export async function standingColumns(q: Runner, caseId: string): Promise<Map<st
         earliestStart: row.earliest_start,
         countsUntil: row.counts_until,
         restedOnBy: row.rested_on_by,
+        handle: row.handle,
         period: row.standing ? { startsAt: row.starts_at, endsAt: row.ends_at, state: row.state ?? "unfixed" } : null,
       },
     ]),

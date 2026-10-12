@@ -979,6 +979,25 @@ export function gate(): { open: () => void; opened: Promise<void> } {
 }
 
 /**
+ * Retires the handle a profile holds as decision_actions_apply does it (3e design, section 6.2), as the migrator and
+ * without a decision: its row of handle_history is written when missing and marked retired, and the profile gets a
+ * placeholder of the right form and no change time. For the tests of the flows that refuse a retired handle; a real
+ * retirement, with its decision, is standing-handles.test.ts's. Answers the handle and the placeholder. It commits.
+ */
+export async function retireHandleForTest(migrateDb: Db, profileId: string): Promise<{ handle: string; placeholder: string }> {
+  const placeholder = `retired_${randomBytes(6).toString("hex")}`;
+  return migrateDb.transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '10s'`);
+    const [row] = await tx.execute<{ handle: string }>(sql`select lower(handle) as handle from profiles where id = ${profileId}::uuid for update`);
+    const handle = row!.handle;
+    await tx.execute(sql`insert into handle_history (handle_lower, profile_id) values (${handle}, ${profileId}::uuid) on conflict do nothing`);
+    await tx.execute(sql`update handle_history set retired_at = now() where handle_lower = ${handle} and profile_id = ${profileId}::uuid`);
+    await tx.execute(sql`update profiles set handle = ${placeholder}, handle_changed_at = null where id = ${profileId}::uuid`);
+    return { handle, placeholder };
+  });
+}
+
+/**
  * Moves an account's standing back in time by the interval (3e design, section 12), as the migrator, and derives its
  * standing again: the only way a test meets a start, an end, an expiry, the frame of 90 days or finality after six
  * months, since the predicate reads the clock, every time is forced by a trigger, and no configuration shortens a number of

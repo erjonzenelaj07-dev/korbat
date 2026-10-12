@@ -130,4 +130,44 @@ describe("handle change", () => {
       { from: "ada_two", to: "ada_three" },
     ]);
   });
+
+  test("3e: a retired handle is handle_retired (409) for its former holder and for anyone else; a handle with the placeholder prefix is handle_reserved (400)", async () => {
+    const h = profileHarness();
+    const ada = h.profile("ada_l");
+    const bob = h.profile("bob_b");
+    await changeHandle(h.deps, ada.id, { handle: "ada_two" });
+    h.retired.add("ada_l");
+    h.advance(HANDLE_COOLDOWN_MS);
+    expect(await failure(changeHandle(h.deps, ada.id, { handle: "ada_l" }))).toMatchObject({ code: "handle_retired", status: 409, message: "That handle was retired by korbat. Nobody can use it." });
+    expect(await failure(changeHandle(h.deps, bob.id, { handle: "ADA_L" }))).toMatchObject({ code: "handle_retired", status: 409 });
+    for (const handle of ["retired_0a1b2c3d4e5f", "retired_bob"]) expect(await failure(changeHandle(h.deps, bob.id, { handle })), handle).toMatchObject({ code: "handle_reserved", status: 400 });
+    expect((await h.deps.repo.findProfileById(bob.id))!.handle).toBe("bob_b");
+    expect(h.events.map((e) => e.metadata)).toEqual([{ from: "ada_l", to: "ada_two" }]);
+  });
+
+  test("3e: the guard of handles refusing under a race answers with its code, as the claim statement would", async () => {
+    const h = profileHarness();
+    const ada = h.profile("ada_l");
+    for (const reason of ["handle_retired", "handle_reserved"] as const) {
+      const real = h.deps.repo.changeHandle;
+      h.deps.repo.changeHandle = async () => ({ ok: false, reason });
+      expect(await failure(changeHandle(h.deps, ada.id, { handle: "ada_new" })), reason).toMatchObject({ code: reason, status: reason === "handle_retired" ? 409 : 400 });
+      h.deps.repo.changeHandle = real;
+    }
+    expect(h.events).toEqual([]);
+  });
+
+  test("3e: after a retirement swapped the handle for the placeholder and cleared the change time, the first change has no wait", async () => {
+    const h = profileHarness();
+    const ada = h.profile("ada_l");
+    await changeHandle(h.deps, ada.id, { handle: "ada_two" });
+    // Minutes after a change, a retirement swaps the handle for the placeholder and clears the change time.
+    h.retire(ada.id, "retired_0a1b2c3d4e5f");
+    expect((await changeHandle(h.deps, ada.id, { handle: "ada_three" })).handle).toBe("ada_three");
+    // The ordinary wait applies again from that change on.
+    expect(await failure(changeHandle(h.deps, ada.id, { handle: "ada_four" }))).toMatchObject({ code: "handle_cooldown" });
+    // The retired handle stays refused to its former holder.
+    h.advance(HANDLE_COOLDOWN_MS);
+    expect(await failure(changeHandle(h.deps, ada.id, { handle: "ada_two" }))).toMatchObject({ code: "handle_retired" });
+  });
 });

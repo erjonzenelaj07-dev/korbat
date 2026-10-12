@@ -14,6 +14,7 @@ import {
   type AuthorCaseRow,
   type DecisionView,
   type HiddenMedia,
+  type MeResponse,
   type MediaView,
   type NoticeItemStatus,
   type NoticeStatus,
@@ -22,6 +23,7 @@ import {
 } from "@korbat/contracts";
 import { REDRESS_TEXTS, STATEMENT_WORDS, getRule, statementParagraphs } from "@korbat/rules";
 import NoticePage from "../src/app/notice/[ref]";
+import { HandleSection } from "../src/app/settings/profile";
 import { DecisionsList, ReportsList, StandingBlock } from "../src/components/moderation/CasesLists";
 import { DecisionDetail } from "../src/components/moderation/DecisionDetail";
 import { NoticeNotFound, NoticeStatusView } from "../src/components/moderation/NoticeStatusView";
@@ -30,6 +32,7 @@ import { HIDDEN_IMAGE, SEALED_IMAGE } from "../src/components/social/HiddenImage
 import { MediaGrid } from "../src/components/social/MediaGrid";
 import { MediaViewerContent } from "../src/components/social/MediaViewer";
 import { PostCard } from "../src/components/social/PostCard";
+import { messageFor } from "../src/lib/api";
 import { chipText, fragmentToken, itemRedress, utcMinute } from "../src/lib/moderation";
 import { CASES_WORDS, CHIP_WORDS, DECISION_WORDS, STATUS_WORDS } from "../src/lib/moderation-words";
 import { CASE_ROW_WORDS, STANDING_TEXTS, standingDay, standingTime } from "../src/lib/standing";
@@ -688,5 +691,60 @@ describe("3e: strikes on Cases and on the decision's screen (design, sections 9.
     expect(screen({ countsUntil: COUNTS, state: "expired", overruledAt: null })).toContain(STANDING_TEXTS.strike.expired(COUNTS));
     expect(screen({ countsUntil: COUNTS, state: "overruled", overruledAt: "2026-10-20T08:00:00.000Z" })).toContain(STANDING_TEXTS.strike.overruled("2026-10-20T08:00:00.000Z"));
     expect(screen(null)).not.toContain("Strike:");
+  });
+});
+
+describe("3e: a retired handle in the app (design, sections 9.4, 9.5 and 9.8)", () => {
+  const PLACEHOLDER = "retired_0a1b2c3d4e5f";
+  const me = (handle: string, handleChangedAt: string | null = null): MeResponse => ({
+    user: { id: id(1), email: "ada@example.com", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 },
+    profile: { id: id(1), handle, displayName: "Ada", handleChangedAt, verified: false, showInExplore: true },
+  });
+  const section = (handle: string, handleChangedAt: string | null = null) => textOf(html(<HandleSection me={me(handle, handleChangedAt)} run={async () => undefined} refresh={async () => undefined} />));
+
+  test("the words are the design's: the retired handle's sentence, the standing sentence, and the refusal", () => {
+    expect(STANDING_TEXTS.handle.retired).toBe("korbat retired your handle; the decision is under Settings, Cases. Choose a new one: the 30-day wait does not apply this time.");
+    expect(STANDING_TEXTS.handle.standing("ada_l")).toBe("Your handle is @ada_l. You can change it once every 30 days. Handles you used before stay yours, except one that korbat retired.");
+    expect(messageFor("handle_retired")).toBe("That handle was retired by korbat. Nobody can use it.");
+    // handle_reserved keeps its words; it now also answers a handle that begins with retired_.
+    expect(messageFor("handle_reserved")).toBe("That handle is reserved.");
+  });
+
+  test("while the profile holds a placeholder, Settings, Profile says that korbat retired the handle and keeps the form open at once", () => {
+    const out = section(PLACEHOLDER);
+    expect(out).toContain(STANDING_TEXTS.handle.retired);
+    expect(out).toContain(STANDING_TEXTS.handle.standing(PLACEHOLDER));
+    expect(out).toContain("Change handle");
+    expect(out).not.toContain("Your next change is allowed on");
+    // Any other handle reads the standing sentence alone.
+    const plain = section("ada_l");
+    expect(plain).toContain(STANDING_TEXTS.handle.standing("ada_l"));
+    expect(plain).not.toContain(STANDING_TEXTS.handle.retired);
+    // The sentence is keyed on the placeholder's form, not on a handle that merely starts with the word.
+    expect(section("retiredada")).not.toContain(STANDING_TEXTS.handle.retired);
+  });
+
+  test("a row of About you names a retirement and its reversal in the words of 9.4", () => {
+    expect(CASE_ROW_WORDS.retired).toBe("your handle retired");
+    expect(CASE_ROW_WORDS.unretired).toBe("handle given back");
+    const row = (extra: Partial<AuthorCaseRow>): AuthorCaseRow => ({
+      id: id(5),
+      kind: "final",
+      outcome: "restricted",
+      decidedOn: "2026-10-12",
+      post: null,
+      actions: ["retire_handle"],
+      endedInterim: false,
+      ruleId: "R4",
+      legal: false,
+      appealUntil: null,
+      reversedOn: null,
+      appeal: null,
+      strike: null,
+      ...extra,
+    });
+    expect(textOf(html(<DecisionsList decisions={[row({})]} />))).toContain(CASE_ROW_WORDS.retired);
+    expect(textOf(html(<DecisionsList decisions={[row({ actions: ["reset_display_name", "retire_handle"] })]} />))).toContain(`${MEASURES.reset_display_name.label}, ${CASE_ROW_WORDS.retired}`);
+    expect(textOf(html(<DecisionsList decisions={[row({ kind: "correction", outcome: "reversed", actions: ["unretire_handle"] })]} />))).toContain(CASE_ROW_WORDS.unretired);
   });
 });

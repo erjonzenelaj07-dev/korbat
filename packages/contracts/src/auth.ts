@@ -38,6 +38,9 @@ export const AuthErrorCode = z.enum([
   "passkey_suspended",
   "passkey_not_found",
   "challenge_expired",
+  // 3e (design, section 10.5): a handle korbat retired, refused to everyone, its former holder included; the social
+  // module's handle change answers it too.
+  "handle_retired",
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCode>;
 
@@ -71,6 +74,21 @@ export const RecoveryCode = z
   .trim()
   .toLowerCase()
   .regex(/^[a-z2-7]{4}-[a-z2-7]{4}-[a-z2-7]{4}$/);
+/**
+ * The prefix of a retired handle's placeholder (3e design, sections 6.2 and 10.1): the placeholder is the prefix and 12
+ * lower-case hex digits made from the retirement's id, 20 characters, so it is a valid handle that every reader of a handle
+ * reads unchanged. The handle rule reserves the whole prefix, so nobody can choose one, and a trigger refuses it to every
+ * role but the migrator.
+ */
+export const RETIRED_HANDLE_PREFIX = "retired_";
+
+/** Whether a handle has a placeholder's form: the prefix and exactly 12 lower-case hex digits. */
+export function isRetiredPlaceholder(handle: string): boolean {
+  if (!handle.startsWith(RETIRED_HANDLE_PREFIX)) return false;
+  const digits = handle.slice(RETIRED_HANDLE_PREFIX.length);
+  return digits.length === 12 && [...digits].every((digit) => "0123456789abcdef".includes(digit));
+}
+
 /** Handle rules (3-20 of a-z, 0-9, _; reserved names) are enforced by the flow so it can return a specific error code. */
 export const HandleInput = z.string().trim().toLowerCase().min(1).max(64);
 export const DisplayName = z

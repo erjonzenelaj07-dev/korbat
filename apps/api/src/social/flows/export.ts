@@ -23,7 +23,8 @@ export type ExportedPost = ExportedPostRow & { media: ExportedMedia[] };
  * iteration reads it again from the start.
  */
 export interface ProfileExport {
-  profile: { handle: string; displayName: string; bio: string; createdAt: Date; handleHistory: string[]; showInExplore: boolean };
+  /** `retiredHandles` (3e design, W.8): the handles of the history that korbat retired and that are still retired, with when. */
+  profile: { handle: string; displayName: string; bio: string; createdAt: Date; handleHistory: string[]; showInExplore: boolean; retiredHandles: { handle: string; retiredAt: Date }[] };
   posts: AsyncIterable<ExportedPost[]>;
   likes: AsyncIterable<PostRefRow[]>;
   reposts: AsyncIterable<PostRefRow[]>;
@@ -92,6 +93,7 @@ export async function exportProfile(deps: SocialDeps, userId: string, pageSize: 
       createdAt: head.profile.createdAt,
       handleHistory,
       showInExplore: head.showInExplore,
+      retiredHandles: head.retiredHandles,
     },
     posts: withMedia(
       deps,

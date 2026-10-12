@@ -159,6 +159,12 @@ export const ExportFormat = z.object({
      * reader that does not know the member loses nothing by skipping it.
      */
     showInExplore: z.boolean(),
+    /**
+     * The account's own handles that korbat retired and that are still retired, each with when (3e design, W.8): such a
+     * handle stays in `handleHistory`, which lists plain strings, so its time is told here. Added to korbat-export-1
+     * without a new format name, last in the profile; empty when none is retired.
+     */
+    retiredHandles: z.array(z.object({ handle: z.string(), retiredAt: at })),
   }),
   posts: z.array(ExportedPost),
   likes: z.array(PostRef),

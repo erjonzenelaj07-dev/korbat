@@ -1,6 +1,6 @@
 import { AuthErrorCode, StaffErrorCode } from "@korbat/contracts";
 import { describe, expect, test } from "vitest";
-import { AuthError, authErrorMessage } from "../../src/auth/context";
+import { AuthError, authErrorMessage, handleRefusal } from "../../src/auth/context";
 
 describe("auth error messages", () => {
   test("every code the contracts list has a message", () => {
@@ -47,5 +47,19 @@ describe("auth error messages", () => {
     expect(refusal).toMatchObject({ code: "reauth_required", status: 403, message: "Confirm it's you to continue.", details: { level: 2, have: ["email"] } });
     expect(refusal.retryAfterSeconds).toBeUndefined();
     expect(new AuthError("rate_limited", 429, undefined, 60).details).toBeUndefined();
+  });
+
+  test("3e: a retired handle is refused in the words of the design (section 9.5), and the trigger that guards handles is read like a unique violation", () => {
+    expect(authErrorMessage("handle_retired")).toBe("That handle was retired by korbat. Nobody can use it.");
+    // The guard raises its code as the message under P0001; the driver may wrap the error once or more.
+    const raisedBy = (message: string, code = "P0001") => ({ code, message });
+    expect(handleRefusal(raisedBy("handle_retired"))).toBe("handle_retired");
+    expect(handleRefusal(raisedBy("handle_reserved"))).toBe("handle_reserved");
+    expect(handleRefusal(new Error("query failed", { cause: raisedBy("handle_retired") }))).toBe("handle_retired");
+    // Anything else is no handle refusal: another code of the database, or the same words under another state.
+    expect(handleRefusal(raisedBy("profile_changed"))).toBeNull();
+    expect(handleRefusal(raisedBy("handle_retired", "23505"))).toBeNull();
+    expect(handleRefusal(new Error("handle_retired"))).toBeNull();
+    expect(handleRefusal(null)).toBeNull();
   });
 });

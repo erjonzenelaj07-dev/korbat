@@ -355,7 +355,7 @@ function harness() {
       purgeProfile: notHere,
       exportProfile: async (_id, pageSize = 1000) => ({
         // The Explore switch is off, not the column's default, so the export is seen to carry what the profile holds.
-        profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: new Date(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false },
+        profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: new Date(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: new Date(T0 - DAY_MS) }] },
         posts: paged("posts", lists.posts, pageSize),
         likes: paged("likes", lists.likes, pageSize),
         reposts: paged("reposts", lists.reposts, pageSize),
@@ -433,7 +433,7 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
         { name: "Laptop", createdAt: iso(T0 - 2 * DAY_MS), lastUsedAt: iso(T0 - DAY_MS), synced: true, createdOn: "Chrome on Windows" },
       ],
     },
-    profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false },
+    profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }] },
     posts: h.lists.posts.map((post) => ({
       id: post.id,
       body: post.body,
@@ -570,7 +570,7 @@ describe("building the export", () => {
       { type: "signup", at: iso(T0 - 3 * DAY_MS) },
     ]);
     // With the author's Explore switch as the profile holds it (off here); the byte-for-byte tests below place it after the handle history.
-    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false });
+    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }] });
     expect(json.posts).toHaveLength(2);
     expect(json.posts[0]).toEqual({
       id: h.postId,

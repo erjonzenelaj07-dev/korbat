@@ -19,6 +19,12 @@ describe("handles", () => {
       expect(checkHandle(handle), handle).toBe("handle_reserved");
     }
   });
+  test("3e: the whole prefix of a retired handle's placeholder is reserved, for onboarding and the handle change alike", () => {
+    // The placeholder's own form, and any other handle that begins with the prefix, so nobody can pass for a retired account.
+    for (const handle of ["retired_0a1b2c3d4e5f", "retired_", "retired_ada", "retired_xyz_123"]) expect(checkHandle(handle), handle).toBe("handle_reserved");
+    // The word itself elsewhere in a handle is no prefix.
+    for (const handle of ["retired", "retiredada", "ada_retired_", "not_retired_1"]) expect(checkHandle(handle), handle).toBeNull();
+  });
 });
 
 describe("minimum age", () => {

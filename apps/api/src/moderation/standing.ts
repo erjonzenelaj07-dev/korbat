@@ -1,5 +1,5 @@
 import { STANDING_RULES, type AtOnceGround, type AuthorStanding, type CaseStanding, type StrikeDue } from "@korbat/contracts";
-import { openReportsIn, standingFacts, strikeDueOf, type StandingFacts } from "./standing-repo";
+import { openReportsIn, snapshotHandleRetired, standingFacts, strikeDueOf, type StandingFacts } from "./standing-repo";
 import type { Runner } from "./repo";
 
 /**
@@ -69,5 +69,7 @@ export async function caseStanding(q: Runner, caseId: string, accountId: string)
     atOnce,
     flood: facts.flood,
     seal: facts.sealOn === null ? null : { decidedOn: facts.sealOn },
+    // Task 2: whether a retirement now would change nothing, the newest snapshot's handle being retired already.
+    snapshotHandleRetired: await snapshotHandleRetired(q, caseId),
   };
 }

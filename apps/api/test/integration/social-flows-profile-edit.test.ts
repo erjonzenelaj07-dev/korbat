@@ -8,20 +8,25 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createPost, getPost } from "../../src/social/flows/posts";
 import { HANDLE_COOLDOWN_MS, changeHandle, editProfile } from "../../src/social/flows/profile-edit";
 import { profile } from "../../src/social/flows/profiles";
+import { leavesNoModerationRows } from "./moderation-decide";
+import { refusal, retireHandleForTest } from "./moderation-fixtures";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
 
 const newHandle = () => `h_${randomBytes(5).toString("hex")}`;
 
 describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and handle change flows", () => {
   let db: Db;
+  let migrateDb: Db;
   let h: SocialHarness;
 
   beforeAll(() => {
     db = createDb(loadConfig().DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator can retire a handle; the API role meets the guard of handles.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     h = socialHarness(db);
   });
   afterAll(async () => {
-    await closeDb(db);
+    await Promise.all([closeDb(db), closeDb(migrateDb)]);
   });
 
   /** The profile the history reserves a handle for, or null when the handle was never left behind. */
@@ -132,4 +137,29 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
       expect(await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.id, late)), taken).toEqual([]);
     }
   });
+
+  test("3e: a retired handle is handle_retired for its former holder and for anyone else, at onboarding too; the placeholder's prefix is handle_reserved; the first change after the retirement has no wait", async () => {
+    const [ada, bob] = await Promise.all([h.established(), h.established()]);
+    // Ada changed her handle a moment ago, so the ordinary wait would apply; the retirement clears it.
+    const judged = newHandle();
+    await changeHandle(h.deps, ada.id, { handle: judged });
+    const { placeholder } = await retireHandleForTest(migrateDb, ada.id);
+    expect((await h.repo.findProfileById(ada.id))!).toMatchObject({ handle: placeholder, handleChangedAt: null });
+    expect(await rejection(changeHandle(h.deps, ada.id, { handle: judged }))).toBe("handle_retired");
+    expect(await rejection(changeHandle(h.deps, bob.id, { handle: judged.toUpperCase() }))).toBe("handle_retired");
+    for (const handle of [placeholder, "retired_0a1b2c3d4e5f", "retired_bob"]) expect(await rejection(changeHandle(h.deps, bob.id, { handle })), handle).toBe("handle_reserved");
+    const store = createProfileStore(db);
+    expect(await store.create({ id: randomUUID(), handle: judged, displayName: "Late" })).toEqual({ ok: false, reason: "handle_retired" });
+    // The guard answers a caller that skipped the handle rule, and the repository and the store pass its code on.
+    expect(await h.repo.changeHandle(bob.id, "retired_0a1b2c3d4e5f", h.clock.next())).toEqual({ ok: false, reason: "handle_reserved" });
+    expect(await store.create({ id: randomUUID(), handle: "retired_0a1b2c3d4e5f", displayName: "Late" })).toEqual({ ok: false, reason: "handle_reserved" });
+    expect(await refusal(db.update(profiles).set({ handle: judged }).where(eq(profiles.id, bob.id)))).toBe("handle_retired");
+    expect((await h.repo.findProfileById(bob.id))!.handle).toBe(bob.handle);
+    // Ada chooses a new handle at once, and the wait applies again from that change on.
+    const fresh = newHandle();
+    expect((await changeHandle(h.deps, ada.id, { handle: fresh })).handle).toBe(fresh);
+    expect(await rejection(changeHandle(h.deps, ada.id, { handle: newHandle() }))).toBe("handle_cooldown");
+  });
+
+  leavesNoModerationRows(() => db);
 });

@@ -54,7 +54,12 @@ export async function chooseHandle(
   const problem = checkHandle(input.handle);
   if (problem) throw new AuthError(problem, 400);
   const created = await deps.profiles.create({ id: session.userId, handle: input.handle, displayName: input.displayName });
-  if (!created.ok) throw new AuthError("handle_taken", 409);
+  if (!created.ok) {
+    // 3e: a handle korbat retired is refused as one another profile holds (409); one of the placeholder's form, which
+    // checkHandle refuses first, reaches the database's guard only from a caller that skipped it (400).
+    if (created.reason === "handle_reserved") throw new AuthError("handle_reserved", 400);
+    throw new AuthError(created.reason, 409);
+  }
   await deps.repo.markOnboarded(session.userId, deps.now());
   const issued = await deps.sessions.rotate(session);
   return { profile: created.profile, issued };

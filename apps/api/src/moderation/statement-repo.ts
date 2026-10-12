@@ -96,6 +96,15 @@ export interface StatementActionRow {
   /** A strike's end of counting, and the strikes of its account that stood and counted at its decision's time, this one included. */
   endsAt: string | null;
   activeThen: number | null;
+  /** On a suspension or a termination: whether it was announced; null on every other kind. */
+  announced: boolean | null;
+  /**
+   * On a retirement, the handle of its decision's snapshot in lower case, as the database retires it; on a reversal of one,
+   * the same of the lifted decision. A snapshot keeps its handle through an erasure (3e design, section 6.7). Null otherwise.
+   */
+  handle: string | null;
+  /** On a retirement that changed the profile, the placeholder it gave, made from the measure's id as the database makes it. */
+  placeholder: string | null;
 }
 
 /** A decision's measures and reversals, in the ledger's order of kinds. */
@@ -112,7 +121,13 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
                -- What the ledger held at the decision's time, never later: a strike that counted then, and was not overruled by then.
                case when a.kind = 'strike' then (select count(*)::int from decision_actions s
                      where s.subject_account_id = a.subject_account_id and s.kind = 'strike' and s.created_at <= a.created_at and s.ends_at > a.created_at
-                       and not exists (select 1 from decision_actions r where r.reverses_action_id = s.id and r.created_at <= a.created_at)) end as active_then
+                       and not exists (select 1 from decision_actions r where r.reverses_action_id = s.id and r.created_at <= a.created_at)) end as active_then,
+               case when a.kind in ('suspend', 'terminate') then a.announced end as announced,
+               case when a.kind = 'retire_handle' then (select lower(s.handle) from evidence_snapshots s where s.id = d.snapshot_id)
+                    when a.kind = 'unretire_handle' then lower(ls.handle) end as handle,
+               -- The placeholder exactly as decision_actions_apply computes it, for a retirement that wrote it.
+               case when a.kind = 'retire_handle' and a.no_effect is null
+                    then 'retired_' || substr(encode(sha256(convert_to(a.id::text, 'UTF8')), 'hex'), 1, 12) end as placeholder
           from decision_actions a join decisions d on d.id = a.decision_id
           left join decision_actions l on l.id = a.reverses_action_id
           left join decisions ld on ld.id = l.decision_id
@@ -129,6 +144,9 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
     sealedDeletedImages: row.sealed_deleted as number,
     endsAt: row.ends_at as string | null,
     activeThen: row.active_then as number | null,
+    announced: row.announced as boolean | null,
+    handle: row.handle as string | null,
+    placeholder: row.placeholder as string | null,
   }));
 }
 

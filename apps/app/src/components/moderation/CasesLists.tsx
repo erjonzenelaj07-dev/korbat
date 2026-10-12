@@ -7,6 +7,9 @@ import { CASES_WORDS } from "@/lib/moderation-words";
 import { CASE_ROW_WORDS, rowStrike, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
 
+/** 3e: the kinds whose words in a row are the row's own (9.4), not the measure's label. */
+const ROW_KINDS: Partial<Record<AuthorCaseRow["actions"][number], string>> = { overrule: CASE_ROW_WORDS.overrule, retire_handle: CASE_ROW_WORDS.retired, unretire_handle: CASE_ROW_WORDS.unretired };
+
 /**
  * What a decision did, in the measures' own labels; a decision without a measure ended what was done while deciding, or
  * took no action. A review that kept the decision is worded by its outcome first: it lifts nothing, and the restriction
@@ -14,8 +17,9 @@ import { ItemLines } from "./ItemLines";
  */
 function done(row: AuthorCaseRow, now: Date): string {
   if (row.kind === "review" && row.outcome === "kept") return CASES_WORDS.keptDecision;
-  // 3e (design, section 9.4): a strike is named with where it stands, and its overruling in the row's own words.
-  const labels: string[] = row.actions.map((kind) => (kind === "strike" && row.strike ? rowStrike(row.strike, now) : kind === "overrule" ? CASE_ROW_WORDS.overrule : MEASURES[kind].label));
+  // 3e (design, section 9.4): a strike is named with where it stands, its overruling, a retirement and its reversal in
+  // the row's own words.
+  const labels: string[] = row.actions.map((kind) => (kind === "strike" && row.strike ? rowStrike(row.strike, now) : (ROW_KINDS[kind] ?? MEASURES[kind].label)));
   if (row.endedInterim) labels.push(CASES_WORDS.ended);
   return labels.length > 0 ? labels.join(", ") : CASES_WORDS.noAction;
 }

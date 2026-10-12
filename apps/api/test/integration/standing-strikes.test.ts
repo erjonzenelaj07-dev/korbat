@@ -102,13 +102,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: strikes through the rout
     expect((await actionsOf(apiDb, await decided(admin, older.caseId, { kind: "final", actions: [act("remove")] }))).map((a) => a.kind)).toEqual(["remove"]);
   });
 
-  test("the routes accept 3c's kinds, a strike and its overruling, and nothing else yet: other kinds, a kept correction, marks and a withdrawal are refused", async () => {
+  test("the routes accept 3c's kinds, a strike and its overruling, and a handle's retirement and its reversal, and nothing else yet: other kinds, a kept correction, marks and a withdrawal are refused", async () => {
     const author = await account();
     const post = await reportedPost(author.id);
     const removal = await decided(admin, post.caseId, { kind: "final", actions: [act("remove")] });
     const accountCase = (await intake(apiDb, ground.finding(admin.id, "R6"), anAccount(author.id))).items[0]!.caseId!;
     expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", ruleId: "R6", actions: [timed("suspend", 3, false)] }))).toBe("invalid_decision");
-    expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", ruleId: "R6", actions: [act("retire_handle")] }))).toBe("invalid_decision");
+    // 3e Task 2 opened the retirement of a handle and its reversal (standing-handles.test.ts); the suspension stays closed.
     expect(await refusedWith(world.decideAs(admin, post.caseId, { kind: "correction", reviewsDecisionId: removal, outcome: "kept", actions: [] }))).toBe("invalid_decision");
     expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", outcome: "no_violation", actions: [], unfounded: [post.intakeId] }))).toBe("invalid_decision");
     await appealOf(apiDb, removal, author.id);

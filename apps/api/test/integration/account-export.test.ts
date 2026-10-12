@@ -29,6 +29,8 @@ import { createPost, deletePost } from "../../src/social/flows/posts";
 import { SoftAuthenticator, type SoftFlags } from "../auth/soft-authenticator";
 import { TEST_TERMS, flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
+import { leavesNoModerationRows } from "./moderation-decide";
+import { retireHandleForTest } from "./moderation-fixtures";
 import { newPost } from "./social-fixtures";
 import { socialHarness, type SocialHarness } from "./social-harness";
 
@@ -57,6 +59,7 @@ function memorySink() {
 describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an account", () => {
   let apiDb: Db;
   let authDb: Db;
+  let migrateDb: Db;
   let authRepo: AuthRepo;
   let h: FlowHarness;
   let m: MediaHarness;
@@ -66,6 +69,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     const config = loadConfig();
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
+    // 3e: only the migrator can retire a handle, as a decision does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     authRepo = createAuthRepo(authDb);
     h = flowHarness(authRepo);
     m = await mediaHarness(apiDb);
@@ -80,7 +85,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
   });
   afterAll(async () => {
     m.cleanup();
-    await Promise.all([closeDb(apiDb), closeDb(authDb)]);
+    await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
   });
 
   // The deletion side of the three interfaces is not exercised by the export; account-deletion.test.ts covers it.
@@ -287,4 +292,22 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     expect(json.blocks.map((ref) => ref.handle)).toEqual(others.slice(5, 8).map((profile) => profile.handle));
     expect(json.mutes.map((ref) => ref.handle)).toEqual(others.slice(0, 3).map((profile) => profile.handle));
   });
+
+  test("3e: the profile lists the account's own handles that korbat retired, each with when, beside the handle history, which still names them (W.8); a retirement lifted leaves the list", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const { handle, placeholder } = await retireHandleForTest(migrateDb, userId);
+    expect(handle).toBe(owner.handle);
+    const [{ at }] = (await apiDb.execute<{ at: string }>(sql`select to_char(retired_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at from handle_history where handle_lower = ${handle}`)) as unknown as [{ at: string }];
+    const read = async () => ExportFormat.parse(JSON.parse(await collect(exportJson(await buildExport(deps(), userId, owner.session.handle, new Date())))));
+    const json = await read();
+    expect(json.profile).toMatchObject({ handle: placeholder, handleHistory: [owner.handle, placeholder], retiredHandles: [{ handle: owner.handle, retiredAt: at }] });
+    // The member comes last in the profile, after the Explore switch, as the format adds members.
+    expect(Object.keys(json.profile)).toEqual(["handle", "displayName", "bio", "createdAt", "handleHistory", "showInExplore", "retiredHandles"]);
+    // Lifted, as unretire_handle clears it: the handle is the account's again and the list is empty.
+    await migrateDb.execute(sql`update handle_history set retired_at = null where handle_lower = ${handle}`);
+    expect((await read()).profile.retiredHandles).toEqual([]);
+  });
+
+  leavesNoModerationRows(() => apiDb);
 });

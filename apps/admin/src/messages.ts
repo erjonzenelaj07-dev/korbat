@@ -71,6 +71,19 @@ export const STANDING_WORDS = {
   conflict: STANDING_CONFLICT,
   /** 8.3: [terminate.r2] */
   terminateR2: STANDING_TERMINATE_R2,
+  /** 8.3: the retirement of a handle, beside its control in the composer of an account case. */
+  retire: {
+    /** [retire.what] */
+    what: "Retiring a handle takes it from everyone for good, its holder included. Use it when the breach lies in the handle itself: impersonation, a doxxed name, a threat. The profile then shows a placeholder (retired_ and 12 characters), and its holder may choose a new handle at once, or, if the account is suspended, when that suspension ends.",
+    /** [retire.first], once it is chosen. */
+    first: "The retirement is this decision's first measure. A reset of the display name added to it copies the placeholder, never the retired handle.",
+    /** [retire.moved], when the profile's handle now differs from the newest snapshot's. */
+    moved: "The account changed its handle after this snapshot. Confirming retires the handle shown in the snapshot and leaves the new one alone. To judge the new handle, take a fresh snapshot.",
+    /** [retire.none], greying the control while the profile holds a placeholder. */
+    none: "Not open: this profile holds a placeholder, so there is no handle to retire.",
+  },
+  /** 8.7: [review.handle], beside "Give the handle back" in a correction or a review. */
+  reviewHandle: "Giving the handle back clears its retirement. A profile that still holds the placeholder gets the handle again; one that chose another handle since may change back at once.",
 } as const;
 
 /**

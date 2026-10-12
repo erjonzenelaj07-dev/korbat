@@ -19,6 +19,8 @@ import {
   outcomesListed,
   previewOf,
   previewable,
+  retireMoved,
+  retireOpen,
   reviewChoices,
   reviewOutcomeOf,
   reviewable,
@@ -214,6 +216,8 @@ function CorrectionView(props: ComposerViewProps) {
               )}
             </label>
             {reversal.kind === "unseal_media" ? <p className="notice">{deciding ? COMPOSER.sealInError : COMPOSER.sealForGood}</p> : null}
+            {/* 3e (design, section 8.7): [review.handle] beside "Give the handle back". */}
+            {reversal.kind === "unretire_handle" ? <p className="hint">{STANDING_WORDS.reviewHandle}</p> : null}
           </li>
         ))}
       </ul>
@@ -283,6 +287,7 @@ function ReviewView(props: ComposerViewProps) {
               )}
             </label>
             {reversal.kind === "unseal_media" ? <p className="notice">{COMPOSER.sealForGood}</p> : null}
+            {reversal.kind === "unretire_handle" ? <p className="hint">{STANDING_WORDS.reviewHandle}</p> : null}
           </li>
         ))}
       </ul>
@@ -301,10 +306,13 @@ function Measure({ measure, props, images }: { measure: MeasureKind; props: Comp
   const held = draft.actions.find((action) => action.kind === measure);
   const action: DecisionActionParams = { kind: measure, mediaId: ofImage ? (held?.mediaId ?? images[0] ?? null) : null };
   if (ofImage && images.length === 0) return null;
+  // 3e (design, section 8.3): the retirement is greyed with [retire.none] while the profile holds a placeholder.
+  const retiring = measure === "retire_handle";
+  const closed = retiring && !retireOpen(view);
   return (
     <li>
       <label>
-        <input type="checkbox" checked={held !== undefined} disabled={props.busy} onChange={(event) => props.onChange({ actions: toggled({ ...draft, actions: draft.actions.filter((other) => other.kind !== measure) }, action, event.target.checked) })} />{" "}
+        <input type="checkbox" checked={held !== undefined} disabled={props.busy || closed} onChange={(event) => props.onChange({ actions: toggled({ ...draft, actions: draft.actions.filter((other) => other.kind !== measure) }, action, event.target.checked) })} />{" "}
         <span>{MEASURES[measure].label}</span>
       </label>
       {ofImage && held !== undefined ? (
@@ -329,7 +337,24 @@ function Measure({ measure, props, images }: { measure: MeasureKind; props: Comp
         </>
       ) : null}
       {noEffectOf(view, action, draft.kind === "final" ? "final" : "interim") !== null ? <p className="hint">{COMPOSER.noEffect}</p> : null}
+      {retiring ? <RetireNotes view={view} chosen={held !== undefined} closed={closed} /> : null}
     </li>
+  );
+}
+
+/**
+ * 3e (design, section 8.3): the sentences beside "Retire the handle": why it is greyed ([retire.none]); else what it does
+ * ([retire.what]), that it is the decision's first measure once chosen ([retire.first]), and that the profile changed its
+ * handle after the snapshot, whose handle is the one retired ([retire.moved]).
+ */
+function RetireNotes({ view, chosen, closed }: { view: CaseView; chosen: boolean; closed: boolean }) {
+  if (closed) return <p className="hint">{STANDING_WORDS.retire.none}</p>;
+  return (
+    <>
+      <p className="hint">{STANDING_WORDS.retire.what}</p>
+      {chosen ? <p className="hint">{STANDING_WORDS.retire.first}</p> : null}
+      {retireMoved(view) ? <p className="notice">{STANDING_WORDS.retire.moved}</p> : null}
+    </>
   );
 }
 

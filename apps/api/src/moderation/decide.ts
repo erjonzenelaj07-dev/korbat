@@ -21,12 +21,23 @@ export type DecideOutcome = { decisionId: string } | "ended" | "late";
 
 /**
  * The kinds of the ledger the decide and review routes accept (3e design, section 7.1 item 2). The params' schema knows
- * all 22 kinds from the first task of 3e on; this list holds 3c's twelve and a strike with its overruling, and each later
- * task of 3e adds the kinds whose flow it builds, so no route records a measure whose flow is not built yet. Any other
- * kind is refused before the transaction (invalid_decision), as are a correction that keeps its decision, a non-empty
- * list of marks and a `replaced` until the tasks that open them.
+ * all 22 kinds from the first task of 3e on; this list holds 3c's twelve, a strike with its overruling and (Task 2) a
+ * handle's retirement with its reversal, and each later task of 3e adds the kinds whose flow it builds, so no route
+ * records a measure whose flow is not built yet. Any other kind is refused before the transaction (invalid_decision), as
+ * are a correction that keeps its decision, a non-empty list of marks and a `replaced` until the tasks that open them.
  */
-export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([...MEASURE_KINDS.slice(0, 7), ...REVERSAL_KINDS.slice(0, 5), "strike", "overrule"]);
+export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([...MEASURE_KINDS.slice(0, 7), ...REVERSAL_KINDS.slice(0, 5), "strike", "overrule", "retire_handle", "unretire_handle"]);
+
+/**
+ * The order in which a decision's actions are inserted (3e design, sections 7.10 and 10.4): the signed list stays in its
+ * one order (by kind, then image, so one decision has one hash), where the resets come before the retirement; the
+ * database takes a retirement only as its decision's first row, so that a reset of the display name after it copies the
+ * placeholder and never the retired handle. So a `retire_handle` is inserted first and the others follow in the list's
+ * order. Nothing signed changes: decision_holds compares the ledger with the list as a set.
+ */
+export function insertionOrder<T extends { kind: ActionKind }>(actions: readonly T[]): T[] {
+  return [...actions.filter((action) => action.kind === "retire_handle"), ...actions.filter((action) => action.kind !== "retire_handle")];
+}
 
 /**
  * How the module's own tests reach the database's rules below the routes: `allKinds` lifts the routes' list of kinds and
@@ -212,6 +223,6 @@ export async function decide(deps: ModerationDeps, session: ActiveStaffSession, 
     await insertDecision(tx, { id: decisionId, caseId, decidedBy: session.userId, params });
     // The marks come after the decision's row, whose trigger answered the items, and before its measures.
     await insertMarks(tx, decisionId, params.unfounded);
-    for (const action of params.actions) await insertAction(tx, decisionId, action, params.replaced);
+    for (const action of insertionOrder(params.actions)) await insertAction(tx, decisionId, action, params.replaced);
   });
 }

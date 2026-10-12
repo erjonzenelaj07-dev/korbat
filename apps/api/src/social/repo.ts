@@ -1,7 +1,7 @@
 import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
-import { isUniqueViolation } from "../auth";
+import { handleRefusal, isUniqueViolation } from "../auth";
 import { SocialError } from "./context";
 import type { Cursor, ExploreCursor } from "./cursor";
 import type { StoredPostState } from "./visibility";
@@ -73,7 +73,7 @@ export interface ProfileRow {
 }
 
 /** How a handle change ended: the handle the profile had before, or why nothing was written. */
-export type HandleChangeResult = { ok: true; from: string } | { ok: false; reason: "not_found" | "unchanged" | "handle_taken" };
+export type HandleChangeResult = { ok: true; from: string } | { ok: false; reason: "not_found" | "unchanged" | "handle_taken" | "handle_retired" | "handle_reserved" };
 
 /** A post as its author wrote it, for the data export; a deleted one keeps its row with an empty body and its deletion time. */
 export interface ExportedPostRow {
@@ -1020,14 +1020,22 @@ export function createSocialRepo(db: Db) {
 
     /**
      * The data export's head: the live profile row, its Explore switch (the owner's, which the profile row the public
-     * reads leaves out), and every handle in handle_history for it, in the order they were recorded. Null when there is
-     * no live profile. The lists come page by page from the reads below.
+     * reads leaves out), and every handle in handle_history for it, in the order they were recorded, with the time korbat
+     * retired one that is still retired (3e). Null when there is no live profile. The lists come page by page from the
+     * reads below.
      */
-    async exportHead(id: string): Promise<{ profile: ProfileRow; showInExplore: boolean; handleHistory: string[] } | null> {
+    async exportHead(id: string): Promise<{ profile: ProfileRow; showInExplore: boolean; handleHistory: string[]; retiredHandles: { handle: string; retiredAt: Date }[] } | null> {
       const [r] = await rows<RawProfile & { show_in_explore: boolean }>(sql`select ${PROFILE_COLUMNS}, show_in_explore from profiles where id = ${id}::uuid and deleted_at is null`);
       if (!r) return null;
-      const history = await rows<{ handle_lower: string }>(sql`select handle_lower from handle_history where profile_id = ${id}::uuid order by changed_at, handle_lower`);
-      return { profile: toProfile(r), showInExplore: r.show_in_explore, handleHistory: history.map((row) => row.handle_lower) };
+      const history = await rows<{ handle_lower: string; retired_at: string | null }>(
+        sql`select handle_lower, ${iso("retired_at")} as retired_at from handle_history where profile_id = ${id}::uuid order by changed_at, handle_lower`,
+      );
+      return {
+        profile: toProfile(r),
+        showInExplore: r.show_in_explore,
+        handleHistory: history.map((row) => row.handle_lower),
+        retiredHandles: history.flatMap((row) => (row.retired_at === null ? [] : [{ handle: row.handle_lower, retiredAt: new Date(row.retired_at) }])),
+      };
     },
 
     /**
@@ -1095,6 +1103,11 @@ export function createSocialRepo(db: Db) {
      * is reserved in handle_history (it may be there already, from an earlier stint), then the row
      * gets the new handle and the change time. Two accounts racing for a free handle are decided by
      * the unique index on lower(handle): the loser's transaction is rolled back and answers handle_taken.
+     *
+     * 3e (design, section 7.10): a handle korbat retired is nobody's, its former holder's included, so the claim answers
+     * handle_retired before it asks whether the handle is free; a handle of the account's own history counts as free
+     * only while it is not retired. The database's guard of handles refuses the same, and a placeholder's form, to a
+     * change that lost a race with a retirement or skipped the handle rule; its code is answered alike.
      */
     async changeHandle(id: string, to: string, now: Date): Promise<HandleChangeResult> {
       try {
@@ -1103,14 +1116,18 @@ export function createSocialRepo(db: Db) {
           if (!current) return { ok: false, reason: "not_found" };
           if (current.handle.toLowerCase() === to) return { ok: false, reason: "unchanged" };
           const [claim] = (await tx.execute(sql`
-            select exists (select 1 from profiles where lower(handle) = ${to} and id <> ${id}::uuid)
-              or exists (select 1 from handle_history where handle_lower = ${to} and profile_id <> ${id}::uuid) as taken`)) as unknown as { taken: boolean }[];
+            select exists (select 1 from handle_history where handle_lower = ${to} and retired_at is not null) as retired,
+                   exists (select 1 from profiles where lower(handle) = ${to} and id <> ${id}::uuid)
+                     or exists (select 1 from handle_history where handle_lower = ${to} and profile_id <> ${id}::uuid) as taken`)) as unknown as { retired: boolean; taken: boolean }[];
+          if (claim!.retired) return { ok: false, reason: "handle_retired" };
           if (claim!.taken) return { ok: false, reason: "handle_taken" };
           await tx.insert(handleHistory).values({ handleLower: current.handle.toLowerCase(), profileId: id, changedAt: now }).onConflictDoNothing();
           await tx.update(profiles).set({ handle: to, handleChangedAt: now }).where(eq(profiles.id, id));
           return { ok: true, from: current.handle };
         });
       } catch (err) {
+        const guarded = handleRefusal(err);
+        if (guarded !== null) return { ok: false, reason: guarded };
         if (isUniqueViolation(err)) return { ok: false, reason: "handle_taken" };
         throw err;
       }

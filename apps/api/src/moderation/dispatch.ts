@@ -255,7 +255,8 @@ export function updateLine(deps: Pick<ModerationDeps, "config">, row: OutcomeLin
   const outcome = row.shownOutcome as ItemOutcome;
   const noAction = outcome === "no_violation" || outcome === "not_evident";
   let scope: OutcomeWordsInput["scope"] = null;
-  if (row.targetType === "account") scope = row.suspect || row.sealed ? "account_suspect" : "account";
+  // 3e (7.11 item 7): an item whose decision retired the handle reads that in place of the display name and bio.
+  if (row.targetType === "account") scope = row.suspect || row.sealed ? "account_suspect" : row.retired ? "account_retired" : "account";
   else if (row.hasCase && !row.suspect && row.quotes) scope = "quote";
   // "No action for now": decided while nobody could open the post's images, on an item about a post that is not itself suspect.
   const unseen = noAction && row.decisionUnseen && row.targetType === "post" && !row.suspect;

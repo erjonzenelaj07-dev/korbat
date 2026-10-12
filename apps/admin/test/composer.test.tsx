@@ -95,7 +95,8 @@ describe("what the composer offers", () => {
     expect(measuresOffered(view, "interim")).toEqual(["withhold", "withhold_media"]);
     expect(measuresOffered(view, "final")).toEqual(["remove", "remove_media"]);
     expect(measuresOffered(accountCase(), "interim")).toEqual(["reset_display_name", "reset_bio"]);
-    expect(measuresOffered(accountCase(), "final")).toEqual(["reset_display_name", "reset_bio"]);
+    // 3e: a final decision on an account case may also retire its handle (8.3).
+    expect(measuresOffered(accountCase(), "final")).toEqual(["reset_display_name", "reset_bio", "retire_handle"]);
     const out = composer(view, MODERATOR);
     for (const label of [MEASURES.withhold.label, MEASURES.withhold_media.label]) expect(out).toContain(label);
     expect(out).not.toContain(`>${MEASURES.remove.label}<`);

@@ -3,10 +3,12 @@ import {
   CaseDecidedParams,
   MEASURES,
   MEASURE_KINDS,
+  RETIRED_HANDLE_PREFIX,
   RULE_DEFAULT_CATEGORY,
   SEAL_DRAFTS,
   STANDING_RULES,
   compareDecisionActions,
+  isRetiredPlaceholder,
   sealFactsDraft,
   snapshotDigest,
   staffTextProblem,
@@ -191,9 +193,35 @@ export function outcomesListed(view: CaseView, role: StaffRole): CaseDraft["outc
  * withhold taken while deciding is in force, is such a one; the page says instead that the case hides the post already.
  */
 export function measuresOffered(view: CaseView, kind: "interim" | "final"): MeasureKind[] {
-  const targets = view.target.type === "post" ? ["post", "image"] : ["display_name", "bio"];
+  // 3e: an account case's final decision may also retire the handle (8.3); its other standing measures come with their tasks.
+  const targets = view.target.type === "post" ? ["post", "image"] : ["display_name", "bio", "handle"];
   return MEASURE_KINDS.filter((measure) => measure !== "seal_media" && MEASURES[measure][kind] && targets.includes(MEASURES[measure].target) && !(kind === "interim" && measure === "withhold" && hiddenWhileDeciding(view)));
 }
+
+/**
+ * 3e (design, section 8.3): whether "Retire the handle" is open. It is greyed with [retire.none] while the profile holds a
+ * placeholder: there is no handle to retire, and the database would retire the placeholder of a fresh snapshot.
+ */
+export const retireOpen = (view: CaseView): boolean => view.target.type === "account" && !(view.target.handle !== null && isRetiredPlaceholder(view.target.handle.toLowerCase()));
+
+/** The handle the newest shown snapshot copied, in lower case as the database retires it; null when no snapshot shows one. */
+const snapshotHandle = (view: CaseView): string | null => {
+  const newest = view.snapshots[0];
+  return newest && !newest.withheld && newest.handle !== null ? newest.handle.toLowerCase() : null;
+};
+
+/** [retire.moved]: the profile's handle now differs from the one the newest snapshot copied, which is the one a retirement names. */
+export function retireMoved(view: CaseView): boolean {
+  const copied = snapshotHandle(view);
+  return view.target.type === "account" && copied !== null && view.target.handle !== null && view.target.handle.toLowerCase() !== copied;
+}
+
+/**
+ * What the preview prints for a retirement's placeholder. The database makes it from the measure's id, which does not
+ * exist before the decision is recorded, so the preview prints the prefix and twelve x in place of the hex digits: the
+ * placeholder's length and form, and plainly not one the author could meet.
+ */
+export const PREVIEW_PLACEHOLDER = `${RETIRED_HANDLE_PREFIX}${"x".repeat(12)}`;
 
 /** Whether this case hides its post while it is decided: a withhold taken while deciding is in force. */
 export const hiddenWhileDeciding = (view: CaseView): boolean => interimInForce(view).some(({ action }) => action.kind === "withhold");
@@ -245,6 +273,8 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
   }
   if (target.type === "account") {
     if (target.deleted) return "deleted";
+    // 3e: a retirement changes nothing when the newest snapshot's handle is retired already, which the case answer says.
+    if (action.kind === "retire_handle") return view.standing?.snapshotHandleRetired ? "already" : null;
     if (action.kind === "reset_display_name") return target.displayName !== null && target.displayName === target.handle ? "already" : null;
     return action.kind === "reset_bio" && target.bio === "" ? "already" : null;
   }
@@ -264,9 +294,10 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
 /**
  * The targets whose measures a correction or a review lifts one by one, each with its own reversal (3c's). A strike falls
  * only with its whole finding: the console adds its overruling to a full reversal (overruleOf) and never offers it alone.
- * 3e's standing measures get their controls from the tasks that build their screens.
+ * 3e's standing measures get their controls from the tasks that build their screens; a retirement is given back with
+ * its own reversal (Task 2, 8.7).
  */
-const ONE_BY_ONE: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio"];
+const ONE_BY_ONE: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio", "handle"];
 
 /** Whether a decision's action is a measure that a correction or a review lifts one by one. */
 const liftsOneByOne = (action: { kind: ActionKind }): boolean => MEASURES[action.kind].lifts === null && ONE_BY_ONE.includes(MEASURES[action.kind].target);
@@ -317,6 +348,7 @@ function reversalOf(action: { kind: ActionKind; mediaId: string | null }): Decis
   if (target === "post") return { kind: "restore", mediaId: null };
   if (target === "image") return { kind: "restore_media", mediaId: action.mediaId };
   if (target === "images") return { kind: "unseal_media", mediaId: null };
+  if (target === "handle") return { kind: "unretire_handle", mediaId: null };
   return { kind: target === "display_name" ? "restore_display_name" : "restore_bio", mediaId: null };
 }
 
@@ -369,6 +401,8 @@ function actionOffered(view: CaseView, role: StaffRole, kind: "interim" | "final
   if (MEASURES[action.kind].lifts !== null) return kind === "final" && leftOpen(view).length > 0 && liftable(view).some((lift) => sameAction(lift, action));
   if (!restricts) return false;
   if (action.kind === "seal_media") return sealOffered(view, kind, role);
+  // A retirement while the profile holds a placeholder is greyed, so a draft that held it loses it.
+  if (action.kind === "retire_handle" && !retireOpen(view)) return false;
   if (!measuresOffered(view, kind).includes(action.kind as MeasureKind)) return false;
   // An image measure names an image of the snapshot the page shows that it may still name.
   return MEASURES[action.kind].target !== "image" || (action.mediaId !== null && imagesOffered(view, kind, action.kind as MeasureKind).includes(action.mediaId));
@@ -660,7 +694,9 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
       // 3e: a full reversal also overrules the decision's strike, as the params will carry it.
       reversals: [...draft.actions, ...overruleOf(corrected, draft.kind === "review" ? reviewOutcomeOf(view, draft) === "reversed" : reversesAll(view, draft))].map((reversal) => {
         const lifted = corrected.actions.find((action) => liftsOneByOne(action) && sameAction(reversalOf(action), reversal));
-        return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET) };
+        // 3e: the handle a retirement's reversal gives back, which the case answer names on the retirement's row.
+        const handle = reversal.kind === "unretire_handle" ? { handle: lifted?.handle ?? null } : {};
+        return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET), ...handle };
       }),
       endedMeasures: [],
       reviewed: { kind: corrected.kind, ground: corrected.ground, ruleId: corrected.ruleId, rulesVersion: corrected.rulesVersion, legalReference: corrected.legalReference, decidedAt: corrected.decidedAt },
@@ -685,12 +721,13 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
     source: predictedSource(view, draft.kind),
     measures: draft.actions
       .filter((action) => MEASURES[action.kind].lifts === null)
-      .map((action) => ({
-        kind: action.kind as MeasureKind,
-        mediaId: action.mediaId,
-        noEffect: noEffectOf(view, action, draft.kind === "final" ? "final" : "interim"),
-        sealed: action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedImages: 0 } : null,
-      }))
+      .map((action) => {
+        const noEffect = noEffectOf(view, action, draft.kind === "final" ? "final" : "interim");
+        const measure = { kind: action.kind as MeasureKind, mediaId: action.mediaId, noEffect, sealed: action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedImages: 0 } : null };
+        // 3e: a retirement names the snapshot's handle, and the placeholder's form when it changes the profile.
+        if (action.kind !== "retire_handle") return measure;
+        return { ...measure, handle: snapshotHandle(view) ?? (view.target.type === "account" ? (view.target.handle?.toLowerCase() ?? null) : null), placeholder: noEffect === null ? PREVIEW_PLACEHOLDER : null };
+      })
       // 3e: the strike the params will carry, until when it counts (decided now) and the strikes that count with it.
       .concat(
         strikeOf(view, draft).map(() => ({

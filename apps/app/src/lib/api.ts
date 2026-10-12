@@ -57,6 +57,8 @@ const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "unauthenti
   handle_taken: "That handle is taken.",
   handle_invalid: "Handles are 3 to 20 characters: lowercase letters, numbers and underscores.",
   handle_reserved: "That handle is reserved.",
+  // 3e (design, sections 9.5 and 9.8): a handle korbat retired, refused to everyone, its former holder included.
+  handle_retired: "That handle was retired by korbat. Nobody can use it.",
   password_too_short: "Passwords need at least 12 characters.",
   password_too_long: "Passwords can have at most 128 characters.",
   password_breached: "That password appears in known data breaches. Choose a different one.",

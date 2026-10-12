@@ -96,7 +96,7 @@ export type { StaffSignedIn } from "./staff/signin";
 export type { StaffStepUpConfirmed } from "./staff/step-up";
 export type { StaffKeysRevokedReport } from "./staff/revoke";
 export type { VerificationProvider } from "./verify/provider";
-export { AuthError, isUniqueViolation } from "./context";
+export { AuthError, handleRefusal, isUniqueViolation } from "./context";
 export { SYSTEM_ACTOR_ID, grantRole, type RoleGranted } from "./admin";
 /** The account module clears a web session's cookies after a deletion; the cookie names and attributes stay this module's. */
 export { clearSessionCookies } from "./cookies";

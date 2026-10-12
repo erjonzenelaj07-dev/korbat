@@ -46,6 +46,16 @@ export const STANDING_TEXTS = {
   },
   /** 9.4: the chip of a removed post while its strike stands and counts: "Removed: R3, strike until 10 Jan 2027". */
   chip: (chip: string, strikeUntil: string) => `${chip}, strike until ${standingDay(strikeUntil)}`,
+  /** 9.5: Settings, Profile, the handle. */
+  handle: {
+    /**
+     * [handle.retired], while the profile holds a placeholder. Task 3 adds [handle.retired.suspended] and the refusals that
+     * replace the form, which read /me's standing.
+     */
+    retired: "korbat retired your handle; the decision is under Settings, Cases. Choose a new one: the 30-day wait does not apply this time.",
+    /** The standing sentence above the form. */
+    standing: (current: string) => `Your handle is @${current}. You can change it once every 30 days. Handles you used before stay yours, except one that korbat retired.`,
+  },
 } as const;
 
 /** 9.4: what a row of "About you" says of a strike and of its overruling (CASE_ROW_WORDS). */
@@ -55,6 +65,9 @@ export const CASE_ROW_WORDS = {
   expired: "no longer counts",
   overruled: "overruled",
   overrule: "strike overruled",
+  /** A decision that retired the account's handle, and one that gave it back. */
+  retired: "your handle retired",
+  unretired: "handle given back",
 } as const;
 
 /** The sentence of a decision's strike on its screen. */
