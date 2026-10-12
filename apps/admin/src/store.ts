@@ -1,5 +1,6 @@
 import type { StaffMe } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
+import type { CaseDraft } from "./compose";
 import { createIdleTimer, type Clock, type IdleWarning } from "./idle";
 import { messageFor } from "./messages";
 import { caseHref, parseRoute, type CaseId, type ConsolePath, type Route } from "./router";
@@ -42,6 +43,18 @@ export interface ConsoleStoreDeps {
   path: string;
 }
 
+/**
+ * The composer's draft slots, one for each case (3c design, section 8): what its person chose and typed and has not
+ * confirmed yet. A session that ends shows sign-in in place of the case's page, which then starts anew; the slot is what
+ * brings the draft back after a sign-in by the same handle. It lives in the page's memory only, and is dropped when
+ * another handle signs in.
+ */
+export interface DraftSlots {
+  get(caseId: CaseId): CaseDraft | null;
+  set(draft: CaseDraft): void;
+  clear(caseId: CaseId): void;
+}
+
 export type ConsoleStore = ReturnType<typeof createConsoleStore>;
 
 export function createConsoleStore(deps: ConsoleStoreDeps) {
@@ -79,16 +92,38 @@ export function createConsoleStore(deps: ConsoleStoreDeps) {
     set({ session: { kind: "signed-out", ended }, warning: null });
   };
 
+  const slots = new Map<CaseId, CaseDraft>();
+  /** The handle the slots' drafts were written under. */
+  let draftsOf: string | null = null;
+  // Keeping a draft changes nothing a screen reads from the state, so no listener is told.
+  const drafts: DraftSlots = {
+    get: (caseId) => slots.get(caseId) ?? null,
+    set: (draft) => void slots.set(draft.caseId, draft),
+    clear: (caseId) => void slots.delete(caseId),
+  };
+  /**
+   * Whose page this is now. Another person at this page never reads what the one before typed: the slots are emptied as
+   * soon as the handle is another one, at a sign-in here and at any read of /me (a sign-in in another tab changes whose
+   * session the page's cookie names).
+   */
+  const draftsFor = (handle: string) => {
+    if (draftsOf !== null && draftsOf !== handle) slots.clear();
+    draftsOf = handle;
+  };
+
   api.hooks.onSessionRequired = sessionEnded;
   api.hooks.onActivity = () => {
     if (state.session.kind === "signed-in") idle.restart();
   };
-  // Any screen's /me read, the step-up's included, keeps the page's session as the cookie names it now.
+  // Any /me read, a screen's, the step-up's and the idle timer's alike, keeps the page's session as the cookie names it
+  // now, and the draft slots with it.
   api.hooks.onMe = (me) => {
+    draftsFor(me.handle);
     if (state.session.kind === "signed-in") set({ session: { kind: "signed-in", me } });
   };
 
   const signedIn = (me: StaffMe) => {
+    draftsFor(me.handle);
     set({ session: { kind: "signed-in", me }, warning: null });
     idle.start(me);
     // Sign-in in place keeps the address; only the sign-in page and an enrolment link move on, to the home page.
@@ -102,6 +137,7 @@ export function createConsoleStore(deps: ConsoleStoreDeps) {
 
   return {
     api,
+    drafts,
     get: (): ConsoleState => state,
     subscribe(listener: () => void): () => void {
       listeners.add(listener);
@@ -163,6 +199,7 @@ export function createConsoleStore(deps: ConsoleStoreDeps) {
     dispose() {
       idle.stop();
       listeners.clear();
+      slots.clear();
     },
   };
 }

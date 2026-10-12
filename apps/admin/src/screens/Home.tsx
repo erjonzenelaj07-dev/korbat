@@ -1,14 +1,50 @@
 import { OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { describeError } from "../messages";
+import { describeError, PROTECTION_LIFTED_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { readSignInsAtOpening } from "../signins";
 import { revokeSessionWithKey } from "../step-up";
 import { clockTime, dateTime, Loaded, UserText, type Loadable } from "../ui";
+import type { ReactNode } from "react";
 import type { CredentialsLike } from "../webauthn";
 import { counted, LANE_NAMES, waited } from "../words";
+
+/**
+ * One of the home screen's lists of the path for child sexual abuse material: each row with its time, its staff handle
+ * as text, a link to its case built from a checked id, and the console's own words for what the row is. A list holds at
+ * most OVERVIEW_LIST_MAX rows, and says how many there are when there are more.
+ */
+function StaffList<T extends { at: string; handle: string; caseId: string }>({ title, hint, empty, list, words, onOpenCase }: { title: string; hint: string; empty: string; list: { total: number; items: T[] }; words(item: T): ReactNode; onOpenCase(id: CaseId): void }) {
+  return (
+    <>
+      <h3>{title}</h3>
+      <p className="hint">{hint}</p>
+      {list.items.length === 0 ? (
+        <p>{empty}</p>
+      ) : (
+        <ul className="reveals">
+          {list.items.map((item, index) => {
+            const id = parseCaseId(item.caseId);
+            return (
+              <li key={`${item.at} ${item.caseId} ${index}`}>
+                <time dateTime={item.at}>{dateTime(item.at)}</time> <UserText>{item.handle}</UserText>{" "}
+                {id ? (
+                  <CaseLink id={id} onOpen={onOpenCase}>
+                    the case
+                  </CaseLink>
+                ) : null}{" "}
+                {words(item)}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {list.total > list.items.length ? <p>{`Showing the newest ${OVERVIEW_LIST_MAX} of ${list.total}.`}</p> : null}
+    </>
+  );
+}
 
 /**
  * The runbook's sentence for a count of decisions not released, in the words of the runbook's own bullet (3c design,
@@ -24,8 +60,9 @@ export const releaseOverdue = (n: number): string => `Decisions not released aft
 /**
  * What every staff member sees of the cases (3c design, section 8): the lanes with their open cases and how long the
  * oldest has waited, the appeals waiting, every reveal of a source in the last 30 days with its staff handle and its
- * case, what each staff account viewed and opened today, the mails that wait or were given up, and the emergency
- * switch. Counts, times, handles and case links only.
+ * case, the decisions that lifted the protection of reported images, the recorded choices not to seal and the seals
+ * taken while deciding that are in force, what each staff account viewed and opened today, the mails that wait or were
+ * given up, and the emergency switch. Counts, times, handles and case links only.
  */
 export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOverview; now: number; onOpenCase(id: CaseId): void }) {
   const { reveals, mailsWaiting, mailsFailed } = overview;
@@ -72,6 +109,31 @@ export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOve
         </ul>
       )}
       {reveals.total > reveals.items.length ? <p>{`Showing the newest ${OVERVIEW_LIST_MAX} of ${reveals.total}.`}</p> : null}
+
+      <StaffList
+        title="Protection of reported images lifted in the last 30 days"
+        hint="Every staff account's: each lifted seal, and each admin's answer to a report or finding of child sexual abuse material without a seal. One nobody expected means someone else holds a staff key: tell the operator."
+        empty="No decision lifted the protection of reported images in the last 30 days."
+        list={overview.protectionLifted}
+        words={(item) => PROTECTION_LIFTED_WORDS[item.kind]}
+        onOpenCase={onOpenCase}
+      />
+      <StaffList
+        title="Choices not to seal in the last 30 days"
+        hint="Every staff account's: each recorded choice not to seal reported images, whose reason is on its case."
+        empty="Nobody recorded a choice not to seal in the last 30 days."
+        list={overview.sealsDeclined}
+        words={() => "Chose not to seal"}
+        onOpenCase={onOpenCase}
+      />
+      <StaffList
+        title="Seals taken while deciding that are in force"
+        hint="Which images stand sealed until an admin answers, and by whom."
+        empty="No seal taken while deciding is in force."
+        list={overview.interimSeals}
+        words={(item) => `${counted(item.images, "image", "images")} on ${counted(item.posts, "post", "posts")}`}
+        onOpenCase={onOpenCase}
+      />
 
       <h3>Today, by staff account</h3>
       {overview.imagesToday.length === 0 && overview.findingsToday.length === 0 ? (

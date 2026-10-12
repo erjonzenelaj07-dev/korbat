@@ -122,6 +122,40 @@ export const DECISION_OUTCOMES: Record<CaseDecision["outcome"], string> = {
   reversed: "reversed",
 };
 
+/** What a decision that lifted the protection of reported images did, as the home screen's list words it. */
+export const PROTECTION_LIFTED_WORDS: Record<"unsealed" | "dismissed", string> = {
+  unsealed: "Lifted a seal",
+  dismissed: "Answered a report of child sexual abuse material without a seal",
+};
+
+/** The two kinds of decision the composer offers, as it names them. */
+export const COMPOSER_KINDS: Record<"interim" | "final", string> = {
+  interim: "While deciding",
+  final: "Decide the case",
+};
+
+/** The three outcomes the composer offers, as it names them. */
+export const COMPOSER_OUTCOMES: Record<"restricted" | "no_violation" | "not_evident", string> = {
+  restricted: "Restrict",
+  no_violation: "No breach",
+  not_evident: "Illegality not evident",
+};
+
+/**
+ * The composer's sentences beside its texts and its preview. The rule on personal data is the design's sentence in three
+ * parts, so that each part is written once: the rule itself, and where the text goes, which differs for a decision
+ * without a measure: its author never receives its texts, whether the decision is told to them (it ended what korbat did
+ * while deciding) or to nobody. The other three say what the preview cannot show yet, or will not.
+ */
+export const COMPOSER_WORDS = {
+  personalDataRule: 'Write only about the author\'s content and conduct. Never copy another person\'s name, handle, address or other personal data here: describe it (for example "the home address of another person").',
+  toAuthor: "The author receives this text by email and keeps it while their account exists.",
+  staysInRecord: "The author never receives this text: a decision without a measure tells them at most that what korbat did while deciding has ended. It stays in the case's record, for staff.",
+  noStatement: "No statement is sent: this decision restricts nothing and ends nothing that was done while deciding.",
+  previewAfterSnapshot: "The preview follows the fresh snapshot: the case's newest snapshot cannot be shown, so Confirm takes a fresh one, shows it, and asks you to confirm again.",
+  sealSettled: "The numbers, the sentence about posts their author had deleted, and whether the seal changes anything are settled when the seal is recorded: the statement its author gets holds them as they are then.",
+} as const;
+
 /**
  * The shared codes a staff route may also answer, and the console's own: a network failure, an answer its schemas refuse,
  * a browser prompt that did not finish, step-up options that bind something other than the action the person chose, and

@@ -32,6 +32,13 @@ describe("mail templates", () => {
       oldest: "2026-10-04 06:59 UTC",
       handle: "mod_anna",
       limit: "10",
+      // Moderation cases: a statement's subject key and paragraphs, the queue-age alert's pairs, and what a decision lifted.
+      subject: "post_restricted",
+      statement: "korbat removed your post of 2026-10-01 12:00 UTC: other people can no longer see it.\nThis applies everywhere korbat is available and has no end date.",
+      lane1Count: "2",
+      lane1Oldest: "2026-10-03 06:59 UTC",
+      interimCount: "1",
+      what: "dismissed",
     };
     for (const template of [
       "sign_in_code",
@@ -63,6 +70,10 @@ describe("mail templates", () => {
       "moderation_urgent",
       "moderation_reads",
       "moderation_reveal",
+      "moderation_decision",
+      "moderation_waiting",
+      "moderation_burst",
+      "moderation_csam_lifted",
     ] as const) {
       const r = renderTemplate(template, data);
       expect(r.subject.length, template).toBeGreaterThan(5);

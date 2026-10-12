@@ -163,3 +163,7 @@ export const REDRESS_TEXTS = {
 export function getRedress(version: number): RedressTexts | undefined {
   return (REDRESS_TEXTS as Record<number, RedressTexts>)[version];
 }
+
+// The statement of reasons, rendered over the rulebooks and the redress texts above. The package exports only this file,
+// so the app, the console and the API reach the statement through it.
+export { STATEMENT_WORDS, statementParagraphs, type StatementInput } from "./statement";

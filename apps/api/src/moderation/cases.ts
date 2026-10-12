@@ -48,13 +48,16 @@ import {
   handleOf,
   imagesOpenedOn,
   insertAccess,
+  interimSealsInForce,
   liveAccount,
   livePost,
   mailAndReleaseCounts,
   openByLane,
   ownDrafts,
   queueRows,
+  recentProtectionLifted,
   recentReveals,
+  recentSealsDeclined,
   reporterFacts,
   sealCovers,
   snapshotListsImage,
@@ -163,6 +166,11 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config">): 
     mailsFailed: mails.failed,
     releaseOverdue: mails.releaseOverdue,
     deferUnproven: deps.config.MODERATION_DEFER_UNPROVEN === "on",
+    // The three lists of the path for child sexual abuse material, which every staff member sees: what lifted the
+    // protection of reported images, who chose not to seal, and which seals taken while deciding stand.
+    protectionLifted: await recentProtectionLifted(q, OVERVIEW_LIST_MAX),
+    sealsDeclined: await recentSealsDeclined(q, OVERVIEW_LIST_MAX),
+    interimSeals: await interimSealsInForce(q, OVERVIEW_LIST_MAX),
   };
 }
 
@@ -459,6 +467,18 @@ export async function readCase(deps: ModerationDeps, session: ActiveStaffSession
     deps.background.start(() => alertDailyReads(deps, session.userId, limits.caseOpens));
     throw new ModerationError("rate_limited", 429, undefined, secondsToUtcMidnight(deps.now()));
   }
+  await insertAccess(deps.apiDb, { staffId: session.userId, caseId, kind: "case_opened" });
+  return caseView(deps, session, row);
+}
+
+/**
+ * The case as the answer to a decision the person's key has just confirmed on it (3c design, section 7.5, step 4): the
+ * read is written to the access log like every read of a case, and it is not held to the day's limit on different
+ * cases, which counts openings. A decision's answer is no opening of another case: its person has just acted on this
+ * one, and the decision's own caps bound how often that can be. So no committed decision is answered with a refusal.
+ */
+export async function readDecidedCase(deps: ModerationDeps, session: ActiveStaffSession, caseId: string): Promise<CaseView> {
+  const row = await openableCase(deps, session, caseId);
   await insertAccess(deps.apiDb, { staffId: session.userId, caseId, kind: "case_opened" });
   return caseView(deps, session, row);
 }

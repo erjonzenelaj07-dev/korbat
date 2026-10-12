@@ -1,10 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  CaseDecidedParams,
+  CaseDecisionRequest,
   CEREMONY_CHALLENGE,
   CHALLENGE_PURPOSES,
   FindingRequest,
   IdentityRevealRequest,
+  MEASURES,
+  RULE_DEFAULT_CATEGORY,
   STAFF_AUDIT_PAGE_SIZE,
   STAFF_STEP_UP_CHALLENGE,
   StaffEnrollOptionsRequest,
@@ -13,13 +17,16 @@ import {
   StaffSignInVerifyRequest,
   StaffStepUpOptionsRequest,
   StaffTextSaveRequest,
+  snapshotDigest,
   stepUpActionHash,
   stepUpBinding,
   textDigest,
   type AuditEntry,
   type AuditPage,
+  type CaseDecision,
   type CaseView,
   type QueuePage,
+  type StaffTextDraft,
   type StaffKey,
   type StaffMe,
   type StaffErrorCode,
@@ -27,7 +34,30 @@ import {
   type StaffStepUpActionInput,
 } from "@korbat/contracts";
 import type { z } from "zod";
-import { accountCase, CASE_ACCOUNT, CASE_FROZEN, CASE_POST, CASE_QUOTED, frozenCase, LONGEST_EXPLANATION, LONGEST_NOTE, LOOKALIKE, overview, postCase, QUEUE_ROWS } from "../case-fixtures";
+import {
+  accountCase,
+  ACCOUNT_DECLINE,
+  ACCOUNT_SEALABLE,
+  adminCase,
+  CASE_ACCOUNT,
+  CASE_ADMIN,
+  CASE_CHANGED,
+  CASE_DECLINE,
+  CASE_DRAFTS,
+  CASE_FROZEN,
+  CASE_POST,
+  CASE_QUOTED,
+  CASE_SEALABLE,
+  frozenCase,
+  LONGEST_EXPLANATION,
+  LONGEST_NOTE,
+  LOOKALIKE,
+  overview,
+  plainCase,
+  postCase,
+  QUEUE_ROWS,
+  sealableCase,
+} from "../case-fixtures";
 import { HOSTILE } from "../fixtures";
 
 /**
@@ -37,6 +67,16 @@ import { HOSTILE } from "../fixtures";
  * header on every write, the WebAuthn ceremonies' client data (type, challenge, origin) and the authenticator's flags
  * (user verified, never backup-eligible or backed up). Anything the page sent that the real API would refuse for the
  * page's own fault is listed in `problems`. Signatures are not verified: the API's own tests do that with its library.
+ *
+ * A decision (3c design, section 7.5) is checked as far as the page's own part goes: the assertion was made over a
+ * challenge bound to exactly the params the request carries, the snapshot it names is the case's newest with the digest
+ * of what the page was shown, recomputed here, and each text it names is one the page saved on that case. The case is
+ * then changed as the decision says, and answered as it now stands.
+ *
+ * A text is saved without the key (section 7.4), also when its field loses focus: every save is kept, so the walk counts
+ * them, and a case's answer carries the person's saved texts that no decision has named yet, as the API's does, so that a
+ * reload brings them back. A step of the walk can have the next save refused, a case decided by another staff member
+ * behind the page, the person made an admin, and a saved draft answered with other words under its digest.
  */
 
 /** The longest handle an account can choose (checkHandle: 3 to 20 of a-z, 0-9 and _). */
@@ -61,10 +101,23 @@ export const TYPED_NOTE = `Art. 18 check: no suspicion ${HOSTILE.img}`;
 export const DEAD_LINK = "http://localhost:8081/post/00000000-0000-4000-8000-000000000000";
 /** The reason a forged save answer stands for: one the person never wrote. */
 export const FORGED_REASON = "A reason this server wrote in the person's name.";
+/** What the walk types into the composer: the reason of a correction, the facts of a decision, and why it does not seal. Each holds markup. */
+export const TYPED_REASON = `The withhold was taken on the wrong post ${HOSTILE.img}`;
+export const TYPED_FACTS = `The post offers followers for money ${HOSTILE.quote}`;
+export const TYPED_DECLINE = `The report repeats one that was answered ${HOSTILE.script}`;
+/** The facts of an admin's answer without a measure, of a decision on a case that changed, and of a draft a reload brings back. Each holds markup. */
+export const TYPED_ADMIN_FACTS = `The report's words give no concrete reason to believe it ${HOSTILE.img}`;
+export const TYPED_CHANGED_FACTS = `The post sells followers ${HOSTILE.script}`;
+export const TYPED_DRAFT_FACTS = `The post repeats one link forty times ${HOSTILE.quote}`;
+/** The other staff member who decides a case behind the page, by handle. */
+export const OTHER_STAFF = HOSTILE.bidi;
+/** The words a forged draft carries in place of the person's own, under the digest of what they saved. */
+export const FORGED_DRAFT = "Words this server put into the draft of its person.";
 
 /**
  * Every user-written string the console must show as text, exactly as written: 3a's handles, names and labels, and of the
- * cases a text made to look like the console's own line, the longest explanation and the longest note.
+ * cases a text made to look like the console's own line, the longest explanation, the longest note, and what the walk
+ * itself types into a note, a correction, a decision and a choice not to seal.
  */
 export const HOSTILE_TEXTS = [
   ...new Set([
@@ -79,6 +132,12 @@ export const HOSTILE_TEXTS = [
     LONGEST_NOTE,
     TYPED_NOTE,
     REVEALED_HANDLE,
+    TYPED_REASON,
+    TYPED_FACTS,
+    TYPED_DECLINE,
+    TYPED_ADMIN_FACTS,
+    TYPED_CHANGED_FACTS,
+    TYPED_DRAFT_FACTS,
   ]),
 ];
 
@@ -254,7 +313,80 @@ function ceremonyChallenge(purpose: "staff_signin" | "staff_register", binding: 
  * The status the API answers each moderation refusal the fixtures use with (apps/api/src/moderation/context.ts); the
  * unit test that holds the staff statuses to the API's source holds these too.
  */
-export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, image_refused: 404, staff_recused: 403 } as const;
+export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, text_quotes_user: 422, rate_limited: 429, image_refused: 404, staff_recused: 403, case_changed: 409, snapshot_mismatch: 409 } as const;
+
+/** The kinds of text a decision or a correction names: the ones a case's answer hands back as drafts while no decision has named them. */
+const DRAFT_KINDS: readonly string[] = ["facts", "reason", "legal_reference", "review_reason"];
+
+/** What an item reads once a decision answered it. */
+const ITEM_OUTCOMES = { restricted: { incompatible: "restricted_rule", illegal: "restricted_legal" }, no_violation: "no_violation", not_evident: "not_evident" } as const;
+
+/**
+ * The case as a confirmed decision leaves it, changed in place: the decision with its measures in the case's list and
+ * history, the next version, a lifted measure no longer in force, a seal with what the case reaches, and after a final
+ * decision the items it answered, the measures taken while deciding ended, and the case closed when nothing is left open.
+ */
+function applyDecision(view: CaseView, params: CaseDecidedParams, written: { facts: string | null; reason: string | null; legalReference: string | null }, staffHandle: string): void {
+  const at = new Date().toISOString();
+  const id = randomUUID();
+  const corrected = view.decisions.find((decided) => decided.id === params.reviewsDecisionId);
+  const actions: CaseDecision["actions"] = params.actions.map((action) => {
+    const lifts: readonly string[] | null = MEASURES[action.kind].lifts;
+    if (lifts !== null) {
+      const lifted = corrected?.actions.find((held) => held.inForce && lifts.includes(held.kind) && held.mediaId === action.mediaId);
+      if (lifted) {
+        lifted.inForce = false;
+        lifted.liftedBy = id;
+      }
+      return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null };
+    }
+    const reach = view.suspicion?.reach ?? { posts: 0, images: 0 };
+    const sealed = action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedPosts: 0, list: [] } : null;
+    return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed };
+  });
+  const suspect = view.items.some((item) => item.outcome === null && item.suspect);
+  view.decisions = [
+    ...view.decisions,
+    {
+      id,
+      kind: params.kind,
+      outcome: params.outcome,
+      ground: params.ground,
+      ruleId: params.ruleId,
+      rulesVersion: params.rulesVersion,
+      redressVersion: params.redressVersion,
+      category: params.category,
+      categoryKeyword: params.categoryKeyword,
+      source: "report",
+      decidedAt: at,
+      staffHandle,
+      throughSeq: params.throughSeq,
+      answersFromSeq: params.kind === "final" ? view.answeredSeq + 1 : null,
+      reviewsDecisionId: params.reviewsDecisionId,
+      snapshotId: params.snapshotId,
+      suspect,
+      unseen: false,
+      needsAdmin: false,
+      endedInterim: false,
+      facts: written.facts,
+      reason: written.reason,
+      legalReference: written.legalReference,
+      actions,
+    },
+  ];
+  view.history = [...view.history, { at, event: "decision", refId: id, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: params.kind, outcome: params.outcome, staffHandle, result: null }];
+  view.stateVersion += 1;
+  if (actions.some((action) => action.kind === "seal_media") && view.suspicion) view.suspicion = { ...view.suspicion, reach: { ...view.suspicion.reach, sealed: view.suspicion.reach.images, served: 0 } };
+  if (params.kind !== "final" || (params.outcome !== "restricted" && params.outcome !== "no_violation" && params.outcome !== "not_evident")) return;
+  const outcome = params.outcome === "restricted" ? ITEM_OUTCOMES.restricted[params.ground ?? "incompatible"] : ITEM_OUTCOMES[params.outcome];
+  view.items = view.items.map((item) => (item.outcome === null && item.seq <= params.throughSeq ? { ...item, outcome, answeredBy: id } : item));
+  view.answeredSeq = params.throughSeq;
+  if (view.items.some((item) => item.outcome === null)) return;
+  // The case is closed: what was done while deciding has ended, and the post reads as the decision's measure left it.
+  view.closedAt = at;
+  for (const decided of view.decisions) if (decided.kind === "interim") for (const action of decided.actions) if (MEASURES[action.kind].lifts === null) action.inForce = false;
+  if (view.target.type === "post" && actions.some((action) => action.kind === "remove")) view.target = { ...view.target, state: "removed", level: "removed" };
+}
 
 /** `raw` answers bytes of this type in place of JSON: an image. */
 type Answer = { status: number; body?: unknown; raw?: { type: string; bytes: Buffer }; headers?: Record<string, string | string[]> };
@@ -285,8 +417,8 @@ export function createFixtureApi() {
     ),
     sessions: new Map<string, SessionRecord>(),
     audit: auditLog(now),
-    /** Challenges handed out and not yet spent, by their base64url text: what each was issued for. */
-    challenges: new Map<string, { purpose: "register" | "signin" | "step_up"; target?: string }>(),
+    /** Challenges handed out and not yet spent, by their base64url text: what each was issued for, a step-up's with the hash of the action it binds. */
+    challenges: new Map<string, { purpose: "register" | "signin" | "step_up"; target?: string; hash?: string }>(),
     /** The handles the page revoked with its key. */
     revoked: [] as string[],
     /** The cases the console can open: a post's, a frozen post's, an account's, and the one a quoting post links to. */
@@ -295,7 +427,16 @@ export function createFixtureApi() {
       [CASE_FROZEN, frozenCase()],
       [CASE_ACCOUNT, accountCase()],
       [CASE_QUOTED, postCase({ id: CASE_QUOTED, items: [], decisions: [], notes: [] })],
+      [CASE_SEALABLE, sealableCase(CASE_SEALABLE, ACCOUNT_SEALABLE)],
+      [CASE_DECLINE, sealableCase(CASE_DECLINE, ACCOUNT_DECLINE)],
+      [CASE_ADMIN, adminCase()],
+      [CASE_CHANGED, plainCase(CASE_CHANGED, "f5d8e7da-4906-48da-91e6-25c413a8f7e1")],
+      [CASE_DRAFTS, plainCase(CASE_DRAFTS, "f5d8e7da-4906-48da-91e6-25c413a8f7e2")],
     ]),
+    /** The role the signed-in person holds: a moderator, unless a step of the walk makes them an admin. */
+    role: "moderator" as StaffMe["role"],
+    /** Every decision the key confirmed: the case and the params, as the page sent them. */
+    decisions: [] as { caseId: string; params: CaseDecidedParams }[],
     /** Every image the page asked for, by its path, in order. */
     imageRequests: [] as string[],
     /**
@@ -308,8 +449,22 @@ export function createFixtureApi() {
      * to take part in the case since the page read it.
      */
     recuseNextCaseRead: false,
-    /** Every text the page saved, with the digest it sent and the server recomputed. */
-    texts: [] as { caseId: string; kind: string; text: string; digest: string }[],
+    /**
+     * Every text the page saved, in order, with its salt and the digest it sent and the server recomputed; `used` once a
+     * decision named it. A text saved when its field lost focus is here before any key is asked: the walk counts them.
+     */
+    texts: [] as { id: string; caseId: string; kind: string; text: string; salt: string; digest: string; createdAt: string; used?: boolean }[],
+    /**
+     * The next save of a text is refused with this code, as the API refuses a text that quotes what someone wrote about
+     * the case (422) or a save over the minute's limit (429). Nothing is stored.
+     */
+    refuseNextSave: null as "text_quotes_user" | "rate_limited" | null,
+    /**
+     * A case and a kind of text: that case's answers carry its newest saved draft of the kind with other words under the
+     * digest of what the person saved, as an API under an attacker's control would answer to put its own words into a
+     * decision's draft. The page must drop it.
+     */
+    forgedDraft: null as { caseId: string; kind: string } | null,
     /**
      * The next save is answered with the digest of another text, one of this server's own choosing which it stores as
      * the person's: what an API under an attacker's control would answer to have the key confirm a reason nobody wrote.
@@ -374,7 +529,7 @@ export function createFixtureApi() {
     const idleEnd = Math.min(session.lastUsedAt + IDLE_MS, absoluteEnd);
     return {
       handle: PERSON_HANDLE,
-      role: "moderator",
+      role: state.role,
       sessionHandle: session.handle,
       idleExpiresAt: iso(idleEnd),
       idleSecondsLeft: Math.max(0, Math.floor((idleEnd - at) / 1000)),
@@ -403,6 +558,20 @@ export function createFixtureApi() {
     bytes.writeBigUInt64BE(BigInt(Date.now() + 10 * 60_000), layout.expiryAt);
     Buffer.from(await stepUpBinding(sessionHandle, await stepUpActionHash(action))).copy(bytes, layout.bindingAt);
     return bytes.toString("base64url");
+  }
+
+  /**
+   * A case as its route answers it: with the person's saved texts of a decision's kinds that no decision has named yet,
+   * oldest first, each with its salt, so that the page can hold it to its digest. The forged draft, where a step asked for
+   * one, carries this server's words under the saved digest.
+   */
+  function caseAnswer(view: CaseView): CaseView {
+    const drafts = state.texts
+      .filter((text) => text.caseId === view.id && DRAFT_KINDS.includes(text.kind) && !text.used)
+      .map((text): StaffTextDraft => ({ id: text.id, kind: text.kind as StaffTextDraft["kind"], text: text.text, salt: text.salt, digest: text.digest, createdAt: text.createdAt }));
+    const forged = state.forgedDraft;
+    const last = forged !== null && forged.caseId === view.id ? drafts.findLast((draft) => draft.kind === forged.kind) : undefined;
+    return { ...view, drafts: drafts.map((draft) => (draft === last ? { ...draft, text: FORGED_DRAFT } : draft)) };
   }
 
   function parse<T>(schema: z.ZodType<T>, body: unknown, what: string): T {
@@ -507,14 +676,33 @@ export function createFixtureApi() {
       "POST /api/staff/findings",
     ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
-    const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts))?$/.exec(url.pathname);
+    const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts|decisions))?$/.exec(url.pathname);
     const image = req.method === "GET" ? IMAGE_PATH.exec(url.pathname) : null;
     const reveal = req.method === "POST" ? /^\/api\/staff\/items\/([0-9a-f-]{36})\/reveal$/.exec(url.pathname) : null;
     if (!routes.has(key) && !revoke && !ofCase && !image && !reveal) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
     // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
-    if (key === "GET /api/staff/overview") return { status: 200, body: overview({ reveals: { total: 1 + state.reveals.length, items: [{ at: iso(now - 26 * HOUR), handle: HOSTILE.script, caseId: CASE_POST }] } }) };
+    if (key === "GET /api/staff/overview") {
+      // The path's three lists: one decision of another staff account that answered a report without a seal, and what
+      // the walk itself did, read from the cases as they now stand.
+      const cases = [...state.cases.values()];
+      const declined = cases.flatMap((view) => view.sealsDeclined.filter((text) => text.staffHandle === PERSON_HANDLE).map((text) => ({ at: text.createdAt, handle: text.staffHandle, caseId: view.id })));
+      const seals = cases.flatMap((view) =>
+        view.decisions
+          .filter((decided) => decided.kind === "interim" && decided.staffHandle === PERSON_HANDLE)
+          .flatMap((decided) => decided.actions.filter((action) => action.kind === "seal_media" && action.inForce).map((action) => ({ at: decided.decidedAt, handle: decided.staffHandle, caseId: view.id, posts: action.sealed?.posts ?? 0, images: action.sealed?.images ?? 0 }))),
+      );
+      return {
+        status: 200,
+        body: overview({
+          reveals: { total: 1 + state.reveals.length, items: [{ at: iso(now - 26 * HOUR), handle: HOSTILE.script, caseId: CASE_POST }] },
+          protectionLifted: { total: 1, items: [{ at: iso(now - 3 * HOUR), handle: HOSTILE.img, caseId: CASE_FROZEN, kind: "dismissed" }] },
+          sealsDeclined: { total: declined.length, items: declined },
+          interimSeals: { total: seals.length, items: seals },
+        }),
+      };
+    }
     if (key === "GET /api/staff/queue") {
       // Two pages: the two urgent cases, then the rest behind a cursor.
       const cursor = url.searchParams.get("cursor");
@@ -551,7 +739,7 @@ export function createFixtureApi() {
           state.recuseNextCaseRead = false;
           throw new Refusal(MODERATION_REFUSAL_STATUS.staff_recused, "staff_recused");
         }
-        return { status: 200, body: found };
+        return { status: 200, body: caseAnswer(found) };
       }
       if (ofCase[2] === "snapshots" && req.method === "POST") {
         state.snapshotsTaken += 1;
@@ -575,19 +763,67 @@ export function createFixtureApi() {
           problem(`${key}: a digest that is not the text's`);
           throw new Refusal(MODERATION_REFUSAL_STATUS.text_invalid, "text_invalid");
         }
+        if (state.refuseNextSave !== null) {
+          const code = state.refuseNextSave;
+          state.refuseNextSave = null;
+          throw new Refusal(MODERATION_REFUSAL_STATUS[code], code);
+        }
         const id = randomUUID();
+        const stored = { id, caseId: found.id, kind: saved.kind, salt: saved.salt, createdAt: iso(Date.now()) };
         if (state.hostileNextSave) {
           state.hostileNextSave = false;
           // The forged case: a text of this server's own is stored in the person's name, and its digest answered. A
           // reveal confirmed under that digest would go through here, so only the page's own check stops it.
           const digest = await textDigest(saved.salt, FORGED_REASON);
-          state.texts.push({ caseId: found.id, kind: saved.kind, text: FORGED_REASON, digest });
+          state.texts.push({ ...stored, text: FORGED_REASON, digest });
           state.forgedDigests.push(digest);
           return { status: 201, body: { id, digest } };
         }
-        state.texts.push({ caseId: found.id, kind: saved.kind, text: saved.text, digest: saved.digest });
+        state.texts.push({ ...stored, text: saved.text, digest: saved.digest });
+        // A note and a recorded choice not to seal are complete when saved, and listed on the case.
         if (saved.kind === "note") found.notes = [...found.notes, { id, staffHandle: PERSON_HANDLE, createdAt: iso(Date.now()), text: saved.text }];
+        if (saved.kind === "seal_declined") found.sealsDeclined = [...found.sealsDeclined, { id, staffHandle: PERSON_HANDLE, createdAt: iso(Date.now()), text: saved.text }];
         return { status: 201, body: { id, digest: saved.digest } };
+      }
+      if (ofCase[2] === "decisions" && req.method === "POST") {
+        const what = "POST /api/staff/cases/:case/decisions";
+        const { stepUp, ...params } = parse(CaseDecisionRequest, body, what);
+        // The assertion: by the session's own key, over a challenge issued for exactly this decision on exactly this case.
+        const issued = clientData(stepUp.response.clientDataJSON, "webauthn.get", "step_up", "staff_step_up_invalid");
+        const hash = await stepUpActionHash({ action: "case_decided", target: { type: "case", id: found.id }, params });
+        if (issued.target !== found.id || issued.hash !== hash || stepUp.id !== session.credentialId) {
+          problem(`${what}: an assertion for ${String(issued.target)} from ${stepUp.id}, over ${issued.hash === hash ? "these" : "other"} params`);
+          throw refuse("staff_step_up_invalid");
+        }
+        const flags = flagRefusal(flagsOf(Buffer.from(stepUp.response.authenticatorData, "base64url")));
+        if (flags) throw refuse(flags === "staff_key_refused" ? "staff_step_up_invalid" : flags);
+        if (params.stateVersion !== found.stateVersion) throw new Refusal(MODERATION_REFUSAL_STATUS.case_changed, "case_changed");
+        // The snapshot: the case's newest, under the digest of what the page was shown, recomputed here from its members.
+        const [newest] = found.snapshots;
+        const shownDigest = !newest || newest.withheld ? null : await snapshotDigest({ ...newest });
+        if (!newest || params.snapshotId !== newest.id || params.snapshotDigest !== shownDigest) {
+          problem(`${what}: a snapshot that is not the case's newest as the page was shown it`);
+          throw new Refusal(MODERATION_REFUSAL_STATUS.snapshot_mismatch, "snapshot_mismatch");
+        }
+        // Each text the decision names: one the page saved on this case, of its kind, not yet used, and never a digest this server made up.
+        const named = [
+          ["facts", params.factsDigest],
+          [params.kind === "correction" ? "review_reason" : "reason", params.reasonDigest],
+          ["legal_reference", params.legalReferenceDigest],
+        ] as const;
+        const texts: (string | null)[] = [];
+        for (const [kind, digest] of named) {
+          const saved = digest === null ? undefined : state.texts.find((text) => text.caseId === found.id && text.kind === kind && text.digest === digest && !text.used);
+          if (digest !== null && (!saved || state.forgedDigests.includes(digest))) {
+            problem(`${what}: a ${kind} text the page did not save on this case`);
+            throw new Refusal(MODERATION_REFUSAL_STATUS.text_not_found, "text_not_found");
+          }
+          if (saved) saved.used = true;
+          texts.push(saved?.text ?? null);
+        }
+        state.decisions.push({ caseId: found.id, params });
+        applyDecision(found, params, { facts: texts[0] ?? null, reason: texts[1] ?? null, legalReference: texts[2] ?? null }, PERSON_HANDLE);
+        return { status: 201, body: caseAnswer(found) };
       }
       throw new Refusal(404, "not_found");
     }
@@ -626,19 +862,29 @@ export function createFixtureApi() {
     }
     if (key === "POST /api/staff/step-up/options") {
       const action = parse(StaffStepUpOptionsRequest, body, key);
-      const known = action.action === "identity_revealed" ? [...state.cases.values()].some((view) => view.items.some((item) => item.id === action.target.id)) : state.sessions.has(action.target.id);
+      const known =
+        action.action === "identity_revealed"
+          ? [...state.cases.values()].some((view) => view.items.some((item) => item.id === action.target.id))
+          : action.action === "case_decided"
+            ? state.cases.has(action.target.id)
+            : state.sessions.has(action.target.id);
       if (!known) throw new Refusal(404, "not_found");
-      // The page builds a reveal's params from the digest it computed itself: one a save's answer carried never gets here.
-      const underDigest = action.action === "identity_revealed" ? action.params.reasonDigest : null;
-      if (typeof underDigest === "string" && state.forgedDigests.includes(underDigest)) problem(`${key}: a reveal under a digest the page did not compute`);
+      // The page builds a reveal's or a decision's params from the digests it computed itself: one a save's answer carried never gets here.
+      const decided = action.action === "case_decided" ? CaseDecidedParams.parse(action.params) : null;
+      const underDigests = decided ? [decided.factsDigest, decided.reasonDigest, decided.legalReferenceDigest] : action.action === "identity_revealed" ? [action.params.reasonDigest] : [];
+      if (underDigests.some((digest) => typeof digest === "string" && state.forgedDigests.includes(digest))) problem(`${key}: an action under a digest the page did not compute`);
       state.stepUpOptionsServed += 1;
       // The mismatched case: an API that asks the key to confirm the revocation of this very session instead of the one
-      // chosen, or, for a reveal, the reveal of another item than the one chosen.
-      const other = action.action === "identity_revealed" ? randomUUID() : session.handle;
-      const bound = state.mismatchNextStepUp ? { ...action, target: { ...action.target, id: other } } : action;
+      // chosen; for a reveal, the reveal of another item than the one chosen; for a decision, the same decision on the
+      // case's next version, which the page never saw.
+      let bound: StaffStepUpActionInput = action;
+      if (state.mismatchNextStepUp) {
+        if (decided) bound = { action: "case_decided", target: action.target, params: { ...decided, stateVersion: decided.stateVersion + 1 } } as StaffStepUpActionInput;
+        else bound = { ...action, target: { ...action.target, id: action.action === "identity_revealed" ? randomUUID() : session.handle } } as StaffStepUpActionInput;
+      }
       state.mismatchNextStepUp = false;
       const challenge = await stepUpChallenge(session.handle, bound);
-      state.challenges.set(challenge, { purpose: "step_up", target: bound.target.id });
+      state.challenges.set(challenge, { purpose: "step_up", target: bound.target.id, hash: await stepUpActionHash(bound) });
       const allow = session.credentialId === null ? [] : [{ id: session.credentialId, type: "public-key", transports: ["usb"] }];
       return { status: 200, body: { options: { challenge, rpId: "localhost", timeout: 300_000, userVerification: "required", allowCredentials: allow } } };
     }
@@ -718,6 +964,37 @@ export function createFixtureApi() {
     /** Every staff session ends behind the page's back, as a revocation from the command line ends them. */
     endEverySession() {
       state.sessions.clear();
+    },
+    /**
+     * Another staff member decides the case behind the page: a withhold of the post taken while deciding, under rule R6,
+     * on the case as it stands. The post is then withheld and the case's version moves on, so a decision the page built
+     * on the version it read is answered case_changed.
+     */
+    decideBehindThePage(caseId: string): void {
+      const found = state.cases.get(caseId);
+      const [newest] = found?.snapshots ?? [];
+      if (!found || !newest) throw new Error("the fixtures hold no such case, or it has no snapshot");
+      const params = CaseDecidedParams.parse({
+        kind: "interim",
+        stateVersion: found.stateVersion,
+        throughSeq: 0,
+        reviewsDecisionId: null,
+        snapshotId: newest.id,
+        snapshotDigest: hex64(),
+        outcome: "restricted",
+        ground: "incompatible",
+        ruleId: "R6",
+        rulesVersion: 2,
+        redressVersion: 1,
+        category: RULE_DEFAULT_CATEGORY.R6,
+        categoryKeyword: null,
+        actions: [{ kind: "withhold", mediaId: null }],
+        factsDigest: hex64(),
+        reasonDigest: hex64(),
+        legalReferenceDigest: null,
+      });
+      applyDecision(found, params, { facts: "The post repeats one link in every reply.", reason: "That is spam, which rule R6 names.", legalReference: null }, OTHER_STAFF);
+      if (found.target.type === "post") found.target = { ...found.target, state: "withheld", level: "withheld" };
     },
     /** A new enrolment link, as `staff.js enroll` prints one for the person's next key; its token. */
     issueEnrolment(): string {

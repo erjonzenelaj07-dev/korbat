@@ -25,18 +25,79 @@ export type TemplateName =
   | "staff_session_started"
   | "staff_key_suspect"
   | "staff_keys_revoked"
-  // Moderation (3c design, section 7.15): the receipt of a report or a notice, and the staff alerts for the urgent lane,
-  // for a staff account that reached its daily case limit and for every reveal of who sent a report.
+  // Moderation (3c design, section 7.15). To the people concerned: the receipt of a report or a notice, the daily update
+  // of decisions on a person's reports, and the statement of reasons to the author of what a decision restricts. To
+  // every staff account: the urgent lane's alert, the cases that wait longer than their response time, a burst of
+  // decisions by one staff account, a staff account that reached its daily case limit, every reveal of who sent a
+  // report, and every decision that lifted the protection of images reported as child sexual abuse material.
   | "notice_received"
+  | "notice_update"
+  | "moderation_decision"
   | "moderation_urgent"
+  | "moderation_waiting"
+  | "moderation_burst"
   | "moderation_reads"
-  | "moderation_reveal";
+  | "moderation_reveal"
+  | "moderation_csam_lifted";
 
-export interface MailMessage {
+/** Every template but the one whose data is a structure: its data are flat strings. */
+export type FlatTemplateName = Exclude<TemplateName, "notice_update">;
+
+/**
+ * One line of the daily update: the outcome of one item of a report (3c design, section 5). The moderation module sets
+ * every field, from what korbat generated; none holds a report's words. The template chooses each of its sentences from
+ * these fields alone.
+ */
+export interface NoticeUpdateLine {
+  /** The notice's public reference. */
+  ref: string;
+  /** The item's position in its notice. */
+  item: number;
+  /** The item's korbat address, an account's under the handle as the notice named it. */
+  link: string;
+  /** The outcome's words, as the contracts' outcomeWords composes them, ending in a full stop. */
+  outcome: string;
+  /** The line answers a re-examination. */
+  reexamination: boolean;
+  /** The line gives the new outcome of an item that a review or a correction changed. */
+  changed: boolean;
+  /** A moderator's decision to take no action that can still be re-examined. */
+  reexaminable: boolean;
+  /** The line reads UNSEEN_NO_ACTION: such an answer is never final within korbat. */
+  unseen: boolean;
+  /** A link that named nothing, answered without a moderator. */
+  automatic: boolean;
+}
+
+/**
+ * The daily update's data. The moderation module gives the lines; the auth module adds whether the reader is signed in,
+ * the receipts the 24-hour cap folded with their page links, the page link of each other notice the update has a line
+ * for, and the terms' address. A signed-in update carries neither receipts nor pages.
+ */
+export interface NoticeUpdateData {
+  signedIn: boolean;
+  lines: NoticeUpdateLine[];
+  receipts: { ref: string; time: string; items: string; pageUrl: string }[];
+  pages: { ref: string; pageUrl: string }[];
+  termsUrl?: string;
+}
+
+/** The daily update, whose data is a structure. */
+export interface NoticeUpdateMessage {
   to: string;
-  template: TemplateName;
+  template: "notice_update";
+  data: NoticeUpdateData;
+}
+
+/** A message of any other template: flat strings. */
+export interface FlatMailMessage {
+  to: string;
+  template: FlatTemplateName;
   data: Record<string, string>;
 }
+
+/** A message is one of two shapes, told apart by its template. */
+export type MailMessage = NoticeUpdateMessage | FlatMailMessage;
 
 export interface Mailer {
   /**

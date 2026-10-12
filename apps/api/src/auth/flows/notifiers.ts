@@ -1,5 +1,6 @@
 import { RETENTION } from "@korbat/contracts";
-import { MailRefused, type MailMessage } from "../../mail/mailer";
+import { MailRefused, type MailMessage, type NoticeUpdateLine } from "../../mail/mailer";
+import type { DecisionMailSubject } from "../../mail/templates";
 import type { AuthDeps } from "../context";
 import { decrypt, encrypt, randomToken, safeEqual } from "../crypto";
 import { emailHash } from "../identifiers";
@@ -26,24 +27,74 @@ export interface NoticeReceivedMessage {
   items: readonly string[];
 }
 
-/** What may be sent to a signed-out notifier's contact, and to an account that reported. Each gains its other mails with the dispatch job. */
+/** The daily update of decisions on the reports an account sent: its lines, as the moderation module composed them. */
+export interface AccountUpdateMessage {
+  template: "notice_update";
+  lines: readonly NoticeUpdateLine[];
+}
+
+/**
+ * The statement of reasons to the author of what a decision restricts or lifts: the subject by its key, and the
+ * statement's paragraphs exactly as they were rendered for the author's screen.
+ */
+export interface DecisionMessage {
+  template: "moderation_decision";
+  subject: DecisionMailSubject;
+  paragraphs: readonly string[];
+}
+
+/** What may be sent to a signed-out notifier's contact by itself: the receipt. Its updates go by address, through mailNotifierUpdates. */
 export type NotifierMessage = NoticeReceivedMessage;
-export type AccountMessage = NoticeReceivedMessage;
+/** What may be sent to an account: the receipt and the daily update of its reports, and the statement of a decision about it. */
+export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage;
+
+/** One contact's share of the daily update: the lines of its notice, and its receipt when the 24-hour cap folded it. */
+export interface NotifierUpdatePart {
+  contactId: string;
+  /** The reference of the contact's notice. */
+  ref: string;
+  lines: readonly NoticeUpdateLine[];
+  receipt?: { ref: string; receivedAt: Date; items: readonly string[] };
+}
+
+/** What became of one contact's share: as a mail's result, or "unavailable" when the relay could not take that address's mail or the contact could not be read. */
+export type NotifierUpdateResult = "sent" | "suppressed" | "no_address" | "forgotten" | "refused" | "unavailable";
 
 /**
  * The staff alerts: counts, times and a staff account's public handle, never a link or content. The urgent lane's alert;
- * the staff account that reached its daily case limit; and every reveal of who sent a report, with the day's count.
+ * the cases that wait longer than their lane's response time, and those that hold a measure taken while deciding for
+ * more than a day; the staff account that confirmed many decisions in a short time; the one that reached its daily case
+ * limit; every reveal of who sent a report, with the day's count; and every decision that lifted the protection of
+ * images reported as child sexual abuse material.
  */
 export type StaffMessage =
   | { template: "moderation_urgent"; count: number; oldest: Date }
+  | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number }
+  | { template: "moderation_burst"; handle: string; count: number }
   | { template: "moderation_reads"; handle: string; limit: number }
-  | { template: "moderation_reveal"; handle: string; at: Date; count: number; limit: number };
+  | { template: "moderation_reveal"; handle: string; at: Date; count: number; limit: number }
+  | { template: "moderation_csam_lifted"; handle: string; at: Date; what: "unsealed" | "dismissed" };
 
 /** A staff alert's template data: every member as the text the template prints. */
 function staffData(message: StaffMessage): Record<string, string> {
   switch (message.template) {
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest) };
+    case "moderation_waiting": {
+      // A lane's pair only for a lane with a case past its time, and the measures' count only when it is not 0.
+      const data: Record<string, string> = {};
+      for (const lane of message.lanes) {
+        if (lane.count <= 0) continue;
+        data[`lane${lane.lane}Count`] = String(lane.count);
+        data[`lane${lane.lane}Oldest`] = noticeTime(lane.oldest);
+      }
+      if (message.interim > 0) data.interimCount = String(message.interim);
+      return data;
+    }
+    case "moderation_burst":
+      return { handle: message.handle, count: String(message.count) };
+    case "moderation_csam_lifted":
+      return { handle: message.handle, time: noticeTime(message.at), what: message.what };
     case "moderation_reads":
       return { handle: message.handle, limit: String(message.limit) };
     case "moderation_reveal":
@@ -147,16 +198,86 @@ export async function mailNotifier(deps: AuthDeps, contactId: string, message: N
 }
 
 /**
- * Sends a report mail to an account's own address, which its sign-in code confirmed: no cap and no confirmation. A stop
- * of that address applies to the report mails. "no_address" for an account that is deleted or was never there.
+ * Sends a mail to an account's own address, which its sign-in code confirmed: no cap and no confirmation. A stop of
+ * that address applies to the two report mails, the receipt and the daily update, and never to a statement of reasons.
+ * The update of an account is signed in: it carries its lines and neither a receipt nor a page link, since an account
+ * follows its reports in the app. "no_address" for an account that is deleted or was never there.
  */
 export async function mailAccount(deps: AuthDeps, userId: string, message: AccountMessage): Promise<AccountMailResult> {
   const user = await deps.repo.findUserById(userId);
   if (!user) return "no_address";
+  if (message.template === "moderation_decision") {
+    // One data value for the statement, one paragraph per line, exactly as it was rendered.
+    return deliver(deps, { to: user.email, template: "moderation_decision", data: { subject: message.subject, statement: message.paragraphs.join("\n") } });
+  }
   const hash = emailHash(deps.config.authHmacKey, user.email);
-  // Only the mails about a report honour a stop: a statement of reasons to an author is never one of them.
-  if (message.template === "notice_received" && (await deps.repo.suppressedNotifierHashes([hash])).has(hash)) return "suppressed";
+  if ((await deps.repo.suppressedNotifierHashes([hash])).has(hash)) return "suppressed";
+  if (message.template === "notice_update") return deliver(deps, { to: user.email, template: "notice_update", data: { signedIn: true, lines: [...message.lines], receipts: [], pages: [] } });
   return deliver(deps, { to: user.email, template: "notice_received", data: receiptData(deps, message) });
+}
+
+/**
+ * The daily update to signed-out notifiers (3c design, sections 5 and 7.8): the parts are grouped by their contacts'
+ * address, which only this module can see, and each address gets one notice_update with every part's lines, every
+ * carried receipt with its page link, and the page link of each other notice it has a line for. A page link is the
+ * status page's address with that contact's own mail token in the fragment, the same link its receipt carried.
+ *
+ * It applies a stop of the address, and neither the confirmation nor the 24-hour cap: nothing is withheld for want of a
+ * confirmed address. It answers for each contact, and throws for none: an address whose mail the relay could not take is
+ * "unavailable", so its lines stay pending while every other address's update is still sent. Each contact is read in a
+ * try of its own: one that cannot be read (a ciphertext no configured key opens) is logged with its id, never an
+ * address, and answered "unavailable" too.
+ */
+export async function mailNotifierUpdates(deps: AuthDeps, parts: readonly NotifierUpdatePart[]): Promise<Map<string, NotifierUpdateResult>> {
+  const results = new Map<string, NotifierUpdateResult>();
+  /** The readable parts, by their address's keyed hash, in the order given. */
+  const byAddress = new Map<string, { to: string; parts: { part: NotifierUpdatePart; pageUrl: string }[] }>();
+  for (const part of parts) {
+    try {
+      const contact = await deps.repo.findNotifierContact(part.contactId);
+      if (!contact) {
+        results.set(part.contactId, "forgotten");
+        continue;
+      }
+      if (!contact.emailEnc || !contact.emailHash || !contact.mailTokenEnc) {
+        results.set(part.contactId, "no_address");
+        continue;
+      }
+      if ((await deps.repo.suppressedNotifierHashes([contact.emailHash])).has(contact.emailHash)) {
+        results.set(part.contactId, "suppressed");
+        continue;
+      }
+      const to = open(deps, contact.emailEnc);
+      const pageUrl = `${deps.config.appOrigin}/notice/${part.ref}#t=${open(deps, contact.mailTokenEnc)}`;
+      const group = byAddress.get(contact.emailHash) ?? { to, parts: [] };
+      group.parts.push({ part, pageUrl });
+      byAddress.set(contact.emailHash, group);
+    } catch (err) {
+      deps.log.error({ err, contactId: part.contactId }, "notifier update: the contact could not be read; its lines stay pending");
+      results.set(part.contactId, "unavailable");
+    }
+  }
+  for (const group of byAddress.values()) {
+    const receipts = group.parts.flatMap(({ part, pageUrl }) => (part.receipt ? [{ ref: part.receipt.ref, time: noticeTime(part.receipt.receivedAt), items: part.receipt.items.join(", "), pageUrl }] : []));
+    // A notice whose receipt rides in this update has its page with the receipt; every other notice with a line gets a page paragraph.
+    const pages = group.parts.flatMap(({ part, pageUrl }) => (part.receipt || part.lines.length === 0 ? [] : [{ ref: part.ref, pageUrl }]));
+    const lines = group.parts.flatMap(({ part }) => [...part.lines]);
+    let result: NotifierUpdateResult;
+    try {
+      result = await deliver(deps, {
+        to: group.to,
+        template: "notice_update",
+        data: { signedIn: false, lines, receipts, pages, ...(receipts.length > 0 ? { termsUrl: `${deps.config.appOrigin}/terms` } : {}) },
+      });
+    } catch (err) {
+      // The relay could not take this address's mail: the other addresses' mails still go. The contacts' ids, never the address.
+      deps.log.warn({ err, contactIds: group.parts.map(({ part }) => part.contactId) }, "notifier update: not sent; its lines stay pending for the next round");
+      result = "unavailable";
+    }
+    for (const { part } of group.parts) results.set(part.contactId, result);
+  }
+  // In the order the parts were given, whatever order the addresses were mailed in.
+  return new Map(parts.map((part) => [part.contactId, results.get(part.contactId) ?? "unavailable"]));
 }
 
 /**

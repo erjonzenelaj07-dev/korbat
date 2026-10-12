@@ -87,7 +87,7 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
       {route.name === "audit" ? <Audit api={api} /> : null}
       {route.name === "queue" ? <Queue api={api} onOpenCase={store.openCase} /> : null}
       {/* Keyed by the case: another case's page starts with nothing of this one's. */}
-      {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} onOpenCase={store.openCase} /> : null}
+      {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} role={session.me.role} drafts={store.drafts} onOpenCase={store.openCase} /> : null}
       {route.name === "appeals" ? (
         <section aria-labelledby="appeals-title">
           <h2 id="appeals-title">Appeals</h2>

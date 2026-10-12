@@ -58,6 +58,8 @@ const stopJanitor = auth.startJanitor(jobLock);
 // that module's own, built over the same pool, the image rows through the media module's interface for cases, and a
 // notifier's contact and every mail through the auth module's. Its limits count in the store the per-IP limit uses.
 const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, rateLimitStore, config, logger });
+// The dispatch job: the staff alerts that are still due, the daily release of outcomes, and the mails that waited.
+const stopModeration = moderation.startJobs(jobLock);
 
 const social = createSocial({
   apiDb,
@@ -112,13 +114,28 @@ const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" 
   logger.info({ port: info.port, version: config.KORBAT_VERSION }, "api listening");
 });
 
+/** How long the shutdown waits for the moderation module's tasks that a request started and did not wait for. */
+const SETTLE_MS = 5_000;
+
 async function shutdown(signal: string) {
   logger.info({ signal }, "shutting down");
   stopSweeper();
   stopJanitor();
   stopExplore();
   stopPurge();
+  stopModeration();
   server.close();
+  // A statement, a receipt or a staff alert may be on its way to the relay: it gets five seconds to finish before the
+  // pools close under it. What is still unsent then stays pending, and the dispatch job of the next start sends it.
+  let waited: NodeJS.Timeout | undefined;
+  const settled = await Promise.race([
+    moderation.settle().then(() => true),
+    new Promise<boolean>((resolve) => {
+      waited = setTimeout(() => resolve(false), SETTLE_MS);
+    }),
+  ]);
+  clearTimeout(waited);
+  if (!settled) logger.warn({ signal }, "shutting down with moderation mails still in flight; what is pending is sent after the next start");
   await Promise.allSettled([closeDb(apiDb), closeDb(authDb), redis.quit()]);
   process.exit(0);
 }

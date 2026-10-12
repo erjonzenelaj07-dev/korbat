@@ -1,0 +1,422 @@
+import { describe, expect, test } from "vitest";
+import { MEASURES, MEASURE_KINDS, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
+import { REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, statementParagraphs, type StatementInput } from "../src/index";
+
+/**
+ * The statement of reasons (3c design, section 10): one pure function renders it for the author's screen, the console's
+ * preview and the mail, from the decision's data and the versions it was made under. These tests hold it to the six
+ * elements of Article 17(3) of the Digital Services Act for every kind of decision, and to the design's sentences word
+ * for word.
+ */
+const POST = { id: "7e2d9a10-6c3b-4f5e-8a21-0d4c7b9e1f36", createdAt: "2026-10-01T12:00:00.000Z" };
+const POST_TIME = "2026-10-01 12:00 UTC";
+const DECIDED = "2026-10-04T09:30:15.250Z";
+const IMAGE = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+const RESET_DECISION = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+const NO_RESET = { resetDecisionId: null, oldValueKept: false, resetRuleId: null } as const;
+
+const measure = (kind: MeasureKind, more: Partial<DecisionStatement["measures"][number]> = {}): DecisionStatement["measures"][number] => ({
+  kind,
+  mediaId: MEASURES[kind].target === "image" ? IMAGE : null,
+  noEffect: null,
+  sealed: kind === "seal_media" ? { posts: 1, images: 2, deletedImages: 0 } : null,
+  ...more,
+});
+const reversal = (kind: ReversalKind, more: Partial<DecisionStatement["reversals"][number]> = {}): DecisionStatement["reversals"][number] => ({
+  kind,
+  mediaId: MEASURES[kind].target === "image" ? IMAGE : null,
+  ...NO_RESET,
+  ...more,
+});
+
+/** A final removal of a post under R1, following a report: the plainest restricting decision. */
+function statement(more: Partial<StatementInput> = {}): StatementInput {
+  return {
+    kind: "final",
+    outcome: "restricted",
+    ground: "incompatible",
+    ruleId: "R1",
+    rulesVersion: 2,
+    redressVersion: 1,
+    legalReference: null,
+    facts: "The post shows explicit sexual acts.",
+    reason: "That is content whose primary purpose is sexual arousal.",
+    source: "report",
+    decidedAt: DECIDED,
+    post: POST,
+    measures: [measure("remove")],
+    reversals: [],
+    endedMeasures: [],
+    reviewed: null,
+    ...more,
+  };
+}
+
+const W = STATEMENT_WORDS;
+const text = (input: StatementInput) => statementParagraphs(input).join("\n");
+const appeal = (decidedAt: string) => REDRESS_TEXTS[1].appeal.replace("{deadline}", `${appealDeadline(new Date(decidedAt)).toISOString().slice(0, 10)} ${appealDeadline(new Date(decidedAt)).toISOString().slice(11, 16)} UTC`);
+
+describe("statementParagraphs", () => {
+  test("a final removal under a rule, paragraph by paragraph: what was done, where and how long, how it came to korbat, no automation, the rule as its version words it, the facts, the reason and the appeal", () => {
+    expect(statementParagraphs(statement())).toEqual([
+      `korbat removed your post of ${POST_TIME}: other people can no longer see it.`,
+      "This applies everywhere korbat is available and has no end date.",
+      "korbat decided this following a report by another user.",
+      "No automated means were used to find this or to decide it.",
+      `It breaks korbat rule R1, "No sexual or pornographic content": ${getRule("R1", 2)!.text}`,
+      "The facts: The post shows explicit sexual acts.",
+      "korbat's reasons: That is content whose primary purpose is sexual arousal.",
+      appeal(DECIDED),
+    ]);
+    // The deadline is the appeal's own: six months after the decision, to the minute, in UTC.
+    expect(text(statement())).toContain("until 2027-04-04 09:30 UTC");
+  });
+
+  test("a time is printed as the mails print one: the date and the minute, in UTC", () => {
+    expect(text(statement({ post: { id: POST.id, createdAt: "2026-02-28T23:59:59.999Z" } }))).toContain("your post of 2026-02-28 23:59 UTC");
+  });
+
+  test("an old statement renders with the rulebook it was made under", () => {
+    for (const version of [1, 2] as const) {
+      for (const rule of RULEBOOKS[version]) {
+        const out = text(statement({ ruleId: rule.id as StatementInput["ruleId"], rulesVersion: version }));
+        expect(out, `${rule.id} v${version}`).toContain(`It breaks korbat rule ${rule.id}, "${rule.title}": ${rule.text}`);
+      }
+    }
+    // R6 changed its title, R1 its text: version 1 keeps the old words.
+    expect(text(statement({ ruleId: "R6", rulesVersion: 1 }))).toContain('"No spam, scams, or impersonation"');
+    expect(text(statement({ ruleId: "R6", rulesVersion: 2 }))).toContain('"No spam, scams, impersonation or coordinated manipulation"');
+    expect(text(statement({ ruleId: "R1", rulesVersion: 1 }))).toContain("Images that score high on the automated check");
+    expect(text(statement({ ruleId: "R1", rulesVersion: 2 }))).not.toContain("Images that score high on the automated check");
+    // A version the package does not hold cannot be rendered as another one.
+    expect(() => statementParagraphs(statement({ rulesVersion: 9 }))).toThrow(/rulebook/);
+    expect(() => statementParagraphs(statement({ redressVersion: 9 }))).toThrow(/redress/);
+  });
+
+  test("a decision on the law names the law, never a rule, and says that it applies everywhere", () => {
+    const out = statementParagraphs(statement({ ground: "illegal", ruleId: null, legalReference: "Section 241 of the criminal code (threats).", source: "notice" }));
+    expect(out).toContain("korbat found it illegal. The law it rests on: Section 241 of the criminal code (threats).");
+    expect(out).toContain("korbat cannot restrict content for one country alone, so this applies everywhere, which is more than the law of a single country asks for.");
+    expect(out).toContain("korbat decided this following a notice under Article 16 of the Digital Services Act.");
+    expect(out.join("\n")).not.toMatch(/korbat rule R[1-6]/);
+  });
+
+  test("the source is one of three phrases", () => {
+    expect(W.source).toEqual({
+      notice: "following a notice under Article 16 of the Digital Services Act",
+      report: "following a report by another user",
+      own_initiative: "found by a moderator",
+    });
+    expect(text(statement({ source: "own_initiative" }))).toContain("What this decision is about was found by a moderator.");
+    for (const source of ["notice", "report", "own_initiative"] as const) expect(text(statement({ source })), source).toContain(W.source[source]);
+  });
+
+  describe("the redress text follows the decision's own kind and outcome, never a later event", () => {
+    test("an interim decision carries the interim text and no appeal", () => {
+      const out = statementParagraphs(statement({ kind: "interim", measures: [measure("withhold")] }));
+      expect(out[0]).toBe(`korbat hid your post of ${POST_TIME} from other people while it decides.`);
+      expect(out).toContain("This applies everywhere korbat is available, for as long as korbat decides the case.");
+      expect(out.at(-1)).toBe(REDRESS_TEXTS[1].interim);
+      expect(out.join("\n")).not.toContain("You can appeal this decision once");
+    });
+
+    test("a final restriction carries korbat's appeal with its deadline", () => {
+      expect(statementParagraphs(statement()).at(-1)).toBe(appeal(DECIDED));
+    });
+
+    test("every other decision carries the text for a decision its author cannot appeal", () => {
+      const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R1" as const, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+      const others: StatementInput[] = [
+        statement({ outcome: "no_violation", ground: null, ruleId: null, facts: null, reason: null, measures: [], endedMeasures: [{ kind: "withhold", mediaId: null, ...NO_RESET }] }),
+        statement({ outcome: "not_evident", ground: null, ruleId: null, facts: null, reason: null, measures: [] }),
+        statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, measures: [], reversals: [reversal("restore")], reviewed }),
+        statement({ kind: "correction", outcome: "partly_reversed", ground: null, ruleId: null, facts: null, measures: [], reversals: [reversal("restore_media")], reviewed }),
+        statement({ kind: "review", outcome: "kept", ground: null, ruleId: null, facts: null, measures: [], reviewed }),
+        statement({ kind: "review", outcome: "reversed", ground: null, ruleId: null, facts: null, measures: [], reversals: [reversal("restore")], reviewed }),
+      ];
+      for (const input of others) expect(statementParagraphs(input).at(-1), `${input.kind} ${input.outcome}`).toBe(REDRESS_TEXTS[1].notAppealable);
+    });
+  });
+
+  test("every restricting decision carries the six elements of Article 17(3): each measure, kind, ground and rulebook version", () => {
+    const grounds = [
+      { ground: "incompatible" as const, ruleId: "R3" as const, legalReference: null },
+      { ground: "illegal" as const, ruleId: null, legalReference: "Section 130 of the criminal code." },
+    ];
+    for (const kind of ["interim", "final"] as const) {
+      for (const measureKind of MEASURE_KINDS) {
+        if (!MEASURES[measureKind][kind]) continue;
+        for (const ground of grounds) {
+          for (const rulesVersion of [1, 2]) {
+            const account = MEASURES[measureKind].target === "display_name" || MEASURES[measureKind].target === "bio";
+            const input = statement({ kind, ...ground, rulesVersion, post: account ? null : POST, measures: [measure(measureKind)] });
+            const out = statementParagraphs(input);
+            const label = `${kind} ${measureKind} ${ground.ground} v${rulesVersion}`;
+            // (a) the restriction, where it applies and for how long.
+            expect(out[0], label).toMatch(/^korbat (hid|removed|sealed|reset) /);
+            expect(out, label).toContain(kind === "interim" ? W.scope.interim : W.scope.final);
+            // (b) the facts, and whether the decision followed a notice or korbat's own finding.
+            expect(out, label).toContain("The facts: The post shows explicit sexual acts.");
+            expect(out, label).toContain("korbat decided this following a report by another user.");
+            // (c) the use of automated means.
+            expect(out, label).toContain(W.automation);
+            // (d) and (e) the legal ground, or the rule, with its explanation.
+            if (ground.ground === "illegal") expect(out, label).toContain("korbat found it illegal. The law it rests on: Section 130 of the criminal code.");
+            else expect(out, label).toContain(`It breaks korbat rule R3, "${getRule("R3", rulesVersion)!.title}": ${getRule("R3", rulesVersion)!.text}`);
+            expect(out, label).toContain("korbat's reasons: That is content whose primary purpose is sexual arousal.");
+            // (f) redress.
+            expect(out.at(-1)!.startsWith(kind === "interim" ? REDRESS_TEXTS[1].interim : "You can appeal this decision once"), label).toBe(true);
+            // One paragraph is one line, but for a staff text that holds line feeds of its own, and none is empty.
+            for (const paragraph of out) expect(paragraph.trim().length, label).toBeGreaterThan(0);
+          }
+        }
+      }
+    }
+  });
+
+  describe("what was done, for each measure", () => {
+    test("a post and an image, while deciding and for good", () => {
+      expect(statementParagraphs(statement({ kind: "interim", measures: [measure("withhold_media")] }))[0]).toBe(`korbat hid one image of your post of ${POST_TIME} from other people while it decides.`);
+      expect(statementParagraphs(statement({ measures: [measure("remove_media")] }))[0]).toBe(`korbat removed one image of your post of ${POST_TIME}: other people can no longer see it.`);
+      // Several measures in one decision: one paragraph each, in the decision's order.
+      const both = statementParagraphs(statement({ measures: [measure("remove"), measure("remove_media")] }));
+      expect(both.slice(0, 2)).toEqual([`korbat removed your post of ${POST_TIME}: other people can no longer see it.`, `korbat removed one image of your post of ${POST_TIME}: other people can no longer see it.`]);
+    });
+
+    test("a field reset says that the placeholder was written once and that the old value does not come back", () => {
+      const name = statementParagraphs(statement({ post: null, measures: [measure("reset_display_name")] }));
+      expect(name[0]).toBe(
+        "korbat reset your display name. korbat wrote this placeholder once. You may set your display name again; what you set is judged on its own if someone reports it, and korbat does not put the old value back when this measure ends or is lifted.",
+      );
+      const bio = statementParagraphs(statement({ kind: "interim", post: null, measures: [measure("reset_bio")] }));
+      expect(bio[0]).toBe(
+        "korbat reset your bio while it decides. korbat wrote this placeholder once. You may set your bio again; what you set is judged on its own if someone reports it, and korbat does not put the old value back when this measure ends or is lifted.",
+      );
+    });
+
+    test("each noEffect sentence: another decision already holds it, the post or the account is deleted, the field already held the placeholder", () => {
+      const first = (input: StatementInput) => statementParagraphs(input)[0];
+      expect(first(statement({ measures: [measure("remove", { noEffect: "already" })] }))).toBe(
+        `korbat removed your post of ${POST_TIME}: other people can no longer see it. Another decision already keeps this post from being shown, so this changes nothing anyone sees now. It stays in force should that decision be reversed.`,
+      );
+      expect(first(statement({ measures: [measure("remove_media", { noEffect: "already" })] }))).toBe(
+        `korbat removed one image of your post of ${POST_TIME}: other people can no longer see it. Another decision already keeps this image from being shown, so this changes nothing anyone sees now. It stays in force should that decision be reversed.`,
+      );
+      expect(first(statement({ measures: [measure("remove", { noEffect: "deleted" })] }))).toBe(
+        `korbat removed your post of ${POST_TIME}: other people can no longer see it. You had deleted this post, so this changes nothing anyone sees.`,
+      );
+      expect(first(statement({ post: null, measures: [measure("reset_bio", { noEffect: "already" })] }))).toBe("korbat reset your bio. The field already held korbat's placeholder, so this changes nothing now.");
+      expect(first(statement({ post: null, measures: [measure("reset_display_name", { noEffect: "deleted" })] }))).toBe("korbat reset your display name. Your account is deleted, so this changes nothing.");
+      // A reset that changed nothing wrote no placeholder, so it does not say that it wrote one.
+      expect(first(statement({ post: null, measures: [measure("reset_bio", { noEffect: "already" })] }))).not.toContain("wrote this placeholder once");
+    });
+  });
+
+  describe("the seal's sentences", () => {
+    const seal = (sealed: { posts: number; images: number; deletedImages: number }, more: Partial<DecisionStatement["measures"][number]> = {}) => measure("seal_media", { sealed, ...more });
+    const sealing = (more: Partial<StatementInput>) => statement({ ruleId: "R2", facts: SEAL_DRAFTS.facts.notice_post, reason: SEAL_DRAFTS.reason.deciding, source: "notice", ...more });
+
+    test("on a post case, while deciding: the images of the post, with their number, and the interim redress", () => {
+      const out = statementParagraphs(sealing({ kind: "interim", measures: [seal({ posts: 1, images: 3, deletedImages: 0 })] }));
+      expect(out[0]).toBe(`korbat sealed the images of your post of ${POST_TIME} (3 in all): nobody can see them, you included.`);
+      expect(out).toContain(`The facts: ${SEAL_DRAFTS.facts.notice_post}`);
+      expect(out).toContain(`korbat's reasons: ${SEAL_DRAFTS.reason.deciding}`);
+      expect(out.at(-1)).toBe(REDRESS_TEXTS[1].interim);
+      // Neither sentence of a seal for good (the rule's own text speaks of both, so they are looked for as whole paragraphs' parts).
+      expect(out[0]).not.toContain(W.sealForGood);
+      expect(out.at(-1)).not.toContain(W.sealAppeal);
+    });
+
+    test("on an account case: every image on the account's posts, with and without posts the author had deleted", () => {
+      const live = statementParagraphs(sealing({ kind: "interim", post: null, measures: [seal({ posts: 4, images: 9, deletedImages: 0 })] }));
+      expect(live[0]).toBe("korbat sealed every image it held on your posts at that time (9 on 4 posts): nobody can see them, you included.");
+      const kept = statementParagraphs(sealing({ kind: "interim", post: null, measures: [seal({ posts: 4, images: 9, deletedImages: 2 })] }));
+      expect(kept[0]).toBe(
+        "korbat sealed every image it held on your posts at that time (9 on 4 posts): nobody can see them, you included. 2 of them are on posts you had deleted, which korbat had kept under its terms (Your data).",
+      );
+    });
+
+    test("for good: kept only for the authorities, and the appeal waits until they have assessed the images", () => {
+      const out = statementParagraphs(sealing({ reason: SEAL_DRAFTS.reason.final, measures: [seal({ posts: 1, images: 2, deletedImages: 0 })] }));
+      expect(out[0]).toBe(`korbat sealed the images of your post of ${POST_TIME} (2 in all): nobody can see them, you included. They are kept only for the authorities korbat reports this to.`);
+      expect(out.at(-1)).toBe(`${appeal(DECIDED)} An appeal of a seal waits until the authorities have assessed the images.`);
+      const account = statementParagraphs(sealing({ post: null, measures: [seal({ posts: 2, images: 5, deletedImages: 1 })] }));
+      expect(account[0]).toBe(
+        "korbat sealed every image it held on your posts at that time (5 on 2 posts): nobody can see them, you included. 1 of them is on a post you had deleted, which korbat had kept under its terms (Your data). They are kept only for the authorities korbat reports this to.",
+      );
+    });
+
+    test("a seal that changed nothing says so: already sealed, or the post or the account deleted", () => {
+      const first = (more: Partial<StatementInput>, noEffect: "already" | "deleted") => statementParagraphs(sealing({ kind: "interim", measures: [seal({ posts: 1, images: 2, deletedImages: 0 }, { noEffect })], ...more }))[0];
+      expect(first({}, "already")).toBe(
+        `korbat sealed the images of your post of ${POST_TIME} (2 in all): nobody can see them, you included. Another decision already keeps these images sealed, so this changes nothing anyone sees now. It stays in force should that decision be reversed.`,
+      );
+      expect(first({}, "deleted")).toBe(`korbat sealed the images of your post of ${POST_TIME} (2 in all): nobody can see them, you included. You had deleted this post, so this changes nothing anyone sees.`);
+      expect(first({ post: null }, "deleted")).toBe("korbat sealed every image it held on your posts at that time (2 on 1 post): nobody can see them, you included. Your account is deleted, so this changes nothing.");
+    });
+
+    test("a lifted seal", () => {
+      const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R2" as const, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+      const out = statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, reason: "The authority answered on 2 October 2026.", measures: [], reversals: [reversal("unseal_media")], reviewed }));
+      expect(out[0]).toBe("korbat corrected its decision of 2026-10-01 09:00 UTC and reversed it.");
+      expect(out[1]).toBe("korbat lifted the seal on these images. If an image is still not shown, another decision listed in Settings, Cases applies.");
+    });
+  });
+
+  describe("reversals and what ended", () => {
+    const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R1" as const, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    const correction = (more: Partial<StatementInput>) => statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, reason: "The post is satire.", measures: [], reviewed, ...more });
+    const FIELD = (field: string) => `korbat does not put back your ${field} as it was before the reset: set it again in Settings, Profile if you wish.`;
+    const KEPT = `The screen of the decision that reset it shows what it was for at least ${RETENTION.resetValueDays} days.`;
+    const KEPT_R4 = `The screen of the decision that reset it shows what it was for at least ${RETENTION.resetValueDays} days, unless korbat had already erased it under rule R4.`;
+
+    test("a correction of a final decision renders that decision's rule from its own row and version, and its reason", () => {
+      // The corrected decision was made under rulebook version 1: its rule reads as that version worded it.
+      const out = statementParagraphs(correction({ reviewed: { ...reviewed, rulesVersion: 1 }, reversals: [reversal("restore")] }));
+      expect(out).toEqual([
+        "korbat corrected its decision of 2026-10-01 09:00 UTC and reversed it.",
+        `Your post of ${POST_TIME}: korbat lifted this restriction. If your post or image is still restricted, another decision listed in Settings, Cases applies, or its content was erased under korbat's retention rules.`,
+        "No automated means were used to find this or to decide it.",
+        `That decision rested on korbat rule R1, "No sexual or pornographic content": ${getRule("R1", 1)!.text}`,
+        "Why korbat changed it: The post is satire.",
+        REDRESS_TEXTS[1].notAppealable,
+      ]);
+      const part = statementParagraphs(correction({ outcome: "partly_reversed", reversals: [reversal("restore_media")] }));
+      expect(part[0]).toBe("korbat corrected its decision of 2026-10-01 09:00 UTC and reversed part of it.");
+      expect(part[1]).toBe(
+        `One image of your post of ${POST_TIME}: korbat lifted this restriction. If your post or image is still restricted, another decision listed in Settings, Cases applies, or its content was erased under korbat's retention rules.`,
+      );
+      // A corrected decision on the law renders its legal reference.
+      const law = statementParagraphs(correction({ reversals: [reversal("restore")], reviewed: { ...reviewed, ground: "illegal", ruleId: null, legalReference: "Section 241." } }));
+      expect(law).toContain("That decision rested on the law: Section 241.");
+    });
+
+    test("a correction of an interim decision lifts what was done while deciding", () => {
+      const out = statementParagraphs(correction({ reversals: [reversal("restore")], reviewed: { ...reviewed, kind: "interim" } }));
+      expect(out[0]).toBe("korbat lifted what it did while deciding on 2026-10-01 09:00 UTC.");
+      expect(out.at(-1)).toBe(REDRESS_TEXTS[1].notAppealable);
+    });
+
+    test("a review answers the appeal: kept, reversed in part or reversed", () => {
+      expect(statementParagraphs(statement({ kind: "review", outcome: "kept", ground: null, ruleId: null, facts: null, reason: "The post was read again.", measures: [], reviewed }))).toEqual([
+        "korbat reviewed your appeal against its decision of 2026-10-01 09:00 UTC and kept that decision.",
+        "No automated means were used to find this or to decide it.",
+        `That decision rested on korbat rule R1, "No sexual or pornographic content": ${getRule("R1", 2)!.text}`,
+        "Why korbat kept it: The post was read again.",
+        REDRESS_TEXTS[1].notAppealable,
+      ]);
+      expect(statementParagraphs(statement({ kind: "review", outcome: "reversed", ground: null, ruleId: null, facts: null, measures: [], reversals: [reversal("restore")], reviewed }))[0]).toBe(
+        "korbat reviewed your appeal against its decision of 2026-10-01 09:00 UTC and reversed that decision.",
+      );
+      expect(statementParagraphs(statement({ kind: "review", outcome: "partly_reversed", ground: null, ruleId: null, facts: null, measures: [], reversals: [reversal("restore_media")], reviewed }))[0]).toBe(
+        "korbat reviewed your appeal against its decision of 2026-10-01 09:00 UTC and reversed part of that decision.",
+      );
+    });
+
+    test("the field-restore sentence, with and without its 30-day sentence, and with the R4 form", () => {
+      const lifted = (more: Partial<DecisionStatement["reversals"][number]>, kind: ReversalKind = "restore_bio") => statementParagraphs(correction({ post: null, reversals: [reversal(kind, { resetDecisionId: RESET_DECISION, ...more })] }))[1];
+      expect(lifted({ oldValueKept: false })).toBe(`korbat lifted the reset of your bio. ${FIELD("bio")}`);
+      expect(lifted({ oldValueKept: true })).toBe(`korbat lifted the reset of your bio. ${FIELD("bio")} ${KEPT}`);
+      expect(lifted({ oldValueKept: true, resetRuleId: "R4" })).toBe(`korbat lifted the reset of your bio. ${FIELD("bio")} ${KEPT_R4}`);
+      expect(lifted({ oldValueKept: true, resetRuleId: "R3" }, "restore_display_name")).toBe(`korbat lifted the reset of your display name. ${FIELD("display name")} ${KEPT}`);
+    });
+
+    test("a final no-action decision that ends measures taken while deciding names them, and nothing else it did", () => {
+      const out = statementParagraphs(
+        statement({
+          outcome: "no_violation",
+          ground: null,
+          ruleId: null,
+          facts: null,
+          reason: null,
+          measures: [],
+          endedMeasures: [
+            { kind: "withhold", mediaId: null, ...NO_RESET },
+            { kind: "withhold_media", mediaId: IMAGE, ...NO_RESET },
+          ],
+        }),
+      );
+      expect(out).toEqual([
+        `What korbat did while deciding has ended: ${MEASURES.withhold.label}, ${MEASURES.withhold_media.label}.`,
+        "korbat decided this following a report by another user.",
+        "No automated means were used to find this or to decide it.",
+        REDRESS_TEXTS[1].notAppealable,
+      ]);
+    });
+
+    test("the field sentence after an interim reset ended by a closing decision, with and without its 30-day sentence, and none for a field the closing decision resets itself", () => {
+      const ended = (more: Partial<DecisionStatement["endedMeasures"][number]>, kind: MeasureKind = "reset_bio") => ({ kind, mediaId: null, resetDecisionId: RESET_DECISION, oldValueKept: false, resetRuleId: null, ...more });
+      const closing = (endedMeasures: DecisionStatement["endedMeasures"], more: Partial<StatementInput> = {}) =>
+        statementParagraphs(statement({ outcome: "no_violation", ground: null, ruleId: null, facts: null, reason: null, post: null, measures: [], endedMeasures, ...more }));
+      expect(closing([ended({})])[0]).toBe(`What korbat did while deciding has ended: ${MEASURES.reset_bio.label}. ${FIELD("bio")}`);
+      expect(closing([ended({ oldValueKept: true })])[0]).toBe(`What korbat did while deciding has ended: ${MEASURES.reset_bio.label}. ${FIELD("bio")} ${KEPT}`);
+      expect(closing([ended({ oldValueKept: true, resetRuleId: "R4" })])[0]).toBe(`What korbat did while deciding has ended: ${MEASURES.reset_bio.label}. ${FIELD("bio")} ${KEPT_R4}`);
+      // Two resets of two fields: one field sentence each.
+      expect(closing([ended({}, "reset_display_name"), ended({ oldValueKept: true })])[0]).toBe(
+        `What korbat did while deciding has ended: ${MEASURES.reset_display_name.label}, ${MEASURES.reset_bio.label}. ${FIELD("display name")} ${FIELD("bio")} ${KEPT}`,
+      );
+      // The closing decision resets the bio itself: its own reset's sentences speak for the field, and no field sentence is added.
+      const own = closing([ended({ oldValueKept: true })], { outcome: "restricted", ground: "incompatible", ruleId: "R6", facts: "f", reason: "r", measures: [measure("reset_bio")] });
+      expect(own[0]).toContain("korbat reset your bio.");
+      expect(own[1]).toBe(`What korbat did while deciding has ended: ${MEASURES.reset_bio.label}.`);
+      expect(own.join("\n")).not.toContain("korbat does not put back your bio");
+    });
+
+    test("a final decision that lifts a withhold taken while deciding and leaves the case open", () => {
+      const out = statementParagraphs(statement({ outcome: "no_violation", ground: null, ruleId: null, facts: null, reason: null, measures: [], reversals: [reversal("restore")] }));
+      expect(out[0]).toBe(
+        `Your post of ${POST_TIME}: korbat lifted this restriction. If your post or image is still restricted, another decision listed in Settings, Cases applies, or its content was erased under korbat's retention rules.`,
+      );
+      expect(out.at(-1)).toBe(REDRESS_TEXTS[1].notAppealable);
+    });
+  });
+
+  test("a review or a correction renders the reviewed decision's rule under the rulebook that decision was made under, whatever version its own row carries", () => {
+    const [v1, v2] = [getRule("R6", 1)!, getRule("R6", 2)!];
+    expect(v1.title).not.toBe(v2.title);
+    const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R6" as const, rulesVersion: 1, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    const correction = statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, facts: null, measures: [], reversals: [reversal("restore")], reviewed }));
+    expect(correction).toContain(`That decision rested on korbat rule R6, "${v1.title}": ${v1.text}`);
+    expect(correction.join(" ")).not.toContain(v2.title);
+    const review = statementParagraphs(statement({ kind: "review", outcome: "kept", ground: null, ruleId: null, rulesVersion: 2, facts: null, measures: [], reviewed }));
+    expect(review).toContain(`That decision rested on korbat rule R6, "${v1.title}": ${v1.text}`);
+    // A reviewed decision made under the current rulebook reads the current wording.
+    expect(statementParagraphs(statement({ kind: "review", outcome: "kept", ground: null, ruleId: null, rulesVersion: 2, facts: null, measures: [], reviewed: { ...reviewed, rulesVersion: 2 } }))).toContain(
+      `That decision rested on korbat rule R6, "${v2.title}": ${v2.text}`,
+    );
+    // A rulebook this package does not hold is never rendered as another.
+    expect(() => statementParagraphs(statement({ kind: "review", outcome: "kept", ground: null, ruleId: null, facts: null, measures: [], reviewed: { ...reviewed, rulesVersion: 99 } }))).toThrow();
+  });
+
+  test("a decision that does nothing, and a decision on the law whose reference was erased, each read one fixed sentence", () => {
+    expect(W.noAction).toBe("korbat decided to take no action.");
+    expect(statementParagraphs(statement({ outcome: "no_violation", ground: null, ruleId: null, facts: null, reason: null, measures: [] }))[0]).toBe("korbat decided to take no action.");
+    expect(statementParagraphs(statement({ ground: "illegal", ruleId: null, legalReference: null }))).toContain("korbat found it illegal. The law it rests on: its reference was erased under korbat's retention rules.");
+    const reviewed = { kind: "final" as const, ground: "illegal" as const, ruleId: null, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    expect(statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, measures: [], reversals: [reversal("restore")], reviewed }))).toContain(
+      "That decision rested on the law: its reference was erased under korbat's retention rules.",
+    );
+  });
+
+  test("every reversal kind has its sentence", () => {
+    const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R1" as const, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    for (const kind of REVERSAL_KINDS) {
+      const account = MEASURES[kind].target === "display_name" || MEASURES[kind].target === "bio";
+      const out = statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: account ? null : POST, measures: [], reversals: [reversal(kind)], reviewed }));
+      expect(out[1], kind).toMatch(/korbat lifted (this restriction|the seal on these images|the reset of your (display name|bio))\./);
+    }
+  });
+
+  test("staff texts that were erased leave their paragraphs out, and the statement still stands", () => {
+    const out = statementParagraphs(statement({ facts: null, reason: null }));
+    expect(out.join("\n")).not.toMatch(/The facts:|korbat's reasons:/);
+    expect(out.at(-1)).toBe(appeal(DECIDED));
+  });
+});
+
+describe("the package", () => {
+  test("its index re-exports the statement and its words: the index is the package's only door", () => {
+    expect(typeof statementParagraphs).toBe("function");
+    expect(STATEMENT_WORDS.automation).toBe("No automated means were used to find this or to decide it.");
+  });
+});

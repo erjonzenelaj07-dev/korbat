@@ -4,11 +4,11 @@ import pino from "pino";
 import { beforeAll, expect, test } from "vitest";
 import type { CaseDecidedParams } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db } from "@korbat/db";
-import type { ActiveStaffSession, StaffStepUpConfirmed } from "../../src/auth";
+import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../../src/auth";
 import { createAuthRepo } from "../../src/auth/repo";
 import { verifyStepUp } from "../../src/auth/staff/step-up";
 import { loadConfig } from "../../src/config";
-import { MemoryStore } from "../../src/middleware/rate-limit";
+import { MemoryStore, type RateLimitStore } from "../../src/middleware/rate-limit";
 import { createModeration, type DecideOutcome } from "../../src/moderation";
 import { recordIntake } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
@@ -52,15 +52,30 @@ export interface DeciderWorld {
   close(options?: { keepStaff?: boolean }): Promise<void>;
 }
 
-export function deciderWorld(apiDb: Db): DeciderWorld {
+/** What a test may give the world in place of its own: the auth module's interface (none unless given: every member then throws) and the limit store. */
+export interface DeciderOptions {
+  auth?: AuthForModeration;
+  rateLimitStore?: RateLimitStore;
+}
+
+export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWorld {
   const config = loadConfig();
   const authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
   // The migrate role issues enrolment links, which only it may; the test environment carries its URL.
   const migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
   const repo = createAuthRepo(authDb);
   const h = flowHarness(repo, { console: TEST_CONSOLE });
-  // No decision sends a mail or stores a contact yet: the module is built without an auth module to call.
-  const moderation = createModeration({ apiDb, auth: noAuthForModeration(), social: socialForModeration(apiDb), media: casesMedia(apiDb), rateLimitStore: new MemoryStore(), config, logger: pino({ level: "silent" }) });
+  // Unless a test hands over the auth module's interface, the module is built without one: what follows a decision's
+  // commit (the statement's mail, the staff alerts) then fails there, is logged, and leaves the decision as committed.
+  const moderation = createModeration({
+    apiDb,
+    auth: options.auth ?? noAuthForModeration(),
+    social: socialForModeration(apiDb),
+    media: casesMedia(apiDb),
+    rateLimitStore: options.rateLimitStore ?? new MemoryStore(),
+    config,
+    logger: pino({ level: "silent" }),
+  });
   const members: RealStaff[] = [];
   /**
    * The harness's clock stands still unless moved, and a step-up challenge lives ten minutes from it; the audit row is
@@ -90,7 +105,10 @@ export function deciderWorld(apiDb: Db): DeciderWorld {
 
   async function decideAs(member: RealStaff, caseId: string, input: DecisionInput = {}): Promise<DecideOutcome> {
     const params = await decisionParams(apiDb, member, caseId, input);
-    return moderation.forStaff.decide(member.session, await confirm(member, caseId, params), { requestId: `req-${randomUUID()}` });
+    const outcome = await moderation.forStaff.decide(member.session, await confirm(member, caseId, params), { requestId: `req-${randomUUID()}` });
+    // What a decision starts after its commit (the statement's mail, the staff alerts) has ended before the test goes on.
+    await moderation.settle();
+    return outcome;
   }
 
   async function close(options: { keepStaff?: boolean } = {}): Promise<void> {

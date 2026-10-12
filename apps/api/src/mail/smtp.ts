@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 import type { MailMessage, Mailer } from "./mailer";
 import { MailRefused, MailUnavailable } from "./mailer";
-import { renderTemplate } from "./templates";
+import { renderMail } from "./templates";
 
 export interface SmtpOptions {
   /** Refuse to send unless a plain smtp:// relay upgrades the connection with STARTTLS. Production sets it. */
@@ -57,7 +57,7 @@ export function smtpMailer(smtpUrl: string, from: string, options: SmtpOptions =
   const transport = nodemailer.createTransport(smtpTransportOptions(smtpUrl, options));
   return {
     async send(message: MailMessage) {
-      const rendered = renderTemplate(message.template, message.data);
+      const rendered = renderMail(message);
       try {
         await transport.sendMail({ from, to: message.to, subject: rendered.subject, text: rendered.text, html: rendered.html });
       } catch (err) {

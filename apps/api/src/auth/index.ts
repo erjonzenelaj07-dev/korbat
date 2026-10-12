@@ -33,6 +33,7 @@ import {
   forgetNotifierAfter,
   mailAccount,
   mailNotifier,
+  mailNotifierUpdates,
   mailStaff,
   notifierFacts,
   notifierMailTokenMatches,
@@ -46,6 +47,8 @@ import {
   type NotifierFacts,
   type NotifierMailResult,
   type NotifierMessage,
+  type NotifierUpdatePart,
+  type NotifierUpdateResult,
   type StaffMessage,
 } from "./flows/notifiers";
 import { redisKv, type KeyValueStore } from "./kv";
@@ -70,7 +73,21 @@ import { vonageProvider } from "./verify/vonage";
 
 export type { ProfileStore, RequestContext, StaffRequestContext } from "./context";
 export type { AccountExport } from "./flows/export";
-export type { AccountMailResult, AccountMessage, NoticeReceivedMessage, NotifierFacts, NotifierMailResult, NotifierMessage, StaffMessage } from "./flows/notifiers";
+export type {
+  AccountMailResult,
+  AccountMessage,
+  AccountUpdateMessage,
+  DecisionMessage,
+  NoticeReceivedMessage,
+  NotifierFacts,
+  NotifierMailResult,
+  NotifierMessage,
+  NotifierUpdatePart,
+  NotifierUpdateResult,
+  StaffMessage,
+} from "./flows/notifiers";
+/** One line of the daily update, which the moderation module composes and this module mails: the mailer's own type. */
+export type { NoticeUpdateLine } from "../mail/mailer";
 export type { AuthEventType, UserRole } from "./repo";
 export type { ProxyTrust } from "./client-ip";
 export type { Session } from "./sessions";
@@ -174,8 +191,19 @@ export interface AuthForModeration {
    * for an id no contact has (it was never stored, or the janitor has deleted it).
    */
   mailNotifier(contactId: string, message: NotifierMessage): Promise<NotifierMailResult>;
-  /** Sends a report mail to an account's own address, with neither the cap nor a confirmation; "suppressed" when that address said stop, "no_address" for a deleted account. */
+  /**
+   * Sends a mail to an account's own address, with neither the cap nor a confirmation: the receipt and the daily update
+   * of its reports, which a stop of that address holds back ("suppressed"), and the statement of a decision about it,
+   * which nothing holds back. "no_address" for a deleted account.
+   */
   mailAccount(userId: string, message: AccountMessage): Promise<AccountMailResult>;
+  /**
+   * The daily update to signed-out notifiers: one notice_update for each address the parts' contacts gave, with every
+   * part's lines, every carried receipt and the page link of each other notice. It applies a stop of the address and
+   * neither the confirmation nor the cap, answers for each contact, and throws for none: "unavailable" when the relay
+   * could not take that address's mail or the contact could not be read.
+   */
+  mailNotifierUpdates(parts: readonly NotifierUpdatePart[]): Promise<Map<string, NotifierUpdateResult>>;
   /** Sends a staff alert to every live staff account, best effort; answers how many addresses the relay took, and never throws for a failed send. */
   mailStaff(message: StaffMessage): Promise<number>;
   /** For each id, whether a contact has it, whether a name and an address were given, and whether the address is confirmed or stopped. */
@@ -287,6 +315,7 @@ export function createAuth(options: CreateAuthOptions) {
     storeNotifierContact: (contactId, contact) => storeNotifierContact(deps, contactId, contact),
     mailNotifier: (contactId, message) => mailNotifier(deps, contactId, message),
     mailAccount: (userId, message) => mailAccount(deps, userId, message),
+    mailNotifierUpdates: (parts) => mailNotifierUpdates(deps, parts),
     mailStaff: (message) => mailStaff(deps, message),
     notifierFacts: (contactIds) => notifierFacts(deps, contactIds),
     notifierName: (contactId) => notifierName(deps, contactId),

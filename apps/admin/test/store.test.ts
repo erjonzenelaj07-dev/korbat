@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { createStaffApi } from "../src/api";
 import { createConsoleStore, type ConsoleState } from "../src/store";
+import { newDraft, type CaseDraft } from "../src/compose";
+import { parseCaseId } from "../src/router";
+import { CASE_ACCOUNT, CASE_POST, accountCase, postCase } from "./case-fixtures";
 import { envelope, FakeClock, fakeFetch, makeMe, OTHER_SESSION, settle } from "./fixtures";
 
 /**
@@ -189,5 +192,70 @@ describe("the console's state", () => {
     expect(s.store.get().route).toEqual({ name: "audit" });
     await settle();
     expect(s.history).toEqual([]);
+  });
+});
+
+describe("the draft slot of a case's composer (3c design, section 8)", () => {
+  const post = parseCaseId(CASE_POST)!;
+  const account = parseCaseId(CASE_ACCOUNT)!;
+  const draftOf = (text: string): CaseDraft => ({ ...newDraft(post, postCase(), "moderator"), written: { facts: text, reason: "", legal_reference: "", review_reason: "" } });
+
+  test("a draft is kept for its case and for no other, and can be put away", async () => {
+    const s = setup("/", { "GET /api/staff/me": { status: 200, body: makeMe() } });
+    await s.store.start();
+    expect(s.store.drafts.get(post)).toBeNull();
+    s.store.drafts.set(draftOf("The post offers followers for money."));
+    s.store.drafts.set(newDraft(account, accountCase(), "moderator"));
+    expect(s.store.drafts.get(post)?.written.facts).toBe("The post offers followers for money.");
+    expect(s.store.drafts.get(account)?.written.facts).toBe("");
+    s.store.drafts.clear(post);
+    expect(s.store.drafts.get(post)).toBeNull();
+    expect(s.store.drafts.get(account)).not.toBeNull();
+    // Keeping a draft is not a change of the page's state: no screen is drawn again for it.
+    expect(s.states.filter((state) => state.session.kind === "signed-in")).toHaveLength(1);
+  });
+
+  test("it survives a session that ended and a sign-in by the same handle", async () => {
+    const s = setup("/cases/" + CASE_POST, { "GET /api/staff/me": { status: 200, body: makeMe() }, "GET /api/staff/keys": { status: 401, body: envelope("staff_session_required") } });
+    await s.store.start();
+    s.store.drafts.set(draftOf("Typed before the session ended."));
+    await s.store.api.keys({ activity: true }).catch(() => undefined);
+    expect(s.store.get().session).toEqual({ kind: "signed-out", ended: true });
+    expect(s.store.drafts.get(post)?.written.facts).toBe("Typed before the session ended.");
+    s.store.signedIn(makeMe({ sessionHandle: OTHER_SESSION }));
+    expect(s.store.drafts.get(post)?.written.facts).toBe("Typed before the session ended.");
+  });
+
+  test("it is dropped when another handle signs in, and only then: a sign-out and a sign-in by the same handle keep it", async () => {
+    const s = setup("/cases/" + CASE_POST, { "GET /api/staff/me": { status: 200, body: makeMe() }, "GET /api/staff/keys": { status: 401, body: envelope("staff_session_required") } });
+    await s.store.start();
+    s.store.drafts.set(draftOf("Typed by mod_anna."));
+    await s.store.api.keys({ activity: true }).catch(() => undefined);
+    s.store.signedIn(makeMe({ handle: "mod_bert" }));
+    expect(s.store.drafts.get(post)).toBeNull();
+    s.store.drafts.set(draftOf("Typed by mod_bert."));
+    s.store.signedOut();
+    s.store.signedIn(makeMe({ handle: "mod_bert" }));
+    expect(s.store.drafts.get(post)?.written.facts).toBe("Typed by mod_bert.");
+    s.store.signedOut();
+    s.store.signedIn(makeMe());
+    expect(s.store.drafts.get(post)).toBeNull();
+  });
+
+  test("it is dropped as soon as any read of /me names another handle: a sign-in in another tab changes whose page this is", async () => {
+    const s = setup("/cases/" + CASE_POST, { "GET /api/staff/me": [{ status: 200, body: makeMe() }, { status: 200, body: makeMe() }, { status: 200, body: makeMe({ handle: "mod_bert" }) }] });
+    await s.store.start();
+    s.store.drafts.set(draftOf("Typed by mod_anna."));
+    // The same person, read again (the step-up reads /me before it asks the key): the draft stays.
+    await s.store.api.me({ activity: true });
+    expect(s.store.drafts.get(post)?.written.facts).toBe("Typed by mod_anna.");
+    // Another tab signed in as someone else, and the cookie now names their session: the next read says so.
+    await s.store.api.me({ activity: true });
+    expect(s.store.get().session).toMatchObject({ kind: "signed-in", me: { handle: "mod_bert" } });
+    expect(s.store.drafts.get(post)).toBeNull();
+    // What the new person types is theirs, and stays through their own reads.
+    s.store.drafts.set(draftOf("Typed by mod_bert."));
+    await s.store.api.me({ activity: false });
+    expect(s.store.drafts.get(post)?.written.facts).toBe("Typed by mod_bert.");
   });
 });

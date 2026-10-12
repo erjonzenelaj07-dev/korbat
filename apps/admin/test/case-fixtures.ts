@@ -15,6 +15,13 @@ export const CASE_POST = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
 export const CASE_FROZEN = "4a2d3c2f-9e5b-4d2f-8c3b-7a1f6e5d4c3b";
 export const CASE_ACCOUNT = "5b3e4d30-af6c-4e30-9d4c-8b2a7f6e5d4c";
 export const CASE_QUOTED = "6c4f5e41-b07d-4f41-ae5d-9c3b8a7f6e5d";
+export const CASE_SEALABLE = "7d506f52-c18e-4052-bf6e-ad4c9b807f6e";
+export const CASE_DECLINE = "8e617063-d29f-4163-8a7f-be5dac91807f";
+export const CASE_ADMIN = "b194a396-05c2-4496-bda2-e180dfc4b3ac";
+export const CASE_CHANGED = "c2a5b4a7-16d3-45a7-8eb3-f291e0d5c4bd";
+export const CASE_DRAFTS = "d3b6c5b8-27e4-46b8-9fc4-03a2f1e6d5ce";
+export const ACCOUNT_SEALABLE = "9f728174-e3a0-4274-9b80-cf6ebda2918a";
+export const ACCOUNT_DECLINE = "a0839285-f4b1-4385-ac91-d07fceb3a29b";
 export const POST_ID = "7e2d9a10-6c3b-4f5e-8a21-0d4c7b9e1f36";
 export const ACCOUNT_ID = "8f3e0b21-7d4c-4a6f-9b32-1e5d8c0f2a47";
 export const IMAGE_ONE = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -24,7 +31,7 @@ export const ITEM_NOTIFIER = "3d4e5f6a-7b8c-4d9e-bf0a-2b3c4d5e6f7a";
 export const ITEM_SUSPECT = "4e5f6a7b-8c9d-4eaf-801b-3c4d5e6f7a8b";
 export const ITEM_FINDING = "5f6a7b8c-9dae-4fb0-912c-4d5e6f7a8b9c";
 export const ITEM_REEXAMINATION = "6a7b8c9d-aebf-40c1-a23d-5e6f7a8b9cad";
-const DECISION_ONE = "7b8c9dae-bfc0-41d2-b34e-6f7a8b9cadbe";
+export const DECISION_ONE = "7b8c9dae-bfc0-41d2-b34e-6f7a8b9cadbe";
 const SNAPSHOT_ONE = "8c9daebf-c0d1-42e3-845f-7a8b9cadbecf";
 const SNAPSHOT_TWO = "9daebfc0-d1e2-43f4-9560-8b9cadbecfd0";
 const HEX = "ab".repeat(32);
@@ -255,6 +262,53 @@ export function accountCase(overrides: Partial<CaseView> = {}): CaseView {
   });
 }
 
+/**
+ * An account's case that holds an unanswered report of child sexual abuse material and reaches images that are still
+ * served: the seal and "Do not seal now" are offered on it. Its newest snapshot holds the account's fields as they read
+ * now, so nothing asks for a fresh one.
+ */
+export function sealableCase(id: string, accountId: string): CaseView {
+  const fields = { handle: "an_account", displayName: HOSTILE.quote, bio: LOOKALIKE.label };
+  const base = accountCase();
+  const [copied] = base.snapshots;
+  if (!copied || copied.withheld) throw new Error("the account case's snapshot shows its content");
+  return accountCase({
+    id,
+    target: { type: "account", id: accountId, ...fields, deleted: false },
+    suspicion: { open: true, reach: { posts: 2, images: 3, sealed: 0, served: 3, newestPostOn: "2026-09-30" }, earlier: { target: { count: 0, lastOn: null, imagesOpenedOn: null }, author: { count: 0, lastOn: null } } },
+    snapshots: [{ ...copied, id: accountId.replace(/^.{8}/, "5a5a5a5a"), targetId: accountId, authorHandle: fields.handle, ...fields }],
+    // An item of its own, so that no two fixture cases hold the same one.
+    items: base.items.map((each) => ({ ...each, id: accountId.replace(/^.{8}/, "6b6b6b6b") })),
+    history: [],
+  });
+}
+
+/**
+ * A post's case as an admin meets it: a rule report, then a report of child sexual abuse material that nobody has
+ * answered, then a second rule report. Its two images are still served and cannot be opened, and nothing was done while
+ * deciding. Its items are its own, so that no two fixture cases hold the same one.
+ */
+export function adminCase(): CaseView {
+  return frozenCase({
+    id: CASE_ADMIN,
+    intakeSeq: 3,
+    decisions: [],
+    sealsDeclined: [],
+    history: [],
+    suspicion: { open: true, reach: { posts: 1, images: 2, sealed: 0, served: 2, newestPostOn: "2026-09-30" }, earlier: { target: { count: 0, lastOn: null, imagesOpenedOn: null }, author: { count: 0, lastOn: null } } },
+    items: [
+      item({ id: "e4c7d6c9-38f5-47c9-80d5-14b302f7e6d1", seq: 1, ruleId: "R1", lane: 2 }),
+      item({ id: "e4c7d6c9-38f5-47c9-80d5-14b302f7e6d2", seq: 2, csam: true, suspect: true, allegesIllegal: true, ruleId: null, category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS", lane: 0, explanation: null, source: SOURCES.anonymous }),
+      item({ id: "e4c7d6c9-38f5-47c9-80d5-14b302f7e6d3", seq: 3, ruleId: "R6", lane: 2, explanation: null }),
+    ],
+  });
+}
+
+/** A post's case in lane 2 that holds one rule report and nothing else: no decision, no note, an item of its own. */
+export function plainCase(id: string, itemId: string): CaseView {
+  return postCase({ id, stateVersion: 1, intakeSeq: 1, items: [item({ id: itemId })], decisions: [], notes: [], history: [] });
+}
+
 export function queueRow(overrides: Partial<QueueRow> = {}): QueueRow {
   return {
     id: CASE_POST,
@@ -295,6 +349,9 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     mailsFailed: { receipts: 0, authorMails: 0, outcomes: 0 },
     releaseOverdue: 0,
     deferUnproven: false,
+    protectionLifted: { total: 0, items: [] },
+    sealsDeclined: { total: 0, items: [] },
+    interimSeals: { total: 0, items: [] },
     ...overrides,
   };
 }

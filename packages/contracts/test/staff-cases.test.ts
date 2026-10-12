@@ -351,8 +351,13 @@ describe("the queue and the overview", () => {
       mailsFailed: { receipts: 0, authorMails: 0, outcomes: 2 },
       releaseOverdue: 0,
       deferUnproven: false,
+      protectionLifted: { total: 1, items: [{ at: TIME, handle: "mod_anna", caseId: CASE, kind: "dismissed" }] },
+      sealsDeclined: { total: 0, items: [] },
+      interimSeals: { total: 1, items: [{ at: TIME, handle: "mod_anna", caseId: CASE, posts: 2, images: 5 }] },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
+    // Each of the three lists holds at most as many rows as the reveals' list does.
+    expect(StaffOverview.safeParse({ ...overview, interimSeals: { total: 101, items: Array.from({ length: 101 }, () => overview.interimSeals.items[0]) } }).success).toBe(false);
     expect(StaffOverview.safeParse({ ...overview, lanes: overview.lanes.slice(0, 2) }).success).toBe(false);
     expect(StaffOverview.safeParse({ ...overview, reveals: { total: 101, items: Array.from({ length: 101 }, () => overview.reveals.items[0]) } }).success).toBe(false);
     expect(StaffOverview.safeParse({ ...overview, releaseOverdue: -1 }).success).toBe(false);

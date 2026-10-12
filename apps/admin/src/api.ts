@@ -17,6 +17,7 @@ import {
   StaffStepUpOptionsResponse,
   StaffTextSaved,
   StaffTextsResponse,
+  type CaseDecisionRequest,
   type FindingRequest,
   type IdentityRevealRequest,
   type StaffEnrollOptionsRequest,
@@ -108,6 +109,15 @@ export function readCookie(cookies: string, name: string): string | undefined {
   return undefined;
 }
 
+/**
+ * A case answered under another case's address is no answer (3c design, section 7.5: the action is built from what the
+ * page shows): the page would show one case and act on another, so nothing is built from it.
+ */
+function sameCase(asked: string, view: CaseView): CaseView {
+  if (view.id !== asked) throw new ApiError(0, "invalid_answer");
+  return view;
+}
+
 export type StaffApi = ReturnType<typeof createStaffApi>;
 
 export function createStaffApi(deps: StaffApiDeps) {
@@ -197,11 +207,19 @@ export function createStaffApi(deps: StaffApiDeps) {
     overview: (call: Call = {}) => request("GET", "/api/staff/overview", StaffOverview, call),
     /** A page of the queue. Its refreshes carry no mark: they are the page's own, never its person's. */
     queue: (cursor: string | null, call: Call = {}) => request("GET", `/api/staff/queue${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, QueuePage, call),
-    caseView: (id: CaseId, call: Call = {}) => request("GET", `/api/staff/cases/${id}`, CaseView, call),
+    caseView: async (id: CaseId, call: Call = {}) => sameCase(id, await request("GET", `/api/staff/cases/${id}`, CaseView, call)),
     takeSnapshot: (id: CaseId, call: Call = {}) => request("POST", `/api/staff/cases/${id}/snapshots`, StaffSnapshotTaken, call, {}),
     saveText: (id: CaseId, body: StaffTextSaveRequest, call: Call = {}) => request("POST", `/api/staff/cases/${id}/texts`, StaffTextSaved, call, body),
     texts: (id: CaseId, call: Call = {}) => request("GET", `/api/staff/cases/${id}/texts`, StaffTextsResponse, call),
     openFinding: (body: FindingRequest, call: Call = {}) => request("POST", "/api/staff/findings", FindingResponse, call, body),
+    /**
+     * A decision on a case, with the key's confirmation: the case must already be the lower-case uuid the step-up
+     * confirmed, since it is the action's target. The answer is the case as it now stands, and it is that case's.
+     */
+    decide: async (caseId: string, body: CaseDecisionRequest, call: Call = {}) => {
+      if (!isLowerUuid(caseId)) throw new ApiError(0, "invalid_request");
+      return sameCase(caseId, await request("POST", `/api/staff/cases/${caseId}/decisions`, CaseView, call, body));
+    },
     /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {
       if (!isLowerUuid(itemId)) throw new ApiError(0, "invalid_request");

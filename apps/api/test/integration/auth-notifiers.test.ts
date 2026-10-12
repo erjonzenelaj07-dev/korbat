@@ -11,6 +11,7 @@ import {
   forgetNotifierAfter,
   mailAccount,
   mailNotifier,
+  mailNotifierUpdates,
   mailStaff,
   notifierFacts,
   notifierMailTokenMatches,
@@ -24,8 +25,9 @@ import {
 import { emailHash } from "../../src/auth/identifiers";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
-import { MailRefused, MailUnavailable, type MailMessage, type Mailer } from "../../src/mail/mailer";
+import { MailRefused, MailUnavailable, type MailMessage, type Mailer, type NoticeUpdateLine } from "../../src/mail/mailer";
 import { flowHarness, newTestEmail, type FlowHarness } from "./flow-harness";
+import { moderationCounts } from "./moderation-fixtures";
 import { newStaffAccount } from "./staff-fixtures";
 
 const HOUR = 60 * 60_000;
@@ -40,6 +42,7 @@ const DAY = 24 * HOUR;
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and the mails of reports", () => {
   let db: Db;
+  let migrateDb: Db;
   let repo: AuthRepo;
   let before: Record<string, number>;
   /** What the tests stored: contact ids, and the addresses whose confirmations and suppressions they made. */
@@ -48,18 +51,22 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
 
   beforeAll(async () => {
     db = createDb(loadConfig().DATABASE_URL_AUTH, { max: 4 });
+    // The migrate role reads what neither the auth role nor the API's may read together: the file's row counts.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     repo = createAuthRepo(db);
     before = await counts();
   });
   afterAll(async () => {
-    await closeDb(db);
+    await Promise.all([closeDb(db), closeDb(migrateDb)]);
   });
 
+  /** How many rows the four auth tables of moderation cases and the moderation tables hold. */
   async function counts(): Promise<Record<string, number>> {
-    const [row] = (await db.execute(
-      sql`select (select count(*)::int from auth.notifier_contacts) as contacts, (select count(*)::int from auth.notifier_confirmations) as confirmations, (select count(*)::int from auth.notifier_suppressions) as suppressions`,
+    const [row] = (await migrateDb.execute(
+      sql`select (select count(*)::int from auth.notifier_contacts) as contacts, (select count(*)::int from auth.notifier_confirmations) as confirmations, (select count(*)::int from auth.notifier_suppressions) as suppressions,
+                 (select count(*)::int from auth.staff_personal_accounts) as staff_personal_accounts`,
     )) as unknown as Record<string, number>[];
-    return { ...row! };
+    return { ...row!, ...(await moderationCounts(migrateDb)) };
   }
 
   const newAddress = () => {
@@ -84,6 +91,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
     const [found] = (await db.execute(sql`select (extract(epoch from forget_after) * 1000)::float8 as ms from auth.notifier_contacts where id = ${id}::uuid`)) as unknown as { ms: number }[];
     return Math.round(Number(found!.ms));
   };
+  /** One line of a daily update, as the moderation module hands it over. */
+  const line = (ref: string, item: number): NoticeUpdateLine => ({
+    ref,
+    item,
+    link: "http://localhost:8081/post/0190f3a2-7c1e-7b1a-9f00-0123456789ab",
+    outcome: "access restricted: korbat found it illegal.",
+    reexamination: false,
+    changed: false,
+    reexaminable: false,
+    unseen: false,
+    automatic: false,
+  });
   const receipt = (ref = "N-ABCDEFGH23"): NoticeReceivedMessage => ({
     template: "notice_received",
     ref,
@@ -311,6 +330,159 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
     });
   });
 
+  describe("the statement and the daily update, to an account", () => {
+    async function account(h: FlowHarness) {
+      const email = newTestEmail("author");
+      addresses.push(email);
+      const user = await repo.createUser({ email, termsVersion: "test", now: h.clock.now() });
+      return { id: user.id, email };
+    }
+    const statement = { template: "moderation_decision", subject: "post_restricted", paragraphs: ["korbat removed your post of 2026-10-01 12:00 UTC: other people can no longer see it.", "The facts: The post offers followers for money."] } as const;
+
+    test("moderation_decision carries its subject's key and the statement's paragraphs, one per line, and a stop of the address never holds it back", async () => {
+      const h = flowHarness(repo);
+      const { id, email } = await account(h);
+      expect(await mailAccount(h.deps, id, statement)).toBe("sent");
+      expect(h.mailer.sent[0]).toEqual({ to: email, template: "moderation_decision", data: { subject: "post_restricted", statement: statement.paragraphs.join("\n") } });
+      // The address asked korbat to stop its report mails: a statement of reasons is no report mail.
+      const signedOut = await contact(h, { email });
+      expect(await mailNotifier(h.deps, signedOut.id, receipt())).toBe("sent");
+      expect(await stopNotifier(h.deps, signedOut.id, tokenSentTo(h, email))).toBe(true);
+      expect(await mailAccount(h.deps, id, receipt())).toBe("suppressed");
+      expect(await mailAccount(h.deps, id, statement)).toBe("sent");
+      expect(h.mailer.sent.filter((m) => m.template === "moderation_decision")).toHaveLength(2);
+      // A purged account has no address; a refusing relay and a failing one are told apart as for every mail.
+      expect(await mailAccount(h.deps, randomUUID(), statement)).toBe("no_address");
+      const refusing = withMailer(h, async () => {
+        throw new MailRefused("no such mailbox");
+      });
+      expect(await mailAccount(refusing, id, statement)).toBe("refused");
+      const failing = withMailer(h, async () => {
+        throw new MailUnavailable("relay down");
+      });
+      await expect(mailAccount(failing, id, statement)).rejects.toBeInstanceOf(MailUnavailable);
+    });
+
+    test("notice_update to an account is signed in, carries its lines and neither a page nor a receipt, and honours a stop of the address", async () => {
+      const h = flowHarness(repo);
+      const { id, email } = await account(h);
+      const lines = [line("N-ABCDEFGH23", 1), line("N-ABCDEFGH23", 2)];
+      expect(await mailAccount(h.deps, id, { template: "notice_update", lines })).toBe("sent");
+      expect(h.mailer.updates).toEqual([{ to: email, template: "notice_update", data: { signedIn: true, lines, receipts: [], pages: [] } }]);
+      const signedOut = await contact(h, { email });
+      await mailNotifier(h.deps, signedOut.id, receipt());
+      await stopNotifier(h.deps, signedOut.id, tokenSentTo(h, email));
+      expect(await mailAccount(h.deps, id, { template: "notice_update", lines })).toBe("suppressed");
+      expect(h.mailer.updates).toHaveLength(1);
+    });
+  });
+
+  describe("mailNotifierUpdates: one update for each address", () => {
+    const app = "http://localhost:8081";
+    const pageOf = (h: FlowHarness, to: string, ref: string) => h.mailer.updates.findLast((m) => m.to === to)!.data.pages.find((page) => page.ref === ref)?.pageUrl;
+
+    test("two notices that gave one address make one update: every line, and the page of each notice with that contact's own mail token; another address gets its own", async () => {
+      const h = flowHarness(repo);
+      const first = await contact(h);
+      const second = await contact(h, { email: first.email });
+      const other = await contact(h);
+      // The receipts' links carry each contact's mail token: the update's pages must be the same links.
+      expect(await mailNotifier(h.deps, first.id, receipt("N-AAAAAAAA22"))).toBe("sent");
+      const firstLink = h.mailer.sent.at(-1)!.data.pageUrl;
+      h.clock.advance(DAY + 1000);
+      expect(await mailNotifier(h.deps, second.id, receipt("N-BBBBBBBB33"))).toBe("sent");
+      const secondLink = h.mailer.sent.at(-1)!.data.pageUrl;
+      expect(firstLink).not.toBe(secondLink);
+      const results = await mailNotifierUpdates(h.deps, [
+        { contactId: first.id, ref: "N-AAAAAAAA22", lines: [line("N-AAAAAAAA22", 1), line("N-AAAAAAAA22", 2)] },
+        { contactId: second.id, ref: "N-BBBBBBBB33", lines: [line("N-BBBBBBBB33", 1)] },
+        { contactId: other.id, ref: "N-CCCCCCCC44", lines: [line("N-CCCCCCCC44", 1)] },
+      ]);
+      expect([...results]).toEqual([
+        [first.id, "sent"],
+        [second.id, "sent"],
+        [other.id, "sent"],
+      ]);
+      expect(h.mailer.updates).toHaveLength(2);
+      const shared = h.mailer.updates.find((m) => m.to === first.email)!;
+      expect(shared.data.signedIn).toBe(false);
+      expect(shared.data.lines.map((each) => `${each.ref} ${each.item}`)).toEqual(["N-AAAAAAAA22 1", "N-AAAAAAAA22 2", "N-BBBBBBBB33 1"]);
+      expect(shared.data.pages).toEqual([
+        { ref: "N-AAAAAAAA22", pageUrl: firstLink },
+        { ref: "N-BBBBBBBB33", pageUrl: secondLink },
+      ]);
+      expect(shared.data.receipts).toEqual([]);
+      expect(pageOf(h, other.email!, "N-CCCCCCCC44")).toMatch(new RegExp(`^${app}/notice/N-CCCCCCCC44#t=[A-Za-z0-9_-]{43}$`));
+      // Neither a confirmation nor the day's cap holds an update back: a second one goes the same day, to an address nobody confirmed.
+      expect([...(await mailNotifierUpdates(h.deps, [{ contactId: other.id, ref: "N-CCCCCCCC44", lines: [line("N-CCCCCCCC44", 1)] }]))]).toEqual([[other.id, "sent"]]);
+    });
+
+    test("a folded receipt rides in the update with its page link and the terms' address, and its notice gets no second page; a receipt alone makes an update of receipts", async () => {
+      const h = flowHarness(repo);
+      const first = await contact(h);
+      const folded = await contact(h, { email: first.email });
+      expect(await mailNotifier(h.deps, first.id, receipt("N-AAAAAAAA22"))).toBe("sent");
+      expect(await mailNotifier(h.deps, folded.id, receipt("N-BBBBBBBB33"))).toBe("folded");
+      const carried = { ref: "N-BBBBBBBB33", receivedAt: new Date("2026-10-04T06:59:59.123Z"), items: ["http://localhost:8081/u/ada"] };
+      const results = await mailNotifierUpdates(h.deps, [
+        { contactId: first.id, ref: "N-AAAAAAAA22", lines: [line("N-AAAAAAAA22", 1)] },
+        { contactId: folded.id, ref: "N-BBBBBBBB33", lines: [line("N-BBBBBBBB33", 1)], receipt: carried },
+      ]);
+      expect([...results.values()]).toEqual(["sent", "sent"]);
+      const update = h.mailer.updates.at(-1)!.data;
+      expect(update.receipts).toHaveLength(1);
+      expect(update.receipts[0]).toMatchObject({ ref: "N-BBBBBBBB33", time: "2026-10-04 06:59 UTC", items: "http://localhost:8081/u/ada" });
+      expect(update.receipts[0]!.pageUrl).toMatch(new RegExp(`^${app}/notice/N-BBBBBBBB33#t=[A-Za-z0-9_-]{43}$`));
+      // The carried receipt's notice has its page with the receipt; only the other notice gets a page paragraph.
+      expect(update.pages.map((page) => page.ref)).toEqual(["N-AAAAAAAA22"]);
+      expect(update.termsUrl).toBe(`${app}/terms`);
+      // A contact that is owed nothing but its folded receipt: an update of receipts alone.
+      const alone = await contact(h);
+      expect([...(await mailNotifierUpdates(h.deps, [{ contactId: alone.id, ref: "N-DDDDDDDD55", lines: [], receipt: { ...carried, ref: "N-DDDDDDDD55" } }]))]).toEqual([[alone.id, "sent"]]);
+      expect(h.mailer.updates.at(-1)!.data).toMatchObject({ lines: [], pages: [], receipts: [{ ref: "N-DDDDDDDD55" }] });
+    });
+
+    test("it answers for each contact: suppressed, no_address, forgotten, refused when the relay refuses the address, unavailable when it cannot take the mail", async () => {
+      const h = flowHarness(repo);
+      const [stopped, nameOnly, fine, bad, down] = [await contact(h), await contact(h, { name: "Bob", email: undefined }), await contact(h), await contact(h), await contact(h)];
+      expect(await mailNotifier(h.deps, stopped.id, receipt())).toBe("sent");
+      expect(await stopNotifier(h.deps, stopped.id, tokenSentTo(h, stopped.email!))).toBe(true);
+      const gone = randomUUID();
+      const part = (contactId: string, ref: string) => ({ contactId, ref, lines: [line(ref, 1)] });
+      const scripted = withMailer(h, async (message) => {
+        if (message.to === bad.email) throw new MailRefused("no such mailbox");
+        if (message.to === down.email) throw new MailUnavailable("relay down");
+        await h.mailer.send(message);
+      });
+      const results = await mailNotifierUpdates(scripted, [part(stopped.id, "N-AAAAAAAA22"), part(nameOnly.id, "N-BBBBBBBB33"), part(gone, "N-CCCCCCCC44"), part(fine.id, "N-DDDDDDDD55"), part(bad.id, "N-EEEEEEEE66"), part(down.id, "N-FFFFFFFF77")]);
+      expect(Object.fromEntries(results)).toEqual({ [stopped.id]: "suppressed", [nameOnly.id]: "no_address", [gone]: "forgotten", [fine.id]: "sent", [bad.id]: "refused", [down.id]: "unavailable" });
+      // Nothing was thrown though one address could not be mailed, and only the one that could was.
+      expect(h.mailer.updates.map((m) => m.to)).toEqual([fine.email]);
+    });
+
+    test("a contact it cannot read is answered unavailable and logged with its id, never an address, while every other address's update is still sent", async () => {
+      const old = flowHarness(repo);
+      const unreadable = await contact(old);
+      // The key was rotated without keeping the old one: what the old key encrypted no configured key opens.
+      const h = flowHarness(repo);
+      h.deps.config.notifierKey = parseVersionedKey(`v2:${Buffer.alloc(32, 9).toString("base64")}`);
+      h.deps.config.notifierPreviousKeys = [];
+      const readable = await contact(h);
+      const logged: unknown[] = [];
+      const deps: AuthDeps = { ...h.deps, log: { ...h.deps.log, error: (...args: unknown[]) => void logged.push(args) } as AuthDeps["log"] };
+      const results = await mailNotifierUpdates(deps, [
+        { contactId: unreadable.id, ref: "N-AAAAAAAA22", lines: [line("N-AAAAAAAA22", 1)] },
+        { contactId: readable.id, ref: "N-BBBBBBBB33", lines: [line("N-BBBBBBBB33", 1)] },
+      ]);
+      expect(Object.fromEntries(results)).toEqual({ [unreadable.id]: "unavailable", [readable.id]: "sent" });
+      expect(h.mailer.updates.map((m) => m.to)).toEqual([readable.email]);
+      expect(logged).toHaveLength(1);
+      const text = JSON.stringify(logged[0], (_key, value: unknown) => (value instanceof Error ? value.message : value));
+      expect(text).toContain(unreadable.id);
+      expect(text).not.toContain(unreadable.email!);
+    });
+  });
+
   describe("mailStaff: an alert to every live staff account", () => {
     test("goes to every moderator and admin, to no user and to no deleted staff account, and answers how many addresses the relay took", async () => {
       const h = flowHarness(repo);
@@ -329,6 +501,22 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
         expect(sent.template).toBe("moderation_urgent");
         expect(sent.data).toEqual({ count: "2", oldest: "2026-10-04 06:59 UTC" });
       }
+    });
+
+    test("the alerts of deciding and of the dispatch hand the templates their data as text: a burst, a decision that lifted the protection of reported images, and cases that wait", async () => {
+      const h = flowHarness(repo);
+      const { user } = await newStaffAccount(db, repo, "moderator");
+      const at = new Date("2026-10-04T06:59:59.123Z");
+      const dataOf = () => h.mailer.sent.findLast((m) => m.to === user.email)!;
+      await mailStaff(h.deps, { template: "moderation_burst", handle: "mod_anna", count: 20 });
+      expect(dataOf()).toMatchObject({ template: "moderation_burst", data: { handle: "mod_anna", count: "20" } });
+      await mailStaff(h.deps, { template: "moderation_csam_lifted", handle: "mod_anna", at, what: "dismissed" });
+      expect(dataOf()).toMatchObject({ template: "moderation_csam_lifted", data: { handle: "mod_anna", time: "2026-10-04 06:59 UTC", what: "dismissed" } });
+      // A lane's pair is there only for a lane with a case past its time, and the measures' count only when it is not 0.
+      await mailStaff(h.deps, { template: "moderation_waiting", lanes: [{ lane: 0, count: 2, oldest: at }, { lane: 2, count: 1, oldest: at }], interim: 0 });
+      expect(dataOf().data).toEqual({ lane0Count: "2", lane0Oldest: "2026-10-04 06:59 UTC", lane2Count: "1", lane2Oldest: "2026-10-04 06:59 UTC" });
+      await mailStaff(h.deps, { template: "moderation_waiting", lanes: [], interim: 3 });
+      expect(dataOf().data).toEqual({ interimCount: "3" });
     });
 
     test("is best effort: a relay that takes no mail gives 0 and nothing is thrown; one that takes some gives their number", async () => {
@@ -459,7 +647,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
     });
   });
 
-  test("this file left no row behind: the notifier tables hold what they held before it", async () => {
+  test("this file left no row behind: the four auth tables of moderation cases and the moderation tables hold what they held before it", async () => {
     const hashes = addresses.map((address) => emailHash(flowHarness(repo).deps.config.authHmacKey, address));
     if (contactIds.length > 0) await db.execute(sql`delete from auth.notifier_contacts where id = any(${`{${contactIds.join(",")}}`}::uuid[])`);
     if (hashes.length > 0) {

@@ -3,29 +3,58 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { MEASURES, SEAL_DRAFTS } from "@korbat/contracts";
+import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
-import { FINDING_WORDS, messageFor, STAFF_MESSAGES } from "../../src/messages";
+import { COMPOSER } from "../../src/compose";
+import { COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, PROTECTION_LIFTED_WORDS, STAFF_MESSAGES } from "../../src/messages";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
 import { SIGN_IN_WINDOW_MS } from "../../src/signins";
 import { clockTime } from "../../src/ui";
 import { consoleSiteHeadersFromCaddyfile } from "../caddyfile";
-import { CASE_ACCOUNT, CASE_FROZEN, CASE_POST, CASE_QUOTED, IMAGE_ONE, IMAGE_TWO, ITEM_REPORTER, LONGEST_EXPLANATION, LONGEST_NOTE, LOOKALIKE, POST_ID } from "../case-fixtures";
+import {
+  CASE_ACCOUNT,
+  CASE_ADMIN,
+  CASE_CHANGED,
+  CASE_DECLINE,
+  CASE_DRAFTS,
+  CASE_FROZEN,
+  CASE_POST,
+  CASE_QUOTED,
+  CASE_SEALABLE,
+  DECISION_ONE,
+  IMAGE_ONE,
+  IMAGE_TWO,
+  ITEM_REPORTER,
+  LONGEST_EXPLANATION,
+  LONGEST_NOTE,
+  LOOKALIKE,
+  POST_ID,
+} from "../case-fixtures";
 import { HOSTILE } from "../fixtures";
 import {
   createFixtureApi,
   CURRENT_BROWSER,
   DEAD_LINK,
   EXISTING_KEY_NAMES,
+  FORGED_DRAFT,
   FORGED_REASON,
   HOSTILE_TEXTS,
   IMAGE_PATH,
   OTHER_BROWSERS,
+  OTHER_STAFF,
   PERSON_HANDLE,
   REVEALED_HANDLE,
+  TYPED_ADMIN_FACTS,
+  TYPED_CHANGED_FACTS,
+  TYPED_DECLINE,
+  TYPED_DRAFT_FACTS,
+  TYPED_FACTS,
   TYPED_KEY_NAME,
   TYPED_NOTE,
+  TYPED_REASON,
   type FixtureApi,
 } from "./fixture-api";
 import { startConsoleSite, type ConsoleSiteServer } from "./server";
@@ -42,9 +71,14 @@ import { inspect, userTexts, watch, type Watcher } from "./watch";
  * asks that key and no other, sign-out, and sign-in options that carry a step-up challenge refused before the key is
  * asked. For moderation cases (3c design, section 8) it walks the home screen's overview, the queue with a finding, a
  * case with its images shown on request, an image the API refuses, a case whose images cannot be opened, an account's
- * case with a fresh snapshot, a reveal, and a save that the API answers with the digest of another text. Each step fails
- * on any policy report through any channel console-lab.md names, any page error and any dialog. It needs no database and
- * writes nothing but a temporary build.
+ * case with a fresh snapshot, a reveal, and a save that the API answers with the digest of another text. For deciding
+ * (sections 7.5 and 8) it lifts a measure taken while deciding, meets step-up options that bind another decision before
+ * the key is asked, confirms a final decision whose texts were saved when their fields lost focus, seals an account's
+ * images with the fixed drafts through a session that ended and a sign-in, records a choice not to seal, answers a report
+ * of child sexual abuse material without a measure as an admin, meets a case that another staff member decided meanwhile,
+ * brings a draft's saved texts back after a reload (one of them answered with other words under its digest, and dropped),
+ * and reads the home screen's three lists of the path. Each step fails on any policy report through any channel
+ * console-lab.md names, any page error and any dialog. It needs no database and writes nothing but a temporary build.
  *
  * It never downloads a browser. By default it drives the Chromium build playwright-core 1.63.0 names (chromium-1243 under
  * ms-playwright), which must already be installed; KORBAT_BROWSER_CHANNEL=chrome drives the machine's own Chrome instead,
@@ -127,6 +161,15 @@ async function until(expression: string, what: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`not within 15 s: ${what}`);
+}
+
+/**
+ * Waits until the fixtures have seen something. A text is saved when its field loses focus, and the request arrives a
+ * moment after the key press that moved the focus.
+ */
+async function arrived(check: () => boolean, what: string): Promise<void> {
+  for (let tries = 0; tries < 150 && !check(); tries++) await new Promise((resolve) => setTimeout(resolve, 100));
+  if (!check()) throw new Error(`not within 15 s: ${what}`);
 }
 
 /** The one image of the page: whether it is there, loaded as a real image of 2 by 2 pixels, from this address, drawn with this class. */
@@ -306,8 +349,10 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await shown(page.getByText("Urgent: 2 cases, oldest", { exact: false }));
     await shown(page.getByText("Lane 1: no open case"));
     await shown(page.getByText("3 appeals wait."));
-    expect(await page.locator("ul.reveals li").count()).toBe(1);
-    expect(await page.locator("ul.reveals a").getAttribute("href")).toBe(`/cases/${CASE_POST}`);
+    // The first list of the kind is the reveals'; the three lists of the path for child sexual abuse material follow it.
+    const reveals = page.locator("ul.reveals").first();
+    expect(await reveals.locator("li").count()).toBe(1);
+    expect(await reveals.locator("a").getAttribute("href")).toBe(`/cases/${CASE_POST}`);
     await shown(page.locator("ul.signins"));
     await shown(page.locator("ul.keys"));
     await shown(page.getByRole("cell", { name: "This session" }));
@@ -566,6 +611,441 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     expect(await dialog.getByLabel("Reason", { exact: true }).inputValue()).toBe("A court asked who sent this notice.");
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await dialog.waitFor({ state: "detached" });
+    await clean();
+  });
+
+  test("a measure taken while deciding lifted with the key: the correction names what it lifts and its reason, the preview is the statement, the key confirms exactly that, and the page shows what the answer says now stands", async () => {
+    // The page still shows the post's case, whose decision taken while deciding holds a withhold in force.
+    const before = await signatures();
+    await page.getByRole("button", { name: COMPOSER.liftLabel }).click();
+    const correction = page.getByRole("region", { name: COMPOSER.liftLabel });
+    await shown(correction);
+    const confirm = correction.getByRole("button", { name: "Confirm with your staff key" });
+    // Nothing to confirm until something is chosen to lift and a reason is written.
+    expect(await confirm.isDisabled()).toBe(true);
+    await correction.getByLabel(MEASURES.restore.label).check();
+    expect(await confirm.isDisabled()).toBe(true);
+    await correction.getByLabel("Reason of the correction").fill(TYPED_REASON);
+    expect(await confirm.isDisabled()).toBe(false);
+    // The preview is the statement its author will receive, each paragraph as text, what was typed among them.
+    const preview = correction.locator(".frame.preview p.frame-text");
+    expect(await preview.first().textContent()).toBe(STATEMENT_WORDS.interimLifted("2026-10-01 09:00 UTC"));
+    expect(await preview.allTextContents()).toContain(`Why korbat changed it: ${TYPED_REASON}`);
+    expect(await inspect(page)).toEqual([]);
+    await confirm.click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    const reason = fixtures.state.texts.at(-1)!;
+    expect(reason).toMatchObject({ caseId: CASE_POST, kind: "review_reason", text: TYPED_REASON });
+    // What the key confirmed is what the page showed: the decision it lifts, the reversal, and the digest of the saved reason.
+    expect(fixtures.state.decisions).toHaveLength(1);
+    expect(fixtures.state.decisions[0]).toMatchObject({
+      caseId: CASE_POST,
+      params: { kind: "correction", stateVersion: 3, throughSeq: 0, reviewsDecisionId: DECISION_ONE, outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, actions: [{ kind: "restore", mediaId: null }], factsDigest: null, reasonDigest: reason.digest, legalReferenceDigest: null },
+    });
+    // The case as the answer gave it: the next version, the withhold lifted, and nothing left to lift.
+    await shown(page.getByText("version 4", { exact: false }));
+    await shown(page.getByText(`${MEASURES.withhold.label}: lifted by the decision of`, { exact: false }));
+    expect(await page.getByRole("button", { name: COMPOSER.liftLabel }).count()).toBe(0);
+    await texts();
+    await clean();
+  });
+
+  test("a decision whose step-up options bind other params is refused before the key is asked; the draft stays, and confirmed again it is recorded without its texts being saved twice", async () => {
+    const before = await signatures();
+    const sent = () => fixtures.state.requests.filter((r) => r.method === "POST" && r.path.endsWith("/decisions")).length;
+    const composer = page.getByRole("region", { name: "Decide" });
+    const confirm = composer.getByRole("button", { name: "Confirm with your staff key" });
+    // The outcome comes first, with every outcome this person may decide on the case; the page opens on a restriction.
+    expect(await composer.locator("fieldset legend").first().textContent()).toBe("Outcome");
+    for (const outcome of Object.values(COMPOSER_OUTCOMES)) expect(await composer.getByLabel(outcome, { exact: true }).count(), outcome).toBe(1);
+    expect(await composer.getByLabel(COMPOSER_OUTCOMES.restricted, { exact: true }).isChecked()).toBe(true);
+    await composer.getByLabel(COMPOSER_KINDS.final).check();
+    // A restriction needs a measure, its facts and its reason before anything can be confirmed.
+    expect(await confirm.isDisabled()).toBe(true);
+    await shown(composer.getByText(COMPOSER.previewNeedsMeasure));
+    await composer.getByLabel(MEASURES.remove.label, { exact: true }).check();
+    const saved = fixtures.state.texts.length;
+    await composer.getByLabel("Facts").fill(TYPED_FACTS);
+    await composer.getByLabel("Reason", { exact: true }).fill("It sells followers, which the rule names.");
+    expect(await confirm.isDisabled()).toBe(false);
+    // Each text is saved, without the key, when its field loses focus: the facts when the reason was begun, the reason now.
+    await arrived(() => fixtures.state.texts.length === saved + 1, "the facts saved when their field lost focus");
+    expect(fixtures.state.texts.at(-1)).toMatchObject({ caseId: CASE_POST, kind: "facts", text: TYPED_FACTS });
+    await composer.getByLabel("Reason", { exact: true }).press("Tab");
+    await arrived(() => fixtures.state.texts.length === saved + 2, "the reason saved when its field lost focus");
+    expect(fixtures.state.texts.at(-1)).toMatchObject({ caseId: CASE_POST, kind: "reason", text: "It sells followers, which the rule names." });
+    expect(await signatures()).toBe(before);
+    // Under both fields of a restriction: the rule on personal data, and that the author receives the text.
+    expect(await composer.getByText(COMPOSER.personalData, { exact: true }).count()).toBe(2);
+    const preview = composer.locator(".frame.preview p.frame-text");
+    expect(await preview.first().textContent()).toBe(STATEMENT_WORDS.done.remove("2026-09-30 12:00 UTC"));
+    expect(await preview.allTextContents()).toContain(`The facts: ${TYPED_FACTS}`);
+    expect(await preview.last().textContent()).toMatch(/^You can appeal this decision once, free of charge, within six months of being told, until /);
+    expect(await inspect(page)).toEqual([]);
+
+    // The API asks the key to confirm another decision than the one the page built: the key is never asked.
+    const [options, posted] = [fixtures.state.stepUpOptionsServed, sent()];
+    fixtures.state.mismatchNextStepUp = true;
+    await confirm.click();
+    await shown(composer.getByRole("alert").filter({ hasText: messageFor("step_up_mismatch") }));
+    expect(fixtures.state.stepUpOptionsServed).toBe(options + 1);
+    expect(await signatures()).toBe(before);
+    expect(sent()).toBe(posted);
+    expect(fixtures.state.decisions).toHaveLength(1);
+    // The confirmation saved nothing more: both texts were on the server before it. What was chosen and written is still there.
+    expect(fixtures.state.texts).toHaveLength(saved + 2);
+    expect(await composer.getByLabel("Facts").inputValue()).toBe(TYPED_FACTS);
+    expect(await composer.getByLabel(MEASURES.remove.label, { exact: true }).isChecked()).toBe(true);
+    await clean();
+
+    // Confirmed again, with options that bind the decision itself: the saved texts are used as they are.
+    await confirm.click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    expect(sent()).toBe(posted + 1);
+    expect(fixtures.state.texts).toHaveLength(saved + 2);
+    const [facts, reason] = fixtures.state.texts.slice(-2);
+    expect(facts).toMatchObject({ caseId: CASE_POST, kind: "facts", text: TYPED_FACTS });
+    expect(fixtures.state.decisions).toHaveLength(2);
+    expect(fixtures.state.decisions[1]).toMatchObject({
+      caseId: CASE_POST,
+      params: { kind: "final", stateVersion: 4, throughSeq: 2, reviewsDecisionId: null, outcome: "restricted", ground: "incompatible", ruleId: "R1", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", categoryKeyword: null, actions: [{ kind: "remove", mediaId: null }], factsDigest: facts!.digest, reasonDigest: reason!.digest, legalReferenceDigest: null },
+    });
+    // The answer is the case as it now stands: closed, with nothing more to decide on it.
+    await shown(page.getByText("; closed ", { exact: false }));
+    await shown(page.getByRole("region", { name: "Decide" }).getByText(COMPOSER.closed));
+    expect(await page.getByRole("button", { name: "Confirm with your staff key" }).count()).toBe(0);
+    await texts();
+    await clean();
+  });
+
+  test("the seal from the composer on an account's case: the fixed drafts as its facts and reason, the draft still there after a session that ended and a sign-in, the key confirming it, and no image asked for", async () => {
+    const asked = fixtures.state.imageRequests.length;
+    await page.goto(`${origin}/cases/${CASE_SEALABLE}`);
+    await shown(page.getByRole("heading", { name: "Case about an account" }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    // A moderator decides only while an admin decides, and the banner says what ends the urgent mails.
+    await shown(composer.getByText(COMPOSER.adminFinal));
+    await shown(composer.getByText(COMPOSER.onlySealEnds));
+    expect(await composer.getByLabel(COMPOSER_KINDS.final).count()).toBe(0);
+    // Under that sentence the restriction stands alone: an outcome without a measure is a final decision's, an admin's here.
+    expect(await composer.getByLabel(COMPOSER_OUTCOMES.restricted, { exact: true }).count()).toBe(1);
+    expect(await composer.getByLabel(COMPOSER_OUTCOMES.no_violation, { exact: true }).count()).toBe(0);
+    expect(await composer.getByLabel(COMPOSER_OUTCOMES.not_evident, { exact: true }).count()).toBe(0);
+    await composer.getByRole("button", { name: MEASURES.seal_media.label }).click();
+    expect(await composer.getByLabel("Rule", { exact: true }).inputValue()).toBe("R2");
+    expect(await composer.getByLabel("Facts").inputValue()).toBe(SEAL_DRAFTS.facts.notice_account);
+    expect(await composer.getByLabel("Reason", { exact: true }).inputValue()).toBe(SEAL_DRAFTS.reason.deciding);
+    await shown(composer.getByText(COMPOSER.neverWrite).first());
+    expect(await composer.locator(".frame.preview p.frame-text").first().textContent()).toBe(STATEMENT_WORDS.sealAccount(3, 2));
+    await clean();
+
+    // The session ends behind the page's back: the confirmation meets the sign-in, in place; nothing was saved or signed.
+    const before = await signatures();
+    const saved = fixtures.state.texts.length;
+    fixtures.endEverySession();
+    await composer.getByRole("button", { name: "Confirm with your staff key" }).click();
+    await shown(page.getByText("Your staff session ended."));
+    expect(page.url()).toBe(`${origin}/cases/${CASE_SEALABLE}`);
+    expect(fixtures.state.texts).toHaveLength(saved);
+    await page.getByRole("button", { name: "Sign in with your staff key" }).click();
+    await shown(page.getByRole("heading", { name: "Case about an account" }));
+    expect(await signatures()).toBe(before + 1);
+    // The draft is the one its person left: the seal chosen, with its rule and its texts.
+    const again = page.getByRole("region", { name: "Decide" });
+    await shown(again.getByLabel(`${MEASURES.seal_media.label}: chosen`));
+    expect(await again.getByLabel(`${MEASURES.seal_media.label}: chosen`).isChecked()).toBe(true);
+    expect(await again.getByLabel("Rule", { exact: true }).inputValue()).toBe("R2");
+    expect(await again.getByLabel("Facts").inputValue()).toBe(SEAL_DRAFTS.facts.notice_account);
+    expect(await again.getByLabel("Reason", { exact: true }).inputValue()).toBe(SEAL_DRAFTS.reason.deciding);
+
+    await again.getByRole("button", { name: "Confirm with your staff key" }).click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 2);
+    const [facts, reason] = fixtures.state.texts.slice(-2);
+    expect([facts!.text, reason!.text]).toEqual([SEAL_DRAFTS.facts.notice_account, SEAL_DRAFTS.reason.deciding]);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({
+      caseId: CASE_SEALABLE,
+      params: { kind: "interim", throughSeq: 0, outcome: "restricted", ground: "incompatible", ruleId: "R2", category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS", actions: [{ kind: "seal_media", mediaId: null }], factsDigest: facts!.digest, reasonDigest: reason!.digest },
+    });
+    // The case as it now stands: the seal in force with what it covers. No image is served any more, so the banner now
+    // names a note, and the seal stays on offer for images posted later.
+    await shown(page.getByText(`${MEASURES.seal_media.label}: in force`, { exact: false }));
+    await shown(page.getByText("3 images on 2 posts (0 of them deleted by their author)"));
+    await shown(page.getByRole("region", { name: "Decide" }).getByText(COMPOSER.noteEnds));
+    expect(await page.getByRole("region", { name: "Decide" }).getByText(COMPOSER.onlySealEnds).count()).toBe(0);
+    // A moderator is not offered the lifting of a seal.
+    expect(await page.getByRole("button", { name: COMPOSER.liftLabel }).count()).toBe(0);
+    expect(fixtures.state.imageRequests).toHaveLength(asked);
+    expect(await page.locator("img").count()).toBe(0);
+    expect(await page.locator("main a").count()).toBe(0);
+    await texts();
+    await clean();
+  });
+
+  test("the choice not to seal: nothing to record until a reason is written; it is saved without the key, shown on the case with its reason, and no image is asked for", async () => {
+    const [asked, before, options] = [fixtures.state.imageRequests.length, await signatures(), fixtures.state.stepUpOptionsServed];
+    await page.goto(`${origin}/cases/${CASE_DECLINE}`);
+    await shown(page.getByRole("heading", { name: "Case about an account" }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    await composer.getByRole("button", { name: "Do not seal now" }).click();
+    const choice = composer.getByRole("group", { name: "Do not seal now" });
+    await shown(choice.getByText(COMPOSER.declineWords));
+    const record = choice.getByRole("button", { name: "Record this choice" });
+    expect(await record.isDisabled()).toBe(true);
+    await choice.getByLabel("Why you do not seal now").fill("   ");
+    expect(await record.isDisabled()).toBe(true);
+    await choice.getByLabel("Why you do not seal now").fill(TYPED_DECLINE);
+    await record.click();
+    await shown(page.getByText(COMPOSER.declined));
+    expect(fixtures.state.texts.at(-1)).toMatchObject({ caseId: CASE_DECLINE, kind: "seal_declined", text: TYPED_DECLINE });
+    // The choice is on the case, with who made it and its reason in a frame; the seal is still offered.
+    await shown(page.getByText("Chose not to seal:", { exact: false }));
+    expect(await page.locator(".frame", { hasText: "Reason. Written by staff" }).locator("p.frame-text").last().textContent()).toBe(TYPED_DECLINE);
+    await choice.waitFor({ state: "detached" });
+    expect(await composer.getByRole("button", { name: MEASURES.seal_media.label }).isEnabled()).toBe(true);
+    // No key was asked, no decision made, no image requested, and the page links nowhere.
+    expect(await signatures()).toBe(before);
+    expect(fixtures.state.stepUpOptionsServed).toBe(options);
+    expect(fixtures.state.decisions.filter((made) => made.caseId === CASE_DECLINE)).toEqual([]);
+    expect(fixtures.state.imageRequests).toHaveLength(asked);
+    expect(await page.locator("img").count()).toBe(0);
+    expect(await page.locator("main a").count()).toBe(0);
+    await texts();
+    await clean();
+  });
+
+  test("an admin's composer on a case with an unanswered report of child sexual abuse material: every outcome listed first, the choice not to seal only while deciding, and an answer without a measure that needs its facts, tells its author nothing and leaves the later report open", async () => {
+    const [asked, before] = [fixtures.state.imageRequests.length, await signatures()];
+    fixtures.state.role = "admin";
+    await page.goto(`${origin}/cases/${CASE_ADMIN}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    const confirm = composer.getByRole("button", { name: "Confirm with your staff key" });
+    // The outcome comes first, with every outcome an admin may decide; beside them, that an answer now is given unseen.
+    expect(await composer.locator("fieldset legend").first().textContent()).toBe("Outcome");
+    for (const outcome of Object.values(COMPOSER_OUTCOMES)) expect(await composer.getByLabel(outcome, { exact: true }).count(), outcome).toBe(1);
+    expect(await composer.getByText(COMPOSER.adminFinal).count()).toBe(0);
+    await shown(composer.getByText(COMPOSER.unseen));
+    // While deciding, the seal and the choice not to seal stand side by side.
+    expect(await composer.getByLabel(COMPOSER_KINDS.interim).isChecked()).toBe(true);
+    await shown(composer.getByRole("button", { name: MEASURES.seal_media.label }));
+    await shown(composer.getByRole("button", { name: "Do not seal now" }));
+    // Deciding the case, an admin seals for good or answers without a seal: the choice not to seal is not offered.
+    await composer.getByLabel(COMPOSER_KINDS.final).check();
+    await shown(composer.getByText(COMPOSER.admin.endsFreeze));
+    await shown(composer.getByText(COMPOSER.admin.unseen));
+    await shown(composer.getByRole("button", { name: MEASURES.seal_media.label }));
+    expect(await composer.getByRole("button", { name: "Do not seal now" }).count()).toBe(0);
+
+    // An answer without a measure: no kind is asked, the category the key will confirm is shown, and the facts are needed.
+    await composer.getByLabel(COMPOSER_OUTCOMES.no_violation, { exact: true }).check();
+    expect(await composer.locator("legend", { hasText: "When" }).count()).toBe(0);
+    expect(await composer.locator("legend", { hasText: "Measures" }).count()).toBe(0);
+    expect(await composer.getByLabel("Ground").count()).toBe(0);
+    expect(await composer.getByRole("button", { name: "Do not seal now" }).count()).toBe(0);
+    expect(await composer.getByLabel("Category").inputValue()).toBe("STATEMENT_CATEGORY_OTHER_VIOLATION_TC");
+    await composer.getByLabel("Category").selectOption("STATEMENT_CATEGORY_PROTECTION_OF_MINORS");
+    expect(await confirm.isDisabled()).toBe(true);
+    // Under both fields: never to say what the images are, and that the author never receives the text.
+    expect(await composer.getByText(COMPOSER.neverWrite, { exact: true }).count()).toBe(2);
+    expect(await composer.getByText(`${COMPOSER_WORDS.personalDataRule} ${COMPOSER_WORDS.staysInRecord}`, { exact: true }).count()).toBe(2);
+    expect(await composer.getByText(COMPOSER_WORDS.toAuthor, { exact: false }).count()).toBe(0);
+    // Nothing was done while deciding on this case, so the answer is told to nobody, and the page says so in the preview's place.
+    await shown(composer.getByText(COMPOSER_WORDS.noStatement));
+    expect(await composer.locator(".frame.preview").count()).toBe(0);
+    const saved = fixtures.state.texts.length;
+    await composer.getByLabel("Reason", { exact: true }).fill("Nothing in the report or in the post supports it.");
+    expect(await confirm.isDisabled()).toBe(true);
+    await composer.getByLabel("Facts").fill(TYPED_ADMIN_FACTS);
+    expect(await confirm.isDisabled()).toBe(false);
+    // Each text is saved, without the key, when its field loses focus.
+    await composer.getByLabel("Facts").press("Tab");
+    await arrived(() => fixtures.state.texts.length === saved + 2, "the reason and the facts saved when their fields lost focus");
+    const written = (kind: string) => fixtures.state.texts.slice(saved).find((text) => text.kind === kind)!;
+    expect(written("facts")).toMatchObject({ caseId: CASE_ADMIN, text: TYPED_ADMIN_FACTS });
+    expect(await signatures()).toBe(before);
+    await clean();
+
+    await confirm.click();
+    // The answer reaches the newest report of child sexual abuse material: the rule report that arrived after it stays open.
+    await shown(page.getByText(`${COMPOSER.recorded} ${COMPOSER.leftForLater(1)}`));
+    expect(await signatures()).toBe(before + 1);
+    expect(fixtures.state.texts).toHaveLength(saved + 2);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({
+      caseId: CASE_ADMIN,
+      params: { kind: "final", stateVersion: 3, throughSeq: 2, reviewsDecisionId: null, outcome: "no_violation", ground: null, ruleId: null, category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS", categoryKeyword: null, actions: [], factsDigest: written("facts").digest, reasonDigest: written("reason").digest, legalReferenceDigest: null },
+    });
+    // The case as the answer gave it: the answer with its facts, for staff, and a composer for the report left open.
+    await shown(page.getByText("; version 4", { exact: false }));
+    expect(await texts()).toContain(TYPED_ADMIN_FACTS);
+    const after = page.getByRole("region", { name: "Decide" });
+    expect(await after.getByText(COMPOSER.neverWrite, { exact: true }).count()).toBe(0);
+    expect(await after.getByLabel(COMPOSER_OUTCOMES.no_violation, { exact: true }).count()).toBe(1);
+    expect(await after.getByLabel(COMPOSER_OUTCOMES.not_evident, { exact: true }).count()).toBe(0);
+    expect(fixtures.state.imageRequests).toHaveLength(asked);
+    expect(await page.locator("img").count()).toBe(0);
+    // The steps that follow are a moderator's again: each opens its page anew, and reads who is signed in.
+    fixtures.state.role = "moderator";
+    await clean();
+  });
+
+  test("a case that another staff member decided meanwhile: a save that failed is worded under its field and made again by the confirmation, the refusal is worded in place, the case is read again with the draft kept, and confirmed again the decision is recorded without a text saved twice", async () => {
+    const before = await signatures();
+    const REASON = "That is what the rule names.";
+    const requests = (method: string, tail: string) => fixtures.state.requests.filter((r) => r.method === method && r.path === `/api/staff/cases/${CASE_CHANGED}${tail}`).map((r) => r.status);
+    await page.goto(`${origin}/cases/${CASE_CHANGED}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    await shown(page.getByText("; version 1", { exact: false }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    const confirm = composer.getByRole("button", { name: "Confirm with your staff key" });
+    // A moderator's own page again: no outcome of an admin's is on it that this person may not take.
+    expect(await composer.getByLabel(COMPOSER_OUTCOMES.not_evident, { exact: true }).count()).toBe(0);
+    await composer.getByLabel(MEASURES.withhold.label, { exact: true }).check();
+    await composer.getByLabel("Facts").fill(TYPED_CHANGED_FACTS);
+    await composer.getByLabel("Reason", { exact: true }).fill(REASON);
+    await arrived(() => requests("POST", "/texts").length === 1, "the facts saved when their field lost focus");
+    // The reason's save meets the minute's limit when its field loses focus: the words stand under the field, and the text stays.
+    fixtures.state.refuseNextSave = "rate_limited";
+    await composer.getByLabel("Reason", { exact: true }).press("Tab");
+    await shown(composer.getByRole("alert").filter({ hasText: NOTE_WORDS.rate_limited }));
+    expect(requests("POST", "/texts")).toEqual([201, 429]);
+    expect(await composer.getByLabel("Reason", { exact: true }).inputValue()).toBe(REASON);
+    expect(await confirm.isDisabled()).toBe(false);
+    await clean();
+
+    // Another staff member withholds the post while this page still shows the case as it read it.
+    fixtures.decideBehindThePage(CASE_CHANGED);
+    const read = requests("GET", "").length;
+    await confirm.click();
+    // The confirmation saved the reason, the key signed the decision the page showed, and the API refused it: in place.
+    await shown(composer.getByRole("alert").filter({ hasText: messageFor("case_changed") }));
+    expect(requests("POST", "/texts")).toEqual([201, 429, 201]);
+    expect(await signatures()).toBe(before + 1);
+    expect(requests("POST", "/decisions")).toEqual([409]);
+    expect(fixtures.state.decisions.filter((made) => made.caseId === CASE_CHANGED)).toEqual([]);
+    // The page read the case again, once: the other decision is on it, and the composer follows the case as it now stands.
+    await arrived(() => requests("GET", "").length === read + 1, "the case read again");
+    await shown(page.getByText("; version 2", { exact: false }));
+    expect(await texts()).toContain(OTHER_STAFF);
+    await shown(composer.getByText(COMPOSER.noEffect));
+    expect(await composer.locator(".frame.preview p.frame-text").first().textContent()).toBe(`${STATEMENT_WORDS.done.withhold("2026-09-30 12:00 UTC")} ${STATEMENT_WORDS.already("post")}`);
+    // The refusal's words stay, the reason's own refusal is gone now that it is saved, and the draft is as its person left it.
+    await shown(composer.getByRole("alert").filter({ hasText: messageFor("case_changed") }));
+    expect(await composer.getByRole("alert").filter({ hasText: NOTE_WORDS.rate_limited }).count()).toBe(0);
+    expect(await composer.getByLabel("Facts").inputValue()).toBe(TYPED_CHANGED_FACTS);
+    expect(await composer.getByLabel("Reason", { exact: true }).inputValue()).toBe(REASON);
+    expect(await composer.getByLabel(MEASURES.withhold.label, { exact: true }).isChecked()).toBe(true);
+    expect(requests("GET", "")).toHaveLength(read + 1);
+    await clean();
+
+    // Confirmed again, on the version the page now shows: the texts are used as they were saved.
+    await confirm.click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 2);
+    expect(requests("POST", "/texts")).toEqual([201, 429, 201]);
+    expect(requests("POST", "/decisions")).toEqual([409, 201]);
+    const mine = fixtures.state.texts.filter((text) => text.caseId === CASE_CHANGED);
+    expect(mine.map((text) => [text.kind, text.text])).toEqual([
+      ["facts", TYPED_CHANGED_FACTS],
+      ["reason", REASON],
+    ]);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({
+      caseId: CASE_CHANGED,
+      params: { kind: "interim", stateVersion: 2, throughSeq: 0, outcome: "restricted", ground: "incompatible", ruleId: "R1", actions: [{ kind: "withhold", mediaId: null }], factsDigest: mine[0]!.digest, reasonDigest: mine[1]!.digest, legalReferenceDigest: null },
+    });
+    await shown(page.getByText("; version 3", { exact: false }));
+    expect(await page.getByRole("region", { name: "Decide" }).getByRole("alert").count()).toBe(0);
+    expect(await texts()).toContain(TYPED_CHANGED_FACTS);
+    await clean();
+  });
+
+  test("a draft's texts come back after a reload: each was saved when its field lost focus, a refused save is worded under its field with the text kept, a saved text is restored with its digest, one answered with other words under its digest is dropped, and the decision names the text saved before the reload", async () => {
+    const [before, options] = [await signatures(), fixtures.state.stepUpOptionsServed];
+    const QUOTING = 'The reporter wrote "this account spams one link everywhere".';
+    const REASON = "The post repeats one link, which the rule names.";
+    const saves = () => fixtures.state.requests.filter((r) => r.method === "POST" && r.path === `/api/staff/cases/${CASE_DRAFTS}/texts`).map((r) => r.status);
+    const mine = () => fixtures.state.texts.filter((text) => text.caseId === CASE_DRAFTS);
+    await page.goto(`${origin}/cases/${CASE_DRAFTS}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    await composer.getByLabel("Facts").fill(TYPED_DRAFT_FACTS);
+    await composer.getByLabel("Facts").press("Tab");
+    await arrived(() => mine().length === 1, "the facts saved when their field lost focus");
+    expect(mine()[0]).toMatchObject({ kind: "facts", text: TYPED_DRAFT_FACTS });
+    // A text that quotes what someone wrote about the case is refused where it was written, and nothing of it is lost.
+    fixtures.state.refuseNextSave = "text_quotes_user";
+    await composer.getByLabel("Reason", { exact: true }).fill(QUOTING);
+    await composer.getByLabel("Reason", { exact: true }).press("Tab");
+    await shown(composer.getByRole("alert").filter({ hasText: messageFor("text_quotes_user") }));
+    expect(await composer.getByLabel("Reason", { exact: true }).inputValue()).toBe(QUOTING);
+    expect(saves()).toEqual([201, 422]);
+    expect(mine()).toHaveLength(1);
+    // Written again in the person's own words, the refusal's words go, and the text is saved when its field loses focus.
+    await composer.getByLabel("Reason", { exact: true }).fill(REASON);
+    await composer.getByRole("alert").waitFor({ state: "detached" });
+    await composer.getByLabel("Reason", { exact: true }).press("Tab");
+    await arrived(() => mine().length === 2, "the reason saved when its field lost focus");
+    expect(mine()[1]).toMatchObject({ kind: "reason", text: REASON });
+    // No key was asked for any of it.
+    expect(await signatures()).toBe(before);
+    expect(fixtures.state.stepUpOptionsServed).toBe(options);
+    await clean();
+
+    // A reload before any confirmation: the case's answer brings the saved texts back. This one answers the reason with
+    // other words under the digest of what was saved: the page holds each text to its digest, and drops that one.
+    fixtures.state.forgedDraft = { caseId: CASE_DRAFTS, kind: "reason" };
+    await page.goto(`${origin}/cases/${CASE_DRAFTS}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    const again = page.getByRole("region", { name: "Decide" });
+    await shown(again);
+    expect(await again.getByLabel("Facts").inputValue()).toBe(TYPED_DRAFT_FACTS);
+    expect(await again.getByLabel("Reason", { exact: true }).inputValue()).toBe("");
+    expect(await page.content()).not.toContain(FORGED_DRAFT);
+    expect(saves()).toEqual([201, 422, 201]);
+    await clean();
+
+    // A measure and a reason later the key confirms the decision. The click that confirms takes the focus from the
+    // reason's field: that save ends first, the confirmation saves nothing, and the facts are the ones saved before the reload.
+    await again.getByLabel(MEASURES.withhold.label, { exact: true }).check();
+    await again.getByLabel("Reason", { exact: true }).fill(REASON);
+    await again.getByRole("button", { name: "Confirm with your staff key" }).click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    expect(saves()).toEqual([201, 422, 201, 201]);
+    expect(mine().map((text) => text.kind)).toEqual(["facts", "reason", "reason"]);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({
+      caseId: CASE_DRAFTS,
+      params: { kind: "interim", stateVersion: 1, throughSeq: 0, outcome: "restricted", ground: "incompatible", ruleId: "R1", actions: [{ kind: "withhold", mediaId: null }], factsDigest: mine()[0]!.digest, reasonDigest: mine()[2]!.digest, legalReferenceDigest: null },
+    });
+    fixtures.state.forgedDraft = null;
+    expect(await texts()).toContain(TYPED_DRAFT_FACTS);
+    await clean();
+  });
+
+  test("home lists, for every staff member, the decisions that lifted the protection of reported images, the choices not to seal and the seals taken while deciding, each with its staff handle as text and its case", async () => {
+    await page.getByRole("link", { name: "Home" }).click();
+    await shown(page.getByRole("heading", { name: "Home" }));
+    await shown(page.getByRole("heading", { name: "Protection of reported images lifted in the last 30 days" }));
+    const lists = page.locator("ul.reveals");
+    await shown(lists.nth(3));
+    // The reveals' list, then the three of the path, in the order the screen names them.
+    expect(await lists.count()).toBe(4);
+    expect(await lists.nth(1).locator("li").innerText()).toContain(PROTECTION_LIFTED_WORDS.dismissed);
+    expect(await lists.nth(1).locator("a").getAttribute("href")).toBe(`/cases/${CASE_FROZEN}`);
+    // Two choices not to seal: the one the fixtures hold on the frozen case, and the one the walk recorded.
+    expect(await lists.nth(2).locator("li").allInnerTexts()).toEqual([expect.stringContaining("Chose not to seal"), expect.stringContaining("Chose not to seal")]);
+    expect(await page.evaluate(`[...document.querySelectorAll("ul.reveals")[2].querySelectorAll("a")].map((link) => link.getAttribute("href"))`)).toEqual([`/cases/${CASE_FROZEN}`, `/cases/${CASE_DECLINE}`]);
+    // The reason of a choice not to seal is on its case, never here.
+    expect(await page.locator("#root").innerText()).not.toContain(TYPED_DECLINE);
+    expect(await lists.nth(3).locator("li").innerText()).toContain("3 images on 2 posts");
+    expect(await lists.nth(3).locator("a").getAttribute("href")).toBe(`/cases/${CASE_SEALABLE}`);
+    const shownTexts = await texts();
+    for (const text of [PERSON_HANDLE, HOSTILE.img]) expect(shownTexts, text).toContain(text);
+    await shown(page.locator("ul.signins"));
+    await shown(page.locator("ul.keys"));
+    await shown(page.getByRole("cell", { name: "This session" }));
     await clean();
   });
 

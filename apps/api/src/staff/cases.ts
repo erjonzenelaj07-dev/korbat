@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import { FindingRequest, MEDIA_SIZES, MediaId, QueueQuery, StaffTextSaveRequest, type CaseDecisionResponse } from "@korbat/contracts";
+import { FindingRequest, MEDIA_SIZES, MediaId, QueueQuery, StaffTextSaveRequest } from "@korbat/contracts";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { AuthError, type ActiveStaffSession, type AuthForStaff, type StaffStepUpConfirmed } from "../auth";
@@ -80,7 +80,8 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
   // A decision on a case: the path's case is the action's target, and the body is the action's params with the assertion
   // as `stepUp`. The decision commits with its audit row or not at all. When the confirming key or account no longer
   // opens anything by then, the session that confirmed has ended, and requireStaff clears both cookies on that answer as
-  // on its own; when the challenge's time ran out, the console asks for the key again.
+  // on its own; when the challenge's time ran out, the console asks for the key again. The answer is the case as it now
+  // stands, so the console shows what the decision left; the case is the one the step-up confirmed.
   routes.post(
     "/cases/:case/decisions",
     auth.requireStaff,
@@ -89,8 +90,7 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
       const outcome = await moderation.decide(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId") });
       if (outcome === "ended") throw new AuthError("staff_session_required", 401);
       if (outcome === "late") throw new AuthError("challenge_expired", 400);
-      const answer: CaseDecisionResponse = { decisionId: outcome.decisionId };
-      return c.json(answer, 201);
+      return c.json(await moderation.decidedCase(staffSession(c), confirmedStepUp(c).target.id), 201);
     },
   );
 

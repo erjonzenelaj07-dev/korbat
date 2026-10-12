@@ -35,14 +35,14 @@ export function newSalt(random: RandomBytes = browserRandom): string {
 export const normalised = (text: string): string => text.trim().normalize("NFC");
 
 /**
- * Saves a text on a case and answers its id, the text as it was saved and the digest computed here from the salt and
- * that text. A text the rules refuse is not sent at all. The request is its person's: it carries the activity mark.
+ * Saves a text on a case and answers its id, the text as it was saved, the salt drawn here and the digest computed here
+ * from that salt and that text. A text the rules refuse is not sent at all. The request is its person's: it carries the activity mark.
  *
  * The answer's digest must be the one that was sent. An API that answers a save with the digest of another text would
  * otherwise have the page build a confirmed action from it, and the key sign a reason or a statement its person never
  * wrote: such an answer is refused as one the console cannot read, and nothing is built from it.
  */
-export async function saveStaffText(deps: { api: StaffApi; random?: RandomBytes }, caseId: CaseId, kind: StaffTextKind, written: string): Promise<StaffTextSaved & { text: string }> {
+export async function saveStaffText(deps: { api: StaffApi; random?: RandomBytes }, caseId: CaseId, kind: StaffTextKind, written: string): Promise<StaffTextSaved & { text: string; salt: string }> {
   const text = normalised(written);
   // No text is saved empty, whatever its kind: the API refuses one as an invalid request, so none is sent.
   if (text === "") throw new ApiError(0, "invalid_request");
@@ -51,5 +51,5 @@ export async function saveStaffText(deps: { api: StaffApi; random?: RandomBytes 
   const digest = await textDigest(salt, text);
   const saved = await deps.api.saveText(caseId, { kind, text, salt, digest }, { activity: true });
   if (saved.digest !== digest) throw new ApiError(0, "invalid_answer");
-  return { id: saved.id, digest, text };
+  return { id: saved.id, digest, text, salt };
 }

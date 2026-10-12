@@ -225,6 +225,47 @@ export const MEASURES = {
   restore_bio: { interim: false, final: false, lifts: ["reset_bio"], target: "bio", label: "Lift the reset of the bio" },
 } as const satisfies Record<ActionKind, MeasureSpec>;
 
+/** The seven measures and the five reversals, each list in the ledger's order: what a statement's data keeps apart. */
+export const MEASURE_KINDS = ["withhold", "remove", "seal_media", "withhold_media", "remove_media", "reset_display_name", "reset_bio"] as const satisfies readonly ActionKind[];
+export type MeasureKind = (typeof MEASURE_KINDS)[number];
+export const REVERSAL_KINDS = ["restore", "unseal_media", "restore_media", "restore_display_name", "restore_bio"] as const satisfies readonly ActionKind[];
+export type ReversalKind = (typeof REVERSAL_KINDS)[number];
+
+/**
+ * The console's fixed drafts of the facts and the reason of a seal (3c design, section 10). Nobody at korbat opens images
+ * that are reported as child sexual abuse material, so none of these says or implies that korbat found them to be such
+ * material, and each reason says that korbat's staff do not open them: the statement then tells its author what korbat
+ * knows and no more. The composer fills them in, and the moderator may edit them. The two `added` drafts are for a case
+ * whose suspect items korbat added for a quoted post: they never say that this post was reported, and name no other post.
+ */
+export const SEAL_DRAFTS = {
+  facts: {
+    notice_post: "korbat received a notice that reports images of this post as child sexual abuse material.",
+    notice_account: "korbat received a notice that reports this account for child sexual abuse material. It does not say which images, so korbat sealed every image on the account's posts.",
+    notice_added: "korbat received a notice about content on korbat that shows this post's images and reports them as child sexual abuse material.",
+    finding_post: "A moderator reported images of this post as possible child sexual abuse material.",
+    finding_account: "A moderator reported images on this account's posts as possible child sexual abuse material. korbat sealed every image on the account's posts.",
+    finding_added: "A moderator reported content on korbat that shows this post's images as possible child sexual abuse material.",
+  },
+  reason: {
+    deciding: "korbat's staff do not open images reported this way, so korbat has not assessed them. It hides them from everyone, you included, until an admin has answered the report.",
+    final:
+      "korbat's staff do not open images reported this way, so korbat has not assessed them. An admin found the report credible enough to keep the images sealed and to report them to the police, who can assess them.",
+  },
+} as const;
+
+/**
+ * The facts draft of a seal, chosen from the suspect items its decision considers: a notice's draft when any of them came
+ * from a user's notice, else a finding's; the `added` form when every one of them is an item korbat added for a quoted
+ * post (or a re-examination of one), else the post's or the account's by the case's target.
+ */
+export function sealFactsDraft(target: "post" | "account", items: readonly { source: "user" | "finding"; added: boolean }[]): string {
+  if (items.length === 0) throw new Error("a seal's facts are drafted from the suspect items its decision considers: there is no suspect item");
+  const from = items.some((item) => item.source === "user") ? "notice" : "finding";
+  const about = items.every((item) => item.added) ? "added" : target;
+  return SEAL_DRAFTS.facts[`${from}_${about}`];
+}
+
 /** One measure or reversal as a decision's confirmed params name it: its kind, and for an image measure the image. */
 export interface DecisionActionParams {
   kind: ActionKind;
@@ -436,6 +477,122 @@ export type NoticeContactRequest = z.infer<typeof NoticeContactRequest>;
 export const ITEM_OUTCOMES = ["restricted_rule", "restricted_legal", "no_violation", "not_evident", "not_available", "partly_reversed", "reversed"] as const;
 export const ItemOutcome = z.enum(ITEM_OUTCOMES);
 export type ItemOutcome = z.infer<typeof ItemOutcome>;
+
+/**
+ * One phrase for each outcome, which the mails, the status page and the app's list all take from here (3c design,
+ * section 10). `{rule}` and `{title}` stand for the rule the restricting decision cites, in the wording of the rulebook
+ * it was made under. A reader composes a whole answer with outcomeWords, never from these alone.
+ */
+export const OUTCOME_PHRASES = {
+  restricted_rule: "access restricted: it breaks korbat rule {rule} ({title})",
+  restricted_legal: "access restricted: korbat found it illegal",
+  no_violation: "no action: korbat found no breach of its rules and nothing illegal",
+  not_evident: "no action: korbat found no breach of its rules, and whether it is illegal cannot be seen without a detailed legal examination; a court or an authority can order its removal",
+  not_available: "no action: the link names nothing korbat can show (checked automatically)",
+  partly_reversed: "korbat reversed part of its decision to restrict it",
+  reversed: "korbat reversed its decision to restrict it",
+} as const satisfies Record<ItemOutcome, string>;
+
+/** After a restricting outcome whose decision's measures all changed nothing when they were imposed. */
+export const ALREADY_NOT_SHOWN = "It was already not shown on korbat, so nothing changed now; korbat's restriction stays in force should that change.";
+
+/** After the outcome of an item about an account that is not suspect and whose answering decision sealed nothing. */
+export const ACCOUNT_ITEM_SCOPE = "This answer concerns the account's display name and bio. korbat decides about its posts and images in cases of their own and does not report those here.";
+
+/** After the outcome of an item about a post that quotes another (never a suspect item, whose quoted post has an item of its own). */
+export const QUOTE_ITEM_SCOPE = "This answer concerns this post's own text and images. korbat decides about the post it quotes, shown inside its card, in a case of its own and does not report that here.";
+
+/** After the outcome of an item about an account that is suspect, or that a decision holding a seal answered: that answer does concern the images on the account's posts. */
+export const ACCOUNT_SUSPECT_SCOPE =
+  "This answer concerns the account's display name and bio and, taken together, the images on its posts. korbat decides about single posts of the account, and about what its posts say, in cases of their own and does not report those here.";
+
+/**
+ * On the path for child sexual abuse material nobody opens the images, so no item is shown words that say korbat found
+ * something about them. `sealed` stands for every item whose answering decision holds a seal, suspect or not, in place of
+ * the two restricting phrases; `no_action` for a suspect item answered without action, in place of the two no-action ones.
+ */
+export const SUSPECT_OUTCOME_PHRASES = {
+  sealed: "access restricted: korbat sealed its images without opening them. They are shown to nobody, their author included, and are kept for the authorities.",
+  no_action:
+    "no action: korbat's staff do not open images reported this way. An admin found in the report, and in what korbat can read and still holds of it, no sufficient ground to seal images or to restrict anything else.",
+} as const;
+
+/** After the restricting phrase of a suspect item that a decision answered by a measure on the post's text, without a seal. */
+export const SUSPECT_NO_SEAL = "No image was sealed; korbat's staff do not open images reported this way.";
+
+/**
+ * For an item on another ground about a post that a decision answered without action while nobody could open the post's
+ * images (decisions.unseen), in place of the two no-action phrases: it tells its sender the truth, and such an answer
+ * does not spend the one re-examination.
+ */
+export const UNSEEN_NO_ACTION =
+  "no action for now: when korbat decided, its staff could not open this post's images, because a report of another kind about them was waiting or they were sealed. If your report is about an image, ask for a re-examination.";
+
+/** What decides how one item's outcome reads: the facts of the item and of the decision that answered it. */
+export interface OutcomeWordsInput {
+  outcome: ItemOutcome;
+  /** The rule a `restricted_rule` outcome names, with its title in the rulebook the decision was made under; null for every other outcome. */
+  rule: { id: string; title: string } | null;
+  /** The item itself is suspect: a report of child sexual abuse material, or a finding citing R2. */
+  suspect: boolean;
+  /** The answering decision holds a seal. */
+  sealed: boolean;
+  /** The answering decision was taken while nobody could open the post's images, and the item is about a post and not suspect. */
+  unseen: boolean;
+  /** Every measure of the answering decision changed nothing when it was imposed. */
+  noEffect: boolean;
+  /** What the answer concerns, as the status answer gives it. */
+  scope: "account" | "quote" | "account_suspect" | null;
+}
+
+const NO_ACTION: readonly ItemOutcome[] = ["no_violation", "not_evident"];
+const RESTRICTING: readonly ItemOutcome[] = ["restricted_rule", "restricted_legal"];
+
+/** A phrase as a sentence: with the one full stop it ends in. */
+const sentence = (phrase: string): string => (phrase.endsWith(".") ? phrase : `${phrase}.`);
+
+/**
+ * One item's outcome as its sender reads it, in a mail's line, on the status page and in the app's list alike: the
+ * outcome's phrase, then the sentences that follow it, in this order (3c design, section 7.8, step 4, and section 10).
+ *   - The phrase. A restriction by a decision that holds a seal reads the `sealed` phrase, whatever the item's ground. A
+ *     suspect item answered without action reads the `no_action` phrase. An item on another ground about a post, answered
+ *     without action with the images out of sight, reads UNSEEN_NO_ACTION; an item about an account never does, since its
+ *     answer concerns the display name and bio, which staff read. Every other outcome reads its own phrase, also a
+ *     reversal and a link that named nothing on that path.
+ *   - SUSPECT_NO_SEAL, after a suspect item's restriction that sealed nothing.
+ *   - ALREADY_NOT_SHOWN, after a restricting outcome whose measures all changed nothing.
+ *   - The scope's sentence, after every outcome but `not_available`.
+ * The text ends in one full stop.
+ */
+export function outcomeWords(input: OutcomeWordsInput): string {
+  const { outcome, scope } = input;
+  const aboutAccount = scope === "account" || scope === "account_suspect";
+  const parts: string[] = [];
+  if (RESTRICTING.includes(outcome) && input.sealed) {
+    parts.push(SUSPECT_OUTCOME_PHRASES.sealed);
+  } else if (NO_ACTION.includes(outcome) && input.suspect) {
+    parts.push(SUSPECT_OUTCOME_PHRASES.no_action);
+  } else if (NO_ACTION.includes(outcome) && input.unseen && !aboutAccount) {
+    parts.push(UNSEEN_NO_ACTION);
+  } else if (outcome === "restricted_rule") {
+    if (input.rule === null) throw new Error("a restriction under a rule is worded with its rule: none was given");
+    const { id, title } = input.rule;
+    // Each placeholder is filled by a function, so that no character of an id or a title is read as a pattern.
+    parts.push(sentence(OUTCOME_PHRASES.restricted_rule.replace("{rule}", () => id).replace("{title}", () => title)));
+  } else {
+    parts.push(sentence(OUTCOME_PHRASES[outcome]));
+  }
+  if (RESTRICTING.includes(outcome)) {
+    if (input.suspect && !input.sealed) parts.push(SUSPECT_NO_SEAL);
+    if (input.noEffect) parts.push(ALREADY_NOT_SHOWN);
+  }
+  if (outcome !== "not_available") {
+    if (scope === "account") parts.push(ACCOUNT_ITEM_SCOPE);
+    if (scope === "account_suspect") parts.push(ACCOUNT_SUSPECT_SCOPE);
+    if (scope === "quote") parts.push(QUOTE_ITEM_SCOPE);
+  }
+  return parts.join(" ");
+}
 
 /**
  * One item of a notice as its sender reads it. `link` is the item's korbat address, an account's built from the handle
@@ -986,6 +1143,75 @@ export const CaseView = z.object({
 });
 export type CaseView = z.infer<typeof CaseView>;
 
+// ---------------------------------------------------------------- the statement of reasons
+
+/** A measure as a statement tells of it: what it was, the image of an image measure, whether it changed anything, and what a seal covers. */
+export const StatementMeasure = z.object({
+  kind: z.enum(MEASURE_KINDS),
+  mediaId: z.uuid().nullable(),
+  /** Null when the measure changed what someone sees; `already` or `deleted` when it did not. */
+  noEffect: z.enum(["already", "deleted"]).nullable(),
+  /** For a seal: the posts and images its list held when it was recorded, and how many of those images were on posts their author had deleted by then. */
+  sealed: z.object({ posts: Count, images: Count, deletedImages: Count }).nullable(),
+});
+export type StatementMeasure = z.infer<typeof StatementMeasure>;
+
+/**
+ * What a statement says of a field reset that ended or was lifted: the decision that holds the reset (whose screen shows
+ * the old value), whether korbat still kept that value when this decision was made, and the rule that decision cites,
+ * since a value reset under R4 may have been erased by then.
+ */
+const ResetFacts = { resetDecisionId: z.uuid().nullable(), oldValueKept: z.boolean(), resetRuleId: z.enum(RULE_IDS).nullable() };
+
+/** A reversal as a statement tells of it. The reset's facts are set only on the lifting of a field reset. */
+export const StatementReversal = z.object({ kind: z.enum(REVERSAL_KINDS), mediaId: z.uuid().nullable(), ...ResetFacts });
+export type StatementReversal = z.infer<typeof StatementReversal>;
+
+/** A measure taken while deciding that ended with the decision, without a reversal. The reset's facts are set only on a field reset. */
+export const StatementEndedMeasure = z.object({ kind: z.enum(MEASURE_KINDS), mediaId: z.uuid().nullable(), ...ResetFacts });
+export type StatementEndedMeasure = z.infer<typeof StatementEndedMeasure>;
+
+/**
+ * The statement's data (3c design, section 10): everything a statement of reasons is rendered from, and nothing a later
+ * event changes, so a statement reads as it was sent whenever it is rendered. It is the part of a decision that the
+ * author's decision view, the console's preview and the mail share; @korbat/rules renders it (statementParagraphs).
+ *   - `rulesVersion` and `redressVersion`: the rulebook and the redress texts the decision was made under.
+ *   - `facts`, `reason`, `legalReference`: the staff texts, each null when the decision has none or it was erased.
+ *   - `post`: the post a post case is about, by its id and creation time, which survive its deletion; null for an account case.
+ *   - `endedMeasures`: the measures taken while deciding that ended with this decision. A seal taken while deciding is
+ *     left out when the decision itself seals, since the images stay sealed.
+ *   - `reviewed`: for a review or a correction, the decision it reviews, whose rule or law the statement renders
+ *     under the rulebook version that decision was made under (`reviewed.rulesVersion`), never under its own.
+ */
+export const DecisionStatement = z.object({
+  kind: z.enum(["interim", "final", "review", "correction"]),
+  outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
+  ground: z.enum(["incompatible", "illegal"]).nullable(),
+  ruleId: z.enum(RULE_IDS).nullable(),
+  rulesVersion: z.number().int().positive(),
+  redressVersion: z.number().int().positive(),
+  legalReference: z.string().nullable(),
+  facts: z.string().nullable(),
+  reason: z.string().nullable(),
+  source: z.enum(["notice", "report", "own_initiative"]),
+  decidedAt: z.iso.datetime(),
+  post: z.object({ id: z.uuid(), createdAt: z.iso.datetime() }).nullable(),
+  measures: z.array(StatementMeasure),
+  reversals: z.array(StatementReversal),
+  endedMeasures: z.array(StatementEndedMeasure),
+  reviewed: z
+    .object({
+      kind: z.enum(["interim", "final"]),
+      ground: z.enum(["incompatible", "illegal"]).nullable(),
+      ruleId: z.enum(RULE_IDS).nullable(),
+      rulesVersion: z.number().int().positive(),
+      legalReference: z.string().nullable(),
+      decidedAt: z.iso.datetime(),
+    })
+    .nullable(),
+});
+export type DecisionStatement = z.infer<typeof DecisionStatement>;
+
 /** How many rows each of the overview's lists holds at most; its total says how many there are. */
 export const OVERVIEW_LIST_MAX = 100;
 
@@ -997,7 +1223,11 @@ const HandleCount = z.object({ handle: z.string(), count: Count });
  * oldest unanswered item waits; the appeals waiting; every reveal of a source in the last 30 days, newest first, with
  * its staff handle and its case; per staff handle the images viewed and the findings opened today (UTC); the mails
  * waiting for more than an hour and those given up in the last 30 days; the decided items the daily release has not
- * released after 26 hours; and whether the emergency switch is on. Counts, times, handles and cases only.
+ * released after 26 hours; and whether the emergency switch is on. And, of the path for child sexual abuse material,
+ * three lists every staff member sees: the decisions of the last 30 days that lifted the protection of reported images
+ * (a lifted seal, `unsealed`, or an admin's final answer to such a report without a seal, `dismissed`), the recorded
+ * choices not to seal of the last 30 days, and the seals taken while deciding that are in force, each with what it
+ * covers. Counts, times, handles and cases only.
  */
 export const StaffOverview = z.object({
   lanes: z.array(z.object({ lane: LaneNumber, open: Count, oldestAt: z.iso.datetime().nullable() })).length(3),
@@ -1009,5 +1239,8 @@ export const StaffOverview = z.object({
   mailsFailed: MailCounts,
   releaseOverdue: Count,
   deferUnproven: z.boolean(),
+  protectionLifted: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid(), kind: z.enum(["unsealed", "dismissed"]) })).max(OVERVIEW_LIST_MAX) }),
+  sealsDeclined: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid() })).max(OVERVIEW_LIST_MAX) }),
+  interimSeals: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid(), posts: Count, images: Count })).max(OVERVIEW_LIST_MAX) }),
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;

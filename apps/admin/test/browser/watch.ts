@@ -12,10 +12,11 @@ import type { BrowserContext, CDPSession, Page } from "playwright-core";
 /**
  * Console errors the walk causes on purpose, which Chromium logs for every answer that is not a success, with the statuses
  * the API answers them with: 401 (no session, an ended session), 403 (a synced key refused at enrolment), 404 (the
- * console off), and 400 and 409, which the API answers other refusals of a key or a link with. What the page then shows
- * is checked step by step, and a request the fixtures refuse for the page's own fault is one of their problems.
+ * console off), and 400 and 409, which the API answers other refusals of a key or a link with, 409 also a decision on a
+ * case that changed; 422, a text the API refuses to save, and 429, a save over the minute's limit. What the page then
+ * shows is checked step by step, and a request the fixtures refuse for the page's own fault is one of their problems.
  */
-const EXPECTED_HTTP_ERROR = /^Failed to load resource: the server responded with a status of (400|401|403|404|409) /;
+const EXPECTED_HTTP_ERROR = /^Failed to load resource: the server responded with a status of (400|401|403|404|409|422|429) /;
 const POLICY_TEXT = /Content.Security.Policy|Trusted.?Type|require-trusted-types-for|Refused to/i;
 
 /**

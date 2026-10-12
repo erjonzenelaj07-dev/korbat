@@ -6,20 +6,25 @@ import { createAuthRepo } from "../../src/auth/repo";
 import { auditVerify } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
 import { ModerationError } from "../../src/moderation/context";
+import { casesCalling } from "../../src/moderation/dispatch";
 import { recordIntake } from "../../src/moderation/intake";
 import { appendConfirmedAudit, insertAction, insertDecision } from "../../src/moderation/repo";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import {
   aPost,
   act,
+  authCaseCounts,
   decisionParams,
+  decisionRow,
   gate,
   ground,
   hex64,
   imageStates,
+  inForce,
   madeUpConfirmation,
   newImageRow,
   newPostRow,
+  postFrozen,
   postRow,
   raised,
   refusal,
@@ -28,6 +33,7 @@ import {
   untilBlocked,
   type DecisionInput,
 } from "./moderation-fixtures";
+import { noticesWorld } from "./notices-harness";
 import { newProfile } from "./social-fixtures";
 import { pgError, rolledBack, withLockTimeout } from "./staff-fixtures";
 
@@ -60,6 +66,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: committed decisions and 
   let takenDown: RealStaff;
   /** A moderator whose key the real revocation revokes. */
   let ordered: RealStaff;
+  /** Two moderators who decide one case at the same moment, and one who seals while a report arrives. */
+  let first: RealStaff;
+  let second: RealStaff;
+  let sealer: RealStaff;
   let before: Record<string, number>;
 
   beforeAll(async () => {
@@ -72,12 +82,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: committed decisions and 
     capped = await world.staff("moderator");
     takenDown = await world.staff("moderator");
     ordered = await world.staff("moderator");
-    before = await rowCounts(apiDb);
+    first = await world.staff("moderator");
+    second = await world.staff("moderator");
+    sealer = await world.staff("moderator");
+    before = await counts();
   }, 120_000);
   afterAll(async () => {
     await world.close();
     await closeDb(apiDb);
   });
+
+  /** How many rows the tables these tests write, and the four auth tables of moderation cases, hold. */
+  const counts = async (): Promise<Record<string, number>> => ({ ...(await rowCounts(apiDb)), ...(await authCaseCounts(migrateDb)) });
 
   /** A committed post with this many images, reported under a rule or on the path for child sexual abuse material, and its open case. Everything is removed after `fn`. */
   async function withReported(fn: (made: { authorId: string; postId: string; mediaIds: string[]; caseId: string }) => Promise<void>, options: { images?: number; by?: "rule" | "csam" } = {}) {
@@ -440,6 +456,121 @@ describe.skipIf(!process.env.INTEGRATION)("integration: committed decisions and 
     });
   });
 
+  test("two moderators deciding one case at the same moment, each in a session of their own: the first commits, and the second, who read the same case, is told that it changed and decides it again as it now stands", async () => {
+    await withReported(async ({ postId, caseId }) => {
+      // Both opened the case as it stood and confirmed a decision on it with their own key.
+      const [withhold, close] = [await prepared(first, caseId, { kind: "interim", actions: [act("withhold")] }), await prepared(second, caseId, { kind: "final", outcome: "no_violation" })];
+      const settled = <T>(promise: Promise<T>) => promise.then((value) => value as unknown, (err: unknown) => err);
+      const outcomes = await whileHeadHeld(async (letGo) => {
+        // The first decision is written and waits for the chain's head, holding the case and its subject.
+        const earlier = settled(withhold());
+        await untilBlocked(apiDb, "append_confirmed_audit");
+        // The second waits for the author's profile row, which every decision about them takes first.
+        const later = settled(close());
+        await untilBlocked(apiDb, "from profiles where id = any");
+        await letGo();
+        return Promise.all([earlier, later]);
+      });
+      expect(outcomes[0]).toEqual({ decisionId: expect.any(String) });
+      expect(outcomes[1]).toBeInstanceOf(ModerationError);
+      expect(outcomes[1]).toMatchObject({ code: "case_changed" });
+      // Nothing of the second is stored: no decision, no audit row, and the case is still open and withheld.
+      expect(await decisionsOf(caseId)).toBe(1);
+      const [audit] = await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from audit_log where action = 'case_decided' and target_id = ${caseId}`);
+      expect(audit!.n).toBe(1);
+      expect(await postRow(apiDb, postId)).toMatchObject({ state: "withheld", level: "withheld" });
+      // The second moderator opens the case again and decides it as it now stands: the withhold ends with the case.
+      expect(await world.decideAs(second, caseId, { kind: "final", outcome: "no_violation" })).toEqual({ decisionId: expect.any(String) });
+      expect(await postRow(apiDb, postId)).toMatchObject({ state: "visible", level: "visible" });
+      expect(await decisionsOf(caseId)).toBe(2);
+    });
+  });
+
+  describe("a report of child sexual abuse material that commits while a seal's decision waits for its first lock", () => {
+    const SEAL: DecisionInput = { kind: "interim", ruleId: "R2", actions: [act("seal_media")] };
+    const settled = <T>(promise: Promise<T>) => promise.then((value) => value as unknown, (err: unknown) => err);
+
+    test("the seal would not be in force for the only report it rests on: the confirmation is refused as case_changed with nothing stored and nothing mailed, and confirmed again it seals, leaves no served image and mails its author once", async () => {
+      // A world with the real auth module and a mailer, so that what follows a commit can be seen: the statement's mail.
+      const w = noticesWorld();
+      const mailing = deciderWorld(w.apiDb, { auth: w.authForModeration });
+      try {
+        const member = await mailing.staff("moderator");
+        const [author, reporter] = [await w.account(), await w.account()];
+        const postId = await newPostRow(w.apiDb, author.id);
+        const mediaIds = [await newImageRow(w.apiDb, author.id, postId, 0)];
+        const caseId = (await recordIntake(w.deps, { ground: ground.rule(reporter.id), live: [aPost(postId)] })).items[0]!.caseId!;
+        // The seal is confirmed on the case as it stands, holding a rule report; the report it would rest on arrives while it waits.
+        const confirmed = await mailing.confirm(member, caseId, await decisionParams(w.apiDb, member, caseId, SEAL));
+        const [refused, reported] = await whileHeld(sql`select 1 from profiles where id = ${author.id}::uuid for no key update`, async (letGo) => {
+          // The decision's transaction has begun, which fixes its time, and waits for its first lock: the author's row.
+          const deciding = settled(mailing.moderation.forStaff.decide(member.session, confirmed, { requestId: `req-${randomUUID()}` }));
+          await untilBlocked(apiDb, "from profiles where id = any");
+          const arrived = await recordIntake(w.deps, { ground: ground.csam(), live: [aPost(postId)] });
+          await letGo();
+          return [await deciding, arrived] as const;
+        });
+        await mailing.moderation.settle();
+        expect(reported.items[0]!.caseId).toBe(caseId);
+        // The item arrived after the decision's time, so the seal would not be in force: the decision is not recorded at all.
+        expect(refused).toBeInstanceOf(ModerationError);
+        expect(refused).toMatchObject({ code: "case_changed" });
+        const [stored] = await w.migrateDb.execute<{ decisions: number; actions: number; lists: number; audit: number }>(sql`
+          select (select count(*)::int from decisions where case_id = ${caseId}::uuid) as decisions,
+                 (select count(*)::int from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = ${caseId}::uuid) as actions,
+                 (select count(*)::int from seal_posts s where s.post_id = ${postId}::uuid) as lists,
+                 (select count(*)::int from audit_log where action = 'case_decided' and target_id = ${caseId}) as audit`);
+        expect({ ...stored! }).toEqual({ decisions: 0, actions: 0, lists: 0, audit: 0 });
+        expect(await imageStates(w.apiDb, mediaIds)).toEqual(["visible"]);
+        // The post is frozen all the same, through the new item, and nobody was told of a seal that never was.
+        expect(await postFrozen(w.apiDb, postId)).toBe(true);
+        expect(w.mailer.to(author.email, "moderation_decision")).toEqual([]);
+        // Once the item is 15 minutes old the dispatch job repeats the urgent lane's alert for it,
+        const later = () => new Date(Date.now() + 16 * 60_000);
+        expect(await casesCalling(w.deps, later())).toContain(caseId);
+
+        // until the person reads the case again and confirms again, in a transaction that begins after the item.
+        expect(await mailing.decideAs(member, caseId, SEAL)).toEqual({ decisionId: expect.any(String) });
+        expect(await inForce(w.apiDb, { caseId })).toEqual(["seal_media"]);
+        expect(await imageStates(w.apiDb, mediaIds)).toEqual(["sealed"]);
+        expect(await casesCalling(w.deps, later())).not.toContain(caseId);
+        expect(w.mailer.to(author.email, "moderation_decision").map((mail) => mail.data.subject)).toEqual(["seal_deciding"]);
+      } finally {
+        await w.cleanUp();
+        await mailing.close();
+        await w.close();
+      }
+    });
+
+    test("on a case that already holds an unanswered report of this kind, the seal is accepted and in force: it rests on the earlier report, and covers the images whatever arrives meanwhile", async () => {
+      await withReported(
+        async ({ authorId, postId, mediaIds, caseId }) => {
+          const decide = await prepared(sealer, caseId, SEAL);
+          const [sealed, reported] = await whileHeld(sql`select 1 from profiles where id = ${authorId}::uuid for no key update`, async (letGo) => {
+            const deciding = settled(decide());
+            await untilBlocked(apiDb, "from profiles where id = any");
+            const arrived = await recordIntake(world.moderation.deps, { ground: ground.csam(), live: [aPost(postId)] });
+            await letGo();
+            return [await deciding, arrived] as const;
+          });
+          expect(reported.items[0]!.caseId).toBe(caseId);
+          expect(sealed).toEqual({ decisionId: expect.any(String) });
+          const seal = (sealed as { decisionId: string }).decisionId;
+          // The second report arrived after the decision's time; the first one, which the seal was taken for, did not.
+          const [order] = await apiDb.execute<{ after: boolean; before: boolean }>(sql`
+            select (select max(created_at) from intake_items where case_id = ${caseId}::uuid) > (select decided_at from decisions where id = ${seal}::uuid) as after,
+                   (select min(created_at) from intake_items where case_id = ${caseId}::uuid) <= (select decided_at from decisions where id = ${seal}::uuid) as before`);
+          expect({ ...order! }).toEqual({ after: true, before: true });
+          expect((await decisionRow(apiDb, seal)).suspect).toBe(true);
+          expect(await inForce(apiDb, { caseId })).toEqual(["seal_media"]);
+          expect(await imageStates(apiDb, mediaIds)).toEqual(["sealed"]);
+          expect(await postFrozen(apiDb, postId)).toBe(true);
+        },
+        { images: 1, by: "csam" },
+      );
+    });
+  });
+
   describe("the check at COMMIT covers every row of the ledger", () => {
     /**
      * A decision's statements as the API issues them, in one transaction of korbat_api that commits: the subject's lock,
@@ -633,7 +764,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: committed decisions and 
     });
   });
 
-  test("this file left no row behind: the tables it writes hold what they held before it", async () => {
-    expect(await rowCounts(apiDb)).toEqual(before);
+  test("this file left no row behind: the tables it writes, the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
+    expect(await counts()).toEqual(before);
   });
 });

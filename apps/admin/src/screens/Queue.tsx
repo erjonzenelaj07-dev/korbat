@@ -1,4 +1,5 @@
 import { FINDING_CATEGORIES, FindingRequest, RULE_DEFAULT_CATEGORY, RULE_IDS, type QueueRow, type RuleId, type TdbCategory } from "@korbat/contracts";
+import { getRule } from "@korbat/rules";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { StaffApi } from "../api";
 import { systemClock, type Clock } from "../idle";
@@ -148,9 +149,10 @@ export function QueueView({ rows, more, loadingMore, now, finding, onLoadMore, o
         <input id="finding-link" type="text" value={finding.link} maxLength={300} autoComplete="off" spellCheck={false} onChange={(event) => onFindingChange({ link: event.target.value })} />
         <label htmlFor="finding-rule">Rule</label>
         <select id="finding-rule" value={finding.ruleId} onChange={(event) => onFindingChange({ ruleId: event.target.value as RuleId })}>
+          {/* Each rule with its title, as the rulebook in force words it. */}
           {RULE_IDS.map((rule) => (
             <option key={rule} value={rule}>
-              {rule}
+              {`${rule}: ${getRule(rule)?.title ?? ""}`}
             </option>
           ))}
         </select>

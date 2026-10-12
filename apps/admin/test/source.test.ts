@@ -97,7 +97,7 @@ describe("no HTML or script sink in apps/admin", () => {
     const keyed = /(^|[{,])\s*(rate_limited|not_found|invalid_request|staff_recused|text_invalid|restricted_rule|restricted_legal|no_violation|not_evident|not_available|partly_reversed|interim|correction)\s*:/;
     expect([...new Set(findInSource(keyed).map((found) => found.split(":")[0]))]).toEqual(["src/messages.ts"]);
     const messages = readFileSync(path.join(SRC, "messages.ts"), "utf8").split("\n");
-    for (const table of ["CASE_WORDS", "REVEAL_WORDS", "NOTE_WORDS", "FINDING_WORDS", "OUTCOME_WORDS", "DECISION_KINDS", "DECISION_OUTCOMES"]) {
+    for (const table of ["CASE_WORDS", "REVEAL_WORDS", "NOTE_WORDS", "FINDING_WORDS", "OUTCOME_WORDS", "DECISION_KINDS", "DECISION_OUTCOMES", "PROTECTION_LIFTED_WORDS", "COMPOSER_KINDS", "COMPOSER_OUTCOMES", "COMPOSER_WORDS"]) {
       expect(messages.filter((line) => line.startsWith(`export const ${table}:`) || line.startsWith(`export const ${table} =`)), table).toHaveLength(1);
       // Declared nowhere else: the name follows `const` in that one file only.
       expect(findInSource(new RegExp(`const ${table}[^A-Za-z0-9_]`)).map((found) => found.split(":")[0]), table).toEqual(["src/messages.ts"]);
@@ -119,8 +119,8 @@ describe("the key is asked only after the console checked what it is asked to si
     const stepUp = readFileSync(path.join(SRC, "step-up.ts"), "utf8");
     expect(stepUp.match(/credentials\.get\(/g)).toHaveLength(1);
     expect(stepUp).toMatch(/export async function confirmWithKey</);
-    // The revocation of a session and the reveal are callers of it; neither asks the key itself.
-    expect(stepUp.match(/confirmWithKey\(deps, action,/g)).toHaveLength(2);
+    // The revocation of a session, the reveal and the decision are callers of it; none asks the key itself.
+    expect(stepUp.match(/confirmWithKey\(deps, action,/g)).toHaveLength(3);
   });
 
   test("navigator.credentials is called only by the three ceremonies, each of which checks its challenge first", () => {

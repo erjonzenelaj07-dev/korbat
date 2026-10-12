@@ -1,4 +1,4 @@
-import type { TemplateName } from "./mailer";
+import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
   subject: string;
@@ -29,7 +29,45 @@ function build(subject: string, paragraphs: string[]): RenderedMail {
   };
 }
 
-export function renderTemplate(template: TemplateName, data: Record<string, string>): RenderedMail {
+/**
+ * The subject of the statement's mail, by the decision's kind and outcome (3c design, section 7.15). The moderation
+ * module names one of these keys; the words are written here only, so no caller passes a subject of its own.
+ */
+export const DECISION_MAIL_SUBJECTS = {
+  seal_deciding: "korbat sealed images of yours while it decides",
+  seal_final: "korbat sealed images of yours",
+  post_deciding: "A post of yours is under review on korbat",
+  profile_deciding: "korbat reset part of your profile while it decides",
+  post_restricted: "korbat restricted a post of yours",
+  profile_restricted: "korbat restricted part of your profile",
+  lifted_deciding: "korbat lifted a restriction it placed while deciding",
+  reversed: "korbat reversed a decision about your account",
+  appeal_kept: "korbat answered your appeal",
+} as const;
+export type DecisionMailSubject = keyof typeof DECISION_MAIL_SUBJECTS;
+
+/** What a decision that lifted the protection of reported images did, as moderation_csam_lifted prints it. */
+const CSAM_LIFTED_WHAT: Record<string, string> = {
+  unsealed: "lifted a seal",
+  dismissed: "answered a report or finding of child sexual abuse material without a seal",
+};
+
+/** The lanes as moderation_waiting names them, each with its response time. */
+const WAITING_LANES = [
+  { key: "lane0", name: "The urgent lane", time: "24 hours" },
+  { key: "lane1", name: "Lane 1", time: "24 hours" },
+  { key: "lane2", name: "Lane 2", time: "7 days" },
+] as const;
+
+/** The receipt's sentences, which notice_received and the receipts a notice_update carries share. */
+const RECEIPT = {
+  received: (ref: string, time: string, items: string) => `korbat received your report ${ref} at ${time}. It names: ${items}.`,
+  page: (pageUrl: string) =>
+    `To see where your report stands, ask for a re-examination of a decision, confirm that you sent it, or stop korbat's emails about reports to this address, open this page: ${pageUrl}`,
+  terms: (termsUrl: string) => `How korbat handles reports, and what it keeps: ${termsUrl}.`,
+};
+
+export function renderTemplate(template: FlatTemplateName, data: Record<string, string>): RenderedMail {
   switch (template) {
     case "sign_in_code":
       return build("Your korbat sign-in code", [
@@ -180,13 +218,22 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
       // `pageUrl` it goes to a signed-out notifier's address, and the link's fragment holds that contact's mail token,
       // which no server log sees; without it, to an account, whose reports are in the app.
       return userMail(`korbat received your report ${need(data, "ref")}`, [
-        `korbat received your report ${need(data, "ref")} at ${need(data, "time")}. It names: ${need(data, "items")}.`,
+        RECEIPT.received(need(data, "ref"), need(data, "time"), need(data, "items")),
         "A moderator decides each item that names something on korbat; a link that names nothing is answered automatically. You get one email with every decision, at most once a day.",
-        data.pageUrl
-          ? `To see where your report stands, ask for a re-examination of a decision, confirm that you sent it, or stop korbat's emails about reports to this address, open this page: ${data.pageUrl}`
-          : "You can follow it in korbat under Settings, Cases, Your reports.",
-        `How korbat handles reports, and what it keeps: ${need(data, "termsUrl")}.`,
+        data.pageUrl ? RECEIPT.page(data.pageUrl) : "You can follow it in korbat under Settings, Cases, Your reports.",
+        RECEIPT.terms(need(data, "termsUrl")),
       ]);
+    case "moderation_decision": {
+      // The statement of reasons, to the author of what a decision restricts or lifts (3c design, section 7.15). The
+      // subject is a key of the table above, and `statement` holds the statement's paragraphs, one per line, exactly as
+      // statementParagraphs rendered them: the author's screen and the console's preview show the same words.
+      const key = need(data, "subject");
+      if (!Object.hasOwn(DECISION_MAIL_SUBJECTS, key)) throw new Error(`mail template data holds a subject that the statement's mail does not have: "${key}"`);
+      const lines = need(data, "statement")
+        .split("\n")
+        .filter((paragraph) => paragraph.trim() !== "");
+      return userMail(DECISION_MAIL_SUBJECTS[key as DecisionMailSubject], [...lines, "Read it in korbat under Settings, Cases. korbat's emails never contain a link to act on a decision."]);
+    }
     case "moderation_urgent": {
       // The alert for the urgent lane (3c design, section 7.12): counts and times only, to every staff account. A single
       // case is its own oldest, so its sentence gives one time and is worded for one.
@@ -194,6 +241,52 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
       return staffMail("korbat: a case is waiting in the urgent lane", [
         need(data, "count") === "1" ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.` : `${need(data, "count")} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
         "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only alert.",
+      ]);
+    }
+    case "moderation_waiting": {
+      // The queue-age alert (3c design, section 7.12): per lane the cases past its response time and since when the
+      // oldest waits, and the cases that have held a measure taken while deciding for more than a day. A lane's pair is
+      // there only for a lane with such a case; a single case is its own oldest and is worded as one.
+      const lines: string[] = [];
+      for (const lane of WAITING_LANES) {
+        const count = data[`${lane.key}Count`];
+        if (count === undefined || count === "") continue;
+        const oldest = need(data, `${lane.key}Oldest`);
+        lines.push(count === "1" ? `${lane.name}: 1 case waiting longer than ${lane.time}, since ${oldest}.` : `${lane.name}: ${count} cases waiting longer than ${lane.time}; the oldest since ${oldest}.`);
+      }
+      const held = data.interimCount;
+      if (held !== undefined && held !== "") {
+        lines.push(
+          held === "1"
+            ? "1 case has held a measure taken while deciding for more than 24 hours; its author cannot appeal until the case is decided."
+            : `${held} cases have held a measure taken while deciding for more than 24 hours; their authors cannot appeal until the case is decided.`,
+        );
+      }
+      if (lines.length === 0) throw new Error("mail template data for moderation_waiting names nothing that waits");
+      return staffMail("korbat: cases are waiting longer than their response time", [...lines, "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only reminder."]);
+    }
+    case "moderation_burst": {
+      // One staff account confirmed many decisions in a short time (3c design, section 7.5, step 4): every staff
+      // account is told, since a stolen key decides at the speed of key prompts.
+      const who = `@${need(data, "handle")}`;
+      return staffMail("korbat: many staff decisions in a short time", [
+        `The staff account ${who} confirmed ${need(data, "count")} decisions in the last 15 minutes.`,
+        `Every staff account gets this email. If ${who} is your account and you did not confirm them, someone else holds your key: tell the operator at once.`,
+        "If that was not expected, ask them; if their key may be in someone else's hands, the operator revokes it with staff.js revoke.",
+      ]);
+    }
+    case "moderation_csam_lifted": {
+      // A decision lifted a seal, or an admin answered a report or finding of child sexual abuse material without one
+      // (3c design, section 7.5, step 4): neither can be undone once the images are served again, so every staff
+      // account is told at once. It names the staff account and the time, never the case or its author.
+      const who = `@${need(data, "handle")}`;
+      const what = CSAM_LIFTED_WHAT[need(data, "what")];
+      if (what === undefined) throw new Error(`mail template data holds a "what" that moderation_csam_lifted does not have: "${data.what}"`);
+      return staffMail("korbat: reported images are no longer protected", [
+        `The staff account ${who} confirmed a decision at ${need(data, "time")} that ${what}.`,
+        "Unless another seal or another open report of this kind still covers them, the images its case reaches are served again as before and staff may open them. After an answer without a seal, whoever is on duty opens them the same day and, where one breaks a rule or the law, opens a finding on its post. Nobody at korbat could open those images while they were protected.",
+        `Every staff account gets this email. If ${who} is your account and you did not confirm it, someone else holds your key: tell the operator at once.`,
+        "The staff console's home screen lists every such decision of the last 30 days with its case. A seal for good is lifted only on the answer of the authority korbat reported the images to, and a seal taken while deciding only when it was taken in error: the operator compares this decision with their R2 records. If it was not expected, ask them; if their key may be in someone else's hands, the operator revokes it with staff.js revoke, and whoever is on duty opens a finding citing R2 on the post or the account and seals its images while deciding.",
       ]);
     }
     case "moderation_reads": {
@@ -217,6 +310,57 @@ export function renderTemplate(template: TemplateName, data: Record<string, stri
       ]);
     }
   }
+}
+
+const OUTSIDE_KORBAT = "go to court, or complain to the Digital Services Coordinator of the EU country where you live (Article 53 of the Digital Services Act).";
+
+/**
+ * The daily update of decisions on a person's reports (3c design, section 7.15), the one template whose data is a
+ * structure. In this order: each receipt the 24-hour cap folded, with its page link, and after them once where korbat
+ * says how it handles reports; one paragraph for each line; for a signed-out reader the page of each notice the update
+ * has a line for; and, only when it carries a line, that nothing was automated, how to ask for a re-examination, what is
+ * final within korbat, what to do about a wrong link, and the courts and the Digital Services Coordinator. Every
+ * sentence is chosen from the lines' fields alone, and a line's outcome is printed as the moderation module composed it.
+ */
+export function renderNoticeUpdate(data: NoticeUpdateData): RenderedMail {
+  const { lines, receipts, pages } = data;
+  if (lines.length === 0 && receipts.length === 0) throw new Error("mail template data for notice_update holds nothing to tell: no line and no receipt");
+  // An account's reports are followed in the app: its update never carries a link with a token.
+  if (data.signedIn && (receipts.length > 0 || pages.length > 0)) throw new Error("mail template data for a signed-in notice_update holds a receipt or a page link");
+  const out: string[] = [];
+  for (const receipt of receipts) out.push(RECEIPT.received(receipt.ref, receipt.time, receipt.items), RECEIPT.page(receipt.pageUrl));
+  if (receipts.length > 0) {
+    if (!data.termsUrl) throw new Error('mail template data is missing "termsUrl"');
+    out.push(RECEIPT.terms(data.termsUrl));
+  }
+  for (const line of lines) {
+    // The outcome's words end in their own full stop.
+    const outcome = line.outcome.endsWith(".") ? line.outcome : `${line.outcome}.`;
+    out.push(`${line.ref}, item ${line.item} (${line.link})${line.reexamination ? ", re-examined" : ""}: ${outcome}`);
+  }
+  for (const page of pages) out.push(`To see report ${page.ref} or ask for a re-examination of a decision on it, open this page: ${page.pageUrl}`);
+  if (lines.length > 0) {
+    const automatic = lines.some((line) => line.automatic);
+    out.push(`No automated means were used to decide${automatic ? ", except for links found to name nothing on korbat, which were checked automatically" : ""}.`);
+    const reexaminable = lines.some((line) => line.reexaminable);
+    if (reexaminable) {
+      out.push(
+        `You can ask korbat once, within six months and free of charge, to re-examine a moderator's decision to take no action: it is decided again as a new report. ${
+          data.signedIn ? "Use korbat's Settings, Cases, Your reports." : "Use the page linked in this email for that report."
+        }`,
+      );
+    }
+    // An answer given while nobody could open the images leaves the re-examination unspent, so it is never called final.
+    if (lines.some((line) => line.changed || (line.reexamination && !line.unseen))) out.push("A decision changed on review or by a correction, or given on re-examination, is final within korbat.");
+    if (automatic) out.push("If a link was wrong, send a new report with the right link.");
+    out.push(`You can ${reexaminable ? "also " : ""}${OUTSIDE_KORBAT}`);
+  }
+  return userMail(lines.length > 0 ? "Decisions on your reports to korbat" : "korbat received your reports", out);
+}
+
+/** A message as it is sent: the structured template by its own renderer, every other by renderTemplate. */
+export function renderMail(message: MailMessage): RenderedMail {
+  return message.template === "notice_update" ? renderNoticeUpdate(message.data) : renderTemplate(message.template, message.data);
 }
 
 /**

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { CaseDecisionResponse, ErrorEnvelope, StaffStepUpOptionsResponse, type AuthenticationResponseJSON, type CaseDecidedParams } from "@korbat/contracts";
+import { CaseView, ErrorEnvelope, StaffStepUpOptionsResponse, type AuthenticationResponseJSON, type CaseDecidedParams } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db } from "@korbat/db";
 import { RULES_VERSION } from "@korbat/rules";
 import { createApp } from "../../src/app";
@@ -20,7 +20,7 @@ import { socialForModeration } from "../../src/social";
 import { createStaff } from "../../src/staff";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { Browser } from "./http-client";
-import { aPost, act, casesMedia, decisionParams, gate, ground, newPostRow, postRow, removeFixtures, rowCounts, uuids, type DecisionInput } from "./moderation-fixtures";
+import { aPost, act, authCaseCounts, casesMedia, decisionParams, gate, ground, newPostRow, postRow, removeFixtures, rowCounts, uuids, type DecisionInput } from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { DEVICE_BOUND, TEST_CONSOLE_ORIGIN, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount, withLockTimeout } from "./staff-fixtures";
@@ -35,9 +35,9 @@ const STAFF_CSRF_COOKIE = "__Host-korbat_staff_csrf";
 const MARKED = { "x-staff-activity": "1" };
 
 /**
- * POST /api/staff/cases/:case/decisions through the real app (3c design, section 7.5, steps 1 to 3): the console's
- * browser signs in with a staff key, asks for step-up options over exactly the decision's params, has the key confirm
- * them, and posts the params with the assertion. Every decision here is confirmed by a real key, so the audit rows that
+ * POST /api/staff/cases/:case/decisions through the real app (3c design, section 7.5): the console's browser signs in
+ * with a staff key, asks for step-up options over exactly the decision's params, has the key confirm them, and posts the
+ * params with the assertion. The answer to a decision that committed is the case as it now stands. Every decision here is confirmed by a real key, so the audit rows that
  * stay are ones audit-verify accepts; the posts, cases and decisions are removed again, and the file's last test holds it
  * to leaving no row behind.
  */
@@ -62,6 +62,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
   let insideRequest: (() => Promise<unknown>) | null = null;
   /** How often the route handed a verified confirmation to the moderation module. */
   let decides = 0;
+  /** Resolves once what the decisions started after their commits (the statements' mails) has ended. */
+  let settle: () => Promise<void>;
 
   beforeAll(async () => {
     // The test environment with the console switched on at the staff harness's address.
@@ -77,6 +79,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
     auth = createAuth({ config, logger, authDb, kv: new MemoryKv(clock), mailer: new MemoryMailer(), profiles: createProfileStore(apiDb), now: () => new Date(clock()) });
     const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: casesMedia(apiDb), rateLimitStore: new MemoryStore(), config, logger });
     deps = moderation.deps;
+    settle = moderation.settle;
     // The staff routes get the moderation module through a wrapper that counts the route's calls and lets a test act
     // inside the request, between the step-up's verification and the decision's own transaction.
     const observed: ModerationForStaff = {
@@ -100,13 +103,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
     } finally {
       skewMs = 0;
     }
-    before = await rowCounts(apiDb);
+    before = await counts();
   }, 120_000);
   afterAll(async () => {
     await migrateDb.execute(sql`delete from profiles where id = any(${uuids(staffIds)})`);
     await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
 
+  /** How many rows the tables this file writes, the moderation tables among them, and the four auth tables of moderation cases hold. */
+  const counts = async (): Promise<Record<string, number>> => ({ ...(await rowCounts(apiDb)), ...(await authCaseCounts(migrateDb)) });
   const consoleBrowser = () => new Browser(app, TEST_CONSOLE_ORIGIN, { base: TEST_CONSOLE_ORIGIN, csrfCookie: STAFF_CSRF_COOKIE, csrfHeader: "x-staff-csrf" });
   const error = async (res: Response) => ErrorEnvelope.parse(await res.json()).error;
 
@@ -154,19 +159,68 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
   }
   const decisionsOf = async (caseId: string) => (await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from decisions where case_id = ${caseId}::uuid`))[0]!.n;
 
-  test("a confirmed decision is answered 201 with its id; it is stored with its measure and its audit row, and its author's mail is pending", async () => {
+  /** The case a decision's 201 answer carries, held strictly equal to its parsed form, and the id of the decision it shows as the newest. */
+  async function answered(res: Response) {
+    expect(res.status, await res.clone().text()).toBe(201);
+    const raw: unknown = await res.json();
+    const view = CaseView.parse(raw);
+    expect(raw).toStrictEqual(view);
+    return { view, decisionId: view.decisions.at(-1)!.id };
+  }
+
+  test("a confirmed decision is answered 201 with the case as it now stands; it is stored with its measure and its audit row, the read is logged, and its author's statement is mailed after the answer", async () => {
     await withReported(async ({ postId, caseId }) => {
+      const before = (await apiDb.execute<{ version: number }>(sql`select state_version as version from cases where id = ${caseId}::uuid`))[0]!.version;
       const res = await decide(moderator, caseId, { kind: "interim", actions: [act("withhold")] });
-      expect(res.status, await res.clone().text()).toBe(201);
       expect(res.headers.get("cache-control")).toBe("no-store");
-      const { decisionId } = CaseDecisionResponse.parse(await res.json());
+      const { view, decisionId } = await answered(res);
+      // What now stands: the case one version on, its post withheld, and the decision with its measure in force.
+      expect(view).toMatchObject({ id: caseId, stateVersion: before + 1, closedAt: null, target: { type: "post", id: postId, state: "withheld", level: "withheld" } });
+      expect(view.decisions).toHaveLength(1);
+      expect(view.decisions[0]).toMatchObject({ kind: "interim", outcome: "restricted", ruleId: "R1", actions: [{ kind: "withhold", inForce: true, noEffect: null }] });
+      // The texts the key confirmed by their digests are the decision's now, and no longer the person's drafts.
+      expect(view.decisions[0]!.facts).toMatch(/^a facts text /);
+      expect(view.drafts).toEqual([]);
+      // The answer is a read of the case like any other: one access row for it.
+      const [access] = await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from case_access_log where case_id = ${caseId}::uuid and staff_id = ${moderator.id}::uuid and kind = 'case_opened'`);
+      expect(access!.n).toBe(1);
+      // What follows the commit is not waited for by the answer: the statement's mail is settled here. The post's author
+      // has a profile and no account in the auth schema, as a purged account has: there is nobody to mail.
+      await settle();
       const [stored] = await apiDb.execute<Record<string, unknown>>(sql`
         select d.case_id, d.kind, d.outcome, d.decided_by, d.author_mail,
                (select count(*)::int from decision_actions a where a.decision_id = d.id and a.kind = 'withhold') as measures,
                (select count(*)::int from audit_log l where l.action = 'case_decided' and l.target_id = d.case_id::text and l.metadata ->> 'decisionId' = d.id::text and l.actor_id = d.decided_by and l.step_up is not null) as audits
           from decisions d where d.id = ${decisionId}::uuid`);
-      expect({ ...stored! }).toEqual({ case_id: caseId, kind: "interim", outcome: "restricted", decided_by: moderator.id, author_mail: "pending", measures: 1, audits: 1 });
+      expect({ ...stored! }).toEqual({ case_id: caseId, kind: "interim", outcome: "restricted", decided_by: moderator.id, author_mail: "no_address", measures: 1, audits: 1 });
       expect(await postRow(apiDb, postId)).toMatchObject({ state: "withheld", level: "withheld" });
+    });
+  });
+
+  test("a decision's answer never meets the day's limit on different cases: a person at the limit who has not opened this case today is answered 201 with it", async () => {
+    await withReported(async (opened) => {
+      await withReported(async ({ caseId }) => {
+        // The limits' row is the suite's to keep: lowered here to one case a day, and put back whatever happens.
+        const [kept] = await migrateDb.execute<{ n: number }>(sql`select case_opens_per_day as n from moderation_limits where id = 1`);
+        await migrateDb.execute(sql`update moderation_limits set case_opens_per_day = 1 where id = 1`);
+        try {
+          const read = (id: string) => moderator.b.fetch(`/api/staff/cases/${id}`, { headers: MARKED });
+          // One case opened today: the person is at the limit, and the other case is refused to them.
+          expect((await read(opened.caseId)).status).toBe(200);
+          const refused = await read(caseId);
+          expect(refused.status).toBe(429);
+          expect((await error(refused)).code).toBe("rate_limited");
+          // The decision on that case is confirmed and recorded all the same, and its answer is the case.
+          const { view } = await answered(await decide(moderator, caseId, { kind: "interim", actions: [act("withhold")] }));
+          expect(view).toMatchObject({ id: caseId, target: { state: "withheld" } });
+          expect(await decisionsOf(caseId)).toBe(1);
+          // The answer was a read like any other, so the case counts as opened today and is read again without a refusal.
+          expect((await read(caseId)).status).toBe(200);
+          await settle();
+        } finally {
+          await migrateDb.execute(sql`update moderation_limits set case_opens_per_day = ${kept!.n} where id = 1`);
+        }
+      });
     });
   });
 
@@ -200,7 +254,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
         // A fresh confirmation of the same params still decides: nothing above spent the decision.
         const fresh = await confirmation(moderator, caseId, params);
         const res = await post(moderator, caseId, { ...params, stepUp: fresh });
-        expect(res.status, await res.clone().text()).toBe(201);
+        await answered(res);
         // And a confirmation decides once: its challenge is spent.
         const again = await post(moderator, caseId, { ...params, stepUp: fresh });
         expect([again.status, (await error(again)).code]).toEqual([403, "staff_step_up_invalid"]);
@@ -220,10 +274,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
       const refused = await decide(moderator, caseId, { kind: "final", ruleId: "R5", actions: [act("remove")] });
       expect([refused.status, (await error(refused)).code]).toEqual([403, "admin_required"]);
       expect(await decisionsOf(caseId)).toBe(1);
-      const taken = await decide(admin, caseId, { kind: "final", ruleId: "R5", actions: [act("remove")] });
-      expect(taken.status, await taken.clone().text()).toBe(201);
+      const taken = await answered(await decide(admin, caseId, { kind: "final", ruleId: "R5", actions: [act("remove")] }));
+      // The final decision closed the case, and its answer says so: the interim withhold ended with it.
+      expect(taken.view.closedAt).not.toBeNull();
+      expect(taken.view.decisions.map((each) => [each.kind, each.actions.map((action) => [action.kind, action.inForce])])).toEqual([
+        ["interim", [["withhold", false]]],
+        ["final", [["remove", true]]],
+      ]);
       // A case nobody has: the params are the console's, the id is not.
-      const params = await decisionParams(apiDb, admin, caseId, { kind: "correction", reviewsDecisionId: CaseDecisionResponse.parse(await taken.json()).decisionId, actions: [act("restore")] });
+      const params = await decisionParams(apiDb, admin, caseId, { kind: "correction", reviewsDecisionId: taken.decisionId, actions: [act("restore")] });
       const nowhere = randomUUID();
       const missing = await post(admin, nowhere, { ...params, stepUp: await confirmation(admin, nowhere, params) });
       expect([missing.status, (await error(missing)).code]).toEqual([404, "not_found"]);
@@ -380,7 +439,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
     });
   });
 
-  test("this file left no row behind: the tables it writes hold what they held before it", async () => {
-    expect(await rowCounts(apiDb)).toEqual(before);
+  test("this file left no row behind: the tables it writes, the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
+    await settle();
+    expect(await counts()).toEqual(before);
   });
 });

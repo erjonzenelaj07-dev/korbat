@@ -1,4 +1,4 @@
-import { STAFF_STEP_UP_CHALLENGE, StaffStepUpOptionsRequest, stepUpActionHash, stepUpBinding, type AuthenticationResponseJSON, type IdentityRevealedParams } from "@korbat/contracts";
+import { STAFF_STEP_UP_CHALLENGE, StaffStepUpOptionsRequest, stepUpActionHash, stepUpBinding, type AuthenticationResponseJSON, type CaseDecidedParams, type IdentityRevealedParams } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
 import { messageFor } from "./messages";
 import { authenticationResponseToJSON, ceremonyFailure, fromBase64url, requestOptionsFromJSON, type CredentialsLike } from "./webauthn";
@@ -64,6 +64,15 @@ export function revealAction(itemId: string, params: IdentityRevealedParams): St
 }
 
 /**
+ * The action that decides a case: the case's id as the target and, as params, the decision as the composer built it from
+ * what the page shows: ids, enums, whole numbers and the digests the console computed, never a text. The contracts'
+ * schema refuses anything else, so the binding the console checks before it asks the key is its own.
+ */
+export function decisionAction(caseId: string, params: CaseDecidedParams): StaffStepUpOptionsRequest {
+  return StaffStepUpOptionsRequest.parse({ action: "case_decided", target: { type: "case", id: caseId }, params });
+}
+
+/**
  * One action confirmed by the key (3c design, section 8): the session's handle read from a marked /me right before,
  * since the API binds the challenge to the session the request's cookie names, which another tab's sign-in may have
  * replaced since the page read its session; then options for exactly this action, asked right before the key (the API
@@ -107,4 +116,13 @@ export async function revokeSessionWithKey(deps: { api: StaffApi; credentials: C
 export function revealWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, itemId: string, params: IdentityRevealedParams) {
   const action = revealAction(itemId, params);
   return confirmWithKey(deps, action, (stepUp) => deps.api.reveal(action.target.id, { ...params, stepUp }, { activity: true }));
+}
+
+/**
+ * "Confirm with your staff key" in the decision composer: the decision on the case, with exactly the params the page
+ * built. Answers the case as it stands after the decision, which the page then shows.
+ */
+export function decideWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, params: CaseDecidedParams) {
+  const action = decisionAction(caseId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.decide(action.target.id, { ...params, stepUp }, { activity: true }));
 }

@@ -1,4 +1,5 @@
 import { CaseView, FINDING_CATEGORIES, ModerationErrorCode, QueuePage, SOURCE_LABELS, StaffOverview, textDigest } from "@korbat/contracts";
+import { RULES } from "@korbat/rules";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
@@ -6,6 +7,7 @@ import { App } from "../src/App";
 import { ApiError, createStaffApi } from "../src/api";
 import { FrameView } from "../src/frames";
 import { hasHidden, mentionedAddresses, mentionedHosts, showHidden } from "../src/hidden";
+import { correctionDraft, newDraft } from "../src/compose";
 import { parseImageId, StaffImage, staffImageSrc } from "../src/media";
 import { CASE_WORDS, CONSOLE_MODERATION_CODES, DECISION_KINDS, DECISION_OUTCOMES, describeError, FINDING_WORDS, messageFor, MODERATION_MESSAGES, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS } from "../src/messages";
 import { parseCaseId } from "../src/router";
@@ -254,6 +256,9 @@ describe("the queue", () => {
     expect(out).toContain(">Open a case</button>");
     expect(out).toContain("That link names nothing live on korbat: the post or the account does not exist or was deleted.");
     for (const rule of ["R1", "R2", "R3", "R4", "R5", "R6"]) expect(out).toContain(`<option value="${rule}"`);
+    // Each rule is offered with its title, as the rulebook in force words it.
+    for (const rule of RULES) expect(out, rule.id).toContain(`>${rule.id}: ${rule.title}</option>`);
+    expect(RULES.map((rule) => rule.id)).toEqual(["R1", "R2", "R3", "R4", "R5", "R6"]);
     expect(out).toContain('<option value="STATEMENT_CATEGORY_PROTECTION_OF_MINORS">protection of minors</option>');
     expect(out).not.toContain("STATEMENT_CATEGORY_NOT_SPECIFIED_NOTICE");
     // The categories offered are the contracts' own list of what a finding may carry: the form restates no rule of it.
@@ -356,6 +361,59 @@ describe("the home screen's overview", () => {
   });
 });
 
+describe("the home screen's three lists of the path for child sexual abuse material", () => {
+  const at = "2026-09-30T10:00:00.000Z";
+  const lists = overview({
+    protectionLifted: {
+      total: 2,
+      items: [
+        { at, handle: HOSTILE.script, caseId: CASE_FROZEN, kind: "unsealed" },
+        { at, handle: HOSTILE.img, caseId: CASE_ACCOUNT, kind: "dismissed" },
+      ],
+    },
+    sealsDeclined: { total: 1, items: [{ at, handle: HOSTILE.quote, caseId: CASE_QUOTED }] },
+    interimSeals: { total: 1, items: [{ at, handle: HOSTILE.script, caseId: CASE_FROZEN, posts: 3, images: 7 }] },
+  });
+
+  test("the decisions that lifted the protection of reported images, the choices not to seal, and the seals taken while deciding that are in force: time, staff handle, case link, and what each did or covers", () => {
+    expect(StaffOverview.safeParse(lists).success).toBe(true);
+    const out = html(<OverviewView overview={lists} now={NOW} onOpenCase={noop} />);
+    expect(out).toContain("Lifted a seal");
+    expect(out).toContain("Answered a report of child sexual abuse material without a seal");
+    expect(out).toContain("Chose not to seal");
+    expect(out).toContain("7 images on 3 posts");
+    // Each row links to its case, in the console, and every handle is text.
+    expect(hrefs(out)).toEqual([`/cases/${CASE_POST}`, `/cases/${CASE_FROZEN}`, `/cases/${CASE_ACCOUNT}`, `/cases/${CASE_QUOTED}`, `/cases/${CASE_FROZEN}`]);
+    expect(out).toContain(`<bdi>${HOSTILE_ESCAPED.quote}</bdi>`);
+    expectInert(out);
+    for (const heading of ["Protection of reported images lifted in the last 30 days", "Choices not to seal in the last 30 days", "Seals taken while deciding that are in force"]) expect(out).toMatch(new RegExp(`<h3[^>]*>${heading}</h3>`));
+  });
+
+  test("an empty list says so, and a list longer than it shows says how many there are", () => {
+    const quiet = html(<OverviewView overview={overview()} now={NOW} onOpenCase={noop} />);
+    expect(quiet).toContain("No decision lifted the protection of reported images in the last 30 days.");
+    expect(quiet).toContain("Nobody recorded a choice not to seal in the last 30 days.");
+    expect(quiet).toContain("No seal taken while deciding is in force.");
+    const row = { at, handle: "mod_anna", caseId: CASE_FROZEN };
+    const many = html(
+      <OverviewView
+        overview={overview({
+          protectionLifted: { total: 130, items: Array.from({ length: 100 }, () => ({ ...row, kind: "dismissed" as const })) },
+          sealsDeclined: { total: 101, items: Array.from({ length: 100 }, () => row) },
+          interimSeals: { total: 250, items: Array.from({ length: 100 }, () => ({ ...row, posts: 1, images: 1 })) },
+        })}
+        now={NOW}
+        onOpenCase={noop}
+      />,
+    );
+    for (const total of [130, 101, 250]) expect(many).toContain(`Showing the newest 100 of ${total}.`);
+    expect(many).toContain("1 image on 1 post");
+    // An id that is no lower-case uuid never becomes a link.
+    const odd = html(<OverviewView overview={overview({ sealsDeclined: { total: 1, items: [{ ...row, caseId: CASE_FROZEN.toUpperCase() }] } })} now={NOW} onOpenCase={noop} />);
+    expect(hrefs(odd)).toEqual([`/cases/${CASE_POST}`]);
+  });
+});
+
 describe("the case page", () => {
   const base: Omit<CaseScreenViewProps, "caseId" | "view"> = {
     shownImage: null,
@@ -381,6 +439,45 @@ describe("the case page", () => {
 
   test("the fixtures are cases as the contracts describe them", () => {
     for (const view of [postCase(), frozenCase(), accountCase()]) expect(CaseView.safeParse(view).success, view.id).toBe(true);
+  });
+
+  test("with a role the page ends in the decision composer and offers Lift what was done while deciding beside the decision; without one it decides nothing", () => {
+    const view = postCase();
+    const compose: NonNullable<CaseScreenViewProps["compose"]> = {
+      role: "moderator",
+      draft: newDraft(caseId(view.id), view, "moderator"),
+      now: new Date(NOW),
+      busy: false,
+      error: null,
+      textErrors: {},
+      declining: null,
+      onChange: noop,
+      onTextBlur: noop,
+      onSeal: noop,
+      onConfirm: noop,
+      onDeclineOpen: noop,
+      onDeclineChange: noop,
+      onDeclineSave: noop,
+      onDeclineClose: noop,
+      onCancelCorrection: noop,
+      onCorrect: noop,
+    };
+    const out = page(view, { compose });
+    // The composer comes last, after the notes.
+    expect(out.indexOf('<h3 id="composer-title">Decide</h3>')).toBeGreaterThan(out.indexOf(">Add a note</label>"));
+    expect(out).toContain(">Confirm with your staff key</button>");
+    expect(out).toContain(">Lift what was done while deciding</button>");
+    // Still no link into the app, and nothing a hostile string could have made.
+    expect(hrefs(out)).toEqual([]);
+    expectInert(out);
+    const bare = page(view);
+    expect(bare).not.toContain("composer-title");
+    expect(bare).not.toContain("Lift what was done while deciding");
+    // A correction takes the composer's place while it is open.
+    const correcting = page(view, { compose: { ...compose, draft: correctionDraft(caseId(view.id), view, view.decisions[0]!, "moderator") } });
+    expect(correcting).toMatch(/<h3 id="composer-title">Lift what was done while deciding<\/h3>/);
+    expect(correcting).toContain(">Lift the restriction of the post</span>");
+    expect(correcting).toContain(">Reason of the correction</label>");
   });
 
   test("a post's case: the header, the evidence in frames, the images as placeholders, the items with their sources, the decision and the notes; every written string as text, and no link into the app", () => {
@@ -723,7 +820,7 @@ describe("saving a text", () => {
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "__Host-korbat_staff_csrf=t" });
     const random = (length: number) => new Uint8Array(length).fill(0xab);
     const answer = await saveStaffText({ api, random }, CASE, "note", "  Art. 18 check: no suspicion \n");
-    expect(answer).toEqual({ id: saved.id, digest, text: "Art. 18 check: no suspicion" });
+    expect(answer).toEqual({ id: saved.id, digest, text: "Art. 18 check: no suspicion", salt: "ab".repeat(32) });
     const sent = fake.requests[0]!.body as { kind: string; text: string; salt: string; digest: string };
     expect(sent).toEqual({ kind: "note", text: "Art. 18 check: no suspicion", salt: "ab".repeat(32), digest });
     expect(fake.requests[0]!.headers["x-staff-activity"]).toBe("1");

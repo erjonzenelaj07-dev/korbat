@@ -13,12 +13,14 @@ import type { Db } from "@korbat/db";
 import type { Logger } from "pino";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../auth";
 import type { Config } from "../config";
+import type { JobLock } from "../lib/jobs";
 import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
-import { caseImage, openFinding, overview, queue, readCase, takeSnapshot } from "./cases";
+import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
+import { createDispatchJob } from "./dispatch";
 import { reveal, type RevealOutcome } from "./reveal";
 import { moderationRoutes } from "./routes";
 import { ownTexts, saveText } from "./texts";
@@ -35,6 +37,8 @@ export interface ModerationForStaff {
    * or key no longer opens anything, "late" when the challenge's time ran out; neither writes anything.
    */
   decide(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome>;
+  /** The case as the answer to a decision that has just committed on it: logged like every read, and never refused for the day's limit. */
+  decidedCase(session: ActiveStaffSession, caseId: string): Promise<CaseView>;
   /** What every staff member's home screen shows: counts, times, staff handles and cases. */
   overview(): Promise<StaffOverview>;
   /** A page of the queue: open cases by lane and age, after the cursor when one is given. */
@@ -91,6 +95,7 @@ export function createModeration(options: CreateModerationOptions) {
   };
   const forStaff: ModerationForStaff = {
     decide: (session, confirmed, ctx) => decide(deps, session, confirmed, ctx),
+    decidedCase: (session, caseId) => readDecidedCase(deps, session, caseId),
     overview: () => overview(deps),
     queue: (cursor) => queue(deps, cursor),
     caseView: (session, caseId) => readCase(deps, session, caseId),
@@ -112,6 +117,11 @@ export function createModeration(options: CreateModerationOptions) {
      * finding, a reveal or a refused case read. The tests await it; the server lets the tasks run.
      */
     settle: () => deps.background.settle(),
+    /**
+     * Starts the module's background work under the jobs' shared lock, on one API instance at a time: the dispatch job,
+     * whose first round comes ten minutes after the start. Answers the function that stops it; a round in flight finishes.
+     */
+    startJobs: (lock: JobLock): (() => void) => createDispatchJob(deps, lock).start(),
   };
 }
 

@@ -20,6 +20,7 @@ import {
 import type { DbTx } from "@korbat/db";
 import type { AccountMailResult, NotifierMailResult, Session } from "../auth";
 import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
+import { MailUnavailable } from "../mail/mailer";
 import type { HoldPair } from "../media";
 import type { CapturedPost, CapturedProfile } from "../social";
 import { alertUrgentLane } from "./alerts";
@@ -41,6 +42,7 @@ import {
   targetKey,
   violatedUniqueConstraint,
   type NoticeItemRow,
+  type NoticeRow,
   type ReceiptState,
 } from "./repo";
 
@@ -596,19 +598,27 @@ export async function submitNotice(deps: ModerationDeps, request: NoticeRequest,
 const RECEIPT_STATES: Record<NotifierMailResult | AccountMailResult, ReceiptState> = { sent: "sent", folded: "folded", suppressed: "suppressed", no_address: "no_address", forgotten: "no_address", refused: "failed" };
 
 /**
+ * A notice's receipt, built from the stored notice alone, so a receipt sent later, or carried in a daily update, holds
+ * the same reference, time and links as one sent at once: the links of the items the sender named, in their order, an
+ * account's under the handle as named.
+ */
+export async function receiptMessage(deps: Pick<ModerationDeps, "apiDb" | "config">, notice: Pick<NoticeRow, "id" | "ref" | "receivedAt">) {
+  // The items the sender named: not those korbat added for a quoted post, and no re-examination, which shares its item's position.
+  const items = (await noticeItems(deps.apiDb, notice.id)).filter((item) => item.position <= 10 && !item.reexamines);
+  return { template: "notice_received" as const, ref: notice.ref, receivedAt: new Date(notice.receivedAt), items: items.map((item) => itemLink(deps, item)) };
+}
+
+/**
  * Sends a notice's receipt and records what became of it: to a signed-out notifier's contact, or to the account behind a
- * notice of illegality sent signed in. It is built from the stored notice alone, so a receipt sent later carries the
- * same reference, time and links as one sent at once: the links of the items the sender named, in their order, an
- * account's under the handle as named. A notice without a pending receipt sends nothing. A failure of the relay leaves
+ * notice of illegality sent signed in. A notice without a pending receipt sends nothing. A failure of the relay leaves
  * the receipt pending, for the dispatch job to send; any other result is recorded, only while the receipt is still
- * pending.
+ * pending. A fault that is not the relay's (a database error, a contact no configured key opens) is thrown: its caller
+ * logs it as what it is, and the receipt stays pending.
  */
 export async function sendReceipt(deps: Pick<ModerationDeps, "apiDb" | "auth" | "config" | "log">, intakeId: string): Promise<ReceiptState | "pending" | "none"> {
   const notice = await noticeById(deps.apiDb, intakeId);
   if (!notice || notice.receipt !== "pending") return "none";
-  // The items the sender named: not those korbat added for a quoted post, and no re-examination, which shares its item's position.
-  const items = (await noticeItems(deps.apiDb, intakeId)).filter((item) => item.position <= 10 && !item.reexamines);
-  const message = { template: "notice_received" as const, ref: notice.ref, receivedAt: new Date(notice.receivedAt), items: items.map((item) => itemLink(deps, item)) };
+  const message = await receiptMessage(deps, notice);
   let result: NotifierMailResult | AccountMailResult;
   try {
     if (notice.contactId !== null) result = await deps.auth.mailNotifier(notice.contactId, message);
@@ -616,6 +626,7 @@ export async function sendReceipt(deps: Pick<ModerationDeps, "apiDb" | "auth" | 
     // The reporter's link was forgotten with their account: there is nobody to mail.
     else result = "no_address";
   } catch (err) {
+    if (!(err instanceof MailUnavailable)) throw err;
     deps.log.warn({ err, intakeId }, "notice receipt: not sent; it stays pending for the next try");
     return "pending";
   }
@@ -626,7 +637,7 @@ export async function sendReceipt(deps: Pick<ModerationDeps, "apiDb" | "auth" | 
 // ---------------------------------------------------------------- the notifier's status page and contact
 
 /** An item's korbat address: a post's from its id, an account's from the handle as the notice named it, never from the handle the profile holds now. */
-function itemLink(deps: Pick<ModerationDeps, "config">, item: Pick<NoticeItemRow, "targetType" | "targetId" | "namedHandle">): string {
+export function itemLink(deps: Pick<ModerationDeps, "config">, item: Pick<NoticeItemRow, "targetType" | "targetId" | "namedHandle">): string {
   return item.targetType === "post" ? postLink(deps.config.APP_ORIGIN, item.targetId) : accountLink(deps.config.APP_ORIGIN, item.namedHandle!);
 }
 

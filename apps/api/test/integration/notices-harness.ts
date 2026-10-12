@@ -9,8 +9,8 @@ import { emailHash } from "../../src/auth/identifiers";
 import { MemoryKv } from "../../src/auth/kv";
 import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
-import { MailRefused, MailUnavailable, type MailMessage, type Mailer } from "../../src/mail/mailer";
-import { renderTemplate } from "../../src/mail/templates";
+import { MailRefused, MailUnavailable, type FlatMailMessage, type MailMessage, type Mailer, type NoticeUpdateMessage } from "../../src/mail/mailer";
+import { renderMail } from "../../src/mail/templates";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createModeration } from "../../src/moderation";
 import type { NoticeSender } from "../../src/moderation/intake";
@@ -33,18 +33,21 @@ export const HUMAN = "human";
 export class ScriptedMailer implements Mailer {
   /** Every message handed over, delivered or not, in order. */
   readonly attempts: MailMessage[] = [];
-  readonly sent: MailMessage[] = [];
+  /** The flat messages delivered, and, apart from them, the structured daily updates delivered: each in order. */
+  readonly sent: FlatMailMessage[] = [];
+  readonly updates: NoticeUpdateMessage[] = [];
   mode: "deliver" | "refuse" | "fail" | "hang" = "deliver";
   private waiting = gate();
 
   async send(message: MailMessage): Promise<void> {
     // As the real mailer does first: a message whose data its template lacks is a programming error.
-    renderTemplate(message.template, message.data);
+    renderMail(message);
     this.attempts.push(message);
     if (this.mode === "hang") await this.waiting.opened;
     if (this.mode === "refuse") throw new MailRefused("the relay refused the recipient");
     if (this.mode === "fail") throw new MailUnavailable("the relay could not be reached");
-    this.sent.push(message);
+    if (message.template === "notice_update") this.updates.push(message);
+    else this.sent.push(message);
   }
 
   /** Lets every hanging send end, as `mode` now says. */
@@ -54,8 +57,13 @@ export class ScriptedMailer implements Mailer {
     this.waiting = gate();
   }
 
-  to(address: string, template?: string): MailMessage[] {
+  to(address: string, template?: string): FlatMailMessage[] {
     return this.sent.filter((message) => message.to === address && (template === undefined || message.template === template));
+  }
+
+  /** The daily updates delivered to this address, in order. */
+  updatesTo(address: string): NoticeUpdateMessage[] {
+    return this.updates.filter((message) => message.to === address);
   }
 
   /** The code of the newest mail to this address that carries one: a sign-up or sign-in code. */

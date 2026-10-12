@@ -12,22 +12,26 @@ import {
 } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
+import { afterRefusal, COMPOSER, confirmDecision, confirmWhileBusy, correctionDraft, decidedNotice, newDraft, offeredDraft, openCorrection, saveDraftText, withSavedTexts, withSeal, type CaseDraft, type DraftTextKind, type StaffRole } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
 import { CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { revealWithKey } from "../step-up";
-import { saveStaffText, type RandomBytes } from "../texts";
+import type { DraftSlots } from "../store";
+import { normalised, saveStaffText, type RandomBytes } from "../texts";
 import { dateTime, Loaded, UserText, type Loadable } from "../ui";
 import { categoryLabel, COLLAPSED_RULES, counted, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
 import type { CredentialsLike } from "../webauthn";
+import { ComposerView, CorrectControl, type ComposerViewProps } from "./Composer";
 
 /**
- * The case page without its composer (3c design, sections 7.3 and 8): the header, the banners, the evidence with its
- * images, the items with their sources, the decisions, the history, the notes and the reveal of a source. Every string
- * someone wrote is drawn as text inside a frame that says who wrote it; every address is text, since the console holds
- * no link into the app; and an image is asked of the API only when its person asks to see it.
+ * The case page (3c design, sections 7.3 and 8): the header, the banners, the evidence with its images, the items with
+ * their sources, the decisions with what can still be lifted or corrected, the history, the notes, the reveal of a
+ * source, and the decision composer. Every string someone wrote is drawn as text inside a frame that says who wrote it;
+ * every address is text, since the console holds no link into the app; and an image is asked of the API only when its
+ * person asks to see it.
  */
 
 /** The Art. 18 check, shown above the evidence of every case in the urgent lane, to everyone who opens it. */
@@ -151,6 +155,11 @@ export interface CaseScreenViewProps {
   onRevealChange(change: Partial<Pick<RevealState, "category" | "reason">>): void;
   onRevealConfirm(): void;
   onRevealClose(): void;
+  /**
+   * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
+   * beside the decisions. Without it the page shows the case and decides nothing.
+   */
+  compose?: Omit<ComposerViewProps, "view"> & { onCorrect(decision: CaseDecision): void };
 }
 
 /** Whether the target as it stands differs from the case's newest snapshot: then the moderator takes a fresh one before deciding. */
@@ -509,7 +518,7 @@ function SealList({ sealed }: { sealed: NonNullable<CaseDecision["actions"][numb
   );
 }
 
-function Decision({ decision, view }: { decision: CaseDecision; view: CaseView }) {
+function Decision({ decision, view, compose }: { decision: CaseDecision; view: CaseView; compose: CaseScreenViewProps["compose"] }) {
   const lifted = (id: string | null) => {
     const by = id === null ? undefined : view.decisions.find((other) => other.id === id);
     return by ? `lifted by the decision of ${dateTime(by.decidedAt)}` : "lifted";
@@ -556,6 +565,7 @@ function Decision({ decision, view }: { decision: CaseDecision; view: CaseView }
           ))}
         </ul>
       )}
+      {compose === undefined ? null : <CorrectControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onCorrect={compose.onCorrect} />}
     </li>
   );
 }
@@ -635,7 +645,7 @@ export function CaseScreenView(props: CaseScreenViewProps) {
       ) : (
         <ul className="plain">
           {view.decisions.map((decision) => (
-            <Decision key={decision.id} decision={decision} view={view} />
+            <Decision key={decision.id} decision={decision} view={view} compose={props.compose} />
           ))}
         </ul>
       )}
@@ -691,11 +701,13 @@ export function CaseScreenView(props: CaseScreenViewProps) {
           Save the note
         </button>
       </div>
+
+      {props.compose === undefined ? null : <ComposerView view={view} {...props.compose} />}
     </section>
   );
 }
 
-export function CaseScreen({ id, api, credentials, onOpenCase }: { id: CaseId; api: StaffApi; credentials: CredentialsLike; onOpenCase(id: CaseId): void }) {
+export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: { id: CaseId; api: StaffApi; credentials: CredentialsLike; role: StaffRole; drafts: DraftSlots; onOpenCase(id: CaseId): void }) {
   const [view, setView] = useState<Loadable<CaseView>>({ state: "loading" });
   const [shownImage, setShownImage] = useState<ShownImage | null>(null);
   const [busy, setBusy] = useState<"snapshot" | "note" | null>(null);
@@ -703,9 +715,38 @@ export function CaseScreen({ id, api, credentials, onOpenCase }: { id: CaseId; a
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [reveal, setReveal] = useState<RevealState | null>(null);
+  // The composer's draft lives in the store's slot for this case, so that it is still there after a session that ended
+  // and a sign-in by the same handle; the page keeps its own copy to draw.
+  const [draft, setDraft] = useState<CaseDraft | null>(() => drafts.get(id));
+  const draftNow = useRef<CaseDraft | null>(draft);
+  /** The decision's draft that a correction took the place of, to come back to when the correction is put away. */
+  const beforeCorrection = useRef<CaseDraft | null>(null);
+  const [composing, setComposing] = useState(false);
+  const [composeError, setComposeError] = useState<string | null>(null);
+  const [textErrors, setTextErrors] = useState<Partial<Record<DraftTextKind, string>>>({});
+  /** The saves of texts that are on their way, by the text's kind: a confirmation waits for them, so that no text is saved twice. */
+  const saving = useRef(new Map<DraftTextKind, Promise<void>>());
+  const [declining, setDeclining] = useState<{ reason: string; busy: boolean; error: string | null } | null>(null);
   const alive = useRef(true);
   /** What the page shows of the case, as the last read left it: a read that fails is judged against it. */
   const page = useRef<Loadable<CaseView>>({ state: "loading" });
+
+  /** Keeps a draft: in the store's slot, and on the page. */
+  const keep = (next: CaseDraft) => {
+    drafts.set(next);
+    draftNow.current = next;
+    setDraft(next);
+  };
+
+  /** A case with no draft yet gets a fresh one, with the texts its person saved on it before (a reload fetches them back). */
+  const openDraft = async (value: CaseView) => {
+    if (draftNow.current !== null) return;
+    const fresh = await withSavedTexts(newDraft(id, value, role), value.drafts);
+    if (!alive.current || draftNow.current !== null) return;
+    // Not put into the store's slot before its person changes it: an untouched draft is made again from the case.
+    draftNow.current = fresh;
+    setDraft(fresh);
+  };
 
   /**
    * Reads the case: its person opened the page or acted on it, so the read is marked. True when the page now shows what
@@ -717,6 +758,7 @@ export function CaseScreen({ id, api, credentials, onOpenCase }: { id: CaseId; a
         if (!alive.current) return false;
         page.current = { state: "ready", value };
         setView(page.current);
+        void openDraft(value);
         return true;
       },
       (err: unknown) => {
@@ -786,6 +828,146 @@ export function CaseScreen({ id, api, credentials, onOpenCase }: { id: CaseId; a
     void read();
   };
 
+  /** A text that is saved now: the refusal of an earlier save of it, worded under its field, no longer holds. */
+  const textSaved = (kind: DraftTextKind) => setTextErrors((errors) => Object.fromEntries(Object.entries(errors).filter(([refused]) => refused !== kind)));
+
+  /**
+   * A text's field lost focus: the text is saved, without the key, so that a reload before the first confirmation brings
+   * it back (3c design, section 7.4). A refusal is worded under its field. What was written stays in the draft either
+   * way: a text whose save failed is saved again by the confirmation.
+   */
+  const saveText = (kind: DraftTextKind) => {
+    const written = draftNow.current;
+    if (written === null || composing) return;
+    const run = (async () => {
+      const outcome = await saveDraftText({ api }, id, written, kind);
+      if (!alive.current || outcome === null) return;
+      if ("error" in outcome) {
+        setTextErrors((errors) => ({ ...errors, [kind]: outcome.error }));
+        return;
+      }
+      textSaved(kind);
+      // Remembered only while the draft still holds the text that was saved: its person may have typed on meanwhile.
+      const now = draftNow.current;
+      if (now !== null && now.kind === written.kind && normalised(now.written[kind]) === outcome.saved.text) keep({ ...now, texts: { ...now.texts, [kind]: outcome.saved } });
+    })();
+    saving.current.set(kind, run);
+    void run.finally(() => {
+      if (saving.current.get(kind) === run) saving.current.delete(kind);
+    });
+  };
+
+  /**
+   * "Confirm with your staff key": the draft as the composer showed it, saved, confirmed and sent; the page then shows
+   * what the answer says now stands. The busy flag is confirmWhileBusy's: down again on every way out.
+   */
+  const confirm = () => {
+    if (composing) return Promise.resolve();
+    const confirming = {
+      alive: () => alive.current,
+      shown: () => (page.current.state === "ready" ? page.current.value : null),
+      draft: () => draftNow.current,
+      saving: () => [...saving.current.values()],
+      setBusy: setComposing,
+    };
+    return confirmWhileBusy(confirming, async (shown, held) => {
+      setComposeError(null);
+      setNotice(null);
+      setError(null);
+      const sent = offeredDraft(shown, role, held);
+      const outcome = await confirmDecision({ api, credentials }, id, shown, sent, (kind, saved) => {
+        // The confirmation saved a text whose save had failed when its field lost focus.
+        textSaved(kind);
+        if (draftNow.current !== null) keep({ ...draftNow.current, texts: { ...draftNow.current.texts, [kind]: saved } });
+      });
+      if (!alive.current) return;
+      if ("error" in outcome) {
+        // The refusal is worded in place and the draft kept. A text that is gone or was used is saved again at the next
+        // try; a case or a snapshot that is no longer what the page shows is read again.
+        const then = afterRefusal(outcome.code);
+        if (then.saveAgain && draftNow.current !== null) keep({ ...draftNow.current, texts: {} });
+        setComposeError(outcome.error);
+        if (then.readAgain) void read();
+        return;
+      }
+      const now = "view" in outcome ? outcome.view : outcome.fresh;
+      page.current = { state: "ready", value: now };
+      setView(page.current);
+      if ("fresh" in outcome) {
+        setNotice(outcome.notice);
+        return;
+      }
+      // Decided: the draft is done with, and the composer starts anew on the case as it now stands.
+      drafts.clear(id);
+      beforeCorrection.current = null;
+      draftNow.current = newDraft(id, now, role);
+      setDraft(draftNow.current);
+      setTextErrors({});
+      setNotice(decidedNotice(shown, now, sent.kind === "final"));
+    });
+  };
+
+  /** "Do not seal now": the reason is saved as a text of its own kind, which is complete when saved, and the case is read again. */
+  const declineSeal = async () => {
+    if (declining === null || declining.busy) return;
+    setDeclining({ ...declining, busy: true, error: null });
+    try {
+      await saveStaffText({ api }, id, "seal_declined", declining.reason);
+      if (!alive.current) return;
+      setDeclining(null);
+      const fresh = await read();
+      if (alive.current) setNotice(fresh ? COMPOSER.declined : `${COMPOSER.declined} This page still shows the case as it was read before.`);
+    } catch (err) {
+      if (alive.current) setDeclining((current) => (current === null ? null : { ...current, busy: false, error: describeError(err, NOTE_WORDS) }));
+    }
+  };
+
+  const composeProps = (value: CaseView): CaseScreenViewProps["compose"] =>
+    draft === null
+      ? undefined
+      : {
+          role,
+          draft,
+          now: new Date(),
+          busy: composing,
+          error: composeError,
+          textErrors,
+          declining,
+          onChange: (change) => {
+            setComposeError(null);
+            // A text that is typed on again is judged anew at its next save.
+            if (change.written !== undefined) setTextErrors({});
+            if (draftNow.current !== null) keep({ ...draftNow.current, ...change });
+          },
+          onTextBlur: saveText,
+          onSeal: () => {
+            setComposeError(null);
+            if (draftNow.current !== null) keep(withSeal(value, offeredDraft(value, role, draftNow.current)));
+          },
+          onConfirm: () => void confirm(),
+          onDeclineOpen: () => setDeclining({ reason: "", busy: false, error: null }),
+          onDeclineChange: (reason) => setDeclining((current) => (current === null ? null : { ...current, reason })),
+          onDeclineSave: () => void declineSeal(),
+          onDeclineClose: () => setDeclining(null),
+          onCorrect: (decision) => {
+            setComposeError(null);
+            setTextErrors({});
+            if (draftNow.current !== null && draftNow.current.kind !== "correction") beforeCorrection.current = draftNow.current;
+            const opened = correctionDraft(id, value, decision, role);
+            keep(opened);
+            // The reason its person saved for a correction on this case before comes back with it, unless they have typed since.
+            void openCorrection(id, value, decision, role).then((restored) => {
+              if (alive.current && draftNow.current === opened) keep(restored);
+            });
+          },
+          onCancelCorrection: () => {
+            setComposeError(null);
+            setTextErrors({});
+            keep(beforeCorrection.current ?? newDraft(id, value, role));
+            beforeCorrection.current = null;
+          },
+        };
+
   return (
     <Loaded
       value={view}
@@ -793,6 +975,7 @@ export function CaseScreen({ id, api, credentials, onOpenCase }: { id: CaseId; a
         <CaseScreenView
           caseId={id}
           view={value}
+          compose={composeProps(value)}
           shownImage={shownImage}
           busy={busy}
           notice={notice}

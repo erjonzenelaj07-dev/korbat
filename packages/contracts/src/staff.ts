@@ -305,11 +305,11 @@ export const IdentityRevealRequest = IdentityRevealedParams.extend({ stepUp: Aut
 export type IdentityRevealRequest = z.infer<typeof IdentityRevealRequest>;
 
 /**
- * POST /api/staff/cases/:case/decisions answers 201 with the id of the decision that committed. The console's case
- * screens, when they come, read the case again in its place.
+ * POST /api/staff/cases/:case/decisions: the action's params with the step-up assertion added as `stepUp`. The route
+ * answers 201 with the case as it now stands (CaseView), so the console shows what the decision left.
  */
-export const CaseDecisionResponse = z.object({ decisionId: z.uuid() });
-export type CaseDecisionResponse = z.infer<typeof CaseDecisionResponse>;
+export const CaseDecisionRequest = CaseDecidedParams.extend({ stepUp: AuthenticationResponseJSON });
+export type CaseDecisionRequest = z.infer<typeof CaseDecisionRequest>;
 
 /**
  * Which ceremony a WebAuthn challenge was issued for: its second byte, in either layout below. A challenge answers only

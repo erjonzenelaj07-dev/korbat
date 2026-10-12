@@ -374,6 +374,24 @@ export async function insertAction(tx: DbTx, decisionId: string, action: { kind:
   await tx.execute(sql`insert into decision_actions (decision_id, kind, media_id) values (${decisionId}::uuid, ${action.kind}::action_kind, ${action.mediaId}::uuid)`);
 }
 
+/**
+ * Whether the seal a decision has just recorded is in force, asked of the view itself, inside the decision's transaction:
+ * the one definition of which measures stand, never a copy of its clause.
+ */
+export async function sealInForce(tx: DbTx, decisionId: string): Promise<boolean> {
+  const [row] = await rows<{ held: boolean }>(tx, sql`select exists (select 1 from measures_in_force m where m.decision_id = ${decisionId}::uuid and m.kind = 'seal_media') as held`);
+  return row!.held;
+}
+
+/**
+ * How many decisions a staff account made in the last `windowMs`, by the database's clock: exact for any window, and
+ * unaffected by a restart of the limit store. One read of the index on who decided.
+ */
+export async function recentDecisionsBy(q: Runner, staffId: string, windowMs: number): Promise<number> {
+  const [row] = await rows<{ n: number }>(q, sql`select count(*)::int as n from decisions where decided_by = ${staffId}::uuid and decided_at > now() - make_interval(secs => ${windowMs / 1000}::float8)`);
+  return row!.n;
+}
+
 /** The audit row of a confirmed action, as public.append_confirmed_audit writes it. */
 export interface ConfirmedAuditRow {
   actorId: string;
@@ -1235,4 +1253,435 @@ export async function mailAndReleaseCounts(q: Runner, giveUpDays: number): Promi
     failed: { receipts: row!.receipts_failed!, authorMails: row!.author_failed!, outcomes: row!.outcomes_failed! },
     releaseOverdue: row!.release_overdue!,
   };
+}
+
+/** The decisions of the last 30 days that lifted the protection of reported images: each lifted seal, and each final answer to a suspect item without a seal. Newest first, at most `max`, with their total. */
+export async function recentProtectionLifted(q: Runner, max: number): Promise<{ total: number; items: { at: string; handle: string; caseId: string; kind: "unsealed" | "dismissed" }[] }> {
+  const found = await rows<{ at: string; handle: string; case_id: string; kind: "unsealed" | "dismissed"; total: number }>(
+    q,
+    sql`select ${iso("d.decided_at")} as at, p.handle, d.case_id, (count(*) over ())::int as total,
+               case when exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind = 'unseal_media') then 'unsealed' else 'dismissed' end as kind
+          from decisions d join profiles p on p.id = d.decided_by
+         where d.decided_at >= now() - interval '30 days'
+           and (exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind = 'unseal_media')
+                or (d.kind = 'final' and d.suspect and not exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind = 'seal_media')))
+         order by d.decided_at desc, d.id desc limit ${max}::int`,
+  );
+  return { total: found[0]?.total ?? 0, items: found.map((row) => ({ at: row.at, handle: row.handle, caseId: row.case_id, kind: row.kind })) };
+}
+
+/** The recorded choices not to seal of the last 30 days, newest first, at most `max`, with their total: time, staff handle and case, never the reason. */
+export async function recentSealsDeclined(q: Runner, max: number): Promise<{ total: number; items: { at: string; handle: string; caseId: string }[] }> {
+  const found = await rows<{ at: string; handle: string; case_id: string; total: number }>(
+    q,
+    sql`select ${iso("t.created_at")} as at, p.handle, t.case_id, (count(*) over ())::int as total
+          from staff_texts t join profiles p on p.id = t.author_id
+         where t.kind = 'seal_declined' and t.created_at >= now() - interval '30 days'
+         order by t.created_at desc, t.id desc limit ${max}::int`,
+  );
+  return { total: found[0]?.total ?? 0, items: found.map((row) => ({ at: row.at, handle: row.handle, caseId: row.case_id })) };
+}
+
+/** The seals taken while deciding that are in force, by the view's one definition, newest first: who took each, on which case, and what its list covers. */
+export async function interimSealsInForce(q: Runner, max: number): Promise<{ total: number; items: { at: string; handle: string; caseId: string; posts: number; images: number }[] }> {
+  const found = await rows<{ at: string; handle: string; case_id: string; posts: number; images: number; total: number }>(
+    q,
+    sql`select ${iso("d.decided_at")} as at, p.handle, m.case_id, (count(*) over ())::int as total,
+               (select count(*)::int from seal_posts s where s.action_id = m.id) as posts,
+               (select coalesce(sum(s.images), 0)::int from seal_posts s where s.action_id = m.id) as images
+          from measures_in_force m join decisions d on d.id = m.decision_id join profiles p on p.id = d.decided_by
+         where m.kind = 'seal_media' and m.decision_kind = 'interim'
+         order by d.decided_at desc, m.id desc limit ${max}::int`,
+  );
+  return { total: found[0]?.total ?? 0, items: found.map((row) => ({ at: row.at, handle: row.handle, caseId: row.case_id, posts: row.posts, images: row.images })) };
+}
+
+// ---------------------------------------------------------------- the statement of reasons
+
+/** A decision as its statement is rendered from it, with what the mail and the staff alerts need beside it. */
+export interface StatementDecisionRow {
+  id: string;
+  caseId: string;
+  kind: "interim" | "final" | "review" | "correction";
+  outcome: string;
+  ground: string | null;
+  ruleId: string | null;
+  rulesVersion: number;
+  redressVersion: number;
+  source: string;
+  decidedAt: string;
+  suspect: boolean;
+  authorMail: string;
+  decidedBy: string;
+  facts: string | null;
+  reason: string | null;
+  legalReference: string | null;
+  targetType: TargetType;
+  targetId: string;
+  /** The post's creation time, which survives its deletion; null for an account case. */
+  postCreatedAt: string | null;
+  /** The account the decision is about: the post's author, or the account itself. */
+  subjectId: string | null;
+  /** The decision a review or a correction is about. */
+  reviewed: { kind: "interim" | "final"; ground: string | null; ruleId: string | null; rulesVersion: number; legalReference: string | null; decidedAt: string } | null;
+}
+
+export async function statementDecision(q: Runner, decisionId: string): Promise<StatementDecisionRow | null> {
+  const [row] = await rows<Record<string, unknown>>(
+    q,
+    sql`select d.id, d.case_id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.source, ${iso("d.decided_at")} as decided_at, d.suspect, d.author_mail, d.decided_by,
+               (select t.text from staff_texts t where t.digest = d.facts_digest) as facts,
+               (select t.text from staff_texts t where t.digest = d.reason_digest) as reason,
+               (select t.text from staff_texts t where t.digest = d.legal_reference_digest) as legal_reference,
+               c.target_type, c.target_id,
+               (select ${iso("p.created_at")} from posts p where c.target_type = 'post' and p.id = c.target_id) as post_created_at,
+               case when c.target_type = 'post' then (select p.author_id from posts p where p.id = c.target_id) else c.target_id end as subject_id,
+               r.kind as reviewed_kind, r.ground as reviewed_ground, r.rule_id as reviewed_rule, r.rules_version as reviewed_rules_version, ${iso("r.decided_at")} as reviewed_at,
+               (select t.text from staff_texts t where t.digest = r.legal_reference_digest) as reviewed_legal
+          from decisions d join cases c on c.id = d.case_id left join decisions r on r.id = d.reviews_decision_id
+         where d.id = ${decisionId}::uuid`,
+  );
+  if (!row) return null;
+  return {
+    id: row.id as string,
+    caseId: row.case_id as string,
+    kind: row.kind as StatementDecisionRow["kind"],
+    outcome: row.outcome as string,
+    ground: row.ground as string | null,
+    ruleId: row.rule_id as string | null,
+    rulesVersion: row.rules_version as number,
+    redressVersion: row.redress_version as number,
+    source: row.source as string,
+    decidedAt: row.decided_at as string,
+    suspect: row.suspect as boolean,
+    authorMail: row.author_mail as string,
+    decidedBy: row.decided_by as string,
+    facts: row.facts as string | null,
+    reason: row.reason as string | null,
+    legalReference: row.legal_reference as string | null,
+    targetType: row.target_type as TargetType,
+    targetId: row.target_id as string,
+    postCreatedAt: row.post_created_at as string | null,
+    subjectId: row.subject_id as string | null,
+    reviewed:
+      row.reviewed_kind === null
+        ? null
+        : { kind: row.reviewed_kind as "interim" | "final", ground: row.reviewed_ground as string | null, ruleId: row.reviewed_rule as string | null, rulesVersion: row.reviewed_rules_version as number, legalReference: row.reviewed_legal as string | null, decidedAt: row.reviewed_at as string },
+  };
+}
+
+/** One ledger row of a decision as its statement tells of it: for a reversal the measure it lifts, for a seal what its list held. */
+export interface StatementActionRow {
+  kind: ActionKind;
+  mediaId: string | null;
+  noEffect: "already" | "deleted" | null;
+  /** For a reversal: the decision that holds the lifted measure, its rule, whether that measure changed anything, and whether korbat still kept that decision's snapshot when this one was made. */
+  lifted: { decisionId: string; ruleId: string | null; noEffect: string | null; snapshotKept: boolean } | null;
+  sealedPosts: number;
+  sealedImages: number;
+  /** The seal's images on posts their author had deleted by the time it was recorded: nothing later is read. */
+  sealedDeletedImages: number;
+}
+
+/** A decision's measures and reversals, in the ledger's order of kinds. */
+export async function statementActions(q: Runner, decisionId: string): Promise<StatementActionRow[]> {
+  const found = await rows<Record<string, unknown>>(
+    q,
+    sql`select a.kind, a.media_id, a.no_effect, l.decision_id as lifted_decision, ld.rule_id as lifted_rule, l.no_effect as lifted_no_effect,
+               (ls.erased_at is null or ls.erased_at > d.decided_at) as lifted_snapshot_kept,
+               (select count(*)::int from seal_posts s where s.action_id = a.id) as sealed_posts,
+               (select coalesce(sum(s.images), 0)::int from seal_posts s where s.action_id = a.id) as sealed_images,
+               (select coalesce(sum(s.images), 0)::int from seal_posts s join posts p on p.id = s.post_id
+                 where s.action_id = a.id and p.state = 'deleted_by_author' and p.deleted_at <= a.created_at) as sealed_deleted
+          from decision_actions a join decisions d on d.id = a.decision_id
+          left join decision_actions l on l.id = a.reverses_action_id
+          left join decisions ld on ld.id = l.decision_id
+          left join evidence_snapshots ls on ls.id = ld.snapshot_id
+         where a.decision_id = ${decisionId}::uuid order by a.kind, a.media_id`,
+  );
+  return found.map((row) => ({
+    kind: row.kind as ActionKind,
+    mediaId: row.media_id as string | null,
+    noEffect: row.no_effect as StatementActionRow["noEffect"],
+    lifted: row.lifted_decision === null ? null : { decisionId: row.lifted_decision as string, ruleId: row.lifted_rule as string | null, noEffect: row.lifted_no_effect as string | null, snapshotKept: row.lifted_snapshot_kept as boolean },
+    sealedPosts: row.sealed_posts as number,
+    sealedImages: row.sealed_images as number,
+    sealedDeletedImages: row.sealed_deleted as number,
+  }));
+}
+
+/** A measure taken while deciding that ended with a final decision, without a reversal. */
+export interface EndedMeasureRow {
+  kind: ActionKind;
+  mediaId: string | null;
+  decisionId: string;
+  ruleId: string | null;
+  noEffect: string | null;
+  snapshotKept: boolean;
+}
+
+/**
+ * The measures taken while deciding that ended with this final decision, of those their author was told of: every one
+ * that was still in force when the decision closed its case, and a seal taken while deciding whose suspect items the
+ * decision answered, unless the decision itself seals (the images then stay sealed). It reads only what stood when the
+ * decision was made: a reversal recorded later, or an item that arrived later, changes nothing here.
+ */
+export async function endedMeasures(q: Runner, decisionId: string): Promise<EndedMeasureRow[]> {
+  const found = await rows<Record<string, unknown>>(
+    q,
+    sql`select a.kind, a.media_id, i.id as decision_id, i.rule_id, a.no_effect, (s.erased_at is null or s.erased_at > d.decided_at) as snapshot_kept
+          from decisions d
+          join cases c on c.id = d.case_id
+          join decisions i on i.case_id = d.case_id and i.kind = 'interim' and i.decided_at < d.decided_at and i.author_mail <> 'none'
+          join decision_actions a on a.decision_id = i.id
+          join evidence_snapshots s on s.id = i.snapshot_id
+         where d.id = ${decisionId}::uuid and d.kind = 'final'
+           and a.kind in ('withhold', 'seal_media', 'withhold_media', 'reset_display_name', 'reset_bio')
+           and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id and r.created_at <= d.decided_at)
+           and case when a.kind = 'seal_media'
+                 then exists (select 1 from intake_items x where x.case_id = d.case_id and x.suspect and x.answered_by = d.id and x.created_at <= i.decided_at)
+                      and not exists (select 1 from decision_actions own where own.decision_id = d.id and own.kind = 'seal_media')
+                 else c.closed_at = d.decided_at end
+         order by i.decided_at, a.kind, a.media_id`,
+  );
+  return found.map((row) => ({ kind: row.kind as ActionKind, mediaId: row.media_id as string | null, decisionId: row.decision_id as string, ruleId: row.rule_id as string | null, noEffect: row.no_effect as string | null, snapshotKept: row.snapshot_kept as boolean }));
+}
+
+/** What became of a mail korbat owed: the delivery states a send can end in. */
+export type MailState = "sent" | "suppressed" | "no_address" | "failed";
+
+/**
+ * Records what became of a decision's statement mail, only while it is still pending, so a late answer never overwrites
+ * one already recorded. True when this call recorded it.
+ */
+export async function recordAuthorMail(q: Runner, decisionId: string, state: MailState): Promise<boolean> {
+  const updated = await rows<{ id: string }>(
+    q,
+    sql`update decisions set author_mail = ${state}::delivery_state, author_mail_at = case when ${state}::text = 'sent' then now() else author_mail_at end
+         where id = ${decisionId}::uuid and author_mail = 'pending' returning id`,
+  );
+  return updated.length > 0;
+}
+
+// ---------------------------------------------------------------- the dispatch job
+
+/** A time as a timestamptz parameter. */
+const at = (time: Date) => sql`${time.toISOString()}::timestamptz`;
+
+/** The notices whose receipt is still pending and that were received before `before`, oldest first, at most `limit`. */
+export async function pendingReceipts(q: Runner, before: Date, limit: number): Promise<string[]> {
+  return (await rows<{ id: string }>(q, sql`select id from intakes where receipt = 'pending' and received_at < ${at(before)} order by received_at, id limit ${limit}::int`)).map((row) => row.id);
+}
+
+/** The decisions whose statement mail is still pending and that were decided before `before`, oldest first. The decision caps bound how many there can be. */
+export async function pendingAuthorMails(q: Runner, before: Date): Promise<string[]> {
+  return (await rows<{ id: string }>(q, sql`select id from decisions where author_mail = 'pending' and decided_at < ${at(before)} order by decided_at, id`)).map((row) => row.id);
+}
+
+/**
+ * The daily release, through the database's one function for it: every item answered before the cut-off is released with
+ * its outcome as of the cut-off, and every released item whose outcome a review or a correction changed before it gets
+ * its new outcome. The function refuses a cut-off in the database's future; a cut-off its clock has not reached yet (the
+ * API's clock running ahead of it) is therefore taken as now. Answers how many items it changed.
+ */
+export async function releaseOutcomes(q: Runner, cutoff: Date): Promise<number> {
+  const [row] = await rows<{ n: number }>(q, sql`select public.release_outcomes(least(${at(cutoff)}, now())) as n`);
+  return row!.n;
+}
+
+/**
+ * The contacts whose notice is still owed something: an item unanswered (a re-examination included), an item's outcome
+ * mail pending or a changed outcome waiting for its release, or its receipt pending or folded. A line or a receipt that
+ * was given up is owed nothing more.
+ */
+export async function contactsOwed(q: Runner): Promise<string[]> {
+  const found = await rows<{ contact_id: string }>(
+    q,
+    sql`select distinct n.contact_id from intakes n
+         where n.contact_id is not null
+           and (n.receipt in ('pending', 'folded')
+                or exists (select 1 from intake_items i where i.intake_id = n.id and (i.outcome is null or i.outcome_mail = 'pending' or i.revision_pending_at is not null)))`,
+  );
+  return found.map((row) => row.contact_id);
+}
+
+/** One released item whose outcome mail is pending, with what its line's words follow from. */
+export interface OutcomeLineRow {
+  id: string;
+  intakeId: string;
+  ref: string;
+  contactId: string | null;
+  reporterId: string | null;
+  position: number;
+  targetType: TargetType;
+  targetId: string;
+  namedHandle: string | null;
+  hasCase: boolean;
+  suspect: boolean;
+  shownOutcome: string;
+  changed: boolean;
+  reexamines: boolean;
+  /** A decision answered it: a link that named nothing was answered without one. */
+  byDecision: boolean;
+  reexamined: boolean;
+  ruleId: string | null;
+  rulesVersion: number | null;
+  decisionUnseen: boolean;
+  /** The answering decision holds a seal. */
+  sealed: boolean;
+  /** Every measure of the answering decision changed nothing when it was imposed. */
+  noEffect: boolean;
+  /** For an item about a post: the post quotes another. */
+  quotes: boolean;
+}
+
+/** Every released item whose outcome mail is still pending, whichever round released it, by notice and position. */
+export async function pendingOutcomeLines(q: Runner): Promise<OutcomeLineRow[]> {
+  const measures = sql`a.kind in ('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
+  const found = await rows<Record<string, unknown>>(
+    q,
+    sql`select i.id, i.intake_id, n.ref, n.contact_id, i.reporter_account_id, i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
+               i.shown_outcome, i.revised_sent_at is not null as changed, i.reexamines_item_id is not null as reexamines, i.answered_by is not null as by_decision,
+               exists (select 1 from intake_items r where r.reexamines_item_id = i.id) as reexamined,
+               d.rule_id, d.rules_version, coalesce(d.unseen, false) as decision_unseen,
+               exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
+               (exists (select 1 from decision_actions a where a.decision_id = i.answered_by and ${measures})
+                and not exists (select 1 from decision_actions a where a.decision_id = i.answered_by and ${measures} and a.no_effect is null)) as no_effect,
+               coalesce((select p.quote_of_id is not null from posts p where i.target_type = 'post' and p.id = i.target_id), false) as quotes
+          from intake_items i join intakes n on n.id = i.intake_id left join decisions d on d.id = i.answered_by
+         where i.outcome_sent_at is not null and i.outcome_mail = 'pending' and i.shown_outcome is not null
+         order by n.received_at, n.id, i.position, i.created_at, i.id`,
+  );
+  return found.map((row) => ({
+    id: row.id as string,
+    intakeId: row.intake_id as string,
+    ref: row.ref as string,
+    contactId: row.contact_id as string | null,
+    reporterId: row.reporter_account_id as string | null,
+    position: row.position as number,
+    targetType: row.target_type as TargetType,
+    targetId: row.target_id as string,
+    namedHandle: row.named_handle as string | null,
+    hasCase: row.has_case as boolean,
+    suspect: row.suspect as boolean,
+    shownOutcome: row.shown_outcome as string,
+    changed: row.changed as boolean,
+    reexamines: row.reexamines as boolean,
+    byDecision: row.by_decision as boolean,
+    reexamined: row.reexamined as boolean,
+    ruleId: row.rule_id as string | null,
+    rulesVersion: row.rules_version as number | null,
+    decisionUnseen: row.decision_unseen as boolean,
+    sealed: row.sealed as boolean,
+    noEffect: row.no_effect as boolean,
+    quotes: row.quotes as boolean,
+  }));
+}
+
+/** The notices of signed-out notifiers whose receipt the 24-hour cap folded: each rides in its address's next update. */
+export async function foldedReceipts(q: Runner): Promise<NoticeRow[]> {
+  const found = await rows<NoticeColumns>(q, sql`select ${noticeColumns} from intakes where receipt = 'folded' and contact_id is not null order by received_at, id`);
+  return found.flatMap((row) => noticeOf(row) ?? []);
+}
+
+/** Records what became of these items' outcome mails, only where one is still pending. */
+export async function recordOutcomeMails(q: Runner, itemIds: readonly string[], state: MailState): Promise<void> {
+  if (itemIds.length === 0) return;
+  await q.execute(sql`update intake_items set outcome_mail = ${state}::delivery_state where id = any(${uuids(itemIds)}) and outcome_mail = 'pending'`);
+}
+
+/** Records what became of a receipt that rode in an update, only while it is still pending or folded. */
+export async function recordCarriedReceipt(q: Runner, intakeId: string, state: MailState): Promise<void> {
+  await q.execute(
+    sql`update intakes set receipt = ${state}::delivery_state, receipt_sent_at = case when ${state}::text = 'sent' then now() else receipt_sent_at end
+         where id = ${intakeId}::uuid and receipt in ('pending', 'folded')`,
+  );
+}
+
+/** The receipts and the statement mails still unsent `days` days after they were due, recorded as given up; answers their ids. */
+export async function giveUpReceiptsAndAuthorMails(q: Runner, now: Date, days: number): Promise<{ receipts: string[]; authorMails: string[] }> {
+  const due = sql`${at(now)} - make_interval(days => ${days}::int)`;
+  const receipts = await rows<{ id: string }>(q, sql`update intakes set receipt = 'failed' where receipt in ('pending', 'folded') and received_at < ${due} returning id`);
+  const authorMails = await rows<{ id: string }>(q, sql`update decisions set author_mail = 'failed' where author_mail = 'pending' and decided_at < ${due} returning id`);
+  return { receipts: receipts.map((row) => row.id), authorMails: authorMails.map((row) => row.id) };
+}
+
+/** The outcome lines still unsent `days` days after their release, or after the release of their changed outcome, recorded as given up; answers their ids. */
+export async function giveUpOutcomeMails(q: Runner, now: Date, days: number): Promise<string[]> {
+  const found = await rows<{ id: string }>(
+    q,
+    sql`update intake_items set outcome_mail = 'failed'
+         where outcome_mail = 'pending' and coalesce(revised_sent_at, outcome_sent_at) < ${at(now)} - make_interval(days => ${days}::int) returning id`,
+  );
+  return found.map((row) => row.id);
+}
+
+/** An unanswered item in the urgent lane that has waited long enough to be alerted about again, with what decides whether it still calls for someone. */
+export interface UrgentItemRow {
+  caseId: string;
+  targetType: TargetType;
+  targetId: string;
+  suspect: boolean;
+  /** When the item arrived, in epoch milliseconds. */
+  arrivedMs: number;
+  /** Whether a decision taken while deciding, a note, or a recorded choice not to seal came after the item arrived. */
+  interimAfter: boolean;
+  noteAfter: boolean;
+  declinedAfter: boolean;
+  /** When the newest recorded choice not to seal of the case was saved, in epoch milliseconds, to the millisecond. */
+  newestDeclinedMs: number | null;
+  /** A post case's post is not visible: withheld, removed, or deleted by its author. */
+  postHidden: boolean;
+}
+
+/**
+ * The unanswered items of open cases in the urgent lane that arrived before `before`. "After the item arrived" compares
+ * the item's time with the decision's or the text's, as the view of measures in force does: no later than.
+ */
+export async function urgentItems(q: Runner, before: Date): Promise<UrgentItemRow[]> {
+  const after = (kind: string) => sql.raw(`exists (select 1 from staff_texts t where t.case_id = c.id and t.kind = '${kind}' and t.created_at >= i.created_at)`);
+  const found = await rows<Record<string, unknown>>(
+    q,
+    sql`select c.id as case_id, c.target_type, c.target_id, i.suspect,
+               floor(extract(epoch from i.created_at) * 1000)::float8 as arrived_ms,
+               exists (select 1 from decisions d where d.case_id = c.id and d.kind = 'interim' and d.decided_at >= i.created_at) as interim_after,
+               ${after("note")} as note_after, ${after("seal_declined")} as declined_after,
+               (select floor(extract(epoch from max(t.created_at)) * 1000)::float8 from staff_texts t where t.case_id = c.id and t.kind = 'seal_declined') as newest_declined_ms,
+               coalesce((select p.state <> 'visible' from posts p where c.target_type = 'post' and p.id = c.target_id), false) as post_hidden
+          from intake_items i join cases c on c.id = i.case_id
+         where c.closed_at is null and i.lane = 0 and i.outcome is null and i.created_at < ${at(before)}
+         order by c.id, i.seq`,
+  );
+  return found.map((row) => ({
+    caseId: row.case_id as string,
+    targetType: row.target_type as TargetType,
+    targetId: row.target_id as string,
+    suspect: row.suspect as boolean,
+    arrivedMs: Number(row.arrived_ms),
+    interimAfter: row.interim_after as boolean,
+    noteAfter: row.note_after as boolean,
+    declinedAfter: row.declined_after as boolean,
+    newestDeclinedMs: row.newest_declined_ms === null ? null : Number(row.newest_declined_ms),
+    postHidden: row.post_hidden as boolean,
+  }));
+}
+
+/**
+ * The cases past their lane's response time (24 hours in lanes 0 and 1, seven days in lane 2, counted from the oldest
+ * unanswered item), per lane with the oldest one's time, and the open cases that have held a measure taken while
+ * deciding for more than 24 hours, whatever their lane.
+ */
+export async function waitingCases(q: Runner, now: Date): Promise<{ lanes: { lane: Lane; count: number; oldest: Date }[]; interim: number }> {
+  const found = await rows<{ lane: Lane; n: number; oldest: string }>(
+    q,
+    sql`select lane, count(*)::int as n, ${iso("min(oldest_open_at)")} as oldest from cases
+         where closed_at is null and oldest_open_at < ${at(now)} - case when lane = 2 then interval '7 days' else interval '24 hours' end
+         group by lane order by lane`,
+  );
+  const [held] = await rows<{ n: number }>(
+    q,
+    sql`select count(distinct m.case_id)::int as n from measures_in_force m join decisions d on d.id = m.decision_id join cases c on c.id = m.case_id
+         where m.decision_kind = 'interim' and c.closed_at is null and d.decided_at < ${at(now)} - interval '24 hours'`,
+  );
+  return { lanes: found.map((row) => ({ lane: row.lane, count: row.n, oldest: new Date(row.oldest) })), interim: held!.n };
 }

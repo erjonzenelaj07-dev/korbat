@@ -18,10 +18,14 @@ import { recordIntake, type IntakeGround, type IntakeRecorded } from "../src/mod
 const pg = (code: string, extra: Record<string, unknown> = {}) => new Error("Failed query", { cause: Object.assign(new Error(String(extra.message ?? code)), { code, ...extra }) });
 const raisedAs = (message: string) => pg("P0001", { message });
 
-/** The module's dependencies over a pool whose transactions end as scripted, one entry for each run; a read finds the case about an account. */
+/**
+ * The module's dependencies over a pool whose transactions end as scripted, one entry for each run; a read finds the case
+ * about an account. What a decision starts after its commit is counted and never run.
+ */
 function scripted(ends: (Error | unknown)[], options: { now?: Date; knowsCase?: boolean } = {}) {
   const subject = randomUUID();
   let runs = 0;
+  let started = 0;
   const apiDb = {
     execute: async () => (options.knowsCase === false ? [] : [{ target_type: "account", target_id: subject }]),
     transaction: async () => {
@@ -31,8 +35,9 @@ function scripted(ends: (Error | unknown)[], options: { now?: Date; knowsCase?: 
       return end;
     },
   };
-  const deps = { apiDb, social: {}, config: {}, log: pino({ level: "silent" }), now: () => options.now ?? new Date() } as unknown as ModerationDeps;
-  return { deps, runs: () => runs };
+  const background = { start: () => void started++, settle: async () => undefined };
+  const deps = { apiDb, social: {}, background, config: {}, log: pino({ level: "silent" }), now: () => options.now ?? new Date() } as unknown as ModerationDeps;
+  return { deps, runs: () => runs, started: () => started };
 }
 
 describe("the intake's transaction is run again when it changed nothing and may now succeed", () => {
@@ -130,6 +135,8 @@ describe("a confirmed decision's transaction is run once more only when it chang
       const world = scripted([pg(code), done], { now });
       expect(await run(world), code).toBe(done);
       expect(world.runs(), code).toBe(2);
+      // What follows a decision's commit is started once, for the run that committed.
+      expect(world.started(), code).toBe(1);
     }
   });
 
@@ -137,6 +144,8 @@ describe("a confirmed decision's transaction is run once more only when it chang
     const world = scripted([pg("40P01"), pg("55P03")], { now });
     expect(await run(world)).toBe("late");
     expect(world.runs()).toBe(2);
+    // Nothing committed, so nothing follows: no statement is mailed and no decision counted.
+    expect(world.started()).toBe(0);
   });
 
   test("with a minute or less of the challenge left it is not run again", async () => {
@@ -150,8 +159,10 @@ describe("a confirmed decision's transaction is run once more only when it chang
   });
 
   test("the audit row's refusals are answers, not errors: the key or the account ended, or the challenge's time ran out", async () => {
-    expect(await run(scripted([raisedAs("staff_confirmation_ended")], { now }))).toBe("ended");
-    expect(await run(scripted([raisedAs("staff_confirmation_late")], { now }))).toBe("late");
+    const [ended, late] = [scripted([raisedAs("staff_confirmation_ended")], { now }), scripted([raisedAs("staff_confirmation_late")], { now })];
+    expect(await run(ended)).toBe("ended");
+    expect(await run(late)).toBe("late");
+    expect([ended.started(), late.started()]).toEqual([0, 0]);
   });
 
   test("a code a trigger raised is thrown as its ModerationError; anything else as it is", async () => {

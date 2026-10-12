@@ -9,7 +9,6 @@ import { z } from "zod";
 import {
   AuditEntry,
   AuditPage,
-  CaseDecisionResponse,
   CaseView,
   FindingResponse,
   QueuePage,
@@ -477,7 +476,6 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       StaffKeysResponse,
       AuditPage,
       StaffEnrollVerifyResponse,
-      CaseDecisionResponse,
       StaffOverview,
       QueuePage,
       CaseView,

@@ -72,6 +72,9 @@ const QUIET: StaffOverview = {
   mailsFailed: { receipts: 0, authorMails: 0, outcomes: 0 },
   releaseOverdue: 0,
   deferUnproven: false,
+  protectionLifted: { total: 0, items: [] },
+  sealsDeclined: { total: 0, items: [] },
+  interimSeals: { total: 0, items: [] },
 };
 
 describe("sign-in", () => {

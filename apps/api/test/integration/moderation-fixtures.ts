@@ -693,6 +693,18 @@ export async function moderationCounts(db: Runner): Promise<Record<string, numbe
   return Object.fromEntries(Object.entries(await rowCounts(db)).filter(([table]) => !kept.has(table)));
 }
 
+/**
+ * How many rows the four auth tables of moderation cases hold (migration 0015: a notifier's contacts, confirmations and
+ * stops, and the links of staff accounts to personal ones), read as the migrator: no other role may read all four.
+ */
+export async function authCaseCounts(migrateDb: Db): Promise<Record<string, number>> {
+  const [row] = await migrateDb.execute<Record<string, number>>(
+    sql`select (select count(*)::int from auth.notifier_contacts) as notifier_contacts, (select count(*)::int from auth.notifier_confirmations) as notifier_confirmations,
+               (select count(*)::int from auth.notifier_suppressions) as notifier_suppressions, (select count(*)::int from auth.staff_personal_accounts) as staff_personal_accounts`,
+  );
+  return { ...row! };
+}
+
 /** A marker for one statement of one test: a word that no other statement holds. */
 export const newMarker = () => `race_${randomBytes(6).toString("hex")}`;
 
