@@ -51,15 +51,20 @@ export function createProfileStore(apiDb: Db): ProfileStore {
     /**
      * The badge, profiles.verified_at, which the auth module decides and cannot write. 3e (design, section 7.2): setting it
      * is a write of the account, so the one predicate joins the update's WHERE and the answer says whether a row changed;
-     * removing it is open to everyone, and answers true.
+     * removing it is open to everyone, and answers true. Setting it locks the row first, in a statement of its own, so the
+     * UPDATE that judges comes once the row is held: an UPDATE that waited for a holder that only locked the row would
+     * keep the judgment it made before the wait. It is the write's last statement, and so its closing judgment (3e's review).
      */
     async setVerified(id, at) {
       if (at === null) {
         await apiDb.update(profiles).set({ verifiedAt: null }).where(eq(profiles.id, id));
         return true;
       }
-      const updated = await apiDb.update(profiles).set({ verifiedAt: at }).where(and(eq(profiles.id, id), liveNotSuspended("profiles", WRITE_CLOCK))).returning({ id: profiles.id });
-      return updated.length === 1;
+      return apiDb.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from profiles where id = ${id}::uuid for no key update`);
+        const updated = await tx.update(profiles).set({ verifiedAt: at }).where(and(eq(profiles.id, id), liveNotSuspended("profiles", WRITE_CLOCK))).returning({ id: profiles.id });
+        return updated.length === 1;
+      });
     },
     /** A plain read of the same fact, which startBadge asks first as a courtesy, so that no code is sent to a suspended account; the write decides. */
     async suspended(id) {

@@ -13,7 +13,7 @@ import {
   type StandingLists,
   type StrikeDue,
 } from "@korbat/contracts";
-import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
+import { isBoundReached, isDeadlock } from "../lib/lock-bounds";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
 import { saltedStatement } from "./intake";
 import {
@@ -220,7 +220,8 @@ export async function fileReply(deps: Pick<ModerationDeps, "apiDb" | "social">, 
       const refusal = raisedMessage(err);
       if (refusal !== null && isModerationErrorCode(refusal)) throw new ModerationError(refusal);
       if (violatedUniqueConstraint(err) !== null) throw new ModerationError("reply_not_open");
-      if (!isDeadlock(err) && !isLockNotAvailable(err)) throw err;
+      // A bound reached on either limit (lock_timeout, or the statement_timeout beside it) changed nothing either.
+      if (!isDeadlock(err) && !isBoundReached(err)) throw err;
       if (attempt >= REPLY_RETRIES) throw new ModerationError("service_unavailable", 503, undefined, 30);
     }
   }

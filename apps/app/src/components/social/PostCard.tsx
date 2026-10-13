@@ -7,6 +7,8 @@ import { errorMessage } from "@/lib/api";
 import { chipText, reportHref } from "@/lib/moderation";
 import { CHIP_WORDS, REPORT_WORDS } from "@/lib/moderation-words";
 import { useSession } from "@/lib/session";
+import { isSuspendedRefusal } from "@/lib/standing";
+import { RefusedNotice } from "@/components/moderation/RefusedNotice";
 import { social, timeAgo, type EngagementKind } from "@/lib/social";
 import { MediaGrid } from "./MediaGrid";
 import { RichText } from "./RichText";
@@ -122,6 +124,8 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
   const me = state.status === "signed-in" ? state.me.user.id : null;
   const [post, setPost] = useState(initial);
   const [error, setError] = useState<string | null>(null);
+  // 3e (design, section 9.4): an action refused account_suspended shows the refusal's sentence from /me, read again after it.
+  const [refused, setRefused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => setPost(initial), [initial]);
@@ -143,8 +147,10 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
     try {
       await action();
       setError(null);
+      setRefused(false);
     } catch (err) {
-      setError(errorMessage(err));
+      setRefused(isSuspendedRefusal(err));
+      setError(isSuspendedRefusal(err) ? null : errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -228,6 +234,7 @@ export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostV
           {error}
         </Text>
       ) : null}
+      {refused ? <RefusedNotice standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
     </View>
   );
 }

@@ -24,6 +24,15 @@ export function isLockNotAvailable(err: unknown): boolean {
   return hasSqlState(err, "55P03");
 }
 
+/**
+ * True when a bounded wait ran out on either of its two limits: lock_timeout (lock_not_available) or the statement_timeout
+ * set beside it (query_canceled, 57014), which ends a statement whose lock others keep out of reach. Either way the
+ * statement, and so the transaction, changed nothing.
+ */
+export function isBoundReached(err: unknown): boolean {
+  return isLockNotAvailable(err) || hasSqlState(err, "57014");
+}
+
 /** True for PostgreSQL's deadlock_detected: this transaction was chosen to give way, and has changed nothing. */
 export function isDeadlock(err: unknown): boolean {
   return hasSqlState(err, "40P01");
@@ -35,6 +44,10 @@ export function isDeadlock(err: unknown): boolean {
  * transaction may meet all end before the expiry. `waits` is the number of locks it may have to wait for. False when
  * nothing is left, or less than a millisecond, which lock_timeout would read as no limit at all; nothing is set then. The
  * bound only aims to end the transaction in time: the statement that writes the audit row checks the clock itself.
+ *
+ * statement_timeout is set to the same length (3e's review, database2): lock_timeout is armed again at each wait of one
+ * statement, so a FOR UPDATE that a stream of others' key-share locks keeps out of reach (each new one joins the holders
+ * without queueing behind it) would wait without end; the statement then ends at the bound, as isBoundReached knows.
  */
 export async function boundLockWaits(tx: Pick<DbTx, "execute">, expiresAt: Date, waits: number): Promise<boolean> {
   if (!Number.isInteger(waits) || waits < 1) throw new Error("boundLockWaits takes the number of waits to bound: a positive whole number");
@@ -43,6 +56,6 @@ export async function boundLockWaits(tx: Pick<DbTx, "execute">, expiresAt: Date,
   );
   const ms = Number(left!.ms);
   if (!(ms >= 1)) return false;
-  await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true)`);
+  await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true), set_config('statement_timeout', ${`${ms}ms`}::text, true)`);
   return true;
 }

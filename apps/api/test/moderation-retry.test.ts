@@ -7,6 +7,7 @@ import type { ActiveStaffSession, StaffStepUpConfirmed } from "../src/auth";
 import { ModerationError, type ModerationDeps } from "../src/moderation/context";
 import { decide } from "../src/moderation/decide";
 import { recordIntake, type IntakeGround, type IntakeRecorded } from "../src/moderation/intake";
+import { fileReply } from "../src/moderation/standing";
 
 /**
  * When the moderation module runs a transaction again (3c design, sections 7.1 and 7.5), without a database: the pool is
@@ -203,5 +204,50 @@ describe("a confirmed decision's transaction is run once more only when it chang
     const revoked = { ...confirmed(600), action: "staff_session_revoked" } as unknown as StaffStepUpConfirmed;
     await expect(decide(world.deps, session, revoked, { requestId: "req-1" })).rejects.toThrow(/needs a step-up that confirmed it/);
     expect(world.runs()).toBe(0);
+  });
+});
+
+describe("the reply's transaction is run again when it changed nothing (3e design, section 7.6 step 9)", () => {
+  /** The reply's dependencies over a pool whose read finds the decision's measure and whose transactions end as scripted. */
+  function replying(ends: unknown[]) {
+    let runs = 0;
+    const apiDb = {
+      execute: async () => [{ id: randomUUID() }],
+      transaction: async () => {
+        const end = ends[runs++];
+        if (end instanceof Error) throw end;
+        if (end === undefined) throw new Error("the transaction ran more often than the test scripted");
+        return end;
+      },
+    };
+    return { deps: { apiDb, social: {} } as unknown as Pick<ModerationDeps, "apiDb" | "social">, runs: () => runs };
+  }
+  const filed = { filedAt: "2026-10-12T10:00:00.000Z", onTime: true };
+
+  test("a deadlock, a lock timeout and the bound's statement timeout each run it again, and the third run's answer is the reply's", async () => {
+    const world = replying([pg("40P01"), pg("55P03"), filed]);
+    expect(await fileReply(world.deps, randomUUID(), randomUUID(), {})).toBe(filed);
+    expect(world.runs()).toBe(3);
+    const bounded = replying([pg("57014"), filed]);
+    expect(await fileReply(bounded.deps, randomUUID(), randomUUID(), {})).toBe(filed);
+    expect(bounded.runs()).toBe(2);
+  });
+
+  test("when the third run fails the same way the answer is service_unavailable, and no fourth run is made", async () => {
+    const world = replying([pg("40P01"), pg("55P03"), pg("57014")]);
+    await expect(fileReply(world.deps, randomUUID(), randomUUID(), {})).rejects.toMatchObject({ name: "ModerationError", code: "service_unavailable", status: 503 });
+    expect(world.runs()).toBe(3);
+  });
+
+  test("a reply that is not open is answered at once, whether the trigger or the primary key finds it; anything else is thrown as it is", async () => {
+    for (const failure of [raisedAs("reply_not_open"), pg("23505", { constraint_name: "suspension_replies_pkey" })]) {
+      const world = replying([failure]);
+      await expect(fileReply(world.deps, randomUUID(), randomUUID(), {})).rejects.toMatchObject({ name: "ModerationError", code: "reply_not_open" });
+      expect(world.runs()).toBe(1);
+    }
+    const other = pg("23503");
+    const world = replying([other]);
+    await expect(fileReply(world.deps, randomUUID(), randomUUID(), {})).rejects.toBe(other);
+    expect(world.runs()).toBe(1);
   });
 });

@@ -295,7 +295,8 @@ describe("the freeze's source pins", () => {
  *   - The predicate's three fragments, exported by lib/standing.ts (`liveNotSuspended`, and the two halves that a locking
  *     statement answers separately, `suspendedAt` and `reportsRestrictedAt`), are named in a pinned list of files, each a
  *     pinned number of times, comments included, as REQUEST_DELETION is: whoever adds a write on behalf of an account adds
- *     its site to the list, and the auth module never names one.
+ *     its site to the list, and the auth module never names one. So is the closing judgment (`closingJudgment`, 3e's
+ *     review), the last statement of a write's transaction, which reads both halves.
  *   - The profile's three derived columns are named in apps/api/src only in lib/standing.ts, social/repo.ts's
  *     lockAccounts and the moderation module's standing-repo.ts, in SQL or by drizzle's names: no other file decides by
  *     itself whether an account is suspended. Their one writer is the database's standing_apply (the function pin of 6.6).
@@ -304,9 +305,14 @@ const STANDING_PREDICATE = {
   // social/repo.ts, 3e Task 6: Explore's round applies the predicate to the candidates' authors and to the engagers at the
   // round's time, and the page and the chip to the authors at the read's (explorePage, listedInExplore).
   liveNotSuspended: { "lib/standing.ts": 1, "media/repo.ts": 2, "profiles/store.ts": 3, "social/repo.ts": 6 },
-  // social/repo.ts, 3e Task 6: the author's Explore status reads whether the author is suspended (exploreFacts).
-  suspendedAt: { "lib/standing.ts": 2, "social/repo.ts": 7 },
-  reportsRestrictedAt: { "lib/standing.ts": 1, "social/repo.ts": 2 },
+  // social/repo.ts, 3e Task 6: the author's Explore status reads whether the author is suspended (exploreFacts). lib/standing.ts,
+  // 3e's review: the closing judgment reads both halves.
+  suspendedAt: { "lib/standing.ts": 3, "social/repo.ts": 7 },
+  reportsRestrictedAt: { "lib/standing.ts": 2, "social/repo.ts": 2 },
+  // 3e's review (database1): the writes that end with the closing judgment: the social repository's (judgeActing), the
+  // upload's row, and the intake of a report under a rule. The profile store's badge and the profile's edit end with
+  // their UPDATE, made once the row is held.
+  closingJudgment: { "lib/standing.ts": 1, "media/repo.ts": 2, "moderation/intake.ts": 2, "social/repo.ts": 2 },
 };
 const STANDING_COLUMNS_ALLOWED = new Set(["lib/standing.ts", "social/repo.ts", "moderation/standing-repo.ts"]);
 const STANDING_COLUMNS = ["suspended_from", "suspended_until", "reports_restricted_until", "suspendedFrom", "suspendedUntil", "reportsRestrictedUntil"];

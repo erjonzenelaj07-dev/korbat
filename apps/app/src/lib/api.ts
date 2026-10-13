@@ -131,6 +131,15 @@ export function messageFor(code: string, fallback?: string, details?: unknown): 
   return MESSAGES[code as keyof typeof MESSAGES] ?? fallback ?? "Something went wrong. Try again.";
 }
 
+/**
+ * The codes worded here rather than by the server: validation and internal errors, whose server messages are technical;
+ * the passkey bounds, whose daily wait is worded from the details; and (3e's review, people7) a report refused for the
+ * restriction of reporting and a reply that is not open, whose screens print the app's own sentences of the design.
+ */
+function localWording(code: string): boolean {
+  return code === "invalid_request" || code === "internal" || code === "passkey_limit" || code === "reporting_restricted" || code === "reply_not_open";
+}
+
 /** The message to show for any thrown value. */
 export function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : "Something went wrong. Try again.";
@@ -218,10 +227,9 @@ export async function apiResponse(path: string, options: Omit<RequestOptions<unk
     // 3e: a write refused for a running suspension: /me is read again, so the screens say until when.
     if (res.status === 403 && code === "account_suspended") onSuspended?.();
     // The server's message is written for people and can be more specific than the generic text for
-    // its code ("Two-factor setup expired. Start again."). Only validation and internal errors use
-    // the local wording, because their server messages are technical, and the passkey bounds do, so
-    // the daily bound's wait is worded here from the details.
-    const local = code === "invalid_request" || code === "internal" || code === "passkey_limit" || !parsed.success;
+    // its code ("Two-factor setup expired. Start again."). Only the codes localWording names use the
+    // local wording.
+    const local = localWording(code) || !parsed.success;
     // Retry-After is whole seconds: on a rate limit, and on the handle cooldown, where it says when the next change is allowed.
     const retryAfter = Number(res.headers.get("retry-after"));
     throw new ApiError(res.status, code, local ? messageFor(code, undefined, details) : parsed.data.error.message, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined, details);

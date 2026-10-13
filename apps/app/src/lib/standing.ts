@@ -1,4 +1,5 @@
 import { REPLY_TEXT_MAX, RETENTION, STANDING_RULES, type AccountStanding, type AuthorCaseRow, type DecisionStrike, type DecisionView } from "@korbat/contracts";
+import { ApiError } from "./api";
 
 /**
  * The app's sentences about an account's standing (3e design, section 9), one table with the design's keys in brackets.
@@ -80,9 +81,12 @@ export const STANDING_TEXTS = {
     /** [banner.unfixed], for a suspension or, with "terminate your account", a termination. */
     unfixed: (kind: "suspend" | "terminate", days: number | null, earliestStart: string) =>
       `korbat has decided to ${decidedTo(kind, days)}. Nothing is restricted yet. It will not start before ${standingTime(earliestStart)}; the exact time appears here within ${RETENTION.mailGiveUpDays} days, once korbat knows whether its email to you could be sent.`,
-    /** [banner.announced] */
-    announced: (kind: "suspend" | "terminate", days: number | null, startsAt: string) =>
-      `korbat will ${decidedTo(kind, days)} from ${standingTime(startsAt)}. Nothing is restricted until then. If you reply before it starts, it waits for korbat's answer.`,
+    /**
+     * [banner.announced]. Its last sentence only while a reply is open (3e's review, people2): after korbat answered the
+     * person's reply, a second one is refused and holds nothing.
+     */
+    announced: (kind: "suspend" | "terminate", days: number | null, startsAt: string, replyOpen = true) =>
+      `korbat will ${decidedTo(kind, days)} from ${standingTime(startsAt)}. Nothing is restricted until then.${replyOpen ? " If you reply before it starts, it waits for korbat's answer." : ""}`,
     /** [banner.held], reading "The termination" for a termination. */
     held: (kind: "suspend" | "terminate", repliedAt: string, earliestStart: string) =>
       `You replied on ${standingDay(repliedAt)}. The ${measureNoun(kind)} does not start while your reply is unanswered. korbat answers you here and by email. If korbat keeps its decision, the ${measureNoun(kind)} starts with that answer, and never before ${standingTime(earliestStart)}.`,
@@ -242,8 +246,10 @@ export const STANDING_TEXTS = {
   },
   /** 9.4 (Task 5): on the line of an item a moderator marked, once its outcome is released. */
   reports: {
-    /** [reports.marked] */
+    /** [reports.marked], while a re-examination of the item is open. */
     marked: "A moderator marked this report as manifestly unfounded (Terms, Reporting in bad faith). You can ask for a re-examination.",
+    /** Its first sentence alone, once no re-examination is open (asked for, answered, or past its window; 3e's review, people8). */
+    markedClosed: "A moderator marked this report as manifestly unfounded (Terms, Reporting in bad faith).",
   },
 } as const;
 
@@ -264,6 +270,14 @@ export function refusalSentence(standing: AccountStanding | null | undefined): s
   return STANDING_TEXTS.refused.suspended(running.endsAt);
 }
 
+/**
+ * Whether a write was refused for a running suspension or termination (403 account_suspended, 9.4): the screen then shows
+ * refusalSentence from /me, which the session reads again after such a refusal, in place of the server's sentence.
+ */
+export function isSuspendedRefusal(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 403 && err.code === "account_suspended";
+}
+
 /** 9.4: what a row of "About you" says of a strike and of its overruling (CASE_ROW_WORDS). */
 export const CASE_ROW_WORDS = {
   strike: "a strike",
@@ -277,6 +291,16 @@ export const CASE_ROW_WORDS = {
   /** Task 3: a suspension (its days and whether it was announced come with Task 4's row members), and its lift. */
   suspended: "a suspension",
   lifted: "suspension lifted",
+  /**
+   * 3e's review (people7; design, section 9.4): a suspension with its days and whether it was announced, a termination,
+   * a withdrawal for another measure, the lift of a termination (a lift of a suspension reads "suspension lifted"), and a
+   * suspension or termination that rested on a decision this one reversed.
+   */
+  suspendedFor: (days: number, announced: boolean) => `a suspension of ${days} ${days === 1 ? "day" : "days"}, ${announced ? "announced" : "at once"}`,
+  terminated: "a termination",
+  withdrawn: "suspension withdrawn for another measure",
+  terminationLifted: "termination lifted",
+  standingEnded: { suspend: "a suspension that rested on it ended", terminate: "a termination that rested on it ended" },
   /** Task 5: a warning about the account's reports, a restriction of them with its days, and the lift of either. */
   warned: "a warning about your reports",
   restricted: (days: number) => `your reports under the rules restricted for ${days} ${days === 1 ? "day" : "days"}`,
@@ -335,7 +359,7 @@ export function bannerSentences(standing: AccountStanding | null | undefined): s
   if (measure === null) return null;
   const { kind, days } = measure;
   if (measure.state === "unfixed") return [STANDING_TEXTS.banner.unfixed(kind, days, measure.earliestStart)];
-  if (measure.state === "announced") return measure.startsAt === null ? [STANDING_TEXTS.banner.unfixed(kind, days, measure.earliestStart)] : [STANDING_TEXTS.banner.announced(kind, days, measure.startsAt)];
+  if (measure.state === "announced") return measure.startsAt === null ? [STANDING_TEXTS.banner.unfixed(kind, days, measure.earliestStart)] : [STANDING_TEXTS.banner.announced(kind, days, measure.startsAt, measure.replyOpen)];
   if (measure.state === "held") return [STANDING_TEXTS.banner.held(kind, measure.reply?.filedAt ?? measure.earliestStart, measure.earliestStart)];
   if (kind === "suspend") return measure.endsAt === null ? null : [STANDING_TEXTS.banner.running(measure.endsAt)];
   const first = measure.appealPending || measure.appealUntil === null ? [STANDING_TEXTS.banner.terminatedFirst, ...(measure.appealPending ? [STANDING_TEXTS.banner.appealed] : [])] : [STANDING_TEXTS.banner.terminated(measure.appealUntil)];
@@ -352,7 +376,9 @@ export function standingMeasureOf(view: Pick<DecisionView, "measures">): { kind:
 
 /**
  * The sentence of "Where it stands now" (9.2) for a decision's measure, from DecisionView.standing: by its state, and for
- * one that ended before its time, by where it was when it ended (its start and end against the moment it ended).
+ * one that ended before its time, by where it was when it ended (its start and end against the moment it ended). The API
+ * sends the period's end cut to a lift or to the break of its basis, so an end at that very moment means the measure was
+ * running then, and only an end before it means it had run out (3e's review, people5).
  */
 export function nowSentence(standing: NonNullable<DecisionView["standing"]>, kind: "suspend" | "terminate", protective: boolean, appealUntil: string | null = null): string {
   const { startsAt, endsAt, endedAt } = standing;
@@ -372,10 +398,10 @@ export function nowSentence(standing: NonNullable<DecisionView["standing"]>, kin
     case "never":
       return standing.replaced ? STANDING_TEXTS.now.withdrawn(ended) : STANDING_TEXTS.now.never(ended);
     case "lifted":
-      return startsAt !== null && endsAt !== null && Date.parse(endsAt) <= Date.parse(ended) ? STANDING_TEXTS.now.liftedEnded(startsAt, endsAt, ended) : STANDING_TEXTS.now.lifted(ended);
+      return startsAt !== null && endsAt !== null && Date.parse(endsAt) < Date.parse(ended) ? STANDING_TEXTS.now.liftedEnded(startsAt, endsAt, ended) : STANDING_TEXTS.now.lifted(ended);
     case "basis_ended":
       if (startsAt === null || Date.parse(startsAt) > Date.parse(ended)) return STANDING_TEXTS.now.basis.before(ended, protective);
-      if (endsAt === null || Date.parse(endsAt) > Date.parse(ended)) return STANDING_TEXTS.now.basis.running(ended, protective);
+      if (endsAt === null || Date.parse(endsAt) >= Date.parse(ended)) return STANDING_TEXTS.now.basis.running(ended, protective);
       return STANDING_TEXTS.now.basis.after(startsAt, endsAt, ended, protective);
   }
 }

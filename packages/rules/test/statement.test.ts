@@ -1085,6 +1085,54 @@ describe("3e: the warning about reporting, the restriction of it, its lift and i
   });
 });
 
+describe("3e's review: a decision about a measure that rests on korbat's terms names the terms, never a rule (W.2, people1)", () => {
+  const BASIS_AT = "2026-10-02T08:00:00.000Z";
+  const STARTS = "2026-10-11T09:30:15.250Z";
+  /** The reviewed decision, which cited the newest strike's rule (a ladder step) or R2 (a protective suspension). */
+  const reviewedOn = (basis: "strikes" | "ladder_end" | "protective" | "threat"): NonNullable<StatementInput["reviewed"]> => ({
+    kind: "final",
+    ground: "incompatible",
+    ruleId: basis === "protective" ? "R2" : basis === "threat" ? "R5" : "R4",
+    rulesVersion: 3,
+    legalReference: null,
+    decidedAt: BASIS_AT,
+    basis,
+  });
+  const about = (basis: "strikes" | "ladder_end" | "protective" | "threat", more: Partial<StatementInput>) =>
+    statement({ ground: null, ruleId: null, facts: null, post: null, rulesVersion: 3, redressVersion: 2, measures: [], reviewed: reviewedOn(basis), ...more });
+  const kind = (basis: string): "suspend" | "terminate" => (basis === "ladder_end" ? "terminate" : "suspend");
+  const forms = (basis: "strikes" | "ladder_end" | "protective" | "threat") => ({
+    "a kept answer to a reply": about(basis, {
+      kind: "correction",
+      outcome: "kept",
+      repliedTo: { filedAt: "2026-10-05T10:00:00.000Z", onTime: true, kind: kind(basis), days: kind(basis) === "suspend" ? 7 : null, periodThen: { state: "not_started", startedAt: null, endedAt: null }, startsAt: STARTS, endsAt: kind(basis) === "suspend" ? "2026-10-18T09:30:15.250Z" : null, appealUntil: "2027-04-11T09:30:15.250Z" },
+    }),
+    "a lift": about(basis, {
+      kind: "correction",
+      outcome: "reversed",
+      reversals: [reversal("lift_suspension", { liftedKind: kind(basis), liftedDecidedAt: BASIS_AT, periodThen: { state: "running", startedAt: STARTS, endedAt: null }, replaced: false, replyFiledAt: null })],
+    }),
+    "a kept review": about(basis, { kind: "review", outcome: "kept" }),
+  });
+
+  test("a kept answer, a lift and a kept review of a suspension of the ladder, a termination at its end and a protective suspension say the decision rested on the terms' section", () => {
+    expect(W.ground.restedOnTerms).toBe("That decision rested on korbat's terms, section Suspension and termination.");
+    for (const basis of ["strikes", "ladder_end", "protective"] as const) {
+      for (const [name, input] of Object.entries(forms(basis))) {
+        const out = text(input);
+        expect(out, `${basis}, ${name}`).toContain(W.ground.restedOnTerms);
+        expect(out, `${basis}, ${name}`).not.toContain("rested on korbat rule");
+      }
+    }
+  });
+
+  test("a measure taken at once on a decision about the account's conduct, and a decision of 3c, still name the rule they rested on", () => {
+    for (const [name, input] of Object.entries(forms("threat"))) expect(text(input), name).toContain("That decision rested on korbat rule R5");
+    const { basis: _basis, ...without } = reviewedOn("strikes");
+    expect(text(about("strikes", { kind: "review", outcome: "kept", reviewed: without }))).toContain("That decision rested on korbat rule R4");
+  });
+});
+
 describe("the package", () => {
   test("its index re-exports the statement and its words: the index is the package's only door", () => {
     expect(typeof statementParagraphs).toBe("function");

@@ -8,7 +8,7 @@ import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { ModerationError } from "../../src/moderation/context";
-import { dueRedactions, insertAction, insertDecision } from "../../src/moderation/repo";
+import { dueRedactions, insertAction, insertDecision, noticeItems } from "../../src/moderation/repo";
 import { closeDecisions, deciderWorld, strikeForTest, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import {
   aPost,
@@ -387,7 +387,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the standing ledger", ()
         for (const minutes of [0, 1, 2]) await strikeIn(tx, account.id, minutes);
         const announcing = await onAccount(tx, account.id, "R1", [timed("suspend", 3, true)]);
         expect(await refusal(onAccount(tx, account.id, "R1", [timed("suspend", 3, true)]))).toBe("standing_conflict");
-        // A lift signed replaced: the announced suspension had not started, so it is a withdrawal for another measure.
+        // A lift signed replaced: the announced suspension had not started, so it is a withdrawal for another measure. Only an
+        // admin withdraws (3e design, sections 7.6 step 12 and 8.7; the review's access5): a moderator's is admin_required.
+        expect(
+          await refusal(decideIn(tx, mod, await caseOfDecision(tx, announcing), { kind: "correction", reviewsDecisionId: announcing, actions: [act("lift_suspension")], replaced: true })),
+        ).toBe("admin_required");
         const withdrawal = await decideIn(tx, admin, await caseOfDecision(tx, announcing), { kind: "correction", reviewsDecisionId: announcing, actions: [act("lift_suspension")], replaced: true });
         expect(await rowOf(tx, withdrawal, "lift_suspension")).toMatchObject({ replaced: true });
         expect(await liveRows(tx, account.id)).toBe(0);
@@ -404,6 +408,28 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the standing ledger", ()
   });
 
   // ---------------------------------------------------------------- invariant 9: measures at once, on the closed list
+
+  test("a reporter is told that nothing changed only when nothing did: a reset that changed nothing beside a suspension at once that did is a measure that changed something", async () => {
+    // 3e's review (access4, people4): the status line and the mail line read "It was already not shown ... nothing
+    // changed now" from one expression, which looked at 3c's seven kinds only.
+    await inWorld(async (tx) => {
+      const [account, reporter] = [await profile(tx), await profile(tx)];
+      await strikeIn(tx, account.id, 0, "R5");
+      const recorded = await intake(tx, ground.rule(reporter.id, "R5"), anAccount(account.id, account.handle));
+      const caseId = recorded.items[0]!.caseId!;
+      // The bio is empty already, so its reset changes nothing; the suspension starts at once.
+      const decision = await decideIn(tx, admin, caseId, { kind: "final", ruleId: "R5", actions: [act("reset_bio"), timed("suspend", 7, false)] });
+      expect((await actionsOf(tx, decision)).map((a) => [a.kind, a.no_effect])).toEqual([
+        ["reset_bio", "already"],
+        ["suspend", null],
+      ]);
+      expect((await noticeItems(tx, recorded.intakeId)).map((item) => item.noEffect)).toEqual([false]);
+      // The reset alone, in another case of the account: it changed nothing, and the reporter is told so.
+      const other = await intake(tx, ground.rule((await profile(tx)).id, "R1"), anAccount(account.id, account.handle));
+      await decideIn(tx, admin, other.items[0]!.caseId!, { kind: "final", ruleId: "R1", actions: [act("reset_bio")] });
+      expect((await noticeItems(tx, other.intakeId)).map((item) => item.noEffect)).toEqual([true]);
+    });
+  });
 
   describe("taken at once only on the closed list, only by an admin (invariant 9)", () => {
     test("threat: accepted on a final R5 decision about a post of the account that stands; refused without one, after its reversal, and for a moderator", async () => {

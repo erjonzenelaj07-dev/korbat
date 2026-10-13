@@ -17,7 +17,7 @@ import {
   users,
   type Db,
 } from "@korbat/db";
-import { boundLockWaits, isLockNotAvailable } from "../lib/lock-bounds";
+import { boundLockWaits, isBoundReached } from "../lib/lock-bounds";
 import { SYSTEM_ACTOR_ID } from "./admin";
 
 /**
@@ -1275,7 +1275,7 @@ export function createAuthRepo(db: Db) {
           return revokeConfirmedIn(tx, input);
         });
       } catch (err) {
-        if (err instanceof LateConfirmation || isLockNotAvailable(err)) return "late";
+        if (err instanceof LateConfirmation || isBoundReached(err)) return "late";
         throw err;
       }
     },

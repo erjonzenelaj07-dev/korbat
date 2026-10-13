@@ -1,6 +1,6 @@
 import { IdentityRevealedParams, type RevealResponse } from "@korbat/contracts";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
-import { boundLockWaits, isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
+import { boundLockWaits, isBoundReached, isDeadlock } from "../lib/lock-bounds";
 import { secondsToUtcMidnight } from "./cases";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
 import { appendConfirmedAudit, dailyLimits, handleOf, insertAccess, raisedMessage, reporterHandle, revealItem, revealReason, revealsToday, staffCaseConflict } from "./repo";
@@ -100,7 +100,7 @@ export async function reveal(deps: ModerationDeps, session: ActiveStaffSession, 
       if (refusal === "staff_confirmation_late") return "late";
       // The reason text was swept or used between the check above and the audit function's own.
       if (refusal !== null && isModerationErrorCode(refusal)) throw new ModerationError(refusal);
-      if (!isDeadlock(err) && !isLockNotAvailable(err)) throw err;
+      if (!isDeadlock(err) && !isBoundReached(err)) throw err;
       if (attempt > 1 || confirmed.expiresAt.getTime() - deps.now().getTime() <= RETRY_MARGIN_MS) return "late";
     }
   }

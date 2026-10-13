@@ -1,13 +1,16 @@
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { STANDING_RULES, type RuleId } from "@korbat/contracts";
+import { RETENTION, STANDING_RULES, type RuleId } from "@korbat/contracts";
 import { STATEMENT_WORDS, statementParagraphs } from "@korbat/rules";
 import { ModerationError } from "../../src/moderation";
 import { giveUpAnnounced } from "../../src/moderation/dispatch";
+import { saltedStatement } from "../../src/moderation/intake";
 import { caseStanding, fileReply } from "../../src/moderation/standing";
+import { insertReply, replyMeasureOf } from "../../src/moderation/standing-repo";
 import { decisionStatement, sendStatement } from "../../src/moderation/statement";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { aPost, act, ageStandingForTest, anAccount, ground, intake, newPostRow, raised, timed, type DecisionInput } from "./moderation-fixtures";
+import { createSocialRepo } from "../../src/social/repo";
+import { aPost, act, ageStandingForTest, anAccount, gate, ground, intake, newPostRow, raised, timed, untilBlocked, type DecisionInput } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 
 // Every step of the ladder is a confirmed decision, each a round of the step-up flow: slow on a loaded machine.
@@ -235,6 +238,134 @@ describe.skipIf(!process.env.INTEGRATION)("integration: announced suspensions an
     expect(n.mailer.to(account.email, "reply_answered")).toEqual([]);
     // Nothing is left to keep: a kept answer to the reply is refused.
     expect(await refused(moderator, caseId, { kind: "correction", outcome: "kept", reviewsDecisionId: decisionId })).toMatchObject({ code: "invalid_decision" });
+  });
+
+  // ---------------------------------------------------------------- what the review of the built code added
+
+  /** How many mails of this template the scripted mailer has been handed for this address, sent, failed or hanging. */
+  const attemptsOf = (address: string, template: string) => n.mailer.attempts.filter((mail) => mail.to === address && mail.template === template).length;
+  /** Resolves once the scripted mailer has been handed one more mail of this template for this address than `before`. */
+  async function handedOver(address: string, template: string, before: number): Promise<void> {
+    for (let round = 0; round < 400; round++) {
+      if (attemptsOf(address, template) > before) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`no ${template} mail was handed over`);
+  }
+  /** What the promise settled with within `ms`, or "still waiting": a write that waits for the relay must not hang the test. */
+  const within = <T>(ms: number, promise: Promise<T>): Promise<T | "still waiting"> =>
+    Promise.race([promise, new Promise<"still waiting">((resolve) => setTimeout(() => resolve("still waiting"), ms))]);
+  /** The decision's statement mail as the database holds it. */
+  const mailState = async (decisionId: string) => (await n.apiDb.execute<{ author_mail: string }>(sql`select author_mail::text from decisions where id = ${decisionId}::uuid`))[0]!.author_mail;
+
+  test("a notice still owed when its suspension was withdrawn is never sent: the dispatch's retry records it failed, fixes no start, and the person reads only the withdrawal", async () => {
+    // 3e's review (proofs1): the old statement would name an earliest start and invite a reply the route refuses.
+    const pending = await announced("fail");
+    expect(await mailState(pending.decisionId)).toBe("pending");
+    await decided(admin, pending.caseId, { kind: "correction", reviewsDecisionId: pending.decisionId, actions: [act("lift_suspension")], replaced: true });
+    // The strikes' statements went before; of the suspension's mails, only the withdrawal's.
+    const standingMails = () => n.mailer.to(pending.account.email).filter((mail) => mail.template.startsWith("suspension_")).map((mail) => mail.template);
+    expect(standingMails()).toEqual(["suspension_lifted"]);
+    const tried = attemptsOf(pending.account.email, "suspension_announced");
+    expect(await sendStatement(n.deps, pending.decisionId)).toBe("failed");
+    expect(await mailState(pending.decisionId)).toBe("failed");
+    expect(standingMails()).toEqual(["suspension_lifted"]);
+    // Not even handed to the relay.
+    expect(attemptsOf(pending.account.email, "suspension_announced")).toBe(tried);
+    expect((await periodOf(pending.decisionId)).start_ms).toBeNull();
+    expect(await columnsOf(pending.account.id)).toEqual({ from: null, until: null });
+    expect((await n.moderation.standingFor(pending.account.id))?.measure).toBeNull();
+    // Nothing is owed any more: a second retry sends nothing.
+    expect(await sendStatement(n.deps, pending.decisionId)).toBe("none");
+  });
+
+  test("the give-up of an announced measure's mail waits for an on-time reply that holds the account's profile, and then fixes no start: the account is not suspended while its reply holds the measure", async () => {
+    // 3e's review (proofs2): without the give-up's lock on the profile, its derivation would read the period before the
+    // reply and write a start the reply holds back.
+    const pending = await announced("fail");
+    await ageStandingForTest(world.migrateDb, pending.account.id, `${RETENTION.mailGiveUpDays} days 1 hour`);
+    const actionId = (await replyMeasureOf(n.apiDb, pending.account.id, pending.decisionId))!;
+    const statement = await saltedStatement("I read the notice and reply in time.");
+    const held = gate();
+    const release = gate();
+    let onTime: boolean | null = null;
+    // The reply's transaction, as fileReply runs it, held open after its insert.
+    const replying = n.apiDb.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '60s'`);
+      await n.deps.social.lockAccounts(tx, [pending.account.id], "update");
+      onTime = (await insertReply(tx, { actionId, accountId: pending.account.id, statement })).onTime;
+      held.open();
+      await release.opened;
+    });
+    let givingUp: Promise<string[]> | null = null;
+    try {
+      await held.opened;
+      givingUp = giveUpAnnounced(n.deps, new Date());
+      await untilBlocked(n.apiDb, "order by id for no key update", 60_000);
+    } finally {
+      release.open();
+      await replying;
+    }
+    expect(await givingUp).toContain(pending.decisionId);
+    expect(onTime).toBe(true);
+    expect(await mailState(pending.decisionId)).toBe("failed");
+    expect((await periodOf(pending.decisionId)).start_ms).toBeNull();
+    expect(await columnsOf(pending.account.id)).toEqual({ from: null, until: null });
+    expect((await n.moderation.standingFor(pending.account.id))?.measure?.state).toBe("held");
+    const [judged] = await n.apiDb.transaction((tx) => n.deps.social.lockAccounts(tx, [pending.account.id], "key share"));
+    expect(judged!.suspended).toBe(false);
+  });
+
+  test("no profile is held while a notice is mailed: a follow of the account goes through while the relay hangs, a decision about it commits meanwhile, and the outcome is then recorded under the profile's lock without a deadlock", async () => {
+    // 3e's review (database3): the subject's profile is taken right before the mail's result is recorded, never before the send.
+    const pending = await announced("fail");
+    const follower = await n.account();
+    const social = createSocialRepo(n.apiDb);
+    n.mailer.mode = "hang";
+    let sending: Promise<unknown> | null = null;
+    try {
+      const tried = attemptsOf(pending.account.email, "suspension_announced");
+      sending = sendStatement(n.deps, pending.decisionId);
+      await handedOver(pending.account.email, "suspension_announced", tried);
+      // The notice's send keeps hanging; every later mail (the lift's statement below) is delivered.
+      n.mailer.mode = "deliver";
+      expect(await within(3000, social.follow(follower.id, pending.account.id, new Date(), true))).toBe(true);
+      // A deciding transaction takes the profile first, then the decisions it answers by foreign key: it commits while
+      // the mail's transaction holds the decision's row and waits for the relay.
+      const corrected = await within(60_000, world.decideAs(admin, pending.caseId, { kind: "correction", reviewsDecisionId: pending.decisionId, actions: [act("lift_suspension")] }));
+      expect(corrected).not.toBe("still waiting");
+      expect(typeof corrected).not.toBe("string");
+    } finally {
+      n.mailer.release("deliver");
+    }
+    expect(await sending).toBe("sent");
+    expect(await mailState(pending.decisionId)).toBe("sent");
+    expect((await n.moderation.standingFor(pending.account.id))?.measure).toBeNull();
+
+    // The other order: a transaction that holds the profile FOR UPDATE and the decision's row FOR KEY SHARE, as a deciding
+    // transaction holds them, while the mail is sent; the mail's transaction records once it has gone.
+    const second = await announced("fail");
+    const held = gate();
+    const release = gate();
+    const holder = n.apiDb.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '60s'`);
+      await n.deps.social.lockAccounts(tx, [second.account.id], "update");
+      await tx.execute(sql`select 1 from decisions where id = ${second.decisionId}::uuid for key share`);
+      held.open();
+      await release.opened;
+    });
+    let recording: Promise<unknown> | null = null;
+    try {
+      await held.opened;
+      recording = sendStatement(n.deps, second.decisionId);
+      await untilBlocked(n.apiDb, "order by id for no key update", 60_000);
+      // The mail went before the profile was asked for.
+      expect(n.mailer.to(second.account.email, "suspension_announced")).toHaveLength(1);
+    } finally {
+      release.open();
+      await holder;
+    }
+    expect(await recording).toBe("sent");
   });
 
   test("this file left no row behind: what it committed is removed, and the tables hold what they held before it", async () => {

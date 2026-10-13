@@ -5,7 +5,7 @@ import path from "node:path";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ErrorEnvelope, FlowResponse, MeResponse, PostView } from "@korbat/contracts";
+import { ErrorEnvelope, FlowResponse, MeResponse, PostView, UploadResponse } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { createAccount } from "../../src/account";
 import { createApp } from "../../src/app";
@@ -22,8 +22,8 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createSocial, enforceWriteLimit, socialForModeration } from "../../src/social";
 import { Browser } from "./http-client";
 import { BYTES } from "./media-harness";
-import { closeDecisions, suspendForTest, terminateForTest } from "./moderation-decide";
-import { removeFixtures, rowCounts } from "./moderation-fixtures";
+import { closeDecisions, decideForTest, suspendForTest, terminateForTest } from "./moderation-decide";
+import { releaseForTest, removeFixtures, rowCounts } from "./moderation-fixtures";
 
 // The suspension is a real, confirmed decision (a staff key's enrolment and sign-in, then two step-ups), and the walk
 // calls every write route of the app once: slow on a loaded machine.
@@ -216,8 +216,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
 
   /**
    * One pass of the walk: two accounts, Ada and Bob, each with a post and Ada liking Bob's; a badge verification Ada
-   * started before the measure; then `measure` puts Ada under it and answers the decision; then every write route once
-   * with Ada's session. Answers each route's answers: "refused" for 403 account_suspended, else the status.
+   * started before the measure; (3e's review, access6) an upload of Ada's own, and Ada's report under a rule of an earlier
+   * post of Bob's, decided "No breach" and released, so the walk's re-examination and deletion name real rows of hers and
+   * a refusal placed after the lookup would show; then `measure` puts Ada under it and answers the decision; then every
+   * write route once with Ada's session. Answers each route's answers: "refused" for 403 account_suspended, else the status.
    */
   async function walk(measure: (accountId: string) => Promise<string>) {
     const ada = await signUp();
@@ -228,6 +230,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     // A badge verification started before the measure, which its verify step then meets.
     const badge = await ada.b.fetch("/api/auth/badge/start", { json: { phone: `+4477${String(randomInt(10_000_000, 100_000_000))}` } });
     const { flowId } = FlowResponse.parse(await badge.json());
+    // An upload of Ada's own, which she may delete while suspended.
+    const upload = UploadResponse.parse(await (await ada.b.fetch("/api/media", { raw: { type: "image/jpeg", body: BYTES.jpeg } })).json());
+    // Ada's report of another post of Bob's, answered "No breach" and released: a re-examination of it is redress.
+    const reported = PostView.parse(await (await bob.b.fetch("/api/posts", { json: { body: "bob's reported post" } })).json());
+    expect((await ada.b.fetch("/api/notices", { json: { ground: "rule", ruleId: "R1", targets: [{ kind: "post", id: reported.id }] } })).status).toBe(201);
+    await decideForTest(apiDb, reported.id, "visible");
+    const [item] = await apiDb.execute<{ id: string }>(sql`select i.id from intake_items i join intakes n on n.id = i.intake_id where n.reporter_id = ${ada.id}::uuid`);
+    await releaseForTest(migrateDb, [item!.id]);
     const decisionId = await measure(ada.id);
     const state = MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).standing?.measure?.state ?? null;
 
@@ -255,7 +265,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       "POST /api/me/explore": [{ method: "POST", path: "/api/me/explore" }],
       "DELETE /api/me/explore": [{ method: "DELETE", path: "/api/me/explore" }],
       "POST /api/media": [{ method: "POST", path: "/api/media", raw: { type: "image/jpeg", body: BYTES.jpeg } }],
-      "DELETE /api/media/:id": [{ method: "DELETE", path: `/api/media/${randomUUID()}` }],
+      "DELETE /api/media/:id": [{ method: "DELETE", path: `/api/media/${upload.id}` }],
       "POST /api/auth/badge/start": [{ method: "POST", path: "/api/auth/badge/start", json: { phone: `+4477${String(randomInt(10_000_000, 100_000_000))}` } }],
       "POST /api/auth/badge/verify": [{ method: "POST", path: "/api/auth/badge/verify", json: { flowId, code: DEV_CODE } }],
       "POST /api/notices": [
@@ -264,7 +274,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       ],
       "POST /api/moderation/decisions/:id/appeal": [{ method: "POST", path: `/api/moderation/decisions/${decisionId}/appeal`, json: {} }],
       "POST /api/moderation/decisions/:id/reply": [{ method: "POST", path: `/api/moderation/decisions/${decisionId}/reply`, json: { statement: "I did not mean it." } }],
-      "POST /api/moderation/items/:item/reexamine": [{ method: "POST", path: `/api/moderation/items/${randomUUID()}/reexamine`, json: {} }],
+      "POST /api/moderation/items/:item/reexamine": [{ method: "POST", path: `/api/moderation/items/${item!.id}/reexamine`, json: {} }],
     };
     const callsOf = (route: string): Call[] => {
       const given = calls[route];
@@ -313,6 +323,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     expect(result.state).toBe("running");
     // The reply to a suspension taken at once is late, and taken.
     expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
+    // Redress and erasure on real rows of the account's own: its released report examined again, its upload deleted.
+    expect(result.answers["POST /api/moderation/items/:item/reexamine"]).toEqual(["201"]);
+    expect(result.answers["DELETE /api/media/:id"]).toEqual(["204"]);
     await expectTable(result);
   });
 
@@ -320,6 +333,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     const result = await walk(async (accountId) => (await terminateForTest(apiDb, accountId)).decisionId);
     expect(result.state).toBe("running");
     expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
+    expect(result.answers["POST /api/moderation/items/:item/reexamine"]).toEqual(["201"]);
+    expect(result.answers["DELETE /api/media/:id"]).toEqual(["204"]);
     await expectTable(result);
   });
 

@@ -84,6 +84,10 @@ export interface AuthorDecisionRow {
   reportingDays: number | null;
   /** 3e Task 5: the kinds of the measures whose basis a reversal of this decision broke, as its statement's endedStanding lists them. */
   endedStanding: ("suspend" | "terminate" | "restrict_reporting")[];
+  /** 3e's review (people7): the decision's suspension or termination, which its row names with its days and kind; null for none. */
+  standingMeasure: { kind: "suspend" | "terminate"; days: number | null; announced: boolean } | null;
+  /** 3e's review (people7): what the decision's lift lifted, and whether it was a withdrawal for another measure; null for none. */
+  liftedStanding: { kind: "suspend" | "terminate"; replaced: boolean } | null;
 }
 
 /**
@@ -103,6 +107,10 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                (select coalesce(ap.result::text, 'pending') from appeals ap where ap.decision_id = d.id) as appeal,
                ${strikeColumns},
                (select a.days from decision_actions a where a.decision_id = d.id and a.kind = 'restrict_reporting') as reporting_days,
+               (select json_build_object('kind', a.kind::text, 'days', a.days, 'announced', a.announced) from decision_actions a
+                 where a.decision_id = d.id and a.kind in ('suspend', 'terminate')) as standing_measure,
+               (select json_build_object('kind', l.kind::text, 'replaced', coalesce(x.replaced, false)) from decision_actions x join decision_actions l on l.id = x.reverses_action_id
+                 where x.decision_id = d.id and x.kind = 'lift_suspension') as lifted_standing,
                -- The measures whose basis this review or correction broke, as the statement's endedStanding reads them.
                coalesce((select array_agg(m.kind::text order by m.created_at, m.id) from decision_actions m
                           where d.kind in ('review', 'correction') and m.kind in ('suspend', 'terminate', 'restrict_reporting') and d.reviews_decision_id = any(m.rests_on)
@@ -130,6 +138,8 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
     strike: row.strike_until === null ? null : { countsUntil: row.strike_until as string, overruledAt: row.strike_overruled_at as string | null },
     reportingDays: row.reporting_days as number | null,
     endedStanding: row.ended_standing as AuthorDecisionRow["endedStanding"],
+    standingMeasure: row.standing_measure as AuthorDecisionRow["standingMeasure"],
+    liftedStanding: row.lifted_standing as AuthorDecisionRow["liftedStanding"],
   }));
 }
 

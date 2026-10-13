@@ -1790,6 +1790,12 @@ export const DecisionStatement = z.object({
       rulesVersion: z.number().int().positive(),
       legalReference: z.string().nullable(),
       decidedAt: z.iso.datetime(),
+      /**
+       * 3e's review (people1): the basis of the reviewed decision's suspension or termination, null for a decision without
+       * one; absent before 3e. A decision about a measure on the bases strikes, ladder_end or protective names korbat's
+       * terms as what it rested on, never the rule it cited.
+       */
+      basis: z.enum(STANDING_BASES).nullable().optional(),
     })
     .nullable(),
 });
@@ -1835,6 +1841,13 @@ export const AuthorCaseRow = z.object({
    */
   reportingDays: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).optional(),
   endedStanding: z.array(z.enum(["suspend", "terminate", "restrict_reporting"])).optional(),
+  /**
+   * 3e's review (people7; design, section 9.4): the decision's suspension or termination, by its kind, its days (null for a
+   * termination) and whether it was announced, which its row names; and what a lift of one lifted, a suspension or a
+   * termination, and whether it was a withdrawal for another measure. Absent where the decision holds none.
+   */
+  standingMeasure: z.object({ kind: z.enum(["suspend", "terminate"]), days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(), announced: z.boolean() }).optional(),
+  liftedStanding: z.object({ kind: z.enum(["suspend", "terminate"]), replaced: z.boolean() }).optional(),
 });
 export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 

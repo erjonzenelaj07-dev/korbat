@@ -27,6 +27,7 @@ import {
   newPostRow,
   newTestStaff,
   noAuthForModeration,
+  releaseForTest,
   rowCounts,
   staffProfile,
   timed,
@@ -176,6 +177,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention of account
       });
     });
 
+    test("a reply answered by the correction that lifted its measure loses its text at once: its decision holds nothing in force, so it can no longer be appealed", async () => {
+      // 3e's review (people6): the six months to appeal are not waited for when nothing is left to appeal.
+      await inWorld(async (tx) => {
+        await eraseReplyStatements(tx);
+        const fay = await profile(tx);
+        const suspension = await threatSuspension(tx, fay, STANDING_RULES.threatDays);
+        const filed = await reply(tx, suspension.actionId, fay.id, "I was quoting someone else.");
+        expect(filed.onTime).toBe(false);
+        await decideIn(tx, admin, suspension.caseId, { kind: "correction", reviewsDecisionId: suspension.decisionId, outcome: "reversed", actions: [act("lift_suspension")] });
+        expect((await replyRow(tx, suspension.actionId)).answered).toBe(true);
+        expect(await finalNow(tx, suspension.decisionId)).toBe(false);
+        expect(await eraseReplyStatements(tx)).toBe(1);
+        expect(await replyRow(tx, suspension.actionId)).toMatchObject({ statement: null, salt: null, erased: true, answered: true });
+        expect(await eraseReplyStatements(tx)).toBe(0);
+      });
+    });
+
     test("an unanswered reply keeps its text however old: one left unanswered past its decision's finality, and one filed after it", async () => {
       await inWorld(async (tx) => {
         await eraseReplyStatements(tx);
@@ -223,6 +241,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention of account
         const inside = await markedReport(tx, reporter.id, author.id);
         await decideIn(tx, admin, oldest.caseId, { kind: "correction", reviewsDecisionId: oldest.decisionId, outcome: "kept" });
         const others = await markedReport(tx, other.id, author.id);
+        // Released, as the daily release would: a mark counts only once its item's outcome is.
+        await releaseForTest(tx, [oldest.itemId, boundary.itemId, inside.itemId, others.itemId]);
         expect(await one(tx, sql`select withdrawn_by is not null as withdrawn from unfounded_marks where item_id = ${oldest.itemId}::uuid`)).toEqual({ withdrawn: true });
 
         // Each report and its mark dated back as the frame meets it: well before, on the last day outside it, the first inside.
@@ -341,6 +361,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention of account
       for (let n = 0; n < 6; n++) reports.push(await markedReport(tx, sam.id, author.id));
       await decideIn(tx, admin, reports[0]!.caseId, { kind: "correction", reviewsDecisionId: reports[0]!.decisionId, outcome: "kept" });
       const olgas = await markedReport(tx, olga.id, author.id);
+      // 3e's review (access2): before the daily release the export tells nothing of a mark, not even that one was set.
+      const unreleased = (await exportFor(moderationDeps(tx), sam.id)).reporting;
+      expect(unreleased).toMatchObject({ marks: [], markedReports: 0, days: [{ reports: 6 }] });
+      await releaseForTest(tx, [...reports.map((report) => report.itemId), olgas.itemId]);
       const warnCase = (await intake(tx, ground.finding(mod.id, "R6"), anAccount(sam.id, sam.handle))).items[0]!.caseId!;
       const warning = await decideIn(tx, mod, warnCase, { kind: "final", ruleId: "R6", actions: [act("warn_reporting")] });
       // Two days later, a suspension at once on a threat, with a reply; a day later korbat lifts it, which answers the reply.

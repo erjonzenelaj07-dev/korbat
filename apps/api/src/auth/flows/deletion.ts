@@ -92,6 +92,11 @@ export async function confirmDeletion(deps: AuthDeps, session: Session, input: D
  * sentence about them. It does nothing a second time: an account already marked deleted (gone from every lookup) is
  * left as it is, with no event and no mail, and the answer is false; true only for the take-down this call made. The
  * address stays on the row until finishPurge, so nothing is lost by mailing after the commit.
+ *
+ * The mail is started and not waited for (3e's review, database3): the moderation module's take-down calls this while its
+ * own transaction holds the account's profile FOR UPDATE, and a relay that stalls would hold that row, and every like,
+ * repost and reply of the account's posts behind it, for as long as the relay. notifyAccount logs a failure itself and
+ * never throws.
  */
 export async function takeDownTerminated(deps: AuthDeps, userId: string, facts: { decidedAt: Date; imagesSealed: boolean }): Promise<boolean> {
   const user = await deps.repo.findUserById(userId);
@@ -99,7 +104,7 @@ export async function takeDownTerminated(deps: AuthDeps, userId: string, facts: 
   const revoked = await deps.repo.takeDownTerminated(user.id, deps.now());
   if (revoked === null) return false;
   await tombstoneQuietly(deps, user.id, revoked);
-  await notifyAccount(deps, user.email, "termination_final", { decided: noticeTime(facts.decidedAt), imagesSealed: String(facts.imagesSealed) });
+  void notifyAccount(deps, user.email, "termination_final", { decided: noticeTime(facts.decidedAt), imagesSealed: String(facts.imagesSealed) });
   return true;
 }
 

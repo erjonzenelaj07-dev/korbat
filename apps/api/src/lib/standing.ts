@@ -1,4 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
+import type { DbTx } from "@korbat/db";
 
 /**
  * The one predicate of account sanctions (3e design, sections 5 and 7.2): whether an account may write now. It is an SQL
@@ -8,7 +9,8 @@ import { sql, type SQL } from "drizzle-orm";
  *   1. in a write the time is WRITE_CLOCK, clock_timestamp(), never now(): a transaction that began before a start and
  *      waited for a lock is judged when it gets the row;
  *   2. in a write it reads only columns of the profile row that its own statement locks or updates, never a subquery's
- *      or a second statement's, which would read a row another transaction is about to change;
+ *      or a second statement's, which would read a row another transaction is about to change; with one exception, the
+ *      closing judgment below, the write's last statement, which reads the row it still holds;
  *   3. it judges the acting account only: any other party of the write need only be live, as before;
  *   4. the session cache never carries it, so a session opened before a suspension is refused at its next write.
  * A refused write answers 403 account_suspended with no detail; the app then reads /api/me, which carries the standing
@@ -46,4 +48,30 @@ export function liveNotSuspended(profile: string, at: SQL): SQL {
 export function reportsRestrictedAt(profile: string, at: SQL): SQL {
   const p = alias(profile);
   return sql`coalesce(${p}.reports_restricted_until > ${at}, false)`;
+}
+
+/** What the closing judgment reads of the acting account's row. */
+export interface ActingJudgment {
+  deleted: boolean;
+  suspended: boolean;
+  reportsRestricted: boolean;
+}
+
+/**
+ * The closing judgment of a write (3e design, section 7.2, rule 2 as the review of the built code amended it): the last
+ * statement of the write's transaction, after every lock, insert and counter update it makes, reads the acting account's
+ * row once more by the clock. The locking statement judged the account when it got its row, but a write can wait after
+ * that (for the other party's row, for the post it engages with, at a foreign key or a counter), and a holder that only
+ * locked the account's own row leaves the first judgment standing as it was before the wait: a start that came meanwhile
+ * is only seen here. The read waits for nothing. The transaction holds the acting row at least FOR KEY SHARE until it
+ * commits, and every writer that can make a start begin takes that row FOR UPDATE first, so such a writer either
+ * committed before this read, which then sees its start, or waits for this commit. The caller refuses the write (and so
+ * rolls it back) when the answer says deleted, suspended, or for a report under a rule restricted; null for no row.
+ */
+export async function closingJudgment(tx: Pick<DbTx, "execute">, accountId: string): Promise<ActingJudgment | null> {
+  const [row] = await tx.execute<{ deleted: boolean; suspended: boolean; reports_restricted: boolean }>(
+    sql`select p.deleted_at is not null as deleted, ${suspendedAt("p", WRITE_CLOCK)} as suspended, ${reportsRestrictedAt("p", WRITE_CLOCK)} as reports_restricted
+          from profiles p where p.id = ${accountId}::uuid`,
+  );
+  return row ? { deleted: row.deleted, suspended: row.suspended, reportsRestricted: row.reports_restricted } : null;
 }

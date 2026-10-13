@@ -7,7 +7,7 @@ import { REPLY_TEXT_MAX, RETENTION, STANDING_RULES, type AccountStanding, type D
 import { ReplyPanel, replyOpening } from "../src/app/settings/cases/[id]/reply";
 import { DecisionDetail } from "../src/components/moderation/DecisionDetail";
 import { StandingBanner } from "../src/components/StandingBanner";
-import { messageFor } from "../src/lib/api";
+import { apiResponse, messageFor } from "../src/lib/api";
 import { bannerSentences, nowSentence, STANDING_TEXTS, standingDay, standingTime } from "../src/lib/standing";
 
 /**
@@ -207,6 +207,11 @@ describe("3e Task 4: the decision's screen (design, section 9.2)", () => {
     );
     expect(nowSentence(at("lifted", { startsAt: STARTS, endsAt: ENDS, endedAt: "2026-10-17T09:00:00.000Z" }), "suspend", false)).toBe(`Lifted on ${standingDay("2026-10-17T09:00:00.000Z")}.`);
     expect(nowSentence(at("lifted", { startsAt: STARTS, endsAt: ENDS, endedAt: "2026-10-25T09:00:00.000Z" }), "suspend", false)).toContain("it no longer counts toward a later suspension.");
+    // 3e's review (people5): the API sends the period's end cut to the lift or to the basis's break (decisionStanding reads
+    // suspension_periods), so a measure lifted, or whose basis broke, while it ran has its end at that moment.
+    const cut = "2026-10-17T09:00:00.000Z";
+    expect(nowSentence(at("lifted", { startsAt: STARTS, endsAt: cut, endedAt: cut }), "suspend", false)).toBe(`Lifted on ${standingDay(cut)}.`);
+    expect(nowSentence(at("basis_ended", { startsAt: STARTS, endsAt: cut, endedAt: cut }), "suspend", true)).toBe(`Ended on ${standingDay(cut)}, because korbat lifted the seal it rested on.`);
     expect(nowSentence(at("basis_ended", { endedAt: lifted }), "suspend", false)).toBe(`It will not start: korbat reversed a decision it rested on, on ${standingDay(lifted)}.`);
     expect(nowSentence(at("basis_ended", { startsAt: STARTS, endsAt: ENDS, endedAt: "2026-10-17T09:00:00.000Z" }), "suspend", true)).toBe(
       `Ended on ${standingDay("2026-10-17T09:00:00.000Z")}, because korbat lifted the seal it rested on.`,
@@ -300,5 +305,29 @@ describe("3e Task 4: the reply screen (design, section 9.3)", () => {
     const reply = read("app", "settings", "cases", "[id]", "reply.tsx");
     expect(reply).toContain('<SettingsNav current="cases" />');
     expect(reply.indexOf("sentOnTime")).toBeLessThan(reply.indexOf("export default function Reply"));
+  });
+});
+
+describe("3e's review: the banner after a reply, and the reply's refusal (design, sections 9.1 and 9.8)", () => {
+  const ANSWERED = "2026-10-14T08:00:00.000Z";
+
+  test("an announced measure whose reply korbat answered (or that takes none) is not offered a second reply: the banner drops its last sentence, a termination's too", () => {
+    const answered = { filedAt: FILED, onTime: true, answeredAt: ANSWERED };
+    const kept = measure({ state: "announced", startsAt: STARTS, endsAt: ENDS, reply: answered, replyOpen: false });
+    const [sentence] = bannerSentences(kept)!;
+    expect(sentence).toBe(`korbat will suspend your account for 3 days from ${standingTime(STARTS)}. Nothing is restricted until then.`);
+    expect(sentence).not.toContain("If you reply before it starts");
+    const termination = measure({ kind: "terminate", days: null, state: "announced", startsAt: STARTS, reply: answered, replyOpen: false });
+    expect(bannerSentences(termination)).toEqual([`korbat will terminate your account from ${standingTime(STARTS)}. Nothing is restricted until then.`]);
+    // While a reply is open, the sentence stays.
+    expect(bannerSentences(measure({ state: "announced", startsAt: STARTS, endsAt: ENDS }))![0]).toContain("If you reply before it starts, it waits for korbat's answer.");
+    expect(textOf(html(<StandingBanner standing={kept} />))).not.toContain("If you reply before it starts");
+  });
+
+  test("a reply that is not open is refused in the app's own words, never the server's", async () => {
+    const answer = (status: number, body: unknown) => async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", answer(409, { error: { code: "reply_not_open", message: "server wording" } }));
+    await expect(apiResponse(`/api/moderation/decisions/${id(9)}/reply`, { json: {} })).rejects.toMatchObject({ code: "reply_not_open", message: messageFor("reply_not_open") });
+    vi.unstubAllGlobals();
   });
 });

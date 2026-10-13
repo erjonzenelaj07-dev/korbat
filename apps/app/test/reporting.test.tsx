@@ -5,7 +5,7 @@ import type { AccountStanding, AuthorCaseRow, DecisionView, ReportItem } from "@
 import { DecisionDetail } from "../src/components/moderation/DecisionDetail";
 import { DecisionsList, ReportsList, StandingBlock } from "../src/components/moderation/CasesLists";
 import { ReportForm } from "../src/components/moderation/ReportForm";
-import { messageFor } from "../src/lib/api";
+import { apiResponse, messageFor } from "../src/lib/api";
 import { CASE_ROW_WORDS, reportingLine, reportingNowLine, reportsRestrictedUntil, STANDING_TEXTS, standingDay, standingTime } from "../src/lib/standing";
 
 /**
@@ -147,6 +147,22 @@ describe("3e Task 5: the report form, Your standing and the lists (design, secti
     const page = (items: ReportItem[]) => textOf(html(<ReportsList page={{ reports: [{ ref: "N-ABCDEFGH23", receivedAt: "2026-10-01T09:00:00.000Z", items }], reportMailStopped: false }} onReexamine={async () => undefined} />));
     expect(page([item({})])).toContain(STANDING_TEXTS.reports.marked);
     expect(page([item({ unfounded: false })])).not.toContain(STANDING_TEXTS.reports.marked);
+    // 3e's review (people8): "You can ask for a re-examination" only while one is open; once asked for, answered or
+    // past its window the line keeps its first sentence.
+    expect(STANDING_TEXTS.reports.markedClosed).toBe("A moderator marked this report as manifestly unfounded (Terms, Reporting in bad faith).");
+    expect(STANDING_TEXTS.reports.marked.startsWith(STANDING_TEXTS.reports.markedClosed)).toBe(true);
+    for (const closed of [{ reexamination: { open: false, until: "2027-04-05T09:00:00.000Z" } }, { reexamination: null }, { changed: true }]) {
+      const text = page([item(closed as Partial<ReportItem>)]);
+      expect(text, JSON.stringify(closed)).toContain(STANDING_TEXTS.reports.markedClosed);
+      expect(text, JSON.stringify(closed)).not.toContain("You can ask for a re-examination.");
+    }
+  });
+
+  test("a report refused for the restriction of reporting is worded in the app's own words, never the server's", async () => {
+    const answer = (status: number, body: unknown) => async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", answer(403, { error: { code: "reporting_restricted", message: "server wording" } }));
+    await expect(apiResponse("/api/notices", { json: {} })).rejects.toMatchObject({ code: "reporting_restricted", message: messageFor("reporting_restricted") });
+    vi.unstubAllGlobals();
   });
 });
 

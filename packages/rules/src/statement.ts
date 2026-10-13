@@ -245,6 +245,9 @@ export const STATEMENT_WORDS = {
     breaks: (id: string, title: string, text: string) => `It breaks korbat rule ${id}, "${title}": ${text}`,
     illegal: (reference: string) => `korbat found it illegal. The law it rests on: ${reference}`,
     restedOnRule: (id: string, title: string, text: string) => `That decision rested on korbat rule ${id}, "${title}": ${text}`,
+    // 3e's review (people1): a review, a correction, a lift or an answer to a reply about a measure of the ladder or a
+    // protective suspension, which rested on the terms' section and found no breach of the rule its decision cited.
+    restedOnTerms: "That decision rested on korbat's terms, section Suspension and termination.",
     restedOnLaw: (reference: string) => `That decision rested on the law: ${reference}`,
     referenceErased: "its reference was erased under korbat's retention rules.",
     // 3e (W.2, "The rule or the term"): a protective suspension rests on the terms' clause, never on a finding under R2; a
@@ -698,7 +701,9 @@ export function statementParagraphs(input: StatementInput): string[] {
   } else {
     // A reporting measure, like a measure at once, names the account's conduct under R6 (W.2, "The rule or the term").
     const form: GroundForm = about ? "about" : input.measures.some((measure) => measure.kind === "seal_media") ? "seal" : input.kind === "interim" ? "deciding" : standing || reporting ? "conduct" : "found";
-    const ground = about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, form) : groundParagraph(input, input.rulesVersion, form);
+    // A decision about a measure that rested on the terms names the terms, never the rule its decision cited (W.2).
+    const onTerms = about && (input.reviewed!.basis === "strikes" || input.reviewed!.basis === "ladder_end" || input.reviewed!.basis === "protective");
+    const ground = onTerms ? W.ground.restedOnTerms : about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, form) : groundParagraph(input, input.rulesVersion, form);
     if (ground !== null) paragraphs.push(ground);
   }
 

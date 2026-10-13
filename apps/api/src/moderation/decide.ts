@@ -4,7 +4,7 @@ import type { DbTx } from "@korbat/db";
 import type { AccountLockMode } from "../social";
 import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
-import { boundLockWaits, isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
+import { boundLockWaits, isBoundReached, isDeadlock } from "../lib/lock-bounds";
 import { staffAlert } from "./alerts";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
 import { appendConfirmedAudit, caseTarget, handleOf, holdsAnnouncedStanding, insertAction, insertDecision, insertMarks, raisedDetail, raisedMessage, recentDecisionsBy } from "./repo";
@@ -230,7 +230,8 @@ export async function recordConfirmed(
         if (detail !== null) deps.log.info({ refusal, detail }, "moderation: a confirmed decision was refused");
         throw Object.assign(new ModerationError(refusal), { detail });
       }
-      if (!isDeadlock(err) && !isLockNotAvailable(err)) throw err;
+      // A bound reached on either limit (lock_timeout, or the statement_timeout beside it) changed nothing either.
+      if (!isDeadlock(err) && !isBoundReached(err)) throw err;
       if (attempt > 1 || confirmed.expiresAt.getTime() - deps.now().getTime() <= RETRY_MARGIN_MS) return "late";
     }
   }

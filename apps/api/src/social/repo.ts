@@ -2,7 +2,7 @@ import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle
 import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import { handleRefusal, isUniqueViolation } from "../auth";
-import { WRITE_CLOCK, liveNotSuspended, reportsRestrictedAt, suspendedAt } from "../lib/standing";
+import { WRITE_CLOCK, closingJudgment, liveNotSuspended, reportsRestrictedAt, suspendedAt } from "../lib/standing";
 import { SocialError } from "./context";
 import type { Cursor, ExploreCursor } from "./cursor";
 import type { StoredPostState } from "./visibility";
@@ -528,6 +528,9 @@ export function createSocialRepo(db: Db) {
      * SHARE: those two modes never wait for each other. A post that both replies and quotes writes two
      * other posts' counters: their rows are taken first, in id order, the order in which a report takes the posts it
      * copies (3c design, section 2, Lock order), so the new post never holds one of them while it waits for the other.
+     * The transaction ends with the closing judgment of the author (judgeActing), after `within`: a post that waited at
+     * the other author's row, the parent's counter or a foreign key commits only if the author's suspension still has not
+     * started.
      */
     async createPost(input: {
       authorId: string;
@@ -556,6 +559,7 @@ export function createSocialRepo(db: Db) {
         }
         if (input.quoteOfId) await tx.update(posts).set({ quoteCount: bump(posts.quoteCount, 1) }).where(eq(posts.id, input.quoteOfId));
         await input.within?.(tx, row!.id);
+        await judgeActing(tx, input.authorId);
         return row!.id;
       });
     },
@@ -633,6 +637,8 @@ export function createSocialRepo(db: Db) {
      * transaction. The liker's and the author's profile rows are locked too and a deleted one refused, so a like
      * cannot land on an account a concurrent purge is removing (lockLive); the same goes for reposts and bookmarks.
      * 3e: the liker is the acting account, refused account_suspended while its suspension runs; the author need only be live.
+     * Like a repost and a bookmark, it ends with the closing judgment of the acting account (judgeActing), after its
+     * counter: the post's row may have kept it waiting past a start.
      */
     async like(userId: string, postId: string, now: Date, other?: string): Promise<boolean> {
       return db.transaction(async (tx) => {
@@ -640,6 +646,7 @@ export function createSocialRepo(db: Db) {
         await lockLive(tx, actorAndAuthor(userId, postId), "not_found", userId);
         const inserted = await tx.insert(likes).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: likes.postId });
         if (inserted.length > 0) await tx.update(posts).set({ likeCount: bump(posts.likeCount, 1) }).where(eq(posts.id, postId));
+        await judgeActing(tx, userId);
         return inserted.length > 0;
       });
     },
@@ -656,6 +663,7 @@ export function createSocialRepo(db: Db) {
         await lockLive(tx, actorAndAuthor(userId, postId), "not_found", userId);
         const inserted = await tx.insert(reposts).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: reposts.postId });
         if (inserted.length > 0) await tx.update(posts).set({ repostCount: bump(posts.repostCount, 1) }).where(eq(posts.id, postId));
+        await judgeActing(tx, userId);
         return inserted.length > 0;
       });
     },
@@ -671,6 +679,7 @@ export function createSocialRepo(db: Db) {
       return db.transaction(async (tx) => {
         await lockLive(tx, actorAndAuthor(userId, postId), "not_found", userId);
         const inserted = await tx.insert(bookmarks).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: bookmarks.postId });
+        await judgeActing(tx, userId);
         return inserted.length > 0;
       });
     },
@@ -703,7 +712,9 @@ export function createSocialRepo(db: Db) {
      * concurrent block. Both profile rows are locked and a deleted one refused either way, so a follow cannot land
      * on an account a concurrent purge is removing and stay behind it. 3e (design, section 5, the lock order, item 2):
      * both rows are taken FOR NO KEY UPDATE, the mode the counter updates need, in one statement ordered by id, before
-     * the insert; the follower is the acting account and is refused account_suspended while its suspension runs.
+     * the insert; the follower is the acting account and is refused account_suspended while its suspension runs. The one
+     * statement projects both rows before it locks either, so a wait for the followee's row leaves the follower's
+     * judgment as it was before it: the transaction ends with the closing judgment of the follower (judgeActing).
      */
     async follow(followerId: string, followeeId: string, now: Date, guard = false): Promise<boolean> {
       return db.transaction(async (tx) => {
@@ -714,6 +725,7 @@ export function createSocialRepo(db: Db) {
           await tx.update(profiles).set({ followerCount: bump(profiles.followerCount, 1) }).where(eq(profiles.id, followeeId));
           await tx.update(profiles).set({ followingCount: bump(profiles.followingCount, 1) }).where(eq(profiles.id, followerId));
         }
+        await judgeActing(tx, followerId);
         return inserted.length > 0;
       });
     },
@@ -1160,14 +1172,20 @@ export function createSocialRepo(db: Db) {
     /**
      * Sets the display name, the bio, or both (`patch` names at least one). False when there is no such live profile, and
      * (3e, section 7.2) while its suspension runs: the predicate is part of the update's own WHERE, so the update decides.
+     * The row is locked first, in a statement of its own: an UPDATE that waited for a holder that only locked the row
+     * would keep the judgment it made before the wait, so the UPDATE comes once the row is held and nothing is left to
+     * wait for. It is the write's last statement, and so its closing judgment (3e's review).
      */
     async updateProfile(id: string, patch: { displayName?: string; bio?: string }): Promise<boolean> {
-      const updated = await db
-        .update(profiles)
-        .set({ ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}), ...(patch.bio !== undefined ? { bio: patch.bio } : {}) })
-        .where(and(eq(profiles.id, id), liveNotSuspended("profiles", WRITE_CLOCK)))
-        .returning({ id: profiles.id });
-      return updated.length === 1;
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from profiles where id = ${id}::uuid for no key update`);
+        const updated = await tx
+          .update(profiles)
+          .set({ ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}), ...(patch.bio !== undefined ? { bio: patch.bio } : {}) })
+          .where(and(eq(profiles.id, id), liveNotSuspended("profiles", WRITE_CLOCK)))
+          .returning({ id: profiles.id });
+        return updated.length === 1;
+      });
     },
 
     /**
@@ -1184,7 +1202,8 @@ export function createSocialRepo(db: Db) {
      * handle_retired before it asks whether the handle is free; a handle of the account's own history counts as free
      * only while it is not retired. The database's guard of handles refuses the same, and a placeholder's form, to a
      * change that lost a race with a retirement or skipped the handle rule; its code is answered alike. The locking
-     * statement also answers whether the account's suspension runs (3e, section 7.2), and then nothing is written.
+     * statement also answers whether the account's suspension runs (3e, section 7.2), and then nothing is written; and the
+     * transaction ends with the closing judgment (judgeActing), since the claim's statements can still wait after it.
      */
     async changeHandle(id: string, to: string, now: Date): Promise<HandleChangeResult> {
       try {
@@ -1203,9 +1222,12 @@ export function createSocialRepo(db: Db) {
           if (claim!.taken) return { ok: false, reason: "handle_taken" };
           await tx.insert(handleHistory).values({ handleLower: current.handle.toLowerCase(), profileId: id, changedAt: now }).onConflictDoNothing();
           await tx.update(profiles).set({ handle: to, handleChangedAt: now }).where(eq(profiles.id, id));
+          await judgeActing(tx, id);
           return { ok: true, from: current.handle };
         });
       } catch (err) {
+        // The closing judgment threw to roll the change back: answered as the locking statement answers it.
+        if (err instanceof SocialError && (err.code === "account_suspended" || err.code === "not_found")) return { ok: false, reason: err.code };
         const guarded = handleRefusal(err);
         if (guarded !== null) return { ok: false, reason: guarded };
         if (isUniqueViolation(err)) return { ok: false, reason: "handle_taken" };
@@ -1466,6 +1488,16 @@ async function lockActing(tx: Tx, accountId: string, mode: "no key update" | "ke
   )) as unknown as { deleted: boolean; suspended: boolean }[];
   if (!row || row.deleted) throw new SocialError("not_found", 404);
   if (row.suspended) throw new SocialError("account_suspended", 403);
+}
+
+/**
+ * The closing judgment of a write of `accountId` (lib/standing.ts): the transaction's last statement. A deleted account is
+ * refused not_found, a suspended one account_suspended, either of which rolls the write back.
+ */
+async function judgeActing(tx: Tx, accountId: string): Promise<void> {
+  const judged = await closingJudgment(tx, accountId);
+  if (!judged || judged.deleted) throw new SocialError("not_found", 404);
+  if (judged.suspended) throw new SocialError("account_suspended", 403);
 }
 
 /**

@@ -4,7 +4,7 @@ import { MEASURES, type AccountStanding, type AuthorCaseRow, type ReportItem, ty
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
 import { CASES_WORDS } from "@/lib/moderation-words";
-import { CASE_ROW_WORDS, reportingLine, rowStrike, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
+import { CASE_ROW_WORDS, bannerSentences, reportingLine, rowStrike, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
 
 /** 3e: the kinds whose words in a row are the row's own (9.4), not the measure's label. */
@@ -20,12 +20,28 @@ const ROW_KINDS: Partial<Record<AuthorCaseRow["actions"][number], string>> = {
 };
 
 /**
+ * 3e's review (people7; design, section 9.4): a suspension's or a termination's row and a lift's, in the row's own words
+ * when the row says what they were: a suspension with its days and kind, a termination, a withdrawal for another measure,
+ * the lift of a termination.
+ */
+function standingWords(row: AuthorCaseRow, kind: AuthorCaseRow["actions"][number]): string | null {
+  const measure = row.standingMeasure;
+  if ((kind === "suspend" || kind === "terminate") && measure !== undefined) {
+    return measure.kind === "terminate" || measure.days === null ? CASE_ROW_WORDS.terminated : CASE_ROW_WORDS.suspendedFor(measure.days, measure.announced);
+  }
+  const lifted = row.liftedStanding;
+  if (kind === "lift_suspension" && lifted !== undefined) return lifted.replaced ? CASE_ROW_WORDS.withdrawn : lifted.kind === "terminate" ? CASE_ROW_WORDS.terminationLifted : CASE_ROW_WORDS.lifted;
+  return null;
+}
+
+/**
  * What a decision did, in the measures' own labels; a decision without a measure ended what was done while deciding, or
  * took no action. A review that kept the decision is worded by its outcome first: it lifts nothing, and the restriction
- * it answered stands.
+ * it answered stands; and so is a kept correction (3e's review, people3), korbat's answer to a reply that kept the
+ * suspension or termination, which holds no row of its own.
  */
 function done(row: AuthorCaseRow, now: Date): string {
-  if (row.kind === "review" && row.outcome === "kept") return CASES_WORDS.keptDecision;
+  if ((row.kind === "review" || row.kind === "correction") && row.outcome === "kept") return CASES_WORDS.keptDecision;
   // 3e (design, section 9.4): a strike is named with where it stands, its overruling, a retirement and its reversal in
   // the row's own words.
   const labels: string[] = row.actions.map((kind) =>
@@ -33,9 +49,11 @@ function done(row: AuthorCaseRow, now: Date): string {
       ? rowStrike(row.strike, now)
       : kind === "restrict_reporting" && row.reportingDays !== undefined
         ? CASE_ROW_WORDS.restricted(row.reportingDays)
-        : (ROW_KINDS[kind] ?? MEASURES[kind].label),
+        : (standingWords(row, kind) ?? ROW_KINDS[kind] ?? MEASURES[kind].label),
   );
-  // Task 5: a reversal that ended a restriction of reporting resting on the decision it reversed says so.
+  // Task 5: a reversal that ended a restriction of reporting resting on the decision it reversed says so; and (3e's
+  // review, people7) one that ended a suspension or a termination.
+  for (const ended of ["suspend", "terminate"] as const) if ((row.endedStanding ?? []).includes(ended)) labels.push(CASE_ROW_WORDS.standingEnded[ended]);
   if ((row.endedStanding ?? []).includes("restrict_reporting")) labels.push(CASE_ROW_WORDS.restrictionEnded);
   if (row.endedInterim) labels.push(CASES_WORDS.ended);
   return labels.length > 0 ? labels.join(", ") : CASES_WORDS.noAction;
@@ -83,12 +101,12 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
 
 /**
  * "Your standing" (3e design, section 9.4), above "About you": how many of the account's strikes count now, and what that
- * many leads to; then (Task 3) the line of a suspension that runs, in the banner's words, from /me's standing; and (Task 5)
- * [cases.reporting]: a restriction of the account's reports that runs, or a warning about them that counts. The line of
- * an announced or held measure comes with the task that builds it.
+ * many leads to; then the line of a suspension or a termination that /me carries, not fixed yet, announced, held by a
+ * reply or running, in the banner's words (3e's review, people7); and (Task 5) [cases.reporting]: a restriction of the
+ * account's reports that runs, or a warning about them that counts.
  */
 export function StandingBlock({ activeStrikes, standing = null }: { activeStrikes: number; standing?: AccountStanding | null }) {
-  const running = runningMeasure(standing);
+  const measure = bannerSentences(standing);
   const reporting = reportingLine(standing);
   return (
     <View className="border-b border-zinc-800 px-4 pb-4 pt-3">
@@ -96,7 +114,7 @@ export function StandingBlock({ activeStrikes, standing = null }: { activeStrike
         {STANDING_TEXTS.cases.title}
       </Text>
       <Text className="mt-1 text-sm leading-5 text-zinc-200">{activeStrikes > 0 ? STANDING_TEXTS.cases.strikes(activeStrikes) : STANDING_TEXTS.cases.none}</Text>
-      {running !== null && running.kind === "suspend" && running.endsAt !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{STANDING_TEXTS.banner.running(running.endsAt)}</Text> : null}
+      {measure !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{measure.join(" ")}</Text> : null}
       {reporting !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{reporting}</Text> : null}
     </View>
   );

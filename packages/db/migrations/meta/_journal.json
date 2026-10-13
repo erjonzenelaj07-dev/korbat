@@ -176,6 +176,13 @@
       "when": 1791830459340,
       "tag": "0024_standing_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791837588048,
+      "tag": "0025_standing_review",
+      "breakpoints": true
     }
   ]
 }

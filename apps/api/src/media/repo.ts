@@ -2,7 +2,7 @@ import { and, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } fr
 import { mediaPath } from "@korbat/contracts";
 import { postMedia, posts, profiles, type Db, type DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
-import { WRITE_CLOCK, liveNotSuspended } from "../lib/standing";
+import { WRITE_CLOCK, closingJudgment, liveNotSuspended } from "../lib/standing";
 import { MediaError, type PostImage } from "./context";
 
 /**
@@ -121,15 +121,22 @@ export function createMediaRepo(db: Db) {
     /**
      * The upload's row, as one statement that locks its owner's profile row FOR KEY SHARE and inserts only when the one
      * predicate holds (3e design, section 7.2): read in the statement that locks the row, by the clock. No row inserted
-     * answers account_suspended, and the caller discards the received file.
+     * answers account_suspended, and the caller discards the received file. The statement's lock may wait for a holder
+     * that only locks the row, which leaves its judgment as it was before the wait, so the transaction ends with the
+     * closing judgment of the owner (3e's review): a deleted or suspended owner then rolls the insert back, answered
+     * account_suspended as the statement answers both.
      */
     async insertProcessing(input: { id: string; ownerId: string; now: Date }): Promise<void> {
-      const inserted = await db.execute(sql`
-        with ok as (select p.id from profiles p where p.id = ${input.ownerId}::uuid and ${liveNotSuspended("p", WRITE_CLOCK)} for key share of p)
-        insert into post_media (id, owner_id, status, created_at)
-        select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz from ok
-        returning id`);
-      if (inserted.length === 0) throw new MediaError("account_suspended", 403);
+      await db.transaction(async (tx) => {
+        const inserted = await tx.execute(sql`
+          with ok as (select p.id from profiles p where p.id = ${input.ownerId}::uuid and ${liveNotSuspended("p", WRITE_CLOCK)} for key share of p)
+          insert into post_media (id, owner_id, status, created_at)
+          select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz from ok
+          returning id`);
+        if (inserted.length === 0) throw new MediaError("account_suspended", 403);
+        const judged = await closingJudgment(tx, input.ownerId);
+        if (!judged || judged.deleted || judged.suspended) throw new MediaError("account_suspended", 403);
+      });
     },
 
     /**

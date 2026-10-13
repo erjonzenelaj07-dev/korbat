@@ -11,6 +11,7 @@ import {
   SUSPECT_OUTCOME_PHRASES,
   UNSEEN_NO_ACTION,
   itemOutcomeWords,
+  type AccountStanding,
   type AuthorCaseRow,
   type DecisionView,
   type HiddenMedia,
@@ -32,10 +33,11 @@ import { HIDDEN_IMAGE, SEALED_IMAGE } from "../src/components/social/HiddenImage
 import { MediaGrid } from "../src/components/social/MediaGrid";
 import { MediaViewerContent } from "../src/components/social/MediaViewer";
 import { PostCard } from "../src/components/social/PostCard";
-import { messageFor } from "../src/lib/api";
+import { ApiError, messageFor } from "../src/lib/api";
 import { chipText, fragmentToken, itemRedress, utcMinute } from "../src/lib/moderation";
 import { CASES_WORDS, CHIP_WORDS, DECISION_WORDS, STATUS_WORDS } from "../src/lib/moderation-words";
-import { CASE_ROW_WORDS, STANDING_TEXTS, standingDay, standingTime } from "../src/lib/standing";
+import { CASE_ROW_WORDS, STANDING_TEXTS, bannerSentences, isSuspendedRefusal, refusalSentence, standingDay, standingTime } from "../src/lib/standing";
+import { RefusedNotice } from "../src/components/moderation/RefusedNotice";
 
 /**
  * The notice status page, the cases screens and the decision screen, the chips and the labels in the web app (3c design,
@@ -751,5 +753,107 @@ describe("3e: a retired handle in the app (design, sections 9.4, 9.5 and 9.8)", 
     expect(textOf(html(<DecisionsList decisions={[row({})]} />))).toContain(CASE_ROW_WORDS.retired);
     expect(textOf(html(<DecisionsList decisions={[row({ actions: ["reset_display_name", "retire_handle"] })]} />))).toContain(`${MEASURES.reset_display_name.label}, ${CASE_ROW_WORDS.retired}`);
     expect(textOf(html(<DecisionsList decisions={[row({ kind: "correction", outcome: "reversed", actions: ["unretire_handle"] })]} />))).toContain(CASE_ROW_WORDS.unretired);
+  });
+});
+
+describe("3e's review: what Cases says of a suspension, a termination and their answers (design, section 9.4)", () => {
+  const row = (extra: Partial<AuthorCaseRow> = {}): AuthorCaseRow => ({
+    id: id(31),
+    kind: "final",
+    outcome: "restricted",
+    decidedOn: "2026-10-12",
+    post: null,
+    actions: ["suspend"],
+    endedInterim: false,
+    ruleId: "R5",
+    legal: false,
+    appealUntil: null,
+    reversedOn: null,
+    appeal: null,
+    strike: null,
+    standingMeasure: { kind: "suspend", days: 7, announced: false },
+    ...extra,
+  });
+  const list = (extra: Partial<AuthorCaseRow>) => textOf(html(<DecisionsList decisions={[row(extra)]} />));
+
+  test("the row words are the design's: a suspension with its days and kind, a termination, a lift, a withdrawal, the lift of a termination, and a suspension that rested on a reversed decision", () => {
+    expect(CASE_ROW_WORDS.suspendedFor(7, false)).toBe("a suspension of 7 days, at once");
+    expect(CASE_ROW_WORDS.suspendedFor(3, true)).toBe("a suspension of 3 days, announced");
+    expect(CASE_ROW_WORDS.suspendedFor(1, true)).toBe("a suspension of 1 day, announced");
+    expect(CASE_ROW_WORDS.terminated).toBe("a termination");
+    expect(CASE_ROW_WORDS.withdrawn).toBe("suspension withdrawn for another measure");
+    expect(CASE_ROW_WORDS.standingEnded.suspend).toBe("a suspension that rested on it ended");
+    expect(list({})).toContain(CASE_ROW_WORDS.suspendedFor(7, false));
+    expect(list({ standingMeasure: { kind: "suspend", days: 3, announced: true } })).toContain(CASE_ROW_WORDS.suspendedFor(3, true));
+    expect(list({ actions: ["terminate"], standingMeasure: { kind: "terminate", days: null, announced: false } })).toContain(CASE_ROW_WORDS.terminated);
+    expect(list({ actions: ["terminate"], standingMeasure: { kind: "terminate", days: null, announced: false } })).not.toContain("Terminate");
+    const lift = { kind: "correction" as const, outcome: "reversed" as const, actions: ["lift_suspension" as const], standingMeasure: undefined };
+    expect(list({ ...lift, liftedStanding: { kind: "suspend", replaced: false } })).toContain(CASE_ROW_WORDS.lifted);
+    expect(list({ ...lift, liftedStanding: { kind: "suspend", replaced: true } })).toContain(CASE_ROW_WORDS.withdrawn);
+    expect(list({ ...lift, liftedStanding: { kind: "terminate", replaced: false } })).toContain(CASE_ROW_WORDS.terminationLifted);
+    expect(list({ ...lift, liftedStanding: { kind: "terminate", replaced: false } })).not.toContain(CASE_ROW_WORDS.lifted);
+    const broke = { kind: "correction" as const, outcome: "reversed" as const, actions: ["restore" as const], standingMeasure: undefined, post: { id: id(1), createdAt: TIME } };
+    expect(list({ ...broke, endedStanding: ["suspend"] })).toContain(`${MEASURES.restore.label}, ${CASE_ROW_WORDS.standingEnded.suspend}`);
+    expect(list({ ...broke, endedStanding: ["terminate"] })).toContain(CASE_ROW_WORDS.standingEnded.terminate);
+  });
+
+  test("korbat's kept answer to a reply is listed as a kept decision, never as no action", () => {
+    // 3e's review (people3): a kept correction holds no ledger row, and kept the suspension.
+    const text = list({ kind: "correction", outcome: "kept", actions: [], standingMeasure: undefined });
+    expect(text).toContain(CASES_WORDS.keptDecision);
+    expect(text).not.toContain(CASES_WORDS.noAction);
+  });
+
+  test("Your standing has a line for a measure not started, announced or held, and for a termination, in the banner's words", () => {
+    const standing = (more: Partial<NonNullable<AccountStanding["measure"]>>): AccountStanding => ({
+      activeStrikes: 3,
+      measure: {
+        decisionId: id(9),
+        kind: "suspend",
+        days: 3,
+        state: "unfixed",
+        earliestStart: "2026-10-15T10:00:00.000Z",
+        startsAt: null,
+        endsAt: null,
+        reply: null,
+        replyOpen: true,
+        appealUntil: "2027-04-12T10:00:00.000Z",
+        appealPending: false,
+        ...more,
+      },
+      reporting: null,
+      handleRetired: false,
+    });
+    for (const s of [
+      standing({}),
+      standing({ state: "announced", startsAt: "2026-10-16T10:00:00.000Z", endsAt: "2026-10-19T10:00:00.000Z" }),
+      standing({ state: "held", reply: { filedAt: "2026-10-13T08:00:00.000Z", onTime: true, answeredAt: null }, replyOpen: false }),
+      standing({ kind: "terminate", days: null, state: "running", startsAt: "2026-10-16T10:00:00.000Z" }),
+    ]) {
+      const text = textOf(html(<StandingBlock activeStrikes={3} standing={s} />));
+      for (const sentence of bannerSentences(s)!) expect(text, s.measure!.state).toContain(sentence);
+    }
+  });
+
+  test("a card's action and a follow refused account_suspended show the refusal's sentence from /me with the link to the decision, as the forms do", () => {
+    const running: AccountStanding = {
+      activeStrikes: 0,
+      measure: { decisionId: id(9), kind: "suspend", days: 7, state: "running", earliestStart: TIME, startsAt: TIME, endsAt: "2026-10-19T10:00:00.000Z", reply: null, replyOpen: true, appealUntil: null, appealPending: false },
+      reporting: null,
+      handleRetired: false,
+    };
+    const out = html(<RefusedNotice standing={running} />);
+    expect(textOf(out)).toContain(refusalSentence(running));
+    expect(textOf(out)).toContain(STANDING_TEXTS.refused.read);
+    expect(out).toContain(`href="/settings/cases/${id(9)}"`);
+    expect(textOf(html(<RefusedNotice standing={null} />))).toBe(STANDING_TEXTS.refused.over);
+    expect(isSuspendedRefusal(new ApiError(403, "account_suspended", "server wording"))).toBe(true);
+    expect(isSuspendedRefusal(new ApiError(403, "reauth_required", "x"))).toBe(false);
+    // A static render cannot press a button: the card and the profile's follow read their refusals through these two.
+    for (const file of [["components", "social", "PostCard.tsx"], ["app", "u", "[handle]", "index.tsx"]]) {
+      const source = read(...file);
+      expect(source, file.join("/")).toContain("isSuspendedRefusal(err)");
+      expect(source, file.join("/")).toContain("<RefusedNotice");
+    }
   });
 });

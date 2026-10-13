@@ -9,6 +9,7 @@ import { GRANT_ROLE_WORDS, runGrantRole } from "../../src/cli/grant-role";
 import { MemoryMailer } from "../../src/mail/memory";
 import { ModerationError } from "../../src/moderation";
 import { updateLine } from "../../src/moderation/dispatch";
+import { authorCases, authorDecisionView } from "../../src/moderation/author";
 import { itemStatus } from "../../src/moderation/intake";
 import { noticeItems, pendingOutcomeLines } from "../../src/moderation/repo";
 import { decisionStatement } from "../../src/moderation/statement";
@@ -212,6 +213,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: suspensions at once", ()
     expect(statement.reversals[0]).toMatchObject({ kind: "lift_suspension", liftedKind: "suspend", periodThen: { state: "running", startedAt: expect.any(String), endedAt: null }, replaced: false });
     expect(statementParagraphs(statement)).toContain(STATEMENT_WORDS.liftedRunning("suspension"));
     expect(n.mailer.to(account.email, "suspension_lifted").map((m) => [m.data.why, m.data.period])).toEqual([["lifted", "running"]]);
+    // 3e's review (people5): the decision's screen reads the period cut to the lift, its end the lift's moment, which the
+    // app words as a lift while it ran ([now.lifted]).
+    const standing = (await authorDecisionView(n.deps, account.id, decisionId)).standing!;
+    expect(standing).toMatchObject({ state: "lifted", endedBy: lift, startsAt: expect.any(String) });
+    expect(standing.endsAt).toBe(standing.endedAt);
+    // 3e's review (people7): the person's list names the suspension with its days and kind, and its lift as a lift.
+    const rows = (await authorCases(n.deps, account.id)).decisions;
+    expect(rows.find((row) => row.id === decisionId)).toMatchObject({ actions: ["suspend"], standingMeasure: { kind: "suspend", days: 7, announced: false } });
+    expect(rows.find((row) => row.id === lift)).toMatchObject({ actions: ["lift_suspension"], liftedStanding: { kind: "suspend", replaced: false } });
+    expect(rows.find((row) => row.id === lift)).not.toHaveProperty("standingMeasure");
     // Lifted, it stands no more: a new suspension at once is open again.
     expect(await refused(admin, await accountCase(account, "R5"), { kind: "final", ruleId: "R5", actions: atOnce(3) })).toBeNull();
   });

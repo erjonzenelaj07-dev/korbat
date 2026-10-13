@@ -27,6 +27,7 @@ import type { DbTx } from "@korbat/db";
 import { getRule } from "@korbat/rules";
 import type { AccountMailResult, NotifierMailResult, Session } from "../auth";
 import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
+import { closingJudgment } from "../lib/standing";
 import { MailUnavailable } from "../mail/mailer";
 import type { HoldPair } from "../media";
 import type { CapturedPost, CapturedProfile } from "../social";
@@ -195,7 +196,10 @@ const byTarget = (a: LiveTarget, b: LiveTarget) => (a.type !== b.type ? (a.type 
  *      item about an account every image row on the account's posts, locked by one statement in one id order, with each
  *      post's case's evidence hold on its images; then a snapshot for each case that holds none yet, or, for an account,
  *      whose newest one differs from the account now, a post's listing the images the hold answered;
- *   5. for each target with nothing live, an item with no case, answered at once.
+ *   5. for each target with nothing live, an item with no case, answered at once;
+ *   6. (3e's review) for a signed-in report under a rule, the closing judgment of the reporter: the case and post locks of
+ *      steps 3 and 4 can keep the transaction waiting past the start of a suspension or a restriction of reporting, which
+ *      the judgment of step 1 was made before.
  * It is run again, up to three times, when an item's case closed in between (the attach trigger says so), on a deadlock
  * and on a lock timeout; when the last run fails the same way the answer is case_closed. A signed-in reporter who already
  * has an item on the same ground in a target's open case is answered already_reported.
@@ -226,9 +230,9 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
   // restriction of the reporter's reports runs (reporting_restricted, Task 5); a notice of illegality and the path for
   // child sexual abuse material read neither (DSA Art. 16(6)), and a re-examination is no intake. The request was counted
   // against the sender's limit already, as an already_reported one is.
+  const underRule = ground.reporterId !== null && ground.kind === "user" && !ground.allegesIllegal && !ground.csam;
   if (ground.reporterId !== null) {
     const [reporter] = await deps.social.lockAccounts(tx, [ground.reporterId], "key share", true);
-    const underRule = ground.kind === "user" && !ground.allegesIllegal && !ground.csam;
     if (underRule && reporter!.suspended) throw new ModerationError("account_suspended");
     if (underRule && reporter!.reportsRestricted) throw new ModerationError("reporting_restricted");
   }
@@ -241,6 +245,14 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
 
   // 3. to 5.
   const items = await attachTargets(deps, tx, { intakeId, lane, suspect, live: request.live, dead: request.dead ?? [] });
+
+  // 6. The reporter's row is still held FOR KEY SHARE from step 1, so this read waits for nothing; a refusal rolls the
+  // whole intake back, its count of the day's tally included.
+  if (underRule) {
+    const judged = await closingJudgment(tx, ground.reporterId!);
+    if (judged?.suspended) throw new ModerationError("account_suspended");
+    if (judged?.reportsRestricted) throw new ModerationError("reporting_restricted");
+  }
   return { intakeId, ref, token, suspect, items };
 }
 

@@ -243,23 +243,35 @@ export interface NoticeItemRow {
 
 /**
  * Whether the mark `m` counts (3e design, section 6.3), exactly as decision_actions_check's restriction and the view
- * reporting_record count one: its report was sent on a UTC day within report_frame_days, no correction withdrew it, and
- * no re-examination of its item ended in a restriction. The alias is written here, never input.
+ * reporting_record count one: its item's outcome is released (3e's review: before the daily release the person can neither
+ * read the mark nor ask for a re-examination of it, so it counts toward nothing, lists nowhere and is exported nowhere),
+ * its report was sent on a UTC day within report_frame_days, no correction withdrew it, and no re-examination of its item
+ * ended in a restriction. The alias is written here, never input.
  */
 export const markCounts = (m: string) =>
   sql.raw(
     `${m}.withdrawn_by is null and (${m}.reported_at at time zone 'UTC')::date > (now() at time zone 'UTC')::date - (select k.report_frame_days from standing_rules() k)
+     and exists (select 1 from intake_items o where o.id = ${m}.item_id and o.outcome_sent_at is not null)
      and not exists (select 1 from intake_items x where x.reexamines_item_id = ${m}.item_id and x.outcome in ('restricted_rule', 'restricted_legal'))`,
   );
 
 const MEASURE_KINDS_SQL = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
+/**
+ * 3e's review (access4, people4): the measures of 3e that change something for the account when imposed. A decision
+ * that holds one of them with no_effect null changed something, whatever its measures of 3c did, so its reporter is
+ * never told that nothing changed. A strike changes nothing a reporter reads, and a reporting measure is never in a
+ * decision a report is answered by. Compared as text: the kinds are 3e's (enum-literals.test.ts).
+ */
+const CHANGING_KINDS_SQL = sql`('retire_handle', 'suspend', 'terminate')`;
 
 /**
  * Whether every measure of the decision that answered item `i` changed nothing when it was imposed: it holds a measure,
- * and none whose `no_effect` is null. The mail's line and the status answer read it through this one expression.
+ * and none whose `no_effect` is null, of 3c's kinds or (3e) a retirement, a suspension or a termination. The mail's line
+ * and the status answer read it through this one expression.
  */
 const answerChangedNothing = sql`(exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind in ${MEASURE_KINDS_SQL})
-                and not exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind in ${MEASURE_KINDS_SQL} and a.no_effect is null))`;
+                and not exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind in ${MEASURE_KINDS_SQL} and a.no_effect is null)
+                and not exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind::text in ${CHANGING_KINDS_SQL} and a.no_effect is null))`;
 
 /**
  * The items of these notices, each notice's in the order its page lists them: by position, an item korbat added for a
@@ -1749,6 +1761,20 @@ export const MAIL_LOCK_TIMEOUT_MS = 5_000;
  */
 export async function beginMailRecord(tx: DbTx): Promise<void> {
   await tx.execute(sql`select set_config('lock_timeout', ${`${MAIL_LOCK_TIMEOUT_MS}ms`}::text, true)`);
+}
+
+/**
+ * Whether a later decision lifted the decision's suspension or termination, or a reversal broke its basis (3e's review,
+ * proofs1): its statement, still owed, is then never sent. A statement of its own, read after the decision's row is held.
+ */
+export async function standingWithdrawn(tx: DbTx, decisionId: string): Promise<boolean> {
+  const [row] = await rows<{ withdrawn: boolean }>(
+    tx,
+    sql`select exists (select 1 from decision_actions a
+                        where a.decision_id = ${decisionId}::uuid and a.kind::text in ('suspend', 'terminate')
+                          and (exists (select 1 from decision_actions r where r.reverses_action_id = a.id) or public.standing_basis_broken_at(a.id) is not null)) as withdrawn`,
+  );
+  return row?.withdrawn === true;
 }
 
 /** Takes a decision's row while its statement's mail is still owed; false, and nothing is taken, when it is not. */

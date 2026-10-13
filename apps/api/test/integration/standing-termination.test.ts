@@ -3,15 +3,16 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { AccountDeps } from "../../src/account/context";
 import { purgePending } from "../../src/account/purge";
+import { takeDownTerminated as takeDownFlow } from "../../src/auth/flows/deletion";
 import { mediaForAccount } from "../../src/media";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { fileAppeal } from "../../src/moderation/appeals";
 import { TAKE_DOWN_SETTLE_MS, fileReply, takeDownDue } from "../../src/moderation/standing";
-import { terminationsDue } from "../../src/moderation/standing-repo";
+import { lockTerminatingDecision, terminationsDue } from "../../src/moderation/standing-repo";
 import { exportProfile } from "../../src/social/flows/export";
 import { mediaHarness, type MediaHarness } from "./media-harness";
 import { closeDecisions, deciderWorld, terminateForTest, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { act, ageStandingForTest, decisionParams, gate, untilBlocked, type DecisionInput } from "./moderation-fixtures";
+import { aPost, act, ageStandingForTest, appealOf, decisionParams, gate, imagePost, report, untilBlocked, type DecisionInput } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 import { socialHarness, type SocialHarness } from "./social-harness";
 
@@ -225,6 +226,163 @@ describe.skipIf(!process.env.INTEGRATION)("integration: termination and its take
     // The next round, with the auth module up: taken down, mailed once, purged.
     expect(await purgePending(accountDeps())).toMatchObject({ terminated: 1, failed: 0, purged: 1 });
     expect(n.mailer.to(fay.email, "termination_final")).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------- what the review of the built code added
+
+  /** A termination final for its author long enough for the take-down: past the six months, and past the settling while. */
+  async function dueForTakeDown(accountId: string) {
+    const terminated = await terminateForTest(n.apiDb, accountId);
+    await pastTheAppeal(accountId);
+    await ageStandingForTest(world.migrateDb, accountId, `${TAKE_DOWN_SETTLE_MS / 1000 + 1} seconds`);
+    return terminated;
+  }
+  /** What the promise settled with within `ms`, or "still waiting". */
+  const within = <T>(ms: number, promise: Promise<T>): Promise<T | "still waiting"> =>
+    Promise.race([promise, new Promise<"still waiting">((resolve) => setTimeout(() => resolve("still waiting"), ms))]);
+
+  test("a reply that waited at the profile behind the take-down is refused once the take-down committed, and nothing of it is stored", async () => {
+    // 3e's review (proofs3): the auth row is marked deleted by the take-down; the profile only by the purge after it.
+    const hal = await account();
+    const terminated = await dueForTakeDown(hal.id);
+    const entered = gate();
+    const release = gate();
+    const taking = takeDownDue(n.deps, async (accountId, facts) => {
+      if (accountId !== hal.id) return false;
+      entered.open();
+      await release.opened;
+      return n.auth.forAccount.takeDownTerminated(accountId, facts);
+    });
+    let replied: Promise<unknown> | null = null;
+    try {
+      await entered.opened;
+      replied = fileReply(n.deps, hal.id, terminated.decisionId, { statement: "Please look again." }).then(
+        () => "stored",
+        (err: unknown) => String((err as { code?: unknown }).code ?? err),
+      );
+      await untilBlocked(n.apiDb, "order by id for update", 60_000);
+    } finally {
+      release.open();
+    }
+    expect(await taking).toMatchObject({ terminated: 1, failed: 0 });
+    expect(await replied).toBe("reply_not_open");
+    expect((await n.apiDb.execute(sql`select 1 from suspension_replies where account_id = ${hal.id}::uuid`)).length).toBe(0);
+    expect(await authDeletedAt(hal.id)).not.toBeNull();
+  });
+
+  test("the take-down against an appeal at its deadline, the appeal first: one in flight holds the terminating decision's row by its foreign key, the take-down waits for it there, reads it and leaves the account", async () => {
+    // 3e's review (proofs4). The appeal is filed while its window is open, and stays in flight: its foreign key holds the
+    // decision's row FOR KEY SHARE until it commits. Meanwhile the deadline and the settling while pass (the migrator
+    // moves the ledger back, which that lock does not hold up), so the take-down finds the account due.
+    const ida = await account();
+    const terminated = await terminateForTest(n.apiDb, ida.id);
+    const held = gate();
+    const release = gate();
+    const appeal = world.migrateDb.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '60s'`);
+      await appealOf(tx, terminated.decisionId, ida.id);
+      held.open();
+      await release.opened;
+    });
+    const called: string[] = [];
+    let taken: Promise<{ terminated: number; failed: number }> | null = null;
+    try {
+      await held.opened;
+      await pastTheAppeal(ida.id);
+      await ageStandingForTest(world.migrateDb, ida.id, `${TAKE_DOWN_SETTLE_MS / 1000 + 1} seconds`);
+      expect(await isDue(ida.id)).toBe(true);
+      taken = takeDownDue(n.deps, async (accountId) => {
+        called.push(accountId);
+        return false;
+      });
+      await untilBlocked(n.apiDb, "d.id desc limit 1 for update", 60_000);
+    } finally {
+      release.open();
+      await appeal;
+    }
+    expect(await taken).toMatchObject({ failed: 0 });
+    expect(called).not.toContain(ida.id);
+    expect(await isDue(ida.id)).toBe(false);
+    expect(await authDeletedAt(ida.id)).toBeNull();
+  });
+
+  test("the take-down against an appeal at its deadline, the take-down first: while it holds the terminating decision's row, an appeal filed in time waits for it and lands only after the take-down's transaction ends", async () => {
+    const jon = await account();
+    const terminated = await terminateForTest(n.apiDb, jon.id);
+    const held = gate();
+    const release = gate();
+    // The take-down's two locks, as takeDownDue takes them, held open: the profile, then the terminating decision's row.
+    const holding = n.apiDb.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '60s'`);
+      await n.deps.social.lockAccounts(tx, [jon.id], "update");
+      expect(await lockTerminatingDecision(tx, jon.id, terminated.caseId)).toBe(terminated.decisionId);
+      held.open();
+      await release.opened;
+    });
+    let appealing: Promise<unknown> | null = null;
+    try {
+      await held.opened;
+      appealing = fileAppeal(n.deps, jon.id, terminated.decisionId, {});
+      // The appeal's check passed (its deadline is months away); its foreign key waits at the decision's row.
+      await untilBlocked(n.apiDb, "insert into appeals", 60_000);
+    } finally {
+      release.open();
+      await holding;
+    }
+    await appealing;
+    expect((await n.moderation.standingFor(jon.id))?.measure).toMatchObject({ appealPending: true });
+  });
+
+  test("termination_final goes only after the auth module's take-down committed: a take-down that throws there mails nothing; and a termination with a seal of the account's images in force says so", async () => {
+    // 3e's review (proofs5).
+    const kim = await account();
+    const { postId } = await imagePost(n.apiDb, 1, kim.id);
+    const sealCase = (await report(n.apiDb, aPost(postId), "csam")).caseId;
+    await decided(sealCase, { kind: "final", ruleId: "R2", actions: [act("seal_media")] });
+    await dueForTakeDown(kim.id);
+    // The auth module's own flow, over a repository whose take-down fails after the account's row was read.
+    const failing = accountDeps({
+      takeDownTerminated: (accountId, facts) =>
+        takeDownFlow(
+          {
+            ...n.auth.deps,
+            repo: {
+              ...n.auth.deps.repo,
+              takeDownTerminated: async () => {
+                throw new Error("the auth database refused the take-down");
+              },
+            },
+          },
+          accountId,
+          facts,
+        ),
+    });
+    expect(await purgePending(failing)).toMatchObject({ terminated: 0, failed: 1 });
+    expect(n.mailer.attempts.filter((mail) => mail.to === kim.email && mail.template === "termination_final")).toEqual([]);
+    expect(await authDeletedAt(kim.id)).toBeNull();
+    expect(await purgePending(accountDeps())).toMatchObject({ terminated: 1, failed: 0 });
+    const mails = n.mailer.to(kim.email, "termination_final");
+    expect(mails).toHaveLength(1);
+    expect(mails[0]!.data.imagesSealed).toBe("true");
+  });
+
+  test("the take-down holds no profile while termination_final is mailed: with the relay hanging, the round ends and a like of the account's post goes through; the mail goes once the relay answers", async () => {
+    // 3e's review (database3).
+    const lou = await account();
+    const liker = await account();
+    const postId = await s.repo.createPost({ authorId: lou.id, body: "a post others still like", replyToId: null, quoteOfId: null, now: new Date() });
+    await dueForTakeDown(lou.id);
+    n.mailer.mode = "hang";
+    try {
+      const taken = await within(30_000, takeDownDue(n.deps, (accountId, facts) => (accountId === lou.id ? n.auth.forAccount.takeDownTerminated(accountId, facts) : Promise.resolve(false))));
+      expect(taken).toMatchObject({ terminated: 1, failed: 0 });
+      expect(await within(3000, s.repo.like(liker.id, postId, new Date(), lou.id))).toBe(true);
+      expect(n.mailer.to(lou.email, "termination_final")).toEqual([]);
+    } finally {
+      n.mailer.release("deliver");
+    }
+    for (let round = 0; round < 200 && n.mailer.to(lou.email, "termination_final").length === 0; round++) await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(n.mailer.to(lou.email, "termination_final")).toHaveLength(1);
   });
 
   test("this file left no row behind: what it committed is removed, and the tables hold what they held before it", async () => {

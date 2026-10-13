@@ -9,10 +9,12 @@ import { ModerationError } from "../../src/moderation/context";
 import { casesCalling } from "../../src/moderation/dispatch";
 import { recordIntake } from "../../src/moderation/intake";
 import { appendConfirmedAudit, insertAction, insertDecision } from "../../src/moderation/repo";
+import { fileReply } from "../../src/moderation/standing";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import {
   aPost,
   act,
+  appealOf,
   authCaseCounts,
   decisionParams,
   decisionRow,
@@ -793,6 +795,48 @@ describe.skipIf(!process.env.INTEGRATION)("integration: committed decisions and 
       const lifted = await whileHeld(sql`select 1 from profiles where id = ${account.id}::uuid for key share`, () => lift());
       expect(typeof lifted).not.toBe("string");
       expect(modes).toEqual(["no key update", "update", "no key update"]);
+    } finally {
+      social.lockAccounts = lockAccounts;
+      await removeFixtures(migrateDb, [account.id]);
+    }
+  });
+
+  test("3e Task 4: a kept correction and a kept review of an announced suspension with a reply on time take the subject's profile FOR UPDATE first, as the start they fix is derived again under it", async () => {
+    // 3e's review (proofs6): the branch of subjectLockMode for an answer to an announced measure (invariant 21).
+    const account = await newProfile(apiDb);
+    const social = world.moderation.deps.social;
+    const lockAccounts = social.lockAccounts;
+    const modes: string[] = [];
+    social.lockAccounts = (tx, ids, mode, live) => {
+      modes.push(mode);
+      return lockAccounts(tx, ids, mode, live);
+    };
+    const decided = async (run: () => Promise<unknown>) => {
+      const outcome = await run();
+      if (typeof outcome === "string") throw new Error(`the decision was not recorded: ${outcome}`);
+      return (outcome as { decisionId: string }).decisionId;
+    };
+    try {
+      // The ladder's first step: three strikes, each a final R1 removal of a post made after the one before it was decided.
+      for (let i = 0; i < 3; i++) {
+        const postId = await newPostRow(apiDb, account.id, { createdAt: sql`clock_timestamp()`, body: "a post that breaks R1" });
+        const postCase = (await recordIntake(world.moderation.deps, { ground: ground.finding(admin.id, "R1"), live: [aPost(postId)] })).items[0]!.caseId!;
+        await decided(await prepared(admin, postCase, { kind: "final", ruleId: "R1", actions: [act("remove")] }));
+      }
+      const accountCase = (await recordIntake(world.moderation.deps, { ground: ground.finding(admin.id, "R1"), live: [{ type: "account", id: account.id, position: 1, namedHandle: account.handle }] })).items[0]!.caseId!;
+      const announced = await decided(await prepared(admin, accountCase, { kind: "final", ruleId: "R1", actions: [{ kind: "suspend", mediaId: null, days: 3, announced: true }] }));
+      // The world mails nothing, so the notice stays owed and the start unfixed: the reply comes before it.
+      expect(await fileReply(world.moderation.deps, account.id, announced, { statement: "I reply before the start." })).toMatchObject({ onTime: true });
+
+      const keep = await prepared(admin, accountCase, { kind: "correction", reviewsDecisionId: announced, outcome: "kept" });
+      modes.length = 0;
+      await decided(keep);
+      expect(modes).toEqual(["update"]);
+
+      await appealOf(apiDb, announced, account.id);
+      modes.length = 0;
+      await decided(() => world.reviewAs(second, announced, { outcome: "kept" }));
+      expect(modes).toEqual(["update"]);
     } finally {
       social.lockAccounts = lockAccounts;
       await removeFixtures(migrateDb, [account.id]);

@@ -2,7 +2,7 @@ import { MEASURES, type DecisionStatement, type MeasureKind, type ReversalKind, 
 import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
 import type { ModerationDeps } from "./context";
-import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, type MailState } from "./repo";
+import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, standingWithdrawn, type MailState } from "./repo";
 import { endedMeasures, endedStanding, repliedTo, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
 
 /**
@@ -108,6 +108,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
             rulesVersion: decision.reviewed.rulesVersion,
             legalReference: decision.reviewed.legalReference,
             decidedAt: decision.reviewed.decidedAt,
+            // 3e's review (people1): a measure on the terms is answered on the terms, never on the rule its decision cited.
+            basis: decision.reviewed.basis as StandingBasis | null,
           },
   };
   return { statement, decision };
@@ -195,8 +197,17 @@ export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonl
  *
  * 3e (design, section 5, the lock order, item 4): for a decision that holds an announced suspension or termination, the
  * outcome fixes the measure's start (the database's decisions_mail_standing derives the profile's columns), so the
- * transaction takes the subject's profile FOR NO KEY UPDATE first and the decision's row after it, as a deciding
- * transaction takes the profile before it touches decisions.
+ * transaction takes the subject's profile FOR NO KEY UPDATE before it records the outcome. It takes it right before the
+ * record and after the send (3e's review, database3): a profile held across a relay that stalls would hold every write of
+ * the account and every follow of it, and the decisions about it, for as long as the relay. The decision's row comes first
+ * then, which no deciding transaction waits for: a decision about the account takes the decisions it answers FOR KEY SHARE
+ * only, through its foreign key, and the take-down, the only transaction that takes a profile and then a decision's row
+ * FOR UPDATE, takes only a termination whose period has started, which a notice still owed never gives.
+ *
+ * A statement whose suspension or termination a later decision has lifted, or whose basis a reversal has broken, while
+ * its mail was owed (3e's review, proofs1) is recorded failed and never sent: it would name a start and invite a reply
+ * that no longer exist. The check is a statement of its own after the decision's row is held, so it sees every lift that
+ * committed before; the measure, lifted, fixes no start whatever is recorded.
  */
 export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth" | "social">, decisionId: string): Promise<MailState | "none"> {
   const found = await decisionStatement(deps.apiDb, decisionId);
@@ -204,14 +215,19 @@ export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth" 
   const subject = found.decision.subjectId;
   // The statement is rendered before anything is sent: one that cannot be rendered is no mail, and stays pending.
   const message = mailTemplateOf(found.statement, statementParagraphs(found.statement));
-  const announced = found.statement.kind === "final" && found.statement.measures.some((measure) => (measure.kind === "suspend" || measure.kind === "terminate") && measure.announced === true);
+  const standing = found.statement.kind === "final" && found.statement.measures.some((measure) => measure.kind === "suspend" || measure.kind === "terminate");
+  const announced = standing && found.statement.measures.some((measure) => (measure.kind === "suspend" || measure.kind === "terminate") && measure.announced === true);
   return deps.apiDb.transaction(async (tx) => {
     await beginMailRecord(tx);
-    if (announced && subject !== null) await deps.social.lockAccounts(tx, [subject], "no key update");
     if (!(await lockPendingAuthorMail(tx, decisionId))) return "none";
-    const result = subject === null ? "no_address" : await deps.auth.mailAccount(subject, message);
-    // A stop of the address never holds a statement back, so "suppressed" is never answered for it.
-    const state: MailState = result === "sent" ? "sent" : result === "refused" ? "failed" : "no_address";
+    let state: MailState;
+    if (standing && (await standingWithdrawn(tx, decisionId))) state = "failed";
+    else {
+      const result = subject === null ? "no_address" : await deps.auth.mailAccount(subject, message);
+      // A stop of the address never holds a statement back, so "suppressed" is never answered for it.
+      state = result === "sent" ? "sent" : result === "refused" ? "failed" : "no_address";
+    }
+    if (announced && subject !== null) await deps.social.lockAccounts(tx, [subject], "no key update");
     await recordAuthorMail(tx, decisionId, state);
     return state;
   });

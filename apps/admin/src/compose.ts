@@ -1217,7 +1217,16 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
         return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET), ...handle, ...lift, ...reporting };
       }),
       endedMeasures: [],
-      reviewed: { kind: corrected.kind, ground: corrected.ground, ruleId: corrected.ruleId, rulesVersion: corrected.rulesVersion, legalReference: corrected.legalReference, decidedAt: corrected.decidedAt },
+      reviewed: {
+        kind: corrected.kind,
+        ground: corrected.ground,
+        ruleId: corrected.ruleId,
+        rulesVersion: corrected.rulesVersion,
+        legalReference: corrected.legalReference,
+        decidedAt: corrected.decidedAt,
+        // 3e's review (people1): the basis of the corrected decision's suspension or termination, as the API's statement carries it.
+        basis: corrected.actions.find((action) => action.kind === "suspend" || action.kind === "terminate")?.basis ?? null,
+      },
       // Task 4: what an answer to the reply fixes, as far as the page can tell now.
       ...(draft.kind === "correction" ? { repliedTo: repliedToPreview(corrected, draft, now) } : {}),
     };

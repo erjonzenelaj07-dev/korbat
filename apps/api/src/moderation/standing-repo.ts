@@ -752,9 +752,14 @@ export async function decisionStanding(q: Runner, decisionId: string): Promise<D
   };
 }
 
-/** Bounds every lock wait of the transaction it runs in: the reply's and the take-down's, as an appeal's is bounded. */
+/**
+ * Bounds every lock wait of the transaction it runs in: the reply's and the take-down's, as an appeal's is bounded. Each
+ * statement is bounded too, by a statement_timeout of the same length (3e's review, database2): the profile these take FOR
+ * UPDATE can be kept out of reach by others' key-share locks, which lock_timeout alone, armed again at each wait, never
+ * ends (lib/lock-bounds.ts, isBoundReached).
+ */
 export async function boundWaits(tx: DbTx, ms: number): Promise<void> {
-  await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true)`);
+  await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true), set_config('statement_timeout', ${`${ms}ms`}::text, true)`);
 }
 
 // ---------------------------------------------------------------- 3e Task 5: the restriction of reporting
@@ -1041,7 +1046,8 @@ export interface ExportedReportingRow {
  * first), every mark on its own reports by the report's reference and the item's position, the newest report first,
  * with whether the mark counts now (markCounts), and the marked reports in the frame as reporting_record counts them,
  * which is what a threshold reads. A mark names the account's own report and nothing else: not the item's target, not
- * the decision, not who decided.
+ * the decision, not who decided. A mark is listed only once its item's outcome is released, as 3c's export tells nothing
+ * of an item before the daily release (3e's review, access2), so a mark withdrawn before it never shows either.
  */
 export async function exportedReporting(q: Runner, accountId: string): Promise<ExportedReportingRow> {
   const account = sql`${accountId}::uuid`;
@@ -1054,7 +1060,7 @@ export async function exportedReporting(q: Runner, accountId: string): Promise<E
     q,
     sql`select n.ref, i.position, ${day("m.reported_at")} as sent_on, ${iso("m.marked_at")} as marked_at, ${iso("m.withdrawn_at")} as withdrawn_at, ${counting("m")} as counts
           from unfounded_marks m join intakes n on n.id = m.intake_id join intake_items i on i.id = m.item_id
-         where m.account_id = ${account}
+         where m.account_id = ${account} and i.outcome_sent_at is not null
          order by m.reported_at desc, n.ref, i.position`,
   );
   return {

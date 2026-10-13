@@ -15,6 +15,7 @@ import {
   giveUpReceiptsAndAuthorMails,
   announcedMailsDue,
   giveUpAnnouncedMail,
+  lockPendingAuthorMail,
   lockPendingOutcomeLines,
   lockPendingReceipt,
   pendingAuthorMails,
@@ -203,10 +204,12 @@ async function alertWaiting(deps: ModerationDeps, now: Date): Promise<DispatchRe
 
 /**
  * 3e (design, sections 5 and 7.14 item 3): gives up the statement mails of decisions that hold an announced suspension
- * or termination, each alone, in a transaction that takes the subject's profile FOR NO KEY UPDATE first and the
- * decision's row after it: the mail's outcome fixes the measure's start, which the database derives into the profile's
- * columns, and a deciding transaction holds the profile before it touches decisions. Answers the ids given up; a failure
- * for one is logged with the decision's id and leaves it for the next round.
+ * or termination, each alone, in a transaction that takes the decision's row while its mail is owed, then the subject's
+ * profile FOR NO KEY UPDATE, then records the give-up: the mail's outcome fixes the measure's start, which the database
+ * derives into the profile's columns, so the profile is held when it is recorded, and an on-time reply that holds the
+ * profile is read before the start is derived. The order is sendStatement's (3e's review, database3), so the two never
+ * take the same rows in opposite orders. Answers the ids given up; a failure for one is logged with the decision's id and
+ * leaves it for the next round.
  */
 export async function giveUpAnnounced(deps: Pick<ModerationDeps, "apiDb" | "social" | "log">, now: Date): Promise<string[]> {
   const gone: string[] = [];
@@ -214,6 +217,7 @@ export async function giveUpAnnounced(deps: Pick<ModerationDeps, "apiDb" | "soci
     try {
       const given = await deps.apiDb.transaction(async (tx) => {
         await beginMailRecord(tx);
+        if (!(await lockPendingAuthorMail(tx, due.decisionId))) return false;
         await deps.social.lockAccounts(tx, [due.subjectId], "no key update");
         return giveUpAnnouncedMail(tx, due.decisionId);
       });

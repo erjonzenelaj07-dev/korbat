@@ -212,6 +212,9 @@ describe("3e Task 4: replies, their answer and the withdrawal (design, sections 
     expect(replyWords(replies[0]!, NOW.getTime())).toEqual([STANDING_WORDS.reply.before, STANDING_WORDS.reply.suspension(3)]);
     expect(replyWords(replies[1]!, NOW.getTime())).toEqual([STANDING_WORDS.reply.afterEnded(dateTime("2026-10-11T09:00:00.000Z")), STANDING_WORDS.reply.suspension(5), STANDING_WORDS.reply.overAim]);
     expect(replyWords(replies[2]!, NOW.getTime())[1]).toBe(STANDING_WORDS.reply.termination);
+    // 3e's review (people9): a termination has no end, and its row names none.
+    expect(replyWords(replies[2]!, NOW.getTime())).toEqual([STANDING_WORDS.reply.afterTermination, STANDING_WORDS.reply.termination]);
+    expect(STANDING_WORDS.reply.afterTermination).toBe("after the start: the termination runs");
     const props: QueueViewProps = {
       rows: { state: "ready", value: [] },
       replies,

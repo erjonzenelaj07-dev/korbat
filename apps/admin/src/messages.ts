@@ -164,6 +164,8 @@ export const STANDING_WORDS = {
     before: "before the start: the suspension is held",
     after: (endsAt: string) => `after the start: it runs until ${endsAt}`,
     afterEnded: (endsAt: string) => `after the start: it ended on ${endsAt}`,
+    /** A late reply to a termination, which has no end to name (3e's review, people9). */
+    afterTermination: "after the start: the termination runs",
     suspension: (days: number) => `Suspension, ${days} ${days === 1 ? "day" : "days"}`,
     termination: "Termination: nothing is deleted before the reply is answered",
     /** A row that has waited longer than korbat's aim. */

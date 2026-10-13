@@ -1078,3 +1078,13 @@ export async function suspendRowForTest(migrateDb: Db, profileId: string, window
 export async function liftRowForTest(migrateDb: Db, profileId: string): Promise<void> {
   await migrateDb.execute(sql`update profiles set suspended_from = null, suspended_until = null, reports_restricted_until = null where id = ${profileId}::uuid`);
 }
+
+/**
+ * Releases these items' outcomes now, as the daily release would (release_outcomes writes the same two columns): the
+ * migrator's write, for a test that cannot wait for a cut-off after its decisions, inside its own transaction or as a
+ * statement of its own. 3e's review: a mark "manifestly unfounded" counts, lists and is exported only once its item's
+ * outcome is released, so a test that warns or restricts on marks releases them first.
+ */
+export async function releaseForTest(migrateDb: Runner, itemIds: readonly string[]): Promise<void> {
+  await migrateDb.execute(sql`update intake_items set outcome_sent_at = now(), shown_outcome = outcome where id = any(${uuids(itemIds)}) and outcome_sent_at is null`);
+}

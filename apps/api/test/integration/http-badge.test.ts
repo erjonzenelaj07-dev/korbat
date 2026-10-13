@@ -15,7 +15,7 @@ import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { createSocial } from "../../src/social";
 import { Browser } from "./http-client";
-import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
+import { liftRowForTest, moderationCounts, suspendRowForTest } from "./moderation-fixtures";
 
 type App = ReturnType<typeof createApp>;
 
@@ -39,7 +39,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the verified badge over 
   let appOff: App;
   const mailer = new MemoryMailer();
 
-  beforeAll(() => {
+  let before: Record<string, number>;
+
+  beforeAll(async () => {
     config = loadConfig();
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
@@ -53,6 +55,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the verified badge over 
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social });
     const authOff = createAuth({ ...shared, kv: new MemoryKv(), profiles: createProfileStore(apiDb) });
     appOff = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth: authOff });
+    before = await moderationCounts(apiDb);
   });
   afterAll(async () => {
     await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
@@ -207,5 +210,29 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the verified badge over 
     const again = await start(ada.b, phone);
     expect((await verify(ada.b, again, DEV_CODE)).status).toBe(200);
     expect(await verifiedOnMe(ada.b)).toBe(true);
+  });
+
+  test("3e: an account with a badge whose second verification is refused for a suspension that began meanwhile keeps its first number behind the badge: the hash read before is restored, not cleared, and nobody else can verify that number", async () => {
+    // 3e's review (access3): clearing the hash would leave a public badge with no number behind it, and free the number.
+    const ada = await signUp();
+    const first = newPhone();
+    expect((await verify(ada.b, await start(ada.b, first), DEV_CODE)).status).toBe(200);
+    const held = await storedHash(ada.userId);
+    expect(held).toBe(phoneHash(auth.deps.config.authHmacKey, first));
+    const second = await start(ada.b, newPhone());
+    await suspendRowForTest(migrateDb, ada.userId);
+    const refused = await verify(ada.b, second, DEV_CODE);
+    expect(refused.status).toBe(403);
+    expect(await errorCode(refused)).toBe("account_suspended");
+    expect(await storedHash(ada.userId)).toBe(held);
+    expect(await verifiedOnMe(ada.b)).toBe(true);
+    const bob = await signUp();
+    const taken = await verify(bob.b, await start(bob.b, first), DEV_CODE);
+    expect(await errorCode(taken)).toBe("phone_in_use");
+    await liftRowForTest(migrateDb, ada.userId);
+  });
+
+  test("this file left no moderation row behind: its accounts' profiles stay, as the auth suites' accounts do, and the moderation tables hold what they held before it", async () => {
+    expect(await moderationCounts(apiDb)).toEqual(before);
   });
 });

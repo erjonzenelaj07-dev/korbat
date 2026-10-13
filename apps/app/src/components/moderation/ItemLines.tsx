@@ -74,7 +74,10 @@ function ItemLine({ item, both, onAsk }: { item: NoticeItemStatus & { unfounded?
           <Text className="mt-2 text-sm leading-5 text-zinc-200">
             {STATUS_WORDS.decided(item.decidedOn)} {words}
           </Text>
-          {item.unfounded === true ? <Text className="mt-2 text-sm leading-5 text-amber-300">{STANDING_TEXTS.reports.marked}</Text> : null}
+          {item.unfounded === true ? (
+            // "You can ask for a re-examination" only while one is open (3e's review, people8).
+            <Text className="mt-2 text-sm leading-5 text-amber-300">{redress === "reexamination" ? STANDING_TEXTS.reports.marked : STANDING_TEXTS.reports.markedClosed}</Text>
+          ) : null}
           {redress === "reexamination" && item.reexamination ? (
             <>
               <Text className="mt-2 text-sm leading-5 text-zinc-400">{STATUS_WORDS.reexaminationOpen(utcMinute(item.reexamination.until))}</Text>

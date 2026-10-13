@@ -37,8 +37,8 @@ export interface StatementDecisionRow {
   postCreatedAt: string | null;
   /** The account the decision is about: the post's author, or the account itself. */
   subjectId: string | null;
-  /** The decision a review or a correction is about. */
-  reviewed: { kind: "interim" | "final"; ground: string | null; ruleId: string | null; rulesVersion: number; legalReference: string | null; decidedAt: string } | null;
+  /** The decision a review or a correction is about; (3e's review) with the basis of its suspension or termination, null for none. */
+  reviewed: { kind: "interim" | "final"; ground: string | null; ruleId: string | null; rulesVersion: number; legalReference: string | null; decidedAt: string; basis: string | null } | null;
 }
 
 export async function statementDecision(q: Runner, decisionId: string): Promise<StatementDecisionRow | null> {
@@ -52,7 +52,8 @@ export async function statementDecision(q: Runner, decisionId: string): Promise<
                (select ${iso("p.created_at")} from posts p where c.target_type = 'post' and p.id = c.target_id) as post_created_at,
                case when c.target_type = 'post' then (select p.author_id from posts p where p.id = c.target_id) else c.target_id end as subject_id,
                r.kind as reviewed_kind, r.ground as reviewed_ground, r.rule_id as reviewed_rule, r.rules_version as reviewed_rules_version, ${iso("r.decided_at")} as reviewed_at,
-               (select t.text from staff_texts t where t.digest = r.legal_reference_digest) as reviewed_legal
+               (select t.text from staff_texts t where t.digest = r.legal_reference_digest) as reviewed_legal,
+               (select a.basis::text from decision_actions a where a.decision_id = r.id and a.kind::text in ('suspend', 'terminate')) as reviewed_basis
           from decisions d join cases c on c.id = d.case_id left join decisions r on r.id = d.reviews_decision_id
          where d.id = ${decisionId}::uuid`,
   );
@@ -81,7 +82,15 @@ export async function statementDecision(q: Runner, decisionId: string): Promise<
     reviewed:
       row.reviewed_kind === null
         ? null
-        : { kind: row.reviewed_kind as "interim" | "final", ground: row.reviewed_ground as string | null, ruleId: row.reviewed_rule as string | null, rulesVersion: row.reviewed_rules_version as number, legalReference: row.reviewed_legal as string | null, decidedAt: row.reviewed_at as string },
+        : {
+            kind: row.reviewed_kind as "interim" | "final",
+            ground: row.reviewed_ground as string | null,
+            ruleId: row.reviewed_rule as string | null,
+            rulesVersion: row.reviewed_rules_version as number,
+            legalReference: row.reviewed_legal as string | null,
+            decidedAt: row.reviewed_at as string,
+            basis: row.reviewed_basis as string | null,
+          },
   };
 }
 

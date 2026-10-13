@@ -253,7 +253,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the statement of reasons
     expect(throttle.resetMs).toBeLessThanOrEqual(60 * 60_000);
   });
 
-  test("3e: an announced suspension's statement is mailed as suspension_announced, and its outcome is recorded under the subject's profile lock, taken before the decision's row: a holder of the profile holds the record back, never the other way round", async () => {
+  test("3e: an announced suspension's statement is mailed as suspension_announced, and its outcome is recorded under the subject's profile lock, taken after the send and right before the record: a holder of the profile holds the record back, never the mail", async () => {
     const author = await w.account();
     // Through the decide route's own code, mailed by no auth module: the statement waits, pending, for this test.
     const { decisionId } = await suspendForTest(w.apiDb, author.id, { announced: true });
@@ -274,12 +274,20 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the statement of reasons
     try {
       await holding;
       const sending = sendStatement(w.deps, decisionId);
-      await untilBlocked(w.apiDb, "for no key update");
-      // The record waits at the profile and has not taken the decision's row: another writer may still take it at once.
-      await w.apiDb.transaction(async (tx) => {
-        await tx.execute(sql`set local lock_timeout = '2s'`);
-        await tx.execute(sql`select id from decisions where id = ${decisionId}::uuid for no key update`);
-      });
+      await untilBlocked(w.apiDb, "order by id for no key update");
+      // 3e's review (database3): the mail went before the profile was asked for, so a relay that stalls never holds the
+      // account's row; the record waits at the profile, holding the decision's row it took before the send.
+      expect(w.mailer.to(author.email, "suspension_announced")).toHaveLength(1);
+      const second = await w.apiDb
+        .transaction(async (tx) => {
+          await tx.execute(sql`set local lock_timeout = '1s'`);
+          await tx.execute(sql`select id from decisions where id = ${decisionId}::uuid for no key update`);
+        })
+        .then(
+          () => "taken",
+          () => "held",
+        );
+      expect(second).toBe("held");
       release();
       await holder;
       expect(await sending).toBe("sent");

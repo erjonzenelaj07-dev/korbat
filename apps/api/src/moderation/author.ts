@@ -79,6 +79,9 @@ export async function authorCases(deps: Pick<ModerationDeps, "apiDb">, viewer: s
       // 3e Task 5: what a row says of a restriction of reporting and of the measures a reversal ended; absent where none.
       ...(row.reportingDays !== null ? { reportingDays: row.reportingDays } : {}),
       ...(row.endedStanding.length > 0 ? { endedStanding: row.endedStanding } : {}),
+      // 3e's review (people7): a suspension's or a termination's own words, and a lift's or a withdrawal's.
+      ...(row.standingMeasure !== null ? { standingMeasure: row.standingMeasure } : {}),
+      ...(row.liftedStanding !== null ? { liftedStanding: row.liftedStanding } : {}),
     })),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > AUTHOR_CASES_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,

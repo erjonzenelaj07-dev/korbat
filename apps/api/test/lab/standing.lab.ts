@@ -12,7 +12,10 @@ import { isDeadlock } from "../../src/lib/lock-bounds";
 import type { ModerationDeps } from "../../src/moderation";
 import { insertionOrder, recordConfirmed } from "../../src/moderation/decide";
 import { caseTarget, insertAction, insertDecision, insertMarks } from "../../src/moderation/repo";
+import { createMediaRepo } from "../../src/media/repo";
+import { recordIntake } from "../../src/moderation/intake";
 import { fileReply } from "../../src/moderation/standing";
+import { createProfileStore } from "../../src/profiles/store";
 import { onceMoreOnDeadlock } from "../../src/social/flows/posts";
 import { createSocialRepo, type HandleChangeResult } from "../../src/social/repo";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "../integration/moderation-decide";
@@ -752,9 +755,12 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the standing ledger on the real 
  * and a wave of its writes is fired while a holder has its profile row FOR UPDATE and changes it, from before the start
  * to after it (a writer of the row, as a handle change or standing_apply is). It passes when no write judged at or after a
  * start commits: a free write that began after the start, or a wave write, which the database judges again when it gets
- * the row. It also records a wave behind a holder that only locks the row (as a decision whose measure changes nothing
- * of the profile does): PostgreSQL then judges a locking statement before it waits, so those writes, judged before the
- * start, commit after it, and the lab records how many and how late.
+ * the row. Three more waves, each of every route of 7.3 that a suspension refuses (3e's review, database1): behind a
+ * holder that only locks the row (as a decision whose measure changes nothing of the profile does), behind one that
+ * changes the other party's rows, and behind a decision that holds the post the writes engage with FOR UPDATE. A
+ * locking statement is judged before it waits, so before the review those writes committed after the start; each now
+ * ends with the closing judgment, and the lab asserts that every write of the three waves is refused or commits before
+ * the start.
  *
  * C2: the same wave behind the changing holder, with the predicate copied into this file reading now() in place of the
  * clock (lab code, never a switch in the code): writes whose transaction began before the start are admitted although
@@ -887,6 +893,50 @@ describe.skipIf(!process.env.INTEGRATION)("lab: announced starts and replies on 
     };
   }
 
+  /**
+   * 3e's review (database1): every route of 7.3 that a suspension refuses, through the code its route runs: a post, a
+   * reply and a quote of the third account's post, a like, a repost and a bookmark of it, a follow, the profile's edit,
+   * the handle's change, an upload, the badge, and a report under a rule of the third account's post. A write that
+   * answers false or { ok: false } is refused the way its route refuses it.
+   */
+  const EVERY_WRITE = ["post", "reply", "quote", "like", "repost", "bookmark", "follow", "profile", "handle", "upload", "badge", "rule report"] as const;
+  function everyWrite(db: Db, s: Subject, route: (typeof EVERY_WRITE)[number]): () => Promise<unknown> {
+    const repo = createSocialRepo(db);
+    const now = new Date();
+    const refusedIf = (refused: boolean) => {
+      if (refused) throw Object.assign(new Error("refused"), { code: "account_suspended" });
+    };
+    switch (route) {
+      case "post":
+        return () => repo.createPost({ authorId: s.id, body: "a post", replyToId: null, quoteOfId: null, now });
+      case "reply":
+        return () => repo.createPost({ authorId: s.id, body: "a reply", replyToId: s.thirdPost, quoteOfId: null, now, lockWith: s.third });
+      case "quote":
+        return () => repo.createPost({ authorId: s.id, body: "a quote", replyToId: null, quoteOfId: s.thirdPost, now, lockWith: s.third });
+      case "like":
+        return () => repo.like(s.id, s.thirdPost, now, s.third);
+      case "repost":
+        return () => repo.repost(s.id, s.thirdPost, now, s.third);
+      case "bookmark":
+        return () => repo.bookmark(s.id, s.thirdPost, now);
+      case "follow":
+        return () => repo.follow(s.id, s.followee, now, true);
+      case "profile":
+        return async () => refusedIf(!(await repo.updateProfile(s.id, { bio: "a wave's bio" })));
+      case "handle":
+        return async () => {
+          const changed = await repo.changeHandle(s.id, `h_${randomBytes(5).toString("hex")}`, now);
+          if (!changed.ok) throw Object.assign(new Error(changed.reason), { code: changed.reason });
+        };
+      case "upload":
+        return () => createMediaRepo(db).insertProcessing({ id: randomUUID(), ownerId: s.id, now });
+      case "badge":
+        return async () => refusedIf(!(await createProfileStore(db).setVerified(s.id, now)));
+      case "rule report":
+        return () => recordIntake({ ...n.deps, apiDb: db }, { ground: ground.rule(s.id, "R1"), live: [aPost(s.thirdPost)] });
+    }
+  }
+
   /** A write between two reads of the database's clock: when it was judged lies between them. */
   async function bracketed(db: Db, write: () => Promise<unknown>): Promise<{ t0: number; t1: number; result: string }> {
     const t0 = await dbNow(db);
@@ -906,6 +956,24 @@ describe.skipIf(!process.env.INTEGRATION)("lab: announced starts and replies on 
       await tx.execute(sql`set local lock_timeout = '10s'`);
       await tx.execute(sql`select 1 from profiles where id = ${id}::uuid for update`);
       if (changes) await tx.execute(sql`update profiles set bio = bio where id = ${id}::uuid`);
+      signal();
+      await tx.execute(sql`select pg_sleep(greatest(0, ${untilMs / 1000}::float8 - extract(epoch from clock_timestamp())))`);
+      return dbNow(tx as unknown as Db);
+    });
+    return { locked, released };
+  }
+
+  /**
+   * A holder of other rows than the account's own, as `hold` holds the account's: `rows` locked (and changed, for profile
+   * rows, when `changes`) until the database's clock reads `untilMs`.
+   */
+  function holdRows(db: Db, rows: ReturnType<typeof sql>, change: ReturnType<typeof sql> | null, untilMs: number): { locked: Promise<void>; released: Promise<number> } {
+    let signal: () => void = () => undefined;
+    const locked = new Promise<void>((resolve) => (signal = resolve));
+    const released = db.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '10s'`);
+      await tx.execute(rows);
+      if (change !== null) await tx.execute(change);
       signal();
       await tx.execute(sql`select pg_sleep(greatest(0, ${untilMs / 1000}::float8 - extract(epoch from clock_timestamp())))`);
       return dbNow(tx as unknown as Db);
@@ -1007,16 +1075,17 @@ describe.skipIf(!process.env.INTEGRATION)("lab: announced starts and replies on 
           else if (w.result !== "account_suspended") tally(r1.freeOther, w.result);
         }
       });
-      // The wave behind a holder that only locks the row: its writes are judged before they wait (recorded, not asserted).
-      // C1's accounts are suspended now, so this runs on half of C2's accounts, whose start is still ahead; C2 then runs
-      // on the other half and on as many new accounts.
+      // The wave behind a holder that only locks the row. 3e's review (database1): every refused route of 7.3, each ending
+      // with the closing judgment, is refused or commits before the start (asserted below; Task 4 recorded writes judged
+      // before they waited and committed after it). C1's accounts are suspended now, so this runs on half of C2's
+      // accounts, whose start is still ahead; C2 then runs on the other half and on as many new accounts.
       const lockOnly = c2.slice(0, Math.max(1, Math.floor(count / 2)));
       await inBatches(lockOnly, async (s) => {
         const start = await bringNear(s.id, LEAD_MS);
         await untilDb(start.ms - 400, offset);
         const holder = hold(holderDb, s.id, start.ms + 300, false);
         await holder.locked;
-        const wave = await Promise.all(Array.from({ length: WAVE }, (_, k) => bracketed(writersDb, realWrite(repo, s, k))));
+        const wave = await Promise.all(EVERY_WRITE.map((route) => bracketed(writersDb, everyWrite(writersDb, s, route))));
         await holder.released;
         for (const w of wave) {
           r1.lockOnlyWaveWrites++;
@@ -1028,7 +1097,40 @@ describe.skipIf(!process.env.INTEGRATION)("lab: announced starts and replies on 
           } else tally(r1.lockOnlyRefused, w.result);
         }
       });
-      line("lab-C1", { subjects: count, ...r1, prepareMs, clockOffsetMs: Math.round(offset), busyPercent });
+      // 3e's review (database1): two more waves on accounts of their own, every refused route of 7.3 each: behind a holder
+      // that changes the other party's rows (the third account's and the followee's, as another account's follow or the
+      // purge does), and behind a decision that holds the third account's post FOR UPDATE (decision_actions_check takes
+      // the case's post so). Each write is refused or commits before the start.
+      const waves = { otherWrites: 0, otherCommittedAfterStart: 0, otherRefused: {} as Record<string, number>, postWrites: 0, postCommittedAfterStart: 0, postRefused: {} as Record<string, number> };
+      const further = Math.max(1, Math.floor(count / 2));
+      const otherRows: Subject[] = [];
+      const heldPost: Subject[] = [];
+      for (let i = 0; i < further; i++) otherRows.push(await subject(repo));
+      for (let i = 0; i < further; i++) heldPost.push(await subject(repo));
+      for (const [group, which] of [[otherRows, "other"], [heldPost, "post"]] as const) {
+        await inBatches(group, async (s) => {
+          const start = await bringNear(s.id, LEAD_MS);
+          await untilDb(start.ms - 400, offset);
+          const holder =
+            which === "other"
+              ? holdRows(holderDb, sql`select 1 from profiles where id in (${s.third}::uuid, ${s.followee}::uuid) order by id for update`, sql`update profiles set bio = bio where id in (${s.third}::uuid, ${s.followee}::uuid)`, start.ms + 300)
+              : holdRows(holderDb, sql`select 1 from posts where id = ${s.thirdPost}::uuid for update`, null, start.ms + 300);
+          await holder.locked;
+          const wave = await Promise.all(EVERY_WRITE.map((route) => bracketed(writersDb, everyWrite(writersDb, s, route))));
+          await holder.released;
+          for (const w of wave) {
+            if (which === "other") waves.otherWrites++;
+            else waves.postWrites++;
+            if (w.result === "committed") {
+              if (w.t1 >= start.ms) {
+                if (which === "other") waves.otherCommittedAfterStart++;
+                else waves.postCommittedAfterStart++;
+              }
+            } else tally(which === "other" ? waves.otherRefused : waves.postRefused, w.result);
+          }
+        });
+      }
+      line("lab-C1", { subjects: count, ...r1, ...waves, prepareMs, clockOffsetMs: Math.round(offset), busyPercent });
 
       // C2: the wave behind a changing holder, with the predicate reading now(), on accounts whose start is still ahead.
       const fresh: Subject[] = c2.slice(lockOnly.length);
@@ -1058,6 +1160,13 @@ describe.skipIf(!process.env.INTEGRATION)("lab: announced starts and replies on 
       expect(r1.freeRefusedBeforeStart).toBe(0);
       expect(r1.waveAdmittedAfterStart).toBe(0);
       expect(r1.waveWrites).toBe(count * WAVE);
+      // 3e's review (database1): behind every holder, no write commits at or after the start.
+      expect(r1.lockOnlyWaveWrites).toBe(Math.max(1, Math.floor(count / 2)) * EVERY_WRITE.length);
+      expect(r1.lockOnlyCommittedAfterStart).toBe(0);
+      expect(waves.otherWrites).toBe(Math.max(1, Math.floor(count / 2)) * EVERY_WRITE.length);
+      expect(waves.otherCommittedAfterStart).toBe(0);
+      expect(waves.postWrites).toBe(Math.max(1, Math.floor(count / 2)) * EVERY_WRITE.length);
+      expect(waves.postCommittedAfterStart).toBe(0);
       expect(r2.admittedAfterStart).toBeGreaterThan(0);
     } finally {
       await Promise.all([closeDb(writersDb), closeDb(holderDb)]);

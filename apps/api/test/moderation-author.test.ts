@@ -69,11 +69,11 @@ describe("what the author's reads may name", () => {
   test("the reporter's list is read in a file of its own, which the author's reads do not import", () => {
     expect(read("moderation/author.ts")).not.toMatch(/from "\.\/(reports|intake|repo)"/);
     expect(read("moderation/author-repo.ts")).not.toMatch(/from "\.\/(reports|intake)"/);
-    // The statement takes its data from its own queries, and from the module's queries only what records its mail; its
-    // queries take only the module's helpers.
+    // The statement takes its data from its own queries, and from the module's queries only what records its mail (3e's
+    // review: with whether its suspension was withdrawn, which records it failed); its queries take only the module's helpers.
     expect(read("moderation/statement.ts")).not.toMatch(/from "\.\/(reports|intake)"/);
     expect(read("moderation/statement-repo.ts")).not.toMatch(/from "\.\/(reports|intake)"/);
-    expect(importedFrom("moderation/statement.ts", "./repo")).toEqual(["MailState", "beginMailRecord", "lockPendingAuthorMail", "recordAuthorMail"]);
+    expect(importedFrom("moderation/statement.ts", "./repo")).toEqual(["MailState", "beginMailRecord", "lockPendingAuthorMail", "recordAuthorMail", "standingWithdrawn"]);
     expect(importedFrom("moderation/statement-repo.ts", "./repo")).toEqual(["Runner", "TargetType", "iso", "rows"]);
   });
 });

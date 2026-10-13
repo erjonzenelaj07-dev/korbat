@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { ErrorEnvelope, FlowResponse, MeResponse, ReplyResponse, STANDING_RULES, appealDeadline, type RuleId } from "@korbat/contracts";
-import { REDRESS_TEXTS, statementParagraphs } from "@korbat/rules";
+import { REDRESS_TEXTS, STATEMENT_WORDS, statementParagraphs } from "@korbat/rules";
 import { randomToken } from "../../src/auth/crypto";
 import { ModerationError } from "../../src/moderation";
 import { fileAppeal } from "../../src/moderation/appeals";
@@ -190,6 +190,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the reply to a suspensio
     expect(Date.parse(statement.repliedTo!.appealUntil)).toBeGreaterThan(fromDecision);
     const paragraphs = statementParagraphs(statement);
     expect(paragraphs[0]).toContain("and keeps that decision. The suspension of 3 days starts at");
+    // 3e's review (people1): the suspension of the ladder rested on the terms, and its answer says so, never naming the rule.
+    expect(statement.reviewed!.basis).toBe("strikes");
+    expect(paragraphs).toContain(STATEMENT_WORDS.ground.restedOnTerms);
+    expect(paragraphs.join(" ")).not.toContain("rested on korbat rule");
     expect(paragraphs[0]!.endsWith("with this answer, and never before the time you were first given.")).toBe(true);
     expect(paragraphs.at(-1)!.startsWith(REDRESS_TEXTS[2].replyAnswered!.slice(0, 40))).toBe(true);
     expect(n.mailer.to(dan.email, "reply_answered").map((mail) => mail.data.outcome)).toEqual(["kept"]);

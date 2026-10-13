@@ -3,7 +3,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, test } from "vitest";
 import type { DbTx } from "@korbat/db";
 import { isLockTimeout } from "../src/cli/lock-timeout";
-import { boundLockWaits, isDeadlock, isLockNotAvailable } from "../src/lib/lock-bounds";
+import { boundLockWaits, isBoundReached, isDeadlock, isLockNotAvailable } from "../src/lib/lock-bounds";
 
 /** An error as the driver raises it, wrapped as often as told: drizzle hands the driver's error over as a cause. */
 function pgError(code: string, wraps = 0): unknown {
@@ -42,6 +42,14 @@ describe("the lock errors a confirmed action's transaction may meet", () => {
     for (const other of [null, undefined, "40P01", new Error("deadlock detected")]) expect(isDeadlock(other), String(other)).toBe(false);
   });
 
+  test("a bounded wait has run out on either of its two limits: lock_timeout (55P03) or the statement_timeout set beside it (57014)", () => {
+    for (let wraps = 0; wraps < 5; wraps++) {
+      expect(isBoundReached(pgError("55P03", wraps)), String(wraps)).toBe(true);
+      expect(isBoundReached(pgError("57014", wraps)), String(wraps)).toBe(true);
+    }
+    for (const other of [pgError("40P01"), pgError("40001"), null, "57014", new Error("canceling statement due to statement timeout")]) expect(isBoundReached(other), String(other)).toBe(false);
+  });
+
   test("the command line's isLockTimeout is the same test", () => {
     expect(isLockTimeout).toBe(isLockNotAvailable);
   });
@@ -50,7 +58,7 @@ describe("the lock errors a confirmed action's transaction may meet", () => {
 describe("boundLockWaits", () => {
   const expiresAt = new Date("2026-10-04T12:00:00.000Z");
 
-  test("asks the database for a share of what is left of the challenge, at most 15 seconds, and sets it as the transaction's lock_timeout", async () => {
+  test("asks the database for a share of what is left of the challenge, at most 15 seconds, and sets it as the transaction's lock_timeout and statement_timeout", async () => {
     const { tx, statements } = fakeTx("4000");
     expect(await boundLockWaits(tx, expiresAt, 15)).toBe(true);
     expect(statements).toHaveLength(2);
@@ -58,9 +66,11 @@ describe("boundLockWaits", () => {
     expect(statements[0]!.text).toContain("clock_timestamp()");
     expect(statements[0]!.text).toContain("least(15000");
     expect(statements[0]!.params).toEqual([expiresAt.getTime(), 15]);
-    // Local to the transaction: the third argument of set_config.
-    expect(statements[1]!.text).toMatch(/set_config\('lock_timeout', \$1::text, true\)/);
-    expect(statements[1]!.params).toEqual(["4000ms"]);
+    // Local to the transaction: the third argument of set_config. 3e's review (database2): lock_timeout is armed again at
+    // each wait of one statement, so a FOR UPDATE that others' key-share locks keep starving would wait without end; the
+    // statement_timeout beside it ends that statement at the same bound.
+    expect(statements[1]!.text).toMatch(/set_config\('lock_timeout', \$1::text, true\), set_config\('statement_timeout', \$2::text, true\)/);
+    expect(statements[1]!.params).toEqual(["4000ms", "4000ms"]);
   });
 
   test("the share follows the number of waits the transaction may meet", async () => {
@@ -68,7 +78,7 @@ describe("boundLockWaits", () => {
       const { tx, statements } = fakeTx("1");
       expect(await boundLockWaits(tx, expiresAt, waits)).toBe(true);
       expect(statements[0]!.params).toEqual([expiresAt.getTime(), waits]);
-      expect(statements[1]!.params).toEqual(["1ms"]);
+      expect(statements[1]!.params).toEqual(["1ms", "1ms"]);
     }
   });
 

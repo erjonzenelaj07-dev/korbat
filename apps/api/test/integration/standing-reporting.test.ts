@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { STANDING_RULES } from "@korbat/contracts";
@@ -11,6 +13,7 @@ import { itemStatus, recordIntake, recordReexamination, reexamineOwnItem } from 
 import { caseItems, noticeItems, reporterItem } from "../../src/moderation/repo";
 import { reporterList } from "../../src/moderation/reports";
 import { caseStanding } from "../../src/moderation/standing";
+import { exportFor } from "../../src/moderation/export";
 import { decisionStatement, mailTemplateOf } from "../../src/moderation/statement";
 import { closeDecisions, deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import {
@@ -28,6 +31,7 @@ import {
   newTestStaff,
   refusal,
   refusalDetail,
+  releaseForTest,
   removeFixtures,
   rowCounts,
   staffProfile,
@@ -206,6 +210,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
     });
 
     test("a kept correction withdraws all of a decision's marks together and mails nobody; one of a decision with no mark left is refused; a withdrawn mark counts no more", async () => {
+      // The migrator releases the outcomes, as the daily release would: a mark counts only once its item's is released.
       await inWorld(async (tx) => {
         const author = await profile(tx);
         const reporters = [await profile(tx), await profile(tx), await profile(tx)];
@@ -214,6 +219,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
         for (const reporter of reporters) items.push((await intake(tx, ground.rule(reporter.id), aPost(postId))).items[0]!);
         const caseId = items[0]!.caseId!;
         const decision = await noBreach(tx, caseId, items.map((item) => item.id).sort());
+        await releaseForTest(tx, items.map((item) => item.id));
         for (const reporter of reporters) expect(await record(tx, reporter.id)).toEqual({ reports: 1, unfounded: 1 });
         const correction = await decideIn(tx, mod, caseId, { kind: "correction", reviewsDecisionId: decision, outcome: "kept", actions: [] });
         const marks = await tx.execute<{ withdrawn_by: string; withdrawn: boolean }>(sql`select withdrawn_by, withdrawn_at = now() as withdrawn from unfounded_marks where decision_id = ${decision}::uuid`);
@@ -227,7 +233,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
         const plain = await reportedPost(tx, reporters[0]!.id, author.id);
         const unmarked = await noBreach(tx, plain.caseId, []);
         expect((await refused(decideIn(tx, mod, plain.caseId, { kind: "correction", reviewsDecisionId: unmarked, outcome: "kept", actions: [] })))?.detail).toMatch(/no mark left/);
-      });
+      }, world.migrateDb);
     });
 
     test("a mark stops counting when a re-examination of its item ends in a restriction: a derivation, nothing is written", async () => {
@@ -236,8 +242,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
         const [author, reporter] = [await profile(tx), await profile(tx)];
         const marked = await reportedPost(tx, reporter.id, author.id);
         await noBreach(tx, marked.caseId, [marked.id]);
+        await releaseForTest(tx, [marked.id]);
         expect(await record(tx, reporter.id)).toEqual({ reports: 1, unfounded: 1 });
-        await tx.execute(sql`update intake_items set outcome_sent_at = now(), shown_outcome = outcome where id = ${marked.id}::uuid`);
         const asked = (await reporterItem(tx, reporter.id, marked.id))!;
         const [again] = await recordReexamination(moderationDeps(tx), asked, null);
         await decideIn(tx, mod, again!.caseId!, { kind: "final", actions: [act("remove")] });
@@ -259,11 +265,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
         const { items } = await reportOf(tx, reporter.id, posts);
         expect(new Set(items.map((item) => item.caseId)).size).toBe(10);
         for (const item of items) await noBreach(tx, item.caseId, [item.id]);
+        await releaseForTest(tx, items.map((item) => item.id));
         expect(await record(tx, reporter.id)).toEqual({ reports: 1, unfounded: 1 });
         const caseId = await accountCase(tx, reporter.id, { finding: mod.id });
         expect((await caseStanding(tx, caseId, reporter.id)).reporting).toMatchObject({ reports: 1, unfounded: 1, mayWarn: false, marked: items.map(() => expect.objectContaining({ sinceWarning: false })) });
         expect((await refused(decideIn(tx, mod, caseId, { kind: "final", ruleId: "R6", actions: [act("warn_reporting")] })))?.detail).toMatch(/below the threshold/);
-      });
+      }, world.migrateDb);
     });
 
     test("a warning is refused below either threshold, and a restriction without a warning that still counts", async () => {
@@ -272,17 +279,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
         const sent = [];
         for (let i = 0; i < STANDING_RULES.reportWarnMarks - 1; i++) sent.push(await reportedPost(tx, reporter.id, author.id));
         for (const report of sent) await noBreach(tx, report.caseId, [report.id]);
+        await releaseForTest(tx, sent.map((report) => report.id));
         const warn = async () => refused(decideIn(tx, mod, await accountCase(tx, reporter.id, { finding: mod.id }), { kind: "final", ruleId: "R6", actions: [act("warn_reporting")] }));
         expect((await warn())?.detail).toMatch(/below the threshold/);
         // Five marked, but of eleven sent: under half.
         for (let i = 0; i < 7; i++) sent.push(await reportedPost(tx, reporter.id, author.id));
         await noBreach(tx, sent[STANDING_RULES.reportWarnMarks - 1]!.caseId, [sent[STANDING_RULES.reportWarnMarks - 1]!.id]);
+        await releaseForTest(tx, [sent[STANDING_RULES.reportWarnMarks - 1]!.id]);
         expect(await record(tx, reporter.id)).toEqual({ reports: 11, unfounded: 5 });
         const caseId = await accountCase(tx, reporter.id, { finding: mod.id });
         expect((await caseStanding(tx, caseId, reporter.id)).reporting).toMatchObject({ reports: 11, unfounded: 5, warnedOn: null, marksSince: null, mayWarn: false, mayRestrict: false });
         expect((await warn())?.detail).toMatch(/below the threshold/);
         expect((await refused(decideIn(tx, mod, caseId, { kind: "final", ruleId: "R6", actions: [timed("restrict_reporting", 7, false)] })))?.detail).toMatch(/no warning that still counts/);
-      });
+      }, world.migrateDb);
     });
 
     test("a warning answers findings only, counts once, and when lifted because its marks were withdrawn cannot be given again on them", async () => {
@@ -292,6 +301,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
         for (let i = 0; i < STANDING_RULES.reportWarnMarks; i++) {
           const report = await reportedPost(tx, reporter.id, author.id);
           decisions.push(await noBreach(tx, report.caseId, [report.id]));
+          await releaseForTest(tx, [report.id]);
         }
         expect(await record(tx, reporter.id)).toEqual({ reports: 5, unfounded: 5 });
         // A case that holds someone's report about the account is decided first: the warning gets a case of its own.
@@ -316,7 +326,77 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
         await decideIn(tx, mod, firstCase!.case_id, { kind: "correction", reviewsDecisionId: decisions[0]!, outcome: "kept", actions: [] });
         expect(await record(tx, reporter.id)).toEqual({ reports: 5, unfounded: 4 });
         expect((await refused(decideIn(tx, mod, await accountCase(tx, reporter.id, { finding: mod.id }), { kind: "final", ruleId: "R6", actions: [act("warn_reporting")] })))?.detail).toMatch(/below the threshold/);
-      });
+      }, world.migrateDb);
+    });
+
+    test("a mark counts, lists and is exported only once its item's outcome is released: before the daily release the warning is refused and its draft lists none of it; after it the warning is taken", async () => {
+      // 3e's review (access1, access2): before the release the person can neither read the mark nor ask for a
+      // re-examination of it, so no measure rests on it and the export tells nothing of it.
+      await inWorld(async (tx) => {
+        const [author, reporter] = [await profile(tx), await profile(tx)];
+        const sent = [];
+        for (let i = 0; i < STANDING_RULES.reportWarnMarks; i++) {
+          const report = await reportedPost(tx, reporter.id, author.id);
+          await noBreach(tx, report.caseId, [report.id]);
+          sent.push(report);
+        }
+        await releaseForTest(tx, sent.slice(0, -1).map((report) => report.id));
+        const last = sent.at(-1)!;
+        const lastRef = (await tx.execute<{ ref: string }>(sql`select n.ref from intakes n join intake_items i on i.intake_id = n.id where i.id = ${last.id}::uuid`))[0]!.ref;
+        const caseId = await accountCase(tx, reporter.id, { finding: mod.id });
+        const warn = () => refused(decideIn(tx, mod, caseId, { kind: "final", ruleId: "R6", actions: [act("warn_reporting")] }));
+
+        expect(await record(tx, reporter.id)).toEqual({ reports: STANDING_RULES.reportWarnMarks, unfounded: STANDING_RULES.reportWarnMarks - 1 });
+        const early = (await caseStanding(tx, caseId, reporter.id)).reporting;
+        expect(early).toMatchObject({ unfounded: STANDING_RULES.reportWarnMarks - 1, mayWarn: false });
+        expect(early.marked).toHaveLength(STANDING_RULES.reportWarnMarks - 1);
+        expect(early.marked.map((mark) => mark.ref)).not.toContain(lastRef);
+        const exported = (await exportFor(moderationDeps(tx), reporter.id)).reporting;
+        expect(exported.markedReports).toBe(STANDING_RULES.reportWarnMarks - 1);
+        expect(exported.marks.map((mark) => mark.ref)).not.toContain(lastRef);
+        expect((await warn())?.detail).toMatch(/below the threshold/);
+
+        await releaseForTest(tx, [last.id]);
+        expect(await record(tx, reporter.id)).toEqual({ reports: STANDING_RULES.reportWarnMarks, unfounded: STANDING_RULES.reportWarnMarks });
+        const ready = (await caseStanding(tx, caseId, reporter.id)).reporting;
+        expect(ready).toMatchObject({ mayWarn: true });
+        expect(ready.marked.map((mark) => mark.ref)).toContain(lastRef);
+        expect((await exportFor(moderationDeps(tx), reporter.id)).reporting.marks.map((mark) => mark.ref)).toContain(lastRef);
+        expect(await warn()).toBeNull();
+      }, world.migrateDb);
+    });
+
+    test("the upgrade's back-fill (migration 0025) counts the rule reports received before the tallies' trigger existed: twelve sent, five marked, and the warning is refused", async () => {
+      // 3e's review (database4). The statement is the migration's own, read from its file and run as the migrator would run
+      // it, over a state as an upgrade meets it: reports received, and no tally of them, as before 0022.
+      const folder = path.resolve(import.meta.dirname, "../../../../packages/db/migrations");
+      const backfill = readdirSync(folder)
+        .filter((name) => name.endsWith(".sql"))
+        .flatMap((name) => readFileSync(path.join(folder, name), "utf8").split("--> statement-breakpoint"))
+        .map((statement) => statement.split(String.fromCharCode(10)).filter((line) => !line.startsWith("--")).join(String.fromCharCode(10)).trim())
+        .filter((statement) => statement.startsWith('INSERT INTO "public"."report_tallies"'));
+      expect(backfill).toHaveLength(1);
+      await inWorld(async (tx) => {
+        const [author, reporter, other] = [await profile(tx), await profile(tx), await profile(tx)];
+        const sent = [];
+        for (let i = 0; i < 12; i++) sent.push(await reportedPost(tx, reporter.id, author.id));
+        await reportedPost(tx, other.id, author.id);
+        await tx.execute(sql`delete from report_tallies where account_id = ${reporter.id}::uuid`);
+        expect(await record(tx, reporter.id)).toEqual({ reports: 0, unfounded: 0 });
+
+        await tx.execute(sql.raw(backfill[0]!));
+        expect(await record(tx, reporter.id)).toEqual({ reports: 12, unfounded: 0 });
+        // Run again, or over tallies the trigger already wrote, it counts nothing twice.
+        await tx.execute(sql.raw(backfill[0]!));
+        expect(await record(tx, reporter.id)).toEqual({ reports: 12, unfounded: 0 });
+        expect(await record(tx, other.id)).toEqual({ reports: 1, unfounded: 0 });
+
+        for (const report of sent.slice(0, STANDING_RULES.reportWarnMarks)) await noBreach(tx, report.caseId, [report.id]);
+        await releaseForTest(tx, sent.slice(0, STANDING_RULES.reportWarnMarks).map((report) => report.id));
+        expect(await record(tx, reporter.id)).toEqual({ reports: 12, unfounded: STANDING_RULES.reportWarnMarks });
+        const caseId = await accountCase(tx, reporter.id, { finding: mod.id });
+        expect((await refused(decideIn(tx, mod, caseId, { kind: "final", ruleId: "R6", actions: [act("warn_reporting")] })))?.detail).toMatch(/below the threshold/);
+      }, world.migrateDb);
     });
   });
 
@@ -367,6 +447,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
       flow.other = await account();
       for (let i = 0; i < 8; i++) flow.reports.push(await reportedPost(apiDb, flow.reporter.id, flow.author.id));
       for (const report of flow.reports.slice(0, 5)) flow.marking.push(await marked(report));
+      // The daily release, as the migrator writes it: a mark counts only once its item's outcome is released.
+      await releaseForTest(world.migrateDb, flow.reports.slice(0, 5).map((report) => report.id));
       // Each item says whether it can be marked, and whether its mark stands.
       const itemIn = async (report: { id: string; caseId: string }) => (await view(report.caseId)).items.find((item) => item.id === report.id)!;
       expect(await itemIn(flow.reports[0]!)).toMatchObject({ markable: true, unfounded: true, markWithdrawn: false });
@@ -415,22 +497,29 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
 
     test("three reports sent before the warning and marked after it count toward no restriction, nor do two sent after it; a third does, and the restriction starts at once and reads as sent", async () => {
       for (const report of flow.reports.slice(5)) flow.marking.push(await marked(report));
+      // Two of the three are released; the last stays unreleased to the end, and so never counts.
+      await releaseForTest(world.migrateDb, flow.reports.slice(5, 7).map((report) => report.id));
       const restrictionCase = await accountCase(apiDb, flow.reporter.id, { finding: finder.id });
-      expect(await reportingOf(restrictionCase)).toMatchObject({ reports: 8, unfounded: 8, warnedOn: today(), marksSince: 0, mayWarn: false, mayRestrict: false });
+      expect(await reportingOf(restrictionCase)).toMatchObject({ reports: 8, unfounded: 7, warnedOn: today(), marksSince: 0, mayWarn: false, mayRestrict: false });
       const restrict = () => world.decideAs(decider, restrictionCase, { kind: "final", ruleId: "R6", actions: [timed("restrict_reporting", 7, false)] });
       expect(await refused(restrict())).toEqual({ code: "invalid_decision", detail: expect.stringMatching(/too few marked reports/) });
       for (let i = 0; i < 2; i++) {
         const report = await reportedPost(apiDb, flow.reporter.id, flow.author.id);
         flow.reports.push(report);
         flow.marking.push(await marked(report));
+        await releaseForTest(world.migrateDb, [report.id]);
       }
-      expect(await reportingOf(restrictionCase)).toMatchObject({ reports: 10, unfounded: 10, marksSince: 2, mayRestrict: false });
+      expect(await reportingOf(restrictionCase)).toMatchObject({ reports: 10, unfounded: 9, marksSince: 2, mayRestrict: false });
       expect(await refused(restrict())).toEqual({ code: "invalid_decision", detail: expect.stringMatching(/too few marked reports/) });
       const third = await reportedPost(apiDb, flow.reporter.id, flow.author.id);
       flow.reports.push(third);
       flow.marking.push(await marked(third));
+      // 3e's review (access1): the third mark is not released yet, so the restriction cannot rest on it.
+      expect(await reportingOf(restrictionCase)).toMatchObject({ reports: 11, unfounded: 9, marksSince: 2, mayRestrict: false });
+      expect(await refused(restrict())).toEqual({ code: "invalid_decision", detail: expect.stringMatching(/too few marked reports/) });
+      await releaseForTest(world.migrateDb, [third.id]);
       const ready = await reportingOf(restrictionCase);
-      expect(ready).toMatchObject({ reports: 11, unfounded: 11, marksSince: 3, mayRestrict: true });
+      expect(ready).toMatchObject({ reports: 11, unfounded: 10, marksSince: 3, mayRestrict: true });
       expect(ready.marked.filter((mark) => mark.sinceWarning)).toHaveLength(3);
       flow.restriction = await decided(decider, restrictionCase, { kind: "final", ruleId: "R6", actions: [timed("restrict_reporting", 7, false)] });
 
@@ -453,26 +542,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
     test("while it runs, the reporter's report under a rule is refused reporting_restricted and counts nothing; its notice of illegality, its report of child sexual abuse material and its request for a re-examination are taken", async () => {
       const postId = await newPostRow(apiDb, flow.author.id);
       expect(await refusal(recordIntake(deps(), { ground: ground.rule(flow.reporter.id, "R1"), live: [aPost(postId)] }))).toBe("reporting_restricted");
-      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 11, unfounded: 11 });
+      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 11, unfounded: 10 });
       expect((await recordIntake(deps(), { ground: ground.illegal(flow.reporter.id), live: [aPost(postId)] })).items).toHaveLength(1);
       expect((await recordIntake(deps(), { ground: ground.csam(), live: [aPost(await newPostRow(apiDb, flow.author.id))] })).items).toHaveLength(1);
-      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 11, unfounded: 11 });
-      // The first marked item is released to its sender, who may ask for a re-examination: the restriction does not stop it.
+      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 11, unfounded: 10 });
+      // The first marked item was released to its sender, who may ask for a re-examination: the restriction does not stop it.
       const first = flow.reports[0]!;
-      await world.migrateDb.execute(sql`update intake_items set outcome_sent_at = now(), shown_outcome = outcome where id = ${first.id}::uuid`);
       expect(await reexamineOwnItem(deps(), flow.reporter.id, first.id, {})).toEqual({ positions: [1] });
       await world.moderation.settle();
       // The sender's own list shows the mark with the released outcome, and not before it.
       const listed = (await reporterList(listDeps(), flow.reporter.id)).reports.flatMap((report) => report.items);
       expect(listed.find((item) => item.id === first.id)).toMatchObject({ outcome: "no_violation", unfounded: true });
-      expect(listed.find((item) => item.id === flow.reports[1]!.id)).toMatchObject({ outcome: null, unfounded: false });
+      expect(listed.find((item) => item.id === flow.reports[7]!.id)).toMatchObject({ outcome: null, unfounded: false });
     });
 
     test("a kept correction withdraws the marks of its decision: the case reads them withdrawn, the counts drop by the report, the sender's line loses the mark, and no statement goes", async () => {
       const first = flow.reports[0]!;
       const correction = await decided(decider, first.caseId, { kind: "correction", reviewsDecisionId: flow.marking[0]!, outcome: "kept", actions: [] });
       expect((await view(first.caseId)).items.find((item) => item.id === first.id)).toMatchObject({ unfounded: false, markWithdrawn: true });
-      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 11, unfounded: 10 });
+      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 11, unfounded: 9 });
       expect((await apiDb.execute<{ author_mail: string }>(sql`select author_mail::text from decisions where id = ${correction}::uuid`))[0]!.author_mail).toBe("none");
       const listed = (await reporterList(listDeps(), flow.reporter.id)).reports.flatMap((report) => report.items);
       expect(listed.find((item) => item.id === first.id)).toMatchObject({ outcome: "no_violation", unfounded: false });
@@ -507,7 +595,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restriction of repor
       expect(rows.find((row) => row.id === flow.warning)).not.toHaveProperty("endedStanding");
       // Reports under the rules are taken again, and counted.
       expect((await recordIntake(deps(), { ground: ground.rule(flow.reporter.id, "R1"), live: [aPost(await newPostRow(apiDb, flow.author.id))] })).items).toHaveLength(1);
-      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 12, unfounded: 10 });
+      expect(await record(apiDb, flow.reporter.id)).toEqual({ reports: 12, unfounded: 9 });
       expect(await otherLine()).toBe(flow.otherLine);
     });
 

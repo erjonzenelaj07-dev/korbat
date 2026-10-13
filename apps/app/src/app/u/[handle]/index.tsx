@@ -10,6 +10,8 @@ import { errorMessage } from "@/lib/api";
 import { reportHref } from "@/lib/moderation";
 import { REPORT_WORDS } from "@/lib/moderation-words";
 import { useSession } from "@/lib/session";
+import { isSuspendedRefusal } from "@/lib/standing";
+import { RefusedNotice } from "@/components/moderation/RefusedNotice";
 import { social } from "@/lib/social";
 
 type Tab = "posts" | "replies" | "likes";
@@ -39,6 +41,8 @@ export default function ProfileScreen() {
   const [tab, setTab] = useState<Tab>("posts");
   const [confirmBlock, setConfirmBlock] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // 3e (design, section 9.4): a follow refused account_suspended shows the refusal's sentence from /me, read again after it.
+  const [refused, setRefused] = useState(false);
   const [busy, setBusy] = useState(false);
   const blockDialog = useRef<View>(null);
   useEffect(() => {
@@ -70,10 +74,12 @@ export default function ProfileScreen() {
   async function act(action: () => Promise<void>) {
     setBusy(true);
     setActionError(null);
+    setRefused(false);
     try {
       await action();
     } catch (err) {
-      setActionError(errorMessage(err));
+      if (isSuspendedRefusal(err)) setRefused(true);
+      else setActionError(errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -167,6 +173,7 @@ export default function ProfileScreen() {
           {actionError}
         </Text>
       ) : null}
+      {refused ? <RefusedNotice standing={me?.standing ?? null} /> : null}
 
       {confirmBlock ? (
         <View ref={blockDialog} role="dialog" aria-labelledby="block-title" tabIndex={-1} className="mt-3 rounded-lg border border-red-900 bg-zinc-900 p-4">

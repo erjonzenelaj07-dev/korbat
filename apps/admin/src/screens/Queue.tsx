@@ -84,7 +84,10 @@ export function replyWords(reply: QueueReply, now: number): string[] {
     ? STANDING_WORDS.reply.before
     : reply.endsAt !== null && Date.parse(reply.endsAt) <= now
       ? STANDING_WORDS.reply.afterEnded(dateTime(reply.endsAt))
-      : STANDING_WORDS.reply.after(reply.endsAt === null ? "" : dateTime(reply.endsAt));
+      : // A termination has no end: its row names none (3e's review, people9).
+        reply.kind === "terminate" || reply.endsAt === null
+        ? STANDING_WORDS.reply.afterTermination
+        : STANDING_WORDS.reply.after(dateTime(reply.endsAt));
   const what = reply.kind === "terminate" ? STANDING_WORDS.reply.termination : STANDING_WORDS.reply.suspension(reply.days ?? 1);
   const late = now - Date.parse(reply.filedAt) > REPLY_AIM_HOURS * 60 * 60 * 1000 ? [STANDING_WORDS.reply.overAim] : [];
   return [where, what, ...late];

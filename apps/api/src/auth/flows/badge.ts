@@ -117,8 +117,10 @@ export async function verifyBadge(deps: AuthDeps, session: Session, input: Badge
   }
   if (!(await deps.profiles.setVerified(user.id, deps.now()))) {
     // 3e: the one predicate refused the badge's write (a suspension started meanwhile): the phone hash written a moment
-    // before is cleared again, so the account holds nothing of a badge it was refused.
-    await deps.repo.setPhoneHash(user.id, null);
+    // before is put back as it was read, so the account holds nothing of a badge it was refused. An account that already
+    // had a badge keeps the number behind it (3e's review, access3): clearing it would leave the badge public with no
+    // number, and free that number for another account's badge.
+    await deps.repo.setPhoneHash(user.id, user.phoneHash);
     throw new AuthError("account_suspended", 403);
   }
   await notifyAccount(deps, user.email, "badge_verified");

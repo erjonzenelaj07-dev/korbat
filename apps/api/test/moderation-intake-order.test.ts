@@ -72,6 +72,8 @@ function recording(openCases: Record<string, (string | null)[]>) {
         snapshots.push({ target: String(params[2]), media: params[9] === null ? null : JSON.parse(String(params[9])) });
         return events.push(`snapshot ${String(params[1])} ${String(params[2])}`), [{ id: randomUUID(), taken_at: TAKEN }];
       }
+      // 3e's review (database1): the closing judgment of a signed-in sender under a rule, the transaction's last read.
+      if (statement.startsWith("select p.deleted_at is not null as deleted")) return events.push("judge sender"), [{ deleted: false, suspended: false, reports_restricted: false }];
       throw new Error(`the intake issued a statement this test does not know: ${statement}`);
     },
   };
@@ -138,6 +140,8 @@ describe("the intake's transaction keeps one order", () => {
       `snapshot post ${POST_ONE}`,
       `snapshot post ${POST_TWO}`,
       `snapshot account ${ACCOUNT}`,
+      // Last, after every lock: the sender is judged again by the clock, so a suspension that started while it waited counts.
+      "judge sender",
     ]);
     // A post's snapshot lists the images the hold answered for it; an account's lists none.
     expect(world.snapshots).toEqual([
@@ -169,7 +173,7 @@ describe("the intake's transaction keeps one order", () => {
     await recordIntake(world.deps, { ground, live: [{ type: "post", id: POST_ONE, position: 1 }] });
     expect(world.runs()).toBe(1);
     const pair = [`open post ${POST_ONE}`, `read post ${POST_ONE}`];
-    expect(world.events).toEqual(["run 1", "lock sender", "intake", ...pair, ...pair, ...pair, `item post ${POST_ONE} in the-new-case`, "time", `copy post ${POST_ONE}`, `hold post ${POST_ONE} for the-new-case`, `snapshot post ${POST_ONE}`]);
+    expect(world.events).toEqual(["run 1", "lock sender", "intake", ...pair, ...pair, ...pair, `item post ${POST_ONE} in the-new-case`, "time", `copy post ${POST_ONE}`, `hold post ${POST_ONE} for the-new-case`, `snapshot post ${POST_ONE}`, "judge sender"]);
   });
 
   test("three reads that find none start the transaction over, with no item stored without a case; after the fourth run the answer is case_closed", async () => {
