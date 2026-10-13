@@ -150,7 +150,7 @@ describe("one decision as its author reads it", () => {
     reviewed: null,
   };
   const image = { id: id(7), alt: "a picture", width: 800, height: 600, small: `/api/media/${id(7)}/small.webp`, large: `/api/media/${id(7)}/large.webp` };
-  const view = { id: id(3), ...statement, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, content: { kind: "post", body: "the words", deletedByAuthor: false, images: [image], imageCount: 1, imagesHidden: null }, appeal: null, strike: null };
+  const view = { id: id(3), ...statement, appealUntil: "2027-04-04T10:00:00.000Z", reversedOn: null, content: { kind: "post", body: "the words", deletedByAuthor: false, images: [image], imageCount: 1, imagesHidden: null }, appeal: null, strike: null, standing: null };
 
   test("it is the statement's data with what the author's screen adds: where the appeal stands and the content actioned", () => {
     expect(DecisionView.parse(view)).toEqual(view);

@@ -19,6 +19,7 @@ import {
   StaffKeysResponse,
   StaffMe,
   StaffOverview,
+  StandingLists,
   StaffSession,
   StaffSessionsResponse,
   StaffSnapshotTaken,
@@ -289,6 +290,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/decisions/:decision/review",
         "GET /api/staff/overview",
         "GET /api/staff/queue",
+        "GET /api/staff/standing",
         "GET /api/staff/cases/:case",
         "GET /api/staff/cases/:case/media/:media/:size",
         "POST /api/staff/cases/:case/snapshots",
@@ -491,6 +493,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       FindingResponse,
       RevealResponse,
       AppealsPage,
+      StandingLists,
     };
     const members = Object.entries(answers).flatMap(([name, schema]) => memberNames(schema).map((member) => `${name}.${member}`));
     // The walk read every member of every answer: none is of a kind it has not been taught, behind which a name could hide.
@@ -513,6 +516,11 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
     expect(members).toContain("CaseView.appeals.needsAdmin");
     expect(members).toContain("StaffOverview.appealsWithoutReviewer");
     expect(members.filter((member) => member.startsWith("AppealsPage.") && /statement|appellant/i.test(member))).toEqual([]);
+    // 3e Task 4: the queue's replies and the Standing screen's lists carry no text and name people by their handles only.
+    expect(members).toContain("QueuePage.replies.onTime");
+    expect(members.filter((member) => member.startsWith("QueuePage.replies.") && /text|statement/i.test(member))).toEqual([]);
+    expect(members).toContain("StandingLists.terminationsWaiting.items.handle");
+    expect(members).toContain("StaffOverview.repliesWaiting.count");
     // People are handles and a source is a summary: no answer has a member for a reporter, a notifier or a contact.
     expect(members.filter((member) => /[.](reporter|notifier|contact)(Id)?$/i.test(member))).toEqual([]);
     expect(memberNames(z.object({ list: z.array(z.object({ inner: z.object({ email: z.string() }).nullable() })) }))).toEqual(["list", "list.inner", "list.inner.email"]);

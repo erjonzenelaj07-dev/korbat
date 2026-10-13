@@ -15,7 +15,7 @@ import { recordIntake } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { flowHarness } from "./flow-harness";
-import { act, casesMedia, decisionParams, ground, moderationCounts, newPostRow, noAuthForModeration, removeDecided, reviewParams, timed, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
+import { act, ageStandingForTest, casesMedia, decisionParams, ground, moderationCounts, newPostRow, noAuthForModeration, removeDecided, reviewParams, timed, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { TEST_CONSOLE, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 import { signedIn, stepUpAssertion } from "./staff-step-up";
@@ -225,15 +225,24 @@ export interface SuspendedForTest {
 }
 
 /**
- * Suspends an account at once the way a suspension at once comes about (3e design, section 12): through the decide
- * route's own code (moderation.forStaff.decide, with a real confirmation by an admin's key), on the basis `threat`, which
- * it makes first: a post the account makes now, an admin's own finding on it under R5 and a final removal, which gives
- * the strike the database computes. Then an admin's finding under R5 on the account opens its case, and a final decision
- * on it holds `{ kind: "suspend", days, announced: false }`. The suspension starts with that decision, and every write of
- * the account is refused from then on. Task 4 adds `announced: true`. closeDecisions removes what it committed, the
- * account's case included; the account's posts and profile stay.
+ * Suspends an account the way a suspension comes about (3e design, section 12), through the decide route's own code
+ * (moderation.forStaff.decide, with a real confirmation by an admin's key).
+ *
+ * At once (the default): on the basis `threat`, which it makes first: a post the account makes now, an admin's own
+ * finding on it under R5 and a final removal, which gives the strike the database computes. Then an admin's finding under
+ * R5 on the account opens its case, and a final decision on it holds `{ kind: "suspend", days, announced: false }`. The
+ * suspension starts with that decision, and every write of the account is refused from then on.
+ *
+ * Announced (Task 4, `announced: true`): the ladder's first step: three strikes (strikeForTest, under R1), an admin's own
+ * finding under R1 on the account, and a final decision that holds `{ kind: "suspend", days, announced: true }` (3 days
+ * unless said, the first rung). Nothing is restricted: the world's decisions are mailed by no auth module, so the
+ * statement's mail stays pending and the suspension has no start until a test records the mail's outcome or ages it.
+ * `basisDecisionId` is then the newest strike's decision.
+ *
+ * closeDecisions removes what it committed, the account's case included; the account's posts and profile stay.
  */
-export async function suspendForTest(apiDb: Db, accountId: string, options: { days?: number; announced?: false } = {}): Promise<SuspendedForTest> {
+export async function suspendForTest(apiDb: Db, accountId: string, options: { days?: number; announced?: boolean } = {}): Promise<SuspendedForTest> {
+  if (options.announced === true) return announceForTest(apiDb, accountId, options.days ?? 3);
   world ??= deciderWorld(apiDb);
   admin ??= world.staff("admin");
   const [w, staff] = [world, await admin];
@@ -247,6 +256,58 @@ export async function suspendForTest(apiDb: Db, accountId: string, options: { da
   const caseId = onAccount.items[0]!.caseId!;
   const decisionId = decided(await w.decideAs(staff, caseId, { kind: "final", ruleId: "R5", actions: [timed("suspend", options.days ?? 7, false)] }), "the suspension at once");
   return { decisionId, caseId, basisDecisionId };
+}
+
+/** The account case an admin's own finding under the rule opens on the account (or joins, when one is open). */
+async function accountCaseForTest(w: DeciderWorld, staff: RealStaff, apiDb: Db, accountId: string, rule: RuleId): Promise<string> {
+  const [profile] = await apiDb.execute<{ handle: string }>(sql`select handle from profiles where id = ${accountId}::uuid`);
+  const onAccount = await recordIntake(w.moderation.deps, { ground: ground.finding(staff.id, rule), live: [{ type: "account", id: accountId, position: 1, namedHandle: profile!.handle }] });
+  return onAccount.items[0]!.caseId!;
+}
+
+/** An announced suspension of the ladder's first step: three strikes under R1, then the measure on the account's case. */
+async function announceForTest(apiDb: Db, accountId: string, days: number): Promise<SuspendedForTest> {
+  world ??= deciderWorld(apiDb);
+  admin ??= world.staff("admin");
+  const [w, staff] = [world, await admin];
+  const strikes = await strikeForTest(apiDb, accountId, 3, "R1");
+  decidedAccounts.add(accountId);
+  const caseId = await accountCaseForTest(w, staff, apiDb, accountId, "R1");
+  const decisionId = decided(await w.decideAs(staff, caseId, { kind: "final", ruleId: "R1", actions: [timed("suspend", days, true)] }), "the announced suspension");
+  return { decisionId, caseId, basisDecisionId: strikes.at(-1)! };
+}
+
+/** What terminateForTest made: the termination's decision and case, the suspension for the first threat, and the two R5 decisions it rests on. */
+export interface TerminatedForTest {
+  decisionId: string;
+  caseId: string;
+  suspensionId: string;
+  /** The R5 decision the earlier suspension rests on, and the newer one about a post made after that suspension. */
+  earlierDecisionId: string;
+  basisDecisionId: string;
+}
+
+/**
+ * Terminates an account at once, the only path to a termination at once (3e design, section 12): an R5 decision about a
+ * post of the account and a suspension at once on it (suspendForTest), that suspension aged past its end
+ * (ageStandingForTest, as the migrator), a post the account makes after it and a second R5 decision on that post, then
+ * an admin's own finding under R5 on the account and a final decision that holds `{ kind: "terminate", days: null,
+ * announced: false }`, on the basis `threat_repeat`. The account is suspended without end from that decision; it is not
+ * taken down before the decision is final for it. closeDecisions removes what it committed; the posts and profile stay.
+ */
+export async function terminateForTest(apiDb: Db, accountId: string): Promise<TerminatedForTest> {
+  const first = await suspendForTest(apiDb, accountId, { days: 7 });
+  const [w, staff] = [world!, await admin!];
+  // The first suspension ends: its period, and every time of the account's ledger, moved back past its 7 days.
+  await ageStandingForTest(w.migrateDb, accountId, "8 days");
+  // A second threat, in a post made after the account was told of that suspension.
+  const postId = await newPostRow(apiDb, accountId, { createdAt: sql`clock_timestamp()`, body: "a second post with a direct threat" });
+  decidedPosts.add(postId);
+  const finding = await recordIntake(w.moderation.deps, { ground: ground.finding(staff.id, "R5"), live: [{ type: "post", id: postId, position: 1 }] });
+  const basisDecisionId = decided(await w.decideAs(staff, finding.items[0]!.caseId!, { kind: "final", ruleId: "R5", actions: [act("remove")] }), "the second R5 removal");
+  const caseId = await accountCaseForTest(w, staff, apiDb, accountId, "R5");
+  const decisionId = decided(await w.decideAs(staff, caseId, { kind: "final", ruleId: "R5", actions: [timed("terminate", null, false)] }), "the termination at once");
+  return { decisionId, caseId, suspensionId: first.decisionId, earlierDecisionId: first.basisDecisionId, basisDecisionId };
 }
 
 /**

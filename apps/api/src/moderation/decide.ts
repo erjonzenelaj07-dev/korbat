@@ -7,7 +7,7 @@ import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { staffAlert } from "./alerts";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { appendConfirmedAudit, caseTarget, handleOf, insertAction, insertDecision, insertMarks, raisedDetail, raisedMessage, recentDecisionsBy } from "./repo";
+import { appendConfirmedAudit, caseTarget, handleOf, holdsAnnouncedStanding, insertAction, insertDecision, insertMarks, raisedDetail, raisedMessage, recentDecisionsBy } from "./repo";
 import { decisionStatement, sendStatement } from "./statement";
 
 /**
@@ -23,10 +23,9 @@ export type DecideOutcome = { decisionId: string } | "ended" | "late";
 /**
  * The kinds of the ledger the decide and review routes accept (3e design, section 7.1 item 2). The params' schema knows
  * all 22 kinds from the first task of 3e on; this list holds 3c's twelve, a strike with its overruling, (Task 2) a
- * handle's retirement with its reversal and (Task 3) a suspension with its lift, and each later task of 3e adds the kinds
- * whose flow it builds, so no route records a measure whose flow is not built yet. Any other kind is refused before the
- * transaction (invalid_decision), as are a correction that keeps its decision, a non-empty list of marks and a `replaced`
- * until the tasks that open them.
+ * handle's retirement with its reversal, (Task 3) a suspension with its lift and (Task 4) a termination, and each later
+ * task of 3e adds the kinds whose flow it builds, so no route records a measure whose flow is not built yet. Any other
+ * kind is refused before the transaction (invalid_decision), as is a non-empty list of marks until the task that opens it.
  */
 export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
   ...MEASURE_KINDS.slice(0, 7),
@@ -37,6 +36,7 @@ export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
   "unretire_handle",
   "suspend",
   "lift_suspension",
+  "terminate",
 ]);
 
 /**
@@ -60,18 +60,12 @@ export interface DecideOptions {
 }
 
 /** The route's refusal of what it does not accept yet; nothing when the options lift the list. */
-export function refuseUnopened(
-  params: { actions: readonly { kind: ActionKind; announced?: boolean | null }[]; outcome: string; kind?: string; unfounded?: readonly string[]; replaced?: boolean },
-  options: DecideOptions,
-): void {
+export function refuseUnopened(params: { actions: readonly { kind: ActionKind }[]; unfounded?: readonly string[] }, options: DecideOptions): void {
   if (options.allKinds) return;
   if (params.actions.some((action) => !ROUTE_KINDS.has(action.kind))) throw new ModerationError("invalid_decision");
-  // The second check of the list (3e design, section 13, Task 3): a suspension is open when it is taken at once, and an
-  // announced one waits for the task that builds the notice, the reply and the start.
-  if (params.actions.some((action) => action.kind === "suspend" && action.announced !== false)) throw new ModerationError("invalid_decision");
-  // A correction that keeps its decision answers a reply or withdraws marks: neither exists before its task.
-  if (params.kind === "correction" && params.outcome === "kept") throw new ModerationError("invalid_decision");
-  if ((params.unfounded ?? []).length > 0 || params.replaced === true) throw new ModerationError("invalid_decision");
+  // Task 4 opens a suspension and a termination, announced or at once, the correction that keeps its decision (it answers
+  // a reply; the database refuses one that answers none) and `replaced`; the marks wait for the reporting task.
+  if ((params.unfounded ?? []).length > 0) throw new ModerationError("invalid_decision");
 }
 
 /**
@@ -109,7 +103,7 @@ export const burstAlertKey = (staffId: string) => `moderation-burst:${staffId}`;
  * A review is a decision too, and the review route starts this after its commit: its statement answers the author's
  * appeal, it counts among the reviewer's decisions, and a review that lifts a seal is told to every staff account.
  */
-export async function afterDecision(deps: Pick<ModerationDeps, "apiDb" | "auth" | "limits" | "log">, staffId: string, decisionId: string): Promise<void> {
+export async function afterDecision(deps: Pick<ModerationDeps, "apiDb" | "auth" | "social" | "limits" | "log">, staffId: string, decisionId: string): Promise<void> {
   try {
     await sendStatement(deps, decisionId);
   } catch (err) {
@@ -142,13 +136,29 @@ export async function afterDecision(deps: Pick<ModerationDeps, "apiDb" | "auth" 
 }
 
 /**
- * The first lock a decision takes on its subject's profile row (3e design, section 5, the lock order, item 1): FOR UPDATE
- * exactly when its signed actions hold a suspension or a termination, since the ledger's trigger takes that row FOR
- * UPDATE again and an upgrade behind the case's lock deadlocks with followers' counter updates (LAB B2); FOR NO KEY UPDATE
- * for every other decision, a lift and an overruling included. (A kept answer to a reply, Task 4, joins the first.)
+ * What the first lock of an answer to a decision needs to know of the decision it answers, read before the transaction
+ * (a decision's ledger rows never change): whether it holds an announced suspension or termination, whose reply the
+ * answer may answer and whose start it may then fix.
  */
-export function subjectLockMode(actions: readonly { kind: ActionKind }[]): AccountLockMode {
-  return actions.some((action) => action.kind === "suspend" || action.kind === "terminate") ? "update" : "no key update";
+export interface AnsweredFacts {
+  kind: "correction" | "review";
+  outcome: string;
+  holdsAnnounced: boolean;
+}
+
+/**
+ * The first lock a decision takes on its subject's profile row (3e design, section 5, the lock order, item 1): FOR UPDATE
+ * when its signed actions hold a suspension or a termination, and (Task 4) when it answers a decision that holds an
+ * announced one and may leave it in force: a correction or a review that keeps it, or a review that reverses part of it.
+ * Whether a reply waits, and whether it came before the start, is read inside, after the lock: decisions_apply then takes
+ * the row FOR UPDATE for an on-time reply, as the ledger's trigger takes it again for a suspension, and an upgrade behind
+ * the case's lock deadlocks with followers' counter updates (LAB B2). FOR NO KEY UPDATE for every other decision, a lift
+ * and an overruling included.
+ */
+export function subjectLockMode(actions: readonly { kind: ActionKind }[], answered: AnsweredFacts | null = null): AccountLockMode {
+  if (actions.some((action) => action.kind === "suspend" || action.kind === "terminate")) return "update";
+  if (answered !== null && answered.holdsAnnounced && (answered.outcome === "kept" || (answered.kind === "review" && answered.outcome === "partly_reversed"))) return "update";
+  return "no key update";
 }
 
 /**
@@ -247,6 +257,9 @@ export async function decide(deps: ModerationDeps, session: ActiveStaffSession, 
   if (!target) throw new ModerationError("not_found");
   // A case's target never changes, and a post's author never does, so the subject is read before the transaction.
   const subject = target.type === "account" ? target.id : await deps.social.postAuthor(target.id);
+  // A correction's first lock depends on the decision it corrects, whose ledger rows never change: read before too.
+  const answered: AnsweredFacts | null =
+    params.kind === "correction" && params.reviewsDecisionId !== null ? { kind: "correction", outcome: params.outcome, holdsAnnounced: await holdsAnnouncedStanding(deps.apiDb, params.reviewsDecisionId) } : null;
 
   return recordConfirmed(
     deps,
@@ -260,6 +273,6 @@ export async function decide(deps: ModerationDeps, session: ActiveStaffSession, 
       await insertMarks(tx, decisionId, params.unfounded);
       for (const action of insertionOrder(params.actions)) await insertAction(tx, decisionId, action, params.replaced);
     },
-    subjectLockMode(params.actions),
+    subjectLockMode(params.actions, answered),
   );
 }

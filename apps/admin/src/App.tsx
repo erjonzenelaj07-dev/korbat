@@ -12,6 +12,7 @@ import { Enroll } from "./screens/Enroll";
 import { Home } from "./screens/Home";
 import { Queue } from "./screens/Queue";
 import { SignIn } from "./screens/SignIn";
+import { Standing } from "./screens/Standing";
 import { Unavailable } from "./screens/Unavailable";
 import type { ConsoleStore } from "./store";
 import type { CredentialsLike } from "./webauthn";
@@ -84,12 +85,13 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
           {signOutError}
         </p>
       ) : null}
-      {route.name === "home" || route.name === "signin" ? <Home me={session.me} api={api} credentials={credentials} onOpenCase={store.openCase} /> : null}
+      {route.name === "home" || route.name === "signin" ? <Home me={session.me} api={api} credentials={credentials} onOpenCase={store.openCase} onNavigate={navigate} /> : null}
       {route.name === "audit" ? <Audit api={api} /> : null}
       {route.name === "queue" ? <Queue api={api} onOpenCase={store.openCase} /> : null}
       {/* Keyed by the case: another case's page starts with nothing of this one's. */}
       {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} role={session.me.role} drafts={store.drafts} onOpenCase={store.openCase} /> : null}
       {route.name === "appeals" ? <Appeals api={api} onOpenCase={store.openCase} /> : null}
+      {route.name === "standing" ? <Standing api={api} onOpenCase={store.openCase} /> : null}
       {route.name === "unknown" ? (
         <section aria-labelledby="unknown-title">
           <h2 id="unknown-title">No such page</h2>

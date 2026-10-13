@@ -276,12 +276,12 @@ describe("the queue", () => {
   });
 
   test("the queue is read page by page from its start; its own refresh carries no activity mark, its person's reads do", async () => {
-    const first: QueuePage = { cases: QUEUE_ROWS.slice(0, 2), nextCursor: "page_2-cursor" };
-    const second: QueuePage = { cases: QUEUE_ROWS.slice(2), nextCursor: null };
+    const first: QueuePage = { cases: QUEUE_ROWS.slice(0, 2), nextCursor: "page_2-cursor", replies: [] };
+    const second: QueuePage = { cases: QUEUE_ROWS.slice(2), nextCursor: null, replies: [] };
     const fake = fakeFetch({ "GET /api/staff/queue": { status: 200, body: first }, "GET /api/staff/queue?cursor=page_2-cursor": { status: 200, body: second } });
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
-    expect(await readQueue(api, 1, true)).toEqual({ rows: first.cases, next: "page_2-cursor" });
-    expect(await readQueue(api, 2, false)).toEqual({ rows: QUEUE_ROWS, next: null });
+    expect(await readQueue(api, 1, true)).toEqual({ rows: first.cases, next: "page_2-cursor", replies: [] });
+    expect(await readQueue(api, 2, false)).toEqual({ rows: QUEUE_ROWS, next: null, replies: [] });
     expect(fake.requests.map((request) => `${request.url} ${request.headers["x-staff-activity"] ?? "unmarked"}`)).toEqual([
       "/api/staff/queue 1",
       "/api/staff/queue unmarked",
@@ -290,7 +290,7 @@ describe("the queue", () => {
   });
 
   test("the screen reads the queue when it opens, marked, and again every 60 seconds, unmarked, until it is left", async () => {
-    const page: QueuePage = { cases: QUEUE_ROWS, nextCursor: null };
+    const page: QueuePage = { cases: QUEUE_ROWS, nextCursor: null, replies: [] };
     const fake = fakeFetch({ "GET /api/staff/queue": { status: 200, body: page } });
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
     const clock = new FakeClock();
@@ -492,6 +492,8 @@ describe("the case page", () => {
       onCancelCorrection: noop,
       onCorrect: noop,
       onReview: noop,
+      onAnswer: noop,
+      onWithdraw: noop,
     };
     const out = page(view, { compose });
     // The composer comes last, after the notes.
@@ -1060,10 +1062,10 @@ describe("the whole page for the new addresses", () => {
     return { store, render: () => html(<App store={store} credentials={fakeCredentials()} signal={undefined} />) };
   }
 
-  test("the layout links to the queue and the appeals, and each address shows its page", async () => {
+  test("the layout links to the queue, the appeals and the standing lists, and each address shows its page", async () => {
     const queue = await page("/queue");
     expect(queue.render()).toMatch(/<h2[^>]*>Queue</);
-    expect(hrefs(queue.render()).slice(0, 4)).toEqual(["/", "/queue", "/appeals", "/audit"]);
+    expect(hrefs(queue.render()).slice(0, 5)).toEqual(["/", "/queue", "/appeals", "/standing", "/audit"]);
     expect(queue.render()).toMatch(/<a href="\/queue" aria-current="page"/);
     const appeals = await page("/appeals");
     expect(appeals.render()).toMatch(/<h2[^>]*>Appeals</);

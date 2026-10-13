@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { CaseView, ErrorEnvelope, StaffStepUpOptionsResponse, type AuthenticationResponseJSON, type CaseDecidedParams } from "@korbat/contracts";
+import { CaseView, ErrorEnvelope, QueuePage, StaffStepUpOptionsResponse, StandingLists, type AuthenticationResponseJSON, type CaseDecidedParams } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db } from "@korbat/db";
 import { RULES_VERSION } from "@korbat/rules";
 import { createApp } from "../../src/app";
@@ -321,6 +321,22 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
         await migrateDb.execute(sql`delete from profiles where id = ${leaving.id}::uuid`);
       }
     }
+  });
+
+  test("3e: GET /api/staff/standing answers the Standing screen's four lists to a staff session and refuses a request without one; the queue's first page leads with the replies, which carry no text", async () => {
+    const signedOut = await consoleBrowser().fetch("/api/staff/standing", { headers: MARKED, csrf: false });
+    expect([signedOut.status, (await error(signedOut)).code]).toEqual([401, "staff_session_required"]);
+    const res = await moderator.b.fetch("/api/staff/standing", { headers: MARKED });
+    expect(res.status).toBe(200);
+    const raw = (await res.json()) as unknown;
+    const lists = StandingLists.parse(raw);
+    // The answer holds nothing but what its contract names, and the reporting records wait for the reporting measures.
+    expect(raw).toEqual(lists);
+    expect(lists.reportingRecords).toEqual({ total: 0, items: [] });
+    expect(JSON.stringify(raw)).not.toMatch(/email|accountId|userId/);
+    const queue = await moderator.b.fetch("/api/staff/queue", { headers: MARKED });
+    const page = QueuePage.parse(await queue.json());
+    expect(page.replies.every((reply) => !("text" in reply))).toBe(true);
   });
 
   test("a decision under another rulebook than the API serves is answered 422 invalid_decision, and stores nothing", async () => {

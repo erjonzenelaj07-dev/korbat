@@ -22,6 +22,7 @@ import { sweep } from "../../src/media/sweeper";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { dueStatements, eraseStatementTexts, forgetReporter } from "../../src/moderation/repo";
 import { decisionStatement, sendStatement } from "../../src/moderation/statement";
+import { socialForModeration } from "../../src/social";
 import { explorePage } from "../../src/social/flows/explore";
 import { exportProfile } from "../../src/social/flows/export";
 import { deletePost, getPost, thread } from "../../src/social/flows/posts";
@@ -230,6 +231,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         confirmDeletion: notHere,
         pendingPurges: async () => pending,
         finishPurge: async (userId) => void finished.push(userId),
+        takeDownTerminated: notHere,
         exportAccount: async (userId) => exported(userId),
         appendEvent: async () => undefined,
       },
@@ -400,7 +402,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         // files of the rows that went are requested.
         const deps = accountDeps(w, [ada.id]);
         await purge(deps, ada.id);
-        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0 });
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
         expect(deps.finished).toEqual([ada.id, ada.id]);
         expect(await existing(w.tx, [...frozen.mediaIds, ...free.mediaIds, upload])).toEqual(sorted(kept));
         expect(await requested()).toEqual([]);
@@ -437,7 +439,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         const suspect = await report(w.tx, anAccount(ada.id, ada.handle), "csam");
         expect(await postFrozen(w.tx, own.postId)).toBe(true);
         // The job's rerun keeps the frozen rows and asks for nothing of them.
-        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0 });
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
         expect(await existing(w.tx, own.mediaIds)).toEqual(sorted(own.mediaIds));
         expect(await requested()).toEqual([]);
         // The sweeper, which asks again for whatever a deleter still owes: a row that is still there is owed nothing,
@@ -514,7 +516,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         const base = accountDeps(w, [ada.id]);
         const deps: typeof base = {
           ...base,
-          moderation: { forgetAccount: async (userId) => void (await forgetReporter(w.tx, userId)), exportFor: () => Promise.reject(new Error("not exercised here")) },
+          moderation: {
+            forgetAccount: async (userId) => void (await forgetReporter(w.tx, userId)),
+            exportFor: () => Promise.reject(new Error("not exercised here")),
+            takeDownDue: async () => ({ terminated: 0, failed: 0 }),
+          },
         };
 
         // A first run whose transaction does not commit: nothing of it stands, and no file was asked for.
@@ -534,7 +540,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
 
         // The request's run, and the job's after it.
         await purge(deps, ada.id);
-        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0 });
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
         expect(deps.finished).toEqual([ada.id, ada.id]);
         const [profile] = await w.tx.execute<{ display_name: string; bio: string; deleted: boolean; handle: string }>(sql`select display_name, bio, deleted_at is not null as deleted, handle from profiles where id = ${ada.id}::uuid`);
         expect({ ...profile! }).toEqual({ display_name: "Deleted account", bio: "", deleted: true, handle: ada.handle });
@@ -561,7 +567,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         ]);
         expect(statementParagraphs((await decisionStatement(w.tx as unknown as Db, removal))!.statement)[0]).toContain(STATEMENT_WORDS.deletedPost);
         // Its mail finds nobody: the auth module answers no_address for an account that is gone.
-        expect(await sendStatement({ apiDb: w.tx as unknown as Db, auth: { mailAccount: async () => "no_address" } as never }, removal)).toBe("no_address");
+        expect(await sendStatement({ apiDb: w.tx as unknown as Db, auth: { mailAccount: async () => "no_address" } as never, social: socialForModeration(w.tx as unknown as Db) }, removal)).toBe("no_address");
 
         // The admin answers the report about her account without a seal: the freeze ends, and the disposal takes the image
         // no case holds and keeps the one the rule case holds.

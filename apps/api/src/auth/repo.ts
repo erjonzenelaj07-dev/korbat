@@ -481,6 +481,24 @@ export function createAuthRepo(db: Db) {
     },
 
     /**
+     * 3e (design, sections 5 and 7.8): the take-down of a terminated account, as the system and not its owner. In one
+     * transaction, as takeDown: the row marked deleted, step 1's rows, the account_deleted event (its metadata says that a
+     * final termination took it down), and last the staff side's audit rows with the server as their actor. Only for a row
+     * that this call marks: one already marked deleted (a round whose purge failed after the take-down, or the owner's own
+     * deletion) is left as it is, nothing is written and the answer is null. Else the ids of the sessions it revoked.
+     */
+    async takeDownTerminated(userId: string, now: Date): Promise<string[] | null> {
+      return db.transaction(async (tx) => {
+        const marked = await tx.update(users).set({ deletedAt: now }).where(and(eq(users.id, userId), isNull(users.deletedAt))).returning({ id: users.id });
+        if (marked.length === 0) return null;
+        const taken = await takeDownRows(tx, userId, now);
+        await tx.insert(authEvents).values({ userId, type: "account_deleted", deviceId: null, metadata: { terminated: true } });
+        await appendTakeDownAudit(tx, SYSTEM_ACTOR_ID, userId, taken.staff);
+        return taken.sessionIds;
+      });
+    },
+
+    /**
      * The rows of step 1 again (the sessions, devices, codes and passkeys, the WebAuthn user handle and the staff rows), for
      * a row marked deleted and not purged yet: a take-down that stopped after the mark, or a session that a sign-in already
      * past its lookup created after it. Nothing for a live or a purged row. The account_deleted event is not appended

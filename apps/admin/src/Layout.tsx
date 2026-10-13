@@ -67,6 +67,9 @@ export function Layout({
           <NavLink to="/appeals" current={path === "/appeals"} onNavigate={onNavigate}>
             Appeals
           </NavLink>
+          <NavLink to="/standing" current={path === "/standing"} onNavigate={onNavigate}>
+            Standing
+          </NavLink>
           <NavLink to="/audit" current={path === "/audit"} onNavigate={onNavigate}>
             Audit log
           </NavLink>

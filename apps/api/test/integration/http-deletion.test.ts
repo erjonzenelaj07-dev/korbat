@@ -18,6 +18,8 @@ import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { createSocial, enforceWriteLimit } from "../../src/social";
 import { Browser, NativeClient } from "./http-client";
+import { sql } from "drizzle-orm";
+import { closeDecisions, suspendForTest } from "./moderation-decide";
 import { suspendRowForTest } from "./moderation-fixtures";
 
 type App = ReturnType<typeof createApp>;
@@ -192,6 +194,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
     expect(confirmed.status).toBe(204);
     expect((await app.request(`/api/profiles/${ada.handle}`)).status).toBe(404);
     expect(await auth.deps.repo.pendingPurges()).not.toContain(ada.userId);
+  });
+
+  test("3e: an account whose announced suspension has not started deletes itself as ever, during the reply window: no hold, and the measure stays in the ledger doing nothing", async () => {
+    const ada = await signUp();
+    const { decisionId } = await suspendForTest(apiDb, ada.userId, { announced: true });
+    try {
+      // Nothing is restricted yet: the account still posts.
+      expect((await ada.b.fetch("/api/posts", { json: { body: "posted during the reply window" } })).status).toBe(201);
+      const { flowId } = DeleteStartResponse.parse(await (await startOf(ada.b)).json());
+      const confirmed = await ada.b.fetch("/api/account/delete/confirm", { json: { flowId, code: mailer.lastCodeFor(ada.email)!, handle: ada.handle } });
+      expect(confirmed.status).toBe(204);
+      expect((await app.request(`/api/profiles/${ada.handle}`)).status).toBe(404);
+      const [measure] = await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from decision_actions where decision_id = ${decisionId}::uuid and kind::text = 'suspend'`);
+      expect(measure?.n).toBe(1);
+      const [profile] = await apiDb.execute<{ from: Date | null }>(sql`select suspended_from as from from profiles where id = ${ada.userId}::uuid`);
+      expect(profile?.from ?? null).toBeNull();
+    } finally {
+      await closeDecisions();
+    }
   });
 
   test("a native session gets a plain 204 without cookies, and its token stops working", async () => {

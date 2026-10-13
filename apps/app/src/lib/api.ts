@@ -101,6 +101,8 @@ const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "account_su
   appeal_exists: "You have already appealed this decision.",
   reexamination_not_open: "A re-examination cannot be asked for this item now.",
   reexamination_exists: "A re-examination of this item has already been asked for.",
+  // 3e Task 4 (design, section 9.8): one answer for every reason a reply is not open.
+  reply_not_open: "You cannot reply to this decision: you already replied, or it has ended or was lifted.",
   // 3e (design, section 9.8): the fallback when /me cannot be read; with it the screens say until when (9.4).
   account_suspended: "Your account is suspended, so you cannot do this now.",
   unauthenticated: "Sign in to continue.",

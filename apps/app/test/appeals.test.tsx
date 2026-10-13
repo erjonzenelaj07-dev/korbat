@@ -78,6 +78,7 @@ const view = (extra: Partial<DecisionView> = {}): DecisionView => ({
   content: { kind: "post", body: "the words that were judged", deletedByAuthor: false, images: [], imageCount: 0, imagesHidden: null },
   appeal: null,
   strike: null,
+  standing: null,
   ...extra,
 });
 const pending = (extra: Partial<Extract<DecisionAppeal, { state: "pending" }>> = {}): DecisionAppeal => ({ state: "pending", filedAt: "2026-10-06T09:00:00.000Z", reviewer: "available", needsAdmin: false, ...extra });

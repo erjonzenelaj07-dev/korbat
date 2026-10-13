@@ -259,6 +259,8 @@ describe("the home screen's three lists of the path for child sexual abuse mater
     protectionLifted: { total: 2, items: [{ at: "2026-10-04T09:00:00.000Z", handle: "mod_anna", caseId: "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a", kind: "unsealed" }] },
     sealsDeclined: { total: 1, items: [{ at: "2026-10-04T09:00:00.000Z", handle: "mod_anna", caseId: "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a" }] },
     interimSeals: { total: 1, items: [{ at: "2026-10-04T09:00:00.000Z", handle: "mod_anna", caseId: "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a", posts: 3, images: 7 }] },
+    repliesWaiting: { count: 0, oldestAt: null },
+    strikeAccounts: 0,
   };
 
   test("StaffOverview carries the decisions that lifted the protection of reported images, the choices not to seal and the seals taken while deciding that are in force", () => {

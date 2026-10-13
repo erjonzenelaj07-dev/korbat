@@ -24,7 +24,7 @@ import type { AppEnv } from "../env";
 import type { Mailer } from "../mail/mailer";
 import { clientIdentity } from "./client-ip";
 import { authConfigFrom, type AuthDeps, type ProfileStore, type RequestContext, type StaffRequestContext } from "./context";
-import { confirmDeletion, finishPurge, startDeletion } from "./flows/deletion";
+import { confirmDeletion, finishPurge, startDeletion, takeDownTerminated } from "./flows/deletion";
 import { exportAccount, type AccountExport } from "./flows/export";
 import {
   accountReportMailStopped,
@@ -142,6 +142,13 @@ export interface AuthForAccount {
   pendingPurges(): Promise<string[]>;
   /** Finishes step 1's rows if a take-down stopped after the mark, then anonymises the auth row and marks it purged; a no-op when it already is. */
   finishPurge(userId: string): Promise<void>;
+  /**
+   * 3e (design, sections 5 and 7.8): the take-down of an account whose termination is final, as the system: the account
+   * marked deleted and every session revoked in one transaction, then termination_final to the address read before it,
+   * after that commit and best effort. True only for the take-down it made; false, with nothing written or sent, for an
+   * account already marked deleted.
+   */
+  takeDownTerminated(userId: string, facts: { decidedAt: Date; imagesSealed: boolean }): Promise<boolean>;
   /** The account's facts, its passkeys (without their keys), its live sessions, its devices and its own events. */
   exportAccount(userId: string): Promise<AccountExport>;
   appendEvent(userId: string, type: AuthEventType, metadata?: Record<string, unknown>): Promise<void>;
@@ -302,6 +309,7 @@ export function createAuth(options: CreateAuthOptions) {
     confirmDeletion: (session, input) => confirmDeletion(deps, session, input),
     pendingPurges: () => repo.pendingPurges(),
     finishPurge: (userId) => finishPurge(deps, userId),
+    takeDownTerminated: (userId, facts) => takeDownTerminated(deps, userId, facts),
     exportAccount: (userId) => exportAccount(deps, userId),
     appendEvent,
   };

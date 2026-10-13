@@ -102,16 +102,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: strikes through the rout
     expect((await actionsOf(apiDb, await decided(admin, older.caseId, { kind: "final", actions: [act("remove")] }))).map((a) => a.kind)).toEqual(["remove"]);
   });
 
-  test("the routes accept 3c's kinds, a strike and its overruling, a handle's retirement and its reversal, and a suspension at once with its lift, and nothing else yet: other kinds, a kept correction, marks and a withdrawal are refused", async () => {
+  test("the routes accept 3c's kinds, a strike and its overruling, a handle's retirement and its reversal, suspensions and terminations with their lift and the kept answer, and nothing else yet: the reporting kinds and marks are refused, and the database refuses a measure or a kept correction that has no ground", async () => {
     const author = await account();
     const post = await reportedPost(author.id);
     const removal = await decided(admin, post.caseId, { kind: "final", actions: [act("remove")] });
     const accountCase = (await intake(apiDb, ground.finding(admin.id, "R6"), anAccount(author.id))).items[0]!.caseId!;
-    // 3e Task 3 opened a suspension taken at once and its lift (standing-at-once.test.ts); a termination and an announced
-    // suspension stay closed, refused by the route before the transaction.
+    // 3e Task 4 opened a termination and an announced suspension: the route passes them, and the database refuses these,
+    // since the account holds no ladder and no basis for a measure at once.
     expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", ruleId: "R6", actions: [timed("terminate", null, false)] }))).toBe("invalid_decision");
     expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", ruleId: "R6", actions: [timed("suspend", 3, true)] }))).toBe("invalid_decision");
-    // 3e Task 2 opened the retirement of a handle and its reversal (standing-handles.test.ts).
+    // 3e Task 4 opened the kept correction, which answers a reply: the database refuses one that answers none.
     expect(await refusedWith(world.decideAs(admin, post.caseId, { kind: "correction", reviewsDecisionId: removal, outcome: "kept", actions: [] }))).toBe("invalid_decision");
     expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", outcome: "no_violation", actions: [], unfounded: [post.intakeId] }))).toBe("invalid_decision");
     await appealOf(apiDb, removal, author.id);

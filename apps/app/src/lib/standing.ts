@@ -1,4 +1,4 @@
-import { STANDING_RULES, type AccountStanding, type AuthorCaseRow, type DecisionStrike } from "@korbat/contracts";
+import { REPLY_TEXT_MAX, RETENTION, STANDING_RULES, type AccountStanding, type AuthorCaseRow, type DecisionStrike, type DecisionView } from "@korbat/contracts";
 
 /**
  * The app's sentences about an account's standing (3e design, section 9), one table with the design's keys in brackets.
@@ -24,6 +24,15 @@ export function standingTime(at: string): string {
   const d = new Date(at);
   return `${standingDay(at)}, ${two(d.getHours())}:${two(d.getMinutes())} (${two(d.getUTCHours())}:${two(d.getUTCMinutes())} UTC)`;
 }
+
+/** "3 days", "1 day". */
+const daysOf = (days: number): string => `${days} ${days === 1 ? "day" : "days"}`;
+
+/** What korbat decided, as the banner and the reply screen say it: "suspend your account for 3 days", or "terminate your account". */
+const decidedTo = (kind: "suspend" | "terminate", days: number | null): string => (kind === "terminate" ? "terminate your account" : `suspend your account for ${daysOf(days ?? 1)}`);
+
+/** The measure's noun, by its kind: "suspension" or "termination". */
+export const measureNoun = (kind: "suspend" | "terminate"): "suspension" | "termination" => (kind === "terminate" ? "termination" : "suspension");
 
 export const STANDING_TEXTS = {
   /** 9.4: the block above "About you". */
@@ -65,11 +74,140 @@ export const STANDING_TEXTS = {
     /** [banner.running] */
     running: (endsAt: string) =>
       `Your account is suspended until ${standingTime(endsAt)}. You can read, reply to korbat, appeal, export your data and delete your account. You cannot post, like, repost, bookmark, follow, edit your profile, upload images or report under korbat's rules.`,
+    /** [banner.unfixed], for a suspension or, with "terminate your account", a termination. */
+    unfixed: (kind: "suspend" | "terminate", days: number | null, earliestStart: string) =>
+      `korbat has decided to ${decidedTo(kind, days)}. Nothing is restricted yet. It will not start before ${standingTime(earliestStart)}; the exact time appears here within ${RETENTION.mailGiveUpDays} days, once korbat knows whether its email to you could be sent.`,
+    /** [banner.announced] */
+    announced: (kind: "suspend" | "terminate", days: number | null, startsAt: string) =>
+      `korbat will ${decidedTo(kind, days)} from ${standingTime(startsAt)}. Nothing is restricted until then. If you reply before it starts, it waits for korbat's answer.`,
+    /** [banner.held], reading "The termination" for a termination. */
+    held: (kind: "suspend" | "terminate", repliedAt: string, earliestStart: string) =>
+      `You replied on ${standingDay(repliedAt)}. The ${measureNoun(kind)} does not start while your reply is unanswered. korbat answers you here and by email. If korbat keeps its decision, the ${measureNoun(kind)} starts with that answer, and never before ${standingTime(earliestStart)}.`,
+    /** [banner.terminated]: its first two sentences, then the rest. */
+    terminatedFirst: "korbat has terminated your account. You cannot post or interact; your posts stay visible for now.",
+    terminated: (appealUntil: string) =>
+      `korbat has terminated your account. You cannot post or interact; your posts stay visible for now. korbat deletes the account once the decision is final: on ${standingTime(appealUntil)} if you do not appeal, or when your appeal is answered and the decision kept. Until then you can reply, appeal, export your data, or delete the account yourself.`,
+    /** [banner.appealed], after the first two sentences of [banner.terminated]. */
+    appealed: "Your appeal is waiting for a reviewer. Nothing is deleted before it is answered.",
+    /** [banner.replied], after [banner.terminated] or [banner.appealed]. */
+    replied: "Your reply is waiting for an answer. Nothing is deleted before it is answered.",
     read: "Read the decision",
+    reply: "Reply",
     appeal: "Appeal",
     export: "Export my data",
     delete: "Delete account",
   },
+  /** 9.2: the block "Where it stands now" under a decision that holds a suspension or a termination, read fresh. */
+  now: {
+    title: "Where it stands now",
+    /** [now.unfixed] */
+    unfixed: (earliestStart: string) => `Start: not fixed yet, and not before ${standingTime(earliestStart)}.`,
+    /** [now.announced]; a termination has no end to name. */
+    announced: (startsAt: string, endsAt: string | null) => (endsAt === null ? `Starts on ${standingTime(startsAt)}.` : `Starts on ${standingTime(startsAt)}. Ends on ${standingTime(endsAt)}.`),
+    /** [now.held] */
+    held: (repliedAt: string) => `Held by your reply of ${standingDay(repliedAt)}: it has not started.`,
+    /** [now.running] */
+    running: (startsAt: string, endsAt: string) => `Started on ${standingTime(startsAt)}. Ends on ${standingTime(endsAt)}.`,
+    /** [now.ended] */
+    ended: (startsAt: string, endsAt: string) => `Ran from ${standingTime(startsAt)} to ${standingTime(endsAt)}.`,
+    /** [now.never] */
+    never: (liftedAt: string) => `Never started: korbat reversed it on ${standingDay(liftedAt)}.`,
+    /** [now.withdrawn] */
+    withdrawn: (liftedAt: string) => `Never started: korbat withdrew it on ${standingDay(liftedAt)} because it took another measure on your account.`,
+    /** [now.lifted] */
+    lifted: (liftedAt: string) => `Lifted on ${standingDay(liftedAt)}.`,
+    /** [now.liftedEnded] */
+    liftedEnded: (startsAt: string, endsAt: string, liftedAt: string) =>
+      `Ran from ${standingTime(startsAt)} to ${standingTime(endsAt)}. korbat lifted it on ${standingDay(liftedAt)}: it no longer counts toward a later suspension.`,
+    /** [now.basis.before], [now.basis.running] and [now.basis.after]; a protective suspension's read "korbat lifted the seal it rested on". */
+    basis: {
+      before: (endedAt: string, protective: boolean) =>
+        protective ? `It will not start: korbat lifted the seal it rested on, on ${standingDay(endedAt)}.` : `It will not start: korbat reversed a decision it rested on, on ${standingDay(endedAt)}.`,
+      running: (endedAt: string, protective: boolean) =>
+        protective ? `Ended on ${standingDay(endedAt)}, because korbat lifted the seal it rested on.` : `Ended on ${standingDay(endedAt)}, because a decision it rested on was reversed.`,
+      after: (startsAt: string, endsAt: string, endedAt: string, protective: boolean) =>
+        `Ran from ${standingTime(startsAt)} to ${standingTime(endsAt)}. On ${standingDay(endedAt)} ${protective ? "korbat lifted the seal it rested on" : "korbat reversed a decision it rested on"}, so it no longer counts toward a later suspension.`,
+    },
+    /** [now.terminated] */
+    terminated: (startsAt: string, appealUntil: string | null) =>
+      `Started on ${standingTime(startsAt)}. It has no end date. The account is deleted once this decision is final${appealUntil === null ? "" : `: on ${standingTime(appealUntil)} if you do not appeal`}. Nothing is deleted while your appeal or your reply is unanswered.`,
+    /** The link to the decision that lifted the measure, withdrew it, or broke its basis. */
+    endedBy: "Read the decision that did this",
+  },
+  /** 9.2: what the measure rests on, each row a link to that decision's screen. */
+  rests: {
+    strike: (decidedAt: string, ruleId: string | null, where: string) => `Strike of ${standingDay(decidedAt)} under ${ruleId ?? "a rule"}: ${where}`,
+    counts: (endsAt: string) => `counts until ${standingTime(endsAt)}`,
+    expired: "no longer counts",
+    overruled: (at: string) => `overruled on ${standingDay(at)}`,
+    /** [rests.hint] */
+    hint: `Each strike is appealed on its own decision's screen. If one is overruled and fewer than ${STANDING_RULES.ladderStrikes} of these still stand, this suspension ends at once.`,
+    decision: (decidedAt: string) => `It rests on korbat's decision of ${standingDay(decidedAt)}.`,
+    seal: (decidedAt: string) => `It rests on the decision of ${standingDay(decidedAt)} that keeps images of your account sealed.`,
+    /** [rests.basis], and what it adds for a protective suspension. */
+    basis: "That decision is appealed on its own screen. If it is reversed, this measure ends at once.",
+    basisProtective: "You can appeal this suspension here without waiting for that.",
+  },
+  /** 9.2 and 9.3: the reply, on the decision's screen and on its own. */
+  reply: {
+    /** The decision's screen. */
+    button: "Reply",
+    replied: (filedAt: string) => `You replied on ${standingDay(filedAt)}.`,
+    erased: (erasedAt: string) => `korbat erased the text on ${standingDay(erasedAt)}.`,
+    waiting: "korbat has not answered yet.",
+    answered: (answeredAt: string) => `korbat answered on ${standingDay(answeredAt)}.`,
+    answer: "Read the answer",
+    /** [reply.closed.withdrawn] */
+    closedWithdrawn: (answeredAt: string) => `korbat withdrew this suspension on ${standingDay(answeredAt)} for another measure. That was no decision on your reply.`,
+    /** [reply.closed.basis] */
+    closedBasis: (answeredAt: string) => `korbat reversed a decision this suspension rested on, on ${standingDay(answeredAt)}, so your reply needs no answer.`,
+    /** The reply screen (9.3). */
+    title: "Reply to korbat",
+    /** [reply.before] */
+    before: (kind: "suspend" | "terminate", startsAt: string) => {
+      const noun = measureNoun(kind);
+      return `korbat has decided to ${kind === "terminate" ? "terminate" : "suspend"} your account from ${standingTime(startsAt)}. If you reply before then, the ${noun} does not start until a moderator has read your reply and answered you. The answer reverses the ${noun}, or keeps it; a kept ${noun} starts with the answer, and never before ${standingTime(startsAt)}, so replying early costs you nothing.`;
+    },
+    /** [reply.unfixed] */
+    unfixed: (kind: "suspend" | "terminate", earliestStart: string) => {
+      const noun = measureNoun(kind);
+      return `korbat has decided to ${kind === "terminate" ? "terminate" : "suspend"} your account not before ${standingTime(earliestStart)}. If you reply before it starts, the ${noun} does not start until a moderator has read your reply and answered you. The answer reverses the ${noun}, or keeps it; a kept ${noun} starts with the answer, and never before ${standingTime(earliestStart)}, so replying early costs you nothing.`;
+    },
+    /** [reply.running] */
+    running: (kind: "suspend" | "terminate", endsAt: string | null) =>
+      kind === "terminate" || endsAt === null
+        ? "Your account is terminated. A moderator reads your reply and answers you, and can end the termination at once. Nothing is deleted before your reply is answered."
+        : `Your account is suspended until ${standingTime(endsAt)}. A moderator reads your reply and answers you, and can end the suspension at once. The suspension goes on meanwhile.`,
+    field: "Your reply (optional)",
+    count: (n: number) => `${n} of ${REPLY_TEXT_MAX} characters`,
+    /** [reply.hint] */
+    hint: "Say anything you want the moderator to weigh: what happened, what the decision gets wrong, what you will do differently. You do not need to cite rules. You can send it empty: that still asks for a second look.",
+    /** [reply.once] */
+    once: "You can reply once to this decision. Replying does not use up your appeal.",
+    /** [reply.kept] */
+    kept: "A moderator reads your reply. korbat keeps its text until it has answered you and this decision can no longer be appealed, then erases it.",
+    send: "Send reply",
+    /** [reply.sent.onTime] */
+    sentOnTime: (kind: "suspend" | "terminate", filedAt: string) => `korbat received your reply on ${standingTime(filedAt)}, before the start. The ${measureNoun(kind)} is held until korbat answers.`,
+    /** [reply.sent.late] */
+    sentLate: (kind: "suspend" | "terminate", filedAt: string) =>
+      kind === "terminate"
+        ? `korbat received your reply on ${standingTime(filedAt)}. The termination stays until korbat answers, and nothing is deleted before that.`
+        : `korbat received your reply on ${standingTime(filedAt)}. The suspension goes on until korbat answers.`,
+    /** When the decision takes no reply now: the API's own sentence for reply_not_open. */
+    closed: "You cannot reply to this decision: you already replied, or it has ended or was lifted.",
+    back: "Back to the decision",
+  },
+  /** 9.2: above the appeal of an announced measure, and after a kept answer to a reply sent before the start. */
+  appeal: {
+    /** [appeal.early] */
+    early: "You can appeal now; you do not have to wait for the start. An appeal does not hold the start: only a reply sent before the start does.",
+    /** [appeal.again] */
+    again: (answeredAt: string, appealUntil: string) =>
+      `korbat kept this decision after your reply, on ${standingDay(answeredAt)}. You can appeal until ${standingTime(appealUntil)}: the six months count again from that answer.`,
+  },
+  /** [terminate.delete]: beside a termination's appeal, and in Settings, Account above "Delete account" while /me carries a termination. */
+  terminateDelete: "If you delete your account now, your appeal ends with it: nothing is left to restore.",
   /** 9.4: a write refused account_suspended, worded from /me's standing read after the refusal. */
   refused: {
     /** [refused.suspended] */
@@ -131,4 +269,79 @@ export function strikeLine(strike: DecisionStrike): string {
 export function rowStrike(strike: NonNullable<AuthorCaseRow["strike"]>, now: Date): string {
   const where = strike.overruledAt !== null ? CASE_ROW_WORDS.overruled : Date.parse(strike.countsUntil) <= now.getTime() ? CASE_ROW_WORDS.expired : CASE_ROW_WORDS.counts(strike.countsUntil);
   return `${CASE_ROW_WORDS.strike} (${where})`;
+}
+
+/**
+ * The banner's sentences for /me's measure (9.1), in order, or null when it shows nothing: a suspension or a termination
+ * whose start is not fixed, announced or held by a reply; a running suspension; a running termination, with [banner.appealed]
+ * in place of its last sentences while its appeal is pending and [banner.replied] after while its reply is unanswered.
+ */
+export function bannerSentences(standing: AccountStanding | null | undefined): string[] | null {
+  const measure = standing?.measure ?? null;
+  if (measure === null) return null;
+  const { kind, days } = measure;
+  if (measure.state === "unfixed") return [STANDING_TEXTS.banner.unfixed(kind, days, measure.earliestStart)];
+  if (measure.state === "announced") return measure.startsAt === null ? [STANDING_TEXTS.banner.unfixed(kind, days, measure.earliestStart)] : [STANDING_TEXTS.banner.announced(kind, days, measure.startsAt)];
+  if (measure.state === "held") return [STANDING_TEXTS.banner.held(kind, measure.reply?.filedAt ?? measure.earliestStart, measure.earliestStart)];
+  if (kind === "suspend") return measure.endsAt === null ? null : [STANDING_TEXTS.banner.running(measure.endsAt)];
+  const first = measure.appealPending || measure.appealUntil === null ? [STANDING_TEXTS.banner.terminatedFirst, ...(measure.appealPending ? [STANDING_TEXTS.banner.appealed] : [])] : [STANDING_TEXTS.banner.terminated(measure.appealUntil)];
+  const replied = measure.reply !== null && measure.reply.answeredAt === null ? [STANDING_TEXTS.banner.replied] : [];
+  return [...first, ...replied];
+}
+
+/** The measure a decision holds, from its statement: a suspension's or a termination's kind and days. */
+export function standingMeasureOf(view: Pick<DecisionView, "measures">): { kind: "suspend" | "terminate"; days: number | null; basis: string | null } | null {
+  const measure = view.measures.find((entry) => entry.kind === "suspend" || entry.kind === "terminate");
+  if (!measure || (measure.kind !== "suspend" && measure.kind !== "terminate")) return null;
+  return { kind: measure.kind, days: measure.days ?? null, basis: measure.basis ?? null };
+}
+
+/**
+ * The sentence of "Where it stands now" (9.2) for a decision's measure, from DecisionView.standing: by its state, and for
+ * one that ended before its time, by where it was when it ended (its start and end against the moment it ended).
+ */
+export function nowSentence(standing: NonNullable<DecisionView["standing"]>, kind: "suspend" | "terminate", protective: boolean, appealUntil: string | null = null): string {
+  const { startsAt, endsAt, endedAt } = standing;
+  const ended = endedAt ?? standing.earliestStart;
+  switch (standing.state) {
+    case "unfixed":
+      return STANDING_TEXTS.now.unfixed(standing.earliestStart);
+    case "announced":
+      return startsAt === null ? STANDING_TEXTS.now.unfixed(standing.earliestStart) : STANDING_TEXTS.now.announced(startsAt, kind === "terminate" ? null : endsAt);
+    case "held":
+      return STANDING_TEXTS.now.held(standing.reply?.filedAt ?? standing.earliestStart);
+    case "running":
+      if (kind === "terminate" || endsAt === null) return STANDING_TEXTS.now.terminated(startsAt ?? standing.earliestStart, appealUntil);
+      return STANDING_TEXTS.now.running(startsAt ?? standing.earliestStart, endsAt);
+    case "ended":
+      return STANDING_TEXTS.now.ended(startsAt ?? standing.earliestStart, endsAt ?? ended);
+    case "never":
+      return standing.replaced ? STANDING_TEXTS.now.withdrawn(ended) : STANDING_TEXTS.now.never(ended);
+    case "lifted":
+      return startsAt !== null && endsAt !== null && Date.parse(endsAt) <= Date.parse(ended) ? STANDING_TEXTS.now.liftedEnded(startsAt, endsAt, ended) : STANDING_TEXTS.now.lifted(ended);
+    case "basis_ended":
+      if (startsAt === null || Date.parse(startsAt) > Date.parse(ended)) return STANDING_TEXTS.now.basis.before(ended, protective);
+      if (endsAt === null || Date.parse(endsAt) > Date.parse(ended)) return STANDING_TEXTS.now.basis.running(ended, protective);
+      return STANDING_TEXTS.now.basis.after(startsAt, endsAt, ended, protective);
+  }
+}
+
+/** A strike the measure rests on, as its row says it: "Strike of 4 Oct 2026 under R1: counts until ...". */
+export function restsOnLine(entry: NonNullable<DecisionView["standing"]>["restsOn"][number]): string {
+  const where =
+    entry.state === "overruled" ? STANDING_TEXTS.rests.overruled(entry.overruledAt ?? entry.decidedAt) : entry.state === "expired" || entry.countsUntil === null ? STANDING_TEXTS.rests.expired : STANDING_TEXTS.rests.counts(entry.countsUntil);
+  return STANDING_TEXTS.rests.strike(entry.decidedAt, entry.ruleId, where);
+}
+
+/**
+ * Where the person's reply stands (9.2), after "You replied on": not answered yet; answered, with the answer's screen;
+ * or closed without an answer on its merits, by a withdrawal for another measure or by the reversal its basis rested on.
+ */
+export function replyStandsLine(standing: NonNullable<DecisionView["standing"]>): { text: string; link: string | null } | null {
+  const reply = standing.reply;
+  if (reply === null) return null;
+  if (reply.answeredAt === null) return { text: STANDING_TEXTS.reply.waiting, link: null };
+  if (standing.state === "never" && standing.replaced) return { text: STANDING_TEXTS.reply.closedWithdrawn(reply.answeredAt), link: reply.answeredBy };
+  if (standing.state === "basis_ended" && reply.answeredBy !== null && reply.answeredBy === standing.endedBy) return { text: STANDING_TEXTS.reply.closedBasis(reply.answeredAt), link: reply.answeredBy };
+  return { text: STANDING_TEXTS.reply.answered(reply.answeredAt), link: reply.answeredBy };
 }

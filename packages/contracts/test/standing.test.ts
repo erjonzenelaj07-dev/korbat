@@ -28,6 +28,14 @@ import {
   UNFOUNDED_MAX,
   isRetiredPlaceholder,
   outcomeWords,
+  DecisionStanding,
+  QueuePage,
+  QueueReply,
+  REPLY_AIM_HOURS,
+  ReplyRequest,
+  ReplyResponse,
+  StandingLists,
+  StatementRepliedTo,
   type ItemOutcome,
 } from "../src/index";
 
@@ -256,6 +264,70 @@ describe("suspensions at once and the account's standing (3e design, sections 7.
     for (const outcome of ITEM_OUTCOMES) {
       expect(line(outcome), outcome).not.toContain(ACCOUNT_ITEM_SCOPE);
       expect(line(outcome), outcome).not.toContain(ACCOUNT_MEASURE_SCOPE.retired);
+    }
+  });
+});
+
+describe("announced measures, replies and termination (3e design, sections 10.1 to 10.3, Task 4)", () => {
+  const T = "2026-10-12T10:00:00.000Z";
+  const ID = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+
+  test("a reply carries at most REPLY_TEXT_MAX characters and nothing else; its answer says when it was filed and whether before the start; replies are answered within REPLY_AIM_HOURS", () => {
+    expect(REPLY_AIM_HOURS).toBe(24);
+    expect(ReplyRequest.safeParse({}).success).toBe(true);
+    expect(ReplyRequest.safeParse({ statement: "I quoted a film." }).success).toBe(true);
+    expect(ReplyRequest.safeParse({ statement: "x".repeat(REPLY_TEXT_MAX + 1) }).success).toBe(false);
+    // The time of filing and whether it came on time are the database's: a request that sets either is refused.
+    expect(ReplyRequest.safeParse({ statement: "x", onTime: true }).success).toBe(false);
+    expect(ReplyRequest.safeParse({ filedAt: T }).success).toBe(false);
+    expect(ReplyResponse.parse({ filedAt: T, onTime: true })).toEqual({ filedAt: T, onTime: true });
+  });
+
+  test("the queue's first page carries the unanswered replies without their text; a decision's standing carries the reply with its text for its author", () => {
+    const reply = { caseId: ID, decisionId: ID, kind: "suspend", days: 3, filedAt: T, onTime: true, endsAt: null };
+    expect(QueueReply.parse(reply)).toEqual(reply);
+    expect(Object.keys(QueueReply.shape)).not.toContain("text");
+    expect(QueuePage.safeParse({ cases: [], nextCursor: null, replies: [reply] }).success).toBe(true);
+    expect(QueuePage.safeParse({ cases: [], nextCursor: null }).success).toBe(false);
+    const standing = {
+      state: "held",
+      earliestStart: T,
+      startsAt: null,
+      endsAt: null,
+      endedAt: null,
+      endedBy: null,
+      replaced: false,
+      restsOn: [{ decisionId: ID, ruleId: "R1", decidedAt: T, countsUntil: T, state: "counts", overruledAt: null }],
+      reply: { filedAt: T, onTime: true, text: "I quoted a film.", erasedAt: null, answeredAt: null, answeredBy: null },
+      replyOpen: false,
+    };
+    expect(DecisionStanding.parse(standing)).toEqual(standing);
+    expect(DecisionStanding.safeParse({ ...standing, state: "paused" }).success).toBe(false);
+    // A measure taken at once rests on a decision, not a strike: no rule's count, no state.
+    expect(DecisionStanding.safeParse({ ...standing, restsOn: [{ decisionId: ID, ruleId: null, decidedAt: T, countsUntil: null, state: null, overruledAt: null }] }).success).toBe(true);
+  });
+
+  test("a statement that answered a reply carries the reply's time, the measure and the start and end it fixed; optional, so older data parses", () => {
+    const repliedTo = { filedAt: T, onTime: true, kind: "suspend", days: 3, periodThen: { state: "not_started", startedAt: null, endedAt: null }, startsAt: T, endsAt: T, appealUntil: T };
+    expect(StatementRepliedTo.parse(repliedTo)).toEqual(repliedTo);
+    expect(StatementRepliedTo.safeParse({ ...repliedTo, days: 31 }).success).toBe(false);
+    expect(DecisionStatement.shape.repliedTo.safeParse(undefined).success).toBe(true);
+    expect(StatementReversal.shape.replyFiledAt.safeParse(undefined).success).toBe(true);
+  });
+
+  test("the Standing screen's four lists: people by handle, each row's case, the numbers the ladder reads", () => {
+    const lists = {
+      atThreeStrikes: { total: 1, items: [{ handle: "someone", caseId: null, activeStrikes: 3, ruleId: "R1", newestOn: "2026-10-04", maxDays: 3, mayTerminate: false }] },
+      reportingRecords: { total: 0, items: [] },
+      noticesUndelivered: { total: 1, items: [{ handle: "someone", caseId: ID, decidedOn: "2026-10-01", startsAt: T }] },
+      terminationsWaiting: { total: 1, items: [{ handle: "someone", caseId: ID, decidedOn: "2026-09-01", finalOn: null, heldBy: "reply", replyOnTime: true }] },
+    };
+    expect(StandingLists.parse(lists)).toEqual(lists);
+    expect(StandingLists.safeParse({ ...lists, terminationsWaiting: { total: 1, items: [{ ...lists.terminationsWaiting.items[0], heldBy: "admin" }] } }).success).toBe(false);
+    // No row carries an account's id or address.
+    for (const list of Object.values(StandingLists.shape)) {
+      const row = (list.shape.items.element as unknown as { shape: Record<string, unknown> }).shape;
+      for (const member of Object.keys(row)) expect(member, member).not.toMatch(/accountId|email|address/i);
     }
   });
 });

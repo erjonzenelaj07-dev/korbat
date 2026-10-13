@@ -3,17 +3,18 @@ import { sql, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { closeDb, createDb } from "@korbat/db";
-import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, OUTCOME_PHRASES, QUOTE_ITEM_SCOPE, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, appealDeadline, type NoticeRequest } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, OUTCOME_PHRASES, QUOTE_ITEM_SCOPE, RETENTION, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, appealDeadline, type NoticeRequest } from "@korbat/contracts";
 import { parseVersionedKey } from "../../src/auth/crypto";
 import { MemoryJobLock, type JobLock } from "../../src/lib/jobs";
 import type { NoticeUpdateLine } from "../../src/mail/mailer";
 import type { ModerationDeps } from "../../src/moderation/context";
 import { DISPATCH_INTERVAL_MS, casesCalling, cutoffOf, dispatchMarkerKey, dispatchRound, type DispatchReport } from "../../src/moderation/dispatch";
-import { noticeStatus, submitNotice } from "../../src/moderation/intake";
+import { noticeStatus, recordIntake, submitNotice } from "../../src/moderation/intake";
 import { accountLink, postLink } from "../../src/moderation/links";
-import { waitingCases } from "../../src/moderation/repo";
+import { giveUpReceiptsAndAuthorMails, waitingCases } from "../../src/moderation/repo";
+import { fileReply } from "../../src/moderation/standing";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { aPost, act, authCaseCounts, casesMedia, illegalNotice, imagePost, insertItem, moderationCounts, newImageRow, newPostRow, report, saveText, uuids } from "./moderation-fixtures";
+import { aPost, act, anAccount, authCaseCounts, casesMedia, ground, illegalNotice, imagePost, insertItem, moderationCounts, newImageRow, newPostRow, report, saveText, timed, uuids } from "./moderation-fixtures";
 import { accountTarget, linkTarget, noticesWorld, notices, postTarget, type NoticesWorld } from "./notices-harness";
 import { rolledBack } from "./staff-fixtures";
 
@@ -222,7 +223,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the dispatch job", () =>
     const holding = await sent(notices.rule([postTarget(second.postId)]));
     await decided(moderator, holding.caseId, { kind: "interim", actions: [act("withhold")] });
     // Nothing is past its time yet (the job's clock is still less than a day ahead of the database's), and the round sends no alert.
-    expect(await waitingCases(w.apiDb, jobNow())).toEqual({ lanes: [], interim: 0 });
+    expect(await waitingCases(w.apiDb, jobNow())).toEqual({ lanes: [], interim: 0, replies: null });
     const mailed = waitingMails().length;
     expect((await round()).waiting).toBe("none");
     // A day on, lane 1's case has waited more than its 24 hours; lane 2's seven days are not over, but its measure is a day old.
@@ -1010,6 +1011,47 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the dispatch job", () =>
     expect(stored).toBeLessThan(jobNow().getTime());
     expect((await round()).daily).toBe(true);
     expect(Math.abs((await forgetAfter(contactId)) - appealDeadline(jobNow()).getTime())).toBeLessThan(5 * MIN);
+  });
+
+  // Last but one: it moves the job's clock by days, as the tests above it that do.
+  test("3e: an announced suspension's statement mail is left out of the bulk give-up and given up alone, under its subject's profile lock; and a reply nobody answered for longer than REPLY_AIM_HOURS joins the queue-age alert", async () => {
+    const waitingMails = () => w.mailer.sent.filter((mail) => mail.template === "moderation_waiting");
+    const author = await w.account();
+    // The ladder's first step: three strikes, then an announced suspension whose statement the relay cannot take.
+    for (let i = 0; i < STANDING_RULES.ladderStrikes; i++) {
+      const postId = await newPostRow(w.apiDb, author.id, { createdAt: sql`clock_timestamp()`, body: "a post that breaks R1" });
+      const finding = (await recordIntake(w.deps, { ground: ground.finding(admin.id, "R1"), live: [aPost(postId)] })).items[0]!.caseId!;
+      await decided(admin, finding, { kind: "final", ruleId: "R1", actions: [act("remove")] });
+    }
+    const accountCase = (await recordIntake(w.deps, { ground: ground.finding(admin.id, "R1"), live: [anAccount(author.id, author.handle)] })).items[0]!.caseId!;
+    w.mailer.mode = "fail";
+    let decisionId: string;
+    try {
+      decisionId = await decided(admin, accountCase, { kind: "final", ruleId: "R1", actions: [timed("suspend", 3, true)] });
+    } finally {
+      w.mailer.mode = "deliver";
+    }
+    expect(await fileReply(w.deps, author.id, decisionId, {})).toMatchObject({ onTime: true });
+    // Six days on: the bulk give-up leaves the announced measure's mail out, and the round gives it up alone.
+    ahead(6 * 24 * HOUR);
+    await rolledBack(w.migrateDb, async (tx) => {
+      expect((await giveUpReceiptsAndAuthorMails(tx, jobNow(), RETENTION.mailGiveUpDays)).authorMails).not.toContain(decisionId);
+    });
+    w.mailer.mode = "fail";
+    let report: DispatchReport;
+    try {
+      report = await round();
+    } finally {
+      w.mailer.mode = "deliver";
+    }
+    expect(report.givenUp.authorMails).toBeGreaterThanOrEqual(1);
+    const [mail] = await w.apiDb.execute<{ author_mail: string; stamped: boolean }>(sql`select author_mail, author_mail_at is not null as stamped from decisions where id = ${decisionId}::uuid`);
+    expect({ ...mail! }).toEqual({ author_mail: "failed", stamped: true });
+    // The reply has waited six days: the queue-age alert carries it, in the next round the relay takes.
+    expect((await waitingCases(w.apiDb, jobNow())).replies?.count).toBeGreaterThanOrEqual(1);
+    ahead(10 * MIN);
+    expect((await round()).waiting).toBe("sent");
+    expect(waitingMails().at(-1)!.data.replyCount).toBeDefined();
   });
 
   test("this file left no row behind: the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {

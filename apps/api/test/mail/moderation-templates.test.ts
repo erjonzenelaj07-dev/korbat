@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, QUOTE_ITEM_SCOPE, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, outcomeWords } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, outcomeWords } from "@korbat/contracts";
 import { noticeTime } from "../../src/auth/flows/notify";
 import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } from "../../src/mail/mailer";
 import { MemoryMailer } from "../../src/mail/memory";
@@ -23,7 +23,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 36 templates: the 25 before moderation cases, the nine of 3c and the two of 3e's Task 3", () => {
+  test("holds 39 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3 and the three of its Task 4", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -31,11 +31,12 @@ describe("the closed union of templates", () => {
       "recovery_code_used", "staff_key_added", "staff_session_started", "staff_key_suspect", "staff_keys_revoked",
       "notice_received", "notice_update", "moderation_decision", "moderation_urgent", "moderation_waiting", "moderation_burst", "moderation_reads", "moderation_reveal", "moderation_csam_lifted",
       "suspension_started_at_once", "suspension_lifted",
+      "suspension_announced", "reply_answered", "termination_final",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(36);
+    expect(new Set(names).size).toBe(39);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(36);
+    expect(Object.keys(all)).toHaveLength(39);
   });
 });
 
@@ -129,19 +130,32 @@ describe("the staff alerts of deciding", () => {
       `Lane 1: 1 case waiting longer than 24 hours, since ${TIME}.`,
       `Lane 2: 12 cases waiting longer than 7 days; the oldest since ${TIME}.`,
       "3 cases have held a measure taken while deciding for more than 24 hours; their authors cannot appeal until the case is decided.",
-      "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only reminder.",
+      "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.",
       LAST_STAFF,
     ]);
     linkless(r);
     // Only the lanes that have such a case, and the measures' line only when there is one.
     const one = renderTemplate("moderation_waiting", { lane2Count: "1", lane2Oldest: TIME });
-    expect(paragraphs(one.text)).toEqual([`Lane 2: 1 case waiting longer than 7 days, since ${TIME}.`, "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only reminder.", LAST_STAFF]);
+    expect(paragraphs(one.text)).toEqual([`Lane 2: 1 case waiting longer than 7 days, since ${TIME}.`, "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.", LAST_STAFF]);
     const held = renderTemplate("moderation_waiting", { interimCount: "1" });
     expect(paragraphs(held.text)).toEqual([
       "1 case has held a measure taken while deciding for more than 24 hours; its author cannot appeal until the case is decided.",
-      "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only reminder.",
+      "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.",
       LAST_STAFF,
     ]);
+    // 3e: the replies to a suspension or a termination unanswered for longer than korbat's aim, after the lanes and the measures.
+    const replies = renderTemplate("moderation_waiting", { lane1Count: "1", lane1Oldest: TIME, replyCount: "2", replyOldest: TIME });
+    expect(paragraphs(replies.text)).toEqual([
+      `Lane 1: 1 case waiting longer than 24 hours, since ${TIME}.`,
+      `2 replies to a suspension or termination have waited more than ${REPLY_AIM_HOURS} hours, the oldest since ${TIME}. A reply sent before the start holds its suspension until someone answers.`,
+      "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.",
+      LAST_STAFF,
+    ]);
+    linkless(replies);
+    expect(paragraphs(renderTemplate("moderation_waiting", { replyCount: "1", replyOldest: TIME }).text)[0]).toBe(
+      `1 reply to a suspension or termination has waited more than ${REPLY_AIM_HOURS} hours, since ${TIME}. A reply sent before the start holds its suspension until someone answers.`,
+    );
+    expect(() => renderTemplate("moderation_waiting", { replyCount: "2" })).toThrow(/replyOldest/);
     // A count without its time, and a mail about nothing, are programming errors.
     expect(() => renderTemplate("moderation_waiting", { lane0Count: "2" })).toThrow(/lane0Oldest/);
     expect(() => renderTemplate("moderation_waiting", {})).toThrow(/nothing/);
@@ -359,6 +373,75 @@ describe("3e: the statement mails of a suspension taken at once and of its lift 
       for (const period of ["not_started", "running", "ended"]) expect(renderTemplate("suspension_lifted", { measure: "suspend", why, period, statement }).text).not.toMatch(/as before|handed to your mail provider|delivered/);
     }
     expect(renderTemplate("suspension_lifted", { measure: "terminate", why: "lifted", period: "running", statement }).subject).toBe("korbat lifted the termination of your account");
-    expect(() => renderTemplate("suspension_lifted", { measure: "suspend", why: "replaced", period: "running", statement })).toThrow(/why/);
+    // Task 4: a withdrawal needs the withdrawn decision's time; a why the template does not have is a programming error.
+    expect(() => renderTemplate("suspension_lifted", { measure: "suspend", why: "replaced", period: "running", statement })).toThrow(/decidedAt/);
+    expect(() => renderTemplate("suspension_lifted", { measure: "suspend", why: "answered", period: "running", statement })).toThrow(/why/);
+  });
+});
+
+describe("3e Task 4: the mails of an announced measure, of the answer to a reply, of a withdrawal, and of a termination's take-down (design, section 18, W.6)", () => {
+  const lines = ["korbat will suspend your account for 3 days. Nothing is restricted yet.", "The facts: The account had 3 active strikes."];
+  const statement = lines.join(String.fromCharCode(10));
+  const READ = "Read it in korbat under Settings, Cases. korbat's emails never contain a link to act on a decision.";
+  const EARLIEST = "2026-10-11 09:30 UTC";
+
+  test("suspension_announced: its subject, its lead with the days, the window and the earliest start, the reply, then the statement; a termination's without days", () => {
+    const r = renderTemplate("suspension_announced", { measure: "suspend", days: "3", window: String(STANDING_RULES.replyWindowHours), earliestStart: EARLIEST, statement });
+    expect(r.subject).toBe("korbat has decided to suspend your account: you can reply first");
+    expect(paragraphs(r.text)).toEqual([
+      `korbat has decided to suspend your korbat account for 3 days. Nothing is restricted yet. The suspension starts ${STANDING_RULES.replyWindowHours} hours after korbat sent this email, and not before ${EARLIEST}.`,
+      `You can reply before it starts: sign in to korbat, where this decision is always shown and a banner on every screen gives the exact time and a Reply button. A reply sent before ${EARLIEST} is certainly in time, and holds the start until a moderator has answered you.`,
+      "The decision and its reasons follow.",
+      ...lines,
+      READ,
+      LAST_USER,
+    ]);
+    expect(r.text).not.toMatch(/https?:|www[.]|handed to your mail provider|delivered/);
+    expect(paragraphs(renderTemplate("suspension_announced", { measure: "suspend", days: "1", window: "168", earliestStart: EARLIEST, statement }).text)[0]).toContain("for 1 day.");
+    const t = renderTemplate("suspension_announced", { measure: "terminate", window: "168", earliestStart: EARLIEST, statement });
+    expect(t.subject).toBe("korbat has decided to terminate your account: you can reply first");
+    expect(paragraphs(t.text)[0]).toBe(`korbat has decided to terminate your korbat account. Nothing is restricted yet. The termination starts 168 hours after korbat sent this email, and not before ${EARLIEST}.`);
+    expect(() => renderTemplate("suspension_announced", { measure: "suspend", window: "168", earliestStart: EARLIEST, statement })).toThrow(/days/);
+    expect(() => renderTemplate("suspension_announced", { measure: "suspend", days: "3", earliestStart: EARLIEST, statement })).toThrow(/window/);
+  });
+
+  test("reply_answered: a lead for a kept and for a reversed answer, then the answer's statement", () => {
+    const kept = renderTemplate("reply_answered", { outcome: "kept", statement });
+    expect(kept.subject).toBe("korbat answered your reply");
+    expect(paragraphs(kept.text)).toEqual(["A moderator read your reply and kept the decision. The answer and its reasons follow.", ...lines, READ, LAST_USER]);
+    expect(paragraphs(renderTemplate("reply_answered", { outcome: "reversed", statement }).text)[0]).toBe("A moderator read your reply and reversed the decision. The answer follows.");
+    expect(() => renderTemplate("reply_answered", { outcome: "withdrawn", statement })).toThrow(/outcome/);
+  });
+
+  test("suspension_lifted for a withdrawal: never an answer to the reply, and the sentence on the reply only when one was filed", () => {
+    const r = renderTemplate("suspension_lifted", { measure: "suspend", why: "replaced", decidedAt: "2026-10-04 09:30 UTC", replied: "true", statement });
+    expect(r.subject).toBe("korbat withdrew the suspension it announced");
+    expect(paragraphs(r.text)).toEqual([
+      "korbat withdrew the suspension of your korbat account that it announced on 2026-10-04 09:30 UTC, because it is taking another measure on your account. This is not a decision on your reply.",
+      "The decision about the other measure reaches you separately.",
+      ...lines,
+      READ,
+      LAST_USER,
+    ]);
+    expect(paragraphs(renderTemplate("suspension_lifted", { measure: "terminate", why: "replaced", decidedAt: "2026-10-04 09:30 UTC", replied: "false", statement }).text)[0]).toBe(
+      "korbat withdrew the termination of your korbat account that it announced on 2026-10-04 09:30 UTC, because it is taking another measure on your account.",
+    );
+  });
+
+  test("termination_final: the decision's day, that it is final, what is deleted, the sentence on sealed images only when images are sealed, and never that korbat keeps nothing when they are", () => {
+    const r = renderTemplate("termination_final", { decided: "2026-04-04 09:30 UTC", imagesSealed: "false" });
+    expect(r.subject).toBe("korbat has closed your terminated account");
+    expect(paragraphs(r.text)).toEqual([
+      "korbat's decision of 2026-04-04 09:30 UTC to terminate your korbat account is final: the time to appeal has passed, or your appeal was answered and the decision kept, and no reply of yours is unanswered.",
+      "korbat has closed the account and is now deleting its posts and profile and every image it has not sealed, as that decision said. This cannot be undone. The handle stays reserved, so nobody else can take it.",
+      "korbat keeps nothing to recognise a new account of yours by. A new account that carries on what this one was terminated for breaks korbat's terms.",
+      LAST_USER,
+    ]);
+    const sealed = renderTemplate("termination_final", { decided: "2026-04-04 09:30 UTC", imagesSealed: "true" });
+    expect(paragraphs(sealed.text)[2]).toBe(
+      "korbat keeps nothing to recognise a new account of yours by. Images of yours that korbat sealed stay with it for the authorities alone, as the decision that sealed them said. A new account that carries on what this one was terminated for breaks korbat's terms.",
+    );
+    for (const mail of [r, sealed]) expect(mail.text).not.toMatch(/https?:|www[.]|@[a-z]/);
+    expect(() => renderTemplate("termination_final", { imagesSealed: "false" })).toThrow(/decided/);
   });
 });

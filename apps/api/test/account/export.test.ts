@@ -340,6 +340,7 @@ function harness() {
       confirmDeletion: notHere,
       pendingPurges: notHere,
       finishPurge: notHere,
+      takeDownTerminated: notHere,
       exportAccount: async () => {
         if (failures.exportAccount > 0) {
           failures.exportAccount -= 1;
@@ -368,6 +369,7 @@ function harness() {
     media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images },
     moderation: {
       forgetAccount: notHere,
+      takeDownDue: notHere,
       exportFor: async (id) => {
         asked.push(id);
         if (failures.exportFor > 0) {

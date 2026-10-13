@@ -268,7 +268,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the path for child sexua
         };
       },
     });
-    await afterDecision({ apiDb: failing, auth: w.authForModeration, limits: w.deps.limits, log: w.deps.log }, admin.id, answer);
+    await afterDecision({ apiDb: failing, auth: w.authForModeration, social: w.deps.social, limits: w.deps.limits, log: w.deps.log }, admin.id, answer);
     expect((await lifted(moderator)).slice(toModerator)).toEqual([alert, alert]);
     expect((await lifted(admin)).slice(toAdmin)).toEqual([alert, alert]);
   });

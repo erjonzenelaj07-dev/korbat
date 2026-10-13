@@ -13,6 +13,8 @@ import {
   foldedReceipts,
   giveUpOutcomeMails,
   giveUpReceiptsAndAuthorMails,
+  announcedMailsDue,
+  giveUpAnnouncedMail,
   lockPendingOutcomeLines,
   lockPendingReceipt,
   pendingAuthorMails,
@@ -188,13 +190,39 @@ async function repeatUrgent(deps: ModerationDeps, now: Date): Promise<DispatchRe
 }
 
 /**
- * The queue-age alert, at most once a day: per lane the cases past its response time with the oldest one's time, and the
- * open cases that have held a measure taken while deciding for more than a day, whose author cannot appeal it.
+ * The queue-age alert, at most once a day: per lane the cases past its response time with the oldest one's time, the
+ * open cases that have held a measure taken while deciding for more than a day, whose author cannot appeal it, and (3e,
+ * section 7.14) the replies to a suspension or a termination unanswered for longer than REPLY_AIM_HOURS, under the same
+ * key and window: a reply before the start holds the suspension until someone answers it.
  */
 async function alertWaiting(deps: ModerationDeps, now: Date): Promise<DispatchReport["waiting"]> {
   const waiting = await waitingCases(deps.apiDb, now);
-  if (waiting.lanes.length === 0 && waiting.interim === 0) return "none";
-  return staffAlert(deps, WAITING_ALERT_KEY, WAITING_ALERT_WINDOW_MS, { template: "moderation_waiting", lanes: waiting.lanes, interim: waiting.interim });
+  if (waiting.lanes.length === 0 && waiting.interim === 0 && waiting.replies === null) return "none";
+  return staffAlert(deps, WAITING_ALERT_KEY, WAITING_ALERT_WINDOW_MS, { template: "moderation_waiting", lanes: waiting.lanes, interim: waiting.interim, replies: waiting.replies });
+}
+
+/**
+ * 3e (design, sections 5 and 7.14 item 3): gives up the statement mails of decisions that hold an announced suspension
+ * or termination, each alone, in a transaction that takes the subject's profile FOR NO KEY UPDATE first and the
+ * decision's row after it: the mail's outcome fixes the measure's start, which the database derives into the profile's
+ * columns, and a deciding transaction holds the profile before it touches decisions. Answers the ids given up; a failure
+ * for one is logged with the decision's id and leaves it for the next round.
+ */
+export async function giveUpAnnounced(deps: Pick<ModerationDeps, "apiDb" | "social" | "log">, now: Date): Promise<string[]> {
+  const gone: string[] = [];
+  for (const due of await announcedMailsDue(deps.apiDb, now, RETENTION.mailGiveUpDays)) {
+    try {
+      const given = await deps.apiDb.transaction(async (tx) => {
+        await beginMailRecord(tx);
+        await deps.social.lockAccounts(tx, [due.subjectId], "no key update");
+        return giveUpAnnouncedMail(tx, due.decisionId);
+      });
+      if (given) gone.push(due.decisionId);
+    } catch (err) {
+      deps.log.error({ err, job: DISPATCH_JOB, step: "give-up", decisionId: due.decisionId }, "moderation-dispatch: an announced measure's mail could not be given up; it is tried again next round");
+    }
+  }
+  return gone;
 }
 
 // ---------------------------------------------------------------- step 3: the daily release
@@ -487,10 +515,12 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
   // them, after it, so each is tried at least once even when the daily release kept failing for longer than that.
   await step("give-up", async () => {
     const gone = await giveUpReceiptsAndAuthorMails(deps.apiDb, now, RETENTION.mailGiveUpDays);
+    // 3e: the announced measures' statement mails, which the bulk statement leaves out, one by one under the profile's lock.
+    const announced = await giveUpAnnounced(deps, now);
     report.givenUp.receipts = gone.receipts.length;
-    report.givenUp.authorMails = gone.authorMails.length;
+    report.givenUp.authorMails = gone.authorMails.length + announced.length;
     for (const id of gone.receipts) deps.log.warn({ job: DISPATCH_JOB, kind: "receipt", id }, "moderation: mail given up");
-    for (const id of gone.authorMails) deps.log.warn({ job: DISPATCH_JOB, kind: "statement", id }, "moderation: mail given up");
+    for (const id of [...gone.authorMails, ...announced]) deps.log.warn({ job: DISPATCH_JOB, kind: "statement", id }, "moderation: mail given up");
     if (!outcomesTried) return;
     const lines = await giveUpOutcomeMails(deps.apiDb, now, RETENTION.mailGiveUpDays);
     report.givenUp.outcomes = lines.length;

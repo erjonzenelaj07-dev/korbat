@@ -222,6 +222,13 @@ export const STANDING_DAYS = { min: 1, max: 30 } as const;
 /** The most characters of a reply to a standing measure: the bound of an appeal's statement. */
 export const REPLY_TEXT_MAX = 2000;
 
+/**
+ * The hours after which a reply to a suspension or a termination that nobody answered joins the queue-age alert, and with
+ * them korbat's published aim for answering a reply to a suspension taken at once (3e design, sections 7.7 step 6 and
+ * 7.14): an aim, not a promise. The terms, the console and the alert print this number, never a literal.
+ */
+export const REPLY_AIM_HOURS = 24;
+
 /** The most items one decision marks "manifestly unfounded" (a default, flagged with the other numbers). */
 export const UNFOUNDED_MAX = 100;
 
@@ -645,6 +652,18 @@ export type ReexamineRequest = z.infer<typeof ReexamineRequest>;
 /** POST /api/moderation/decisions/:id/appeal: the author's appeal of a final decision that restricts them. */
 export const AppealRequest = z.strictObject({ statement: Statement });
 export type AppealRequest = z.infer<typeof AppealRequest>;
+
+/**
+ * POST /api/moderation/decisions/:id/reply (3e design, sections 7.6 step 9 and 10.2): the person's one reply to the
+ * suspension or termination a decision holds, with an optional text under the text rules, at most REPLY_TEXT_MAX
+ * characters. The server makes its salt and digest, as for an appeal.
+ */
+export const ReplyRequest = z.strictObject({ statement: noticeText(REPLY_TEXT_MAX).optional() });
+export type ReplyRequest = z.infer<typeof ReplyRequest>;
+
+/** The answer to a reply (201): when the database filed it, and whether it came before the start, which it then holds. */
+export const ReplyResponse = z.object({ filedAt: z.iso.datetime(), onTime: z.boolean() });
+export type ReplyResponse = z.infer<typeof ReplyResponse>;
 
 /**
  * The answer to a request for a re-examination (201): the positions of the items that are now examined again, in
@@ -1131,7 +1150,16 @@ export const CaseStanding = z.object({
    * terrorist content, a seal for good), or null. The composer's preview prints it in the statement's basis sentence,
    * which names that decision by its time.
    */
-  basisDecidedAt: z.object({ threat: z.iso.datetime().nullable(), terrorist: z.iso.datetime().nullable(), protective: z.iso.datetime().nullable() }),
+  basisDecidedAt: z.object({
+    threat: z.iso.datetime().nullable(),
+    terrorist: z.iso.datetime().nullable(),
+    protective: z.iso.datetime().nullable(),
+    /**
+     * 3e Task 4: for a termination at once, the times of the two R5 decisions it would rest on now: the one the earlier
+     * suspension for a threat rests on, and the newest about a post made after it; null when the ground is not met.
+     */
+    threatRepeat: z.object({ earlier: z.iso.datetime(), newer: z.iso.datetime() }).nullable().optional(),
+  }),
 });
 export type CaseStanding = z.infer<typeof CaseStanding>;
 const TargetKind = z.enum(["post", "account"]);
@@ -1161,8 +1189,28 @@ export const QueueRow = z.object({
 });
 export type QueueRow = z.infer<typeof QueueRow>;
 
-/** GET /api/staff/queue: a page of the queue in its order, and the cursor that asks for the next; null when there is none. */
-export const QueuePage = z.object({ cases: z.array(QueueRow).max(QUEUE_PAGE_SIZE), nextCursor: z.string().nullable() });
+/**
+ * 3e (design, sections 8.5 and 10.3): a reply to a suspension or a termination that no decision has answered yet, as the
+ * queue's first section lists it, oldest first: the measure's case and decision, its kind and days, when the reply was
+ * filed, whether before the start (it then holds the start), and the measure's end as it stands now (null while it has
+ * none, and for a termination). Never the reply's text: that is read on the case page, whose read is logged.
+ */
+export const QueueReply = z.object({
+  caseId: z.uuid(),
+  decisionId: z.uuid(),
+  kind: z.enum(["suspend", "terminate"]),
+  days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(),
+  filedAt: z.iso.datetime(),
+  onTime: z.boolean(),
+  endsAt: z.iso.datetime().nullable(),
+});
+export type QueueReply = z.infer<typeof QueueReply>;
+
+/**
+ * GET /api/staff/queue: a page of the queue in its order, and the cursor that asks for the next; null when there is none.
+ * 3e: the first page (no cursor) also carries the unanswered replies, oldest first; a later page carries none.
+ */
+export const QueuePage = z.object({ cases: z.array(QueueRow).max(QUEUE_PAGE_SIZE), nextCursor: z.string().nullable(), replies: z.array(QueueReply).max(QUEUE_PAGE_SIZE) });
 export type QueuePage = z.infer<typeof QueuePage>;
 
 /** The queue's cursor is the last row's sort key, as an opaque word the server made. */
@@ -1328,6 +1376,12 @@ export const CaseDecisionAction = z.object({
    * names and the preview of its reversal prints. Absent on every other kind.
    */
   handle: z.string().optional(),
+  /**
+   * 3e Task 4: on a suspension or a termination, the person's reply to it: when it was filed and whether before the start,
+   * its text while korbat keeps it (null when there was none or it was erased), and the decision that answered it with
+   * when; null when there is no reply and on every other kind. The case page is the one place the text is read.
+   */
+  reply: z.object({ filedAt: z.iso.datetime(), onTime: z.boolean(), text: z.string().nullable(), answeredAt: z.iso.datetime().nullable(), answeredBy: z.uuid().nullable() }).nullable(),
 });
 export type CaseDecisionAction = z.infer<typeof CaseDecisionAction>;
 
@@ -1423,10 +1477,15 @@ export const AppealRow = z.object({
   reviewer: ReviewerState,
   needsAdmin: z.boolean(),
   mayReview: z.boolean(),
+  /**
+   * 3e (design, sections 7.11 item 6 and 10.3): the appealed decision holds a suspension that runs now or a termination
+   * that stands; such appeals come first in the list, oldest first: the person who can do nothing while waiting is read first.
+   */
+  standingFirst: z.boolean(),
 });
 export type AppealRow = z.infer<typeof AppealRow>;
 
-/** GET /api/staff/appeals: the pending appeals, newest first. */
+/** GET /api/staff/appeals: the pending appeals: those of a running suspension or a termination first, oldest first; then the rest, newest first. */
 export const AppealsPage = z.object({ appeals: z.array(AppealRow).max(APPEALS_PAGE_SIZE), nextCursor: z.string().nullable() });
 export type AppealsPage = z.infer<typeof AppealsPage>;
 
@@ -1594,8 +1653,33 @@ export const StatementReversal = z.object({
   periodThen: PeriodThen.nullable().optional(),
   /** 3e: on such a lift, whether the correction withdrew an announced measure to make room for another (signed `replaced`). */
   replaced: z.boolean().nullable().optional(),
+  /**
+   * 3e Task 4: on such a lift, when the person had replied to the lifted measure, or null when they had not: a withdrawal
+   * signed `replaced` then says that it is no decision on that reply.
+   */
+  replyFiledAt: z.iso.datetime().nullable().optional(),
 });
 export type StatementReversal = z.infer<typeof StatementReversal>;
+
+/**
+ * 3e (design, section 10.2): on a correction or a review of the decision that holds a suspension or a termination, when it
+ * kept or reversed that measure while the person's reply to it was unanswered (never a withdrawal signed `replaced`, never
+ * the end of a broken basis): the reply's time and whether it came before the start; the measure's kind and days; where
+ * its period stood at this answer's time; the start and the end as this answer fixes or leaves them (after a kept answer
+ * to a reply before the start, the later of the answer and the earliest start; the end null for a termination; both null
+ * when the measure never starts); and the last moment of the announcing decision's appeal as it stands after this answer.
+ */
+export const StatementRepliedTo = z.object({
+  filedAt: z.iso.datetime(),
+  onTime: z.boolean(),
+  kind: z.enum(["suspend", "terminate"]),
+  days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(),
+  periodThen: PeriodThen,
+  startsAt: z.iso.datetime().nullable(),
+  endsAt: z.iso.datetime().nullable(),
+  appealUntil: z.iso.datetime(),
+});
+export type StatementRepliedTo = z.infer<typeof StatementRepliedTo>;
 
 /** A measure taken while deciding that ended with the decision, without a reversal. The reset's facts are set only on a field reset. */
 export const StatementEndedMeasure = z.object({ kind: z.enum(MEASURE_KINDS), mediaId: z.uuid().nullable(), ...ResetFacts });
@@ -1631,6 +1715,8 @@ export const DecisionStatement = z.object({
   endedMeasures: z.array(StatementEndedMeasure),
   /** 3e: the standing measures and restrictions of reporting whose basis a reversal of this decision broke; absent before 3e. */
   endedStanding: z.array(StatementEndedStanding).optional(),
+  /** 3e Task 4: the reply this correction or review answered by keeping or reversing its measure; absent otherwise. */
+  repliedTo: StatementRepliedTo.optional(),
   reviewed: z
     .object({
       kind: z.enum(["interim", "final"]),
@@ -1755,6 +1841,39 @@ export type DecisionAppeal = z.infer<typeof DecisionAppeal>;
  * author's screen adds: `appealUntil` and `reversedOn` as the list gives them, the content actioned, and `appeal`, the
  * author's appeal of this decision (null when they filed none).
  */
+/**
+ * 3e (design, sections 9.2 and 10.2): where a decision's suspension or termination stands now, read fresh, beside the
+ * statement that never changes. `state` as the case page's period has it (unfixed, announced, held, running, ended, never,
+ * lifted, basis_ended); the earliest start the statement names; the start and the end once the database has them (the end
+ * null for a termination); when it stopped early, and by which decision (`endedBy`: the one that lifted it, withdrew it
+ * signed `replaced`, or broke its basis), with `replaced` true for a withdrawal; each decision it rests on (a strike's with
+ * where that strike stands now); the reply, with its text while korbat keeps it; and whether a reply can still be sent.
+ */
+export const DecisionStanding = z.object({
+  state: z.enum(PERIOD_STATES),
+  earliestStart: z.iso.datetime(),
+  startsAt: z.iso.datetime().nullable(),
+  endsAt: z.iso.datetime().nullable(),
+  endedAt: z.iso.datetime().nullable(),
+  endedBy: z.uuid().nullable(),
+  replaced: z.boolean(),
+  restsOn: z.array(
+    z.object({
+      decisionId: z.uuid(),
+      ruleId: z.enum(RULE_IDS).nullable(),
+      decidedAt: z.iso.datetime(),
+      countsUntil: z.iso.datetime().nullable(),
+      state: z.enum(["counts", "expired", "overruled"]).nullable(),
+      overruledAt: z.iso.datetime().nullable(),
+    }),
+  ),
+  reply: z
+    .object({ filedAt: z.iso.datetime(), onTime: z.boolean(), text: z.string().nullable(), erasedAt: z.iso.datetime().nullable(), answeredAt: z.iso.datetime().nullable(), answeredBy: z.uuid().nullable() })
+    .nullable(),
+  replyOpen: z.boolean(),
+});
+export type DecisionStanding = z.infer<typeof DecisionStanding>;
+
 export const DecisionView = DecisionStatement.extend({
   id: z.uuid(),
   appealUntil: z.iso.datetime().nullable(),
@@ -1763,6 +1882,8 @@ export const DecisionView = DecisionStatement.extend({
   appeal: DecisionAppeal.nullable(),
   /** The strike the decision gave, read fresh (3e design, section 10.2); null for a decision without one. */
   strike: DecisionStrike.nullable(),
+  /** 3e Task 4: where the decision's suspension or termination stands now; null for a decision without one. */
+  standing: DecisionStanding.nullable(),
 });
 export type DecisionView = z.infer<typeof DecisionView>;
 
@@ -1838,5 +1959,41 @@ export const StaffOverview = z.object({
   protectionLifted: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid(), kind: z.enum(["unsealed", "dismissed"]) })).max(OVERVIEW_LIST_MAX) }),
   sealsDeclined: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid() })).max(OVERVIEW_LIST_MAX) }),
   interimSeals: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid(), posts: Count, images: Count })).max(OVERVIEW_LIST_MAX) }),
+  /**
+   * 3e (design, sections 7.12 and 8.8): the replies to a suspension or a termination that no decision has answered, with
+   * the oldest one's time (null when none waits), and the accounts at the ladder's number of strikes (StandingLists'
+   * first list).
+   */
+  repliesWaiting: z.object({ count: Count, oldestAt: z.iso.datetime().nullable() }),
+  strikeAccounts: Count,
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
+
+/** One of the Standing screen's lists: how many rows there are, and at most OVERVIEW_LIST_MAX of them. */
+const StandingList = <T extends z.ZodType>(row: T) => z.object({ total: Count, items: z.array(row).max(OVERVIEW_LIST_MAX) });
+
+/**
+ * GET /api/staff/standing (3e design, sections 7.5, 7.12, 8.6 and 10.3): four lists, each newest first, read from the
+ * ledger's views; people are handles, and no row names a reporter. None is a queue key and none is weighted.
+ *   - `atThreeStrikes`: the accounts with the ladder's number of active strikes, one of them newer than the account's
+ *     newest measure of the ladder that stands, and no suspension or termination that stands and has not ended: the
+ *     newest strike's rule and day, the most days an announced suspension could take now, and whether a termination
+ *     could be announced.
+ *   - `reportingRecords`: the accounts whose rule reports hold marks "manifestly unfounded" (the restriction of
+ *     reporting's task fills it; until then it is empty).
+ *   - `noticesUndelivered`: the announced measures of live accounts whose notice mail was recorded `failed`, with the
+ *     start that follows; never a deleted account's `no_address`.
+ *   - `terminationsWaiting`: the terminations that stand, with the day each becomes final, or what holds it: a pending
+ *     appeal, or an unanswered reply (`replyOnTime` true when the reply came before the start, so it has not started).
+ */
+export const StandingLists = z.object({
+  atThreeStrikes: StandingList(
+    z.object({ handle: z.string(), caseId: z.uuid().nullable(), activeStrikes: Count, ruleId: z.enum(RULE_IDS), newestOn: UtcDay, maxDays: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(), mayTerminate: z.boolean() }),
+  ),
+  reportingRecords: StandingList(z.object({ handle: z.string(), caseId: z.uuid().nullable(), reports: Count, unfounded: Count, warnedOn: UtcDay.nullable(), marksSince: Count.nullable() })),
+  noticesUndelivered: StandingList(z.object({ handle: z.string(), caseId: z.uuid(), decidedOn: UtcDay, startsAt: z.iso.datetime() })),
+  terminationsWaiting: StandingList(
+    z.object({ handle: z.string(), caseId: z.uuid(), decidedOn: UtcDay, finalOn: UtcDay.nullable(), heldBy: z.enum(["appeal", "reply"]).nullable(), replyOnTime: z.boolean().nullable() }),
+  ),
+});
+export type StandingLists = z.infer<typeof StandingLists>;

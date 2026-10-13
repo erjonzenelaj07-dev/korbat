@@ -42,8 +42,20 @@ export interface AccountUpdateMessage {
  */
 export type DecisionMessage =
   | { template: "moderation_decision"; subject: DecisionMailSubject; paragraphs: readonly string[] }
+  // 3e Task 4: an announced measure, with its days (null for a termination), the reply window in hours and the earliest start.
+  | { template: "suspension_announced"; measure: "suspend" | "terminate"; days: number | null; window: number; earliestStart: string; paragraphs: readonly string[] }
   | { template: "suspension_started_at_once"; measure: "suspend" | "terminate"; days: number | null; endsAt: string | null; paragraphs: readonly string[] }
-  | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "lifted" | "basis"; period: "not_started" | "running" | "ended"; paragraphs: readonly string[] };
+  // 3e Task 4: the answer to the person's reply, which kept the measure in force or reversed it.
+  | { template: "reply_answered"; outcome: "kept" | "reversed"; paragraphs: readonly string[] }
+  | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "lifted" | "basis"; period: "not_started" | "running" | "ended"; paragraphs: readonly string[] }
+  // 3e Task 4: a withdrawal signed `replaced`, with the withdrawn decision's time and whether the person had replied to it.
+  | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "replaced"; decidedAt: string; replied: boolean; paragraphs: readonly string[] };
+
+/** The templates of a decision's statement mail: a stop of the address never holds one back. */
+const DECISION_TEMPLATES: ReadonlySet<string> = new Set(["moderation_decision", "suspension_announced", "suspension_started_at_once", "reply_answered", "suspension_lifted"]);
+
+/** Whether an account's message is a decision's statement. */
+const isDecisionMessage = (message: { template: string }): message is DecisionMessage => DECISION_TEMPLATES.has(message.template);
 
 /** What the statement's paragraphs are joined with in a mail's data: one paragraph per line. */
 const LINE_BREAK = String.fromCharCode(10);
@@ -54,10 +66,16 @@ function decisionData(message: DecisionMessage): Record<string, string> {
   switch (message.template) {
     case "moderation_decision":
       return { subject: message.subject, statement };
+    case "suspension_announced":
+      return { measure: message.measure, statement, window: String(message.window), earliestStart: noticeTime(new Date(message.earliestStart)), ...(message.days === null ? {} : { days: String(message.days) }) };
     case "suspension_started_at_once":
       return { measure: message.measure, statement, ...(message.days === null ? {} : { days: String(message.days) }), ...(message.endsAt === null ? {} : { endsAt: noticeTime(new Date(message.endsAt)) }) };
+    case "reply_answered":
+      return { outcome: message.outcome, statement };
     case "suspension_lifted":
-      return { measure: message.measure, why: message.why, period: message.period, statement };
+      return message.why === "replaced"
+        ? { measure: message.measure, why: message.why, decidedAt: noticeTime(new Date(message.decidedAt)), replied: String(message.replied), statement }
+        : { measure: message.measure, why: message.why, period: message.period, statement };
   }
 }
 
@@ -87,7 +105,7 @@ export type NotifierUpdateResult = "sent" | "suppressed" | "no_address" | "forgo
  */
 export type StaffMessage =
   | { template: "moderation_urgent"; count: number; oldest: Date }
-  | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number }
+  | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number; replies?: { count: number; oldest: Date } | null }
   | { template: "moderation_burst"; handle: string; count: number }
   | { template: "moderation_reads"; handle: string; limit: number }
   | { template: "moderation_reveal"; handle: string; at: Date; count: number; limit: number }
@@ -107,6 +125,11 @@ function staffData(message: StaffMessage): Record<string, string> {
         data[`lane${lane.lane}Oldest`] = noticeTime(lane.oldest);
       }
       if (message.interim > 0) data.interimCount = String(message.interim);
+      // 3e Task 4: the replies unanswered for longer than korbat's aim, only when there are any.
+      if (message.replies && message.replies.count > 0) {
+        data.replyCount = String(message.replies.count);
+        data.replyOldest = noticeTime(message.replies.oldest);
+      }
       return data;
     }
     case "moderation_burst":
@@ -224,7 +247,7 @@ export async function mailNotifier(deps: AuthDeps, contactId: string, message: N
 export async function mailAccount(deps: AuthDeps, userId: string, message: AccountMessage): Promise<AccountMailResult> {
   const user = await deps.repo.findUserById(userId);
   if (!user) return "no_address";
-  if (message.template === "moderation_decision" || message.template === "suspension_started_at_once" || message.template === "suspension_lifted") {
+  if (isDecisionMessage(message)) {
     // A statement is never held back by a stop of the address.
     return deliver(deps, { to: user.email, template: message.template, data: decisionData(message) });
   }

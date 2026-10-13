@@ -147,13 +147,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
 
   // ---------------------------------------------------------------- the routes
 
-  test("the six signed-in routes are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
+  test("the seven signed-in routes (3e adds the reply) are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
     const routes = app.routes.filter((route) => route.path.startsWith("/api/moderation") && route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
     expect([...new Set(routes)].sort()).toEqual([
       "GET /api/moderation/cases",
       "GET /api/moderation/decisions/:id",
       "GET /api/moderation/reports",
       "POST /api/moderation/decisions/:id/appeal",
+      "POST /api/moderation/decisions/:id/reply",
       "POST /api/moderation/items/:item/reexamine",
       "POST /api/moderation/report-mail/resume",
     ]);
@@ -165,6 +166,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
       ["/api/moderation/reports", undefined],
       ["/api/moderation/report-mail/resume", "POST"],
       [`/api/moderation/decisions/${randomUUID()}/appeal`, "POST"],
+      [`/api/moderation/decisions/${randomUUID()}/reply`, "POST"],
       [`/api/moderation/items/${randomUUID()}/reexamine`, "POST"],
     ];
     const half = await signUp(false);

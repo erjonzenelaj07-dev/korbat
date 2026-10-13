@@ -111,10 +111,9 @@ describe("3e: the banner (design, section 9.1)", () => {
     expect(textOf(html(<StandingBanner standing={running({ appealUntil: null })} />))).not.toContain(` ${STANDING_TEXTS.banner.appeal} `);
   });
 
-  test("no banner without a measure, and none yet for the states that Task 4 builds", () => {
+  test("no banner without a measure (the states that Task 4 builds are tested with it, in announced.test.tsx)", () => {
     expect(html(<StandingBanner standing={NONE} />)).toBe("");
     expect(html(<StandingBanner standing={null} />)).toBe("");
-    expect(html(<StandingBanner standing={running({ state: "announced" })} />)).toBe("");
   });
 
   test("the shell renders it above every signed-in screen, and the session reads /me again on focus and after a refusal account_suspended", () => {

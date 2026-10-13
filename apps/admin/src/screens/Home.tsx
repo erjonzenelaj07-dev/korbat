@@ -1,9 +1,9 @@
 import { OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, describeError, PROTECTION_LIFTED_WORDS } from "../messages";
-import { CaseLink } from "../nav";
-import { parseCaseId, type CaseId } from "../router";
+import { APPEAL_WORDS, describeError, PROTECTION_LIFTED_WORDS, STANDING_WORDS } from "../messages";
+import { CaseLink, NavLink } from "../nav";
+import { parseCaseId, type CaseId, type ConsolePath } from "../router";
 import { readSignInsAtOpening } from "../signins";
 import { revokeSessionWithKey } from "../step-up";
 import { clockTime, dateTime, Loaded, UserText, type Loadable } from "../ui";
@@ -104,7 +104,23 @@ export function appealsLine(overview: Pick<StaffOverview, "appealsWaiting" | "ap
   return `${parts.join("; ")}.`;
 }
 
-export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOverview; now: number; onOpenCase(id: CaseId): void }) {
+/**
+ * 3e Task 4 (design, section 8.8): the home screen's two lines, each shown when above zero and each a link to its list:
+ * the replies waiting, with the oldest one's age, and the accounts at the ladder's number of strikes. Without a way to
+ * move between pages (a test's rendering), each is plain text.
+ */
+function StandingLines({ overview, now, onNavigate }: { overview: StaffOverview; now: number; onNavigate?: (path: ConsolePath) => void }) {
+  const { repliesWaiting, strikeAccounts } = overview;
+  const line = (text: string, to: ConsolePath) => (onNavigate ? <NavLink to={to} onNavigate={onNavigate}>{text}</NavLink> : text);
+  return (
+    <>
+      {repliesWaiting.count > 0 ? <p>{line(STANDING_WORDS.home.replies(repliesWaiting.count, repliesWaiting.oldestAt === null ? "" : waited(repliesWaiting.oldestAt, now)), "/queue")}</p> : null}
+      {strikeAccounts > 0 ? <p>{line(STANDING_WORDS.home.strikes(strikeAccounts), "/standing")}</p> : null}
+    </>
+  );
+}
+
+export function OverviewView({ overview, now, onOpenCase, onNavigate }: { overview: StaffOverview; now: number; onOpenCase(id: CaseId): void; onNavigate?: (path: ConsolePath) => void }) {
   const { reveals, mailsWaiting, mailsFailed } = overview;
   const lateErasures = erasureOverdue(overview.erasureOverdue);
   const waiting = mailsWaiting.receipts + mailsWaiting.authorMails + mailsWaiting.outcomes;
@@ -120,6 +136,7 @@ export function OverviewView({ overview, now, onOpenCase }: { overview: StaffOve
       </ul>
       <p>{appealsLine(overview)}</p>
       {overview.appealsWaiting > 0 ? <p className="hint">{APPEAL_WORDS.reviewerRule}</p> : null}
+      <StandingLines overview={overview} now={now} onNavigate={onNavigate} />
       <p>{overview.deferUnproven ? "The emergency switch is on: cases whose unanswered items all come from unproven sources are listed after the others of their lane." : "The emergency switch is off."}</p>
       {overview.releaseOverdue > 0 ? (
         <p role="alert" className="error">
@@ -217,6 +234,8 @@ export interface HomeViewProps {
   /** The time the overview's waiting times are counted to. */
   now: number;
   onOpenCase(id: CaseId): void;
+  /** 3e: a move to one of the console's pages, which the home screen's lines of Task 4 link to. */
+  onNavigate?: (path: ConsolePath) => void;
   signIns: Loadable<AuditEntry[]>;
   sessions: Loadable<StaffSession[]>;
   keys: Loadable<StaffKey[]>;
@@ -227,7 +246,7 @@ export interface HomeViewProps {
   onRevoke(handle: string): void;
 }
 
-export function HomeView({ me, overview, now, onOpenCase, signIns, sessions, keys, revoking, notice, error, onRevoke }: HomeViewProps) {
+export function HomeView({ me, overview, now, onOpenCase, onNavigate, signIns, sessions, keys, revoking, notice, error, onRevoke }: HomeViewProps) {
   return (
     <section aria-labelledby="home-title">
       <h2 id="home-title">Home</h2>
@@ -246,7 +265,7 @@ export function HomeView({ me, overview, now, onOpenCase, signIns, sessions, key
         </p>
       ) : null}
 
-      <Loaded value={overview} render={(value) => <OverviewView overview={value} now={now} onOpenCase={onOpenCase} />} />
+      <Loaded value={overview} render={(value) => <OverviewView overview={value} now={now} onOpenCase={onOpenCase} onNavigate={onNavigate} />} />
 
       <h3>Staff sign-ins in the last 7 days</h3>
       <p className="hint">Every staff account's, newest first. A sign-in nobody recognises means someone else holds a staff key: tell the operator.</p>
@@ -360,7 +379,7 @@ export function openHome(api: StaffApi, alive: { current: boolean }, set: HomeLi
   load(alive, set.keys, async () => (await api.keys({ activity: true })).keys);
 }
 
-export function Home({ me, api, credentials, onOpenCase }: { me: StaffMe; api: StaffApi; credentials: CredentialsLike; onOpenCase(id: CaseId): void }) {
+export function Home({ me, api, credentials, onOpenCase, onNavigate }: { me: StaffMe; api: StaffApi; credentials: CredentialsLike; onOpenCase(id: CaseId): void; onNavigate?: (path: ConsolePath) => void }) {
   const [overview, setOverview] = useState<Loadable<StaffOverview>>({ state: "loading" });
   const [now, setNow] = useState(() => Date.now());
   const [signIns, setSignIns] = useState<Loadable<AuditEntry[]>>({ state: "loading" });
@@ -406,6 +425,6 @@ export function Home({ me, api, credentials, onOpenCase }: { me: StaffMe; api: S
   };
 
   return (
-    <HomeView me={me} overview={overview} now={now} onOpenCase={onOpenCase} signIns={signIns} sessions={sessions} keys={keys} revoking={revoking} notice={notice} error={error} onRevoke={(handle) => void revoke(handle)} />
+    <HomeView me={me} overview={overview} now={now} onOpenCase={onOpenCase} onNavigate={onNavigate} signIns={signIns} sessions={sessions} keys={keys} revoking={revoking} notice={notice} error={error} onRevoke={(handle) => void revoke(handle)} />
   );
 }

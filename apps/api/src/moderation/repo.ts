@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { ActionKind, AppealsReviewedParams, CaseDecidedParams, Lane, StaffStoredAssertion } from "@korbat/contracts";
+import { REPLY_AIM_HOURS, type ActionKind, type AppealsReviewedParams, type CaseDecidedParams, type Lane, type StaffStoredAssertion } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 
 /**
@@ -627,6 +627,20 @@ export async function reviewedDecision(q: Runner, decisionId: string): Promise<{
  * How many decisions a staff account made in the last `windowMs`, by the database's clock: exact for any window, and
  * unaffected by a restart of the limit store. One read of the index on who decided.
  */
+/**
+ * 3e (design, section 5, the lock order, items 1 and 4): whether a decision holds an announced suspension or termination.
+ * An answer to it that may leave the measure in force takes the subject's profile FOR UPDATE first, and recording its
+ * statement mail's outcome takes the profile before the decision's row. A decision's ledger rows never change, so this is
+ * read before the transaction.
+ */
+export async function holdsAnnouncedStanding(q: Runner, decisionId: string): Promise<boolean> {
+  const [row] = await rows<{ held: boolean }>(
+    q,
+    sql`select exists (select 1 from decision_actions a where a.decision_id = ${decisionId}::uuid and a.kind::text in ('suspend', 'terminate') and a.announced) as held`,
+  );
+  return row?.held ?? false;
+}
+
 export async function recentDecisionsBy(q: Runner, staffId: string, windowMs: number): Promise<number> {
   const [row] = await rows<{ n: number }>(q, sql`select count(*)::int as n from decisions where decided_by = ${staffId}::uuid and decided_at > now() - make_interval(secs => ${windowMs / 1000}::float8)`);
   return row!.n;
@@ -1245,26 +1259,38 @@ export interface PendingAppealRow {
   reviewer: ReviewerStateRow;
   needsAdmin: boolean;
   mayReview: boolean;
+  /** 3e: the appealed decision holds a suspension that runs now or a termination that stands. */
+  standingFirst: boolean;
 }
 
 /**
- * The pending appeals, newest first, after the cursor when one is given: each with its case, the decision it appeals and
- * the three marks of its review. The list reads no statement, so nobody reads what an appellant wrote without opening
- * the case, whose read is logged and counted.
+ * 3e (design, section 7.11 item 6): whether the appealed decision `d` holds a suspension that runs now (it stands, its
+ * basis holds, and its period has started and not ended) or a termination that stands: the person can do nothing while
+ * the appeal waits, so it is read first.
  */
-export async function pendingAppeals(q: Runner, person: Reviewer, after: { at: string; id: string } | null, limit: number): Promise<PendingAppealRow[]> {
+const STANDING_FIRST = sql`exists (select 1 from decision_actions s join standing_live l on l.action_id = s.id left join suspension_periods p on p.action_id = s.id
+                                    where s.decision_id = d.id and (s.kind::text = 'terminate' or p.starts_at <= clock_timestamp()))`;
+
+/**
+ * The pending appeals, after the cursor when one is given: each with its case, the decision it appeals and the three
+ * marks of its review. The list reads no statement, so nobody reads what an appellant wrote without opening the case,
+ * whose read is logged and counted. 3e: `first` asks for the appeals of a decision that holds a running suspension or a
+ * termination that stands, oldest first; without it the others, newest first, after the cursor.
+ */
+export async function pendingAppeals(q: Runner, person: Reviewer, after: { at: string; id: string } | null, limit: number, first = false): Promise<PendingAppealRow[]> {
   const found = await rows<Record<string, unknown>>(
     q,
     sql`select a.id, d.case_id, a.decision_id, ${iso("a.filed_at")} as filed_at,
                to_char(a.filed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as sort_at,
-               ${iso("d.decided_at")} as decided_at, ${iso("public.appeal_deadline(d.informed_at)")} as deadline,
+               ${iso("d.decided_at")} as decided_at, ${iso("public.appeal_deadline(public.appeal_informed_at(d.id))")} as deadline,
                d.rule_id, d.ground is not distinct from 'illegal' as legal,
                coalesce((select array_agg(x.kind::text order by x.kind, x.media_id) from decision_actions x where x.decision_id = d.id), '{}') as actions,
-               public.appeal_reviewer_state(a.id) as reviewer, public.review_needs_admin(d.id) as needs_admin, ${mayReview(person)} as may_review
+               public.appeal_reviewer_state(a.id) as reviewer, public.review_needs_admin(d.id) as needs_admin, ${mayReview(person)} as may_review,
+               ${first} as standing_first
           from appeals a join decisions d on d.id = a.decision_id
-         where a.answered_by is null
+         where a.answered_by is null and ${first ? STANDING_FIRST : sql`not ${STANDING_FIRST}`}
            ${after === null ? sql`` : sql`and (a.filed_at, a.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
-         order by a.filed_at desc, a.id desc limit ${limit}::int`,
+         order by ${first ? sql`a.filed_at, a.id` : sql`a.filed_at desc, a.id desc`} limit ${limit}::int`,
   );
   return found.map((row) => ({
     id: row.id as string,
@@ -1280,6 +1306,7 @@ export async function pendingAppeals(q: Runner, person: Reviewer, after: { at: s
     reviewer: row.reviewer as ReviewerStateRow,
     needsAdmin: row.needs_admin as boolean,
     mayReview: row.may_review as boolean,
+    standingFirst: row.standing_first as boolean,
   }));
 }
 
@@ -1859,12 +1886,39 @@ export async function recordCarriedReceipt(q: Runner, intakeId: string, state: M
   );
 }
 
-/** The receipts and the statement mails still unsent `days` days after they were due, recorded as given up; answers their ids. */
+/** A decision that holds an announced suspension or termination, as a condition on decision `d`. */
+const HOLDS_ANNOUNCED = sql`exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind::text in ('suspend', 'terminate') and a.announced)`;
+
+/**
+ * The receipts and the statement mails still unsent `days` days after they were due, recorded as given up; answers their
+ * ids. 3e (design, section 7.14 item 3): the statement mail of a decision that holds an announced measure is left out:
+ * its outcome fixes the measure's start, so each is given up alone, under its subject's profile lock (giveUpAnnouncedMail).
+ */
 export async function giveUpReceiptsAndAuthorMails(q: Runner, now: Date, days: number): Promise<{ receipts: string[]; authorMails: string[] }> {
   const due = sql`${at(now)} - make_interval(days => ${days}::int)`;
   const receipts = await rows<{ id: string }>(q, sql`update intakes set receipt = 'failed' where receipt in ('pending', 'folded') and received_at < ${due} returning id`);
-  const authorMails = await rows<{ id: string }>(q, sql`update decisions set author_mail = 'failed' where author_mail = 'pending' and decided_at < ${due} returning id`);
+  const authorMails = await rows<{ id: string }>(q, sql`update decisions d set author_mail = 'failed' where d.author_mail = 'pending' and d.decided_at < ${due} and not ${HOLDS_ANNOUNCED} returning d.id`);
   return { receipts: receipts.map((row) => row.id), authorMails: authorMails.map((row) => row.id) };
+}
+
+/** The statement mails of decisions that hold an announced measure, still unsent `days` days after the decision, with each decision's subject: each is given up alone. */
+export async function announcedMailsDue(q: Runner, now: Date, days: number): Promise<{ decisionId: string; subjectId: string }[]> {
+  const found = await rows<{ id: string; subject: string }>(
+    q,
+    sql`select d.id, (select a.subject_account_id from decision_actions a where a.decision_id = d.id and a.kind::text in ('suspend', 'terminate')) as subject
+          from decisions d where d.author_mail = 'pending' and d.decided_at < ${at(now)} - make_interval(days => ${days}::int) and ${HOLDS_ANNOUNCED}
+         order by d.decided_at, d.id`,
+  );
+  return found.map((row) => ({ decisionId: row.id, subjectId: row.subject }));
+}
+
+/**
+ * Gives up one announced measure's statement mail, in a transaction whose caller took the subject's profile row first
+ * (the lock order, item 4): the decision's row is updated only while its mail is still pending, and the database stamps
+ * the time and fixes the start from it (decisions_mail_forward, decisions_mail_standing). True when this call gave it up.
+ */
+export async function giveUpAnnouncedMail(tx: DbTx, decisionId: string): Promise<boolean> {
+  return (await rows<{ id: string }>(tx, sql`update decisions set author_mail = 'failed' where id = ${decisionId}::uuid and author_mail = 'pending' returning id`)).length > 0;
 }
 
 /** The outcome lines still unsent `days` days after their release, or after the release of their changed outcome, recorded as given up; answers their ids. */
@@ -1933,7 +1987,7 @@ export async function urgentItems(q: Runner, before: Date): Promise<UrgentItemRo
  * unanswered item), per lane with the oldest one's time, and the open cases that have held a measure taken while
  * deciding for more than 24 hours, whatever their lane.
  */
-export async function waitingCases(q: Runner, now: Date): Promise<{ lanes: { lane: Lane; count: number; oldest: Date }[]; interim: number }> {
+export async function waitingCases(q: Runner, now: Date): Promise<{ lanes: { lane: Lane; count: number; oldest: Date }[]; interim: number; replies: { count: number; oldest: Date } | null }> {
   const found = await rows<{ lane: Lane; n: number; oldest: string }>(
     q,
     sql`select lane, count(*)::int as n, ${iso("min(oldest_open_at)")} as oldest from cases
@@ -1945,7 +1999,18 @@ export async function waitingCases(q: Runner, now: Date): Promise<{ lanes: { lan
     sql`select count(distinct m.case_id)::int as n from measures_in_force m join decisions d on d.id = m.decision_id join cases c on c.id = m.case_id
          where m.decision_kind = 'interim' and c.closed_at is null and d.decided_at < ${at(now)} - interval '24 hours'`,
   );
-  return { lanes: found.map((row) => ({ lane: row.lane, count: row.n, oldest: new Date(row.oldest) })), interim: held!.n };
+  // 3e (design, section 7.14): the replies to a suspension or a termination that no decision answered for longer than
+  // korbat's aim, with the oldest one's time.
+  const [replies] = await rows<{ n: number; oldest: string | null }>(
+    q,
+    sql`select count(*)::int as n, ${iso("min(r.filed_at)")} as oldest from suspension_replies r
+         where r.answered_by is null and r.filed_at < ${at(now)} - make_interval(hours => ${REPLY_AIM_HOURS}::int)`,
+  );
+  return {
+    lanes: found.map((row) => ({ lane: row.lane, count: row.n, oldest: new Date(row.oldest) })),
+    interim: held!.n,
+    replies: replies!.n > 0 && replies!.oldest !== null ? { count: replies!.n, oldest: new Date(replies!.oldest) } : null,
+  };
 }
 
 // ---------------------------------------------------------------- retention

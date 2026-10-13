@@ -37,7 +37,7 @@ describe("where the member is built", () => {
     expect(built).toMatch(/decisionStatement\(/);
   });
 
-  test("the module hands the account module its two operations: forgetting a deleted account's reports, and the export's member", () => {
+  test("the module hands the account module its three operations: forgetting a deleted account's reports, the export's member, and (3e) the take-down of terminated accounts", () => {
     const untouched = new Proxy({}, { get: () => () => Promise.reject(new Error("nothing is read while the module is built")) });
     const options: CreateModerationOptions = {
       apiDb: untouched as CreateModerationOptions["apiDb"],
@@ -48,7 +48,7 @@ describe("where the member is built", () => {
       config: { APP_ORIGIN: "http://localhost:8081" } as CreateModerationOptions["config"],
       logger: pino({ level: "silent" }),
     };
-    expect(Object.keys(createModeration(options).forAccount).sort()).toEqual(["exportFor", "forgetAccount"]);
+    expect(Object.keys(createModeration(options).forAccount).sort()).toEqual(["exportFor", "forgetAccount", "takeDownDue"]);
     // The server hands that interface to the account module.
     expect(read("index.ts")).toMatch(/createAccount\(\{[^}]*\bmoderation: moderation\.forAccount\b/);
   });

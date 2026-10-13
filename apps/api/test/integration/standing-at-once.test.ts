@@ -131,13 +131,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: suspensions at once", ()
     expect(await refused(admin, await accountCase(reversed, "R5"), { kind: "final", ruleId: "R5", actions: atOnce(3) })).toMatchObject({ code: "invalid_decision", detail: expect.stringMatching(/^basis/) });
   });
 
-  test("the route's second check: an announced suspension and every termination are refused before the transaction, with nothing stored", async () => {
+  test("an announced suspension on a threat reaches only the ladder, and a termination needs its own facts: the database refuses each (Task 4 opened them in the route), with nothing stored", async () => {
     const account = await n.account();
     await threatOn(account.id);
     const caseId = await accountCase(account, "R5");
-    expect(await refused(admin, caseId, { kind: "final", ruleId: "R5", actions: [timed("suspend", 3, true)] })).toEqual({ code: "invalid_decision", detail: null });
-    expect(await refused(admin, caseId, { kind: "final", ruleId: "R5", actions: [timed("terminate", null, false)] })).toEqual({ code: "invalid_decision", detail: null });
-    expect(await refused(admin, caseId, { kind: "final", ruleId: "R5", actions: [timed("terminate", null, true)] })).toEqual({ code: "invalid_decision", detail: null });
+    // The route passes them now; the database refuses, with a detail the log keeps: one strike is no ladder, and a first
+    // threat is no ground for a termination at once.
+    for (const action of [timed("suspend", 3, true), timed("terminate", null, false), timed("terminate", null, true)]) {
+      expect(await refused(admin, caseId, { kind: "final", ruleId: "R5", actions: [action] }), `${action.kind} ${action.announced}`).toMatchObject({ code: "invalid_decision", detail: expect.any(String) });
+    }
     const [row] = await n.apiDb.execute<{ n: number }>(sql`select count(*)::int as n from decisions where case_id = ${caseId}::uuid`);
     expect(row!.n).toBe(0);
   });

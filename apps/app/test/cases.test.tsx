@@ -279,7 +279,9 @@ describe("Cases, under Settings", () => {
     expect(current).toHaveLength(1);
     expect(current[0]).toContain('href="/settings/cases"');
     expect(textOf(out)).toContain("Cases");
-    expect(readdirSync(path.join(SRC, "app", "settings", "cases")).sort()).toEqual(["[id].tsx", "index.tsx"]);
+    expect(readdirSync(path.join(SRC, "app", "settings", "cases")).sort()).toEqual(["[id]", "[id].tsx", "index.tsx"]);
+    // 3e Task 4: the reply screen sits beside the decision's screen, at /settings/cases/<id>/reply.
+    expect(readdirSync(path.join(SRC, "app", "settings", "cases", "[id]")).sort()).toEqual(["reply.tsx"]);
     for (const file of ["index.tsx", "[id].tsx"]) expect(read("app", "settings", "cases", file), file).toContain('<SettingsNav current="cases" />');
     // Two tabs, and the list each shows.
     const screen = read("app", "settings", "cases", "index.tsx");
@@ -411,6 +413,7 @@ describe("a decision's screen", () => {
     content: { kind: "post", body: "the words that were judged", deletedByAuthor: false, images: [image(7)], imageCount: 1, imagesHidden: null },
     appeal: null,
     strike: null,
+    standing: null,
     ...extra,
   });
   const screen = (extra: Partial<DecisionView> = {}) => html(<DecisionDetail view={view(extra)} />);
@@ -682,6 +685,7 @@ describe("3e: strikes on Cases and on the decision's screen (design, sections 9.
       content: { kind: "post", body: "the words that were judged", deletedByAuthor: false, images: [], imageCount: 0, imagesHidden: null },
       appeal: null,
       strike: { countsUntil: COUNTS, state: "counts", overruledAt: null },
+      standing: null,
     };
     const screen = (strike: DecisionView["strike"]) => textOf(html(<DecisionDetail view={{ ...view, strike }} />));
     const counting = screen(view.strike);

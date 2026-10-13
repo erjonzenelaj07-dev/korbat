@@ -8,7 +8,7 @@
  * only through the interfaces they export, never names an image row (the media module locks and holds a case's images for
  * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
-import type { AppealsPage, CaseView, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse } from "@korbat/contracts";
+import type { AppealsPage, CaseView, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse, StandingLists } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
@@ -28,7 +28,7 @@ import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
-import { standingFor } from "./standing";
+import { standingFor, standingLists, takeDownDue, type TakeDown } from "./standing";
 import { reveal, type RevealOutcome } from "./reveal";
 import { moderationRoutes, noSession } from "./routes";
 import { ownTexts, saveText } from "./texts";
@@ -61,8 +61,10 @@ export interface ModerationForStaff {
   appeals(session: ActiveStaffSession, cursor?: string): Promise<AppealsPage>;
   /** What every staff member's home screen shows: counts, times, staff handles and cases, and how many appeals this person may review. */
   overview(session: ActiveStaffSession): Promise<StaffOverview>;
-  /** A page of the queue: open cases by lane and age, after the cursor when one is given. */
+  /** A page of the queue: open cases by lane and age, after the cursor when one is given; the first page leads with the replies no decision answered. */
   queue(cursor?: string): Promise<QueuePage>;
+  /** 3e: the Standing screen's four lists (accounts at the ladder's strikes, reporting records, notices not sent, terminations waiting). */
+  standing(): Promise<StandingLists>;
   /** The case as staff read it. The read is logged, and held to the day's limit on different cases; a recused person is refused. */
   caseView(session: ActiveStaffSession, caseId: string): Promise<CaseView>;
   /** An image of the case's own post, opened for staff and logged, or image_refused. The caller streams the file and closes it. */
@@ -94,7 +96,7 @@ export interface ModerationForSocial {
   authorFacts(viewer: string, postIds: readonly string[]): Promise<Map<string, PostModeration>>;
 }
 
-/** What the account module needs from this one (3c design, sections 5, 7.10 and 7.11): the purge's forgetting, and the export's member. */
+/** What the account module needs from this one (3c design, sections 5, 7.10 and 7.11): the purge's forgetting, and the export's member; 3e adds the take-down of terminated accounts. */
 export interface ModerationForAccount {
   /**
    * Forgets that a deleted account sent its reports: the account's id goes from its intakes and their items, which go on
@@ -108,6 +110,13 @@ export interface ModerationForAccount {
    * person's report, a reporter, a notifier or a staff member.
    */
   exportFor(userId: string): Promise<ModerationExport>;
+  /**
+   * 3e (design, sections 5 and 7.8): takes down every account whose termination is final for its author. For each, in a
+   * transaction of its own, the profile and then the terminating decision's case FOR UPDATE, terminations_due() again for
+   * that account, and only then `takeDown` (the auth module's takeDownTerminated), awaited while the transaction is open.
+   * Answers how many it took down and how many failed; one failure never stops the next account.
+   */
+  takeDownDue(takeDown: TakeDown): Promise<{ terminated: number; failed: number }>;
 }
 
 export interface CreateModerationOptions {
@@ -151,6 +160,7 @@ export function createModeration(options: CreateModerationOptions) {
     appeals: (session, cursor) => appealsList(deps, session, cursor),
     overview: (session) => overview(deps, session),
     queue: (cursor) => queue(deps, cursor),
+    standing: () => standingLists(deps.apiDb),
     caseView: (session, caseId) => readCase(deps, session, caseId),
     caseImage: (session, caseId, mediaId, size) => caseImage(deps, session, caseId, mediaId, size),
     takeSnapshot: (session, caseId) => takeSnapshot(deps, session, caseId),
@@ -167,6 +177,7 @@ export function createModeration(options: CreateModerationOptions) {
       await forgetReporter(deps.apiDb, userId);
     },
     exportFor: (userId) => exportFor(deps, userId),
+    takeDownDue: (takeDown) => takeDownDue(deps, takeDown),
   };
   return {
     deps,

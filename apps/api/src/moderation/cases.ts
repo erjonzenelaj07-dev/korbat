@@ -35,7 +35,8 @@ import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
-import { standingColumns, standingOnDecisions } from "./standing-repo";
+import { caseReplies, repliesWaiting, standingColumns, standingOnDecisions, strikeAccounts, unansweredReplies, type ReplyColumns } from "./standing-repo";
+
 import {
   appealCounts,
   caseActions,
@@ -77,6 +78,10 @@ import {
   type ReporterFacts,
   type SnapshotRead,
 } from "./repo";
+
+/** A reply as the case page shows it: its text while korbat keeps it, which an erasure blanks. */
+const replyOf = (reply: ReplyColumns | undefined): CaseDecisionAction["reply"] =>
+  reply === undefined ? null : { filedAt: reply.filedAt, onTime: reply.onTime, text: reply.erasedAt === null ? reply.text : null, answeredAt: reply.answeredAt, answeredBy: reply.answeredBy };
 
 /**
  * The queue and the case, for staff (3c design, section 7.3): the overview the home screen shows, the queue, the case
@@ -218,6 +223,9 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     protectionLifted: await recentProtectionLifted(q, OVERVIEW_LIST_MAX),
     sealsDeclined: await recentSealsDeclined(q, OVERVIEW_LIST_MAX),
     interimSeals: await interimSealsInForce(q, OVERVIEW_LIST_MAX),
+    // 3e (design, section 8.8): the replies no decision answered, and the accounts at the ladder's number of strikes.
+    repliesWaiting: await repliesWaiting(q),
+    strikeAccounts: (await strikeAccounts(q, 1)).total,
   };
 }
 
@@ -273,6 +281,8 @@ export async function queue(deps: Pick<ModerationDeps, "apiDb" | "config">, curs
     ),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > QUEUE_PAGE_SIZE && last ? encodeCursor(last) : null,
+    // 3e (design, section 8.5): the first page leads with the replies no decision answered, oldest first, without text.
+    replies: after === null ? await unansweredReplies(deps.apiDb, QUEUE_PAGE_SIZE) : [],
   };
 }
 
@@ -424,6 +434,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   const columns = await standingColumns(q, row.id);
   // 3e Task 3: the standing measures that rest on each decision of the case, which a review or a correction would end.
   const standingOn = await standingOnDecisions(q, row.id);
+  // 3e Task 4: the replies to the case's standing measures, with their texts: read here, in the logged read, and nowhere else.
+  const replies = await caseReplies(q, row.id);
   const decisions: CaseDecision[] = [];
   for (const decision of await caseDecisions(q, row.id)) {
     const own: CaseDecision["actions"] = [];
@@ -449,6 +461,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
         restedOnBy: (more?.restedOnBy ?? null) as CaseDecisionAction["restedOnBy"],
         // 3e Task 2: a retirement names the handle it retired; no other row carries the member.
         ...(more?.handle ? { handle: more.handle } : {}),
+        reply: replyOf(replies.get(action.id)),
       });
     }
     decisions.push({

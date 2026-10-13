@@ -10,7 +10,7 @@ import { clampRatio } from "@/components/social/MediaGrid";
 import { API_BASE } from "@/lib/api";
 import { appealWaitWords, dailyLimitFailure, utcMinute } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
-import { strikeLine } from "@/lib/standing";
+import { nowSentence, replyStandsLine, restsOnLine, STANDING_TEXTS, standingMeasureOf, strikeLine } from "@/lib/standing";
 
 const Line = ({ children, strong = false }: { children: string; strong?: boolean }) => <Text className={`mt-3 text-base leading-6 ${strong ? "font-semibold text-zinc-100" : "text-zinc-200"}`}>{children}</Text>;
 const Note = ({ children }: { children: string }) => <Text className="mt-3 text-sm leading-5 text-zinc-400">{children}</Text>;
@@ -156,6 +156,89 @@ function Appeal({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement:
   return <Line>{DECISION_WORDS.reversed(view.reversedOn ?? "")}</Line>;
 }
 
+/** A link to another decision's screen, as a line of its own. */
+function DecisionLink({ id, label }: { id: string; label: string }) {
+  return (
+    <Link href={`/settings/cases/${id}`} asChild>
+      <Pressable className="mt-3 self-start">
+        <Text className="text-sm text-sky-400 underline">{label}</Text>
+      </Pressable>
+    </Link>
+  );
+}
+
+/** The states in which a measure ended before its time, by a decision the block links to. */
+const ENDED_BY_A_DECISION = new Set(["never", "lifted", "basis_ended"]);
+
+/**
+ * 3e Task 4 (design, section 9.2): "Where it stands now", under the statement of a decision that holds a suspension or a
+ * termination, from DecisionView.standing read fresh: the sentence of its state, with a link to the decision that ended
+ * it before its time; the strikes it rests on (or the decision, for a measure taken at once), each a link to its own
+ * screen; "Reply" while the reply is open; and once the person replied, their text while korbat keeps it and where the
+ * reply stands.
+ */
+function StandingNow({ view }: { view: DecisionView }) {
+  const standing = view.standing;
+  const measure = standingMeasureOf(view);
+  if (standing === null || measure === null) return null;
+  const protective = measure.basis === "protective";
+  const strikes = standing.restsOn.filter((entry) => entry.state !== null);
+  const decisions = standing.restsOn.filter((entry) => entry.state === null);
+  const reply = standing.reply;
+  const stands = replyStandsLine(standing);
+  return (
+    <Section title={STANDING_TEXTS.now.title}>
+      <Line strong>{nowSentence(standing, measure.kind, protective, view.appealUntil)}</Line>
+      {ENDED_BY_A_DECISION.has(standing.state) && standing.endedBy !== null ? <DecisionLink id={standing.endedBy} label={STANDING_TEXTS.now.endedBy} /> : null}
+      {strikes.map((entry) => (
+        <DecisionLink key={entry.decisionId} id={entry.decisionId} label={restsOnLine(entry)} />
+      ))}
+      {strikes.length > 0 ? <Note>{STANDING_TEXTS.rests.hint}</Note> : null}
+      {decisions.map((entry) => (
+        <DecisionLink key={entry.decisionId} id={entry.decisionId} label={protective ? STANDING_TEXTS.rests.seal(entry.decidedAt) : STANDING_TEXTS.rests.decision(entry.decidedAt)} />
+      ))}
+      {decisions.length > 0 ? <Note>{protective ? `${STANDING_TEXTS.rests.basis} ${STANDING_TEXTS.rests.basisProtective}` : STANDING_TEXTS.rests.basis}</Note> : null}
+      {standing.replyOpen ? (
+        <Link href={`/settings/cases/${view.id}/reply`} asChild>
+          <Pressable accessibilityRole="button" className="mt-4 self-start rounded-lg border border-zinc-500 px-4 py-2">
+            <Text className="text-base font-semibold text-zinc-50">{STANDING_TEXTS.reply.button}</Text>
+          </Pressable>
+        </Link>
+      ) : null}
+      {reply ? (
+        <View>
+          <Line>{STANDING_TEXTS.reply.replied(reply.filedAt)}</Line>
+          {reply.text !== null ? <Line>{reply.text}</Line> : reply.erasedAt !== null ? <Note>{STANDING_TEXTS.reply.erased(reply.erasedAt)}</Note> : null}
+          {stands ? <Line>{stands.text}</Line> : null}
+          {stands?.link ? <DecisionLink id={stands.link} label={STANDING_TEXTS.reply.answer} /> : null}
+        </View>
+      ) : null}
+    </Section>
+  );
+}
+
+/**
+ * 3e Task 4 (design, section 9.2): what the appeal of a standing measure adds above D 9's control: [appeal.early] while an
+ * announced measure has not started, [appeal.again] after a kept answer to a reply sent before the start, and
+ * [terminate.delete] beside a termination's appeal.
+ */
+function StandingAppealNotes({ view }: { view: DecisionView }) {
+  const standing = view.standing;
+  const measure = standingMeasureOf(view);
+  if (standing === null || measure === null) return null;
+  const open = view.appealUntil !== null && view.appeal === null;
+  const notStarted = standing.state === "unfixed" || standing.state === "announced" || standing.state === "held";
+  const reply = standing.reply;
+  const keptAfterReply = reply !== null && reply.onTime && reply.answeredAt !== null && !ENDED_BY_A_DECISION.has(standing.state);
+  return (
+    <View>
+      {open && notStarted ? <Note>{STANDING_TEXTS.appeal.early}</Note> : null}
+      {open && keptAfterReply && reply.answeredAt !== null && view.appealUntil !== null ? <Line>{STANDING_TEXTS.appeal.again(reply.answeredAt, view.appealUntil)}</Line> : null}
+      {measure.kind === "terminate" && (open || view.appeal?.state === "pending") ? <Note>{STANDING_TEXTS.terminateDelete}</Note> : null}
+    </View>
+  );
+}
+
 /**
  * One decision as its author reads it (3c design, section 9): the statement of reasons, rendered by the same function
  * that rendered its mail, from the same data; what the decision is about and the content it was made on; and where its
@@ -187,12 +270,15 @@ export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppea
         ))}
       </Section>
 
+      <StandingNow view={view} />
+
       <Section title={DECISION_WORDS.content}>
         <Content content={view.content} />
       </Section>
 
       {view.appeal || view.appealUntil || view.reversedOn ? (
         <Section title={DECISION_WORDS.appeal}>
+          <StandingAppealNotes view={view} />
           <Appeal view={view} onAppeal={onAppeal} />
         </Section>
       ) : null}

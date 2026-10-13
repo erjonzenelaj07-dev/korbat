@@ -12,7 +12,29 @@ import {
 } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { afterRefusal, COMPOSER, confirmDecision, confirmWhileBusy, correctionDraft, decidedNotice, newDraft, offeredDraft, openCorrection, openReview, reviewDraft, saveDraftText, withSavedTexts, withSeal, type CaseDraft, type DraftTextKind, type StaffRole } from "../compose";
+import {
+  afterRefusal,
+  answerDraft,
+  COMPOSER,
+  confirmDecision,
+  confirmWhileBusy,
+  correctionDraft,
+  decidedNotice,
+  newDraft,
+  offeredDraft,
+  openCorrection,
+  openReview,
+  replyOf,
+  replyState,
+  reviewDraft,
+  saveDraftText,
+  withdrawDraft,
+  withSavedTexts,
+  withSeal,
+  type CaseDraft,
+  type DraftTextKind,
+  type StaffRole,
+} from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
 import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
@@ -24,7 +46,7 @@ import { normalised, saveStaffText, type RandomBytes } from "../texts";
 import { dateTime, Loaded, UserText, type Loadable } from "../ui";
 import { categoryLabel, COLLAPSED_RULES, counted, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
 import type { CredentialsLike } from "../webauthn";
-import { ComposerView, CorrectControl, ReviewControl, type ComposerViewProps } from "./Composer";
+import { AnswerControl, ComposerView, CorrectControl, ReviewControl, WithdrawControl, type ComposerViewProps } from "./Composer";
 
 /**
  * The case page (3c design, sections 7.3 and 8): the header, the banners, the evidence with its images, the items with
@@ -159,7 +181,7 @@ export interface CaseScreenViewProps {
    * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
    * beside the decisions. Without it the page shows the case and decides nothing.
    */
-  compose?: Omit<ComposerViewProps, "view"> & { onCorrect(decision: CaseDecision): void; onReview(decision: CaseDecision): void };
+  compose?: Omit<ComposerViewProps, "view"> & { onCorrect(decision: CaseDecision): void; onReview(decision: CaseDecision): void; onAnswer(decision: CaseDecision): void; onWithdraw(decision: CaseDecision): void };
 }
 
 /** Whether the target as it stands differs from the case's newest snapshot: then the moderator takes a fresh one before deciding. */
@@ -518,6 +540,47 @@ function SealList({ sealed }: { sealed: NonNullable<CaseDecision["actions"][numb
   );
 }
 
+/**
+ * 3e Task 4 (design, section 8.5): under the decision that holds a suspension or a termination, the person's reply: its
+ * text in a frame of its own ([reply.empty] when there is none), when it was filed and where that leaves the measure
+ * ([reply.onTime], [reply.late], [reply.lateEnded]), or that the decision which broke its basis answered it
+ * ([reply.basisGone]); and "Answer this reply" for whoever may. The text is read here, in the case's logged read only.
+ */
+function ReplyBlock({ decision, compose }: { decision: CaseDecision; compose: CaseScreenViewProps["compose"] }) {
+  const found = replyOf(decision);
+  if (found === null) return null;
+  const { measure, reply } = found;
+  const state = replyState(measure, reply);
+  const where =
+    state === "onTime"
+      ? STANDING_WORDS.reply.onTime
+      : state === "late"
+        ? STANDING_WORDS.reply.late
+        : state === "lateEnded"
+          ? STANDING_WORDS.reply.lateEnded(dateTime(measure.period?.endsAt ?? ""))
+          : state === "basisGone"
+            ? STANDING_WORDS.reply.basisGone
+            : STANDING_WORDS.reply.answered(dateTime(reply.answeredAt ?? ""));
+  const waiting = state === "onTime" || state === "late" || state === "lateEnded";
+  return (
+    <div className="reply" role="group" aria-label={STANDING_WORDS.reply.blockTitle}>
+      <h4>{STANDING_WORDS.reply.blockTitle}</h4>
+      {reply.text === null ? <p className="hint">{STANDING_WORDS.reply.empty}</p> : <Frame by={STANDING_WORDS.reply.writtenBy} text={reply.text} />}
+      <p>
+        {"Filed on "}
+        <time dateTime={reply.filedAt}>{dateTime(reply.filedAt)}</time>.
+      </p>
+      <p className="hint">{where}</p>
+      {compose !== undefined && waiting ? (
+        <>
+          <AnswerControl decision={decision} role={compose.role} disabled={compose.busy} onAnswer={compose.onAnswer} />
+          {decision.needsAdmin && compose.role !== "admin" ? <p className="hint">{STANDING_WORDS.reply.admin}</p> : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function Decision({ decision, view, compose }: { decision: CaseDecision; view: CaseView; compose: CaseScreenViewProps["compose"] }) {
   const lifted = (id: string | null) => {
     const by = id === null ? undefined : view.decisions.find((other) => other.id === id);
@@ -568,6 +631,8 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
         </ul>
       )}
       {compose === undefined ? null : <CorrectControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onCorrect={compose.onCorrect} />}
+      {compose === undefined ? null : <WithdrawControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdraw={compose.onWithdraw} />}
+      <ReplyBlock decision={decision} compose={compose} />
     </li>
   );
 }
@@ -957,6 +1022,20 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
     }
   };
 
+  /**
+   * Opens a correction of Task 4 (an answer to a reply, a withdrawal) as "Correct this decision" opens one: the draft it
+   * replaces is kept for Cancel, and the reason its person saved on this case before comes back, unless they have typed.
+   */
+  const openAnother = (value: CaseView, opened: CaseDraft) => {
+    setComposeError(null);
+    setTextErrors({});
+    if (draftNow.current !== null && draftNow.current.kind !== "correction" && draftNow.current.kind !== "review") beforeCorrection.current = draftNow.current;
+    keep(opened);
+    void withSavedTexts(opened, value.drafts).then((restored) => {
+      if (alive.current && draftNow.current === opened) keep(restored);
+    });
+  };
+
   const composeProps = (value: CaseView): CaseScreenViewProps["compose"] =>
     draft === null
       ? undefined
@@ -1006,6 +1085,9 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
               if (alive.current && draftNow.current === opened) keep(restored);
             });
           },
+          // 3e Task 4: an answer to the reply, and the withdrawal of an announced measure, open as a correction does.
+          onAnswer: (decision) => openAnother(value, answerDraft(id, value, decision, role)),
+          onWithdraw: (decision) => openAnother(value, withdrawDraft(id, value, decision, role)),
           onCancelCorrection: () => {
             setComposeError(null);
             setTextErrors({});

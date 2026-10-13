@@ -18,6 +18,7 @@ import {
   StaffStepUpOptionsResponse,
   StaffTextSaved,
   StaffTextsResponse,
+  StandingLists,
   type AppealReviewRequest,
   type CaseDecisionRequest,
   type FindingRequest,
@@ -222,6 +223,8 @@ export function createStaffApi(deps: StaffApiDeps) {
       if (!isLowerUuid(caseId)) throw new ApiError(0, "invalid_request");
       return sameCase(caseId, await request("POST", `/api/staff/cases/${caseId}/decisions`, CaseView, call, body));
     },
+    /** 3e: the Standing screen's four lists. */
+    standing: (call: Call = {}) => request("GET", "/api/staff/standing", StandingLists, call),
     /** A page of the pending appeals, newest first. The cursor is one the API itself handed out, encoded. */
     appeals: (cursor: string | null, call: Call = {}) => request("GET", `/api/staff/appeals${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, AppealsPage, call),
     /**

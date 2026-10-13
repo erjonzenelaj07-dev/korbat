@@ -9,6 +9,7 @@ import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/comp
 import { api, ApiError, apiResponse, errorMessage } from "@/lib/api";
 import { exportFilename, saveBlob } from "@/lib/download";
 import { useSession } from "@/lib/session";
+import { STANDING_TEXTS } from "@/lib/standing";
 
 type Run = (action: () => Promise<void>) => Promise<void>;
 type Refresh = () => Promise<unknown>;
@@ -361,6 +362,8 @@ export default function AccountSettings() {
           <ExportSection run={reauth.run} />
         </Section>
         <Section title="Delete account">
+          {/* 3e Task 4 (design, section 9.2): [terminate.delete], while /me carries a termination. */}
+          {me.standing?.measure?.kind === "terminate" ? <Body>{STANDING_TEXTS.terminateDelete}</Body> : null}
           <DeleteSection me={me} run={reauth.run} refresh={refresh} />
         </Section>
       </ScrollView>

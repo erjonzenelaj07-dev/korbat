@@ -67,7 +67,7 @@ const SEAL_WHILE_DECIDING = { kind: "interim", ruleId: "R2", actions: [act("seal
 const SEAL_FOR_GOOD = { kind: "final", ruleId: "R2", actions: [act("seal_media")] } as const;
 const NO_SEAL = { kind: "final", outcome: "no_violation" } as const;
 /** 3e: the standing columns of an action that is no standing measure and no strike, as the case answer carries them. */
-const NO_STANDING = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null } as const;
+const NO_STANDING = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null, reply: null } as const;
 
 /**
  * The queue and the case, for staff (3c design, section 7.3), against the real database: the case answer with its

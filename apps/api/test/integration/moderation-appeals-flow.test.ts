@@ -18,6 +18,7 @@ import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-de
 import {
   aPost,
   act,
+  anAccount,
   appealOf,
   authCaseCounts,
   decisionParams,
@@ -30,6 +31,7 @@ import {
   newPostRow,
   postRow,
   refusal,
+  timed,
   untilBlocked,
   type DecisionInput,
   type ReviewInput,
@@ -155,6 +157,33 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals and reviews, fro
     // The reviewer reads the statement on the case page.
     expect((await readCase(w.deps, mod2.session, r.caseId)).appeals).toEqual([expect.objectContaining({ decisionId: r.decisionId, statement: "The post quotes a film. Please look again.", reviewer: "available", mayReview: true })]);
     expect((await readCase(w.deps, mod.session, r.caseId)).appeals[0]).toMatchObject({ mayReview: false });
+  });
+
+  test("3e: the console lists first the appeals of a decision that holds a running suspension, oldest first, then the rest; each row's deadline is the database's appeal_informed_at's six months, and the review of a suspension taken at once is an admin's", async () => {
+    // A suspension at once on a threat: an admin's R5 removal of a post, then the suspension on the account's case.
+    const author = await w.account();
+    const postId = await newPostRow(w.apiDb, author.id, { createdAt: sql`clock_timestamp()`, body: "a direct threat" });
+    const postCase = (await recordIntake(w.deps, { ground: ground.finding(admin.id, "R5"), live: [aPost(postId)] })).items[0]!.caseId!;
+    await decided(admin, postCase, { kind: "final", ruleId: "R5", actions: [act("remove")] });
+    const accountCase = (await recordIntake(w.deps, { ground: ground.finding(admin.id, "R5"), live: [anAccount(author.id, author.handle)] })).items[0]!.caseId!;
+    const suspension = await decided(admin, accountCase, { kind: "final", ruleId: "R5", actions: [timed("suspend", 3, false)] });
+    await fileAppeal(w.deps, author.id, suspension, { statement: "I did not write that." });
+    // A removal appealed after it: the rest are listed newest first, after the running suspension's appeal.
+    const r = await removedPost();
+    await fileAppeal(w.deps, r.author.id, r.decisionId, {});
+    const rows = (await appealsList(w.deps, admin2.session)).appeals;
+    const first = rows.findIndex((row) => row.decisionId === suspension);
+    const later = rows.findIndex((row) => row.decisionId === r.decisionId);
+    expect(rows[first]).toMatchObject({ standingFirst: true, needsAdmin: true, mayReview: true });
+    expect(rows[later]).toMatchObject({ standingFirst: false });
+    expect(first).toBeLessThan(later);
+    expect(rows.filter((row) => row.standingFirst).every((row, index, list) => index === 0 || list[index - 1]!.filedAt <= row.filedAt)).toBe(true);
+    const [deadline] = await w.apiDb.execute<{ until: string }>(sql`select to_char(public.appeal_deadline(public.appeal_informed_at(${suspension}::uuid)) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as until`);
+    expect(rows[first]!.deadline).toBe(deadline!.until);
+    // A moderator may not review it; a second admin's kept review answers it.
+    expect((rows.find((row) => row.decisionId === suspension) && (await appealsList(w.deps, mod2.session)).appeals.find((row) => row.decisionId === suspension))?.mayReview).toBe(false);
+    await reviewed(admin2, suspension, { outcome: "kept" });
+    await reviewed(mod2, r.decisionId, { outcome: "kept" });
   });
 
   test("a kept review by a second moderator: the first is refused, the author is mailed the review's statement and reads it on the decision's screen, and the post's chip still names the removal", async () => {

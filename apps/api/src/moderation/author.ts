@@ -13,6 +13,7 @@ import {
 import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
+import { decisionStandingView } from "./standing";
 import { activeStrikesOf } from "./standing-repo";
 
 /**
@@ -143,6 +144,8 @@ export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb">, vi
     content: contentOf(facts),
     appeal: facts.appeal === null ? null : await appealOf(deps, facts.appeal),
     strike: facts.strike,
+    // 3e Task 4: where the decision's suspension or termination stands now, beside the statement that never changes.
+    standing: await decisionStandingView(deps.apiDb, decisionId),
   };
 }
 

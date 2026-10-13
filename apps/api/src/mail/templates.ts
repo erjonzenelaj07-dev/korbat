@@ -1,4 +1,4 @@
-import { ACCOUNT_DELETION_WORDS } from "@korbat/contracts";
+import { ACCOUNT_DELETION_WORDS, REPLY_AIM_HOURS } from "@korbat/contracts";
 import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
@@ -270,6 +270,46 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
         .filter((paragraph) => paragraph.trim() !== "");
       return userMail(DECISION_MAIL_SUBJECTS[key as DecisionMailSubject], [...lines, STATEMENT_CLOSING]);
     }
+    case "suspension_announced": {
+      // 3e (design, W.6): a suspension or a termination announced with the reply window. Nothing is restricted yet; the
+      // lead says when it starts and that a reply before then holds it, then the statement's paragraphs exactly as
+      // rendered. Every time is the database's, printed as the notices print one; "sent" is all korbat knows of a mail.
+      const terminated = need(data, "measure") === "terminate";
+      const earliest = need(data, "earliestStart");
+      const days = terminated ? "" : need(data, "days");
+      const what = terminated ? "termination" : "suspension";
+      const lead = `${terminated ? "korbat has decided to terminate your korbat account" : `korbat has decided to suspend your korbat account for ${days} ${days === "1" ? "day" : "days"}`}. Nothing is restricted yet. The ${what} starts ${need(data, "window")} hours after korbat sent this email, and not before ${earliest}.`;
+      const reply = `You can reply before it starts: sign in to korbat, where this decision is always shown and a banner on every screen gives the exact time and a Reply button. A reply sent before ${earliest} is certainly in time, and holds the start until a moderator has answered you.`;
+      return userMail(terminated ? "korbat has decided to terminate your account: you can reply first" : "korbat has decided to suspend your account: you can reply first", [
+        lead,
+        reply,
+        "The decision and its reasons follow.",
+        ...statementLines(data),
+        STATEMENT_CLOSING,
+      ]);
+    }
+    case "reply_answered": {
+      // 3e (design, W.6): the answer to the person's reply, which kept the measure or reversed it; the answer's statement follows.
+      const outcome = need(data, "outcome");
+      if (outcome !== "kept" && outcome !== "reversed") throw new Error(`mail template data holds an outcome that reply_answered does not have: "${outcome}"`);
+      const lead = outcome === "kept" ? "A moderator read your reply and kept the decision. The answer and its reasons follow." : "A moderator read your reply and reversed the decision. The answer follows.";
+      return userMail("korbat answered your reply", [lead, ...statementLines(data), STATEMENT_CLOSING]);
+    }
+    case "termination_final": {
+      // 3e (design, W.6): the auth module's own mail after the take-down of a terminated account, to the address read
+      // before it. It names no reporter and no staff member, carries no link, and never says that korbat keeps nothing
+      // when images of the account stay sealed for the authorities.
+      const sealed = need(data, "imagesSealed") === "true";
+      return userMail("korbat has closed your terminated account", [
+        `korbat's decision of ${need(data, "decided")} to terminate your korbat account is final: the time to appeal has passed, or your appeal was answered and the decision kept, and no reply of yours is unanswered.`,
+        "korbat has closed the account and is now deleting its posts and profile and every image it has not sealed, as that decision said. This cannot be undone. The handle stays reserved, so nobody else can take it.",
+        [
+          "korbat keeps nothing to recognise a new account of yours by.",
+          ...(sealed ? ["Images of yours that korbat sealed stay with it for the authorities alone, as the decision that sealed them said."] : []),
+          "A new account that carries on what this one was terminated for breaks korbat's terms.",
+        ].join(" "),
+      ]);
+    }
     case "suspension_started_at_once": {
       // 3e (design, W.6): a suspension or a termination taken at once. The lead, then the statement's paragraphs exactly
       // as rendered, then what every statement mail ends with.
@@ -285,8 +325,13 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       // reversed, by where its period stood at that decision's time. No lead says "you can use your account as before":
       // another measure may still stand, so each says only that this one no longer restricts the account.
       const what = need(data, "measure") === "terminate" ? "termination" : "suspension";
-      const period = need(data, "period");
       const why = need(data, "why");
+      if (why === "replaced") {
+        // A withdrawal to make room for another measure: never worded as an answer to the person's reply.
+        const lead = `korbat withdrew the ${what} of your korbat account that it announced on ${need(data, "decidedAt")}, because it is taking another measure on your account.${data.replied === "true" ? " This is not a decision on your reply." : ""}`;
+        return userMail(`korbat withdrew the ${what} it announced`, [lead, "The decision about the other measure reaches you separately.", ...statementLines(data), STATEMENT_CLOSING]);
+      }
+      const period = need(data, "period");
       const words = why === "basis" ? LIFTED_BASIS[period] : why === "lifted" ? LIFTED[period] : undefined;
       if (words === undefined) throw new Error(`mail template data holds a why or a period that suspension_lifted does not have: "${why}", "${period}"`);
       return userMail(words.subject(what), [words.lead(what), ...statementLines(data), STATEMENT_CLOSING]);
@@ -297,7 +342,7 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       const lane = "in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm)";
       return staffMail("korbat: a case is waiting in the urgent lane", [
         need(data, "count") === "1" ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.` : `${need(data, "count")} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
-        "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only alert.",
+        "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only alert.",
       ]);
     }
     case "moderation_waiting": {
@@ -319,8 +364,16 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
             : `${held} cases have held a measure taken while deciding for more than 24 hours; their authors cannot appeal until the case is decided.`,
         );
       }
+      // 3e (W.6): the replies to a suspension or a termination unanswered for longer than korbat's aim.
+      const replies = data.replyCount;
+      if (replies !== undefined && replies !== "") {
+        const oldest = need(data, "replyOldest");
+        lines.push(
+          `${replies === "1" ? "1 reply to a suspension or termination has" : `${replies} replies to a suspension or termination have`} waited more than ${REPLY_AIM_HOURS} hours, ${replies === "1" ? "since" : "the oldest since"} ${oldest}. A reply sent before the start holds its suspension until someone answers.`,
+        );
+      }
       if (lines.length === 0) throw new Error("mail template data for moderation_waiting names nothing that waits");
-      return staffMail("korbat: cases are waiting longer than their response time", [...lines, "Open the staff console. Until the phone alerts of sub-project 3e, this email is the only reminder."]);
+      return staffMail("korbat: cases are waiting longer than their response time", [...lines, "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder."]);
     }
     case "moderation_burst": {
       // One staff account confirmed many decisions in a short time (3c design, section 7.5, step 4): every staff

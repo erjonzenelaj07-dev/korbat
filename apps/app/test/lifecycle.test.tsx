@@ -56,11 +56,14 @@ describe("the settings row", () => {
 
   test("every settings screen shows the row and names itself as the current page", () => {
     const dir = path.join(SRC, "app", "settings");
-    // A page is a file of the folder, or a folder of its own whose screens all belong to it (Cases: its list and one decision).
+    // A page is a file of the folder, or a folder of its own whose screens all belong to it, at any depth (Cases: its list,
+    // one decision, and that decision's reply screen).
+    const filesUnder = (folder: string): string[] =>
+      readdirSync(path.join(dir, folder), { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(path.join(folder, entry.name)) : [path.join(folder, entry.name)]));
     const screens = readdirSync(dir, { withFileTypes: true })
       .filter((entry) => !entry.name.startsWith("_"))
       .flatMap((entry) =>
-        entry.isDirectory() ? readdirSync(path.join(dir, entry.name)).map((file) => ({ page: entry.name, file: path.join(entry.name, file) })) : [{ page: entry.name.replace(/\.tsx$/, ""), file: entry.name }],
+        entry.isDirectory() ? filesUnder(entry.name).map((file) => ({ page: entry.name, file })) : [{ page: entry.name.endsWith(".tsx") ? entry.name.slice(0, -".tsx".length) : entry.name, file: entry.name }],
       );
     expect([...new Set(screens.map((screen) => screen.page))].sort()).toEqual([...PAGES].sort());
     for (const { page, file } of screens) {

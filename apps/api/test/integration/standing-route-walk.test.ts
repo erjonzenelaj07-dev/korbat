@@ -22,7 +22,7 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createSocial, enforceWriteLimit, socialForModeration } from "../../src/social";
 import { Browser } from "./http-client";
 import { BYTES } from "./media-harness";
-import { closeDecisions, suspendForTest } from "./moderation-decide";
+import { closeDecisions, suspendForTest, terminateForTest } from "./moderation-decide";
 import { removeFixtures, rowCounts } from "./moderation-fixtures";
 
 // The suspension is a real, confirmed decision (a staff key's enrolment and sign-in, then two step-ups), and the walk
@@ -100,6 +100,8 @@ export const SUSPENDED_WRITES: Record<string, "refused" | "allowed"> = {
   "POST /api/notices/contact": "allowed",
   "POST /api/notices/reexamine": "allowed",
   "POST /api/moderation/decisions/:id/appeal": "allowed",
+  // 3e Task 4: the reply is the hearing, and is never suspended.
+  "POST /api/moderation/decisions/:id/reply": "allowed",
   "POST /api/moderation/items/:item/reexamine": "allowed",
   "POST /api/moderation/report-mail/resume": "allowed",
 };
@@ -114,11 +116,11 @@ export function writeRoutes(app: { routes: readonly { method: string; path: stri
 }
 
 /**
- * The route walk (3e design, section 12.2; invariant 10, its pass for an account suspended at once): the real app with
- * every module, an account signed up over HTTP and suspended at once through the decide route's own code, and then every
- * write route of the app's route table called once with that account's session. Each answers as section 7.3 says: 403
- * account_suspended, or not that. Task 4 adds the passes for a terminated account and for an announced suspension before
- * its start.
+ * The route walk (3e design, section 12.2; invariant 10): the real app with every module, an account signed up over HTTP
+ * and put under a measure through the decide route's own code, and then every write route of the app's route table
+ * called once with that account's session. Three passes: an account suspended at once and (Task 4) one terminated at
+ * once, where each route answers as section 7.3 says (403 account_suspended, or not that), and one whose announced
+ * suspension has not started, where every route gives its ordinary answer.
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a suspended account", () => {
   let config: Config;
@@ -212,17 +214,22 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     expect(Object.keys(SUSPENDED_WRITES).filter((route) => !routes.includes(route))).toEqual([]);
   });
 
-  test("an account suspended at once: each write route answers 403 account_suspended or its ordinary answer, as the table says, and /api/me then shows the suspension", async () => {
+  /**
+   * One pass of the walk: two accounts, Ada and Bob, each with a post and Ada liking Bob's; a badge verification Ada
+   * started before the measure; then `measure` puts Ada under it and answers the decision; then every write route once
+   * with Ada's session. Answers each route's answers: "refused" for 403 account_suspended, else the status.
+   */
+  async function walk(measure: (accountId: string) => Promise<string>) {
     const ada = await signUp();
     const bob = await signUp();
     const bobsPost = PostView.parse(await (await bob.b.fetch("/api/posts", { json: { body: "bob's post" } })).json());
     const adasPost = PostView.parse(await (await ada.b.fetch("/api/posts", { json: { body: "ada's post" } })).json());
     expect((await ada.b.fetch(`/api/posts/${bobsPost.id}/like`, { method: "POST" })).status).toBe(200);
-    // A badge verification started before the suspension, which its verify step then meets.
+    // A badge verification started before the measure, which its verify step then meets.
     const badge = await ada.b.fetch("/api/auth/badge/start", { json: { phone: `+4477${String(randomInt(10_000_000, 100_000_000))}` } });
     const { flowId } = FlowResponse.parse(await badge.json());
-    const { decisionId } = await suspendForTest(apiDb, ada.id, { days: 7 });
-    expect(MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).standing?.measure?.state).toBe("running");
+    const decisionId = await measure(ada.id);
+    const state = MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).standing?.measure?.state ?? null;
 
     type Call = { path: string; method: string; json?: unknown; raw?: { type: string; body: Uint8Array } };
     const calls: Record<string, Call[]> = {
@@ -256,6 +263,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
         { method: "POST", path: "/api/notices", json: { ground: "illegal", targets: [{ kind: "post", id: bobsPost.id }], category: "STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH", explanation: "It is a threat.", bonaFide: true } },
       ],
       "POST /api/moderation/decisions/:id/appeal": [{ method: "POST", path: `/api/moderation/decisions/${decisionId}/appeal`, json: {} }],
+      "POST /api/moderation/decisions/:id/reply": [{ method: "POST", path: `/api/moderation/decisions/${decisionId}/reply`, json: { statement: "I did not mean it." } }],
       "POST /api/moderation/items/:item/reexamine": [{ method: "POST", path: `/api/moderation/items/${randomUUID()}/reexamine`, json: {} }],
     };
     const callsOf = (route: string): Call[] => {
@@ -274,6 +282,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
         (answers[route] ??= []).push(code === "account_suspended" ? "refused" : `${res.status}`);
       }
     }
+    return { ada, order, answers, state };
+  }
+
+  /** Each route answers as section 7.3's table says, and what the refusals left is as it was. */
+  async function expectTable({ ada, order, answers }: Awaited<ReturnType<typeof walk>>) {
     for (const route of order) {
       const got = answers[route]!;
       if (route === "POST /api/notices") {
@@ -293,6 +306,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
                  (select handle from profiles where id = ${ada.id}::uuid) as handle`,
     );
     expect({ ...counts! }).toEqual({ posts: 0, follows: 0, verified: false, handle: ada.handle });
+  }
+
+  test("an account suspended at once: each write route answers 403 account_suspended or its ordinary answer, as the table says, and /api/me then shows the suspension", async () => {
+    const result = await walk(async (accountId) => (await suspendForTest(apiDb, accountId, { days: 7 })).decisionId);
+    expect(result.state).toBe("running");
+    // The reply to a suspension taken at once is late, and taken.
+    expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
+    await expectTable(result);
+  });
+
+  test("an account terminated at once: the same table, the reply taken, and /api/me shows the termination running", async () => {
+    const result = await walk(async (accountId) => (await terminateForTest(apiDb, accountId)).decisionId);
+    expect(result.state).toBe("running");
+    expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
+    await expectTable(result);
+  });
+
+  test("an account whose announced suspension has not started: every write route gives its ordinary answer, none refuses it, and its reply comes before the start", async () => {
+    const result = await walk(async (accountId) => (await suspendForTest(apiDb, accountId, { announced: true })).decisionId);
+    // The decisions of this file are mailed by no auth module: the notice mail's outcome is unknown, so nothing has a start.
+    expect(result.state).toBe("unfixed");
+    const refused = Object.entries(result.answers).filter(([, got]) => got.includes("refused"));
+    expect(refused).toEqual([]);
+    expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
+    const [reply] = await apiDb.execute<{ on_time: boolean }>(sql`select on_time from suspension_replies where account_id = ${result.ada.id}::uuid`);
+    expect(reply?.on_time).toBe(true);
   });
 
   test("this file left no row behind: what it committed is removed, and the tables hold what they held before it", async () => {

@@ -6,9 +6,9 @@ import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { authorDecisionView, decodeListCursor, encodeListCursor } from "./author";
 import { reviewerOf } from "./cases";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { recordConfirmed, refuseUnopened, subjectLockMode, type DecideOptions, type DecideOutcome } from "./decide";
+import { recordConfirmed, refuseUnopened, subjectLockMode, type AnsweredFacts, type DecideOptions, type DecideOutcome } from "./decide";
 import { countOrRefuse, saltedStatement } from "./intake";
-import { insertAction, insertAppeal, insertReview, pendingAppeals, raisedMessage, reviewedDecision, violatedUniqueConstraint } from "./repo";
+import { holdsAnnouncedStanding, insertAction, insertAppeal, insertReview, pendingAppeals, raisedMessage, reviewedDecision, violatedUniqueConstraint } from "./repo";
 
 /**
  * Appeals and their reviews (3c design, sections 6.3 and 7.7). An appeal has one shape: the author's appeal of a final
@@ -75,15 +75,21 @@ export async function fileAppeal(deps: Pick<ModerationDeps, "apiDb" | "limits" |
 }
 
 /**
- * GET /api/staff/appeals: the pending appeals, newest first, 50 a page, each marked whether the reading person may
- * review it (3c design, section 7.7). No row carries a statement: the reviewer reads it on the case page, whose read is
- * logged and counted.
+ * GET /api/staff/appeals: the pending appeals, 50 a page, each marked whether the reading person may review it (3c
+ * design, section 7.7). No row carries a statement: the reviewer reads it on the case page, whose read is logged and
+ * counted. 3e (section 7.11 item 6): the first page lists first the appeals of a decision that holds a running suspension
+ * or a termination that stands, oldest first, since the person can do nothing while they wait; then the rest, newest
+ * first, which the cursor pages through. The first group is read on the first page alone, up to a page of it: as many
+ * appeals of running measures as a page holds are far more than one or two staff accounts can have waiting.
  */
 export async function appealsList(deps: Pick<ModerationDeps, "apiDb">, session: ActiveStaffSession, cursor?: string): Promise<AppealsPage> {
   const after = cursor === undefined ? null : decodeListCursor(cursor);
-  const found = await pendingAppeals(deps.apiDb, reviewerOf(session), after, APPEALS_PAGE_SIZE + 1);
-  const page = found.slice(0, APPEALS_PAGE_SIZE);
-  const last = page.at(-1);
+  const first = after === null ? await pendingAppeals(deps.apiDb, reviewerOf(session), null, APPEALS_PAGE_SIZE, true) : [];
+  const room = APPEALS_PAGE_SIZE - first.length;
+  const rest = room > 0 ? await pendingAppeals(deps.apiDb, reviewerOf(session), after, room + 1) : [];
+  const page = [...first, ...rest.slice(0, room)];
+  // The cursor is the last row of the rest: the first group is never paged.
+  const last = rest.slice(0, room).at(-1);
   return {
     appeals: page.map(
       (row): AppealRow => ({
@@ -99,10 +105,11 @@ export async function appealsList(deps: Pick<ModerationDeps, "apiDb">, session: 
         reviewer: row.reviewer,
         needsAdmin: row.needsAdmin,
         mayReview: row.mayReview,
+        standingFirst: row.standingFirst,
       }),
     ),
-    // One row more than the page was read: only then is there a next page.
-    nextCursor: found.length > APPEALS_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,
+    // One row more than the room was read: only then is there a next page.
+    nextCursor: rest.length > room && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,
   };
 }
 
@@ -139,7 +146,9 @@ export async function review(deps: ModerationDeps, session: ActiveStaffSession, 
   // As for a decision: a case's target and a post's author never change, so the subject is read before the transaction.
   const subject = reviewed.target.type === "account" ? reviewed.target.id : await deps.social.postAuthor(reviewed.target.id);
 
-  // A review holds reversals only, so its first lock stays FOR NO KEY UPDATE (3e design, section 5): a lift included.
+  // A review holds reversals only, so its first lock stays FOR NO KEY UPDATE (3e design, section 5), a lift included,
+  // but for one that keeps an announced suspension or termination in force, and so may fix its start (Task 4).
+  const answered: AnsweredFacts = { kind: "review", outcome: params.outcome, holdsAnnounced: await holdsAnnouncedStanding(deps.apiDb, reviewsDecisionId) };
   return recordConfirmed(
     deps,
     session,
@@ -150,7 +159,7 @@ export async function review(deps: ModerationDeps, session: ActiveStaffSession, 
       await insertReview(tx, { id: decisionId, caseId: reviewed.caseId, reviewsDecisionId, decidedBy: session.userId, params });
       for (const action of params.actions) await insertAction(tx, decisionId, action);
     },
-    subjectLockMode(params.actions),
+    subjectLockMode(params.actions, answered),
   );
 }
 

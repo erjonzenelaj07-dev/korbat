@@ -52,6 +52,8 @@ function harness() {
         started.push({ session, ctx });
         return { flowId: `flow-${session.userId}` };
       },
+      // 3e: a terminated account's take-down; the harness's moderation fake decides when it is called.
+      takeDownTerminated: async () => false,
       confirmDeletion: async (session, input) => {
         calls.push("auth.confirmDeletion");
         if (input.handle.toLowerCase() !== "ada") throw new AuthError("invalid_request", 400, "handle_mismatch");
@@ -260,7 +262,7 @@ describe("the purge job", () => {
     h.account();
     h.failing.add(ada.userId);
 
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 1 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 1, terminated: 0 });
     expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
     expect(h.users.get(bob.userId)!.purgedAt).toEqual(h.now());
     expect(await h.deps.auth.pendingPurges()).toEqual([ada.userId]);
@@ -269,14 +271,44 @@ describe("the purge job", () => {
     expect(h.lines.filter((line) => line.purged !== undefined).map((line) => [line.purged, line.failed])).toEqual([[1, 1]]);
 
     h.advance(PURGE_INTERVAL_MS);
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
     expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
     expect(h.requested).toEqual([[], [expect.any(String)]]);
     expect(await h.deps.auth.pendingPurges()).toEqual([]);
     // A round with nothing to do reports zeros and logs nothing.
     h.lines.length = 0;
-    expect(await purgePending(h.deps)).toEqual({ purged: 0, failed: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 0, failed: 0, terminated: 0 });
     expect(h.lines).toEqual([]);
+  });
+
+  test("3e: the round first takes down the terminations that are due, adds what failed to `failed`, and purges the deletions whatever happened there", async () => {
+    const h = harness();
+    const bob = h.account({ deletedAt: new Date(T0 - 60_000) });
+    const taken: string[] = [];
+    // The moderation module's step: it calls the auth module's take-down for each account due, and counts.
+    h.deps.moderation = {
+      takeDownDue: async (takeDown) => {
+        h.calls.push("moderation.takeDownDue");
+        const made = await takeDown("terminated-1", { decidedAt: new Date(T0 - 1), imagesSealed: false });
+        if (made) taken.push("terminated-1");
+        return { terminated: made ? 1 : 0, failed: 1 };
+      },
+      forgetAccount: async () => undefined,
+      exportFor: async () => {
+        throw new Error("not exercised by the purge");
+      },
+    };
+    h.deps.auth = { ...h.deps.auth, takeDownTerminated: async () => true };
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 1, terminated: 1 });
+    expect(taken).toEqual(["terminated-1"]);
+    expect(h.calls[0]).toBe("moderation.takeDownDue");
+    expect(h.users.get(bob.userId)!.purgedAt).toEqual(h.now());
+    // A step that throws as a whole is logged, and the person's own deletion is purged all the same.
+    const carl = h.account({ deletedAt: new Date(T0 - 30_000) });
+    h.deps.moderation = { ...h.deps.moderation, takeDownDue: async () => Promise.reject(new Error("the moderation module is down")) };
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
+    expect(h.users.get(carl.userId)!.purgedAt).toEqual(h.now());
+    expect(h.lines.some((line) => line.level >= 50 && /terminations due/.test(String(line.msg)))).toBe(true);
   });
 
   test("runs every five minutes under the lock job:account-purge, and skips a round another instance holds", async () => {
@@ -302,6 +334,8 @@ describe("the purge and the reports the account sent (3c design, section 7.10)",
     const forgotten: string[] = [];
     const failing = new Set<string>();
     h.deps.moderation = {
+      // 3e: no termination is due in these tests.
+      takeDownDue: async () => ({ terminated: 0, failed: 0 }),
       forgetAccount: async (userId) => {
         h.calls.push("moderation.forgetAccount");
         if (failing.delete(userId)) throw new Error("the forgetting failed");
@@ -333,7 +367,7 @@ describe("the purge and the reports the account sent (3c design, section 7.10)",
     expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
     expect(await h.deps.auth.pendingPurges()).toEqual([ada.userId]);
     // The job's next round: the same steps, and this time the account is purged.
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
     expect(h.forgotten).toEqual([ada.userId]);
     expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
   });

@@ -72,6 +72,7 @@ describe("the appeals as the console reads them", () => {
     reviewer: "available",
     needsAdmin: false,
     mayReview: true,
+    standingFirst: false,
   };
 
   test("a page holds the pending appeals, each with its case, its decision and the three marks of its review", () => {
@@ -124,6 +125,8 @@ describe("the appeals as the console reads them", () => {
       deferUnproven: false,
       protectionLifted: { total: 0, items: [] },
       sealsDeclined: { total: 0, items: [] },
+      repliesWaiting: { count: 0, oldestAt: null },
+      strikeAccounts: 0,
       interimSeals: { total: 0, items: [] },
     };
     expect(StaffOverview.parse(overview)).toEqual(overview);

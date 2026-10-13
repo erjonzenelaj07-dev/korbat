@@ -1,9 +1,9 @@
-import { FINDING_CATEGORIES, FindingRequest, RULE_DEFAULT_CATEGORY, RULE_IDS, type QueueRow, type RuleId, type TdbCategory } from "@korbat/contracts";
+import { FINDING_CATEGORIES, FindingRequest, REPLY_AIM_HOURS, RULE_DEFAULT_CATEGORY, RULE_IDS, type QueueReply, type QueueRow, type RuleId, type TdbCategory } from "@korbat/contracts";
 import { getRule } from "@korbat/rules";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { StaffApi } from "../api";
 import { systemClock, type Clock } from "../idle";
-import { describeError, FINDING_WORDS } from "../messages";
+import { describeError, FINDING_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { dateTime, Loaded, type Loadable } from "../ui";
@@ -60,6 +60,8 @@ export interface FindingFormState {
 
 export interface QueueViewProps {
   rows: Loadable<QueueRow[]>;
+  /** 3e Task 4: the replies no decision answered, oldest first, which lead the queue's first page; never their text. */
+  replies?: QueueReply[];
   /** Whether the API named a further page. */
   more: boolean;
   loadingMore: boolean;
@@ -72,7 +74,53 @@ export interface QueueViewProps {
   onFindingSubmit(): void;
 }
 
-export function QueueView({ rows, more, loadingMore, now, finding, onLoadMore, onOpenCase, onFindingChange, onFindingSubmit }: QueueViewProps) {
+/**
+ * 3e Task 4 (design, section 8.5): one reply in "Replies to answer": how long it has waited; before the start (the
+ * suspension is held) or after it, until or since its end; the measure; and whether it has waited longer than korbat's
+ * aim. The reply's text is read on the case page, where the access log and the recusal apply.
+ */
+export function replyWords(reply: QueueReply, now: number): string[] {
+  const where = reply.onTime
+    ? STANDING_WORDS.reply.before
+    : reply.endsAt !== null && Date.parse(reply.endsAt) <= now
+      ? STANDING_WORDS.reply.afterEnded(dateTime(reply.endsAt))
+      : STANDING_WORDS.reply.after(reply.endsAt === null ? "" : dateTime(reply.endsAt));
+  const what = reply.kind === "terminate" ? STANDING_WORDS.reply.termination : STANDING_WORDS.reply.suspension(reply.days ?? 1);
+  const late = now - Date.parse(reply.filedAt) > REPLY_AIM_HOURS * 60 * 60 * 1000 ? [STANDING_WORDS.reply.overAim] : [];
+  return [where, what, ...late];
+}
+
+function Replies({ replies, now, onOpenCase }: { replies: QueueReply[]; now: number; onOpenCase(id: CaseId): void }) {
+  return (
+    <>
+      <h3 id="replies-title">{STANDING_WORDS.reply.title}</h3>
+      {replies.length === 0 ? (
+        <p>{STANDING_WORDS.reply.none}</p>
+      ) : (
+        <ul className="plain replies" aria-labelledby="replies-title">
+          {replies.map((reply) => {
+            const id = parseCaseId(reply.caseId);
+            return (
+              <li key={`${reply.decisionId} ${reply.filedAt}`}>
+                <time dateTime={reply.filedAt} title={dateTime(reply.filedAt)}>
+                  {waited(reply.filedAt, now)}
+                </time>
+                {`: ${replyWords(reply, now).join("; ")}. `}
+                {id ? (
+                  <CaseLink id={id} onOpen={onOpenCase}>
+                    Open the case
+                  </CaseLink>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </>
+  );
+}
+
+export function QueueView({ rows, replies = [], more, loadingMore, now, finding, onLoadMore, onOpenCase, onFindingChange, onFindingSubmit }: QueueViewProps) {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     onFindingSubmit();
@@ -80,6 +128,8 @@ export function QueueView({ rows, more, loadingMore, now, finding, onLoadMore, o
   return (
     <section aria-labelledby="queue-title">
       <h2 id="queue-title">Queue</h2>
+      {/* 3e Task 4: the replies to answer come first. */}
+      <Replies replies={replies} now={now} onOpenCase={onOpenCase} />
       <p className="hint">Open cases by lane, then by how long their oldest unanswered item has waited. Nothing else orders them.</p>
       <Loaded
         value={rows}
@@ -189,20 +239,24 @@ export function findingOf(form: Pick<FindingFormState, "link" | "ruleId" | "cate
  * Reads the queue from its start through as many pages as the screen shows, one after the other. `activity` says whether
  * a person's action started the read: the screen's opening and "Load more" do, its own refresh every minute does not.
  */
-export async function readQueue(api: StaffApi, pages: number, activity: boolean): Promise<{ rows: QueueRow[]; next: string | null }> {
+export async function readQueue(api: StaffApi, pages: number, activity: boolean): Promise<{ rows: QueueRow[]; next: string | null; replies: QueueReply[] }> {
   const rows: QueueRow[] = [];
+  const replies: QueueReply[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < Math.max(1, pages); page++) {
     const answer = await api.queue(cursor, { activity });
     rows.push(...answer.cases);
+    // Only the first page carries the replies.
+    replies.push(...answer.replies);
     cursor = answer.nextCursor;
     if (cursor === null) break;
   }
-  return { rows, next: cursor };
+  return { rows, next: cursor, replies };
 }
 
 export function Queue({ api, onOpenCase, clock = systemClock }: { api: StaffApi; onOpenCase(id: CaseId): void; clock?: Clock }) {
   const [rows, setRows] = useState<Loadable<QueueRow[]>>({ state: "loading" });
+  const [replies, setReplies] = useState<QueueReply[]>([]);
   const [next, setNext] = useState<string | null>(null);
   const [pages, setPages] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -218,6 +272,7 @@ export function Queue({ api, onOpenCase, clock = systemClock }: { api: StaffApi;
         (answer) => {
           if (!alive.current) return;
           setRows({ state: "ready", value: answer.rows });
+          setReplies(answer.replies);
           setNext(answer.next);
           setNow(Date.now());
         },
@@ -270,6 +325,7 @@ export function Queue({ api, onOpenCase, clock = systemClock }: { api: StaffApi;
   return (
     <QueueView
       rows={rows}
+      replies={replies}
       more={next !== null}
       loadingMore={loadingMore}
       now={now}

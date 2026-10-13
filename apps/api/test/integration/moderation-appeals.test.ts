@@ -523,6 +523,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals and reviews in t
           reviewer: "available",
           needsAdmin: false,
           mayReview: true,
+          // 3e Task 4: a removal holds no suspension that runs, so the row is listed with the rest, newest first.
+          standingFirst: false,
         });
         // The deciders and the linked admin may not, and the row says no more than that.
         for (const staff of [mod, mod2, admin]) expect((await rowFor(staff))?.mayReview, staff.id).toBe(false);

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { CaseDecidedParams } from "@korbat/contracts";
+import { CaseDecidedParams, STANDING_RULES } from "@korbat/contracts";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../../src/auth";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
@@ -12,10 +12,12 @@ import { isDeadlock } from "../../src/lib/lock-bounds";
 import type { ModerationDeps } from "../../src/moderation";
 import { insertionOrder, recordConfirmed } from "../../src/moderation/decide";
 import { caseTarget, insertAction, insertDecision, insertMarks } from "../../src/moderation/repo";
+import { fileReply } from "../../src/moderation/standing";
 import { onceMoreOnDeadlock } from "../../src/social/flows/posts";
 import { createSocialRepo, type HandleChangeResult } from "../../src/social/repo";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "../integration/moderation-decide";
-import { act, anAccount, aPost, decisionParams, ground, intake, newPostRow, removeFixtures, timed } from "../integration/moderation-fixtures";
+import { act, ageStandingForTest, anAccount, aPost, decisionParams, ground, intake, newPostRow, removeFixtures, timed, type DecisionInput } from "../integration/moderation-fixtures";
+import { noticesWorld, type NoticesWorld } from "../integration/notices-harness";
 import { newPost, newProfile } from "../integration/social-fixtures";
 
 /**
@@ -46,6 +48,12 @@ import { newPost, newProfile } from "../integration/social-fixtures";
  * deadlocks the database detected over its run (pg_stat_database), the second tries of the flows and of the purge job,
  * and the decisions' times. LAB_B_SUBJECTS sets the subjects of B1 to B5 (36 unless set), LAB_B6_ACCOUNTS and
  * LAB_B7_ACCOUNTS the accounts of B6 and B7 (30 each unless set).
+ *
+ * Task 4 adds labs C1, C2 and D (3e design, section 12.3), in a block of their own below, with the notices world, whose
+ * auth module mails each announced suspension's notice so that its start is fixed. Their own comment says what each runs
+ * and when it passes; LAB_C_SUBJECTS and LAB_D_SUBJECTS set their accounts. To run only them:
+ *
+ *     node ../../node_modules/vitest/vitest.mjs run --config vitest.lab.config.ts test/lab/standing.lab.ts -t "labs? [CD]"
  */
 
 /** Where the measurements go, one line of JSON each: the file LAB_OUT names, or lab-standing.jsonl in the repository's .data folder (the lab runs from apps/api). */
@@ -721,6 +729,396 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the standing ledger on the real 
       expect(counts.purgesLost).toBe(0);
       expect(live!.n).toBe(0);
       expect(leftovers).toEqual({ follows: 0, posts: 0 });
+    } finally {
+      await closeDb(writersDb);
+    }
+  }, 1_800_000);
+});
+
+/**
+ * Labs C1, C2 and D (3e design, section 12.3; Task 4), on the real code: announced suspensions of the ladder's first step,
+ * each decided through the decide route's own code by a moderator after three strikes, its notice mailed through the
+ * notices world's auth module so that its start is fixed, and that start then brought a moment ahead by
+ * ageStandingForTest (the migrator moves every time of the account's ledger back, and standing_apply writes the profile's
+ * columns again). Every time the labs judge by is the database's clock, read before and after each write.
+ *
+ * C1: around each start the account writes through the social repository's own functions, back to back (the free loop),
+ * and a wave of its writes is fired while a holder has its profile row FOR UPDATE and changes it, from before the start
+ * to after it (a writer of the row, as a handle change or standing_apply is). It passes when no write judged at or after a
+ * start commits: a free write that began after the start, or a wave write, which the database judges again when it gets
+ * the row. It also records a wave behind a holder that only locks the row (as a decision whose measure changes nothing
+ * of the profile does): PostgreSQL then judges a locking statement before it waits, so those writes, judged before the
+ * start, commit after it, and the lab records how many and how late.
+ *
+ * C2: the same wave behind the changing holder, with the predicate copied into this file reading now() in place of the
+ * clock (lab code, never a switch in the code): writes whose transaction began before the start are admitted although
+ * judged after it, which is what the clock rule prevents.
+ *
+ * D: each account replies through fileReply, the reply route's own function, at a moment from 300 ms before to 300 ms
+ * after its start, while it writes back to back. It passes when on_time equals filed_at < start for every reply, no write
+ * is refused before a start, none is refused after an on-time reply, and none is admitted at or after the start of a
+ * measure whose reply came late.
+ *
+ * LAB_C_SUBJECTS sets the accounts of C1 and of C2 (25 each unless set, the design's LAB C starts), LAB_D_SUBJECTS those of D
+ * (60 unless set, as the design's LAB D).
+ */
+describe.skipIf(!process.env.INTEGRATION)("lab: announced starts and replies on the real code (Task 4)", () => {
+  let n: NoticesWorld;
+  let cd: DeciderWorld;
+  /** Each staff account decides at most DECISIONS_PER_STAFF a hour: a new one is made when the last is near its cap. */
+  const pools = { admin: { members: [] as RealStaff[], used: 0 }, moderator: { members: [] as RealStaff[], used: 0 } };
+
+  beforeAll(() => {
+    n = noticesWorld();
+    cd = deciderWorld(n.apiDb, { auth: n.authForModeration });
+  });
+  afterAll(async () => {
+    try {
+      await n.cleanUp();
+      await cd.close();
+    } finally {
+      await n.close();
+    }
+  }, 600_000);
+
+  async function staffOf(role: "admin" | "moderator"): Promise<RealStaff> {
+    const pool = pools[role];
+    if (pool.members.length === 0 || pool.used >= DECISIONS_PER_STAFF - 2) {
+      pool.members.push(await cd.staff(role));
+      pool.used = 0;
+    }
+    pool.used++;
+    return pool.members.at(-1)!;
+  }
+
+  /** Counts each outcome by its name. */
+  const tally = (map: Record<string, number>, key: string) => {
+    map[key] = (map[key] ?? 0) + 1;
+  };
+
+  async function decided(member: RealStaff, caseId: string, input: DecisionInput): Promise<string> {
+    const outcome = await cd.decideAs(member, caseId, input);
+    if (typeof outcome === "string") throw new Error(`lab C/D: a decision was not recorded (${outcome})`);
+    return outcome.decisionId;
+  }
+
+  type Subject = { id: string; decisionId: string; third: string; thirdPost: string; followee: string };
+
+  /**
+   * An account at the ladder's first step with its announced suspension of 3 days: three strikes (a post made now, an
+   * admin's own finding on it under R1 and a final removal, one after another), then an admin's finding on the account and
+   * a moderator's final decision with the announced suspension, whose notice the scripted mailer accepts. A third account
+   * with a post, and an account to follow, are the other parties of its writes.
+   */
+  async function subject(repo: ReturnType<typeof createSocialRepo>): Promise<Subject> {
+    const account = await n.account();
+    for (let i = 0; i < STANDING_RULES.ladderStrikes; i++) {
+      const admin = await staffOf("admin");
+      const postId = await newPostRow(n.apiDb, account.id, { createdAt: sql`clock_timestamp()`, body: "a post that breaks R1" });
+      const caseId = (await intake(n.apiDb, ground.finding(admin.id, "R1"), aPost(postId))).items[0]!.caseId!;
+      await decided(admin, caseId, { kind: "final", ruleId: "R1", actions: [act("remove")] });
+    }
+    const opener = await staffOf("admin");
+    const caseId = (await intake(n.apiDb, ground.finding(opener.id, "R1"), anAccount(account.id, account.handle))).items[0]!.caseId!;
+    const decisionId = await decided(await staffOf("moderator"), caseId, { kind: "final", ruleId: "R1", actions: [timed("suspend", 3, true)] });
+    const third = (await newProfile(n.apiDb)).id;
+    const followee = (await newProfile(n.apiDb)).id;
+    n.profileIds.push(third, followee);
+    const thirdPost = await newPost(repo, third, new Date(), "a third account's post");
+    return { id: account.id, decisionId, third, thirdPost, followee };
+  }
+
+  /** The database's clock, in epoch milliseconds. */
+  async function dbNow(db: Db): Promise<number> {
+    const [row] = await db.execute<{ ms: number }>(sql`select extract(epoch from clock_timestamp()) * 1000 as ms`);
+    return Number(row!.ms);
+  }
+
+  /** How far the database's clock runs ahead of this process's: the middle of a read's round trip. */
+  async function clockOffset(db: Db): Promise<number> {
+    const samples: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const before = Date.now();
+      const at = await dbNow(db);
+      samples.push(at - (before + Date.now()) / 2);
+    }
+    return samples.sort((a, b) => a - b)[2]!;
+  }
+
+  /** Waits until the database's clock reads `atMs`, by this process's clock and the offset. */
+  const untilDb = (atMs: number, offset: number) => new Promise((resolve) => setTimeout(resolve, Math.max(0, atMs - offset - Date.now())));
+
+  /**
+   * Brings the account's start `leadMs` ahead of the database's clock: the migrator moves the account's ledger back by the
+   * time left to its start, less the lead. Answers the start, in epoch milliseconds and as the database's text (to the
+   * microsecond, for the comparisons made in SQL).
+   */
+  async function bringNear(id: string, leadMs: number): Promise<{ ms: number; text: string }> {
+    for (let round = 0; ; round++) {
+      const [row] = await cd.migrateDb.execute<{ secs: number | null }>(sql`select extract(epoch from (suspended_from - clock_timestamp()))::float8 as secs from profiles where id = ${id}::uuid`);
+      if (row?.secs !== null && row?.secs !== undefined) {
+        await ageStandingForTest(cd.migrateDb, id, `${(Number(row.secs) - leadMs / 1000).toFixed(6)} seconds`);
+        break;
+      }
+      // The notice's outcome is recorded after the decision's commit: wait for it.
+      if (round >= 50) throw new Error("lab C/D: the announced suspension got no start");
+      await cd.moderation.settle();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const [after] = await cd.migrateDb.execute<{ ms: number; text: string }>(sql`select extract(epoch from suspended_from) * 1000 as ms, suspended_from::text as text from profiles where id = ${id}::uuid`);
+    return { ms: Number(after!.ms), text: after!.text };
+  }
+
+  /** One of the account's writes through the social repository's own functions, by its number: a post, a reply, a like, a follow, its profile. */
+  function realWrite(repo: ReturnType<typeof createSocialRepo>, s: Subject, i: number): () => Promise<unknown> {
+    const kind = i % 5;
+    if (kind === 0) return () => repo.createPost({ authorId: s.id, body: "a post", replyToId: null, quoteOfId: null, now: new Date() });
+    if (kind === 1) return () => repo.createPost({ authorId: s.id, body: "a reply", replyToId: s.thirdPost, quoteOfId: null, now: new Date(), lockWith: s.third });
+    if (kind === 2) return () => repo.like(s.id, s.thirdPost, new Date(), s.third).then(() => repo.unlike(s.id, s.thirdPost));
+    if (kind === 3) return () => repo.follow(s.id, s.followee, new Date(), true).then(() => repo.unfollow(s.id, s.followee));
+    return async () => {
+      if (!(await repo.updateProfile(s.id, { bio: `bio ${i}` }))) throw Object.assign(new Error("refused"), { code: "account_suspended" });
+    };
+  }
+
+  /** A write between two reads of the database's clock: when it was judged lies between them. */
+  async function bracketed(db: Db, write: () => Promise<unknown>): Promise<{ t0: number; t1: number; result: string }> {
+    const t0 = await dbNow(db);
+    const { result } = await outcomeOf(write);
+    return { t0, t1: await dbNow(db), result };
+  }
+
+  /**
+   * A holder of the account's profile row: FOR UPDATE, and a change of the row when `changes` (bio = bio, a new version
+   * of the row, as any writer of the row makes), held until the database's clock reads `untilMs`. `locked` resolves once
+   * it has the row; `released` with the clock at its commit.
+   */
+  function hold(db: Db, id: string, untilMs: number, changes: boolean): { locked: Promise<void>; released: Promise<number> } {
+    let signal: () => void = () => undefined;
+    const locked = new Promise<void>((resolve) => (signal = resolve));
+    const released = db.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '10s'`);
+      await tx.execute(sql`select 1 from profiles where id = ${id}::uuid for update`);
+      if (changes) await tx.execute(sql`update profiles set bio = bio where id = ${id}::uuid`);
+      signal();
+      await tx.execute(sql`select pg_sleep(greatest(0, ${untilMs / 1000}::float8 - extract(epoch from clock_timestamp())))`);
+      return dbNow(tx as unknown as Db);
+    });
+    return { locked, released };
+  }
+
+  /**
+   * C2's write: the gate of the social repository's writes copied here with now() in place of the clock (lab code), then
+   * the count of the account's posts, as a post's write changes it. It answers whether it was admitted, and when it was
+   * judged: the target list is computed again when the database judges the row again after a changing holder.
+   */
+  async function nowGatedWrite(db: Db, id: string): Promise<{ admitted: boolean; judged: number }> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '10s'`);
+      const [row] = await tx.execute<{ suspended: boolean; judged: number }>(
+        sql`select (p.suspended_from is not null and p.suspended_from <= now() and now() < p.suspended_until) as suspended,
+                   extract(epoch from clock_timestamp()) * 1000 as judged
+              from profiles p where p.id = ${id}::uuid and p.deleted_at is null for key share`,
+      );
+      if (!row || row.suspended) return { admitted: false, judged: Number(row?.judged ?? 0) };
+      await tx.execute(sql`update profiles set post_count = post_count + 1 where id = ${id}::uuid`);
+      return { admitted: true, judged: Number(row.judged) };
+    });
+  }
+
+  /** The accounts' scenes, BATCH at a time. */
+  async function inBatches<T>(items: T[], scene: (item: T) => Promise<void>): Promise<void> {
+    for (let from = 0; from < items.length; from += BATCH) await Promise.all(items.slice(from, from + BATCH).map(scene));
+  }
+
+  /** The free loop: the account's real writes back to back until the database's clock reads `untilMs`, each between two reads of the clock. */
+  async function freeLoop(db: Db, repo: ReturnType<typeof createSocialRepo>, s: Subject, untilMs: number) {
+    const writes: { t0: number; t1: number; result: string }[] = [];
+    for (let i = 0; (await dbNow(db)) < untilMs; i++) writes.push(await bracketed(db, realWrite(repo, s, i)));
+    return writes;
+  }
+
+  const WAVE = 6;
+  const LEAD_MS = 1500;
+
+  test("labs C1 and C2: around an announced start no write judged at or after it commits under the clock; with now() some are", async () => {
+    const count = Number(process.env.LAB_C_SUBJECTS ?? 25);
+    const writersDb = createDb(loadConfig().DATABASE_URL_API, { max: 24 });
+    const holderDb = createDb(loadConfig().DATABASE_URL_API, { max: 12 });
+    const repo = createSocialRepo(writersDb);
+    try {
+      const prepareStarted = performance.now();
+      const c1: Subject[] = [];
+      const c2: Subject[] = [];
+      for (let i = 0; i < count; i++) c1.push(await subject(repo));
+      for (let i = 0; i < count; i++) c2.push(await subject(repo));
+      const prepareMs = Math.round(performance.now() - prepareStarted);
+      const offset = await clockOffset(writersDb);
+      const busyPercent = await busy();
+
+      const r1 = {
+        starts: 0,
+        freeWrites: 0,
+        freeCommittedBefore: 0,
+        freeAdmittedAfterStart: 0,
+        freeRefusedBeforeStart: 0,
+        freeAcross: 0,
+        freeAcrossLatestCommitMs: 0,
+        freeOther: {} as Record<string, number>,
+        waveWrites: 0,
+        waveAdmittedAfterStart: 0,
+        waveRefused: {} as Record<string, number>,
+        lockOnlyWaveWrites: 0,
+        lockOnlyCommittedAfterStart: 0,
+        lockOnlyLatestCommitMs: 0,
+        lockOnlyRefused: {} as Record<string, number>,
+      };
+      await inBatches(c1, async (s) => {
+        const start = await bringNear(s.id, LEAD_MS);
+        r1.starts++;
+        const free = freeLoop(writersDb, repo, s, start.ms + 1000);
+        // The wave behind a holder that changes the row, from 400 ms before the start to 300 ms after it.
+        await untilDb(start.ms - 400, offset);
+        const changing = hold(holderDb, s.id, start.ms + 300, true);
+        await changing.locked;
+        const wave = await Promise.all(Array.from({ length: WAVE }, (_, k) => bracketed(writersDb, realWrite(repo, s, k))));
+        await changing.released;
+        for (const w of wave) {
+          r1.waveWrites++;
+          if (w.result === "committed") r1.waveAdmittedAfterStart++;
+          else tally(r1.waveRefused, w.result);
+        }
+        for (const w of await free) {
+          r1.freeWrites++;
+          if (w.result === "committed") {
+            if (w.t0 >= start.ms) r1.freeAdmittedAfterStart++;
+            else if (w.t1 < start.ms) r1.freeCommittedBefore++;
+            else {
+              r1.freeAcross++;
+              r1.freeAcrossLatestCommitMs = Math.max(r1.freeAcrossLatestCommitMs, Math.round(w.t1 - start.ms));
+            }
+          } else if (w.result === "account_suspended" && w.t1 < start.ms) r1.freeRefusedBeforeStart++;
+          else if (w.result !== "account_suspended") tally(r1.freeOther, w.result);
+        }
+      });
+      // The wave behind a holder that only locks the row: its writes are judged before they wait (recorded, not asserted).
+      // C1's accounts are suspended now, so this runs on half of C2's accounts, whose start is still ahead; C2 then runs
+      // on the other half and on as many new accounts.
+      const lockOnly = c2.slice(0, Math.max(1, Math.floor(count / 2)));
+      await inBatches(lockOnly, async (s) => {
+        const start = await bringNear(s.id, LEAD_MS);
+        await untilDb(start.ms - 400, offset);
+        const holder = hold(holderDb, s.id, start.ms + 300, false);
+        await holder.locked;
+        const wave = await Promise.all(Array.from({ length: WAVE }, (_, k) => bracketed(writersDb, realWrite(repo, s, k))));
+        await holder.released;
+        for (const w of wave) {
+          r1.lockOnlyWaveWrites++;
+          if (w.result === "committed") {
+            if (w.t1 >= start.ms) {
+              r1.lockOnlyCommittedAfterStart++;
+              r1.lockOnlyLatestCommitMs = Math.max(r1.lockOnlyLatestCommitMs, Math.round(w.t1 - start.ms));
+            }
+          } else tally(r1.lockOnlyRefused, w.result);
+        }
+      });
+      line("lab-C1", { subjects: count, ...r1, prepareMs, clockOffsetMs: Math.round(offset), busyPercent });
+
+      // C2: the wave behind a changing holder, with the predicate reading now(), on accounts whose start is still ahead.
+      const fresh: Subject[] = c2.slice(lockOnly.length);
+      for (let i = fresh.length; i < count; i++) fresh.push(await subject(repo));
+      const r2 = { starts: 0, writes: 0, admittedAfterStart: 0, latestAdmittedAfterStartMs: 0, admittedBefore: 0, refused: 0 };
+      await inBatches(fresh, async (s) => {
+        const start = await bringNear(s.id, LEAD_MS);
+        r2.starts++;
+        await untilDb(start.ms - 400, offset);
+        const changing = hold(holderDb, s.id, start.ms + 300, true);
+        await changing.locked;
+        const wave = await Promise.all(Array.from({ length: WAVE }, () => nowGatedWrite(writersDb, s.id)));
+        await changing.released;
+        for (const w of wave) {
+          r2.writes++;
+          if (!w.admitted) r2.refused++;
+          else if (w.judged >= start.ms) {
+            r2.admittedAfterStart++;
+            r2.latestAdmittedAfterStartMs = Math.max(r2.latestAdmittedAfterStartMs, Math.round(w.judged - start.ms));
+          } else r2.admittedBefore++;
+        }
+      });
+      line("lab-C2", { subjects: fresh.length, ...r2, busyPercent: await busy() });
+
+      expect(r1.starts).toBe(count);
+      expect(r1.freeAdmittedAfterStart).toBe(0);
+      expect(r1.freeRefusedBeforeStart).toBe(0);
+      expect(r1.waveAdmittedAfterStart).toBe(0);
+      expect(r1.waveWrites).toBe(count * WAVE);
+      expect(r2.admittedAfterStart).toBeGreaterThan(0);
+    } finally {
+      await Promise.all([closeDb(writersDb), closeDb(holderDb)]);
+    }
+  }, 1_800_000);
+
+  test("lab D: replies around the start: on_time equals filed_at < start; no write refused before a start or after an on-time reply, none admitted after the start of a late one", async () => {
+    const count = Number(process.env.LAB_D_SUBJECTS ?? 60);
+    const writersDb = createDb(loadConfig().DATABASE_URL_API, { max: 24 });
+    const repo = createSocialRepo(writersDb);
+    try {
+      const subjects: Subject[] = [];
+      for (let i = 0; i < count; i++) subjects.push(await subject(repo));
+      const offset = await clockOffset(writersDb);
+      const busyPercent = await busy();
+      const r = {
+        replies: 0,
+        onTime: 0,
+        late: 0,
+        mismatches: 0,
+        replyErrors: {} as Record<string, number>,
+        earliestFiledMs: Number.POSITIVE_INFINITY,
+        latestFiledMs: Number.NEGATIVE_INFINITY,
+        writes: 0,
+        refusedBeforeStart: 0,
+        refusedAfterOnTimeReply: 0,
+        admittedAfterLateStart: 0,
+        across: 0,
+        otherOutcomes: {} as Record<string, number>,
+      };
+      await inBatches(subjects, async (s) => {
+        const start = await bringNear(s.id, LEAD_MS);
+        const free = freeLoop(writersDb, repo, s, start.ms + 1000);
+        await untilDb(start.ms - 300 + Math.random() * 600, offset);
+        try {
+          await fileReply(n.deps, s.id, s.decisionId, { statement: "lab D" });
+        } catch (err) {
+          tally(r.replyErrors, String((err as { code?: unknown }).code ?? "error"));
+        }
+        const writes = await free;
+        const [reply] = await cd.migrateDb.execute<{ on_time: boolean; before: boolean; filed_ms: number }>(
+          sql`select on_time, filed_at < ${start.text}::timestamptz as before, extract(epoch from filed_at) * 1000 - ${start.ms}::float8 as filed_ms
+                from suspension_replies where account_id = ${s.id}::uuid`,
+        );
+        if (!reply) return;
+        r.replies++;
+        if (reply.on_time) r.onTime++;
+        else r.late++;
+        if (reply.on_time !== reply.before) r.mismatches++;
+        r.earliestFiledMs = Math.min(r.earliestFiledMs, Math.round(Number(reply.filed_ms)));
+        r.latestFiledMs = Math.max(r.latestFiledMs, Math.round(Number(reply.filed_ms)));
+        for (const w of writes) {
+          r.writes++;
+          const refused = w.result === "account_suspended";
+          if (w.result !== "committed" && !refused) tally(r.otherOutcomes, w.result);
+          else if (refused && w.t1 < start.ms) r.refusedBeforeStart++;
+          else if (refused && reply.on_time) r.refusedAfterOnTimeReply++;
+          else if (!refused && !reply.on_time && w.t0 >= start.ms) r.admittedAfterLateStart++;
+          else if (w.t0 < start.ms && start.ms <= w.t1) r.across++;
+        }
+      });
+      line("lab-D", { subjects: count, ...r, clockOffsetMs: Math.round(offset), busyPercent });
+      expect(r.replies).toBe(count);
+      expect(r.mismatches).toBe(0);
+      expect(r.refusedBeforeStart).toBe(0);
+      expect(r.refusedAfterOnTimeReply).toBe(0);
+      expect(r.admittedAfterLateStart).toBe(0);
     } finally {
       await closeDb(writersDb);
     }

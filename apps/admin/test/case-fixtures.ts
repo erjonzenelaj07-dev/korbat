@@ -1,4 +1,4 @@
-import type { CaseDecision, CaseItem, CaseSnapshot, CaseStanding, CaseView, QueueRow, SourceSummary, StaffOverview } from "@korbat/contracts";
+import type { CaseDecision, CaseDecisionAction, CaseItem, CaseSnapshot, CaseStanding, CaseView, QueueRow, SourceSummary, StaffOverview } from "@korbat/contracts";
 import { HOSTILE } from "./fixtures";
 
 // Built from its char code: a right-to-left override, here where an address's host ends.
@@ -124,7 +124,7 @@ export function postSnapshot(overrides: Partial<Extract<CaseSnapshot, { withheld
 }
 
 /** 3e: the standing columns of a ledger row that is no standing measure and no strike, as the case answer carries them. */
-export const NO_STANDING = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null } as const;
+export const NO_STANDING = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null, reply: null } as const;
 
 export function decision(overrides: Partial<CaseDecision> = {}): CaseDecision {
   return {
@@ -438,6 +438,9 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     deferUnproven: false,
     protectionLifted: { total: 0, items: [] },
     sealsDeclined: { total: 0, items: [] },
+    // 3e Task 4: no reply waits and no account is at the ladder's strikes, unless a test says otherwise.
+    repliesWaiting: { count: 0, oldestAt: null },
+    strikeAccounts: 0,
     interimSeals: { total: 0, items: [] },
     ...overrides,
   };
@@ -515,5 +518,135 @@ export function atOnceCase(standing: Partial<CaseStanding> = {}, rule: "R2" | "R
       basisDecidedAt: { threat: "2026-10-10T08:00:00.000Z", terrorist: null, protective: null },
       ...standing,
     },
+  });
+}
+
+// ---------------------------------------------------------------- 3e Task 4: the ladder, a reply and a withdrawal
+
+export const CASE_LADDER = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+export const ITEM_LADDER = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
+export const CASE_REPLIED = "c3d4e5f6-a7b8-4c9d-8e0f-2a3b4c5d6e7f";
+export const DECISION_REPLIED = "d4e5f6a7-b8c9-4dae-9f1a-3b4c5d6e7f80";
+export const ACTION_REPLIED = "e5f6a7b8-c9da-4ebf-801b-4c5d6e7f8091";
+export const CASE_WITHDRAW = "f6a7b8c9-daeb-4fc0-912c-5d6e7f8091a2";
+export const DECISION_WITHDRAW = "07b8c9da-ebfc-40d1-a23d-6e7f8091a2b3";
+/** What the account's holder wrote in their reply: markup, which the console shows as text and nowhere but on the case. */
+export const REPLY_TEXT = `These posts quote a film ${HOSTILE.script}`;
+
+/** Three active strikes under R1 and R3, the newest under R1, as an account case's standing lists them. */
+const THREE_STRIKES: CaseStanding["strikes"] = [
+  { decisionId: "18c9daeb-fc0d-41e2-b34e-7f8091a2b3c4", caseId: CASE_POST, ruleId: "R3", decidedAt: "2026-09-20T09:00:00.000Z", countsUntil: "2026-12-19T09:00:00.000Z" },
+  { decisionId: "29daebfc-0d1e-42f3-845f-8091a2b3c4d5", caseId: CASE_POST, ruleId: "R1", decidedAt: "2026-09-27T09:00:00.000Z", countsUntil: "2026-12-26T09:00:00.000Z" },
+  { decisionId: "3aebfc0d-1e2f-4304-9560-91a2b3c4d5e6", caseId: CASE_POST, ruleId: "R1", decidedAt: "2026-10-04T09:00:00.000Z", countsUntil: "2027-01-02T09:00:00.000Z" },
+];
+
+/**
+ * 3e Task 4: an account case at the ladder's first step, opened by a moderator's own finding: three active strikes, the
+ * newest under R1, a rung of 3 days, and nothing live. With `openReports` it also holds a report that waits, which greys
+ * the announced measures with [reports.first].
+ */
+export function ladderCase(openReports = false): CaseView {
+  return accountCase({
+    id: CASE_LADDER,
+    lane: 2,
+    stateVersion: 1,
+    intakeSeq: 1,
+    suspicion: null,
+    target: { type: "account", id: ACCOUNT_ID, handle: "lad_der", displayName: "Ladder", bio: "", deleted: false },
+    items: [item({ id: ITEM_LADDER, ruleId: "R1", suspect: false, category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", link: "http://localhost:8081/u/lad_der", explanation: null, source: SOURCES.staff })],
+    history: [],
+    standing: { ...NO_ACCOUNT_STANDING, activeStrikes: 3, strikes: THREE_STRIKES, ladderRule: "R1", maxDays: 3, openReports },
+  });
+}
+
+/** An announced suspension of 3 days, as a decision's row on the case page holds it, with where its period stands and its reply. */
+function announcedSuspension(id: string, period: NonNullable<CaseDecisionAction["period"]>, reply: CaseDecisionAction["reply"]): CaseDecisionAction {
+  return {
+    id,
+    kind: "suspend",
+    mediaId: null,
+    noEffect: null,
+    inForce: true,
+    reversesActionId: null,
+    liftedBy: null,
+    sealed: null,
+    ...NO_STANDING,
+    days: 3,
+    announced: true,
+    basis: "strikes",
+    restsOn: THREE_STRIKES.map((strike) => strike.decisionId),
+    earliestStart: "2026-10-12T09:00:00.000Z",
+    period,
+    reply,
+  };
+}
+
+/**
+ * 3e Task 4: an account case closed by a moderator's announced suspension of 3 days, whose holder replied before the
+ * start (the start is held), in words that hold markup; the case lists nothing open, and the account's measure is live.
+ */
+export function repliedCase(): CaseView {
+  return accountCase({
+    id: CASE_REPLIED,
+    lane: 2,
+    stateVersion: 4,
+    intakeSeq: 1,
+    answeredSeq: 1,
+    closedAt: "2026-10-05T09:00:00.000Z",
+    suspicion: null,
+    target: { type: "account", id: ACCOUNT_ID, handle: "repl_ier", displayName: "Replier", bio: "", deleted: false },
+    items: [item({ id: "18d9eafb-0c1d-42e3-a45f-708192a3b4c5", ruleId: "R1", suspect: false, outcome: "restricted_rule", answeredBy: DECISION_REPLIED, link: "http://localhost:8081/u/repl_ier", explanation: null, source: SOURCES.staff })],
+    decisions: [
+      decision({
+        id: DECISION_REPLIED,
+        kind: "final",
+        ruleId: "R1",
+        rulesVersion: 3,
+        redressVersion: 2,
+        throughSeq: 1,
+        answersFromSeq: 1,
+        decidedAt: "2026-10-05T09:00:00.000Z",
+        facts: "When this was written the account had 3 active strikes.",
+        reason: "Three strikes in three weeks.",
+        actions: [announcedSuspension(ACTION_REPLIED, { startsAt: null, endsAt: null, state: "held" }, { filedAt: "2026-10-06T10:00:00.000Z", onTime: true, text: REPLY_TEXT, answeredAt: null, answeredBy: null })],
+      }),
+    ],
+    history: [],
+    standing: { ...NO_ACCOUNT_STANDING, activeStrikes: 3, strikes: THREE_STRIKES, ladderRule: "R1", live: true, openReports: false },
+  });
+}
+
+/**
+ * 3e Task 4: an account case whose announced suspension has a start fixed and ahead, with no reply, while the account's
+ * measure is live: the composer shows [conflict], and an admin may withdraw it for another measure.
+ */
+export function withdrawCase(): CaseView {
+  return accountCase({
+    id: CASE_WITHDRAW,
+    lane: 2,
+    stateVersion: 2,
+    intakeSeq: 1,
+    answeredSeq: 1,
+    closedAt: null,
+    suspicion: null,
+    target: { type: "account", id: ACCOUNT_ID, handle: "with_drawn", displayName: "Withdrawn", bio: "", deleted: false },
+    items: [item({ id: "29eafb0c-1d2e-43f4-b56a-8192a3b4c5d6", ruleId: "R5", suspect: false, category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", link: "http://localhost:8081/u/with_drawn", explanation: null, source: SOURCES.staff })],
+    decisions: [
+      decision({
+        id: DECISION_WITHDRAW,
+        kind: "final",
+        ruleId: "R1",
+        rulesVersion: 3,
+        redressVersion: 2,
+        throughSeq: 1,
+        answersFromSeq: 1,
+        decidedAt: "2026-10-05T09:00:00.000Z",
+        facts: "When this was written the account had 3 active strikes.",
+        reason: "Three strikes in three weeks.",
+        actions: [announcedSuspension("3afb0c1d-2e3f-4405-867b-92a3b4c5d6e7", { startsAt: "2026-10-12T09:05:00.000Z", endsAt: "2026-10-15T09:05:00.000Z", state: "announced" }, null)],
+      }),
+    ],
+    history: [],
+    standing: { ...NO_ACCOUNT_STANDING, activeStrikes: 3, strikes: THREE_STRIKES, ladderRule: "R1", live: true, openReports: false, atOnce: [] },
   });
 }

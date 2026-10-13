@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
-import { iso, rows, type Runner } from "./repo";
+import type { DbTx } from "@korbat/db";
+import { iso, rows, type Runner, type SaltedText } from "./repo";
 
 /**
  * The queries of account sanctions (3e design, sections 6.2 and 7.12): an account's standing as the views of the standing
@@ -63,8 +64,8 @@ export interface StandingFacts {
   threatRepeat: boolean;
   /** The day of the newest seal for good of the account's images that a protective suspension may rest on now. */
   sealOn: string | null;
-  /** The time of the decision each ground of a suspension at once would rest on now, or null (Task 3). */
-  basisDecidedAt: { threat: string | null; terrorist: string | null; protective: string | null };
+  /** The time of the decision each ground of a suspension at once would rest on now, or null (Task 3); and (Task 4) the two of a termination at once. */
+  basisDecidedAt: { threat: string | null; terrorist: string | null; protective: string | null; threatRepeat: { earlier: string; newer: string } | null };
 }
 
 /**
@@ -109,6 +110,8 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
     threat_repeat: boolean;
     seal_on: string | null;
     seal_at: string | null;
+    repeat_earlier: string | null;
+    repeat_newer: string | null;
   }>(
     q,
     sql`select (select count(*)::int from posts p where p.author_id = ${account} and p.created_at > now() - make_interval(mins => k.flood_minutes)) as posts,
@@ -132,6 +135,8 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
                           and ad.decided_at >= now() - make_interval(days => k.ladder_memory_days)
                           and x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days)
                           and exists (select 1 from measures_in_force f where f.decision_id = x.id)) as threat_repeat,
+               -- Task 4: the two decisions a termination at once would rest on now, for the console's preview.
+               t.earlier as repeat_earlier, t.newer as repeat_newer,
                (select ${day("x.decided_at")} from measures_in_force m join decisions x on x.id = m.decision_id
                  where m.kind = 'seal_media' and m.decision_kind = 'final' and m.subject_account_id = ${account}
                    and x.decided_at >= now() - make_interval(days => k.basis_age_days)
@@ -142,7 +147,22 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
                    and x.decided_at >= now() - make_interval(days => k.basis_age_days)
                    and not exists (select 1 from decision_actions p where p.kind = 'suspend' and p.basis = 'protective' and m.decision_id = any(p.rests_on))
                  order by x.decided_at desc, x.id desc limit 1) as seal_at
-          from standing_rules() k`
+          from standing_rules() k
+          left join lateral (
+            select ${iso("rd.decided_at")} as earlier, ${iso("x.decided_at")} as newer
+              from decision_actions a join decisions ad on ad.id = a.decision_id
+              join decisions rd on rd.id = a.rests_on[1]
+              join posts xp on xp.author_id = ${account} and xp.created_at > ad.informed_at
+              join cases xc on xc.target_type = 'post' and xc.target_id = xp.id
+              join decisions x on x.case_id = xc.id
+             where a.subject_account_id = ${account} and a.kind = 'suspend' and a.basis = 'threat'
+               and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)
+               and public.standing_basis_broken_at(a.id) is null
+               and ad.decided_at >= now() - make_interval(days => k.ladder_memory_days)
+               and x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+               and exists (select 1 from measures_in_force f where f.decision_id = x.id)
+             order by x.decided_at desc, x.id desc limit 1
+          ) t on true`
   );
   return {
     strikes: strikes.map((row) => ({ decisionId: row.decision_id, caseId: row.case_id, ruleId: row.rule_id, decidedAt: row.decided_at, countsUntil: row.counts_until })),
@@ -156,7 +176,12 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
     terrorist: grounds!.terrorist_at !== null,
     threatRepeat: grounds!.threat_repeat,
     sealOn: grounds!.seal_on,
-    basisDecidedAt: { threat: grounds!.threat_at, terrorist: grounds!.terrorist_at, protective: grounds!.seal_at },
+    basisDecidedAt: {
+      threat: grounds!.threat_at,
+      terrorist: grounds!.terrorist_at,
+      protective: grounds!.seal_at,
+      threatRepeat: grounds!.repeat_earlier !== null && grounds!.repeat_newer !== null ? { earlier: grounds!.repeat_earlier, newer: grounds!.repeat_newer } : null,
+    },
   };
 }
 
@@ -404,4 +429,326 @@ export async function standingOnDecisions(q: Runner, caseId: string): Promise<Ma
   const byDecision = new Map<string, { kind: "suspend" | "terminate"; basis: string }[]>();
   for (const row of found) byDecision.set(row.decision_id, [...(byDecision.get(row.decision_id) ?? []), { kind: row.kind, basis: row.basis }]);
   return byDecision;
+}
+
+// ---------------------------------------------------------------- 3e Task 4: the reply, the lists and the take-down
+
+/** A standing measure a reply is filed against: the suspension or termination of the decision, when the account is its subject. */
+export async function replyMeasureOf(q: Runner, accountId: string, decisionId: string): Promise<string | null> {
+  const [row] = await rows<{ id: string }>(
+    q,
+    sql`select a.id from decision_actions a join decisions d on d.id = a.decision_id
+         where a.decision_id = ${decisionId}::uuid and a.kind::text in ('suspend', 'terminate') and a.subject_account_id = ${accountId}::uuid
+           and d.kind = 'final' and d.author_mail <> 'none'`,
+  );
+  return row?.id ?? null;
+}
+
+/**
+ * The reply's row (3e design, section 7.6 step 9). Its trigger refuses a reply that is not open (reply_not_open: the
+ * measure is not this account's, was lifted, its basis broke, it has ended, or it has a reply already), takes the profile
+ * again, and forces the time of filing by the clock and whether it came before the start; the statement, when there is
+ * one, comes with the salt and the digest the server made. Answers what the trigger forced.
+ */
+export async function insertReply(tx: DbTx, row: { actionId: string; accountId: string; statement: SaltedText | null }): Promise<{ filedAt: string; onTime: boolean }> {
+  const [inserted] = await rows<{ filed_at: string; on_time: boolean }>(
+    tx,
+    sql`insert into suspension_replies (action_id, account_id, statement, statement_salt, statement_digest)
+        values (${row.actionId}::uuid, ${row.accountId}::uuid, ${row.statement?.text ?? null}, ${row.statement?.salt ?? null}, ${row.statement?.digest ?? null})
+        returning ${iso("filed_at")} as filed_at, on_time`,
+  );
+  return { filedAt: inserted!.filed_at, onTime: inserted!.on_time };
+}
+
+/** The reply to a standing measure as the case page reads it, with its text while korbat keeps it; by the measure's id. */
+export interface ReplyColumns {
+  filedAt: string;
+  onTime: boolean;
+  text: string | null;
+  erasedAt: string | null;
+  answeredAt: string | null;
+  answeredBy: string | null;
+}
+
+/** The replies to the case's standing measures, by the measure's id. The text is read here only, on the case page, whose read is logged. */
+export async function caseReplies(q: Runner, caseId: string): Promise<Map<string, ReplyColumns>> {
+  const found = await rows<{ action_id: string; filed_at: string; on_time: boolean; statement: string | null; erased_at: string | null; answered_at: string | null; answered_by: string | null }>(
+    q,
+    sql`select r.action_id, ${iso("r.filed_at")} as filed_at, r.on_time, r.statement, ${iso("r.erased_at")} as erased_at, ${iso("r.answered_at")} as answered_at, r.answered_by
+          from suspension_replies r join decision_actions a on a.id = r.action_id join decisions d on d.id = a.decision_id
+         where d.case_id = ${caseId}::uuid`,
+  );
+  return new Map(
+    found.map((row) => [row.action_id, { filedAt: row.filed_at, onTime: row.on_time, text: row.statement, erasedAt: row.erased_at, answeredAt: row.answered_at, answeredBy: row.answered_by }]),
+  );
+}
+
+/** An unanswered reply as the queue lists it: never its text. */
+export interface QueueReplyRow {
+  caseId: string;
+  decisionId: string;
+  kind: "suspend" | "terminate";
+  days: number | null;
+  filedAt: string;
+  onTime: boolean;
+  endsAt: string | null;
+}
+
+/** The replies no decision has answered, oldest first, at most `limit`, each with its measure's end as the period gives it now. */
+export async function unansweredReplies(q: Runner, limit: number): Promise<QueueReplyRow[]> {
+  const found = await rows<{ case_id: string; decision_id: string; kind: "suspend" | "terminate"; days: number | null; filed_at: string; on_time: boolean; ends_at: string | null }>(
+    q,
+    sql`select d.case_id, a.decision_id, a.kind::text as kind, a.days, ${iso("r.filed_at")} as filed_at, r.on_time, ${finite("p.ends_at")} as ends_at
+          from suspension_replies r join decision_actions a on a.id = r.action_id join decisions d on d.id = a.decision_id
+          left join suspension_periods p on p.action_id = a.id
+         where r.answered_by is null
+         order by r.filed_at, r.action_id limit ${limit}::int`,
+  );
+  return found.map((row) => ({ caseId: row.case_id, decisionId: row.decision_id, kind: row.kind, days: row.kind === "terminate" ? null : row.days, filedAt: row.filed_at, onTime: row.on_time, endsAt: row.ends_at }));
+}
+
+/** How many replies no decision has answered, and since when the oldest waits: the home screen's line. */
+export async function repliesWaiting(q: Runner): Promise<{ count: number; oldestAt: string | null }> {
+  const [row] = await rows<{ n: number; oldest: string | null }>(q, sql`select count(*)::int as n, ${iso("min(r.filed_at)")} as oldest from suspension_replies r where r.answered_by is null`);
+  return { count: row?.n ?? 0, oldestAt: row?.oldest ?? null };
+}
+
+/**
+ * The accounts at the ladder's number of strikes (3e design, section 7.5 step 1): at least ladder_strikes active strikes,
+ * one of them newer than the account's newest measure of the ladder that stands (or it has none), and nothing in
+ * standing_live, read as decision_actions_check reads the ladder. For each: its handle, its open case on the account if
+ * one is open, its active strikes, the rule and the day of the newest, and the rung of an announced suspension (the
+ * suspensions of the ladder that stand with their basis, decided in ladder_memory_days), newest strike first.
+ */
+export async function strikeAccounts(q: Runner, limit: number): Promise<{ total: number; items: { handle: string; caseId: string | null; activeStrikes: number; ruleId: string; newestOn: string; inYear: number }[] }> {
+  const found = await rows<{ total: number; handle: string; case_id: string | null; active: number; rule_id: string; newest_on: string; in_year: number }>(
+    q,
+    sql`with strikes as (
+          select s.account_id, count(*)::int as active, max(s.created_at) as newest
+            from active_strikes s group by s.account_id
+        ), listed as (
+          select s.*, k.ladder_strikes, k.ladder_memory_days from strikes s cross join standing_rules() k
+           where s.active >= k.ladder_strikes
+             and not exists (select 1 from standing_live l where l.account_id = s.account_id)
+             and s.newest > coalesce((select max(a.created_at) from decision_actions a
+                                       where a.subject_account_id = s.account_id and a.kind::text in ('suspend', 'terminate') and a.basis in ('strikes', 'ladder_end')
+                                         and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)), '-infinity'::timestamptz)
+        )
+        select count(*) over ()::int as total, p.handle,
+               (select c.id from cases c where c.target_type = 'account' and c.target_id = l.account_id and c.closed_at is null) as case_id,
+               l.active,
+               (select d.rule_id from active_strikes s join decisions d on d.id = s.decision_id where s.account_id = l.account_id order by s.created_at desc, s.action_id desc limit 1) as rule_id,
+               ${day("l.newest")} as newest_on,
+               (select count(*)::int from decision_actions a join decisions d on d.id = a.decision_id
+                 where a.subject_account_id = l.account_id and a.kind = 'suspend' and a.basis = 'strikes'
+                   and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)
+                   and public.standing_basis_broken_at(a.id) is null
+                   and d.decided_at >= now() - make_interval(days => l.ladder_memory_days)) as in_year
+          from listed l join profiles p on p.id = l.account_id and p.deleted_at is null
+         order by l.newest desc, l.account_id limit ${limit}::int`,
+  );
+  return {
+    total: found[0]?.total ?? 0,
+    items: found.map((row) => ({ handle: row.handle, caseId: row.case_id, activeStrikes: row.active, ruleId: row.rule_id, newestOn: row.newest_on, inYear: row.in_year })),
+  };
+}
+
+/**
+ * The announced measures of live accounts whose notice mail was recorded `failed` (3e design, section 7.12), with the
+ * start that follows, newest decision first. A `no_address` belongs to a deleted account, for which nothing starts: not
+ * listed. A measure that was lifted, whose basis broke or whose period has ended is not listed either.
+ */
+export async function noticesUndelivered(q: Runner, limit: number): Promise<{ total: number; items: { handle: string; caseId: string; decidedOn: string; startsAt: string }[] }> {
+  const found = await rows<{ total: number; handle: string; case_id: string; decided_on: string; starts_at: string }>(
+    q,
+    sql`select count(*) over ()::int as total, pr.handle, d.case_id, ${day("d.decided_at")} as decided_on, ${iso("sp.starts_at")} as starts_at
+          from decision_actions a join decisions d on d.id = a.decision_id
+          join profiles pr on pr.id = a.subject_account_id and pr.deleted_at is null
+          join standing_live l on l.action_id = a.id
+          join suspension_periods sp on sp.action_id = a.id
+         where a.kind::text in ('suspend', 'terminate') and a.announced and d.author_mail = 'failed'
+         order by d.decided_at desc, a.id limit ${limit}::int`,
+  );
+  return { total: found[0]?.total ?? 0, items: found.map((row) => ({ handle: row.handle, caseId: row.case_id, decidedOn: row.decided_on, startsAt: row.starts_at })) };
+}
+
+/**
+ * The terminations that stand and wait for their take-down (3e design, sections 7.8 and 7.12), newest decision first: the
+ * account's handle, the case, the day it was decided, and either the day it becomes final (decision_final_at, read
+ * fresh: after a kept answer to a reply before the start, six months after that answer) or what holds it: an appeal
+ * that waits, or a reply nobody answered (`replyOnTime` true when it came before the start, which has then not come).
+ */
+export async function terminationsWaiting(
+  q: Runner,
+  limit: number,
+): Promise<{ total: number; items: { handle: string; caseId: string; decidedOn: string; finalOn: string | null; heldBy: "appeal" | "reply" | null; replyOnTime: boolean | null }[] }> {
+  const found = await rows<{ total: number; handle: string; case_id: string; decided_on: string; final_on: string | null; appeal: boolean; reply_on_time: boolean | null }>(
+    q,
+    sql`select count(*) over ()::int as total, pr.handle, d.case_id, ${day("d.decided_at")} as decided_on,
+               ${day("public.decision_final_at(d.id)")} as final_on,
+               exists (select 1 from appeals ap where ap.decision_id = d.id and ap.answered_by is null) as appeal,
+               (select r.on_time from suspension_replies r where r.action_id = a.id and r.answered_by is null) as reply_on_time
+          from decision_actions a join decisions d on d.id = a.decision_id
+          join profiles pr on pr.id = a.subject_account_id and pr.deleted_at is null
+          join standing_live l on l.action_id = a.id
+         where a.kind::text = 'terminate'
+         order by d.decided_at desc, a.id limit ${limit}::int`,
+  );
+  return {
+    total: found[0]?.total ?? 0,
+    items: found.map((row) => ({
+      handle: row.handle,
+      caseId: row.case_id,
+      decidedOn: row.decided_on,
+      // A reply holds it before an appeal does: an unanswered reply before the start keeps it from starting at all.
+      heldBy: row.reply_on_time !== null ? "reply" : row.appeal ? "appeal" : null,
+      replyOnTime: row.reply_on_time,
+      finalOn: row.reply_on_time !== null || row.appeal ? null : row.final_on,
+    })),
+  };
+}
+
+/** The accounts whose termination is due for its take-down (public.terminations_due()), with the terminating decision's case and time. */
+export async function terminationsDue(q: Runner, accountId: string | null = null): Promise<{ accountId: string; caseId: string; decidedAt: string }[]> {
+  const found = await rows<{ account_id: string; case_id: string; decided_at: string }>(
+    q,
+    sql`select t.account_id, t.case_id, ${iso("t.decided_at")} as decided_at from public.terminations_due() t
+         ${accountId === null ? sql`` : sql`where t.account_id = ${accountId}::uuid`}`,
+  );
+  return found.map((row) => ({ accountId: row.account_id, caseId: row.case_id, decidedAt: row.decided_at }));
+}
+
+/**
+ * Takes the terminating decision's row FOR UPDATE, after the account's profile, and answers its id (null when the case
+ * holds no termination of the account). The design takes the decision's case here, which korbat_api may not lock: it
+ * holds no UPDATE privilege on cases, and a row lock needs one. It may lock a decision's row (it updates the mail's
+ * columns), and an appeal being filed takes exactly that row FOR KEY SHARE, through its foreign key, before it commits:
+ * so an appeal either committed before this lock and is read below, or waits here until the take-down has committed.
+ */
+export async function lockTerminatingDecision(tx: DbTx, accountId: string, caseId: string): Promise<string | null> {
+  const [row] = await rows<{ id: string }>(
+    tx,
+    sql`select d.id from decisions d
+         where d.case_id = ${caseId}::uuid and d.kind = 'final'
+           and exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind::text = 'terminate' and a.subject_account_id = ${accountId}::uuid)
+         order by d.decided_at desc, d.id desc limit 1 for update`,
+  );
+  return row?.id ?? null;
+}
+
+/**
+ * Whether the decision became final for its author at least `settleMs` before the database's clock: an appeal whose own
+ * deadline check passed an instant before the deadline has by then committed and is read, or has failed. An appeal's
+ * transaction waits at most 10 seconds for a lock and is run at most three times, so a minute is far beyond it.
+ */
+export async function finalSettled(q: Runner, decisionId: string, settleMs: number): Promise<boolean> {
+  const [row] = await rows<{ settled: boolean }>(
+    q,
+    sql`select coalesce(public.decision_final_at(${decisionId}::uuid) <= clock_timestamp() - make_interval(secs => ${settleMs / 1000}::float8), false) as settled`,
+  );
+  return row?.settled ?? false;
+}
+
+/**
+ * Whether a seal of the account's images is in force (3e design, section 7.8 step 3): a seal_media in force, of a case
+ * about the account or about one of its posts, whose images stay with korbat for the authorities after the purge, as
+ * termination_final then says.
+ */
+export async function imagesSealed(q: Runner, accountId: string): Promise<boolean> {
+  const [row] = await rows<{ sealed: boolean }>(
+    q,
+    sql`select exists (select 1 from measures_in_force m where m.kind = 'seal_media' and m.subject_account_id = ${accountId}::uuid) as sealed`,
+  );
+  return row?.sealed ?? false;
+}
+
+/** A standing measure of a decision as its author's screen shows it now (DecisionView.standing). */
+export interface DecisionStandingRow {
+  state: string;
+  earliestStart: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  endedAt: string | null;
+  endedBy: string | null;
+  replaced: boolean;
+  restsOn: { decisionId: string; ruleId: string | null; decidedAt: string; countsUntil: string | null; state: "counts" | "expired" | "overruled" | null; overruledAt: string | null }[];
+  reply: ReplyColumns | null;
+}
+
+/**
+ * Where the decision's suspension or termination stands now (3e design, section 10.2), read fresh: its state as the case
+ * page's period has it, its earliest start, its start and end as the database has them, when and by which decision it
+ * stopped early (a lift, a withdrawal signed `replaced`, or the reversal that broke its basis), the decisions it rests on
+ * (a strike's with where that strike stands now), and the reply. Null for a decision without one.
+ */
+export async function decisionStanding(q: Runner, decisionId: string): Promise<DecisionStandingRow | null> {
+  const [row] = await rows<{
+    id: string;
+    basis: string | null;
+    earliest_start: string;
+    starts_at: string | null;
+    ends_at: string | null;
+    lifted_at: string | null;
+    lifted_by: string | null;
+    replaced: boolean | null;
+    broken_at: string | null;
+    broken_by: string | null;
+    state: string;
+    rests_on: DecisionStandingRow["restsOn"] | null;
+  }>(
+    q,
+    sql`select a.id, a.basis, ${iso("a.starts_at")} as earliest_start, ${iso("p.starts_at")} as starts_at, ${finite("p.ends_at")} as ends_at,
+               ${iso("l.created_at")} as lifted_at, l.decision_id as lifted_by, l.replaced,
+               ${iso("public.standing_basis_broken_at(a.id)")} as broken_at,
+               (select x.decision_id from decision_actions x where x.created_at = public.standing_basis_broken_at(a.id) and x.reverses_action_id is not null
+                  and exists (select 1 from decision_actions y where y.id = x.reverses_action_id and y.decision_id = any(a.rests_on)) order by x.id limit 1) as broken_by,
+               case
+                 when l.id is not null then case when p.starts_at is null then 'never' else 'lifted' end
+                 when public.standing_basis_broken_at(a.id) is not null then 'basis_ended'
+                 when p.starts_at is not null and p.ends_at <= clock_timestamp() then 'ended'
+                 when p.starts_at is not null and p.starts_at <= clock_timestamp() then 'running'
+                 when p.starts_at is not null then 'announced'
+                 when r.on_time and r.answered_by is null then 'held'
+                 else 'unfixed'
+               end as state,
+               (select json_agg(json_build_object(
+                         'decisionId', x.id, 'ruleId', case when a.basis = 'protective' then null else x.rule_id end, 'decidedAt', ${iso("x.decided_at")},
+                         'countsUntil', ${iso("s.ends_at")},
+                         'state', case when s.id is null then null when exists (select 1 from decision_actions o where o.reverses_action_id = s.id) then 'overruled'
+                                       when s.ends_at <= clock_timestamp() then 'expired' else 'counts' end,
+                         'overruledAt', (select ${iso("o.created_at")} from decision_actions o where o.reverses_action_id = s.id)) order by u.ord)
+                  from unnest(a.rests_on) with ordinality as u(id, ord)
+                  join decisions x on x.id = u.id
+                  left join decision_actions s on s.decision_id = x.id and s.kind = 'strike') as rests_on
+          from decision_actions a
+          left join suspension_periods p on p.action_id = a.id
+          left join decision_actions l on l.reverses_action_id = a.id
+          left join suspension_replies r on r.action_id = a.id
+         where a.decision_id = ${decisionId}::uuid and a.kind::text in ('suspend', 'terminate')`,
+  );
+  if (!row) return null;
+  const replies = await rows<{ filed_at: string; on_time: boolean; statement: string | null; erased_at: string | null; answered_at: string | null; answered_by: string | null }>(
+    q,
+    sql`select ${iso("r.filed_at")} as filed_at, r.on_time, r.statement, ${iso("r.erased_at")} as erased_at, ${iso("r.answered_at")} as answered_at, r.answered_by
+          from suspension_replies r where r.action_id = ${row.id}::uuid`,
+  );
+  const reply = replies[0];
+  // A lift ends it at the lift's time, a broken basis at the break's: the period's end is cut to either, or it never ran.
+  const endedAt = row.lifted_at ?? row.broken_at;
+  return {
+    state: row.state,
+    earliestStart: row.earliest_start,
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    endedAt,
+    endedBy: row.lifted_by ?? row.broken_by,
+    replaced: row.replaced === true,
+    restsOn: row.rests_on ?? [],
+    reply: reply ? { filedAt: reply.filed_at, onTime: reply.on_time, text: reply.statement, erasedAt: reply.erased_at, answeredAt: reply.answered_at, answeredBy: reply.answered_by } : null,
+  };
+}
+
+/** Bounds every lock wait of the transaction it runs in: the reply's and the take-down's, as an appeal's is bounded. */
+export async function boundWaits(tx: DbTx, ms: number): Promise<void> {
+  await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true)`);
 }

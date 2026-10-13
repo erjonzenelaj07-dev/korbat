@@ -3,9 +3,9 @@ import type { ModerationDeps } from "./context";
 import { urgentWaiting } from "./repo";
 
 /**
- * Staff alerts before the phone channel of sub-project 3e (3c design, section 7.12): a mail to every live staff account,
- * with counts and times only and never a link or content. The moderation module, which never sees an address, keeps
- * each alert's throttle as one key of the shared limit store.
+ * Staff alerts before the phone channel of sub-project 3f (3c design, section 7.12; 3e moved the channel there): a mail
+ * to every live staff account, with counts and times only and never a link or content. The moderation module, which
+ * never sees an address, keeps each alert's throttle as one key of the shared limit store.
  */
 
 /** The key and the window of the urgent lane's alert. The dispatch job repeats the alert under the same key. */

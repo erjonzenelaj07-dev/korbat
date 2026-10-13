@@ -8,8 +8,8 @@ import { BURST_ALERT_AT, BURST_WINDOW_MS, burstAlertKey } from "../../src/modera
 import { recordIntake } from "../../src/moderation/intake";
 import { pendingAuthorMails, recentDecisionsBy } from "../../src/moderation/repo";
 import { decisionStatement, mailSubjectOf, sendStatement } from "../../src/moderation/statement";
-import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { aPost, act, anAccount, authCaseCounts, ground, moderationCounts, newPostRow, saveText } from "./moderation-fixtures";
+import { closeDecisions, deciderWorld, suspendForTest, type DeciderWorld, type RealStaff } from "./moderation-decide";
+import { aPost, act, anAccount, authCaseCounts, ground, moderationCounts, newPostRow, saveText, untilBlocked } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 
 // Every test signs decisions with a real staff key: on a loaded machine that takes longer than a test gets by default.
@@ -253,7 +253,49 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the statement of reasons
     expect(throttle.resetMs).toBeLessThanOrEqual(60 * 60_000);
   });
 
+  test("3e: an announced suspension's statement is mailed as suspension_announced, and its outcome is recorded under the subject's profile lock, taken before the decision's row: a holder of the profile holds the record back, never the other way round", async () => {
+    const author = await w.account();
+    // Through the decide route's own code, mailed by no auth module: the statement waits, pending, for this test.
+    const { decisionId } = await suspendForTest(w.apiDb, author.id, { announced: true });
+    expect((await mailState(decisionId)).author_mail).toBe("pending");
+    const statement = (await statementOf(decisionId)).statement;
+    expect(statement.measures.find((measure) => measure.kind === "suspend")).toMatchObject({ announced: true, days: 3, basis: "strikes" });
+    // Another transaction holds the account's profile, as a decision about the account does.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => (held = resolve));
+    const holder = w.migrateDb.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '30s'`);
+      await tx.execute(sql`select 1 from profiles where id = ${author.id}::uuid for update`);
+      held();
+      await gate;
+    });
+    try {
+      await holding;
+      const sending = sendStatement(w.deps, decisionId);
+      await untilBlocked(w.apiDb, "for no key update");
+      // The record waits at the profile and has not taken the decision's row: another writer may still take it at once.
+      await w.apiDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '2s'`);
+        await tx.execute(sql`select id from decisions where id = ${decisionId}::uuid for no key update`);
+      });
+      release();
+      await holder;
+      expect(await sending).toBe("sent");
+    } finally {
+      release();
+      await holder.catch(() => undefined);
+    }
+    expect(await mailState(decisionId)).toEqual({ author_mail: "sent", mailed: true });
+    const [mail] = w.mailer.to(author.email, "suspension_announced");
+    expect(mail?.data).toMatchObject({ measure: "suspend", days: "3", statement: statementParagraphs(statement).join(String.fromCharCode(10)) });
+    expect(w.mailer.to(author.email, "moderation_decision").map((sent) => sent.data.statement)).not.toContain(mail!.data.statement);
+    await closeDecisions();
+  });
+
   test("this file left no row behind: the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
+    await closeDecisions();
     await w.cleanUp();
     await d.close();
     expect(await counts()).toEqual(before);

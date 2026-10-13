@@ -78,6 +78,8 @@ const QUIET: StaffOverview = {
   protectionLifted: { total: 0, items: [] },
   sealsDeclined: { total: 0, items: [] },
   interimSeals: { total: 0, items: [] },
+  repliesWaiting: { count: 0, oldestAt: null },
+  strikeAccounts: 0,
 };
 
 describe("sign-in", () => {

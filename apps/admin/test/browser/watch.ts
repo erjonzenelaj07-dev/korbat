@@ -137,7 +137,7 @@ const INSPECT_SCRIPT = `
   }
   for (const link of root.querySelectorAll("a")) {
     const href = link.getAttribute("href");
-    if (href !== "/" && href !== "/audit" && href !== "/signin" && href !== "/queue" && href !== "/appeals" && !casePath.test(String(href))) out.push("a link to " + String(href));
+    if (href !== "/" && href !== "/audit" && href !== "/signin" && href !== "/queue" && href !== "/appeals" && href !== "/standing" && !casePath.test(String(href))) out.push("a link to " + String(href));
   }
   for (const form of root.querySelectorAll("form")) {
     if (form.hasAttribute("action")) out.push("a form with an action: " + String(form.getAttribute("action")));

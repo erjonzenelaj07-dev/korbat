@@ -19,13 +19,15 @@ const MEASURES = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'rem
  * The end of the appeal's window of decision `d`, while an appeal can still be filed: a final decision that restricts,
  * with at least one of its measures in force, no appeal filed, and its deadline not yet reached on the database's clock.
  * Null otherwise: for a decision taken while deciding, one that restricts nothing, a review, a correction, a restriction
- * reversed in full, and once the author appealed or the window closed.
+ * reversed in full, and once the author appealed or the window closed. 3e Task 4: the six months run from
+ * appeal_informed_at, the database's one statement of that moment, which after a kept answer to a reply sent before the
+ * start is that answer's time.
  */
 const appealUntil = sql`case when d.kind = 'final' and d.outcome = 'restricted'
                   and exists (select 1 from measures_in_force m where m.decision_id = d.id)
                   and not exists (select 1 from appeals ap where ap.decision_id = d.id)
-                  and clock_timestamp() < public.appeal_deadline(d.informed_at)
-             then ${iso("public.appeal_deadline(d.informed_at)")} end`;
+                  and clock_timestamp() < public.appeal_deadline(public.appeal_informed_at(d.id))
+             then ${iso("public.appeal_deadline(public.appeal_informed_at(d.id))")} end`;
 
 /**
  * The UTC day on which the last measure of decision `d` was lifted, for a final decision that restricted and of which

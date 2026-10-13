@@ -98,6 +98,7 @@ describe("the appeals screen", () => {
     reviewer: "available",
     needsAdmin: false,
     mayReview: true,
+    standingFirst: false,
     ...more,
   });
   const view = (rows: AppealRow[], more = false) => html(<AppealsView rows={{ state: "ready", value: rows }} more={more} loadingMore={false} onLoadMore={noop} onOpenCase={noop} />);
@@ -162,7 +163,7 @@ describe("the appeals screen", () => {
 describe("an appeal on the case page", () => {
   const page = (view: CaseView, role: StaffMe["role"] = MODERATOR) => {
     const draft = newDraft(caseId(view.id), view, role);
-    const compose: CaseScreenViewProps["compose"] = { role, draft, now: NOW, busy: false, error: null, textErrors: {}, declining: null, onChange: noop, onTextBlur: noop, onSeal: noop, onConfirm: noop, onDeclineOpen: noop, onDeclineChange: noop, onDeclineSave: noop, onDeclineClose: noop, onCancelCorrection: noop, onCorrect: noop, onReview: noop };
+    const compose: CaseScreenViewProps["compose"] = { role, draft, now: NOW, busy: false, error: null, textErrors: {}, declining: null, onChange: noop, onTextBlur: noop, onSeal: noop, onConfirm: noop, onDeclineOpen: noop, onDeclineChange: noop, onDeclineSave: noop, onDeclineClose: noop, onCancelCorrection: noop, onCorrect: noop, onReview: noop, onAnswer: noop, onWithdraw: noop };
     const props: CaseScreenViewProps = { caseId: caseId(view.id), view, compose, shownImage: null, busy: null, notice: null, error: null, note: "", reveal: null, onOpenCase: noop, onShowImage: noop, onShowClearly: noop, onHideImage: noop, onImageError: noop, onSnapshot: noop, onNoteChange: noop, onNoteSave: noop, onRevealOpen: noop, onRevealChange: noop, onRevealConfirm: noop, onRevealClose: noop };
     return html(<CaseScreenView {...props} />);
   };

@@ -8,15 +8,30 @@ export const PURGE_INTERVAL_MS = 5 * 60 * 1000;
 export interface PurgeReport {
   purged: number;
   failed: number;
+  /** 3e: the terminated accounts this round took down (the moderation module's takeDownDue). */
+  terminated: number;
 }
 
 /**
- * One round: every account the auth module reports as deleted but not purged is run through the
- * purge, oldest deletion first. A failure is logged with the account and counted; the account stays
- * pending and is tried again next round. A plain function, so tests call it directly.
+ * One round. First (3e design, section 7.8 step 3) the terminated accounts whose termination is final for their author
+ * are taken down, through the moderation module's takeDownDue, which holds each account's profile and its case while the
+ * auth module takes the account down: a failed take-down is counted in `failed`, and the call stands in a try of its own,
+ * so whatever happens there the round goes on, and no person's own deletion ever waits on a termination that cannot be
+ * taken down. Then every account the auth module reports as deleted but not purged is run through the purge, oldest
+ * deletion first, the accounts just taken down among them. A failure is logged with the account and counted; the account
+ * stays pending and is tried again next round. A plain function, so tests call it directly.
  */
 export async function purgePending(deps: AccountDeps): Promise<PurgeReport> {
-  const report: PurgeReport = { purged: 0, failed: 0 };
+  const report: PurgeReport = { purged: 0, failed: 0, terminated: 0 };
+  if (deps.moderation) {
+    try {
+      const taken = await deps.moderation.takeDownDue((account, facts) => deps.auth.takeDownTerminated(account, facts));
+      report.terminated += taken.terminated;
+      report.failed += taken.failed;
+    } catch (err) {
+      deps.log.error({ err }, "account purge: the terminations due could not be taken down this round; the deletions are purged all the same");
+    }
+  }
   for (const userId of await deps.auth.pendingPurges()) {
     try {
       await purge(deps, userId);
@@ -27,7 +42,7 @@ export async function purgePending(deps: AccountDeps): Promise<PurgeReport> {
     }
   }
   // As the janitor: a round that did something is logged with its counts, an idle one is not.
-  if (report.purged > 0 || report.failed > 0) deps.log.info(report, "account purge: round finished");
+  if (report.purged > 0 || report.failed > 0 || report.terminated > 0) deps.log.info(report, "account purge: round finished");
   return report;
 }
 

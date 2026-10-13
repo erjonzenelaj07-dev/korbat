@@ -44,8 +44,9 @@ export interface AccountDeps {
   media: MediaForAccount;
   /**
    * The purge's forgetting of a deleted account's reports, in the moderation module's tables (3c design, section 7.10),
-   * and the export's moderation member (section 7.11). The server always hands it over; a test of the other steps may
-   * leave it out: the purge then skips that step, and the export writes the member with two empty lists.
+   * the export's moderation member (section 7.11), and (3e, section 7.8) the take-down of the terminated accounts whose
+   * termination is final, at the start of each purge round. The server always hands it over; a test of the other steps
+   * may leave it out: the purge then skips those steps, and the export writes the member with two empty lists.
    */
   moderation?: ModerationForAccount;
   limits: RateLimitStore;

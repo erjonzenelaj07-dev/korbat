@@ -98,9 +98,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retirement of a hand
   test("the routes take the retirement and its reversal now (7.1 item 2)", () => {
     expect(ROUTE_KINDS.has("retire_handle")).toBe(true);
     expect(ROUTE_KINDS.has("unretire_handle")).toBe(true);
-    // Task 3 opens a suspension at once and its lift (standing-at-once.test.ts); the rest come with Tasks 4 and 5.
-    for (const kind of ["suspend", "lift_suspension"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(true);
-    for (const kind of ["terminate", "warn_reporting", "restrict_reporting", "lift_reporting"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(false);
+    // Task 3 opened a suspension at once and its lift, Task 4 a termination; the reporting kinds come with Task 5.
+    for (const kind of ["suspend", "lift_suspension", "terminate"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(true);
+    for (const kind of ["warn_reporting", "restrict_reporting", "lift_reporting"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(false);
   });
 
   test("invariant 15: a retirement swaps the handle for the placeholder made from the measure's id and clears the change time; the handle is refused to everyone, its former holder included, and the new handle is chosen at once", async () => {

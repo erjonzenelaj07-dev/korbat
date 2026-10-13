@@ -80,6 +80,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: step 1 of an account del
       confirmDeletion: (session, input) => confirmDeletion(h.deps, session, input),
       pendingPurges: () => authRepo.pendingPurges(),
       finishPurge: (userId) => finishPurge(h.deps, userId),
+      takeDownTerminated: async () => {
+        throw new Error("not exercised here");
+      },
       exportAccount: async () => {
         throw new Error("not exercised here");
       },

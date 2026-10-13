@@ -243,7 +243,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: appeals, reviews and re-
     const page = await parsed(listed, 200, AppealsPage);
     const row = page.appeals.find((appeal) => appeal.decisionId === removal)!;
     // 3e: the removal under R1 gave the post a strike, listed among the actions the appeal is against.
-    expect(row).toMatchObject({ caseId: r.caseId, ruleId: "R1", actions: ["remove", "strike"], reviewer: "available", needsAdmin: false, mayReview: true });
+    // 3e Task 4: a removal holds no running suspension, so its row is not among those listed first.
+    expect(row).toMatchObject({ caseId: r.caseId, ruleId: "R1", actions: ["remove", "strike"], reviewer: "available", needsAdmin: false, mayReview: true, standingFirst: false });
     expect(JSON.stringify(page)).not.toContain("Please look again");
     expect((await parsed(await moderator.b.fetch("/api/staff/appeals", { headers: MARKED }), 200, AppealsPage)).appeals.find((appeal) => appeal.id === row.id)!.mayReview).toBe(false);
     // The home screen counts them, with the person's own number.

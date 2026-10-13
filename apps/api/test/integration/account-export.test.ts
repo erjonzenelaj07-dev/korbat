@@ -98,6 +98,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
       confirmDeletion: notHere,
       pendingPurges: notHere,
       finishPurge: notHere,
+      takeDownTerminated: notHere,
       exportAccount: (userId) => exportAccount(h.deps, userId),
       appendEvent: (userId, type, metadata) => authRepo.appendEvent({ userId, type, metadata }),
     },

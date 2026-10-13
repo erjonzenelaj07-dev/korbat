@@ -38,7 +38,7 @@ const OTHER = "5b0e4a52-3c1d-4f6e-9a8b-7c6d5e4f3a2b";
 const HEX = "ab".repeat(32);
 const TIME = "2026-10-04T08:15:30.123Z";
 /** The seven members of 3e on a ledger row of 3c, where each is null. */
-const NO_STANDING_COLUMNS = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null } as const;
+const NO_STANDING_COLUMNS = { days: null, announced: null, basis: null, restsOn: null, earliestStart: null, countsUntil: null, period: null, restedOnBy: null, reply: null } as const;
 
 describe("FindingRequest", () => {
   const finding = { target: { kind: "post", id: POST }, ground: "rule", ruleId: "R1", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC" };
@@ -381,10 +381,10 @@ describe("the queue and the overview", () => {
 
   test("a page of the queue holds at most 50 cases and the cursor of the next", () => {
     expect(QUEUE_PAGE_SIZE).toBe(50);
-    expect(QueuePage.safeParse({ cases: [row], nextCursor: null }).success).toBe(true);
-    expect(QueuePage.safeParse({ cases: Array.from({ length: 50 }, () => row), nextCursor: "abc_-123" }).success).toBe(true);
-    expect(QueuePage.safeParse({ cases: Array.from({ length: 51 }, () => row), nextCursor: null }).success).toBe(false);
-    expect(QueuePage.safeParse({ cases: [{ ...row, lane: 3 }], nextCursor: null }).success).toBe(false);
+    expect(QueuePage.safeParse({ cases: [row], nextCursor: null, replies: [] }).success).toBe(true);
+    expect(QueuePage.safeParse({ cases: Array.from({ length: 50 }, () => row), nextCursor: "abc_-123", replies: [] }).success).toBe(true);
+    expect(QueuePage.safeParse({ cases: Array.from({ length: 51 }, () => row), nextCursor: null, replies: [] }).success).toBe(false);
+    expect(QueuePage.safeParse({ cases: [{ ...row, lane: 3 }], nextCursor: null, replies: [] }).success).toBe(false);
   });
 
   test("the queue's cursor is an opaque word: letters, digits, dashes and underscores", () => {
@@ -414,6 +414,8 @@ describe("the queue and the overview", () => {
       protectionLifted: { total: 1, items: [{ at: TIME, handle: "mod_anna", caseId: CASE, kind: "dismissed" }] },
       sealsDeclined: { total: 0, items: [] },
       interimSeals: { total: 1, items: [{ at: TIME, handle: "mod_anna", caseId: CASE, posts: 2, images: 5 }] },
+      repliesWaiting: { count: 2, oldestAt: TIME },
+      strikeAccounts: 1,
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
     // Each of the three lists holds at most as many rows as the reveals' list does.

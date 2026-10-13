@@ -3,7 +3,7 @@ import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
 import type { ModerationDeps } from "./context";
 import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, type MailState } from "./repo";
-import { endedMeasures, endedStanding, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
+import { endedMeasures, endedStanding, repliedTo, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
 
 /**
  * The data a statement of reasons and its mail are rendered from (3c design, sections 7.5 and 10). A decision is the
@@ -34,6 +34,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
   const ended = decision.kind === "final" ? await endedMeasures(q, decisionId) : [];
   // 3e: the standing measures whose basis a reversal of this decision broke; absent from a statement that holds none.
   const brokenBasis = decision.kind === "review" || decision.kind === "correction" ? await endedStanding(q, decisionId) : [];
+  // 3e Task 4: the reply this correction or review answered by keeping or reversing its measure; absent when none.
+  const replied = decision.kind === "review" || decision.kind === "correction" ? await repliedTo(q, decisionId) : null;
   // The facts and the reason are told with a decision that restricts (it holds a measure), with a correction and with a
   // review. Those of a decision without a measure are the case's record, for staff: such a decision tells its author at
   // most that what korbat did while deciding has ended, so the statement's data holds neither, and no mail, screen or
@@ -83,10 +85,13 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         // 3e: the handle a reversal of a retirement gives back.
         ...(action.kind === "unretire_handle" ? { handle: action.handle } : {}),
         // 3e: what a lift of a suspension lifted, where its period stood then, and whether it was a withdrawal for another measure.
-        ...(action.kind === "lift_suspension" ? { liftedKind: action.liftedKind, liftedDecidedAt: action.liftedDecidedAt, periodThen: action.periodThen, replaced: action.replaced } : {}),
+        ...(action.kind === "lift_suspension"
+          ? { liftedKind: action.liftedKind, liftedDecidedAt: action.liftedDecidedAt, periodThen: action.periodThen, replaced: action.replaced, replyFiledAt: action.replyFiledAt }
+          : {}),
       })),
     endedMeasures: ended.map((measure) => ({ kind: measure.kind as MeasureKind, mediaId: measure.mediaId, ...resetFacts(measure.kind, measure) })),
     ...(brokenBasis.length > 0 ? { endedStanding: brokenBasis } : {}),
+    ...(replied !== null ? { repliedTo: replied } : {}),
     reviewed:
       decision.reviewed === null
         ? null
@@ -125,17 +130,39 @@ export function mailSubjectOf(statement: DecisionStatement): Extract<DecisionMes
 /**
  * The template a decision's statement is mailed under (3e design, sections 7.15 and 18, W.6): the first row of 7.15's
  * table that fits, and moderation_decision otherwise, so that a strike, a retirement and their reversals ride on 3c's
- * mail. Task 3 builds two rows: a suspension or a termination taken at once, and a lift of one, or a decision whose
- * reversal ended one by breaking its basis. The announced measures, the answer to a reply and the reporting measures
- * join with the tasks that build them.
+ * mail. In order: an announced suspension or termination; one taken at once; the answer to a reply (a statement with
+ * `repliedTo`); a lift of one (a withdrawal signed `replaced` under its own lead), or a decision whose reversal ended one by
+ * breaking its basis. The reporting measures join with the task that builds them.
  */
 export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonly string[]): DecisionMessage {
   const standing = statement.measures.find((measure) => measure.kind === "suspend" || measure.kind === "terminate");
+  if (statement.kind === "final" && standing !== undefined && standing.announced === true) {
+    const measure = standing.kind === "terminate" ? "terminate" : "suspend";
+    if (standing.earliestStart === undefined || standing.earliestStart === null) throw new Error("an announced measure's mail names its earliest start: the statement's data holds none");
+    // The window is the row's own: its earliest start less its decision's time, in hours.
+    const window = Math.round((Date.parse(standing.earliestStart) - Date.parse(statement.decidedAt)) / 3_600_000);
+    return { template: "suspension_announced", measure, days: measure === "terminate" ? null : (standing.days ?? null), window, earliestStart: standing.earliestStart, paragraphs };
+  }
   if (statement.kind === "final" && standing !== undefined && standing.announced === false) {
     const measure = standing.kind === "terminate" ? "terminate" : "suspend";
     return { template: "suspension_started_at_once", measure, days: standing.days ?? null, endsAt: standing.endsAt ?? null, paragraphs };
   }
   const lift = statement.reversals.find((reversal) => reversal.kind === "lift_suspension");
+  if (statement.repliedTo !== undefined) {
+    // A review that reverses part but leaves the measure in force answers the reply as a kept answer does.
+    const lifted = lift !== undefined && lift.replaced !== true;
+    return { template: "reply_answered", outcome: lifted ? "reversed" : "kept", paragraphs };
+  }
+  if ((statement.kind === "review" || statement.kind === "correction") && lift !== undefined && lift.replaced === true && lift.liftedDecidedAt) {
+    return {
+      template: "suspension_lifted",
+      measure: lift.liftedKind === "terminate" ? "terminate" : "suspend",
+      why: "replaced",
+      decidedAt: lift.liftedDecidedAt,
+      replied: lift.replyFiledAt !== undefined && lift.replyFiledAt !== null,
+      paragraphs,
+    };
+  }
   if ((statement.kind === "review" || statement.kind === "correction") && lift !== undefined && lift.periodThen) {
     return { template: "suspension_lifted", measure: lift.liftedKind === "terminate" ? "terminate" : "suspend", why: "lifted", period: lift.periodThen.state, paragraphs };
   }
@@ -153,15 +180,22 @@ export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonl
  * database that cannot write refuses that, and nothing is sent, so a mail is never sent again and again for want of a
  * record. Two senders of one statement (the decision's own request and the dispatch job) then send it once: the second
  * waits for the row and finds the mail recorded.
+ *
+ * 3e (design, section 5, the lock order, item 4): for a decision that holds an announced suspension or termination, the
+ * outcome fixes the measure's start (the database's decisions_mail_standing derives the profile's columns), so the
+ * transaction takes the subject's profile FOR NO KEY UPDATE first and the decision's row after it, as a deciding
+ * transaction takes the profile before it touches decisions.
  */
-export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth">, decisionId: string): Promise<MailState | "none"> {
+export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth" | "social">, decisionId: string): Promise<MailState | "none"> {
   const found = await decisionStatement(deps.apiDb, decisionId);
   if (!found || found.decision.authorMail !== "pending") return "none";
   const subject = found.decision.subjectId;
   // The statement is rendered before anything is sent: one that cannot be rendered is no mail, and stays pending.
   const message = mailTemplateOf(found.statement, statementParagraphs(found.statement));
+  const announced = found.statement.kind === "final" && found.statement.measures.some((measure) => (measure.kind === "suspend" || measure.kind === "terminate") && measure.announced === true);
   return deps.apiDb.transaction(async (tx) => {
     await beginMailRecord(tx);
+    if (announced && subject !== null) await deps.social.lockAccounts(tx, [subject], "no key update");
     if (!(await lockPendingAuthorMail(tx, decisionId))) return "none";
     const result = subject === null ? "no_address" : await deps.auth.mailAccount(subject, message);
     // A stop of the address never holds a statement back, so "suppressed" is never answered for it.

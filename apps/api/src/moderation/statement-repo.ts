@@ -126,6 +126,8 @@ export interface StatementActionRow {
   liftedDecidedAt: string | null;
   periodThen: { state: "not_started" | "running" | "ended"; startedAt: string | null; endedAt: string | null } | null;
   replaced: boolean | null;
+  /** 3e Task 4, on such a lift: when the person had replied to the lifted measure, or null when they had not. */
+  replyFiledAt: string | null;
 }
 
 /** A decision's measures and reversals, in the ledger's order of kinds. */
@@ -155,6 +157,8 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
                case when a.kind = 'lift_suspension' then l.kind::text end as lifted_kind,
                case when a.kind = 'lift_suspension' then ${iso("ld.decided_at")} end as lifted_decided_at,
                case when a.kind = 'lift_suspension' then a.replaced end as replaced,
+               -- Whether the person had replied to the lifted measure before this lift: a withdrawal then says it is no answer to it.
+               case when a.kind = 'lift_suspension' then (select ${iso("r.filed_at")} from suspension_replies r where r.action_id = l.id and r.filed_at <= a.created_at) end as reply_filed_at,
                -- Where the lifted measure's period stood at this lift's time: the lift cuts its end to that time, so a period
                -- that ends before it had already ended, and one with no start, or a start not before it, never started.
                ${iso("lp.starts_at")} as lifted_started_at, ${finite("lp.ends_at")} as lifted_ended_at,
@@ -206,6 +210,7 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
             endedAt: row.lifted_state === "ended" ? (row.lifted_ended_at as string | null) : null,
           },
     replaced: row.replaced as boolean | null,
+    replyFiledAt: row.reply_filed_at as string | null,
   }));
 }
 
@@ -286,4 +291,77 @@ export async function endedStanding(q: Runner, decisionId: string): Promise<Ende
     seal: row.seal,
     replyFiledAt: row.reply_filed_at,
   }));
+}
+
+/** The reply a correction or a review answered by keeping or reversing its measure (3e design, section 10.2). */
+export interface RepliedToRow {
+  filedAt: string;
+  onTime: boolean;
+  kind: "suspend" | "terminate";
+  days: number | null;
+  periodThen: { state: "not_started" | "running" | "ended"; startedAt: string | null; endedAt: string | null };
+  startsAt: string | null;
+  endsAt: string | null;
+  appealUntil: string;
+}
+
+/**
+ * The reply this correction or review answered by keeping or reversing the measure of the decision it is about: a reply
+ * to a suspension or a termination of that decision whose answering decision is this one. Never a withdrawal signed
+ * `replaced` (it is no answer on the reply's merits), and never the end of a broken basis (that measure is not the
+ * reviewed decision's: its reply is the reversal's endedStanding). Null when there is none.
+ *
+ * Each member is what the ledger fixed by this answer's time, so the statement reads as it was sent. The start: after a
+ * kept answer to a reply before the start, the later of the answer and the earliest start, which nothing later moves; for
+ * any other answer the period's own start, already fixed before the reply (a late reply) or never (a reversed one before
+ * the start, which has no row). The end: a kept suspension's start plus its days; a reversed one's period end, which this
+ * lift cut; null for a termination and for a measure that never starts. Where the period stood at this answer's time, by
+ * those two. And the last moment of the announcing decision's appeal after this answer (appeal_informed_at).
+ */
+export async function repliedTo(q: Runner, decisionId: string): Promise<RepliedToRow | null> {
+  const [row] = await rows<{
+    filed_at: string;
+    on_time: boolean;
+    kind: "suspend" | "terminate";
+    days: number | null;
+    kept: boolean;
+    starts_at: string | null;
+    ends_at: string | null;
+    started: boolean;
+    ended: boolean;
+    appeal_until: string;
+  }>(
+    q,
+    sql`select ${iso("r.filed_at")} as filed_at, r.on_time, m.kind::text as kind, m.days, t.kept,
+               ${iso("t.starts_at")} as starts_at, ${finite("t.ends_at")} as ends_at,
+               coalesce(t.starts_at <= d.decided_at, false) as started, coalesce(t.ends_at <= d.decided_at, false) as ended,
+               ${iso("public.appeal_deadline(public.appeal_informed_at(m.decision_id))")} as appeal_until
+          from decisions d
+          join decision_actions m on m.decision_id = d.reviews_decision_id and m.kind::text in ('suspend', 'terminate')
+          join suspension_replies r on r.action_id = m.id and r.answered_by = d.id
+          left join suspension_periods p on p.action_id = m.id
+          cross join lateral (
+            select x.kept,
+                   case when x.kept and r.on_time then greatest(m.starts_at, r.answered_at) else p.starts_at end as starts_at,
+                   case when m.kind::text = 'terminate' then null
+                        when x.kept and r.on_time then greatest(m.starts_at, r.answered_at) + make_interval(days => m.days)
+                        when x.kept then p.starts_at + make_interval(days => m.days)
+                        else p.ends_at end as ends_at
+              from (select not exists (select 1 from decision_actions l where l.decision_id = d.id and l.reverses_action_id = m.id) as kept) x
+          ) t
+         where d.id = ${decisionId}::uuid and d.kind in ('review', 'correction')
+           and not exists (select 1 from decision_actions w where w.decision_id = d.id and w.kind = 'lift_suspension' and w.replaced)`,
+  );
+  if (!row) return null;
+  const state: RepliedToRow["periodThen"]["state"] = !row.started ? "not_started" : row.ended ? "ended" : "running";
+  return {
+    filedAt: row.filed_at,
+    onTime: row.on_time,
+    kind: row.kind,
+    days: row.kind === "terminate" ? null : row.days,
+    periodThen: { state, startedAt: state === "not_started" ? null : row.starts_at, endedAt: state === "ended" ? row.ends_at : null },
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    appealUntil: row.appeal_until,
+  };
 }

@@ -4,7 +4,7 @@ import { randomToken } from "../crypto";
 import { HOUR, enforceLimit } from "../limits";
 import type { Session } from "../sessions";
 import { CODE_TTL_MS, checkEmailCode, emailCodeHash, flowKey, newEmailCode, sendCode } from "./email";
-import { notifyAccount } from "./notify";
+import { noticeTime, notifyAccount } from "./notify";
 
 export const DELETE_STARTS_PER_HOUR = 3;
 
@@ -81,6 +81,26 @@ export async function confirmDeletion(deps: AuthDeps, session: Session, input: D
   // Told once the account is gone, and never before: a take-down that failed leaves the account as it was. The address
   // still belongs to the row until finishPurge; best effort, since no mail failure may keep an account its owner has given up.
   await notifyAccount(deps, user.email, "account_deleted");
+}
+
+/**
+ * 3e (design, sections 5 and 7.8 step 3): the take-down of an account whose termination is final for its author, as the
+ * system, without a session or a code. As confirmDeletion does: the account's row is read first with its address, then
+ * the account is marked deleted with every session revoked and the event written, in one transaction; the revoked
+ * sessions get their tombstones; and only after that commit the address read before gets termination_final, best
+ * effort, in place of account_deleted, with the decision's day and, when images of the account stay sealed, its
+ * sentence about them. It does nothing a second time: an account already marked deleted (gone from every lookup) is
+ * left as it is, with no event and no mail, and the answer is false; true only for the take-down this call made. The
+ * address stays on the row until finishPurge, so nothing is lost by mailing after the commit.
+ */
+export async function takeDownTerminated(deps: AuthDeps, userId: string, facts: { decidedAt: Date; imagesSealed: boolean }): Promise<boolean> {
+  const user = await deps.repo.findUserById(userId);
+  if (!user) return false;
+  const revoked = await deps.repo.takeDownTerminated(user.id, deps.now());
+  if (revoked === null) return false;
+  await tombstoneQuietly(deps, user.id, revoked);
+  await notifyAccount(deps, user.email, "termination_final", { decided: noticeTime(facts.decidedAt), imagesSealed: String(facts.imagesSealed) });
+  return true;
 }
 
 /**

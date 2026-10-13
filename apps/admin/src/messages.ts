@@ -1,4 +1,4 @@
-import { STANDING_RULES, type AppealsReviewedParams, type AuthorStanding, type CaseDecision, type ItemOutcome, type ModerationErrorCode, type ReviewerState, type StaffErrorCode } from "@korbat/contracts";
+import { REPLY_AIM_HOURS, RETENTION, STANDING_RULES, type AppealsReviewedParams, type AuthorStanding, type CaseDecision, type ItemOutcome, type ModerationErrorCode, type ReviewerState, type StaffErrorCode } from "@korbat/contracts";
 
 /**
  * The console's own words for every code it can receive (3a design, section 10) and for every outcome it shows (3c
@@ -122,6 +122,142 @@ export const STANDING_WORDS = {
   reviewBasis: "A suspension (or termination) of this account rests on this decision. If you reverse it, or lift the seal, that measure ends when you confirm, and this decision's statement says so.",
   /** 8.7: [review.protective], beside the review or correction of a protective suspension. */
   reviewProtective: "A protective suspension is reviewed at once, on what korbat knows: the review does not wait for the authorities, and it may lift the suspension while the seal stays. Only the appeal of the seal's own decision waits.",
+  // ---------------------------------------------------------------- 3e Task 4 (design, sections 8.3 and 8.5 to 8.8)
+  /** 8.3: an announced suspension. */
+  suspend: {
+    /** The control's name. */
+    label: "Announce a suspension",
+    /** [suspend.what] */
+    what: (days: number) =>
+      `This announces a suspension of ${days} ${days === 1 ? "day" : "days"}. Nothing is restricted when you confirm. The account is mailed at once and may reply. With no reply the suspension starts by itself, ${STANDING_RULES.replyWindowHours} hours after korbat sent the mail, on your signature: nobody acts at the start. korbat cannot see whether the mail reached the person; the app always shows the notice.`,
+    /** [suspend.days], with the rung the database would accept now and the step it would be. */
+    days: (maxDays: number, n: number) =>
+      `At most ${maxDays} days: this would be the account's suspension number ${n} in ${STANDING_RULES.ladderMemoryDays} days, and the steps are ${STANDING_RULES.ladderDays.join(", ")} days. Shorter is allowed, down to 1 day; a shorter suspension still uses its step.`,
+    /** [suspend.rule] */
+    rule: (ladderRule: string) =>
+      `The decision cites ${ladderRule}, the rule of the newest strike; the composer sets it. The statement names korbat's terms as its ground, that rule as the rule of the newest strike, and every strike it rests on.`,
+    /** [suspend.short] */
+    short: (activeStrikes: number) => `Not open: an announced suspension needs ${STANDING_RULES.ladderStrikes} active strikes. This account has ${activeStrikes}.`,
+    /** [suspend.stale] */
+    stale: "Not open: no strike is newer than the account's last suspension under the ladder. A next step needs at least one new strike.",
+    /** How many days, at most the rung. */
+    daysLabel: (max: number) => `Days (1 to ${max})`,
+  },
+  /** 8.3: a termination, announced or at once. */
+  terminate: {
+    announceLabel: "Announce a termination",
+    atOnceLabel: "Terminate at once",
+    /** [terminate.what] */
+    what: "A termination is a suspension without end. Until the decision is final for the account (six months unused, or its appeal answered and kept) the account is only suspended: it signs in, replies, appeals, exports and may delete itself, and its posts stay visible. Nothing is deleted while its appeal or its reply, on time or late, is unanswered. Then korbat deletes it, and keeps nothing to recognise a new account of the person by; images that korbat sealed stay for the authorities.",
+    /** [terminate.notYet] */
+    notYet: `Not open: an announced termination needs ${STANDING_RULES.ladderDays.length} suspensions under the ladder decided in the last ${STANDING_RULES.ladderMemoryDays} days, whatever their length, and ${STANDING_RULES.ladderStrikes} active strikes of which one is newer than the last of them.`,
+    /** [terminate.noRepeat] */
+    noRepeat: `Not open: a termination at once needs a second direct threat after a suspension for the first. That is: a suspension at once for a direct threat, decided in the last ${STANDING_RULES.ladderMemoryDays} days, that still stands with the decision it rests on; and a final R5 decision at most ${STANDING_RULES.basisAgeDays} days old about a post the account made after it was told of that suspension. A second post from before the suspension, or a first threat that was overruled, is no ground.`,
+    /** Only an admin terminates. */
+    admin: "Only an admin terminates an account.",
+  },
+  /** 8.5: the queue's first section, and the block "Reply" under the decision that holds the measure. */
+  reply: {
+    title: "Replies to answer",
+    none: "No reply waits.",
+    /** Where a reply stands, in a queue row. */
+    before: "before the start: the suspension is held",
+    after: (endsAt: string) => `after the start: it runs until ${endsAt}`,
+    afterEnded: (endsAt: string) => `after the start: it ended on ${endsAt}`,
+    suspension: (days: number) => `Suspension, ${days} ${days === 1 ? "day" : "days"}`,
+    termination: "Termination: nothing is deleted before the reply is answered",
+    /** A row that has waited longer than korbat's aim. */
+    overAim: `waiting more than ${REPLY_AIM_HOURS} hours`,
+    blockTitle: "Reply",
+    writtenBy: "Written by the account's holder",
+    /** [reply.empty] */
+    empty: "The reply has no text: the person asks for a second look.",
+    /** [reply.onTime] */
+    onTime: "Filed before the start: the suspension has not started and does not start until someone answers, however long that takes.",
+    /** [reply.late] */
+    late: "Filed after the start: the suspension goes on while you read.",
+    /** [reply.lateEnded] */
+    lateEnded: (endedAt: string) => `Filed after the start: the suspension ended on ${endedAt}. The reply is still answered.`,
+    /** [reply.basisGone] */
+    basisGone: "The decision that reversed what this suspension rested on answered this reply: the suspension does not start, or ended with that decision. Nothing is left to keep.",
+    answered: (at: string) => `Answered on ${at}.`,
+    answerLabel: "Answer this reply",
+    /** [reply.reason] */
+    reason: "Write the reason for the person: say what you weighed in their reply. They receive it by email, and can still appeal the decision.",
+    /** [reply.same] */
+    same: "You may answer a reply to your own decision: the reply is the hearing, not the appeal. An appeal goes to another staff member.",
+    /** [reply.admin] */
+    admin: "A reply to a suspension taken at once, or to a termination, is answered by an admin.",
+    keepLabel: "Keep",
+    reverseLabel: "Reverse",
+  },
+  /** 8.5: what each answer does, by when the reply came. */
+  keep: {
+    /** [keep.onTime] */
+    onTime: (earliestStart: string, days: number | null) =>
+      `It starts when you confirm, or on ${earliestStart} if that is later: never before the time the person was given. ${days === null ? "It has no end" : `It runs ${days} ${days === 1 ? "day" : "days"} from then`}, and the person's six months to appeal count again from your answer.`,
+    /** [keep.late] */
+    late: (endsAt: string) => `Nothing changes; it runs until ${endsAt}.`,
+    /** [keep.lateEnded] */
+    lateEnded: (endedAt: string) => `Nothing changes; it ended on ${endedAt}, as decided.`,
+  },
+  reverse: {
+    /** [reverse.onTime] */
+    onTime: "It never starts.",
+    /** [reverse.late] */
+    late: "It ends when you confirm.",
+    /** [reverse.lateEnded] */
+    lateEnded: (endedAt: string) => `It ended on ${endedAt}. Reversing it takes it off the record: it no longer counts toward a later suspension.`,
+  },
+  /** 8.7: "Withdraw it for another measure". */
+  replace: {
+    label: "Withdraw it for another measure",
+    /** [replace.what] */
+    what: "Use this only to make room for a measure at once: after you confirm, take that measure in the account's case. The person is told that korbat withdrew the announced suspension because it is taking another measure, and that this is no decision on their reply. A withdrawn suspension was never a step of the ladder.",
+    /** [replace.reply] */
+    reply: "The person's reply is closed by this withdrawal without an answer on its merits. Say in the reason that their reply was read, if it was, and that they can reply to the new measure.",
+  },
+  /** 8.7: [review.reply] */
+  reviewReply:
+    "This review also answers the person's reply. Keep, and Reverse in part when the suspension stays, answer it as a kept answer does: a suspension held by the reply then starts when you confirm, or at its announced time if that is later. Read the reply before you decide; its text is kept until it is answered.",
+  /** 8.7: [review.admin] */
+  reviewAdmin: "A decision that holds a termination, or a measure taken at once, is reviewed and corrected by an admin.",
+  /** 8.6: the Standing screen. */
+  lists: {
+    title: "Standing",
+    strikesTitle: `Accounts at ${STANDING_RULES.ladderStrikes} strikes`,
+    /** A row of the accounts at the ladder's strikes. */
+    strikesRow: (handle: string, activeStrikes: number, rule: string, day: string, maxDays: number | null, mayTerminate: boolean) =>
+      `@${handle}: ${activeStrikes} active strikes, the newest under ${rule} on ${day}. ${mayTerminate ? "A termination can be announced." : `A suspension of at most ${maxDays ?? 0} days can be announced.`}`,
+    /** [lists.strikes] */
+    strikes: `An account appears here while it has ${STANDING_RULES.ladderStrikes} active strikes, one of them newer than its last suspension under the ladder, and no suspension or termination that stands and has not ended. Nothing happens by itself: a moderator opens a case, reads the strikes' decisions and decides.`,
+    /** [lists.finding] */
+    finding: "Opening the case is a finding of your own, so you cannot review an appeal in it.",
+    openCase: "Open a case on this account",
+    reportingTitle: "Reporting records",
+    reportingRow: (handle: string, unfounded: number, reports: number) => `@${handle}: ${unfounded} of the ${reports} rule reports sent in the last ${STANDING_RULES.reportFrameDays} days hold a mark manifestly unfounded.`,
+    noticesTitle: "Notices not sent",
+    noticesRow: (handle: string, decidedOn: string, startsAt: string) =>
+      `@${handle}: korbat's mail service could not send the notice of ${decidedOn}: it refused the address, or the mail was given up after ${RETENTION.mailGiveUpDays} days. Only the app carries the notice, so it starts on ${startsAt}, ${STANDING_RULES.undeliveredHours} hours after the decision.`,
+    terminationsTitle: "Terminations waiting",
+    terminatedOn: (handle: string, decidedOn: string) => `@${handle}: terminated on ${decidedOn}.`,
+    finalOn: (finalOn: string) => `Final on ${finalOn}; the account is deleted in the first round after that.`,
+    appealHolds: "An appeal is pending: nothing is deleted before it is answered.",
+    replyHoldsStart: "A reply is unanswered: it has not started.",
+    replyHolds: "A reply is unanswered: nothing is deleted before it is answered.",
+    empty: "None.",
+    more: (total: number, shown: number) => `${total - shown} more not listed here.`,
+  },
+  /** 8.8: the home screen's two lines. */
+  home: {
+    replies: (n: number, age: string) =>
+      `Replies waiting: ${n}, the oldest for ${age}. A held suspension does not start until its reply is answered, and a terminated account is not deleted before its reply is.`,
+    strikes: (n: number) => `Accounts at ${STANDING_RULES.ladderStrikes} strikes: ${n}.`,
+  },
+  /** 8.5: [appeals.order] */
+  appealsOrder: "Appeals of a running suspension or of a termination come first.",
+  /** 8.5: the mark of an appeal listed first. */
+  appealsFirst: "a running suspension or a termination",
 } as const;
 
 /**

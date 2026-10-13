@@ -30,10 +30,15 @@ import {
   CASE_SEALABLE,
   CASE_STRIKE,
   CASE_AT_ONCE,
+  CASE_LADDER,
+  CASE_REPLIED,
   CASE_STRUCK,
+  CASE_WITHDRAW,
   DECISION_APPEALED,
   DECISION_ONE,
+  DECISION_REPLIED,
   DECISION_STRUCK,
+  DECISION_WITHDRAW,
   IMAGE_ONE,
   IMAGE_TWO,
   ITEM_REPORTER,
@@ -41,8 +46,12 @@ import {
   LONGEST_NOTE,
   LOOKALIKE,
   POST_ID,
+  REPLY_TEXT,
   atOnceCase,
+  ladderCase,
+  repliedCase,
   struckCase,
+  withdrawCase,
 } from "../case-fixtures";
 import { HOSTILE } from "../fixtures";
 import {
@@ -58,6 +67,7 @@ import {
   OTHER_STAFF,
   PERSON_HANDLE,
   REVEALED_HANDLE,
+  STANDING_HANDLE,
   TYPED_ADMIN_FACTS,
   TYPED_CHANGED_FACTS,
   TYPED_DECLINE,
@@ -1306,6 +1316,147 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     expect(await composer.locator(".grounds li").count()).toBe(4);
     expect(await inspect(page)).toEqual([]);
     expect(fixtures.state.decisions).toHaveLength(decided);
+    await texts();
+    await clean();
+  });
+
+  test("3e Task 4: an announced suspension on an account case, offered to a moderator with the rung's days, its options binding days and announced; and the same case greyed with [reports.first] while it holds a report that waits", async () => {
+    // A report waits in the case: the announced measures are greyed, and say why.
+    fixtures.state.cases.set(CASE_LADDER, ladderCase(true));
+    await page.goto(`${origin}/cases/${CASE_LADDER}`);
+    await shown(page.getByRole("heading", { name: "Case about an account" }));
+    let composer = page.getByRole("region", { name: "Decide" });
+    await composer.getByLabel(COMPOSER_KINDS.final).check();
+    const greyed = composer.getByLabel(STANDING_WORDS.suspend.label, { exact: true });
+    await shown(greyed);
+    expect(await greyed.isDisabled()).toBe(true);
+    await shown(composer.getByText(STANDING_WORDS.reportsFirst, { exact: true }).first());
+    expect(await inspect(page)).toEqual([]);
+
+    // The case once its reports are decided: the moderator announces 2 days of the rung's 3, under the newest strike's rule.
+    fixtures.state.cases.set(CASE_LADDER, ladderCase(false));
+    const before = await signatures();
+    await page.goto(`${origin}/cases/${CASE_LADDER}`);
+    await shown(page.getByRole("heading", { name: "Case about an account" }));
+    composer = page.getByRole("region", { name: "Decide" });
+    await composer.getByLabel(COMPOSER_KINDS.final).check();
+    const control = composer.getByLabel(STANDING_WORDS.suspend.label, { exact: true });
+    await shown(control);
+    expect(await control.isDisabled()).toBe(false);
+    await control.check();
+    await shown(composer.getByText(STANDING_WORDS.suspend.days(3, 1), { exact: true }));
+    await shown(composer.getByText(STANDING_WORDS.suspend.rule("R1"), { exact: true }));
+    const days = composer.getByLabel(STANDING_WORDS.suspend.daysLabel(3));
+    await days.fill("2");
+    await shown(composer.getByText(STANDING_WORDS.suspend.what(2), { exact: true }));
+    expect(await composer.getByLabel("Facts").inputValue()).toBe("When this was written the account had 3 active strikes. Each was given by a decision that found a breach of a korbat rule in a post, and each of those decisions was sent to the account with its reasons.");
+    await composer.getByLabel("Facts").press("Tab");
+    await composer.getByLabel("Reason", { exact: true }).fill(`Three strikes in two weeks ${HOSTILE.quote}`);
+    await composer.getByLabel("Reason", { exact: true }).press("Tab");
+    await arrived(() => fixtures.state.texts.filter((text) => text.caseId === CASE_LADDER).length === 2, "both texts saved when their fields lost focus");
+    const told = (await composer.locator(".frame.preview p.frame-text").allTextContents()).join(" ");
+    expect(told).toContain("korbat will suspend your account for 2 days. Nothing is restricted yet. It rests on the active strikes of your account:");
+    expect(told).toContain("This rests on korbat's terms, section Suspension and termination");
+    expect(told).not.toMatch(/It breaks korbat rule/);
+    expect(await inspect(page)).toEqual([]);
+    await composer.getByRole("button", { name: "Confirm with your staff key" }).click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({
+      caseId: CASE_LADDER,
+      params: { kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R1", actions: [{ kind: "suspend", mediaId: null, days: 2, announced: true }], unfounded: [], replaced: false },
+    });
+    await texts();
+    await clean();
+  });
+
+  test("3e Task 4: the queue's Replies to answer, without the reply's text; the reply read on its case as text; and answered Keep, which signs a kept correction with nothing lifted", async () => {
+    fixtures.state.cases.set(CASE_REPLIED, repliedCase());
+    await page.goto(`${origin}/queue`);
+    await shown(page.getByRole("heading", { name: STANDING_WORDS.reply.title }));
+    const row = page.locator("ul.replies li").first();
+    await shown(row);
+    expect(await row.textContent()).toContain(STANDING_WORDS.reply.before);
+    expect(await row.textContent()).toContain(STANDING_WORDS.reply.suspension(3));
+    // The queue never carries the reply's words: they are read on the case page, whose read is logged.
+    expect(await page.getByText(REPLY_TEXT, { exact: false }).count()).toBe(0);
+    await row.getByRole("link", { name: "Open the case" }).click();
+    await shown(page.getByRole("heading", { name: "Case about an account" }));
+    const block = page.getByRole("group", { name: STANDING_WORDS.reply.blockTitle });
+    await shown(block);
+    await shown(block.getByText(STANDING_WORDS.reply.onTime, { exact: true }));
+    expect(await texts()).toContain(REPLY_TEXT);
+    const before = await signatures();
+    await block.getByRole("button", { name: STANDING_WORDS.reply.answerLabel }).click();
+    const answer = page.getByRole("region", { name: STANDING_WORDS.reply.answerLabel });
+    await shown(answer);
+    expect(await answer.getByLabel(STANDING_WORDS.reply.keepLabel, { exact: true }).isChecked()).toBe(true);
+    await shown(answer.getByText(STANDING_WORDS.reply.same, { exact: true }));
+    await answer.getByLabel("Reason of the answer").fill(`Your reply did not change the strikes ${HOSTILE.img}`);
+    await answer.getByLabel("Reason of the answer").press("Tab");
+    const told = (await answer.locator(".frame.preview p.frame-text").allTextContents()).join(" ");
+    expect(told).toContain("and keeps that decision. The suspension of 3 days starts at");
+    expect(await inspect(page)).toEqual([]);
+    await answer.getByRole("button", { name: "Confirm with your staff key" }).click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({
+      caseId: CASE_REPLIED,
+      params: { kind: "correction", outcome: "kept", reviewsDecisionId: DECISION_REPLIED, actions: [], unfounded: [], replaced: false },
+    });
+    // The case as the answer leaves it: the reply answered, and nothing to answer any more.
+    await shown(page.getByRole("group", { name: STANDING_WORDS.reply.blockTitle }).getByText("Answered on", { exact: false }));
+    expect(await page.getByRole("button", { name: STANDING_WORDS.reply.answerLabel }).count()).toBe(0);
+    await texts();
+    await clean();
+  });
+
+  test("3e Task 4: Withdraw it for another measure on an announced suspension that has not started, for an admin while the account's case shows [conflict]: a correction with the lift signed replaced", async () => {
+    fixtures.state.cases.set(CASE_WITHDRAW, withdrawCase());
+    fixtures.state.role = "admin";
+    try {
+      const before = await signatures();
+      await page.goto(`${origin}/cases/${CASE_WITHDRAW}`);
+      await shown(page.getByRole("heading", { name: "Case about an account" }));
+      const composer = page.getByRole("region", { name: "Decide" });
+      await composer.getByLabel(COMPOSER_KINDS.final).check();
+      await shown(composer.getByText(STANDING_WORDS.conflict, { exact: true }).first());
+      await page.getByRole("button", { name: STANDING_WORDS.replace.label }).click();
+      const withdraw = page.getByRole("region", { name: STANDING_WORDS.replace.label });
+      await shown(withdraw);
+      await shown(withdraw.getByText(STANDING_WORDS.replace.what, { exact: true }));
+      await withdraw.getByLabel("Reason of the withdrawal").fill("A threat since needs a suspension at once.");
+      await withdraw.getByLabel("Reason of the withdrawal").press("Tab");
+      const told = (await withdraw.locator(".frame.preview p.frame-text").allTextContents()).join(" ");
+      expect(told).toContain("because it is taking another measure on your account.");
+      expect(told).not.toContain("korbat corrected its decision");
+      expect(await inspect(page)).toEqual([]);
+      await withdraw.getByRole("button", { name: "Confirm with your staff key" }).click();
+      await shown(page.getByText(COMPOSER.recorded));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.decisions.at(-1)).toMatchObject({
+        caseId: CASE_WITHDRAW,
+        params: { kind: "correction", outcome: "reversed", reviewsDecisionId: DECISION_WITHDRAW, actions: [{ kind: "lift_suspension", mediaId: null }], unfounded: [], replaced: true },
+      });
+      await texts();
+      await clean();
+    } finally {
+      fixtures.state.role = "moderator";
+    }
+  });
+
+  test("3e Task 4: the Standing screen's four lists, a hostile handle shown as text, and Open a case on this account, which opens the moderator's own finding on the account under the newest strike's rule", async () => {
+    await page.getByRole("link", { name: "Standing" }).click();
+    await shown(page.getByRole("heading", { name: STANDING_WORDS.lists.title }));
+    for (const title of [STANDING_WORDS.lists.strikesTitle, STANDING_WORDS.lists.reportingTitle, STANDING_WORDS.lists.noticesTitle, STANDING_WORDS.lists.terminationsTitle]) await shown(page.getByRole("heading", { name: title }));
+    await shown(page.getByText(STANDING_WORDS.lists.strikes, { exact: true }));
+    await shown(page.getByText(STANDING_WORDS.lists.appealHolds, { exact: false }));
+    expect(await texts()).toContain(STANDING_WORDS.lists.noticesRow(HOSTILE.script, "2026-10-01", "2026-10-15T09:00:00.000Z"));
+    const findings = fixtures.state.findings.length;
+    await page.getByRole("button", { name: STANDING_WORDS.lists.openCase }).first().click();
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    expect(fixtures.state.findings).toHaveLength(findings + 1);
+    expect(fixtures.state.findings.at(-1)).toEqual({ target: { kind: "account", handle: STANDING_HANDLE }, ground: "rule", ruleId: "R1", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC" });
     await texts();
     await clean();
   });

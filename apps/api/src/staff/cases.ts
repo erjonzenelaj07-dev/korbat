@@ -44,6 +44,9 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
   // Open cases by lane and age. The console refreshes it without the activity mark.
   routes.get("/queue", auth.requireStaff, validate("query", QueueQuery), async (c) => c.json(await moderation.queue(c.req.valid("query").cursor)));
 
+  // 3e: the Standing screen's four lists, read only: no list is a queue key, and people are handles.
+  routes.get("/standing", auth.requireStaff, async (c) => c.json(await moderation.standing()));
+
   // A moderator's own finding opens a case, or joins the target's open one: a named exception to the step-up.
   routes.post("/findings", auth.requireStaff, validate("json", FindingRequest), async (c) => c.json(await moderation.openFinding(staffSession(c), c.req.valid("json")), 201));
 

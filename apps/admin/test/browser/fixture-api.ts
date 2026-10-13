@@ -31,6 +31,8 @@ import {
   type CaseDecision,
   type CaseView,
   type QueuePage,
+  type QueueReply,
+  type StandingLists,
   type StaffTextDraft,
   type StaffKey,
   type StaffMe,
@@ -108,6 +110,9 @@ export const OTHER_BROWSERS = [HOSTILE.img, HOSTILE.bidi] as const;
 export const EXISTING_KEY_NAMES = [HOSTILE.long, HOSTILE.quote] as const;
 /** The handles the audit log's rows name, in turn; null is the system actor. */
 export const ACTOR_HANDLES = [HOSTILE.script, HOSTILE.img, HOSTILE.url, HOSTILE.quote, HOSTILE.bidi, LONGEST_HANDLE, null] as const;
+
+/** 3e Task 4: the handle of the Standing screen's account at the ladder's strikes, on which the walk opens a case. */
+export const STANDING_HANDLE = "lad_der";
 
 /** The handle the fixtures reveal for a reporter (hostile, and found nowhere else on a page), and the note the walk types on a case. */
 export const REVEALED_HANDLE = '"><a href="javascript:alert(5)">a_reporter</a>';
@@ -377,8 +382,19 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
       if (lifted) {
         lifted.inForce = false;
         lifted.liftedBy = id;
+        // 3e Task 4: a lift answers the measure's reply, and one before the start leaves a measure that never ran.
+        if (lifted.reply && lifted.reply.answeredAt === null) lifted.reply = { ...lifted.reply, answeredAt: at, answeredBy: id };
+        if (lifted.period && lifted.period.startsAt === null) lifted.period = { ...lifted.period, state: "never" };
+        if (view.standing) view.standing = { ...view.standing, live: false };
       }
       return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null, ...NO_STANDING };
+    }
+    // 3e Task 4: a suspension or a termination carries its days and whether it was announced; an announced one has no
+    // start until its mail's outcome is known, and the account's measure is live from the decision on.
+    if (action.kind === "suspend" || action.kind === "terminate") {
+      if (view.standing) view.standing = { ...view.standing, live: true };
+      const period = action.announced ? { startsAt: null, endsAt: null, state: "unfixed" as const } : { startsAt: at, endsAt: action.days ? new Date(Date.parse(at) + action.days * 86_400_000).toISOString() : null, state: "running" as const };
+      return { id: randomUUID(), kind: action.kind, mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: null, ...NO_STANDING, days: action.days ?? null, announced: action.announced ?? null, period };
     }
     const reach = view.suspicion?.reach ?? { posts: 0, images: 0 };
     const sealed = action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedPosts: 0, list: [] } : null;
@@ -386,6 +402,18 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
     const strike = action.kind === "strike" ? { countsUntil: new Date(Date.parse(at) + STANDING_RULES.strikeDays * 86_400_000).toISOString(), restedOnBy: [] } : {};
     return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed, ...NO_STANDING, ...strike };
   });
+  // 3e Task 4: a kept correction answers the corrected decision's reply; one filed before the start then fixes the start
+  // at the later of now and the earliest start.
+  if (params.kind === "correction" && params.outcome === "kept" && corrected) {
+    for (const held of corrected.actions) {
+      if (!held.reply || held.reply.answeredAt !== null) continue;
+      held.reply = { ...held.reply, answeredAt: at, answeredBy: id };
+      if (held.reply.onTime && held.period) {
+        const start = new Date(Math.max(Date.parse(held.earliestStart ?? at), Date.parse(at))).toISOString();
+        held.period = { startsAt: start, endsAt: held.days ? new Date(Date.parse(start) + held.days * 86_400_000).toISOString() : null, state: "announced" };
+      }
+    }
+  }
   const suspect = view.items.some((item) => item.outcome === null && item.suspect);
   view.decisions = [
     ...view.decisions,
@@ -686,6 +714,34 @@ export function createFixtureApi() {
    * The appeals of the fixtures' cases that no review has answered, newest first, as the list's route answers them: each
    * with its case, its decision and the marks the case's own answer carries, and never the appellant's statement.
    */
+  /** 3e Task 4: the replies that wait in the fixtures' cases, oldest first, as the queue's first page lists them: never their text. */
+  function queueReplies(): QueueReply[] {
+    const rows: QueueReply[] = [];
+    for (const view of state.cases.values()) {
+      for (const decided of view.decisions) {
+        for (const action of decided.actions) {
+          if ((action.kind !== "suspend" && action.kind !== "terminate") || !action.reply || action.reply.answeredAt !== null) continue;
+          rows.push({ caseId: view.id, decisionId: decided.id, kind: action.kind, days: action.days, filedAt: action.reply.filedAt, onTime: action.reply.onTime, endsAt: action.period?.endsAt ?? null });
+        }
+      }
+    }
+    return rows.sort((a, b) => (a.filedAt < b.filedAt ? -1 : 1));
+  }
+
+  /**
+   * 3e Task 4: the Standing screen's four lists, each with a row the walk reads: an account at the ladder's strikes whose
+   * handle the walk opens a case on, a reporting record, a notice korbat could not send (a hostile handle, shown as text)
+   * and a termination that waits for its appeal.
+   */
+  function standingLists(): StandingLists {
+    return {
+      atThreeStrikes: { total: 1, items: [{ handle: STANDING_HANDLE, caseId: null, activeStrikes: 3, ruleId: "R1", newestOn: "2026-10-04", maxDays: 3, mayTerminate: false }] },
+      reportingRecords: { total: 1, items: [{ handle: "rep_orter", caseId: null, reports: 8, unfounded: 5, warnedOn: null, marksSince: null }] },
+      noticesUndelivered: { total: 1, items: [{ handle: HOSTILE.script, caseId: CASE_POST, decidedOn: "2026-10-01", startsAt: "2026-10-15T09:00:00.000Z" }] },
+      terminationsWaiting: { total: 1, items: [{ handle: "term_inated", caseId: CASE_POST, decidedOn: "2026-09-01", finalOn: null, heldBy: "appeal", replyOnTime: null }] },
+    };
+  }
+
   function pendingAppeals(): AppealRow[] {
     const rows: AppealRow[] = [];
     for (const view of state.cases.values()) {
@@ -705,6 +761,7 @@ export function createFixtureApi() {
           reviewer: appeal.reviewer,
           needsAdmin: appeal.needsAdmin,
           mayReview: appeal.mayReview,
+          standingFirst: false,
         });
       }
     }
@@ -812,6 +869,7 @@ export function createFixtureApi() {
       "GET /api/staff/queue",
       "GET /api/staff/appeals",
       "POST /api/staff/findings",
+      "GET /api/staff/standing",
     ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
     const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts|decisions))?$/.exec(url.pathname);
@@ -849,11 +907,12 @@ export function createFixtureApi() {
         }),
       };
     }
+    if (key === "GET /api/staff/standing") return { status: 200, body: standingLists() };
     if (key === "GET /api/staff/queue") {
       // Two pages: the two urgent cases, then the rest behind a cursor.
       const cursor = url.searchParams.get("cursor");
       if (cursor !== null && cursor !== "second-page") throw new Refusal(400, "invalid_request");
-      const page: QueuePage = cursor === null ? { cases: QUEUE_ROWS.slice(0, 2), nextCursor: "second-page" } : { cases: QUEUE_ROWS.slice(2), nextCursor: null };
+      const page: QueuePage = cursor === null ? { cases: QUEUE_ROWS.slice(0, 2), nextCursor: "second-page", replies: queueReplies() } : { cases: QUEUE_ROWS.slice(2), nextCursor: null, replies: [] };
       return { status: 200, body: page };
     }
     if (key === "GET /api/staff/appeals") {
@@ -873,6 +932,7 @@ export function createFixtureApi() {
         reviewer: "none_single_staff",
         needsAdmin: true,
         mayReview: false,
+        standingFirst: false,
       };
       return { status: 200, body: { appeals: [unreviewable, ...pendingAppeals()], nextCursor: null } satisfies AppealsPage };
     }

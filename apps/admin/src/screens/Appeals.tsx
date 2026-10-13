@@ -1,7 +1,7 @@
 import { MEASURES, type AppealRow } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, describeError } from "../messages";
+import { APPEAL_WORDS, describeError, STANDING_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { dateTime, Loaded, type Loadable } from "../ui";
@@ -38,6 +38,8 @@ export function AppealsView({ rows, more, loadingMore, onLoadMore, onOpenCase }:
     <section aria-labelledby="appeals-title">
       <h2 id="appeals-title">Appeals</h2>
       <p className="hint">{`${APPEAL_WORDS.reviewerRule} ${APPEAL_WORDS.statementOnCase}`}</p>
+      {/* 3e Task 4 (8.5): [appeals.order] */}
+      <p className="hint">{STANDING_WORDS.appealsOrder}</p>
       <Loaded
         value={rows}
         render={(list) =>
@@ -72,7 +74,7 @@ export function AppealsView({ rows, more, loadingMore, onLoadMore, onOpenCase }:
                         <td>
                           <time dateTime={row.deadline}>{dateTime(row.deadline)}</time>
                         </td>
-                        <td>{marksOf(row).join(" ")}</td>
+                        <td>{[...(row.standingFirst ? [`${STANDING_WORDS.appealsFirst}.`] : []), ...marksOf(row)].join(" ")}</td>
                         <td>
                           {id ? (
                             <CaseLink id={id} onOpen={onOpenCase}>

@@ -1,4 +1,4 @@
-import { AppealRequest, AuthorCasesQuery, NoticeContactRequest, NoticeReexamineRequest, NoticeRequest, NoticeStatusRequest, ReexamineRequest, ReportsQuery } from "@korbat/contracts";
+import { AppealRequest, AuthorCasesQuery, NoticeContactRequest, NoticeReexamineRequest, NoticeRequest, NoticeStatusRequest, ReexamineRequest, ReplyRequest, ReportsQuery } from "@korbat/contracts";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -9,6 +9,7 @@ import { authorCases, authorDecisionView } from "./author";
 import type { ModerationDeps } from "./context";
 import { noticeContact, noticeStatus, reexamineNotice, reexamineOwnItem, submitNotice, type NoticeSender } from "./intake";
 import { reporterList, resumeReportMail } from "./reports";
+import { fileReply } from "./standing";
 
 /** A decision's id in the lower case PostgreSQL returns. */
 const DecisionParam = z.object({ id: z.uuid().transform((id) => id.toLowerCase()) });
@@ -32,7 +33,7 @@ export const noSession: MiddlewareHandler<AppEnv> = async (c) => c.json(errorBod
  * browser, it carries the token as every cookie request does. The status page's tokens travel in the body of a POST, so
  * no address, and no server log, ever holds one.
  *
- * The six routes under `/api/moderation` are the signed-in account's own (sections 7.6 and 7.7). `guard` is the auth
+ * The seven routes under `/api/moderation` are the signed-in account's own (sections 7.6 and 7.7, and 3e's 7.6 step 9). `guard` is the auth
  * module's requireSession: an onboarded account, with CSRF and Origin already checked for cookie sessions. Each answers
  * only for the session's account: the decisions about it and its appeal of one, and the reports it sent and its request
  * to have one of their items examined again.
@@ -63,6 +64,12 @@ export function moderationRoutes(deps: ModerationDeps, guard: MiddlewareHandler<
   // The author's appeal of one of them: the database decides whether it is open. It answers the decision as it now reads.
   r.post("/moderation/decisions/:id/appeal", guard, validate("param", DecisionParam), validate("json", AppealRequest), async (c) =>
     c.json(await fileAppeal(deps, me(c), c.req.valid("param").id, c.req.valid("json")), 201),
+  );
+  // 3e: the person's one reply to the suspension or termination a decision about them holds: the hearing, never
+  // suspended. The database decides whether it is open and whether it came before the start; not_found for anyone but
+  // the measure's subject.
+  r.post("/moderation/decisions/:id/reply", guard, validate("param", DecisionParam), validate("json", ReplyRequest), async (c) =>
+    c.json(await fileReply(deps, me(c), c.req.valid("param").id, c.req.valid("json")), 201),
   );
   // The reports and notices the account sent, each item as its status page would give it.
   r.get("/moderation/reports", guard, validate("query", ReportsQuery), async (c) => c.json(await reporterList(deps, me(c), c.req.valid("query").cursor)));

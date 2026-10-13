@@ -6,8 +6,10 @@ import {
   RETIRED_HANDLE_PREFIX,
   RULE_DEFAULT_CATEGORY,
   SEAL_DRAFTS,
+  STANDING_DAYS,
   STANDING_DRAFTS,
   STANDING_RULES,
+  appealDeadline,
   compareDecisionActions,
   isRetiredPlaceholder,
   sealFactsDraft,
@@ -81,6 +83,10 @@ export interface CaseDraft {
   actions: DecisionActionParams[];
   written: Record<DraftTextKind, string>;
   texts: Partial<Record<DraftTextKind, SavedText>>;
+  /** 3e: a correction that answers the person's reply: Keep (the outcome `kept`, nothing lifted) or Reverse (the lift). */
+  answer?: "kept" | "reversed";
+  /** 3e: a correction that withdraws an announced measure for another, signed `replaced`. */
+  replaced?: boolean;
 }
 
 /** The composer's own sentences, each written once. The seal's drafts are the contracts', and the statement's words the rulebook package's. */
@@ -419,8 +425,8 @@ export function atOnceState(
   return { open: true, ground };
 }
 
-/** The suspension a draft holds, if any. */
-export const suspensionOf = (draft: CaseDraft): DecisionActionParams | undefined => draft.actions.find((action) => action.kind === "suspend");
+/** The suspension taken at once a draft holds, if any (an announced one is Task 4's control). */
+export const suspensionOf = (draft: CaseDraft): DecisionActionParams | undefined => draft.actions.find((action) => action.kind === "suspend" && action.announced === false);
 
 /** A placeholder of a draft filled in, each by a function, so that no character of a value is read as a pattern. */
 const filled = (text: string, values: Record<string, string>): string => Object.entries(values).reduce((out, [key, value]) => out.split(`{${key}}`).join(value), text);
@@ -432,7 +438,8 @@ const filled = (text: string, values: Record<string, string>): string => Object.
  */
 export function withAtOnce(view: CaseView, draft: CaseDraft, ground: AtOnceKey, days: number): CaseDraft {
   const standing = view.standing;
-  const actions = [...draft.actions.filter((action) => action.kind !== "suspend"), { kind: "suspend" as const, mediaId: null, days, announced: false }];
+  // At most one suspension or termination in a decision: choosing this one puts any other away.
+  const actions = [...draft.actions.filter((action) => action.kind !== "suspend" && action.kind !== "terminate"), { kind: "suspend" as const, mediaId: null, days, announced: false }];
   const facts =
     ground === "flood"
       ? filled(STANDING_DRAFTS.facts.flood, { posts: String(standing?.flood.posts ?? 0), from: standing?.flood.from ?? "", to: standing?.flood.to ?? "" })
@@ -472,6 +479,208 @@ function periodNow(action: CaseDecisionAction): { state: "not_started" | "runnin
   return { state: "ended", startedAt: period.startsAt, endedAt: period.endsAt };
 }
 
+// ---------------------------------------------------------------- 3e Task 4: announced measures, termination, replies
+
+/** The three controls of a standing measure that Task 4 builds (8.3): announce a suspension, announce a termination, terminate at once. */
+export type StandingControl = "announce" | "announceTerminate" | "terminateAtOnce";
+
+/** Why such a control is greyed, by its key in STANDING_WORDS: a measure is live, a report waits, too few strikes, no new strike, not the ladder's end, no admin, no second threat, R2. */
+export type StandingClosed = "conflict" | "reportsFirst" | "short" | "stale" | "notYet" | "admin" | "noRepeat" | "r2";
+
+/**
+ * Whether a control is open for this draft on this case, or why not; null where it is not shown: on a post case, while
+ * deciding, for an outcome that restricts nothing, and on the law (a measure of the ladder cites the newest strike's rule,
+ * and a termination at once R5). The case answer's standing says what the database would accept now; it decides at the
+ * commit. The two announced measures answer findings only, so a report that waits in the case greys them.
+ */
+export function standingControlState(view: CaseView, role: StaffRole, draft: Pick<CaseDraft, "kind" | "outcome" | "ground" | "ruleId">, control: StandingControl): { open: true } | { open: false; why: StandingClosed } | null {
+  const standing = view.standing;
+  if (view.target.type !== "account" || standing === null || draft.kind !== "final" || draft.outcome !== "restricted" || draft.ground !== "incompatible") return null;
+  if (standing.live) return { open: false, why: "conflict" };
+  if (control === "announce") {
+    if (standing.openReports) return { open: false, why: "reportsFirst" };
+    if (standing.activeStrikes < STANDING_RULES.ladderStrikes) return { open: false, why: "short" };
+    if (standing.maxDays === null) return { open: false, why: "stale" };
+    return { open: true };
+  }
+  if (role !== "admin") return { open: false, why: "admin" };
+  if (control === "announceTerminate") {
+    if (standing.openReports) return { open: false, why: "reportsFirst" };
+    return standing.mayTerminate ? { open: true } : { open: false, why: "notYet" };
+  }
+  if (draft.ruleId === "R2") return { open: false, why: "r2" };
+  return draft.ruleId === "R5" && standing.atOnce.includes("threat_repeat") ? { open: true } : { open: false, why: "noRepeat" };
+}
+
+/** The standing measure a draft holds, if any: a suspension or a termination, announced or at once. */
+export const standingMeasureOf = (draft: CaseDraft): DecisionActionParams | undefined => draft.actions.find((action) => action.kind === "suspend" || action.kind === "terminate");
+
+/** Whether an action is the measure a control adds. */
+export const ofControl = (action: DecisionActionParams, control: StandingControl): boolean =>
+  control === "announce" ? action.kind === "suspend" && action.announced === true : control === "announceTerminate" ? action.kind === "terminate" && action.announced === true : action.kind === "terminate" && action.announced === false;
+
+/**
+ * The draft once a control is chosen: its measure beside the draft's other measures, and never beside another suspension
+ * or termination (at most one of the four can be chosen); for a measure of the ladder the newest strike's rule, which the
+ * composer sets ([suspend.rule]); and, when the facts are still empty, W.5's draft, filled from the case answer as this
+ * page read it. The moderator may edit them and writes the reason.
+ */
+export function withStanding(view: CaseView, draft: CaseDraft, control: StandingControl, days: number | null): CaseDraft {
+  const standing = view.standing;
+  const measure: DecisionActionParams =
+    control === "announce" ? { kind: "suspend", mediaId: null, days: days ?? 1, announced: true } : { kind: "terminate", mediaId: null, days: null, announced: control === "announceTerminate" };
+  const actions = [...draft.actions.filter((action) => action.kind !== "suspend" && action.kind !== "terminate"), measure];
+  const ladder = control !== "terminateAtOnce" && standing?.ladderRule ? standing.ladderRule : draft.ruleId;
+  const facts =
+    control === "announce"
+      ? filled(STANDING_DRAFTS.facts.strikes, { activeStrikes: String(standing?.activeStrikes ?? 0) })
+      : control === "announceTerminate"
+        ? filled(STANDING_DRAFTS.facts.ladder_end, {
+            n: String(standing?.suspensionsInYear ?? 0),
+            ladderMemoryDays: String(STANDING_RULES.ladderMemoryDays),
+            day: standing?.lastSuspendedOn ?? "",
+            activeStrikes: String(standing?.activeStrikes ?? 0),
+          })
+        : STANDING_DRAFTS.facts.threat_repeat;
+  const written = { ...draft.written };
+  if (normalised(written.facts) === "") written.facts = facts;
+  return { ...draft, ruleId: ladder, category: ladder === draft.ruleId ? draft.category : RULE_DEFAULT_CATEGORY[ladder], actions, written };
+}
+
+/** Whether a standing measure a draft holds is still what its control offers now, with days within the rung. */
+function standingOffered(view: CaseView, role: StaffRole, draft: Pick<CaseDraft, "kind" | "outcome" | "ground" | "ruleId">, action: DecisionActionParams): boolean | null {
+  for (const control of ["announce", "announceTerminate", "terminateAtOnce"] as const) {
+    if (!ofControl(action, control)) continue;
+    if (standingControlState(view, role, draft, control)?.open !== true) return false;
+    // A measure of the ladder cites the newest strike's rule; a suspension's days are at most the rung.
+    if (control !== "terminateAtOnce" && draft.ruleId !== view.standing?.ladderRule) return false;
+    if (control === "announce") return typeof action.days === "number" && action.days >= STANDING_DAYS.min && action.days <= (view.standing?.maxDays ?? 0);
+    return true;
+  }
+  return null;
+}
+
+/** An announced suspension or termination, or a termination at once, as the preview renders it: what the database will fix, as far as the page can tell now. */
+function previewStanding(view: CaseView, action: DecisionActionParams, noEffect: "already" | "deleted" | null, now: Date) {
+  const standing = view.standing;
+  if (action.announced === true) {
+    return {
+      kind: action.kind as MeasureKind,
+      mediaId: null,
+      noEffect,
+      sealed: null,
+      announced: true,
+      days: action.kind === "suspend" ? (action.days ?? 1) : null,
+      basis: action.kind === "suspend" ? ("strikes" as const) : ("ladder_end" as const),
+      earliestStart: new Date(now.getTime() + STANDING_RULES.replyWindowHours * 60 * 60 * 1000).toISOString(),
+      endsAt: null,
+      // The account's active strikes as the page read them: the database lists the same, with the posts they were given for.
+      restsOn: (standing?.strikes ?? []).map((strike) => ({ decidedAt: strike.decidedAt, ruleId: strike.ruleId as RuleId | null, postCreatedAt: null })),
+    };
+  }
+  const repeat = standing?.basisDecidedAt.threatRepeat ?? null;
+  return {
+    kind: "terminate" as MeasureKind,
+    mediaId: null,
+    noEffect,
+    sealed: null,
+    announced: false,
+    days: null,
+    basis: "threat_repeat" as const,
+    earliestStart: now.toISOString(),
+    endsAt: null,
+    restsOn: [
+      { decidedAt: repeat?.earlier ?? now.toISOString(), ruleId: "R5" as RuleId, postCreatedAt: null },
+      { decidedAt: repeat?.newer ?? now.toISOString(), ruleId: "R5" as RuleId, postCreatedAt: null },
+    ],
+  };
+}
+
+/** The measure of a decision that a reply was filed against, with the reply, when that decision holds one. */
+export function replyOf(decision: CaseDecision): { measure: CaseDecisionAction; reply: NonNullable<CaseDecisionAction["reply"]> } | null {
+  const measure = decision.actions.find((action) => (action.kind === "suspend" || action.kind === "terminate") && action.reply !== null);
+  return measure && measure.reply ? { measure, reply: measure.reply } : null;
+}
+
+/**
+ * Where a reply stands, for the case page's block (8.5): answered; or waiting, filed before the start (the start is held),
+ * after it while the measure runs, or after it with the measure's days run out since; or left without an answer to give,
+ * since the decision that broke its measure's basis answered it ([reply.basisGone]).
+ */
+export type ReplyState = "answered" | "basisGone" | "onTime" | "late" | "lateEnded";
+export function replyState(measure: CaseDecisionAction, reply: NonNullable<CaseDecisionAction["reply"]>): ReplyState {
+  if (measure.period?.state === "basis_ended") return "basisGone";
+  if (reply.answeredAt !== null) return "answered";
+  if (reply.onTime) return "onTime";
+  return measure.period?.state === "ended" ? "lateEnded" : "late";
+}
+
+/**
+ * Whether this person may answer the decision's reply ("Answer this reply"): one waits, its measure's basis holds, and a
+ * decision that needed an admin is corrected by an admin ([reply.admin]). The same moderator may answer ([reply.same]).
+ */
+export function answerable(decision: CaseDecision, role: StaffRole): boolean {
+  const found = replyOf(decision);
+  if (found === null) return false;
+  const state = replyState(found.measure, found.reply);
+  if (state !== "onTime" && state !== "late" && state !== "lateEnded") return false;
+  return !decision.needsAdmin || role === "admin";
+}
+
+/** The draft of an answer to a reply: a correction of the decision that holds the measure, Keep chosen, nothing lifted, no reason written. */
+export function answerDraft(caseId: CaseId, view: CaseView, decision: CaseDecision, role: StaffRole): CaseDraft {
+  return { ...newDraft(caseId, view, role), kind: "correction", reviewsDecisionId: decision.id, category: decision.category, answer: "kept", actions: [] };
+}
+
+/** The draft once the answer is chosen: Keep lifts nothing; Reverse lifts the measure the reply was filed against. */
+export function withAnswer(draft: CaseDraft, decision: CaseDecision, answer: "kept" | "reversed"): CaseDraft {
+  const found = replyOf(decision);
+  return { ...draft, answer, actions: answer === "kept" || found === null ? [] : [reversalOf(found.measure)] };
+}
+
+/**
+ * Whether this person may withdraw the decision's announced measure for another one ("Withdraw it for another measure",
+ * 8.7): an admin, while the account's case shows [conflict] (a standing measure is live), for an announced suspension or
+ * termination that has not started. It is never offered to lift a measure for any other reason.
+ */
+export function withdrawable(view: CaseView, decision: CaseDecision, role: StaffRole): CaseDecisionAction | null {
+  if (role !== "admin" || view.standing?.live !== true) return null;
+  const measure = decision.actions.find((action) => (action.kind === "suspend" || action.kind === "terminate") && action.announced === true && action.inForce);
+  const state = measure?.period?.state;
+  return measure && (state === "unfixed" || state === "announced" || state === "held") ? measure : null;
+}
+
+/** The draft of a withdrawal: a correction that lifts the announced measure, signed `replaced`, and no other action. */
+export function withdrawDraft(caseId: CaseId, view: CaseView, decision: CaseDecision, role: StaffRole): CaseDraft {
+  return { ...newDraft(caseId, view, role), kind: "correction", reviewsDecisionId: decision.id, category: decision.category, replaced: true, actions: [{ kind: "lift_suspension", mediaId: null }] };
+}
+
+/**
+ * What an answer to a reply would fix, for the preview's statement (repliedTo, 10.2), as the page can tell now: after a
+ * kept answer to a reply before the start, the start at the later of now and the earliest start, and the six months
+ * counted again from now; otherwise the period as it stands, and the six months from the decision.
+ */
+function repliedToPreview(decision: CaseDecision, draft: CaseDraft, now: Date): StatementInput["repliedTo"] {
+  const found = replyOf(decision);
+  if (found === null || draft.answer === undefined || draft.replaced === true) return undefined;
+  const { measure, reply } = found;
+  const terminate = measure.kind === "terminate";
+  const then = periodNow(measure);
+  const keptOnTime = draft.answer === "kept" && reply.onTime;
+  const start = keptOnTime ? new Date(Math.max(Date.parse(measure.earliestStart ?? now.toISOString()), now.getTime())).toISOString() : (measure.period?.startsAt ?? null);
+  const end = terminate || start === null ? null : keptOnTime || draft.answer === "kept" ? new Date(Date.parse(start) + (measure.days ?? 0) * DAY_MS).toISOString() : now.toISOString();
+  return {
+    filedAt: reply.filedAt,
+    onTime: reply.onTime,
+    kind: terminate ? "terminate" : "suspend",
+    days: terminate ? null : measure.days,
+    periodThen: keptOnTime ? { state: start !== null && Date.parse(start) <= now.getTime() ? "running" : "not_started", startedAt: start !== null && Date.parse(start) <= now.getTime() ? start : null, endedAt: null } : then,
+    startsAt: draft.answer === "reversed" && reply.onTime ? null : start,
+    endsAt: draft.answer === "reversed" && reply.onTime ? null : end,
+    appealUntil: appealDeadline(keptOnTime ? now : new Date(decision.decidedAt)).toISOString(),
+  };
+}
+
 // ---------------------------------------------------------------- drafts
 
 const sameAction = (a: DecisionActionParams, b: DecisionActionParams): boolean => a.kind === b.kind && a.mediaId === b.mediaId;
@@ -508,6 +717,9 @@ function actionOffered(view: CaseView, role: StaffRole, kind: "interim" | "final
   if (action.kind === "seal_media") return sealOffered(view, kind, role);
   // A retirement while the profile holds a placeholder is greyed, so a draft that held it loses it.
   if (action.kind === "retire_handle" && !retireOpen(view)) return false;
+  // 3e Task 4: an announced suspension or termination, or a termination at once, stays while its control is open.
+  const standing = action.kind === "suspend" || action.kind === "terminate" ? standingOffered(view, role, { ...draftLike, kind, outcome: restricts ? "restricted" : "no_violation" }, action) : null;
+  if (standing !== null) return standing;
   // 3e: a suspension at once stays while its control is open for this person, rule and case, with days within its ground's.
   if (action.kind === "suspend") {
     const state = atOnceState(view, role, { ...draftLike, kind, outcome: restricts ? "restricted" : "no_violation" });
@@ -792,7 +1004,7 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
     return {
       ...base,
       kind: draft.kind,
-      outcome: draft.kind === "review" ? reviewOutcomeOf(view, draft) : reversesAll(view, draft) ? "reversed" : "partly_reversed",
+      outcome: draft.kind === "review" ? reviewOutcomeOf(view, draft) : draft.answer === "kept" ? "kept" : reversesAll(view, draft) ? "reversed" : "partly_reversed",
       ground: null,
       ruleId: null,
       rulesVersion: corrected.rulesVersion,
@@ -809,12 +1021,21 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
         // 3e Task 3: what a lift of a suspension lifts, and where its period stands now, which is the lift's time.
         const lift =
           reversal.kind === "lift_suspension" && lifted
-            ? { liftedKind: lifted.kind === "terminate" ? ("terminate" as const) : ("suspend" as const), liftedDecidedAt: corrected.decidedAt, periodThen: periodNow(lifted), replaced: false }
+            ? {
+                liftedKind: lifted.kind === "terminate" ? ("terminate" as const) : ("suspend" as const),
+                liftedDecidedAt: corrected.decidedAt,
+                periodThen: periodNow(lifted),
+                // Task 4: a withdrawal for another measure, and whether the person had replied to what it withdraws.
+                replaced: draft.replaced === true,
+                replyFiledAt: lifted.reply?.filedAt ?? null,
+              }
             : {};
         return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET), ...handle, ...lift };
       }),
       endedMeasures: [],
       reviewed: { kind: corrected.kind, ground: corrected.ground, ruleId: corrected.ruleId, rulesVersion: corrected.rulesVersion, legalReference: corrected.legalReference, decidedAt: corrected.decidedAt },
+      // Task 4: what an answer to the reply fixes, as far as the page can tell now.
+      ...(draft.kind === "correction" ? { repliedTo: repliedToPreview(corrected, draft, now) } : {}),
     };
   }
   const restricts = draft.outcome === "restricted";
@@ -838,6 +1059,8 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
       .filter((action) => MEASURES[action.kind].lifts === null)
       .map((action) => {
         const noEffect = noEffectOf(view, action, draft.kind === "final" ? "final" : "interim");
+        // 3e Task 4: an announced suspension or termination, or a termination at once.
+        if ((action.kind === "suspend" && action.announced === true) || action.kind === "terminate") return previewStanding(view, action, noEffect, now);
         // 3e Task 3: a suspension at once, with its basis, its end and the decision it rests on, as the database will fix them.
         if (action.kind === "suspend") return previewSuspension(view, draft, action, noEffect, now);
         const measure = { kind: action.kind as MeasureKind, mediaId: action.mediaId, noEffect, sealed: action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedImages: 0 } : null };
@@ -903,17 +1126,17 @@ export function decisionParamsOf(view: CaseView, draft: CaseDraft, digests: Deci
   const corrected = draft.kind === "correction" ? view.decisions.find((decided) => decided.id === draft.reviewsDecisionId) : undefined;
   if (draft.kind === "correction" && !corrected) throw new Error("a correction's draft names a decision of the case");
   // 3e: the strike the case answer says is due, and the overruling of a full correction, are the console's to add: the
-  // person never chooses either. Marks and the withdrawal for another measure come with the tasks that build them.
-  const added = draft.kind === "correction" ? overruleOf(corrected, reversesAll(view, draft)) : strikeOf(view, draft);
+  // person never chooses either. A kept answer to a reply lifts nothing and overrules nothing. Marks come with Task 5.
+  const added = draft.kind === "correction" ? (draft.answer === "kept" ? [] : overruleOf(corrected, reversesAll(view, draft))) : strikeOf(view, draft);
   const actions = [...draft.actions, ...added].sort(compareDecisionActions);
-  const shared = { stateVersion: view.stateVersion, snapshotId: newest.id, snapshotDigest: digests.snapshot, redressVersion: REDRESS_VERSION, actions, unfounded: [], replaced: false };
+  const shared = { stateVersion: view.stateVersion, snapshotId: newest.id, snapshotDigest: digests.snapshot, redressVersion: REDRESS_VERSION, actions, unfounded: [], replaced: draft.kind === "correction" && draft.replaced === true };
   if (draft.kind === "correction" && corrected) {
     return CaseDecidedParams.parse({
       ...shared,
       kind: "correction",
       throughSeq: 0,
       reviewsDecisionId: corrected.id,
-      outcome: reversesAll(view, draft) ? "reversed" : "partly_reversed",
+      outcome: draft.answer === "kept" ? "kept" : reversesAll(view, draft) ? "reversed" : "partly_reversed",
       ground: null,
       ruleId: null,
       // A correction carries the rulebook version and the category of the decision it corrects.
@@ -965,7 +1188,8 @@ export function textsRequired(view: CaseView, draft: CaseDraft): DraftTextKind[]
 /** Whether a draft holds what its decision needs before anything is sent: something to do, and each text it cannot do without. */
 export function complete(view: CaseView, draft: CaseDraft): boolean {
   if (textsRequired(view, draft).some((kind) => normalised(draft.written[kind]) === "")) return false;
-  if (draft.kind === "correction") return draft.actions.length > 0;
+  // 3e: a kept answer to a reply lifts nothing; every other correction lifts something.
+  if (draft.kind === "correction") return draft.answer === "kept" ? draft.actions.length === 0 : draft.actions.length > 0;
   if (draft.kind === "review") return reviewConsistent(view, draft);
   return draft.outcome !== "restricted" || draft.actions.some((action) => MEASURES[action.kind].lifts === null);
 }

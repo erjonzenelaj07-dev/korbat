@@ -7,7 +7,7 @@ import { blocks, bookmarks, closeDb, createDb, follows, handleHistory, likes, mu
 import type { AccountDeps } from "../../src/account/context";
 import { confirmDeletion, purge, startDeletion } from "../../src/account/flows/deletion";
 import { createPurgeJob, purgePending } from "../../src/account/purge";
-import { confirmDeletion as authConfirmDeletion, startDeletion as authStartDeletion } from "../../src/auth/flows/deletion";
+import { confirmDeletion as authConfirmDeletion, startDeletion as authStartDeletion, takeDownTerminated } from "../../src/auth/flows/deletion";
 import { startEmail } from "../../src/auth/flows/email";
 import { exportAccount } from "../../src/auth/flows/export";
 import { passwordSignIn } from "../../src/auth/flows/password";
@@ -77,6 +77,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
       confirmDeletion: (session, input) => authConfirmDeletion(h.deps, session, input),
       pendingPurges: () => authRepo.pendingPurges(),
       finishPurge: (userId) => authRepo.finishPurge(userId, new Date()),
+      takeDownTerminated: (userId, facts) => takeDownTerminated(h.deps, userId, facts),
       exportAccount: (userId) => exportAccount(h.deps, userId),
       appendEvent: (userId, type, metadata) => authRepo.appendEvent({ userId, type, metadata }),
     },
@@ -261,6 +262,28 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     expect(await postRow(own.id)).toMatchObject({ state: "deleted_by_author", body: "" });
     expect(await profileRow(bob.id)).toMatchObject({ followingCount: 0 });
     expect(await profileRow(carol.id)).toMatchObject({ followerCount: 0 });
+  });
+
+  test("3e: the take-down of a terminated account, as the system: the row marked deleted and its sessions revoked as a confirmation leaves them, the event marked a termination's, termination_final to the address read before it and never account_deleted; a second call changes and mails nothing, and the round's purge finishes it", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const decidedAt = new Date("2026-04-04T09:30:15.250Z");
+    expect(await takeDownTerminated(h.deps, userId, { decidedAt, imagesSealed: true })).toBe(true);
+    expect((await authRow(userId))!.deletedAt).not.toBeNull();
+    expect(await authRepo.findActiveSession(owner.session.sessionId, new Date())).toBeUndefined();
+    const mailed = () => h.mailer.sent.filter((mail) => mail.to === owner.email);
+    expect(mailed().map((mail) => mail.template)).toEqual(["termination_final"]);
+    expect(mailed()[0]!.data).toEqual({ decided: "2026-04-04 09:30 UTC", imagesSealed: "true" });
+    const [event] = await migrateDb.execute<{ metadata: Record<string, unknown> }>(sql`select metadata from auth.auth_events where user_id = ${userId}::uuid and type = 'account_deleted'`);
+    expect(event?.metadata).toEqual({ terminated: true });
+    // Once only: the account is already marked deleted, so nothing is written and nothing mailed.
+    expect(await takeDownTerminated(h.deps, userId, { decidedAt, imagesSealed: true })).toBe(false);
+    expect(mailed()).toHaveLength(1);
+    // The round's purge finds it among the deletions left to finish, as any other.
+    expect(await authRepo.pendingPurges()).toContain(userId);
+    const report = await purgePending(deps());
+    expect(report).toMatchObject({ failed: 0, terminated: 0 });
+    expect((await authRow(userId))!.purgedAt).not.toBeNull();
   });
 
   test("sign-in with a deleted address behaves as for an unknown one before the purge ran, and one round of the job finishes deletions left half done, oldest first", async () => {

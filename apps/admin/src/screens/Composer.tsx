@@ -16,10 +16,19 @@ import {
   measuresOffered,
   AT_ONCE_DAYS,
   AT_ONCE_ORDER,
+  answerable,
   atOnceState,
+  ofControl,
+  replyOf,
+  standingControlState,
   suspensionOf,
+  withAnswer,
   withAtOnce,
+  withStanding,
+  withdrawable,
   type AtOnceKey,
+  type StandingClosed,
+  type StandingControl,
   noEffectOf,
   offeredDraft,
   outcomesListed,
@@ -300,6 +309,9 @@ function ReviewView(props: ComposerViewProps) {
       </ul>
       <StrikeNotes decision={decision} />
       <StandingNotes decision={decision} />
+      {/* 3e Task 4 (8.7): [review.reply] while the decision's reply waits, and [review.admin] for a decision that needed an admin. */}
+      {replyOf(decision)?.reply.answeredAt === null ? <p className="notice">{STANDING_WORDS.reviewReply}</p> : null}
+      {decision.needsAdmin ? <p className="hint">{STANDING_WORDS.reviewAdmin}</p> : null}
       <TextField id="compose-review-reason" label="Reason of the review" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
       <Preview view={view} draft={draft} now={props.now} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
@@ -389,6 +401,205 @@ function AtOnce({ props }: { props: ComposerViewProps }) {
   );
 }
 
+/** The sentence that greys a control of Task 4, by its key. */
+function standingClosedWords(view: CaseView, why: StandingClosed): string {
+  switch (why) {
+    case "conflict":
+      return STANDING_WORDS.conflict;
+    case "reportsFirst":
+      return STANDING_WORDS.reportsFirst;
+    case "short":
+      return STANDING_WORDS.suspend.short(view.standing?.activeStrikes ?? 0);
+    case "stale":
+      return STANDING_WORDS.suspend.stale;
+    case "notYet":
+      return STANDING_WORDS.terminate.notYet;
+    case "admin":
+      return STANDING_WORDS.terminate.admin;
+    case "noRepeat":
+      return STANDING_WORDS.terminate.noRepeat;
+    case "r2":
+      return STANDING_WORDS.terminateR2;
+  }
+}
+
+/**
+ * 3e Task 4 (design, section 8.3): "Announce a suspension" with its days, "Announce a termination" and "Terminate at
+ * once" on an account case's final restriction, each offered when the case answer says the database would accept it and
+ * greyed with its reason otherwise. Choosing one puts any other suspension or termination away, sets the newest strike's
+ * rule for a measure of the ladder, and drafts the facts.
+ */
+function StandingMeasureControl({ props, control }: { props: ComposerViewProps; control: StandingControl }) {
+  const { view, role, draft } = props;
+  const state = standingControlState(view, role, draft, control);
+  const standing = view.standing;
+  if (state === null || standing === null) return null;
+  const held = draft.actions.find((action) => ofControl(action, control));
+  const max = standing.maxDays ?? 1;
+  const days = typeof held?.days === "number" ? held.days : max;
+  const label = control === "announce" ? STANDING_WORDS.suspend.label : control === "announceTerminate" ? STANDING_WORDS.terminate.announceLabel : STANDING_WORDS.terminate.atOnceLabel;
+  const choose = (on: boolean, value: number) => {
+    if (!state.open) return;
+    props.onChange(on ? withStanding(view, draft, control, control === "announce" ? Math.min(max, Math.max(1, value)) : null) : { actions: draft.actions.filter((action) => !ofControl(action, control)) });
+  };
+  const id = `compose-${control}`;
+  return (
+    <li>
+      <label>
+        <input type="checkbox" checked={held !== undefined} disabled={props.busy || !state.open} onChange={(event) => choose(event.target.checked, days)} /> <span>{label}</span>
+      </label>
+      {held !== undefined && state.open && control === "announce" ? (
+        <>
+          {" "}
+          <label htmlFor={`${id}-days`}>{STANDING_WORDS.suspend.daysLabel(max)}</label>{" "}
+          <input id={`${id}-days`} type="number" min={1} max={max} value={days} disabled={props.busy} onChange={(event) => choose(true, Number(event.target.value) || 1)} />
+        </>
+      ) : null}
+      {state.open ? null : <p className="hint">{standingClosedWords(view, state.why)}</p>}
+      {control === "announce" ? (
+        <>
+          <p className="hint">{STANDING_WORDS.suspend.what(days)}</p>
+          {state.open && standing.maxDays !== null ? <p className="hint">{STANDING_WORDS.suspend.days(standing.maxDays, standing.suspensionsInYear + 1)}</p> : null}
+          {state.open && standing.ladderRule !== null ? <p className="hint">{STANDING_WORDS.suspend.rule(standing.ladderRule)}</p> : null}
+        </>
+      ) : (
+        <p className="hint">{STANDING_WORDS.terminate.what}</p>
+      )}
+      {held !== undefined ? (
+        <>
+          <p className="hint">{STANDING_WORDS.facts}</p>
+          <p className="hint">{STANDING_WORDS.previewTimes}</p>
+        </>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * 3e Task 4 (design, section 8.5): the answer to the person's reply, a correction of the decision that holds the measure:
+ * Keep or Reverse, with what each does by when the reply came, the reply's text, the reason for the person, and the
+ * preview of the answer's statement.
+ */
+function AnswerView(props: ComposerViewProps) {
+  const { view, role, draft } = props;
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const found = decision ? replyOf(decision) : null;
+  if (!decision || found === null || !answerable(decision, role)) {
+    return (
+      <section className="panel composer" aria-labelledby="composer-title">
+        <h3 id="composer-title">{STANDING_WORDS.reply.answerLabel}</h3>
+        <p>Nothing is left to answer: the reply was answered, or its measure ended with the decision it rested on.</p>
+        <div className="actions">
+          <button type="button" onClick={props.onCancelCorrection}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+  const { measure, reply } = found;
+  const ended = measure.period?.state === "ended";
+  const endsAt = measure.period?.endsAt ? dateTime(measure.period.endsAt) : "";
+  const does =
+    draft.answer === "kept"
+      ? reply.onTime
+        ? STANDING_WORDS.keep.onTime(dateTime(measure.earliestStart ?? ""), measure.kind === "terminate" ? null : measure.days)
+        : ended
+          ? STANDING_WORDS.keep.lateEnded(endsAt)
+          : STANDING_WORDS.keep.late(endsAt)
+      : reply.onTime
+        ? STANDING_WORDS.reverse.onTime
+        : ended
+          ? STANDING_WORDS.reverse.lateEnded(endsAt)
+          : STANDING_WORDS.reverse.late;
+  return (
+    <section className="panel composer" aria-labelledby="composer-title">
+      <h3 id="composer-title">{STANDING_WORDS.reply.answerLabel}</h3>
+      <p>{`The reply of ${dateTime(reply.filedAt)} to the decision of ${dateTime(decision.decidedAt)}.`}</p>
+      {reply.text === null ? (
+        <p className="hint">{STANDING_WORDS.reply.empty}</p>
+      ) : (
+        <div className="frame">
+          <h4>{STANDING_WORDS.reply.writtenBy}</h4>
+          <p className="frame-text">
+            <UserText>{reply.text}</UserText>
+          </p>
+        </div>
+      )}
+      <fieldset>
+        <legend>Answer</legend>
+        {(["kept", "reversed"] as const).map((option) => (
+          <label key={option}>
+            <input type="radio" name="compose-answer" checked={draft.answer === option} disabled={props.busy} onChange={() => props.onChange(withAnswer(draft, decision, option))} />{" "}
+            <span>{option === "kept" ? STANDING_WORDS.reply.keepLabel : STANDING_WORDS.reply.reverseLabel}</span>
+          </label>
+        ))}
+        <p className="hint">{does}</p>
+      </fieldset>
+      <p className="hint">{STANDING_WORDS.reply.same}</p>
+      {decision.needsAdmin ? <p className="hint">{STANDING_WORDS.reply.admin}</p> : null}
+      <TextField id="compose-review-reason" label="Reason of the answer" kind="review_reason" rows={3} props={props} under={[STANDING_WORDS.reply.reason, COMPOSER.personalData]} />
+      <Preview view={view} draft={draft} now={props.now} />
+      <Confirm props={props} onCancel={props.onCancelCorrection} />
+    </section>
+  );
+}
+
+/**
+ * 3e Task 4 (design, section 8.7): "Withdraw it for another measure": a correction that lifts an announced measure that
+ * has not started, signed `replaced`, to make room for a measure at once; with [replace.what], and [replace.reply] when a
+ * reply waits, which the withdrawal closes without an answer on its merits.
+ */
+function WithdrawView(props: ComposerViewProps) {
+  const { view, role, draft } = props;
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const measure = decision ? withdrawable(view, decision, role) : null;
+  if (!decision || measure === null) {
+    return (
+      <section className="panel composer" aria-labelledby="composer-title">
+        <h3 id="composer-title">{STANDING_WORDS.replace.label}</h3>
+        <p>Nothing can be withdrawn: the measure has started, was lifted, or no other measure is waiting for room.</p>
+        <div className="actions">
+          <button type="button" onClick={props.onCancelCorrection}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="panel composer" aria-labelledby="composer-title">
+      <h3 id="composer-title">{STANDING_WORDS.replace.label}</h3>
+      <p>{`The ${measure.kind === "terminate" ? "termination" : "suspension"} announced by the decision of ${dateTime(decision.decidedAt)}.`}</p>
+      <p className="notice">{STANDING_WORDS.replace.what}</p>
+      {measure.reply !== null && measure.reply.answeredAt === null ? <p className="hint">{STANDING_WORDS.replace.reply}</p> : null}
+      <TextField id="compose-review-reason" label="Reason of the withdrawal" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
+      <Preview view={view} draft={draft} now={props.now} />
+      <Confirm props={props} onCancel={props.onCancelCorrection} />
+    </section>
+  );
+}
+
+/** Beside a decision whose reply waits: "Answer this reply", for whoever may ([reply.admin] where only an admin may). */
+export function AnswerControl({ decision, role, disabled, onAnswer }: { decision: CaseDecision; role: StaffRole; disabled: boolean; onAnswer(decision: CaseDecision): void }) {
+  if (!answerable(decision, role)) return null;
+  return (
+    <button type="button" onClick={() => onAnswer(decision)} disabled={disabled}>
+      {STANDING_WORDS.reply.answerLabel}
+    </button>
+  );
+}
+
+/** Beside a decision whose announced measure has not started, while the account's case shows [conflict]: "Withdraw it for another measure", for an admin. */
+export function WithdrawControl({ view, decision, role, disabled, onWithdraw }: { view: CaseView; decision: CaseDecision; role: StaffRole; disabled: boolean; onWithdraw(decision: CaseDecision): void }) {
+  if (withdrawable(view, decision, role) === null) return null;
+  return (
+    <button type="button" onClick={() => onWithdraw(decision)} disabled={disabled}>
+      {STANDING_WORDS.replace.label}
+    </button>
+  );
+}
+
 /** One measure's checkbox, with the image it names for an image measure, and the sentence that it changes nothing now when it would not. */
 function Measure({ measure, props, images }: { measure: MeasureKind; props: ComposerViewProps; images: string[] }) {
   const { view, draft } = props;
@@ -450,7 +661,8 @@ function RetireNotes({ view, chosen, closed }: { view: CaseView; chosen: boolean
 
 export function ComposerView(shown: ComposerViewProps) {
   const { view, role } = shown;
-  if (shown.draft.kind === "correction") return <CorrectionView {...shown} />;
+  // 3e Task 4: a correction that answers a reply, and one that withdraws an announced measure, have views of their own.
+  if (shown.draft.kind === "correction") return shown.draft.answer !== undefined ? <AnswerView {...shown} /> : shown.draft.replaced === true ? <WithdrawView {...shown} /> : <CorrectionView {...shown} />;
   if (shown.draft.kind === "review") return <ReviewView {...shown} />;
   // What the draft holds is shown as far as it is offered, and that is what the key confirms.
   const draft = offeredDraft(view, role, shown.draft);
@@ -648,6 +860,10 @@ export function ComposerView(shown: ComposerViewProps) {
             ))}
             {/* 3e (design, section 8.3): a suspension at once, on an account case's final restriction. */}
             <AtOnce props={props} />
+            {/* 3e Task 4: an announced suspension, an announced termination and a termination at once. */}
+            <StandingMeasureControl props={props} control="announce" />
+            <StandingMeasureControl props={props} control="announceTerminate" />
+            <StandingMeasureControl props={props} control="terminateAtOnce" />
             {kind === "interim" && view.target.type === "post" && hiddenWhileDeciding(view) ? (
               <li>
                 <p className="hint">{COMPOSER.alreadyHidden}</p>

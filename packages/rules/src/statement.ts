@@ -79,6 +79,8 @@ export const STATEMENT_WORDS = {
     final: "This applies everywhere korbat is available and has no end date.",
     // 3e: in place of `final` for a decision that suspends the account.
     suspend: (days: number) => `This applies everywhere korbat is available, for ${days} ${days === 1 ? "day" : "days"} from its start.`,
+    // 3e Task 4: a decision that terminates the account.
+    terminate: "This applies everywhere korbat is available and has no end date.",
     law: "korbat cannot restrict content for one country alone, so this applies everywhere, which is more than the law of a single country asks for.",
   },
   /** The source, as a category only: never a count, a reporter or a report's words. */
@@ -146,6 +148,62 @@ export const STATEMENT_WORDS = {
   },
   /** After basisEnded, when the measure had a reply that nobody had answered: this decision answers it. */
   basisEndedReply: (filedAt: string) => `Your reply of ${filedAt} to it needs no answer now.`,
+  // 3e (design, section 18, W.2, Task 4): an announced suspension or termination with its start, the reply, a termination
+  // taken at once, what a termination waits for and leaves, a withdrawal for another measure, and the answers to a reply.
+  /** An announced suspension: its days, and that nothing is restricted yet. */
+  suspendAnnounced: (days: number) => `korbat will suspend your account for ${days} ${days === 1 ? "day" : "days"}. Nothing is restricted yet.`,
+  /** A measure of the ladder: the strikes it rests on, one entry for each decision in rests_on (restsOnEntry), joined by "; ". */
+  restsOn: (list: string) => `It rests on the active strikes of your account: ${list}.`,
+  restsOnEntry: (decidedAt: string, ruleId: string, postCreatedAt: string | null) => `the strike of ${decidedAt} under rule ${ruleId}${postCreatedAt === null ? "" : ` (your post of ${postCreatedAt})`}`,
+  /**
+   * When an announced measure starts: `window` hours (the row's starts_at less its created_at) after korbat sent the mail,
+   * never before the earliest start. A termination's reads "The termination" for "It".
+   */
+  start: (subject: "It" | "The termination", window: number, earliestStart: string) =>
+    `${subject} starts ${window} hours after korbat sent the email with this decision, and not before ${earliestStart}. If korbat's mail service cannot send it to your address, it starts later, and korbat's app alone tells you. korbat cannot see whether an email it sent reached you: this decision is always shown in the app. The exact start and end are on this decision's screen under Settings, Cases, as soon as they are fixed.`,
+  /** An announced termination, at the ladder's end: the strikes it rests on. */
+  terminateAnnounced: (list: string) =>
+    `korbat will terminate your account. Nothing is restricted yet. It follows the earlier suspensions of your account and rests on the active strikes of your account: ${list}.`,
+  /** A termination at once, on a second threat: the newer R5 decision, then the older one the earlier suspension rests on. */
+  terminateAtOnce: (basisDecidedAt: string, earlierDecidedAt: string) =>
+    `korbat terminated your account with this decision, without notice beforehand, because its decision of ${basisDecidedAt} found a direct threat of violence (rule R5) in a post you made after korbat had suspended your account for an earlier threat, which its decision of ${earlierDecidedAt} found. It ends at once if either of those two decisions is reversed.`,
+  /**
+   * What every termination waits for before the account is deleted; `deadline` is the end of the six months from this
+   * decision. One taken at once leaves out the clause about a reply before the start, which it cannot have.
+   */
+  terminateWait: (deadline: string, announced: boolean) =>
+    `From its start your account is suspended with no end date. Your profile and posts stay visible to others until the account is deleted. korbat deletes the account, with its posts and profile and every image it has not sealed, once this decision is final: when the six months for your appeal have passed unused, on ${deadline}, ${
+      announced ? "or six months after korbat's answer if you reply before the start and korbat keeps the decision, " : ""
+    }or when your appeal is answered and the decision kept. Nothing is deleted while your appeal or your reply is unanswered.`,
+  terminateLeave:
+    "Until then you can export your data in Settings, Account. You can also delete the account yourself sooner; that ends your appeal with it, since nothing is left to restore. After the deletion korbat keeps nothing to recognise a new account of yours by. Images that korbat sealed, if it sealed any of yours, stay with it for the authorities alone, as the decision that sealed them said. A new account that carries on what this one was terminated for breaks korbat's terms.",
+  /** A termination's `stops` and `explore`: from its start, and Explore's first sentence alone, since it has no end. */
+  stopsFromStart:
+    "From its start you cannot post, reply, quote, like, repost, bookmark, follow, edit your profile, change your handle, upload images, ask for the verified badge, or report under korbat's rules.",
+  exploreFromStart: "From its start your posts do not appear in Explore, and your likes and reposts of other people's posts do not count there.",
+  /** A lift signed `replaced`, in place of the reversal's lead and liftedBefore; the last sentence only when the person had replied. */
+  withdrawn: (what: "suspension" | "termination", decidedAt: string, replied: boolean) =>
+    `korbat withdrew the ${what} it announced on ${decidedAt}, because it is taking another measure on your account.${replied ? " This is not a decision on your reply." : ""}`,
+  /** The lead of a kept answer to a reply. */
+  replyKept: (decided: string) => `korbat read your reply to its decision of ${decided} and keeps that decision.`,
+  /** After a kept answer to a reply sent before the start: the start and end this answer fixes. */
+  replyKeptOnTime: {
+    suspension: (days: number, startsAt: string, endsAt: string) =>
+      `The suspension of ${days} ${days === 1 ? "day" : "days"} starts at ${startsAt} and ends at ${endsAt}: with this answer, and never before the time you were first given.`,
+    termination: (startsAt: string) => `The termination starts at ${startsAt}: with this answer, and never before the time you were first given.`,
+  },
+  /** After a kept answer to a reply sent after the start, by where the period stood: it goes on, or it had ended. */
+  replyKeptLate: {
+    running: (endsAt: string) => `The suspension goes on and ends at ${endsAt}, as before.`,
+    ended: (endedAt: string) => `The suspension ended at ${endedAt}, as decided.`,
+    termination: "The termination stays.",
+  },
+  /** The lead of a correction that answers a reply by reversing the measure, in place of `corrected`. */
+  replyReversed: (decided: string, part: boolean) => `korbat read your reply to its decision of ${decided} and ${part ? "reversed part of that decision" : "reversed that decision"}.`,
+  /** After a review's lead, when the review also answers the reply. */
+  replyAlso: (filedAt: string) => `This also answers your reply of ${filedAt}.`,
+  /** What the software did for a measure of the ladder: it counted what the measure rests on and listed the account. */
+  automationCounted: "korbat's software counted what this rests on and listed your account for a moderator. A moderator read it and decided; no automated means decided it.",
   /**
    * The rule or the law, worded by what korbat knows when it decides. A decision that seals rests on a report that nobody
    * at korbat has checked against the images, since nobody opens them, so it says what the step rests on and never that
@@ -168,6 +226,13 @@ export const STATEMENT_WORDS = {
     protective: (title: string) =>
       `This rests on korbat's terms, section Suspension and termination: when korbat keeps images of an account sealed after a report of child sexual abuse material, an admin may suspend the account once, for up to 14 days. The rule such a report is made under is korbat rule R2, "${title}". korbat has not found that your account broke it.`,
     conduct: (id: string, title: string, text: string) => `Your account's conduct breaks korbat rule ${id}, "${title}": ${text}`,
+    // 3e Task 4: a measure of the ladder finds no new breach. It rests on the terms' section, and names the rule of the
+    // newest strike as that and nothing more. The numbers are literals of these words, held to STANDING_RULES
+    // (ladderStrikes, the rungs and ladderMemoryDays) by the rules package's table test.
+    ladder: (id: string, title: string) =>
+      `This rests on korbat's terms, section Suspension and termination: an account with 3 active strikes may be suspended for a limited time. This decision finds no new breach. The newest of the strikes it rests on was given under korbat rule ${id}, "${title}".`,
+    ladderEnd: (id: string, title: string) =>
+      `This rests on korbat's terms, section Suspension and termination: after three suspensions in 365 days an account with 3 active strikes may be terminated. This decision finds no new breach. The newest of the strikes it rests on was given under korbat rule ${id}, "${title}".`,
   },
 } as const;
 
@@ -197,10 +262,10 @@ function fieldSentence(field: Field, reset: { oldValueKept: boolean; resetRuleId
 }
 
 /**
- * The kinds of 3e whose sentences this version of the package does not hold yet: none is rendered as another one. Task 3
- * words a suspension taken at once and the lift of a suspension; an announced suspension is refused where it is rendered.
+ * The kinds of 3e whose sentences this version of the package does not hold yet: none is rendered as another one. The
+ * reporting measures are worded with the task that builds them.
  */
-const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["terminate", "warn_reporting", "restrict_reporting", "lift_reporting"];
+const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["warn_reporting", "restrict_reporting", "lift_reporting"];
 
 /** What a sentence calls a standing measure. */
 const standingWord = (kind: "suspend" | "terminate"): "suspension" | "termination" => (kind === "terminate" ? "termination" : "suspension");
@@ -208,13 +273,65 @@ const standingWord = (kind: "suspend" | "terminate"): "suspension" | "terminatio
 /** A decision's standing measure (a suspension or a termination), if it holds one: a decision holds at most one. */
 const standingOf = (input: StatementInput) => input.measures.find((measure) => measure.kind === "suspend" || measure.kind === "terminate");
 
+/** The strikes a measure of the ladder rests on, as `restsOn` lists them: "the strike of {decidedAt} under rule {ruleId} (your post of {postCreatedAt})", joined by "; ". */
+function strikeList(measure: StatementInput["measures"][number]): string {
+  const entries = measure.restsOn ?? [];
+  if (entries.length === 0) throw new Error("a statement's measure of the ladder names the strikes it rests on: the decision's data holds none");
+  return entries
+    .map((entry) => {
+      if (entry.ruleId === null) throw new Error("a strike a measure of the ladder rests on names its rule");
+      // The ledger always knows the post; the console's preview, which reads the account's strikes without their posts, does not.
+      return W.restsOnEntry(utcMinute(entry.decidedAt), entry.ruleId, entry.postCreatedAt === null ? null : utcMinute(entry.postCreatedAt));
+    })
+    .join("; ");
+}
+
+/** The hours between an announced measure's decision and its earliest start: the reply window its statement names. */
+function windowHours(decidedAt: string, earliestStart: string): number {
+  return Math.round((Date.parse(earliestStart) - Date.parse(decidedAt)) / 3_600_000);
+}
+
+/**
+ * An announced suspension, as four paragraphs (3e design, W.2): that korbat will suspend the account and the strikes it
+ * rests on; when it starts; what it stops and what it leaves; and what it does to Explore.
+ */
+function announcedSuspendParagraphs(input: StatementInput, measure: StatementInput["measures"][number]): string[] {
+  const { days, earliestStart } = measure;
+  if (days === undefined || days === null || earliestStart === undefined || earliestStart === null) throw new Error("an announced suspend names its days and its earliest start: the decision's data holds neither");
+  const lead = [W.suspendAnnounced(days), W.restsOn(strikeList(measure))];
+  if (measure.noEffect === "deleted") lead.push(W.deletedAccount);
+  return [lead.join(" "), W.start("It", windowHours(input.decidedAt, earliestStart), utcMinute(earliestStart)), `${W.stops} ${W.stays}`, W.explore];
+}
+
+/**
+ * A termination, as five paragraphs (3e design, W.2): what was done (announced at the ladder's end with its strikes and
+ * its start, or at once on a second threat with the two decisions it rests on); what it waits for before the account is
+ * deleted; what the person can do until then; what it stops and leaves from its start; and Explore.
+ */
+function terminateParagraphs(input: StatementInput, measure: StatementInput["measures"][number]): string[] {
+  const deadline = utcMinute(appealDeadline(new Date(input.decidedAt)));
+  const lead: string[] = [];
+  if (measure.announced === true) {
+    if (measure.earliestStart === undefined || measure.earliestStart === null) throw new Error("an announced terminate names its earliest start: the decision's data holds none");
+    lead.push(W.terminateAnnounced(strikeList(measure)), W.start("The termination", windowHours(input.decidedAt, measure.earliestStart), utcMinute(measure.earliestStart)));
+  } else {
+    // On threat_repeat the two R5 decisions, the earlier first: the one the earlier suspension rests on, then the new one.
+    const [earlier, newer] = measure.restsOn ?? [];
+    if (earlier === undefined || newer === undefined) throw new Error("a terminate at once names the two decisions it rests on: the decision's data holds none");
+    lead.push(W.terminateAtOnce(utcMinute(newer.decidedAt), utcMinute(earlier.decidedAt)));
+  }
+  if (measure.noEffect === "deleted") lead.push(W.deletedAccount);
+  return [lead.join(" "), W.terminateWait(deadline, measure.announced === true), W.terminateLeave, `${W.stopsFromStart} ${W.stays}`, W.exploreFromStart];
+}
+
 /**
  * A suspension taken at once, as three paragraphs (3e design, W.2): what was done, until when, and why at once (with the
  * decision or the seal it rests on, read from the ledger's row), and that it changes nothing for a deleted account; what
- * it stops and what it leaves; and what it does to Explore. An announced suspension is not worded in this version.
+ * it stops and what it leaves; and what it does to Explore. An announced one has paragraphs of its own.
  */
-function suspendParagraphs(measure: StatementInput["measures"][number]): string[] {
-  if (measure.announced !== false) throw new Error("a statement's suspend is not worded in this version of @korbat/rules unless it is taken at once");
+function suspendParagraphs(input: StatementInput, measure: StatementInput["measures"][number]): string[] {
+  if (measure.announced === true) return announcedSuspendParagraphs(input, measure);
+  if (measure.announced !== false) throw new Error("a statement's suspend says whether it was announced: the decision's data does not");
   const { days, endsAt, basis, restsOn } = measure;
   if (days === undefined || days === null || endsAt === undefined || endsAt === null || basis === undefined || basis === null) {
     throw new Error("a statement's suspend names its days, its end and its basis: the decision's data holds none");
@@ -229,14 +346,21 @@ function suspendParagraphs(measure: StatementInput["measures"][number]): string[
   return [lead.join(" "), `${W.stops} ${W.stays}`, W.explore];
 }
 
-/** The lift of a suspension, by where its period stood at this decision's time; a withdrawal signed `replaced` is not worded in this version. */
+/**
+ * The lift of a suspension, by where its period stood at this decision's time. A withdrawal signed `replaced` says that
+ * korbat withdrew the announced measure for another one, and that this is no decision on the person's reply when they
+ * had sent one, in place of the reversal's lead and of liftedBefore.
+ */
 function liftParagraph(reversal: StatementInput["reversals"][number]): string {
   const { liftedKind, periodThen } = reversal;
   if (liftedKind === undefined || liftedKind === null || periodThen === undefined || periodThen === null) {
     throw new Error("a statement's lift_suspension names the measure it lifts and its period then: the decision's data holds neither");
   }
-  if (reversal.replaced === true) throw new Error("a statement's lift_suspension signed replaced is not worded in this version of @korbat/rules");
   const what = standingWord(liftedKind);
+  if (reversal.replaced === true) {
+    if (reversal.liftedDecidedAt === undefined || reversal.liftedDecidedAt === null) throw new Error("a statement's withdrawal names the withdrawn decision's time: the decision's data holds none");
+    return W.withdrawn(what, utcMinute(reversal.liftedDecidedAt), reversal.replyFiledAt !== undefined && reversal.replyFiledAt !== null);
+  }
   if (periodThen.state === "not_started") {
     if (reversal.liftedDecidedAt === undefined || reversal.liftedDecidedAt === null) throw new Error("a statement's lift_suspension before the start names the lifted decision's time: the decision's data holds none");
     return W.liftedBefore(what, utcMinute(reversal.liftedDecidedAt));
@@ -375,6 +499,57 @@ function groundParagraph(ground: { ground: StatementInput["ground"]; ruleId: str
 }
 
 /**
+ * 3e (W.2): the second sentence of an answer to a reply that leaves the measure in force, by whether the reply came
+ * before the start and, after a late one, where the period stood: the start and end a kept answer fixes; that a running
+ * suspension goes on, or that an ended one ended as decided; that a termination stays.
+ */
+function replyKeptSentence(replied: NonNullable<StatementInput["repliedTo"]>): string {
+  if (replied.onTime) {
+    if (replied.startsAt === null) throw new Error("a kept answer to a reply before the start names the start it fixes: the decision's data holds none");
+    if (replied.kind === "terminate") return W.replyKeptOnTime.termination(utcMinute(replied.startsAt));
+    if (replied.days === null || replied.endsAt === null) throw new Error("a kept answer to a reply names the suspension's days and end: the decision's data holds neither");
+    return W.replyKeptOnTime.suspension(replied.days, utcMinute(replied.startsAt), utcMinute(replied.endsAt));
+  }
+  if (replied.kind === "terminate") return W.replyKeptLate.termination;
+  if (replied.periodThen.state === "ended") {
+    if (replied.periodThen.endedAt === null) throw new Error("a kept answer to a reply after an ended suspension names its end");
+    return W.replyKeptLate.ended(utcMinute(replied.periodThen.endedAt));
+  }
+  if (replied.endsAt === null) throw new Error("a kept answer to a reply after the start names the suspension's end");
+  return W.replyKeptLate.running(utcMinute(replied.endsAt));
+}
+
+/**
+ * The lead of a review or a correction: which decision it is about, by its time, and what became of it. 3e: a correction
+ * that answers a reply leads with that answer (kept with the start or the state it leaves, or reversed); a review that
+ * answers one adds that it does, and what it leaves; a withdrawal signed `replaced` has no lead of its own, since its
+ * lift's sentence says what it did.
+ */
+function aboutLead(input: StatementInput): string | null {
+  const decided = utcMinute(input.reviewed!.decidedAt);
+  const replied = input.repliedTo;
+  if (input.kind === "review") {
+    const lead = W.reviewed(decided, input.outcome === "kept" ? "kept" : input.outcome === "partly_reversed" ? "partly_reversed" : "reversed");
+    if (replied === undefined) return lead;
+    // The review leaves the measure in force when it keeps the decision, or reverses part of it without the lift.
+    const stays = input.outcome === "kept" || (input.outcome === "partly_reversed" && !input.reversals.some((reversal) => reversal.kind === "lift_suspension"));
+    return [lead, W.replyAlso(utcMinute(replied.filedAt)), ...(stays ? [replyKeptSentence(replied)] : [])].join(" ");
+  }
+  if (input.reviewed!.kind === "interim") return W.interimLifted(decided);
+  if (replied !== undefined) return input.outcome === "kept" ? `${W.replyKept(decided)} ${replyKeptSentence(replied)}` : W.replyReversed(decided, input.outcome === "partly_reversed");
+  if (input.reversals.some((reversal) => reversal.kind === "lift_suspension" && reversal.replaced === true)) return null;
+  return W.corrected(decided, input.outcome === "partly_reversed");
+}
+
+/** The paragraph of the rule or the term of a decision that holds a measure of the ladder: the terms' section, and the newest strike's rule named as that. */
+function ladderGround(input: StatementInput, basis: "strikes" | "ladder_end"): string {
+  if (input.ruleId === null) throw new Error("a measure of the ladder cites the rule of the newest strike: the decision's data holds none");
+  const rule = getRule(input.ruleId, input.rulesVersion);
+  if (!rule) throw new Error(`a statement cites ${input.ruleId} of rulebook version ${input.rulesVersion}, which this package does not hold`);
+  return basis === "strikes" ? W.ground.ladder(rule.id, rule.title) : W.ground.ladderEnd(rule.id, rule.title);
+}
+
+/**
  * The statement of reasons as paragraphs, in this order: what was done (one paragraph for each measure and each reversal,
  * then what ended); where it applies and for how long; how it came to korbat; that nothing was automated; the rule or the
  * law; the facts and the reason; and what the author can do about it.
@@ -389,13 +564,14 @@ export function statementParagraphs(input: StatementInput): string[] {
   // What was done.
   if (about) {
     if (input.reviewed === null) throw new Error("the statement of a review or a correction names the decision it is about: the decision's data holds none");
-    const decided = utcMinute(input.reviewed.decidedAt);
-    if (input.kind === "review") paragraphs.push(W.reviewed(decided, input.outcome === "kept" ? "kept" : input.outcome === "partly_reversed" ? "partly_reversed" : "reversed"));
-    else paragraphs.push(input.reviewed.kind === "interim" ? W.interimLifted(decided) : W.corrected(decided, input.outcome === "partly_reversed"));
+    const lead = aboutLead(input);
+    if (lead !== null) paragraphs.push(lead);
   }
   for (const measure of input.measures) {
-    // 3e: a suspension is three paragraphs of its own (what and why, what it stops and leaves, Explore).
-    if (measure.kind === "suspend") paragraphs.push(...suspendParagraphs(measure));
+    // 3e: a suspension and a termination are paragraphs of their own (what and why, when it starts, what it stops and
+    // leaves, Explore, and for a termination what it waits for and leaves until the deletion).
+    if (measure.kind === "suspend") paragraphs.push(...suspendParagraphs(input, measure));
+    else if (measure.kind === "terminate") paragraphs.push(...terminateParagraphs(input, measure));
     else paragraphs.push(measureParagraph(input, measure, redress));
   }
   for (const reversal of input.reversals) paragraphs.push(reversalParagraph(input, reversal));
@@ -405,27 +581,41 @@ export function statementParagraphs(input: StatementInput): string[] {
   if (paragraphs.length === 0) paragraphs.push(W.noAction);
 
   const standing = standingOf(input);
-  // Where and how long: only a decision that restricts has a scope; a suspension's is its days from its start.
+  // Where and how long: only a decision that restricts has a scope; a suspension's is its days from its start, and a
+  // termination's has no end.
   if (restricts) {
-    paragraphs.push(input.kind === "interim" ? W.scope.interim : standing?.kind === "suspend" && typeof standing.days === "number" ? W.scope.suspend(standing.days) : W.scope.final);
+    paragraphs.push(
+      input.kind === "interim"
+        ? W.scope.interim
+        : standing?.kind === "suspend" && typeof standing.days === "number"
+          ? W.scope.suspend(standing.days)
+          : standing?.kind === "terminate"
+            ? W.scope.terminate
+            : W.scope.final,
+    );
     if (input.ground === "illegal") paragraphs.push(W.scope.law);
   }
 
   // How it came to korbat, for a decision of its own; a review or a correction is korbat's own second look.
   if (!about) paragraphs.push(sourceSentence(input.source));
   // A decision that gives a strike says what the software did: it applied korbat's published rule of when one is given.
-  // A suspension on a flood rests on a count the software made; one on a decision, a threat or a seal rests on nothing
-  // the software did, and keeps 3c's sentence.
-  paragraphs.push(input.measures.some((measure) => measure.kind === "strike") ? W.automationStrike : standing?.basis === "flood" ? W.automationFlood : W.automation);
+  // A suspension on a flood rests on a count the software made, and a measure of the ladder on the strikes it counted and
+  // the list it put the account on; one on a decision, a threat or a seal rests on nothing the software did, and keeps
+  // 3c's sentence.
+  const counted = standing?.basis === "strikes" || standing?.basis === "ladder_end";
+  paragraphs.push(input.measures.some((measure) => measure.kind === "strike") ? W.automationStrike : standing?.basis === "flood" ? W.automationFlood : counted ? W.automationCounted : W.automation);
 
   // The rule or the law: the decision's own, or for a review or a correction the reviewed decision's, from that decision's
   // row and in the wording of the rulebook that decision was made under. A decision that holds a standing measure names
   // the ground it truly rests on (3e, W.2): the terms' clause for a protective suspension, which never says that a rule is
-  // broken, and the account's conduct for one taken at once on a threat or a flood (the law, as ever, on terrorist content).
+  // broken; the terms' section for a measure of the ladder, which finds no new breach; and the account's conduct for one
+  // taken at once on a threat or a flood (the law, as ever, on terrorist content).
   if (!about && standing?.basis === "protective") {
     const r2 = getRule("R2", input.rulesVersion);
     if (!r2) throw new Error(`a statement cites R2 of rulebook version ${input.rulesVersion}, which this package does not hold`);
     paragraphs.push(W.ground.protective(r2.title));
+  } else if (!about && (standing?.basis === "strikes" || standing?.basis === "ladder_end")) {
+    paragraphs.push(ladderGround(input, standing.basis));
   } else {
     const form: GroundForm = about ? "about" : input.measures.some((measure) => measure.kind === "seal_media") ? "seal" : input.kind === "interim" ? "deciding" : standing ? "conduct" : "found";
     const ground = about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, form) : groundParagraph(input, input.rulesVersion, form);
@@ -439,13 +629,24 @@ export function statementParagraphs(input: StatementInput): string[] {
   // Redress, from the decision's own kind and outcome.
   if (input.kind === "interim") paragraphs.push(redress.interim);
   else if (input.kind === "final" && input.outcome === "restricted") {
-    // 3e (W.3): a measure taken at once can be replied to at any time while it runs; the reply comes before the appeal.
+    // 3e (W.3): an announced measure can be replied to before its start, and appealed from now; one taken at once can be
+    // replied to at any time while it runs. The reply comes before the appeal.
+    if (standing !== undefined && standing.announced === true) {
+      if (redress.reply === undefined) throw new Error(`a statement's announced measure needs the reply's text, which redress version ${input.redressVersion} does not hold`);
+      paragraphs.push(redress.reply);
+    }
     if (standing !== undefined && standing.announced === false) {
       if (redress.replyAtOnce === undefined) throw new Error(`a statement's measure taken at once needs the reply's text, which redress version ${input.redressVersion} does not hold`);
       paragraphs.push(redress.replyAtOnce);
     }
     const appeal = redress.appeal.replace("{deadline}", () => utcMinute(appealDeadline(new Date(input.decidedAt))));
     paragraphs.push(input.measures.some((measure) => measure.kind === "seal_media") ? `${appeal} ${W.sealAppeal}` : appeal);
+    if (standing !== undefined && standing.announced === true && redress.appealNow !== undefined) paragraphs.push(redress.appealNow);
+  } else if (input.kind === "correction" && input.outcome === "kept" && input.repliedTo !== undefined && redress.replyAnswered !== undefined) {
+    // A kept answer to a reply: the appeal is against the decision it keeps, until the date this answer leaves it; once
+    // that date has passed (a late reply answered after the six months), the paragraph for no appeal.
+    const until = input.repliedTo.appealUntil;
+    paragraphs.push(Date.parse(until) > Date.parse(input.decidedAt) ? redress.replyAnswered.replace("{deadline}", () => utcMinute(until)) : redress.notAppealable);
   } else paragraphs.push(redress.notAppealable);
   return paragraphs;
 }

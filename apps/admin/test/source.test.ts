@@ -68,7 +68,7 @@ describe("no HTML or script sink in apps/admin", () => {
     expect(nav).toMatch(/to: ConsolePath/);
     expect(nav).toMatch(/id: CaseId/);
     const router = readFileSync(path.join(SRC, "router.ts"), "utf8");
-    expect(router).toMatch(/export type ConsolePath = "\/" \| "\/audit" \| "\/signin" \| "\/queue" \| "\/appeals";/);
+    expect(router).toContain('export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing";');
     // A CaseId is made in one place, by the function that checks it: nothing else may call a text a case's id.
     expect(findInSource(/\bas CaseId\b/).map((found) => found.split(":")[0])).toEqual(["src/router.ts"]);
     expect(router).toMatch(/return isLowerUuid\(text\) \? \(text as CaseId\) : null;/);

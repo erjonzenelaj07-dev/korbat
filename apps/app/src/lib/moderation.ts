@@ -8,6 +8,7 @@ import {
   NoticeStatus,
   NoticeTarget,
   ReexamineResponse,
+  ReplyResponse,
   ReportsPage,
   type CsamKeywordChoice,
   type NoticeItemStatus,
@@ -58,6 +59,11 @@ export const moderation = {
   resumeReportMail: () => api("/api/moderation/report-mail/resume", { method: "POST" }),
   /** The author's appeal of a decision about them. The answer is the decision as it now reads, with the appeal waiting. */
   appeal: (id: string, statement: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}/appeal`, { json: statementOf(statement), schema: DecisionView }),
+  /**
+   * 3e Task 4: the person's reply to a decision that holds a suspension or a termination, with what they wrote, if
+   * anything. The answer says when korbat received it and whether that was before the start.
+   */
+  reply: (id: string, statement: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}/reply`, { json: statementOf(statement), schema: ReplyResponse }),
   /** A re-examination of an item of a notice, asked with the status page's token, which travels in the body of a POST. */
   reexamineNotice: (ref: string, token: string, position: number, statement: string) => api("/api/notices/reexamine", { json: { ref, token, position, ...statementOf(statement) }, schema: ReexamineResponse }),
   /** A re-examination of an item of a report the signed-in account sent, named by the id its list carries. */
