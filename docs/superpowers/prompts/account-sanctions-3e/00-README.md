@@ -69,3 +69,21 @@ python docs/superpowers/prompts/account-sanctions-3e/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-13)
+
+The eight prompts were replayed into this repository by the scratch tooling's `replay.py`, with no model session, through the same gated runner as the dry run. It ran in one attempt with no stop: every red step failed as recorded, every gate passed, and both stack rebuilds, in Tasks 7 and 8, ended with the smoke test passing through Caddy on the app's site and the console's.
+
+| Task | Commit |
+|---|---|
+| 1 | `4df1a51` |
+| 2 | `fc6fb64` |
+| 3 | `0d6a86c` |
+| 4 | `622ff48` |
+| 5 | `ab2595e` |
+| 6 | `d9233f4` |
+| 7 | `774a1cf` |
+| 8 | `39541f8` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree is byte-identical to the dry run's except drizzle's snapshots of 0020 to 0025 and its journal, which end with a newline here and with none in the dry run (drizzle writes none and the prompts' file blocks end every file with one; drizzle orders migrations by the journal's entries, so the newline changes nothing it does). `verify_prompts.py` reproduces all 244 files. The integration suite ends at 1,308 tests on a database upgraded from 0019 (100 files) and 1,302 on a fresh one (99 files: the back-fill test of 0025 runs only on an upgraded database); the timing gate passed.
+- **The review that shaped Task 8.** After Task 7, one adversarial review read the built code through four lenses (who can see or do what; the database and concurrency; what people are told; the proofs and the failure paths), each with runs on the scratch test database. It found no high defect. It upheld 21 points: above all a write could be judged against a suspension's start and then wait behind a lock and commit after the start, on eight write paths (Task 4's lab had found one case); waits that a stream of likes could stretch past their bound; locks held across a mail; marks that counted before the reporter could see them. One point is left for the owner: a steady stream of others' likes can still starve the row lock a suspension takes; the bound now ends the wait instead of hanging.
