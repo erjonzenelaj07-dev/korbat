@@ -19,7 +19,9 @@ import * as terms from "../src/lib/terms";
  * tests that hold every number and every rule's text the terms print to its constant. A number is held twice: its
  * sentence is in the terms with the constant's value, and with other values in the constants the terms print those and
  * not one of the old ones, so no number is typed. The rulebook, the measures' labels and the outcomes' phrases are held
- * the same way.
+ * the same way. 3e (design, W.7) adds four sections, "Strikes", "Suspension and termination", "Reporting in bad faith" and
+ * "Handles", whose numbers are STANDING_RULES', REPLY_AIM_HOURS', RETENTION.mailGiveUpDays' and APPEAL_MONTHS', and grows
+ * RETENTION by three members: two numbers and one phrase, which the terms print as they print a rule's text.
  */
 vi.mock("expo-router", () => ({
   Link: ({ href, children }: { href: string; children: ReactElement }) => cloneElement(children, { href } as object),
@@ -42,8 +44,8 @@ const textOf = (markup: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-/** The sections 3c wrote or rewrote whole; of "Your data" it wrote every paragraph after the first, which older designs wrote. */
-const MODERATION_TITLES = ["What you can post", "The rules", "Reports and notices", "How moderators decide", "Appeals", "Terrorist content"];
+/** The sections 3c and 3e wrote or rewrote whole; of "Your data" they wrote every paragraph after the first, which older designs wrote. */
+const MODERATION_TITLES = ["What you can post", "The rules", "Reports and notices", "How moderators decide", "Appeals", "Strikes", "Suspension and termination", "Reporting in bad faith", "Handles", "Terrorist content"];
 const bodyOf = (t: TermsModule, title: string): string => t.TERMS_SECTIONS.find((section: Section) => section.title === title)?.body ?? "";
 const paragraphsOf = (t: TermsModule, title: string): string[] => t.termsParagraphs(bodyOf(t, title));
 /** What 3c added to "Your data". */
@@ -53,6 +55,8 @@ const moderationText = (t: TermsModule): Record<string, string> => ({ ...Object.
 
 /** A count as the terms print it: a small number as a word, and its noun in the singular or the plural. */
 const count = (n: number, one: string): string => `${numberWord(n)} ${n === 1 ? one : `${one}s`}`;
+/** A share as the terms print it: half as a word, any other as a percentage. */
+const share = (fraction: number): string => (fraction === 0.5 ? "half" : `${fraction * 100} percent`);
 
 /**
  * The table of numbers: every number of the constants the terms print, with the section and the sentence it stands in.
@@ -60,7 +64,7 @@ const count = (n: number, one: string): string => `${numberWord(n)} ${n === 1 ? 
  * with other numbers in the constants.
  */
 function numbersTable(c: Contracts): { constant: string; section: string; phrase: string }[] {
-  const { NOTICE_LIMITS: L, RETENTION: R, DAILY_LIMITS: D } = c;
+  const { NOTICE_LIMITS: L, RETENTION: R, DAILY_LIMITS: D, STANDING_RULES: S } = c;
   return [
     { constant: "NOTICE_LIMITS.signedOut.perHour", section: "Reports and notices", phrase: `at most ${L.signedOut.perHour} reports an hour and` },
     { constant: "NOTICE_LIMITS.signedOut.perDay", section: "Reports and notices", phrase: `and ${L.signedOut.perDay} a day from one network without an account` },
@@ -90,6 +94,43 @@ function numbersTable(c: Contracts): { constant: string; section: string; phrase
     { constant: "RETENTION.backupDays", section: "Your data", phrase: `deleted ${count(R.backupDays, "day")} after it was taken` },
     { constant: "RETENTION.draftHours", section: "Your data", phrase: `is deleted after ${count(R.draftHours, "hour")}` },
     { constant: "RETENTION.mailGiveUpDays", section: "Reports and notices", phrase: `could not send for ${count(R.mailGiveUpDays, "day")}` },
+    // 3e (W.7): the four sections, each number from the constant the code that acts on it reads.
+    { constant: "STANDING_RULES.strikeDays", section: "Strikes", phrase: `It counts for ${count(S.strikeDays, "day")} from its decision.` },
+    { constant: "STANDING_RULES.ladderStrikes", section: "Strikes", phrase: `ends at once if fewer than ${numberWord(S.ladderStrikes)} of its strikes still stand` },
+    { constant: "STANDING_RULES.ladderStrikes", section: "Suspension and termination", phrase: `When your account has ${numberWord(S.ladderStrikes)} active strikes at once` },
+    { constant: "STANDING_RULES.ladderStrikes", section: "Suspension and termination", phrase: `while at least ${numberWord(S.ladderStrikes - 1)} earlier strikes still count` },
+    ...([0, 1, 2] as const).map((rung) => ({
+      constant: `STANDING_RULES.ladderDays.${rung}`,
+      section: "Suspension and termination",
+      phrase: `for at most ${count(S.ladderDays[0], "day")} the first time, ${numberWord(S.ladderDays[1])} the second and ${numberWord(S.ladderDays[2])} the third`,
+    })),
+    { constant: "STANDING_RULES.ladderMemoryDays", section: "Suspension and termination", phrase: `counting the suspensions decided in the last ${count(S.ladderMemoryDays, "day")}` },
+    { constant: "STANDING_RULES.ladderMemoryDays", section: "Suspension and termination", phrase: `that you post within ${count(S.ladderMemoryDays, "day")} after korbat suspended your account` },
+    { constant: "STANDING_RULES.replyWindowHours", section: "Suspension and termination", phrase: `The suspension starts ${count(S.replyWindowHours, "hour")} after korbat sent that email.` },
+    { constant: "STANDING_RULES.undeliveredHours", section: "Suspension and termination", phrase: `the suspension starts ${count(S.undeliveredHours, "hour")} after the decision` },
+    { constant: "STANDING_RULES.threatDays", section: "Suspension and termination", phrase: `a direct threat of violence (rule R5), for up to ${count(S.threatDays, "day")};` },
+    { constant: "STANDING_RULES.terroristDays", section: "Suspension and termination", phrase: `is terrorist content, for up to ${count(S.terroristDays, "day")};` },
+    { constant: "STANDING_RULES.floodPosts", section: "Suspension and termination", phrase: `it made ${S.floodPosts} or more posts within` },
+    { constant: "STANDING_RULES.floodMinutes", section: "Suspension and termination", phrase: `or more posts within ${count(S.floodMinutes, "minute")}, for up to` },
+    { constant: "STANDING_RULES.floodDays", section: "Suspension and termination", phrase: `minutes, for up to ${count(S.floodDays, "day")}; and, as a protective suspension` },
+    { constant: "STANDING_RULES.basisAgeDays", section: "Suspension and termination", phrase: `by a decision at most ${count(S.basisAgeDays, "day")} old` },
+    { constant: "STANDING_RULES.protectiveDays", section: "Suspension and termination", phrase: `once for each such decision and for up to ${count(S.protectiveDays, "day")}.` },
+    { constant: "REPLY_AIM_HOURS", section: "Suspension and termination", phrase: `korbat aims to answer a reply to a suspension taken at once within ${count(c.REPLY_AIM_HOURS, "hour")}.` },
+    { constant: "RETENTION.mailGiveUpDays", section: "Suspension and termination", phrase: `cannot send the email for ${count(R.mailGiveUpDays, "day")}, only the app can tell you` },
+    { constant: "APPEAL_MONTHS", section: "Suspension and termination", phrase: `your ${count(c.APPEAL_MONTHS, "month")} to appeal count again from that answer` },
+    { constant: "APPEAL_MONTHS", section: "Suspension and termination", phrase: `It is final when the ${count(c.APPEAL_MONTHS, "month")} for your appeal have passed unused` },
+    { constant: "APPEAL_MONTHS", section: "Appeals", phrase: `the ${count(c.APPEAL_MONTHS, "month")} to appeal it count from that answer` },
+    { constant: "STANDING_RULES.reportWarnMarks", section: "Reporting in bad faith", phrase: `If at least ${numberWord(S.reportWarnMarks)} of the reports you sent under the rules` },
+    { constant: "STANDING_RULES.reportFrameDays", section: "Reporting in bad faith", phrase: `you sent under the rules within ${count(S.reportFrameDays, "day")} are marked` },
+    { constant: "STANDING_RULES.reportFrameDays", section: "Reporting in bad faith", phrase: `while it counts, which is ${count(S.reportFrameDays, "day")},` },
+    { constant: "STANDING_RULES.reportWarnShare", section: "Reporting in bad faith", phrase: `they are at least ${share(S.reportWarnShare)} of the reports you sent under the rules in that time` },
+    { constant: "STANDING_RULES.reportRestrictMarks", section: "Reporting in bad faith", phrase: `If ${numberWord(S.reportRestrictMarks)} of the reports you send after that warning are marked` },
+    { constant: "STANDING_RULES.reportRestrictDays", section: "Reporting in bad faith", phrase: `for up to ${count(S.reportRestrictDays, "day")}; the restriction ends at once if the warning is lifted` },
+    // "Your data": what 3e keeps, by RETENTION's three new members (two of them numbers read from STANDING_RULES).
+    { constant: "RETENTION.standingRecord.strikeDays", section: "Your data", phrase: `a strike counts for ${count(R.standingRecord.strikeDays, "day")}` },
+    { constant: "RETENTION.standingRecord.ladderMemoryDays", section: "Your data", phrase: `a suspension counts toward the next one for ${count(R.standingRecord.ladderMemoryDays, "day")}` },
+    { constant: "RETENTION.standingRecord.warningDays", section: "Your data", phrase: `a warning about reporting for ${count(R.standingRecord.warningDays, "day")}` },
+    { constant: "RETENTION.reportCountDays", section: "Your data", phrase: `both are deleted after ${count(R.reportCountDays, "day")} and with the account` },
   ];
 }
 
@@ -107,6 +148,8 @@ const constantPaths = (c: Contracts): string[] => [
   ...numberPaths("APPEAL_MONTHS", c.APPEAL_MONTHS),
   ...numberPaths("DAILY_LIMITS", c.DAILY_LIMITS),
   ...numberPaths("RETENTION", c.RETENTION),
+  ...numberPaths("STANDING_RULES", c.STANDING_RULES),
+  ...numberPaths("REPLY_AIM_HOURS", c.REPLY_AIM_HOURS),
 ];
 
 /** A rule's name inside a sentence: its title without the leading "No". */
@@ -129,8 +172,6 @@ function measuresSentence(t: TermsModule, lead: string): string {
 const LEADS = { interim: "While korbat decides a case:", final: "When the case is decided:", either: "While it decides or when the case is decided:", lifted: "A later decision can lift each of them again:" };
 /** The labels a sentence of the measures' paragraph quotes, in order. */
 const labelsIn = (sentence: string): string[] => [...sentence.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
-/** 3e: the measures the terms list until Task 7 of 3e writes the standing measures' sections (W.7): 3c's, by their target. */
-const listedIn = (c: Contracts, kind: contracts.ActionKind): boolean => ["post", "image", "images", "display_name", "bio"].includes(c.MEASURES[kind].target);
 
 /** What the tables below hold of the terms, read with the constants and the rulebook they were built from. */
 function holds(t: TermsModule, c: Contracts, r: Rules): void {
@@ -147,18 +188,39 @@ function holds(t: TermsModule, c: Contracts, r: Rules): void {
   expect(text["Your data"]).toContain(`under rule R4 (${ruleName(r4)})`);
   expect(text["Appeals"]).toContain(`under rule R4 (${ruleName(r4)})`);
   // Every measure's label, in the sentence its two marks put it in; every reversal's in the last one.
-  const kinds = { interim: c.MEASURE_KINDS.filter((kind) => listedIn(c, kind) && c.MEASURES[kind].interim && !c.MEASURES[kind].final), final: c.MEASURE_KINDS.filter((kind) => listedIn(c, kind) && !c.MEASURES[kind].interim && c.MEASURES[kind].final), either: c.MEASURE_KINDS.filter((kind) => listedIn(c, kind) && c.MEASURES[kind].interim && c.MEASURES[kind].final) };
+  const kinds = { interim: c.MEASURE_KINDS.filter((kind) => c.MEASURES[kind].interim && !c.MEASURES[kind].final), final: c.MEASURE_KINDS.filter((kind) => !c.MEASURES[kind].interim && c.MEASURES[kind].final), either: c.MEASURE_KINDS.filter((kind) => c.MEASURES[kind].interim && c.MEASURES[kind].final) };
   for (const group of ["interim", "final", "either"] as const) expect(labelsIn(measuresSentence(t, LEADS[group])), group).toEqual(kinds[group].map((kind) => c.MEASURES[kind].label));
-  expect(labelsIn(measuresSentence(t, LEADS.lifted))).toEqual(c.REVERSAL_KINDS.filter((kind) => listedIn(c, kind)).map((kind) => c.MEASURES[kind].label));
+  expect(labelsIn(measuresSentence(t, LEADS.lifted))).toEqual(c.REVERSAL_KINDS.map((kind) => c.MEASURES[kind].label));
   // Every outcome's phrase, each in a paragraph of its own that says what it means.
   const answers = paragraphsOf(t, "Reports and notices").filter((paragraph) => paragraph.startsWith('"'));
   expect(answers.map((paragraph) => paragraph.slice(1, paragraph.indexOf('": ')))).toEqual(outcomePhrases(c).map(quoted));
   for (const paragraph of answers) expect(paragraph.slice(paragraph.indexOf('": ') + 3).length, paragraph).toBeGreaterThan(40);
+  // 3e: the scope phrases of an answer that a measure on an account gave, the placeholder's prefix, and a reply's period.
+  expect(text["Reports and notices"]).toContain(`the answer adds "${c.ACCOUNT_MEASURE_SCOPE.measure}", or "${c.ACCOUNT_MEASURE_SCOPE.retired}" when it retired the handle.`);
+  expect(text["Handles"]).toContain(`Your profile then shows a placeholder that begins with ${c.RETIRED_HANDLE_PREFIX},`);
+  expect(text["Handles"]).toContain(`Handles that begin with ${c.RETIRED_HANDLE_PREFIX} cannot be chosen.`);
+  expect(text["Your data"]).toContain(`The text of a reply to a suspension is kept ${c.RETENTION.replyText}; a reply that is not answered yet is never erased.`);
 }
 
 describe("the terms' sections", () => {
-  test("are these, in this order, under the draft's version: 3c adds five and rewrites two, without a new version", () => {
-    expect(terms.TERMS_SECTIONS.map((section) => section.title)).toEqual(["Draft", "Who can use korbat", "What you can post", "The rules", "Reports and notices", "How moderators decide", "Appeals", "Terrorist content", "Explore", "Your account", "Your data"]);
+  test("are these, in this order, under the draft's version: 3c adds five and rewrites two, 3e adds four after Appeals, without a new version", () => {
+    expect(terms.TERMS_SECTIONS.map((section) => section.title)).toEqual([
+      "Draft",
+      "Who can use korbat",
+      "What you can post",
+      "The rules",
+      "Reports and notices",
+      "How moderators decide",
+      "Appeals",
+      "Strikes",
+      "Suspension and termination",
+      "Reporting in bad faith",
+      "Handles",
+      "Terrorist content",
+      "Explore",
+      "Your account",
+      "Your data",
+    ]);
     expect(terms.TERMS_VERSION).toBe("draft-2026-09");
     // Contact is the page's, built from the build's address, and no section of the terms.
     expect(terms.TERMS_SECTIONS.map((section) => section.title)).not.toContain("Contact");
@@ -284,8 +346,94 @@ describe("the terms' sections", () => {
   });
 });
 
+describe("3e's sections and sentences (design, W.7)", () => {
+  test("Who can use korbat names what another account may not carry on, and points to the section that says it", () => {
+    expect(bodyOf(terms, "Who can use korbat")).toBe(
+      "You must be at least 16 years old. You can use a pseudonym. One person may hold more than one account, but not to carry on what another of their accounts was suspended or terminated for (Suspension and termination).",
+    );
+    expect(bodyOf(terms, "Who can use korbat")).not.toContain("to evade a suspension");
+  });
+
+  test("the four sections hold the design's paragraphs and sentences", () => {
+    expect(paragraphsOf(terms, "Strikes")).toHaveLength(1);
+    expect(paragraphsOf(terms, "Suspension and termination")).toHaveLength(6);
+    expect(paragraphsOf(terms, "Reporting in bad faith")).toHaveLength(2);
+    expect(paragraphsOf(terms, "Handles")).toHaveLength(1);
+    const said: Record<string, string[]> = {
+      Strikes: [
+        "When a moderator's final decision finds that a post of yours breaks a korbat rule, the decision also gives your account a strike.",
+        "A strike restricts nothing by itself and is used for one thing: counting toward a suspension.",
+        "A decision gives no strike when it rests on the law alone, when it concerns child sexual abuse material (rule R2), when it is about your profile and not a post, or while korbat is still deciding.",
+        "so several posts decided in one sitting count as one warning",
+        "A strike also counts when the post was already removed or deleted.",
+        "your strikes are listed under Settings, Cases",
+        "If that suspension was already over, it no longer counts toward a later one.",
+      ],
+      "Suspension and termination": [
+        "A moderator may choose fewer days, never more, and a moderator who chose fewer days still used that step.",
+        "After three such suspensions in that time, whatever their length, the next step may be the termination of the account, which only an admin decides.",
+        "Nothing happens automatically: a moderator reads the strikes and decides.",
+        "Such a decision finds no new breach: its ground is this section, and its statement says so and lists the strikes it rests on.",
+        "korbat cannot see whether an email it sent reached you, so keep the address of your account current.",
+        "The app shows the start as a date and time.",
+        "A reply sent later is read and answered too, and can end the suspension, but does not pause it.",
+        "korbat suspends an account at once, before any reply, only in four cases, each decided by an admin",
+        "the suspension is a protective measure and not a finding that you broke the law or a rule, it gives no strike, counts toward no later step, and ends on its date, or earlier if the seal is lifted.",
+        "Its appeal is reviewed at once and does not wait for the authorities.",
+        "An announced suspension never rests on one of these four cases.",
+        "While suspended you cannot post, reply, quote, like, repost, bookmark, follow, edit your profile, change your handle, upload images, ask for the verified badge, or report under korbat's rules.",
+        "Your profile and posts stay visible, without any mark, and others can still follow you and react to your posts.",
+        "Your posts do not appear in Explore while you are suspended, and your likes and reposts do not count there.",
+        "A second post from before that suspension is no ground for it.",
+        "nothing is deleted while your appeal or a reply of yours is unanswered",
+        "deleting it ends your appeal, since nothing is left to restore",
+        "After the deletion korbat keeps nothing to recognise a new account of yours by",
+        "an appeal does not hold a start, only a reply does",
+        "korbat treats that as the same conduct and decides about it like any other breach, on what the account does.",
+      ],
+      "Reporting in bad faith": [
+        "Report what you believe breaks a rule; a report that turns out wrong costs you nothing.",
+        "korbat acts only on reports that are manifestly unfounded",
+        "You see the mark on your list of reports together with the report's outcome, and you can ask for a re-examination.",
+        "a report counts once, by the day you sent it, however many of its items were marked, so no single report can lead to a warning.",
+        "the count alone decides nothing",
+        "Notices of illegal content, reports of child sexual abuse material and requests for re-examination are never counted and never restricted.",
+        "You can appeal the warning and the restriction.",
+      ],
+      Handles: [
+        "When the breach lies in a handle itself (impersonation, someone's private information, a threat), a moderator may retire it.",
+        "A retired handle can be used by nobody again, you included.",
+        "you can choose a new handle without the usual wait: at once, or, while your account is suspended, when the suspension ends.",
+        "nobody else could take it meanwhile",
+        "also when the breach was someone's private information (rule R4): refusing it needs it.",
+      ],
+      Appeals: [
+        "If a final decision restricts your content or your account, you can appeal it once",
+        "An appeal never holds the start of a suspension; a reply does.",
+        "The appeal of a protective suspension is reviewed at once; only the appeal of a decision that seals images waits for the authorities.",
+      ],
+      "Reports and notices": [
+        "When korbat's answer to a report about an account is a measure on that account, korbat tells you that it took a measure, and not which or for how long",
+        "korbat does not tell you what happens to that account afterwards.",
+      ],
+      "Your data": [
+        "korbat keeps the record of every strike, suspension, termination, warning and retired handle with its decision, as it keeps every decision. What ends is its use:",
+        "To decide about reporting in bad faith korbat counts, for each account and day, how many reports under its rules the account sent, and keeps which of them a moderator marked manifestly unfounded;",
+        "so for that long a marked report stays linked to the account that sent it. A retired handle is kept as a handle (Handles). Your export holds all of this.",
+        "while it can still be re-examined, except through the mark of a report found manifestly unfounded (Reporting in bad faith).",
+      ],
+    };
+    for (const [title, sentences] of Object.entries(said)) for (const sentence of sentences) expect(bodyOf(terms, title), `${title}: ${sentence}`).toContain(sentence);
+    // No text says more of a mail than korbat knows: it was sent, never delivered or handed over.
+    const all = terms.TERMS_SECTIONS.map((section) => section.body).join(" ");
+    expect(all).not.toMatch(/delivered|handed to your mail provider/);
+    // A protective suspension is never worded as a finding.
+    expect(bodyOf(terms, "Suspension and termination")).not.toContain("It breaks");
+  });
+});
+
 describe("the table tests: the terms' numbers, rules, measures and outcomes are their constants'", () => {
-  test("the table of numbers names every number of NOTICE_LIMITS, CSAM_NOTICE_MAX_ACCOUNTS, SUSPECT_EARLIER_MONTHS, APPEAL_MONTHS, DAILY_LIMITS and RETENTION", () => {
+  test("the table of numbers names every number of NOTICE_LIMITS, CSAM_NOTICE_MAX_ACCOUNTS, SUSPECT_EARLIER_MONTHS, APPEAL_MONTHS, DAILY_LIMITS, RETENTION, STANDING_RULES and REPLY_AIM_HOURS", () => {
     expect([...new Set(numbersTable(contracts).map((row) => row.constant))].sort()).toEqual(constantPaths(contracts).sort());
   });
 
@@ -299,25 +447,35 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     expect(text["Your data"]).toContain("Each is deleted 30 days after it was taken");
     expect(text["How moderators decide"]).toContain("under R2 or R5 or on a report made on the anonymous path");
     expect(labelsIn(measuresSentence(terms, LEADS.interim))).toEqual(["Withhold the post", "Withhold one image"]);
-    expect(labelsIn(measuresSentence(terms, LEADS.final))).toEqual(["Remove", "Remove one image"]);
+    expect(labelsIn(measuresSentence(terms, LEADS.final))).toEqual(["Remove", "Remove one image", "Strike", "Suspend the account", "Terminate the account", "Retire the handle", "Warn about reporting", "Restrict reporting"]);
     expect(labelsIn(measuresSentence(terms, LEADS.either))).toEqual(["Seal the images this case reaches", "Reset display name", "Reset bio"]);
     expect(text["Reports and notices"]).toContain('"access restricted: it breaks korbat rule [number] ([title])": ');
+    // 3e's numbers as a reader meets them.
+    expect(text["Strikes"]).toContain("It counts for 90 days from its decision.");
+    expect(text["Suspension and termination"]).toContain("for at most three days the first time, seven the second and 30 the third, counting the suspensions decided in the last 365 days");
+    expect(text["Suspension and termination"]).toContain("The suspension starts 168 hours after korbat sent that email. If korbat's mail service refuses your address or cannot send the email for five days, only the app can tell you, and the suspension starts 336 hours after the decision.");
+    expect(text["Suspension and termination"]).toContain("it made 20 or more posts within 60 minutes, for up to seven days");
+    expect(text["Suspension and termination"]).toContain("korbat aims to answer a reply to a suspension taken at once within 24 hours.");
+    expect(text["Reporting in bad faith"]).toContain("If at least five of the reports you sent under the rules within 90 days are marked, and they are at least half of the reports you sent under the rules in that time");
+    expect(text["Handles"]).toContain("a placeholder that begins with retired_,");
+    expect(text["Your data"]).toContain("a strike counts for 90 days, a suspension counts toward the next one for 365 days, a warning about reporting for 90 days.");
   });
 
-  test("the terms name no measure and no period the constants lack: no strike, no retired handle, no suspension, no preservation for an order; and no number but the constants', the emergency switch's 48 hours and the Regulation's own", () => {
+  test("the terms name no measure and no period the constants lack: no preservation for an order and no ban; every kind of the ledger is quoted; and no number but the constants', the emergency switch's 48 hours and the Regulation's own", () => {
     const text = moderationText(terms);
     const all = Object.values(text).join(" ");
-    for (const absent of [/\bstrikes?\b/i, /retire/i, /suspen/i, /preserv/i, /\bban(s|ned)?\b/i]) expect(absent.test(all), String(absent)).toBe(false);
-    // The quoted labels are the ledger's twelve kinds of 3c and nothing else (3e: Task 7 lists the standing measures).
+    // 3e names strikes, suspensions and retired handles (W.7); an order's preservation is 3f's, and korbat bans nobody.
+    for (const absent of [/preserv/i, /\bban(s|ned)?\b/i]) expect(absent.test(all), String(absent)).toBe(false);
+    // The quoted labels are the ledger's 22 kinds and nothing else.
     const labels = Object.values(LEADS).flatMap((lead) => labelsIn(measuresSentence(terms, lead)));
-    expect([...labels].sort()).toEqual(contracts.ACTION_KINDS.filter((kind) => listedIn(contracts, kind)).map((kind) => contracts.MEASURES[kind].label).sort());
+    expect([...labels].sort()).toEqual(contracts.ACTION_KINDS.map((kind) => contracts.MEASURES[kind].label).sort());
     // Every run of digits outside the rulebook's own texts, a rule's number and the Regulation's articles is a constant's.
     const values = new Set<string>();
     const collect = (value: unknown): void => {
       if (typeof value === "number") values.add(String(value));
       else if (value !== null && typeof value === "object") Object.values(value).forEach(collect);
     };
-    collect([contracts.NOTICE_LIMITS, contracts.DAILY_LIMITS, contracts.RETENTION, contracts.CSAM_NOTICE_MAX_ACCOUNTS, contracts.SUSPECT_EARLIER_MONTHS, contracts.APPEAL_MONTHS]);
+    collect([contracts.NOTICE_LIMITS, contracts.DAILY_LIMITS, contracts.RETENTION, contracts.CSAM_NOTICE_MAX_ACCOUNTS, contracts.SUSPECT_EARLIER_MONTHS, contracts.APPEAL_MONTHS, contracts.STANDING_RULES, contracts.REPLY_AIM_HOURS]);
     const outside = Object.entries(text)
       .filter(([title]) => title !== "The rules")
       .map(([, body]) => body)
@@ -339,6 +497,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       let next = 100;
       const renumber = (value: unknown): unknown => {
         if (typeof value === "number") return ++next;
+        if (Array.isArray(value)) return value.map(renumber);
         if (value === null || typeof value !== "object") return value;
         return Object.fromEntries(Object.entries(value).map(([key, member]) => [key, renumber(member)]));
       };
@@ -348,7 +507,12 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
           ...actual,
           NOTICE_LIMITS: renumber(actual.NOTICE_LIMITS),
           DAILY_LIMITS: renumber(actual.DAILY_LIMITS),
-          RETENTION: renumber(actual.RETENTION),
+          // RETENTION's one phrase is changed too, as a rule's text is.
+          RETENTION: { ...(renumber(actual.RETENTION) as object), replyText: "for the period of a reply's text" },
+          STANDING_RULES: renumber(actual.STANDING_RULES),
+          REPLY_AIM_HOURS: renumber(actual.REPLY_AIM_HOURS),
+          ACCOUNT_MEASURE_SCOPE: { retired: "the phrase of a retirement.", measure: "the phrase of an account measure." },
+          RETIRED_HANDLE_PREFIX: "gone_",
           APPEAL_MONTHS: renumber(actual.APPEAL_MONTHS),
           CSAM_NOTICE_MAX_ACCOUNTS: renumber(actual.CSAM_NOTICE_MAX_ACCOUNTS),
           SUSPECT_EARLIER_MONTHS: renumber(actual.SUSPECT_EARLIER_MONTHS),
@@ -375,6 +539,8 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
 
     test("the constants the terms were built from are the changed ones", () => {
       expect(changed.contracts.RETENTION.backupDays).not.toBe(contracts.RETENTION.backupDays);
+      expect(changed.contracts.STANDING_RULES.strikeDays).not.toBe(contracts.STANDING_RULES.strikeDays);
+      expect(changed.contracts.STANDING_RULES.ladderDays).toHaveLength(3);
       expect(changed.contracts.APPEAL_MONTHS).toBeGreaterThan(100);
       expect(changed.rules.RULES_VERSION).toBe(9);
       expect(changed.terms).not.toBe(terms);
@@ -384,7 +550,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       holds(changed.terms, changed.contracts, changed.rules);
       const text = moderationText(changed.terms);
       expect(text["How moderators decide"]).toContain("under R2, R3 or R5 or on a report made on the anonymous path");
-      expect(labelsIn(measuresSentence(changed.terms, LEADS.final))).toEqual(["the label of remove_media"]);
+      expect(labelsIn(measuresSentence(changed.terms, LEADS.final))).toEqual(["remove_media", "strike", "suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting"].map((kind) => `the label of ${kind}`));
       expect(labelsIn(measuresSentence(changed.terms, LEADS.either))).toEqual(["the label of remove", "the label of seal_media", "the label of reset_display_name", "the label of reset_bio"]);
       expect(text["What you can post"]).toContain("(title of R1, title of R2, title of R3, title of R4, title of R5, title of R6)");
     });
@@ -403,6 +569,8 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       }
       for (const spec of Object.values(contracts.MEASURES)) expect(all.includes(`"${spec.label}"`), spec.label).toBe(false);
       for (const phrase of outcomePhrases(contracts)) expect(all.includes(quoted(phrase)), phrase).toBe(false);
+      // 3e: the scope phrases, the placeholder's prefix and a reply's period are the constants', never typed.
+      for (const phrase of [contracts.ACCOUNT_MEASURE_SCOPE.measure, contracts.ACCOUNT_MEASURE_SCOPE.retired, contracts.RETIRED_HANDLE_PREFIX, contracts.RETENTION.replyText]) expect(all.includes(phrase), phrase).toBe(false);
       // The only digits left that no changed constant printed are the emergency switch's and the Regulation's.
       const values = new Set<string>();
       const collect = (value: unknown): void => {
@@ -410,7 +578,9 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
         else if (value !== null && typeof value === "object") Object.values(value).forEach(collect);
       };
       const c = changed.contracts;
+      // 3e prints two numbers worked out from a constant: the earlier strikes after a suspension, and the share as a percentage.
       collect([c.NOTICE_LIMITS, c.DAILY_LIMITS, c.RETENTION, c.CSAM_NOTICE_MAX_ACCOUNTS, c.SUSPECT_EARLIER_MONTHS, c.APPEAL_MONTHS, c.APPEAL_MONTHS + Math.ceil(c.RETENTION.intakeDays / 30), changed.rules.RULES_VERSION]);
+      collect([c.STANDING_RULES, c.REPLY_AIM_HOURS, c.STANDING_RULES.ladderStrikes - 1, c.STANDING_RULES.reportWarnShare * 100]);
       const outside = all.replace(/Article [0-9]+\([0-9]+\)|Regulation \(EU\) [0-9]+\/[0-9]+/g, " ").replace(/\bR[1-6]\b/g, " ");
       expect((outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual(["48"]);
     });

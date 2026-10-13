@@ -435,7 +435,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         { name: "auth.users_deleted_mark", owner: "korbat_migrate", definer: false, config: auth, api: false, auth: false, pub: false },
       ]);
       // Everything the API role may call of what the migrator owns, in both schemas, after the last migration of 3c (design,
-      // section 11), and the five of 3e's standing ledger: the constants, a basis, the strike rule, the appeal's start and the terminations due.
+      // section 11), and the five of 3e's standing ledger: the constants, a basis, the strike rule, the appeal's start and the terminations due;
+      // and 3e's two steps of the retention job (0024_standing_retention): a reply's text and the reporting counts.
       const callable = all.filter((f) => f.owner === "korbat_migrate" && f.api).map((f) => f.name);
       expect(callable).toEqual([
         "public.appeal_deadline",
@@ -447,7 +448,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.delete_access_log",
         "public.erase_case_evidence",
         "public.erase_intake",
+        "public.erase_reply_statements",
         "public.erase_statement_texts",
+        "public.forget_report_counts",
         "public.forget_reporter",
         "public.frozen_for",
         "public.intake_due_at",

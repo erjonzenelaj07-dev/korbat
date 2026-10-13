@@ -52,6 +52,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { isDeepStrictEqual } from "node:util";
 import { CONSOLE_CSP } from "../apps/admin/site-headers.mjs";
 
 const argv = process.argv.slice(2);
@@ -299,9 +300,9 @@ async function consoleSite() {
   check("signed out, the console's site answers /api/staff/me with 401 staff_session_required", onConsole.status === 401 && onConsole.body?.error?.code === "staff_session_required", onConsole.summary);
 
   // The console's case routes (3c design, section 12) stand behind the same two doors: the overview, the queue, a case
-  // and the appeals. The staff session is asked for before anything of the request is read, so a case that does not
-  // exist answers like the others.
-  const caseRoutes = ["/api/staff/overview", "/api/staff/queue", `/api/staff/cases/${randomUUID()}`, "/api/staff/appeals"];
+  // and the appeals, and since account sanctions (3e design, section 12.2) the Standing screen's lists. The staff session
+  // is asked for before anything of the request is read, so a case that does not exist answers like the others.
+  const caseRoutes = ["/api/staff/overview", "/api/staff/queue", `/api/staff/cases/${randomUUID()}`, "/api/staff/appeals", "/api/staff/standing"];
   const answers = (list) => list.map((answer, index) => `${caseRoutes[index]}: ${answer.summary}`).join("; ");
   const casesOnApp = await Promise.all(caseRoutes.map((path) => getJson(`${base}${path}`)));
   check(
@@ -551,6 +552,10 @@ async function main() {
   const token = onboarding.body.token;
   const me = await api("/api/me", { token });
   check("/api/me for the new account", me.status === 200 && me.body?.user?.email === email && me.body?.user?.role === "user", me.summary);
+  // Account sanctions (3e design, section 12.2): an onboarded account's standing, read fresh, holds no strike, no
+  // measure, no restriction of reporting and no retired handle. A suspension needs a staff key: the walk-through's.
+  const noStanding = { activeStrikes: 0, measure: null, reporting: null, handleRetired: false };
+  check("/api/me carries the new account's standing: no strike, no measure, no restriction", isDeepStrictEqual(me.body?.standing, noStanding), JSON.stringify(me.body?.standing));
 
   const created = await api("/api/posts", { json: { body: "smoke test post" }, token });
   check("create a post", created.status === 201 && typeof created.body?.id === "string", created.summary);

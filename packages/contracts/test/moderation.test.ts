@@ -17,6 +17,7 @@ import {
   RULE_IDS,
   SEAL_LIST_MAX,
   SNAPSHOT_DIGEST_TAG,
+  STANDING_RULES,
   SUSPECT_EARLIER_MONTHS,
   TDB_CATEGORIES,
   TDB_FORM_CATEGORIES,
@@ -170,9 +171,16 @@ describe("limits and periods", () => {
       backupDays: 30,
       draftHours: 24,
       mailGiveUpDays: 5,
+      // 3e (design, sections 6.7 and 10.1, W.7): a reply's text, the reporting counts and the record of standing measures.
+      replyText: "until korbat has answered it and its decision can no longer be appealed",
+      reportCountDays: 90,
+      standingRecord: { strikeDays: 90, ladderMemoryDays: 365, warningDays: 90 },
     });
     // Content restricted under R4 goes when its restriction is final: the appeal's window.
     expect(RETENTION.r4FinalMonths).toBe(APPEAL_MONTHS);
+    // 3e's periods are the standing rules' own numbers, read from STANDING_RULES and never typed twice.
+    expect(RETENTION.reportCountDays).toBe(STANDING_RULES.reportFrameDays);
+    expect(RETENTION.standingRecord).toEqual({ strikeDays: STANDING_RULES.strikeDays, ladderMemoryDays: STANDING_RULES.ladderMemoryDays, warningDays: STANDING_RULES.reportFrameDays });
   });
 });
 

@@ -227,8 +227,11 @@ const actionKey = (action: { kind: unknown; mediaId: unknown; days?: unknown; an
  *   2. Every decision is named by exactly one such row, written by the deciding account on the decision's case (for a
  *      review, on the reviewed decision), whose params equal the decision's own columns and whose actions equal its
  *      ledger rows as a set (3e: with each row's days and whether it was announced; the marks the decision set equal the
- *      params' `unfounded`, and a withdrawal for another measure its `replaced`). A row that names a decision korbat does
- *      not hold is reported too.
+ *      params' `unfounded`, and a withdrawal for another measure its `replaced`). A signed mark that korbat's own rules
+ *      deleted is no difference: its report was sent on a UTC day before the frame of the reporting counts (the
+ *      retention job's step), or korbat no longer knows who sent the report (the sender's account was purged, which
+ *      deletes its marks; an intake whose record was erased also forgets its sender, so a mark deleted by hand from such
+ *      a report is not told apart). A row that names a decision korbat does not hold is reported too.
  *   3. Every post's level and every image's state equal what the ledger of measures gives, worked out here from the
  *      ledger's rows, the cases' closures, the items and the erasure marks, as the database's own writer derives them;
  *      and every post a seal in force lists still has the number of image rows the seal recorded.
@@ -308,15 +311,19 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
   let decisions = 0;
   const seen = new Set<string>();
   for (let after: string | null = null; ; ) {
-    const page: { id: string; d: Record<string, unknown>; actions: { kind: string; mediaId: string | null; days: number | null; announced: boolean | null }[]; marks: string[]; replaced: boolean }[] = await rowsOf(
+    const page: { id: string; d: Record<string, unknown>; actions: { kind: string; mediaId: string | null; days: number | null; announced: boolean | null }[]; marks: string[]; forgotten: string[]; replaced: boolean }[] = await rowsOf(
       q,
       sql`select d.id, to_jsonb(d) as d,
                  coalesce((select jsonb_agg(jsonb_build_object('kind', a.kind, 'mediaId', a.media_id, 'days', a.days, 'announced', a.announced)) from decision_actions a where a.decision_id = d.id), '[]'::jsonb) as actions,
                  coalesce((select jsonb_agg(m.item_id) from unfounded_marks m where m.decision_id = d.id), '[]'::jsonb) as marks,
+                 coalesce((select jsonb_agg(i.id) from intake_items i join intakes n on n.id = i.intake_id
+                            where i.answered_by = d.id
+                              and ((n.received_at at time zone 'UTC')::date <= (now() at time zone 'UTC')::date - (select k.report_frame_days from standing_rules() k)
+                                   or n.reporter_id is null)), '[]'::jsonb) as forgotten,
                  exists (select 1 from decision_actions a where a.decision_id = d.id and a.replaced) as replaced
             from decisions d where ${after === null ? sql`true` : sql`d.id > ${after}::uuid`} order by d.id limit ${PAGE}`,
     );
-    for (const { id, d, actions, marks, replaced } of page) {
+    for (const { id, d, actions, marks, forgotten, replaced } of page) {
       decisions++;
       seen.add(id);
       const named = naming.get(id) ?? [];
@@ -344,8 +351,11 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
       // 3e: the marks the decision set, as the sorted item ids its params signed, and whether it withdrew a suspension for
       // another measure; a review signs neither, and a row signed before 3e lacks both, which reads as none and false.
       if (!review) {
-        const signed = row.params.unfounded === undefined ? "" : Array.isArray(row.params.unfounded) ? row.params.unfounded.map(String).sort().join("|") : null;
-        if (signed !== [...marks].sort().join("|")) differing.push("unfounded");
+        const signed = row.params.unfounded === undefined ? [] : Array.isArray(row.params.unfounded) ? row.params.unfounded.map(String) : null;
+        // 3e Task 7: a signed mark with no row is no difference when korbat's own rules may have deleted it (above).
+        const held = new Set(marks);
+        const expected = signed?.filter((item) => held.has(item) || !forgotten.includes(item));
+        if (expected === undefined || [...expected].sort().join("|") !== [...marks].sort().join("|")) differing.push("unfounded");
         if ((row.params.replaced ?? false) !== replaced) differing.push("replaced");
       }
       const recorded = Array.isArray(row.params.actions) ? row.params.actions.filter(isObject).map((a) => actionKey({ kind: a.kind, mediaId: a.mediaId, days: a.days, announced: a.announced })) : null;

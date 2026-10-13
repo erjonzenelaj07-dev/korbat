@@ -6,13 +6,14 @@ import { createJob, type JobLock } from "../lib/jobs";
 import { DISPOSAL_BATCH } from "../media";
 import { appendAuditRow } from "../staff";
 import type { ModerationDeps } from "./context";
-import { deleteAccessLog, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseStatementTexts, redactR4, sweepStaffTexts } from "./repo";
+import { deleteAccessLog, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseReplyStatements, eraseStatementTexts, forgetReportCounts, redactR4, sweepStaffTexts } from "./repo";
 
 /**
  * The retention job (3c design, sections 6.4, 6.6 and 7.9): every ten minutes it deletes the drafts nobody confirmed,
  * erases the evidence of the cases and the records of the intakes that are due, makes R4 redactions final, erases the
- * statements of accounts deleted for 12 months, deletes the old access rows, and deletes the image rows that a case or a
- * freeze kept and nothing retains any more.
+ * statements of accounts deleted for 12 months, erases the texts of replies to suspensions that are answered and final
+ * and forgets the reporting counts of the days before their frame (3e design, section 7.14), deletes the old access rows,
+ * and deletes the image rows that a case or a freeze kept and nothing retains any more.
  *
  * The job only names what it believes is due. Each erase function of migration 0018 checks its own rule again, against
  * values the API role cannot set, and the two gates of the freeze decide for every snapshot and every image row: so a
@@ -36,7 +37,7 @@ export const RETENTION_ACTION = "moderation_retention";
 export const RETENTION_OFF_WARNING = "moderation-retention: off (MODERATION_RETENTION)";
 
 /** The steps, by the name their audit rows and log lines carry. */
-export type RetentionStep = "drafts" | "case_evidence" | "intake_record" | "redaction" | "statements" | "access_log" | "images";
+export type RetentionStep = "drafts" | "case_evidence" | "intake_record" | "redaction" | "statements" | "reply_statements" | "report_counts" | "access_log" | "images";
 
 /** What one round did, for its log line and for the tests: counts only. */
 export interface RetentionReport {
@@ -47,6 +48,9 @@ export interface RetentionReport {
   intakes: number;
   redactions: number;
   statements: number;
+  /** 3e: the replies whose text was erased, and the marks and daily tallies of reporting deleted with their frame. */
+  replies: number;
+  reportCounts: number;
   /** The access rows deleted, with the reveal reasons erased before them. */
   accessLog: number;
   /** The size of each batch of image rows the disposal deleted, in order; the last one is smaller than a full batch. */
@@ -128,7 +132,7 @@ async function dispose(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, re
 
 /** One round. A plain function, so the tests call it directly. */
 export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">): Promise<RetentionReport> {
-  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, accessLog: 0, batches: [], failed: 0 };
+  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, accessLog: 0, batches: [], failed: 0 };
   /** A step in a try of its own: what it raises is logged with the step, and the round goes on. */
   const step = async (name: RetentionStep, run: () => Promise<void>) => {
     try {
@@ -168,6 +172,14 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
   await step("statements", async () => {
     report.statements = await each("statements", "decisionId", await dueStatements(deps.apiDb, RETENTION.statementMonths), eraseStatementTexts);
   });
+  // 3e: each of the two is one call of its function, which checks its own rule against values the API role cannot set
+  // (the reply's answer, the decision's finality, the frame of standing_rules()), so its audit row names no id.
+  await step("reply_statements", async () => {
+    report.replies = await inStep(deps, "reply_statements", {}, (tx) => eraseReplyStatements(tx));
+  });
+  await step("report_counts", async () => {
+    report.reportCounts = await inStep(deps, "report_counts", {}, (tx) => forgetReportCounts(tx));
+  });
   await step("access_log", async () => {
     report.accessLog = await inStep(deps, "access_log", {}, (tx) => deleteAccessLog(tx, RETENTION.accessLogMonths));
   });
@@ -175,7 +187,7 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
 
   // One line for a round that did something or failed somewhere: counts only.
   const images = report.batches.reduce((sum, size) => sum + size, 0);
-  if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.accessLog + images + report.failed > 0) {
+  if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.replies + report.reportCounts + report.accessLog + images + report.failed > 0) {
     deps.log.info({ job: RETENTION_JOB, ...report, images }, "moderation-retention: round");
   }
   return report;

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { STANDING_RULES } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { runStaffCommand } from "../../src/cli/staff";
@@ -281,6 +282,34 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, l
         expect((await found()).filter((line) => line.includes(String(plainPlace)))).toEqual([]);
         // And such a row beside a decision that holds a mark is reported: what was not signed is not what korbat holds.
         await tx.execute(sql`update audit_log set metadata = metadata #- '{params,unfounded}' where chain_seq = ${place}::bigint`);
+        expect(await found()).toEqual([`decision: it differs from the audit row at place ${place} that names it: unfounded`]);
+      });
+    });
+
+    test("3e Task 7: a mark that korbat's own rules deleted is no difference: its report's day left the frame (the retention job's step) or its sender was forgotten (the account's purge); a mark deleted while korbat still knows its report and sender is", async () => {
+      await inWorld(async (tx) => {
+        const p = await imagePost(tx, 0);
+        const senders = [await newProfile(tx as unknown as Db), await newProfile(tx as unknown as Db), await newProfile(tx as unknown as Db)];
+        const reports = [];
+        for (const sender of senders) reports.push(await intake(tx, ground.rule(sender.id, "R1"), aPost(p.postId)));
+        const items = reports.map((recorded) => recorded.items[0]!.id);
+        const marked = await decideIn(tx, mod, reports[0]!.items[0]!.caseId!, { kind: "final", outcome: "no_violation", unfounded: items });
+        const [place] = await placesOf(tx, [marked]);
+        const found = async () => about((await textVerify(tx, Number.MAX_SAFE_INTEGER)).problems, [marked, place!]).sort();
+        expect(await found()).toEqual([]);
+        // The first report's day leaves the frame: forget_report_counts deletes its mark, as the retention job does.
+        await tx.execute(sql`update intakes set received_at = now() - make_interval(days => ${STANDING_RULES.reportFrameDays}::int) where id = ${reports[0]!.intakeId}::uuid`);
+        await tx.execute(sql`update unfounded_marks set reported_at = now() - make_interval(days => ${STANDING_RULES.reportFrameDays}::int) where item_id = ${items[0]!}::uuid`);
+        await tx.execute(sql`select public.forget_report_counts()`);
+        expect(await one(tx, sql`select count(*)::int as n from unfounded_marks where decision_id = ${marked}::uuid`)).toEqual({ n: 2 });
+        expect(await found()).toEqual([]);
+        // The second sender's account is deleted: its purge forgets who sent the report and deletes the mark with it.
+        await authAccount(tx, senders[1]!.id, "0 seconds");
+        await tx.execute(sql`select public.forget_reporter(${senders[1]!.id}::uuid)`);
+        expect(await one(tx, sql`select count(*)::int as n from unfounded_marks where decision_id = ${marked}::uuid`)).toEqual({ n: 1 });
+        expect(await found()).toEqual([]);
+        // The third mark taken out by hand, while its report is in the frame and its sender known: that is a difference.
+        await tx.execute(sql`delete from unfounded_marks where item_id = ${items[2]!}::uuid`);
         expect(await found()).toEqual([`decision: it differs from the audit row at place ${place} that names it: unfounded`]);
       });
     });

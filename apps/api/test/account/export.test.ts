@@ -8,7 +8,7 @@ import { Deflate, strFromU8, unzipSync } from "fflate";
 import { Hono, type MiddlewareHandler } from "hono";
 import pino from "pino";
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { ExportFormat } from "@korbat/contracts";
+import { ExportFormat, STANDING_RULES } from "@korbat/contracts";
 import { MAX_VARIANT_BYTES } from "@korbat/media-protocol";
 import { AccountError, type AccountDeps } from "../../src/account/context";
 import { EXPORT_WINDOW_MS, buildExport, enforceExportLimit, exportFilename, exportJson, mediaEntry, writeExport } from "../../src/account/flows/export";
@@ -256,6 +256,33 @@ function harness() {
     decidedBy: "a staff member the export must never name",
   } satisfies ModerationExport["decisions"][number] & { decidedBy: string };
   const moderation: ModerationExport = {
+    // 3e (W.8): the report counts, a reply and a suspension at once that a correction lifted, each object's members in
+    // another order than the format's.
+    reporting: {
+      markedReports: 1,
+      marks: [{ counts: true, withdrawnAt: null, markedAt: new Date(T0 - DAY_MS).toISOString(), sentOn: "2026-09-11", position: 1, ref: "N-ABCDEFGH24" }],
+      days: [{ reports: 2, day: "2026-09-11" }],
+      frameDays: 90,
+    },
+    replies: [{ answeredBy: correctionId, answeredAt: new Date(T0 - DAY_MS).toISOString(), erasedAt: null, text: "I did not write that post.", onTime: false, filedAt: new Date(T0 - 2 * DAY_MS).toISOString(), decisionId: removalId }],
+    standing: [
+      {
+        basisEndedBy: null,
+        basisEndedAt: null,
+        replaced: false,
+        liftedBy: correctionId,
+        liftedAt: new Date(T0 - DAY_MS).toISOString(),
+        endsAt: new Date(T0 - DAY_MS).toISOString(),
+        startsAt: new Date(T0 - 3 * DAY_MS).toISOString(),
+        earliestStart: new Date(T0 - 3 * DAY_MS).toISOString(),
+        decidedAt: new Date(T0 - 3 * DAY_MS).toISOString(),
+        announced: false,
+        days: 7,
+        basis: "threat",
+        kind: "suspend",
+        decisionId: removalId,
+      },
+    ],
     strikes: [],
     reports: [
       {
@@ -508,6 +535,32 @@ function expectedModeration(h: Harness) {
     ],
     // 3e (W.8): the strikes the account was given, after its reports.
     strikes: [],
+    // Then its standing measures, its replies and its report counts.
+    standing: [
+      {
+        decisionId: h.removalId,
+        kind: "suspend",
+        basis: "threat",
+        days: 7,
+        announced: false,
+        decidedAt: iso(T0 - 3 * DAY_MS),
+        earliestStart: iso(T0 - 3 * DAY_MS),
+        startsAt: iso(T0 - 3 * DAY_MS),
+        endsAt: iso(T0 - DAY_MS),
+        liftedAt: iso(T0 - DAY_MS),
+        liftedBy: h.correctionId,
+        replaced: false,
+        basisEndedAt: null,
+        basisEndedBy: null,
+      },
+    ],
+    replies: [{ decisionId: h.removalId, filedAt: iso(T0 - 2 * DAY_MS), onTime: false, text: "I did not write that post.", erasedAt: null, answeredAt: iso(T0 - DAY_MS), answeredBy: h.correctionId }],
+    reporting: {
+      frameDays: 90,
+      days: [{ day: "2026-09-11", reports: 2 }],
+      marks: [{ ref: "N-ABCDEFGH24", position: 1, sentOn: "2026-09-11", markedAt: iso(T0 - DAY_MS), withdrawnAt: null, counts: true }],
+      markedReports: 1,
+    },
   };
 }
 
@@ -653,11 +706,11 @@ describe("building the export", () => {
     expect(h.asked).toEqual([h.userId]);
   });
 
-  test("an account module built without the moderation module still writes the member, with three empty lists", async () => {
+  test("an account module built without the moderation module still writes the member, with empty lists and counts over the standing rules' frame", async () => {
     const h = harness();
     const deps: AccountDeps = { ...h.deps, moderation: undefined };
     const text = (await collect(exportJson(await buildExport(deps, h.userId, h.currentSession, h.now())))).join("");
-    expect(text).toBe(JSON.stringify({ ...expectedDocument(h), moderation: { decisions: [], reports: [], strikes: [] } }, null, 2));
+    expect(text).toBe(JSON.stringify({ ...expectedDocument(h), moderation: { decisions: [], reports: [], strikes: [], standing: [], replies: [], reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 } } }, null, 2));
     expect(() => ExportFormat.parse(JSON.parse(text))).not.toThrow();
     expect(h.asked).toEqual([]);
   });

@@ -169,6 +169,13 @@
       "when": 1791827521579,
       "tag": "0023_explore_resume",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791830459340,
+      "tag": "0024_standing_retention",
+      "breakpoints": true
     }
   ]
 }

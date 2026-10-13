@@ -2116,6 +2116,13 @@ export const eraseStatementTexts = (q: Runner, decisionId: string) => changedBy(
 export const deleteAccessLog = (q: Runner, months: number) => changedBy(q, sql`public.delete_access_log(now() - make_interval(months => ${months}::int))`);
 /** Forgets that a deleted account sent its reports; 0 for an account whose auth row is not marked deleted. */
 export const forgetReporter = (q: Runner, accountId: string) => changedBy(q, sql`public.forget_reporter(${accountId}::uuid)`);
+/**
+ * 3e: erases the text of every reply to a suspension or a termination that is answered and whose decision is final for
+ * its author, keeping its digest and its row; an unanswered reply keeps its text however old. Answers how many it erased.
+ */
+export const eraseReplyStatements = (q: Runner) => changedBy(q, sql`public.erase_reply_statements()`);
+/** 3e: deletes the marks and the tallies of reports sent on a UTC day before the frame of the reporting counts; answers how many rows. */
+export const forgetReportCounts = (q: Runner) => changedBy(q, sql`public.forget_report_counts()`);
 
 /** Makes an R4 restriction's erasure final; false when it changed nothing (its post is frozen, or another round was faster). */
 export async function redactR4(q: Runner, decisionId: string): Promise<boolean> {

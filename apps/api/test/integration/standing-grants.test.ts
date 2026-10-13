@@ -165,6 +165,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
         "public.unfounded_marks_recheck": [true, false, false],
         "public.report_tallies_count": [true, false, false],
         "public.forget_reporter": [true, true, false],
+        // 3e Task 7, retention: the two steps of the retention job, which the API runs in each round.
+        "public.erase_reply_statements": [true, true, false],
+        "public.forget_report_counts": [true, true, false],
       };
       const all = await functions();
       for (const [name, [definer, api, auth]] of Object.entries(expected)) {
@@ -195,10 +198,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
       expect(matching(/retired_at = /)).toEqual(["public.decision_actions_apply"]);
       expect(matching(/'retired_' [|][|]/)).toEqual(["public.decision_actions_apply"]);
       expect(matching(/UPDATE public[.]suspension_replies[^;]*answered_by/i)).toEqual(["public.decision_actions_apply", "public.decisions_apply"]);
+      // Task 7: erase_reply_statements is the one writer of a reply's erased_at, and the only function that blanks its text.
+      expect(matching(/UPDATE public[.]suspension_replies[^;]*erased_at/i)).toEqual(["public.erase_reply_statements"]);
+      expect(matching(/UPDATE public[.]suspension_replies[^;]*statement = NULL/i)).toEqual(["public.erase_reply_statements"]);
       expect(matching(/UPDATE public[.]unfounded_marks[^;]*withdrawn_by/i)).toEqual(["public.decisions_apply"]);
       // Task 5: report_tallies_count is the one writer of a tally; forget_reporter and the retention of a later task
       // only delete. A mark's reporter, report and times are forced by its check alone.
       expect(matching(/(INSERT INTO|UPDATE) public[.]report_tallies/i)).toEqual(["public.report_tallies_count"]);
+      // Task 7: marks and tallies are deleted by two functions only, the account's purge and the retention job's step.
+      expect(matching(/DELETE FROM public[.](unfounded_marks|report_tallies)/i)).toEqual(["public.forget_report_counts", "public.forget_reporter"]);
       expect(matching(/NEW[.](account_id|intake_id|reported_at|marked_at) :=/)).toEqual(["public.unfounded_marks_check"]);
       // Task 6: moderation_apply, the one writer of a post's level, is the one writer of Explore's three columns, in the
       // statement that moves the level; only the posts' guard forces them, null on an insert by any role but the migrator.
@@ -237,6 +245,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
         // Task 6, Explore's resume rule: the two functions explore_resume replaces.
         "public.moderation_apply",
         "public.posts_guard",
+        // Task 7, retention: the frame is report_frame_days, and finality is decision_final_at's.
+        "public.erase_reply_statements",
+        "public.forget_report_counts",
       ];
       for (const name of fresh) expect(all.get(name)!.definition, name).not.toMatch(/interval '/i);
       expect([...all.get("public.decisions_record")!.definition.matchAll(/interval '/gi)]).toHaveLength(2);

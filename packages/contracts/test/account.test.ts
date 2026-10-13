@@ -81,8 +81,41 @@ const full = {
     ],
     // 3e: the strikes the account was given, newest first.
     strikes: [{ decisionId: id(10), postId: id(1), ruleId: "R3", givenAt: at, countsUntil: "2027-01-01T00:00:00.000Z", overruledAt: null }],
+    // 3e (W.8): a suspension taken at once and lifted, which answered the account's reply, and a warning about reporting.
+    standing: [
+      {
+        decisionId: id(30),
+        kind: "suspend",
+        basis: "threat",
+        days: 7,
+        announced: false,
+        decidedAt: at,
+        earliestStart: at,
+        startsAt: at,
+        endsAt: "2026-09-25T10:00:00.000Z",
+        liftedAt: "2026-09-25T10:00:00.000Z",
+        liftedBy: id(31),
+        replaced: false,
+        basisEndedAt: null,
+        basisEndedBy: null,
+      },
+      { decisionId: id(32), kind: "warn_reporting", basis: "reports", days: null, announced: null, decidedAt: at, earliestStart: null, startsAt: at, endsAt: "2026-12-23T10:00:00.000Z", liftedAt: null, liftedBy: null, replaced: false, basisEndedAt: null, basisEndedBy: null },
+    ],
+    replies: [{ decisionId: id(30), filedAt: at, onTime: false, text: "I did not write that post.", erasedAt: null, answeredAt: "2026-09-25T10:00:00.000Z", answeredBy: id(31) }],
+    reporting: {
+      frameDays: 90,
+      days: [{ day: "2026-09-24", reports: 6 }],
+      marks: [
+        { ref: "N-ABCDEFGH24", position: 1, sentOn: "2026-09-24", markedAt: at, withdrawnAt: null, counts: true },
+        { ref: "N-ABCDEFGH25", position: 2, sentOn: "2026-09-24", markedAt: at, withdrawnAt: at, counts: false },
+      ],
+      markedReports: 1,
+    },
   },
 };
+
+/** The three members 3e adds to the moderation member, empty, as an account with no standing measure, reply or report has them. */
+const NO_STANDING = { standing: [], replies: [], reporting: { frameDays: 90, days: [], marks: [], markedReports: 0 } };
 
 describe("what deleting an account removes, and what korbat keeps", () => {
   test("one sentence, word for word, that the deletion screen and both deletion mails say: nothing in it says that everything is gone for good", () => {
@@ -110,7 +143,7 @@ describe("export format", () => {
       devices: [],
       events: [],
       missingMedia: [],
-      moderation: { decisions: [], reports: [], strikes: [] },
+      moderation: { decisions: [], reports: [], strikes: [], ...NO_STANDING },
     };
     expect(ExportFormat.parse(empty)).toEqual(empty);
   });
@@ -191,8 +224,8 @@ describe("the export's moderation member", () => {
   const [report] = full.moderation.reports;
   const [released, waiting] = report!.items;
   const withModeration = (moderation: unknown) => ExportFormat.safeParse({ ...full, moderation }).success;
-  const withDecision = (change: Record<string, unknown>) => withModeration({ decisions: [{ ...decision, ...change }], reports: [], strikes: [] });
-  const withReport = (change: Record<string, unknown>) => withModeration({ decisions: [], reports: [{ ...report, ...change }], strikes: [] });
+  const withDecision = (change: Record<string, unknown>) => withModeration({ decisions: [{ ...decision, ...change }], reports: [], strikes: [], ...NO_STANDING });
+  const withReport = (change: Record<string, unknown>) => withModeration({ decisions: [], reports: [{ ...report, ...change }], strikes: [], ...NO_STANDING });
   const withItem = (change: Record<string, unknown>) => withReport({ items: [{ ...released, ...change }] });
 
   test("is part of korbat-export-1 since 3c, the last member of the document: always present, with its two lists, either of which may be empty", () => {
@@ -203,9 +236,12 @@ describe("the export's moderation member", () => {
     expect(withModeration({ decisions: [] })).toBe(false);
     expect(withModeration({ reports: [] })).toBe(false);
     expect(withModeration({ decisions: [], reports: [] })).toBe(false);
-    expect(withModeration({ decisions: [], reports: [], strikes: [] })).toBe(true);
-    expect(withModeration({ decisions: [decision], reports: [], strikes: [] })).toBe(true);
-    expect(withModeration({ decisions: [], reports: [report], strikes: [] })).toBe(true);
+    // 3e: the strikes, the standing measures, the replies and the reporting counts are always there too.
+    expect(withModeration({ decisions: [], reports: [], strikes: [] })).toBe(false);
+    expect(withModeration({ decisions: [], reports: [], strikes: [], standing: [], replies: [] })).toBe(false);
+    expect(withModeration({ decisions: [], reports: [], strikes: [], ...NO_STANDING })).toBe(true);
+    expect(withModeration({ decisions: [decision], reports: [], strikes: [], ...NO_STANDING })).toBe(true);
+    expect(withModeration({ decisions: [], reports: [report], strikes: [], ...NO_STANDING })).toBe(true);
   });
 
   test("a decision carries its day, the post it concerns, its kind, outcome, ground, rule and rules version, its measures with whether each changed anything, its reversals, the texts still held and where the appeal stands", () => {
@@ -257,7 +293,7 @@ describe("the export's moderation member", () => {
 
   test("a decision is read with its own members and no more: nothing of who reported, who decided or how many reports there were is part of the format", () => {
     const extra = { ...decision, decidedBy: id(20), staffHandle: "mod_one", reporterId: id(21), reporterHandle: "grace", reports: 3, source: "report", caseId: id(22) };
-    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [extra], reports: [], strikes: [] } });
+    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [extra], reports: [], strikes: [], ...NO_STANDING } });
     expect(parsed.moderation.decisions).toEqual([decision]);
   });
 
@@ -275,7 +311,7 @@ describe("the export's moderation member", () => {
     expect(withReport({ explanation: undefined })).toBe(false);
     expect(withReport({ items: undefined })).toBe(false);
     // Read with its own members and no more.
-    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], strikes: [], reports: [{ ...report, reporterId: id(1), contactId: id(23), lookupHash: "f".repeat(64), token: "secret" }] } });
+    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], strikes: [], ...NO_STANDING, reports: [{ ...report, reporterId: id(1), contactId: id(23), lookupHash: "f".repeat(64), token: "secret" }] } });
     expect(parsed.moderation.reports).toEqual([report]);
   });
 
@@ -296,7 +332,72 @@ describe("the export's moderation member", () => {
     expect(withReport({ items: [{ ...waiting, reexaminationOpen: false }] })).toBe(false);
     expect(withReport({ items: [{ ...waiting, outcomeText: "no action" }] })).toBe(false);
     // An item is read with its own members and no more: the list's id of an item is not part of the export.
-    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], strikes: [], reports: [{ ...report, items: [{ ...released, id: id(24), caseId: id(25), answeredBy: id(26) }] }] } });
+    const parsed = ExportFormat.parse({ ...full, moderation: { decisions: [], strikes: [], ...NO_STANDING, reports: [{ ...report, items: [{ ...released, id: id(24), caseId: id(25), answeredBy: id(26) }] }] } });
     expect(parsed.moderation.reports[0]!.items).toEqual([released]);
+  });
+});
+
+describe("the moderation member's standing, replies and reporting (3e design, W.8)", () => {
+  const [suspension, warning] = full.moderation.standing;
+  const [answered] = full.moderation.replies;
+  const [counting, withdrawn] = full.moderation.reporting.marks;
+  const withModeration = (change: Record<string, unknown>) => ExportFormat.safeParse({ ...full, moderation: { ...full.moderation, ...change } }).success;
+  const withStanding = (change: Record<string, unknown>) => withModeration({ standing: [{ ...suspension, ...change }] });
+  const withReply = (change: Record<string, unknown>) => withModeration({ replies: [{ ...answered, ...change }] });
+  const withReporting = (change: Record<string, unknown>) => withModeration({ reporting: { ...full.moderation.reporting, ...change } });
+  const withMark = (change: Record<string, unknown>) => withReporting({ marks: [{ ...counting, ...change }] });
+
+  test("come after the strikes, in this order, and every one of them is always there", () => {
+    expect(Object.keys(ExportFormat.shape.moderation.shape)).toEqual(["decisions", "reports", "strikes", "standing", "replies", "reporting"]);
+    expect(ExportFormat.parse(full).moderation).toEqual(full.moderation);
+    for (const member of ["standing", "replies", "reporting"]) expect(withModeration({ [member]: undefined }), member).toBe(false);
+  });
+
+  test("a standing entry is a suspension, a termination, a warning or a restriction of reporting, with its basis, days, times, lift and broken basis", () => {
+    expect(withStanding({})).toBe(true);
+    expect(withModeration({ standing: [warning] })).toBe(true);
+    for (const kind of ["suspend", "terminate", "warn_reporting", "restrict_reporting"]) expect(withStanding({ kind }), kind).toBe(true);
+    // A strike is in strikes, a retirement in the profile's retired handles; neither is a standing entry.
+    for (const kind of ["strike", "retire_handle", "remove"]) expect(withStanding({ kind }), kind).toBe(false);
+    for (const basis of ["strikes", "threat", "terrorist", "flood", "protective", "threat_repeat", "ladder_end", "reports"]) expect(withStanding({ basis }), basis).toBe(true);
+    expect(withStanding({ basis: "other" })).toBe(false);
+    expect(withStanding({ days: null, kind: "terminate" })).toBe(true);
+    expect(withStanding({ days: 0 })).toBe(false);
+    expect(withStanding({ days: 31 })).toBe(false);
+    // A period that never started, or a termination without end, has no start or no end.
+    expect(withStanding({ startsAt: null, endsAt: null })).toBe(true);
+    expect(withStanding({ basisEndedAt: at, basisEndedBy: id(33) })).toBe(true);
+    expect(withStanding({ replaced: null })).toBe(false);
+    expect(withStanding({ liftedBy: "a staff member" })).toBe(false);
+    // An entry is read with its own members and no more: who decided is not part of it.
+    const parsed = ExportFormat.parse({ ...full, moderation: { ...full.moderation, standing: [{ ...suspension, decidedBy: id(40), handle: "staff" }] } });
+    expect(parsed.moderation.standing).toEqual([suspension]);
+  });
+
+  test("a reply carries when it was filed, whether it was on time, its text while korbat holds it, when that was erased and its answer", () => {
+    expect(withReply({})).toBe(true);
+    expect(withReply({ text: null, erasedAt: at })).toBe(true);
+    expect(withReply({ text: null, erasedAt: null })).toBe(true);
+    expect(withReply({ answeredAt: null, answeredBy: null })).toBe(true);
+    expect(withReply({ text: "x".repeat(2001) })).toBe(false);
+    expect(withReply({ onTime: undefined })).toBe(false);
+    expect(withReply({ filedAt: "yesterday" })).toBe(false);
+  });
+
+  test("the reporting counts carry the frame, the reports of each day, each mark by its own report's reference and position, and the marked reports a threshold reads", () => {
+    expect(withReporting({})).toBe(true);
+    expect(withModeration({ reporting: { frameDays: 90, days: [], marks: [], markedReports: 0 } })).toBe(true);
+    expect(withReporting({ marks: [withdrawn] })).toBe(true);
+    expect(withReporting({ frameDays: 0 })).toBe(false);
+    expect(withReporting({ markedReports: -1 })).toBe(false);
+    expect(withReporting({ days: [{ day: at, reports: 1 }] })).toBe(false);
+    expect(withReporting({ days: [{ day: "2026-09-24", reports: 0 }] })).toBe(false);
+    expect(withMark({ ref: "not a reference" })).toBe(false);
+    expect(withMark({ position: 0 })).toBe(false);
+    expect(withMark({ sentOn: at })).toBe(false);
+    expect(withMark({ counts: undefined })).toBe(false);
+    // A mark names the account's own report and nothing else: never the item, the decision or who was reported.
+    const parsed = ExportFormat.parse({ ...full, moderation: { ...full.moderation, reporting: { ...full.moderation.reporting, marks: [{ ...counting, itemId: id(41), decisionId: id(42), target: "u/bob" }] } } });
+    expect(parsed.moderation.reporting.marks).toEqual([counting]);
   });
 });

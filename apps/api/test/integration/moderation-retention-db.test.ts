@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql, type SQL } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { RETENTION } from "@korbat/contracts";
+import { RETENTION, STANDING_RULES } from "@korbat/contracts";
 import { STATEMENT_WORDS, statementParagraphs } from "@korbat/rules";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
@@ -86,6 +86,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
     test("24 hours for a case's newest snapshot or draft, 30 days for a reset value and for an intake, 12 months for statements and the access log", () => {
       // The functions write these numbers as SQL intervals; the tests below move the clock just under and just over each.
       expect(RETENTION).toMatchObject({ evidenceHours: 24, draftHours: 24, resetValueDays: 30, intakeDays: 30, statementMonths: 12, accessLogMonths: 12 });
+    });
+
+    test("3e: the reporting counts are kept for the frame of the standing rules, which the database reads from standing_rules()", async () => {
+      // RETENTION reads the number from STANDING_RULES, never types it; the database's function holds the same number.
+      expect(RETENTION.reportCountDays).toBe(STANDING_RULES.reportFrameDays);
+      const [row] = await apiDb.execute<{ days: number }>(sql`select report_frame_days as days from public.standing_rules()`);
+      expect(row!.days).toBe(RETENTION.reportCountDays);
     });
   });
 

@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { strFromU8, unzipSync } from "fflate";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { ACCOUNT_ITEM_SCOPE, ExportFormat, OUTCOME_PHRASES, QUOTE_ITEM_SCOPE, itemOutcomeWords, type NoticeRequest } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ExportFormat, OUTCOME_PHRASES, QUOTE_ITEM_SCOPE, STANDING_RULES, itemOutcomeWords, type NoticeRequest } from "@korbat/contracts";
 import { RULES_VERSION, getRule } from "@korbat/rules";
 import type { AccountDeps } from "../../src/account/context";
 import { buildExport, writeExport } from "../../src/account/flows/export";
@@ -324,6 +324,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     const secrets = { theirRef: theirs.ref, theirWords, otherId: other.id, otherHandle: other.handle, anonymousRef: anonymous.ref, anonymousToken: anonymous.token!, renamed, moderatorId: moderator.id, moderatorHandle: moderator.handle };
     for (const [what, secret] of Object.entries(secrets)) expect(mine.text.includes(secret), what).toBe(false);
     expect([...namesIn(mine.json.moderation.reports)].filter((name) => /reporter|notifier|contact|sender|staff|decidedBy|token|hash|caseId|^id$/i.test(name))).toEqual([]);
+    // 3e (W.8): the account's own count of rule reports, by the UTC day it sent them: the report under a rule counts, the
+    // notice of illegality and the anonymous report do not, and nothing it sent was marked.
+    const sentOn = undecided.reports[1]!.receivedAt.slice(0, 10);
+    expect(mine.json.moderation.reporting).toEqual({ frameDays: STANDING_RULES.reportFrameDays, days: [{ day: sentOn, reports: 1 }], marks: [], markedReports: 0 });
     // The other reporter's export holds their own report and words, and none of this account's.
     const others = await exportOf(other.id);
     expect(others.json.moderation.reports).toMatchObject([{ ref: theirs.ref, ground: "rule", ruleId: "R3", explanation: theirWords, items: [{ position: 1, link: `${origin}/post/${postId}`, outcome: "restricted_rule" }] }]);
@@ -365,7 +369,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     const frozen = await exportOf(author.id);
     expect(frozen.json.posts.find((post) => post.id === sealedPost)!.media.map((image) => image.id)).toEqual(sealedImages);
     expect([...frozen.json.missingMedia].sort()).toEqual([...sealedImages, plainImage].sort());
-    expect(frozen.json.moderation).toEqual({ decisions: [], reports: [], strikes: [] });
+    // 3e (W.8): an account with no standing measure, no reply and no report has empty lists and counts, over the frame of its counts.
+    expect(frozen.json.moderation).toEqual({ decisions: [], reports: [], strikes: [], standing: [], replies: [], reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 } });
 
     const seal = await decided(moderator, notice.caseId, { kind: "interim", ruleId: "R2", actions: [act("seal_media")] });
     const sealed = await exportOf(author.id);

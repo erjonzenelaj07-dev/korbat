@@ -141,43 +141,11 @@ export const APPEAL_MONTHS = 6;
 export const DAILY_LIMITS = { appeals: 5, reexaminations: 5 } as const;
 
 /**
- * How long 3c keeps each kind of data (the design's section 6.6), published in the terms. Each is a design choice, not a
- * legal figure.
- */
-export const RETENTION = {
-  /** Content restricted under R4 is erased once the restriction is final: this long after its author was told, or at the answer to their appeal. */
-  r4FinalMonths: APPEAL_MONTHS,
-  /** An intake's record (its texts and who sent it) goes this long after its last release. */
-  intakeDays: 30,
-  /** A reset field's old value stays readable this long after a lift that comes before the case's copies are erased. */
-  resetValueDays: 30,
-  /** A case's evidence waits this long after the case's newest snapshot or draft text. */
-  evidenceHours: 24,
-  /** Statements are erased this long after the account's deletion. */
-  statementMonths: 12,
-  /** The access log, and the reveal reasons its rows name. */
-  accessLogMonths: 12,
-  /** A notifier's contact goes this long after the last day korbat owed the notice something, */
-  contactMonths: 6,
-  /** and at most this long after the notice when nothing moved that day. */
-  contactMaxMonths: 13,
-  /** A notifier's confirmation of an address. */
-  confirmationDays: 30,
-  /** Backups are deleted this long after each was taken. No code of 3c enforces it: the README tells the operator. */
-  backupDays: 30,
-  /** An unconfirmed staff text is deleted after this long. */
-  draftHours: 24,
-  /** A mail still unsent this long after it was due is given up. */
-  mailGiveUpDays: 5,
-} as const;
-
-// ---------------------------------------------------------------- account sanctions (3e design, section 10.1)
-
-/**
  * The numbers of account sanctions, the same as the SQL function standing_rules() returns, which a database test compares
  * member by member: every function and view of the standing ledger reads its numbers from there, and every word of the
  * console and the app from here. Each is a cautious default without a source of its own, flagged for the owner (3e
- * design, section 2): one line to change in each place.
+ * design, section 2): one line to change in each place. It stands here, ahead of the section of account sanctions below,
+ * because RETENTION reads three of its numbers.
  */
 export const STANDING_RULES = {
   /** How long a strike counts. */
@@ -211,6 +179,57 @@ export const STANDING_RULES = {
   reportRestrictMarks: 3,
   reportRestrictDays: 30,
 } as const;
+
+/**
+ * How long 3c keeps each kind of data (the design's section 6.6), published in the terms. Each is a design choice, not a
+ * legal figure.
+ */
+export const RETENTION = {
+  /** Content restricted under R4 is erased once the restriction is final: this long after its author was told, or at the answer to their appeal. */
+  r4FinalMonths: APPEAL_MONTHS,
+  /** An intake's record (its texts and who sent it) goes this long after its last release. */
+  intakeDays: 30,
+  /** A reset field's old value stays readable this long after a lift that comes before the case's copies are erased. */
+  resetValueDays: 30,
+  /** A case's evidence waits this long after the case's newest snapshot or draft text. */
+  evidenceHours: 24,
+  /** Statements are erased this long after the account's deletion. */
+  statementMonths: 12,
+  /** The access log, and the reveal reasons its rows name. */
+  accessLogMonths: 12,
+  /** A notifier's contact goes this long after the last day korbat owed the notice something, */
+  contactMonths: 6,
+  /** and at most this long after the notice when nothing moved that day. */
+  contactMaxMonths: 13,
+  /** A notifier's confirmation of an address. */
+  confirmationDays: 30,
+  /** Backups are deleted this long after each was taken. No code of 3c enforces it: the README tells the operator. */
+  backupDays: 30,
+  /** An unconfirmed staff text is deleted after this long. */
+  draftHours: 24,
+  /** A mail still unsent this long after it was due is given up. */
+  mailGiveUpDays: 5,
+  /**
+   * 3e (design, sections 6.5, 6.7 and W.7): the text of a reply to a suspension or a termination is kept until it is
+   * answered and its decision is final for its author (erase_reply_statements); an unanswered reply keeps it, however
+   * old. No clock alone ends it, so it is a phrase, the one the terms print, and no number.
+   */
+  replyText: "until korbat has answered it and its decision can no longer be appealed",
+  /**
+   * 3e: the reporting counts (the marks "manifestly unfounded" and the daily tallies of rule reports) are deleted this
+   * long after the UTC day their report was sent (forget_report_counts), and with the account. It is the frame of the
+   * counts, read from STANDING_RULES and never typed twice.
+   */
+  reportCountDays: STANDING_RULES.reportFrameDays,
+  /**
+   * 3e: the ledger rows of strikes, suspensions, terminations, warnings and retired handles are kept with their decision,
+   * as every row of the ledger is; what ends is their use, after these days: a strike's counting, a suspension's memory
+   * toward the next rung, and a warning's counting. Each is STANDING_RULES' own number.
+   */
+  standingRecord: { strikeDays: STANDING_RULES.strikeDays, ladderMemoryDays: STANDING_RULES.ladderMemoryDays, warningDays: STANDING_RULES.reportFrameDays },
+} as const;
+
+// ---------------------------------------------------------------- account sanctions (3e design, section 10.1)
 
 /** What a standing measure or a restriction of reporting rests on, as the ledger's check trigger forces it. The migration's CHECK list is written from it. */
 export const STANDING_BASES = ["strikes", "threat", "terrorist", "flood", "protective", "threat_repeat", "ladder_end", "reports"] as const;

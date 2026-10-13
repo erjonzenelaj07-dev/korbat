@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Platform, Role } from "./auth";
-import { ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REVERSAL_KINDS, RULE_IDS, TDB_CATEGORIES } from "./moderation";
+import { ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REPLY_TEXT_MAX, REVERSAL_KINDS, RULE_IDS, STANDING_BASES, STANDING_DAYS, TDB_CATEGORIES } from "./moderation";
 
 const at = z.iso.datetime();
 /** A UTC day, as the list of decisions shows one. */
@@ -119,6 +119,66 @@ const ExportedReport = z.object({
 const ExportedStrike = z.object({ decisionId: z.uuid(), postId: z.uuid(), ruleId: z.enum(RULE_IDS), givenAt: at, countsUntil: at, overruledAt: at.nullable() });
 
 /**
+ * A suspension, a termination, a warning about reporting or a restriction of reporting of the account (3e design, W.8):
+ *   - `decisionId` is the decision that took it, `kind` the measure, `basis` what the database found it rests on, `days`
+ *     the days the decision gave (null for a termination and a warning), `announced` whether it was announced (null for
+ *     a warning), and `decidedAt` the decision's time.
+ *   - `earliestStart` is the earliest start a suspension or a termination was announced with (null for the two reporting
+ *     measures). `startsAt` and `endsAt` are its period as the ledger gives it now: null for a suspension that has no
+ *     start (an announcement still waiting, or one lifted before its start); `endsAt` null for a termination; a
+ *     warning runs from its decision to the end of its counting, a restriction from its decision for its days; each end
+ *     is cut to a lift or to a broken basis.
+ *   - `liftedAt` and `liftedBy` are the reversal that lifted it and its decision, `replaced` whether that was a withdrawal
+ *     for another measure; `basisEndedAt` and `basisEndedBy` the reversal that broke what it rested on and its decision.
+ * It names no staff member and no reporter.
+ */
+const ExportedStanding = z.object({
+  decisionId: z.uuid(),
+  kind: z.enum(["suspend", "terminate", "warn_reporting", "restrict_reporting"]),
+  basis: z.enum(STANDING_BASES),
+  days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(),
+  announced: z.boolean().nullable(),
+  decidedAt: at,
+  earliestStart: at.nullable(),
+  startsAt: at.nullable(),
+  endsAt: at.nullable(),
+  liftedAt: at.nullable(),
+  liftedBy: z.uuid().nullable(),
+  replaced: z.boolean(),
+  basisEndedAt: at.nullable(),
+  basisEndedBy: z.uuid().nullable(),
+});
+
+/**
+ * A reply the account sent to a suspension or a termination (3e design, W.8): the decision it answered, when it was filed
+ * and whether before the start, its text while korbat holds it (null when none was written, or once erased, with
+ * `erasedAt`), and the decision that answered it. A reply is never erased before it is answered.
+ */
+const ExportedReply = z.object({
+  decisionId: z.uuid(),
+  filedAt: at,
+  onTime: z.boolean(),
+  text: z.string().max(REPLY_TEXT_MAX).nullable(),
+  erasedAt: at.nullable(),
+  answeredAt: at.nullable(),
+  answeredBy: z.uuid().nullable(),
+});
+
+/**
+ * The account's own reporting counts (3e design, W.8 and section 6.3): the frame they are counted in, the rule reports it
+ * sent on each UTC day korbat still counts, every mark "manifestly unfounded" on its own reports by the report's
+ * reference and the item's position (when its report was sent, when it was marked, when a correction withdrew it, and
+ * whether it counts now), and the marked reports in the frame, which is what a warning's and a restriction's threshold
+ * reads. Nothing in it names another person: never the item reported, its author, or the decision's staff member.
+ */
+const ExportedReporting = z.object({
+  frameDays: z.number().int().positive(),
+  days: z.array(z.object({ day, reports: z.number().int().positive() })),
+  marks: z.array(z.object({ ref: NoticeRef, position: z.number().int().min(1).max(20), sentOn: day, markedAt: at, withdrawnAt: at.nullable(), counts: z.boolean() })),
+  markedReports: z.number().int().nonnegative(),
+});
+
+/**
  * export.json inside the data export archive (1b design, section 7.5): everything the account owns, and
  * nothing about other people beyond the handle they had at export time.
  */
@@ -184,8 +244,17 @@ export const ExportFormat = z.object({
    * What korbat's moderation holds for the account (3c design, section 7.11): the decisions about it that its Cases screen
    * lists, newest first, and its own reports and notices, newest first. Never another person's report, a reporter, a
    * notifier or a staff member. Added to korbat-export-1 without a new format name, last in the document: a reader that
-   * does not know the member loses nothing by skipping it. `strikes` (3e) lists the account's strikes, newest first.
+   * does not know the member loses nothing by skipping it. `strikes` (3e) lists the account's strikes, newest first;
+   * then `standing` its suspensions, terminations and reporting measures, newest first, `replies` its replies to them,
+   * newest first, and `reporting` its own reporting counts (3e design, W.8).
    */
-  moderation: z.object({ decisions: z.array(ExportedDecision), reports: z.array(ExportedReport), strikes: z.array(ExportedStrike) }),
+  moderation: z.object({
+    decisions: z.array(ExportedDecision),
+    reports: z.array(ExportedReport),
+    strikes: z.array(ExportedStrike),
+    standing: z.array(ExportedStanding),
+    replies: z.array(ExportedReply),
+    reporting: ExportedReporting,
+  }),
 });
 export type ExportFormat = z.infer<typeof ExportFormat>;

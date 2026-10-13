@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import type { Platform } from "@korbat/contracts";
+import { STANDING_RULES, type Platform } from "@korbat/contracts";
 import type { AccountExport } from "../../auth";
 import type { ModerationExport } from "../../moderation";
 import type { ProfileExport } from "../../social";
@@ -74,8 +74,18 @@ export async function giveBackExport(deps: AccountDeps, userId: string, log: Log
 const iso = (at: Date): string => at.toISOString();
 const isoOrNull = (at: Date | null): string | null => (at ? at.toISOString() : null);
 
-/** What an account module built without the moderation module writes: the member is part of the format, so it is always there. */
-const NO_MODERATION: ModerationExport = { decisions: [], reports: [], strikes: [] };
+/**
+ * What an account module built without the moderation module writes: the member is part of the format, so it is always
+ * there. Its reporting counts are empty over the standing rules' frame, the number the moderation module would read.
+ */
+const NO_MODERATION: ModerationExport = {
+  decisions: [],
+  reports: [],
+  strikes: [],
+  standing: [],
+  replies: [],
+  reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 },
+};
 
 /**
  * Reads what is needed before the first byte: the account's facts, sessions, devices and events (one
@@ -249,6 +259,30 @@ function moderationMember(moderation: ModerationExport): ModerationExport {
     })),
     // 3e (W.8): the strikes the account was given.
     strikes: moderation.strikes.map((strike) => ({ decisionId: strike.decisionId, postId: strike.postId, ruleId: strike.ruleId, givenAt: strike.givenAt, countsUntil: strike.countsUntil, overruledAt: strike.overruledAt })),
+    // Then its suspensions, terminations and reporting measures, its replies to them, and its own reporting counts.
+    standing: moderation.standing.map((entry) => ({
+      decisionId: entry.decisionId,
+      kind: entry.kind,
+      basis: entry.basis,
+      days: entry.days,
+      announced: entry.announced,
+      decidedAt: entry.decidedAt,
+      earliestStart: entry.earliestStart,
+      startsAt: entry.startsAt,
+      endsAt: entry.endsAt,
+      liftedAt: entry.liftedAt,
+      liftedBy: entry.liftedBy,
+      replaced: entry.replaced,
+      basisEndedAt: entry.basisEndedAt,
+      basisEndedBy: entry.basisEndedBy,
+    })),
+    replies: moderation.replies.map((reply) => ({ decisionId: reply.decisionId, filedAt: reply.filedAt, onTime: reply.onTime, text: reply.text, erasedAt: reply.erasedAt, answeredAt: reply.answeredAt, answeredBy: reply.answeredBy })),
+    reporting: {
+      frameDays: moderation.reporting.frameDays,
+      days: moderation.reporting.days.map((entry) => ({ day: entry.day, reports: entry.reports })),
+      marks: moderation.reporting.marks.map((mark) => ({ ref: mark.ref, position: mark.position, sentOn: mark.sentOn, markedAt: mark.markedAt, withdrawnAt: mark.withdrawnAt, counts: mark.counts })),
+      markedReports: moderation.reporting.markedReports,
+    },
   };
 }
 

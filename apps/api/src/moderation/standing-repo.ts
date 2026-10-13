@@ -919,3 +919,148 @@ export async function reportingStanding(q: Runner, decisionId: string): Promise<
   if (row.state === "basis_ended") return { state: row.state, until: row.until, endedAt: row.broken_at, endedBy: row.broken_by };
   return { state: row.state, until: row.until, endedAt: null, endedBy: null };
 }
+
+// ---------------------------------------------------------------- 3e Task 7: the export (W.8)
+
+/** A suspension, a termination or a reporting measure as the account's export lists it (3e design, section 18, W.8). */
+export interface ExportedStandingRow {
+  decisionId: string;
+  kind: "suspend" | "terminate" | "warn_reporting" | "restrict_reporting";
+  basis: string;
+  days: number | null;
+  announced: boolean | null;
+  decidedAt: string;
+  earliestStart: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  liftedAt: string | null;
+  liftedBy: string | null;
+  replaced: boolean;
+  basisEndedAt: string | null;
+  basisEndedBy: string | null;
+}
+
+/**
+ * Every suspension, termination, warning about reporting and restriction of reporting the account was given, newest
+ * first, as the ledger gives each now: its decision, kind, basis, days and whether it was announced; the earliest start
+ * of a standing measure; its period, which for a suspension or a termination is suspension_periods' (no start while an
+ * announcement waits or when it was lifted before its start, no end for a termination), for a warning its counting from
+ * the decision, and for a restriction its days from the decision, each cut to a lift and to a broken basis; the lift and
+ * whether it was a withdrawal for another measure; and the reversal that broke what it rested on. Every row is the
+ * account's own and names no staff member: a decision is its id.
+ */
+export async function exportedStanding(q: Runner, accountId: string): Promise<ExportedStandingRow[]> {
+  const found = await rows<{
+    decision_id: string;
+    kind: ExportedStandingRow["kind"];
+    basis: string;
+    days: number | null;
+    announced: boolean | null;
+    decided_at: string;
+    earliest_start: string | null;
+    starts_at: string | null;
+    ends_at: string | null;
+    lifted_at: string | null;
+    lifted_by: string | null;
+    replaced: boolean;
+    basis_ended_at: string | null;
+    basis_ended_by: string | null;
+  }>(
+    q,
+    sql`select a.decision_id, a.kind::text as kind, a.basis, a.days, a.announced, ${iso("d.decided_at")} as decided_at,
+               case when a.kind::text in ('suspend', 'terminate') then ${iso("a.starts_at")} end as earliest_start,
+               case when a.kind::text in ('suspend', 'terminate') then ${iso("p.starts_at")}
+                    when a.kind::text = 'warn_reporting' then ${iso("a.created_at")}
+                    else ${iso("a.starts_at")} end as starts_at,
+               case when a.kind::text in ('suspend', 'terminate') then ${finite("p.ends_at")}
+                    when a.kind::text = 'warn_reporting' then ${iso("least(a.ends_at, l.created_at)")}
+                    else ${iso("least(a.starts_at + make_interval(days => a.days), l.created_at, b.at)")} end as ends_at,
+               ${iso("l.created_at")} as lifted_at, l.decision_id as lifted_by, coalesce(l.replaced, false) as replaced,
+               ${iso("b.at")} as basis_ended_at,
+               (select x.decision_id from decision_actions x join decision_actions y on y.id = x.reverses_action_id
+                 where y.decision_id = any(a.rests_on) and x.created_at = b.at order by x.id limit 1) as basis_ended_by
+          from decision_actions a
+          join decisions d on d.id = a.decision_id
+          left join suspension_periods p on p.action_id = a.id
+          left join decision_actions l on l.reverses_action_id = a.id
+          cross join lateral (select public.standing_basis_broken_at(a.id) as at) b
+         where a.subject_account_id = ${accountId}::uuid and a.kind::text in ('suspend', 'terminate', 'warn_reporting', 'restrict_reporting')
+         order by a.created_at desc, a.id desc`,
+  );
+  return found.map((row) => ({
+    decisionId: row.decision_id,
+    kind: row.kind,
+    basis: row.basis,
+    days: row.days,
+    announced: row.announced,
+    decidedAt: row.decided_at,
+    earliestStart: row.earliest_start,
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    liftedAt: row.lifted_at,
+    liftedBy: row.lifted_by,
+    replaced: row.replaced,
+    basisEndedAt: row.basis_ended_at,
+    basisEndedBy: row.basis_ended_by,
+  }));
+}
+
+/** A reply as the account's export lists it (W.8): its text while korbat holds it, and when that was erased. */
+export interface ExportedReplyRow {
+  decisionId: string;
+  filedAt: string;
+  onTime: boolean;
+  text: string | null;
+  erasedAt: string | null;
+  answeredAt: string | null;
+  answeredBy: string | null;
+}
+
+/** Every reply the account sent to a suspension or a termination, newest first: the measure's decision, and the decision that answered it. */
+export async function exportedReplies(q: Runner, accountId: string): Promise<ExportedReplyRow[]> {
+  const found = await rows<{ decision_id: string; filed_at: string; on_time: boolean; statement: string | null; erased_at: string | null; answered_at: string | null; answered_by: string | null }>(
+    q,
+    sql`select a.decision_id, ${iso("r.filed_at")} as filed_at, r.on_time, r.statement, ${iso("r.erased_at")} as erased_at, ${iso("r.answered_at")} as answered_at, r.answered_by
+          from suspension_replies r join decision_actions a on a.id = r.action_id
+         where r.account_id = ${accountId}::uuid
+         order by r.filed_at desc, r.action_id desc`,
+  );
+  return found.map((row) => ({ decisionId: row.decision_id, filedAt: row.filed_at, onTime: row.on_time, text: row.statement, erasedAt: row.erased_at, answeredAt: row.answered_at, answeredBy: row.answered_by }));
+}
+
+/** The account's reporting counts as its export lists them (W.8). */
+export interface ExportedReportingRow {
+  frameDays: number;
+  days: { day: string; reports: number }[];
+  marks: { ref: string; position: number; sentOn: string; markedAt: string; withdrawnAt: string | null; counts: boolean }[];
+  markedReports: number;
+}
+
+/**
+ * The account's own reporting counts: the frame of standing_rules(), every tally korbat holds for it (the newest day
+ * first), every mark on its own reports by the report's reference and the item's position, the newest report first,
+ * with whether the mark counts now (markCounts), and the marked reports in the frame as reporting_record counts them,
+ * which is what a threshold reads. A mark names the account's own report and nothing else: not the item's target, not
+ * the decision, not who decided.
+ */
+export async function exportedReporting(q: Runner, accountId: string): Promise<ExportedReportingRow> {
+  const account = sql`${accountId}::uuid`;
+  const [head] = await rows<{ frame_days: number; marked: number }>(
+    q,
+    sql`select k.report_frame_days as frame_days, coalesce((select r.unfounded from reporting_record r where r.account_id = ${account}), 0)::int as marked from standing_rules() k`,
+  );
+  const days = await rows<{ day: string; reports: number }>(q, sql`select to_char(t.day, 'YYYY-MM-DD') as day, t.reports from report_tallies t where t.account_id = ${account} order by t.day desc`);
+  const marks = await rows<{ ref: string; position: number; sent_on: string; marked_at: string; withdrawn_at: string | null; counts: boolean }>(
+    q,
+    sql`select n.ref, i.position, ${day("m.reported_at")} as sent_on, ${iso("m.marked_at")} as marked_at, ${iso("m.withdrawn_at")} as withdrawn_at, ${counting("m")} as counts
+          from unfounded_marks m join intakes n on n.id = m.intake_id join intake_items i on i.id = m.item_id
+         where m.account_id = ${account}
+         order by m.reported_at desc, n.ref, i.position`,
+  );
+  return {
+    frameDays: head!.frame_days,
+    days: days.map((row) => ({ day: row.day, reports: row.reports })),
+    marks: marks.map((row) => ({ ref: row.ref, position: row.position, sentOn: row.sent_on, markedAt: row.marked_at, withdrawnAt: row.withdrawn_at, counts: row.counts })),
+    markedReports: head!.marked,
+  };
+}
