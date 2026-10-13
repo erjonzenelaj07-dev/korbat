@@ -527,7 +527,9 @@ describe("3e: the strike's sentences (design, section 18, W.2 and W.3)", () => {
     // Task 4 words an announced suspension and a termination, but not without the data their sentences print.
     expect(() => statementParagraphs(struck({ post: null, measures: [measure("suspend", { announced: true })] }))).toThrow(/suspend/);
     expect(() => statementParagraphs(struck({ post: null, measures: [measure("terminate", { announced: false })] }))).toThrow(/terminate/);
+    // Task 5 words the reporting measures, but not without the data their sentences print.
     expect(() => statementParagraphs(struck({ post: null, measures: [measure("warn_reporting")] }))).toThrow(/warn_reporting/);
+    expect(() => statementParagraphs(struck({ post: null, measures: [measure("restrict_reporting", { days: 7, endsAt: DECIDED })] }))).toThrow(/restrict_reporting/);
     const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R3" as const, rulesVersion: 3, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
     // A lift whose data names no period is not rendered as another lift.
     expect(() => statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, measures: [], reversals: [reversal("lift_suspension")], reviewed }))).toThrow(/lift_suspension/);
@@ -966,6 +968,120 @@ describe("3e: an announced suspension, a termination, the reply's answers and a 
     expect(out.join(" ")).not.toMatch(/korbat corrected its decision|korbat read your reply|it never starts/);
     expect(out.at(-1)).toBe(REDRESS_TEXTS[2].notAppealable);
     expect(withdrawal(null)[0]).toBe(W.withdrawn("suspension", at(BASIS_AT), false));
+  });
+});
+
+describe("3e: the warning about reporting, the restriction of it, its lift and its end with the warning (design, section 18, W.2 and W.3, Task 5)", () => {
+  const WARN_ENDS = "2027-01-02T09:30:15.250Z";
+  const RESTRICT_ENDS = "2026-11-03T09:30:15.250Z";
+  const WARNED_AT = "2026-09-20T08:00:00.000Z";
+  const at = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+  const warning = (more: Partial<DecisionStatement["measures"][number]> = {}) => measure("warn_reporting", { basis: "reports", endsAt: WARN_ENDS, ...more });
+  const restriction = (more: Partial<DecisionStatement["measures"][number]> = {}) => measure("restrict_reporting", { basis: "reports", days: 30, endsAt: RESTRICT_ENDS, warnedAt: WARNED_AT, ...more });
+  /** A final decision on an account case under R6 that warns about reporting or restricts it, made under rulebook 3 and redress 2. */
+  const decided = (measures: DecisionStatement["measures"]) =>
+    statement({ ruleId: "R6", rulesVersion: 3, redressVersion: 2, source: "own_initiative", post: null, measures, facts: "In the 90 days up to 2026-10-04 the account sent 8 reports.", reason: "They named nothing a rule could cover." });
+  const appeal2 = REDRESS_TEXTS[2].appeal.replace("{deadline}", at(appealDeadline(new Date(DECIDED)).toISOString()));
+  const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R6" as const, rulesVersion: 3, legalReference: null, decidedAt: WARNED_AT };
+  const about = (kind: "correction" | "review", more: Partial<StatementInput>) =>
+    statementParagraphs(statement({ kind, outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, rulesVersion: 3, redressVersion: 2, measures: [], reviewed, ...more }));
+
+  test("the words, each a constant", () => {
+    expect(W.warn("2027-01-02 09:30 UTC")).toBe(
+      "korbat warns you about your reports. Nothing is restricted. The facts below say how many of your reports under korbat's rules a moderator marked as manifestly unfounded, and which. This warning counts until 2027-01-02 09:30 UTC.",
+    );
+    expect(W.restrict(30, "2026-11-03 09:30 UTC", "2026-09-20 08:00 UTC")).toBe(
+      "korbat restricted your reports under its rules for 30 days, until 2026-11-03 09:30 UTC: until then it takes no report from your account that says something breaks a korbat rule. It follows korbat's warning of 2026-09-20 08:00 UTC, and ends at once if that warning is lifted; the facts below name the reports you sent after it that were marked.",
+    );
+    expect(W.restrict(1, "x", "y")).toContain("for 1 day, until x");
+    expect(W.reportingOpen).toBe("Notices of illegal content, reports of child sexual abuse material and requests for re-examination are never counted and never restricted.");
+    expect(W.basisEndedReporting("2026-09-20 08:00 UTC")).toBe("The restriction of your reports that korbat decided on 2026-09-20 08:00 UTC rested on that warning.");
+    expect(W.basisEndedReportingThen.running).toBe("It ended with this decision: you can report under korbat's rules again.");
+    expect(W.basisEndedReportingThen.ended("2026-09-20 08:00 UTC", "2026-09-27 08:00 UTC")).toBe("It had run from 2026-09-20 08:00 UTC to 2026-09-27 08:00 UTC.");
+    expect(W.reportingLifted.warning).toBe("korbat lifted its warning about your reports: it no longer counts.");
+    expect(W.reportingLifted.restriction).toBe("korbat lifted the restriction of your reports: you can report under korbat's rules again.");
+    expect(W.reportingLifted.restrictionEnded("2026-09-27 08:00 UTC")).toBe("korbat lifted the restriction of your reports that ran until 2026-09-27 08:00 UTC.");
+    expect(W.scope.reporting("2026-11-03 09:30 UTC")).toBe("This applies everywhere korbat is available, until 2026-11-03 09:30 UTC.");
+    expect(W.scope.warn).toBe("This restricts nothing.");
+  });
+
+  test("a warning, paragraph by paragraph: what it is and until when with what may follow and what it never touches, that it restricts nothing, the source, what the software counted, the account's conduct under R6, the facts, the reason and the appeal", () => {
+    const r6 = getRule("R6", 3)!;
+    expect(statementParagraphs(decided([warning()]))).toEqual([
+      `${W.warn(at(WARN_ENDS))} ${REDRESS_TEXTS[2].warnNext} ${W.reportingOpen}`,
+      W.scope.warn,
+      "What this decision is about was found by a moderator.",
+      W.automationCounted,
+      W.ground.conduct("R6", r6.title, r6.text),
+      "The facts: In the 90 days up to 2026-10-04 the account sent 8 reports.",
+      "korbat's reasons: They named nothing a rule could cover.",
+      appeal2,
+    ]);
+    // Rulebook 3's R6 names unfounded reports, so the paragraph of the rule says what the warning is about.
+    expect(r6.text).toContain("plainly unfounded");
+  });
+
+  test("a restriction, paragraph by paragraph: its days, its end and the warning it follows, until when it applies, what the software counted, the account's conduct under R6 and the appeal; neither measure needs a reply", () => {
+    const out = statementParagraphs(decided([restriction()]));
+    expect(out[0]).toBe(`${W.restrict(30, at(RESTRICT_ENDS), at(WARNED_AT))} ${W.reportingOpen}`);
+    expect(out[1]).toBe(W.scope.reporting(at(RESTRICT_ENDS)));
+    expect(out).toContain(W.automationCounted);
+    expect(out.at(-1)).toBe(appeal2);
+    for (const paragraphs of [out, statementParagraphs(decided([warning()]))]) {
+      expect(paragraphs).not.toContain(REDRESS_TEXTS[2].reply);
+      expect(paragraphs).not.toContain(REDRESS_TEXTS[2].replyAtOnce);
+      expect(paragraphs.join(" ")).not.toContain("It breaks");
+    }
+    // A deleted account's measure says that it changes nothing.
+    expect(statementParagraphs(decided([restriction({ noEffect: "deleted" })]))[0]).toBe(`${W.restrict(30, at(RESTRICT_ENDS), at(WARNED_AT))} ${W.deletedAccount} ${W.reportingOpen}`);
+  });
+
+  test("a warning without its end, or a restriction without its days, its end or its warning, is not rendered as another statement", () => {
+    expect(() => statementParagraphs(decided([warning({ endsAt: null })]))).toThrow(/warn_reporting/);
+    expect(() => statementParagraphs(decided([restriction({ days: undefined })]))).toThrow(/restrict_reporting/);
+    expect(() => statementParagraphs(decided([restriction({ endsAt: null })]))).toThrow(/restrict_reporting/);
+    expect(() => statementParagraphs(decided([restriction({ warnedAt: null })]))).toThrow(/restrict_reporting/);
+    // A redress version without the warning's next step cannot word a warning.
+    expect(() => statementParagraphs({ ...decided([warning()]), redressVersion: 1 })).toThrow(/redress/);
+  });
+
+  test("the lift of a warning, of a restriction that ran and of one whose days had run out, in a correction and in a review", () => {
+    for (const kind of ["correction", "review"] as const) {
+      const lift = (more: Partial<DecisionStatement["reversals"][number]>) => about(kind, { reversals: [reversal("lift_reporting", { liftedDecidedAt: WARNED_AT, ...more })] });
+      expect(lift({ liftedKind: "warn_reporting" })[1], kind).toBe(W.reportingLifted.warning);
+      expect(lift({ liftedKind: "restrict_reporting", periodThen: { state: "running", startedAt: WARNED_AT, endedAt: null } })[1], kind).toBe(W.reportingLifted.restriction);
+      expect(lift({ liftedKind: "restrict_reporting", periodThen: { state: "ended", startedAt: WARNED_AT, endedAt: RESTRICT_ENDS } })[1], kind).toBe(W.reportingLifted.restrictionEnded(at(RESTRICT_ENDS)));
+      expect(() => lift({ liftedKind: null }), kind).toThrow(/lift_reporting/);
+      expect(lift({ liftedKind: "warn_reporting" }).at(-1), kind).toBe(REDRESS_TEXTS[2].notAppealable);
+    }
+  });
+
+  test("lifting the warning a restriction rests on ends the restriction in that decision, which says so: you can report again, or when its days had already run out, when it ran", () => {
+    const ended = (state: "running" | "ended") => ({
+      kind: "restrict_reporting" as const,
+      decidedAt: WARNED_AT,
+      periodThen: { state, startedAt: WARNED_AT, endedAt: state === "ended" ? RESTRICT_ENDS : null },
+      seal: false,
+      replyFiledAt: null,
+    });
+    const lifting = (state: "running" | "ended") =>
+      about("review", { reversals: [reversal("lift_reporting", { liftedKind: "warn_reporting", liftedDecidedAt: WARNED_AT })], endedStanding: [ended(state)] });
+    expect(lifting("running")).toContain(`${W.basisEndedReporting(at(WARNED_AT))} ${W.basisEndedReportingThen.running}`);
+    expect(lifting("ended")).toContain(`${W.basisEndedReporting(at(WARNED_AT))} ${W.basisEndedReportingThen.ended(at(WARNED_AT), at(RESTRICT_ENDS))}`);
+    expect(lifting("running").join(" ")).not.toContain("suspension");
+  });
+
+  test("every kind of the ledger is worded: none is refused as not worded", () => {
+    for (const kind of [...MEASURE_KINDS, ...REVERSAL_KINDS]) {
+      let message = "";
+      try {
+        if ((MEASURE_KINDS as readonly string[]).includes(kind)) statementParagraphs(decided([measure(kind as MeasureKind)]));
+        else about("correction", { reversals: [reversal(kind as ReversalKind)] });
+      } catch (err) {
+        message = String(err);
+      }
+      expect(message, kind).not.toMatch(/not worded/);
+    }
   });
 });
 

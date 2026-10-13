@@ -34,7 +34,7 @@ import {
 } from "@korbat/contracts";
 import { REDRESS_VERSION, RULES_VERSION, type StatementInput } from "@korbat/rules";
 import type { StaffApi } from "./api";
-import { codeOf, COMPOSER_WORDS, describeError, messageFor, NOTE_WORDS } from "./messages";
+import { codeOf, COMPOSER_WORDS, describeError, messageFor, NOTE_WORDS, STANDING_WORDS } from "./messages";
 import { parseCaseId, type CaseId } from "./router";
 import { decideWithKey, reviewWithKey } from "./step-up";
 import { normalised, saveStaffText, type RandomBytes } from "./texts";
@@ -87,6 +87,10 @@ export interface CaseDraft {
   answer?: "kept" | "reversed";
   /** 3e: a correction that withdraws an announced measure for another, signed `replaced`. */
   replaced?: boolean;
+  /** 3e Task 5: the items a final decision that finds no breach marks "manifestly unfounded", which the key signs. */
+  unfounded?: string[];
+  /** 3e Task 5: a correction kept that withdraws every mark of the "No breach" decision it corrects. */
+  withdrawMarks?: boolean;
 }
 
 /** The composer's own sentences, each written once. The seal's drafts are the contracts', and the statement's words the rulebook package's. */
@@ -301,11 +305,12 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
 /**
  * The targets whose measures a correction or a review lifts one by one, each with its own reversal (3c's). A strike falls
  * only with its whole finding: the console adds its overruling to a full reversal (overruleOf) and never offers it alone.
- * A retirement is given back with its own reversal (Task 2, 8.7), and (Task 3) a suspension or a termination is lifted
- * with lift_suspension: those two share the target `account` with the strike, so they are named by kind.
+ * A retirement is given back with its own reversal (Task 2, 8.7), (Task 3) a suspension or a termination is lifted with
+ * lift_suspension, and (Task 5) a warning about reporting or a restriction of it with lift_reporting: the first two share
+ * the target `account` with the strike, so they are named by kind, and the reporting measures with them.
  */
 const ONE_BY_ONE: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio", "handle"];
-const ONE_BY_ONE_KINDS: readonly ActionKind[] = ["suspend", "terminate"];
+const ONE_BY_ONE_KINDS: readonly ActionKind[] = ["suspend", "terminate", "warn_reporting", "restrict_reporting"];
 
 /** Whether a decision's action is a measure that a correction or a review lifts one by one. */
 const liftsOneByOne = (action: { kind: ActionKind }): boolean =>
@@ -359,6 +364,7 @@ function reversalOf(action: { kind: ActionKind; mediaId: string | null }): Decis
   if (target === "images") return { kind: "unseal_media", mediaId: null };
   if (target === "handle") return { kind: "unretire_handle", mediaId: null };
   if (action.kind === "suspend" || action.kind === "terminate") return { kind: "lift_suspension", mediaId: null };
+  if (target === "reporting") return { kind: "lift_reporting", mediaId: null };
   return { kind: target === "display_name" ? "restore_display_name" : "restore_bio", mediaId: null };
 }
 
@@ -681,6 +687,177 @@ function repliedToPreview(decision: CaseDecision, draft: CaseDraft, now: Date): 
   };
 }
 
+// ---------------------------------------------------------------- 3e Task 5: the restriction of reporting and the marks
+
+/** The two controls of the reporting measures (8.3): warn about reporting, restrict reporting. */
+export type ReportingControl = "warn" | "restrict";
+
+/**
+ * Why such a control is greyed, by its key in STANDING_WORDS.reporting: a report waits in the case ([reports.first]), too
+ * few marked reports ([warn.short]), a warning still counts ([warn.standing]), no warning counts ([restrict.noWarning]),
+ * too few marked reports since it ([restrict.short]), a restriction runs ([restrict.running]).
+ */
+export type ReportingClosed = "reportsFirst" | "warnShort" | "warnStanding" | "noWarning" | "restrictShort" | "running";
+
+/** The ledger kind a reporting control adds. */
+export const reportingKindOf = (control: ReportingControl): "warn_reporting" | "restrict_reporting" => (control === "warn" ? "warn_reporting" : "restrict_reporting");
+
+/**
+ * Whether a reporting control is open for this draft on this case, or why not; null where it is not shown: on a post
+ * case, while deciding, for an outcome that restricts nothing, and on the law (both cite R6). Both answer findings only,
+ * so a report that waits in the case greys them; the case answer's reporting says what the database would accept now,
+ * and the database decides at the commit.
+ */
+export function reportingControlState(view: CaseView, draft: Pick<CaseDraft, "kind" | "outcome" | "ground">, control: ReportingControl): { open: true } | { open: false; why: ReportingClosed } | null {
+  const standing = view.standing;
+  if (view.target.type !== "account" || standing === null || draft.kind !== "final" || draft.outcome !== "restricted" || draft.ground !== "incompatible") return null;
+  const reporting = standing.reporting;
+  if (standing.openReports) return { open: false, why: "reportsFirst" };
+  if (control === "warn") {
+    if (reporting.warnedOn !== null) return { open: false, why: "warnStanding" };
+    return reporting.mayWarn ? { open: true } : { open: false, why: "warnShort" };
+  }
+  if (reporting.warnedOn === null) return { open: false, why: "noWarning" };
+  if (reporting.restrictedUntil !== null) return { open: false, why: "running" };
+  return reporting.mayRestrict ? { open: true } : { open: false, why: "restrictShort" };
+}
+
+/** "1", "1 and 3", "1, 2 and 3". */
+const listedNumbers = (numbers: readonly number[]): string => {
+  const words = [...numbers].sort((a, b) => a - b).map(String);
+  return words.length <= 1 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)!}`;
+};
+
+/**
+ * W.5's {marked}: the marked reports by what korbat generated, each once, oldest first, with the day it was sent and the
+ * numbers of its marked items: "report N-ABCDEFGHIJ of 2026-10-01 (item 2)", joined by "; ". Nobody is named.
+ */
+export function markedList(marks: readonly NonNullable<CaseView["standing"]>["reporting"]["marked"][number][]): string {
+  const reports = new Map<string, { sentOn: string; positions: number[] }>();
+  for (const mark of marks) {
+    const entry = reports.get(mark.ref) ?? { sentOn: mark.sentOn, positions: [] };
+    entry.positions.push(mark.position);
+    reports.set(mark.ref, entry);
+  }
+  return [...reports].map(([ref, { sentOn, positions }]) => `report ${ref} of ${sentOn} (${positions.length === 1 ? "item" : "items"} ${listedNumbers(positions)})`).join("; ");
+}
+
+/** The UTC day of an instant: the {readDay} of W.5's reporting drafts. */
+const utcDay = (at: Date): string => at.toISOString().slice(0, 10);
+
+/**
+ * The draft once a reporting control is chosen: its measure beside the draft's other measures and never beside the other
+ * reporting measure, a restriction with its days and never announced; rule R6, which the composer sets; and, when the
+ * facts are still empty, W.5's draft filled from the case answer as this page read it on `now`'s day: the counts in
+ * reports and the marked reports (since the warning, for a restriction). The moderator may edit them and writes the
+ * reason.
+ */
+export function withReporting(view: CaseView, draft: CaseDraft, control: ReportingControl, days: number | null, now: Date): CaseDraft {
+  const reporting = view.standing?.reporting;
+  const measure: DecisionActionParams =
+    control === "warn" ? { kind: "warn_reporting", mediaId: null } : { kind: "restrict_reporting", mediaId: null, days: days ?? STANDING_RULES.reportRestrictDays, announced: false };
+  const actions = [...draft.actions.filter((action) => action.kind !== "warn_reporting" && action.kind !== "restrict_reporting"), measure];
+  const facts =
+    control === "warn"
+      ? filled(STANDING_DRAFTS.facts.warn, {
+          frameDays: String(STANDING_RULES.reportFrameDays),
+          readDay: utcDay(now),
+          reports: String(reporting?.reports ?? 0),
+          unfounded: String(reporting?.unfounded ?? 0),
+          marked: markedList(reporting?.marked ?? []),
+        })
+      : filled(STANDING_DRAFTS.facts.restrict, {
+          warnedOn: reporting?.warnedOn ?? "",
+          readDay: utcDay(now),
+          marksSince: String(reporting?.marksSince ?? 0),
+          marked: markedList((reporting?.marked ?? []).filter((mark) => mark.sinceWarning)),
+        });
+  const written = { ...draft.written };
+  if (normalised(written.facts) === "") written.facts = facts;
+  return { ...draft, ruleId: "R6", category: draft.ruleId === "R6" ? draft.category : RULE_DEFAULT_CATEGORY.R6, actions, written };
+}
+
+/** Whether a reporting measure a draft holds is still what its control offers now, under R6 and with a restriction's days within its bound. */
+function reportingOffered(view: CaseView, draft: Pick<CaseDraft, "kind" | "outcome" | "ground" | "ruleId">, action: DecisionActionParams): boolean {
+  const state = reportingControlState(view, draft, action.kind === "warn_reporting" ? "warn" : "restrict");
+  if (state?.open !== true || draft.ruleId !== "R6") return false;
+  return action.kind === "warn_reporting" || (action.announced === false && typeof action.days === "number" && action.days >= STANDING_DAYS.min && action.days <= STANDING_RULES.reportRestrictDays);
+}
+
+/** A warning about reporting or a restriction of it as the preview renders it: what the database will fix, as far as the page can tell now. */
+function previewReporting(view: CaseView, action: DecisionActionParams, noEffect: "already" | "deleted" | null, now: Date) {
+  if (action.kind === "warn_reporting") {
+    return { kind: "warn_reporting" as MeasureKind, mediaId: null, noEffect, sealed: null, basis: "reports" as const, endsAt: new Date(now.getTime() + STANDING_RULES.reportFrameDays * DAY_MS).toISOString() };
+  }
+  const days = action.days ?? 1;
+  return {
+    kind: "restrict_reporting" as MeasureKind,
+    mediaId: null,
+    noEffect,
+    sealed: null,
+    basis: "reports" as const,
+    days,
+    endsAt: new Date(now.getTime() + days * DAY_MS).toISOString(),
+    // The warning it follows, by its decision's time as the case answer gives it.
+    warnedAt: view.standing?.reporting.warnedAt ?? now.toISOString(),
+  };
+}
+
+/**
+ * What a lift of a reporting measure lifts, for the preview of a correction or a review: the warning, or the restriction
+ * with whether its days still run now (it started with its decision) or had run out.
+ */
+function reportingLiftOf(decision: CaseDecision, lifted: CaseDecisionAction, now: Date) {
+  if (lifted.kind === "warn_reporting") return { liftedKind: "warn_reporting" as const, liftedDecidedAt: decision.decidedAt, periodThen: null };
+  const end = new Date(Date.parse(decision.decidedAt) + (lifted.days ?? 0) * DAY_MS);
+  const ended = end.getTime() <= now.getTime();
+  return { liftedKind: "restrict_reporting" as const, liftedDecidedAt: decision.decidedAt, periodThen: { state: ended ? ("ended" as const) : ("running" as const), startedAt: decision.decidedAt, endedAt: ended ? end.toISOString() : null } };
+}
+
+/** What a correction's or a review's choice is called: a reporting measure's lift by what it lifts (8.7), every other by its label. */
+export function reversalLabel(measure: CaseDecisionAction, reversal: DecisionActionParams): string {
+  if (reversal.kind === "lift_reporting") return measure.kind === "warn_reporting" ? STANDING_WORDS.reporting.liftWarning : STANDING_WORDS.reporting.liftRestriction;
+  return MEASURES[reversal.kind].label;
+}
+
+/** The items a final "No breach" decision made now answers and may mark (8.4): those it considers whose `markable` is true. */
+export function markableItems(view: CaseView, draft: Pick<CaseDraft, "kind" | "outcome">): CaseItem[] {
+  if (draft.kind !== "final" || draft.outcome !== "no_violation") return [];
+  return considered(view, "final").filter((item) => item.markable);
+}
+
+/** The items such a decision answers that cannot be marked, for [mark.never], said once. */
+export function unmarkableItems(view: CaseView, draft: Pick<CaseDraft, "kind" | "outcome">): CaseItem[] {
+  if (draft.kind !== "final" || draft.outcome !== "no_violation") return [];
+  return considered(view, "final").filter((item) => !item.markable);
+}
+
+/** The draft's marks with one item ticked or unticked, sorted, as the params sign them. */
+export function withMark(draft: CaseDraft, itemId: string, on: boolean): string[] {
+  const rest = (draft.unfounded ?? []).filter((id) => id !== itemId);
+  return (on ? [...rest, itemId] : rest).sort();
+}
+
+/** The marks a draft signs: those of its items that a final "No breach" decision made now may still mark, sorted, without repeats. */
+export function marksOf(view: CaseView, draft: Pick<CaseDraft, "kind" | "outcome" | "unfounded">): string[] {
+  const markable = new Set(markableItems(view, draft).map((item) => item.id));
+  return [...new Set((draft.unfounded ?? []).filter((id) => markable.has(id)))].sort();
+}
+
+/**
+ * The items whose marks a correction of this decision would withdraw ("Withdraw this decision's marks", 8.4 and 8.7): a
+ * final "No breach" decision's items whose marks stand. A decision that needed an admin is corrected by an admin.
+ */
+export function marksWithdrawable(view: CaseView, decision: CaseDecision, role: StaffRole): CaseItem[] {
+  if (decision.kind !== "final" || decision.outcome !== "no_violation" || (decision.needsAdmin && role !== "admin")) return [];
+  return view.items.filter((item) => item.answeredBy === decision.id && item.unfounded);
+}
+
+/** The draft of that correction: kept, nothing lifted, no list signed; the database withdraws every mark of the decision. */
+export function withdrawMarksDraft(caseId: CaseId, view: CaseView, decision: CaseDecision, role: StaffRole): CaseDraft {
+  return { ...newDraft(caseId, view, role), kind: "correction", reviewsDecisionId: decision.id, category: decision.category, answer: "kept", withdrawMarks: true, actions: [] };
+}
+
 // ---------------------------------------------------------------- drafts
 
 const sameAction = (a: DecisionActionParams, b: DecisionActionParams): boolean => a.kind === b.kind && a.mediaId === b.mediaId;
@@ -720,6 +897,8 @@ function actionOffered(view: CaseView, role: StaffRole, kind: "interim" | "final
   // 3e Task 4: an announced suspension or termination, or a termination at once, stays while its control is open.
   const standing = action.kind === "suspend" || action.kind === "terminate" ? standingOffered(view, role, { ...draftLike, kind, outcome: restricts ? "restricted" : "no_violation" }, action) : null;
   if (standing !== null) return standing;
+  // 3e Task 5: a warning about reporting or a restriction of it stays while its control is open, under R6.
+  if (action.kind === "warn_reporting" || action.kind === "restrict_reporting") return reportingOffered(view, { ...draftLike, kind, outcome: restricts ? "restricted" : "no_violation" }, action);
   // 3e: a suspension at once stays while its control is open for this person, rule and case, with days within its ground's.
   if (action.kind === "suspend") {
     const state = atOnceState(view, role, { ...draftLike, kind, outcome: restricts ? "restricted" : "no_violation" });
@@ -750,8 +929,11 @@ export function offeredDraft(view: CaseView, role: StaffRole, draft: CaseDraft):
   const ruleId = draft.ruleId === "R2" && suspectOpen(view).length === 0 ? openingRule(view) : draft.ruleId;
   const category = ruleId === draft.ruleId ? draft.category : RULE_DEFAULT_CATEGORY[ruleId];
   const actions = draft.actions.filter((action) => actionOffered(view, role, kind, outcome === "restricted", action, { ground, ruleId, terrorist: draft.terrorist }));
-  const same = kind === draft.kind && outcome === draft.outcome && ground === draft.ground && ruleId === draft.ruleId && actions.length === draft.actions.length;
-  return same ? draft : { ...draft, kind, outcome, ground, ruleId, category, actions };
+  // 3e Task 5: the marks stay on the items a final "No breach" decision made now may still mark, and on no other.
+  const unfounded = marksOf(view, { kind, outcome, unfounded: draft.unfounded });
+  const same =
+    kind === draft.kind && outcome === draft.outcome && ground === draft.ground && ruleId === draft.ruleId && actions.length === draft.actions.length && unfounded.join(" ") === (draft.unfounded ?? []).join(" ");
+  return same ? draft : { ...draft, kind, outcome, ground, ruleId, category, actions, unfounded };
 }
 
 /** The fixed drafts of a seal on this case: the facts by its unanswered suspect items, the reason by whether it is taken while deciding or for good. */
@@ -1030,7 +1212,9 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
                 replyFiledAt: lifted.reply?.filedAt ?? null,
               }
             : {};
-        return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET), ...handle, ...lift };
+        // 3e Task 5: what a lift of a reporting measure lifts, and whether a restriction's days still ran.
+        const reporting = reversal.kind === "lift_reporting" && lifted ? reportingLiftOf(corrected, lifted, now) : {};
+        return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET), ...handle, ...lift, ...reporting };
       }),
       endedMeasures: [],
       reviewed: { kind: corrected.kind, ground: corrected.ground, ruleId: corrected.ruleId, rulesVersion: corrected.rulesVersion, legalReference: corrected.legalReference, decidedAt: corrected.decidedAt },
@@ -1063,6 +1247,8 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
         if ((action.kind === "suspend" && action.announced === true) || action.kind === "terminate") return previewStanding(view, action, noEffect, now);
         // 3e Task 3: a suspension at once, with its basis, its end and the decision it rests on, as the database will fix them.
         if (action.kind === "suspend") return previewSuspension(view, draft, action, noEffect, now);
+        // 3e Task 5: a warning about reporting or a restriction of it, with its end and the warning a restriction follows.
+        if (action.kind === "warn_reporting" || action.kind === "restrict_reporting") return previewReporting(view, action, noEffect, now);
         const measure = { kind: action.kind as MeasureKind, mediaId: action.mediaId, noEffect, sealed: action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedImages: 0 } : null };
         // 3e: a retirement names the snapshot's handle, and the placeholder's form when it changes the profile.
         if (action.kind !== "retire_handle") return measure;
@@ -1126,17 +1312,21 @@ export function decisionParamsOf(view: CaseView, draft: CaseDraft, digests: Deci
   const corrected = draft.kind === "correction" ? view.decisions.find((decided) => decided.id === draft.reviewsDecisionId) : undefined;
   if (draft.kind === "correction" && !corrected) throw new Error("a correction's draft names a decision of the case");
   // 3e: the strike the case answer says is due, and the overruling of a full correction, are the console's to add: the
-  // person never chooses either. A kept answer to a reply lifts nothing and overrules nothing. Marks come with Task 5.
-  const added = draft.kind === "correction" ? (draft.answer === "kept" ? [] : overruleOf(corrected, reversesAll(view, draft))) : strikeOf(view, draft);
+  // person never chooses either. A kept answer to a reply, and a kept correction that withdraws a decision's marks, lift
+  // nothing and overrule nothing. Task 5: a final "No breach" decision signs the marks its person ticked on the items it
+  // answers; any other signs none, and a withdrawal of marks signs no list either (the database withdraws them all).
+  const kept = draft.answer === "kept" || draft.withdrawMarks === true;
+  const added = draft.kind === "correction" ? (kept ? [] : overruleOf(corrected, reversesAll(view, draft))) : strikeOf(view, draft);
   const actions = [...draft.actions, ...added].sort(compareDecisionActions);
-  const shared = { stateVersion: view.stateVersion, snapshotId: newest.id, snapshotDigest: digests.snapshot, redressVersion: REDRESS_VERSION, actions, unfounded: [], replaced: draft.kind === "correction" && draft.replaced === true };
+  const unfounded = draft.kind === "correction" ? [] : marksOf(view, draft);
+  const shared = { stateVersion: view.stateVersion, snapshotId: newest.id, snapshotDigest: digests.snapshot, redressVersion: REDRESS_VERSION, actions, unfounded, replaced: draft.kind === "correction" && draft.replaced === true };
   if (draft.kind === "correction" && corrected) {
     return CaseDecidedParams.parse({
       ...shared,
       kind: "correction",
       throughSeq: 0,
       reviewsDecisionId: corrected.id,
-      outcome: draft.answer === "kept" ? "kept" : reversesAll(view, draft) ? "reversed" : "partly_reversed",
+      outcome: kept ? "kept" : reversesAll(view, draft) ? "reversed" : "partly_reversed",
       ground: null,
       ruleId: null,
       // A correction carries the rulebook version and the category of the decision it corrects.

@@ -1,4 +1,4 @@
-import { FINDING_CATEGORIES, MEASURES, RULE_DEFAULT_CATEGORY, type AppealsReviewedParams, type CaseDecision, type CaseView, type DecisionActionParams, type MeasureKind, type RuleId, type TdbCategory } from "@korbat/contracts";
+import { FINDING_CATEGORIES, MEASURES, RULE_DEFAULT_CATEGORY, STANDING_RULES, type AppealsReviewedParams, type CaseDecision, type CaseView, type DecisionActionParams, type MeasureKind, type RuleId, type TdbCategory } from "@korbat/contracts";
 import { RULES, statementParagraphs, type StatementInput } from "@korbat/rules";
 import {
   COMPOSER,
@@ -14,6 +14,16 @@ import {
   hiddenWhileDeciding,
   imagesOffered,
   measuresOffered,
+  markableItems,
+  marksWithdrawable,
+  reportingControlState,
+  reportingKindOf,
+  reversalLabel,
+  unmarkableItems,
+  withMark,
+  withReporting,
+  type ReportingClosed,
+  type ReportingControl,
   AT_ONCE_DAYS,
   AT_ONCE_ORDER,
   answerable,
@@ -222,7 +232,7 @@ function CorrectionView(props: ComposerViewProps) {
           <li key={measure.id}>
             <label>
               <input type="checkbox" checked={holds(draft, reversal)} disabled={props.busy} onChange={(event) => props.onChange({ actions: toggled(draft, reversal, event.target.checked) })} />{" "}
-              <span>{MEASURES[reversal.kind].label}</span>
+              <span>{reversalLabel(measure, reversal)}</span>
               {measure.mediaId === null ? null : (
                 <>
                   {" "}
@@ -294,7 +304,7 @@ function ReviewView(props: ComposerViewProps) {
             <label>
               {/* What "Keep" and "Reverse" lift follows from the answer: only a part is chosen measure by measure. */}
               <input type="checkbox" checked={holds(draft, reversal)} disabled={props.busy || answer !== "partly_reversed"} onChange={(event) => props.onChange({ actions: toggled(draft, reversal, event.target.checked) })} />{" "}
-              <span>{MEASURES[reversal.kind].label}</span>
+              <span>{reversalLabel(measure, reversal)}</span>
               {measure.mediaId === null ? null : (
                 <>
                   {" "}
@@ -327,11 +337,14 @@ function ReviewView(props: ComposerViewProps) {
 function StandingNotes({ decision }: { decision: CaseDecision }) {
   const basis = (decision.standingOn ?? []).some((entry) => entry.basis === "threat" || entry.basis === "terrorist" || entry.basis === "protective" || entry.basis === "threat_repeat");
   const protective = decision.actions.some((action) => action.kind === "suspend" && action.basis === "protective");
-  if (!basis && !protective) return null;
+  // 3e Task 5: a restriction of reporting rests on this decision's warning ([review.warning]).
+  const warning = (decision.standingOn ?? []).some((entry) => entry.kind === "restrict_reporting");
+  if (!basis && !protective && !warning) return null;
   return (
     <>
       {basis ? <p className="notice">{STANDING_WORDS.reviewBasis}</p> : null}
       {protective ? <p className="hint">{STANDING_WORDS.reviewProtective}</p> : null}
+      {warning ? <p className="notice">{STANDING_WORDS.reviewWarning}</p> : null}
     </>
   );
 }
@@ -580,6 +593,135 @@ function WithdrawView(props: ComposerViewProps) {
   );
 }
 
+/** The sentence that greys a reporting control, by its key, with the case answer's numbers. */
+function reportingClosedWords(view: CaseView, why: ReportingClosed): string {
+  const reporting = view.standing?.reporting;
+  const W = STANDING_WORDS.reporting;
+  switch (why) {
+    case "reportsFirst":
+      return STANDING_WORDS.reportsFirst;
+    case "warnShort":
+      return W.warnShort(reporting?.unfounded ?? 0, reporting?.reports ?? 0);
+    case "warnStanding":
+      return W.warnStanding(reporting?.warnedOn ?? "");
+    case "noWarning":
+      return W.restrictNoWarning;
+    case "restrictShort":
+      return W.restrictShort(reporting?.marksSince ?? 0, reporting?.warnedOn ?? "");
+    case "running":
+      return W.restrictRunning(dateTime(reporting?.restrictedUntil ?? ""));
+  }
+}
+
+/**
+ * 3e Task 5 (design, section 8.3): "Warn about reporting" and "Restrict reporting" with its days, on an account case's
+ * final restriction, each offered when the case answer says the database would accept it and greyed with its reason
+ * otherwise. Both cite R6, which choosing one sets, and choosing one drafts the facts from the case answer.
+ */
+function ReportingMeasureControl({ props, control }: { props: ComposerViewProps; control: ReportingControl }) {
+  const { view, draft } = props;
+  const state = reportingControlState(view, draft, control);
+  const reporting = view.standing?.reporting;
+  if (state === null || reporting === undefined) return null;
+  const kind = reportingKindOf(control);
+  const held = draft.actions.find((action) => action.kind === kind);
+  const max = STANDING_RULES.reportRestrictDays;
+  const days = typeof held?.days === "number" ? held.days : max;
+  const W = STANDING_WORDS.reporting;
+  const choose = (on: boolean, value: number) => {
+    if (!state.open) return;
+    props.onChange(on ? withReporting(view, draft, control, control === "restrict" ? Math.min(max, Math.max(1, value)) : null, props.now) : { actions: draft.actions.filter((action) => action.kind !== kind) });
+  };
+  const id = `compose-${control}-reporting`;
+  return (
+    <li>
+      <label>
+        <input type="checkbox" checked={held !== undefined} disabled={props.busy || !state.open} onChange={(event) => choose(event.target.checked, days)} /> <span>{control === "warn" ? W.warnLabel : W.restrictLabel}</span>
+      </label>
+      {held !== undefined && state.open && control === "restrict" ? (
+        <>
+          {" "}
+          <label htmlFor={`${id}-days`}>{W.daysLabel}</label> <input id={`${id}-days`} type="number" min={1} max={max} value={days} disabled={props.busy} onChange={(event) => choose(true, Number(event.target.value) || 1)} />
+        </>
+      ) : null}
+      {state.open ? null : <p className="hint">{reportingClosedWords(view, state.why)}</p>}
+      <p className="hint">{control === "warn" ? W.warnWhat(reporting.unfounded, reporting.reports) : W.restrictWhat(days)}</p>
+      {held !== undefined ? (
+        <>
+          <p className="hint">{W.rule}</p>
+          <p className="hint">{STANDING_WORDS.facts}</p>
+        </>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * 3e Task 5 (design, section 8.4): with the outcome "No breach" of a final decision, a tick box "Manifestly unfounded"
+ * beside each item it answers whose `markable` is true; the ticked items are the signed list. [mark.rule] and
+ * [mark.undone] stand under them, and [mark.never] once when an item it answers cannot be marked.
+ */
+function Marks({ props }: { props: ComposerViewProps }) {
+  const { view, draft } = props;
+  const items = markableItems(view, draft);
+  const unmarkable = unmarkableItems(view, draft);
+  if (items.length === 0 && unmarkable.length === 0) return null;
+  const W = STANDING_WORDS.mark;
+  return (
+    <fieldset>
+      <legend>{W.legend}</legend>
+      <ul className="plain">
+        {items.map((item) => (
+          <li key={item.id}>
+            <label>
+              <input type="checkbox" checked={(draft.unfounded ?? []).includes(item.id)} disabled={props.busy} onChange={(event) => props.onChange({ unfounded: withMark(draft, item.id, event.target.checked) })} />{" "}
+              <span>{`${W.label}: item ${item.seq}`}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      {items.length > 0 ? <p className="hint">{W.rule}</p> : null}
+      {unmarkable.length > 0 ? <p className="hint">{W.never}</p> : null}
+      {items.length > 0 ? <p className="hint">{W.undone}</p> : null}
+    </fieldset>
+  );
+}
+
+/**
+ * 3e Task 5 (design, sections 8.4 and 8.7): "Withdraw this decision's marks": a correction kept of a "No breach" decision
+ * whose marks stand, which holds no action and signs no list; the database withdraws every mark of the decision. It sends
+ * the author nothing, so the page says so in place of a preview.
+ */
+function MarksView(props: ComposerViewProps) {
+  const { view, role, draft } = props;
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const marked = decision ? marksWithdrawable(view, decision, role) : [];
+  const W = STANDING_WORDS.mark;
+  if (!decision || marked.length === 0) {
+    return (
+      <section className="panel composer" aria-labelledby="composer-title">
+        <h3 id="composer-title">{W.withdrawLabel}</h3>
+        <p>No mark of that decision stands any more.</p>
+        <div className="actions">
+          <button type="button" onClick={props.onCancelCorrection}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="panel composer" aria-labelledby="composer-title">
+      <h3 id="composer-title">{W.withdrawLabel}</h3>
+      <p>{`The decision of ${dateTime(decision.decidedAt)} marked ${marked.length === 1 ? "item" : "items"} ${marked.map((item) => item.seq).join(", ")} manifestly unfounded.`}</p>
+      <p className="notice">{W.withdrawWhat}</p>
+      <TextField id="compose-review-reason" label="Reason of the correction" kind="review_reason" rows={3} props={props} under={[`${COMPOSER_WORDS.personalDataRule} ${COMPOSER_WORDS.staysInRecord}`]} />
+      <p className="hint">{W.noStatement}</p>
+      <Confirm props={props} onCancel={props.onCancelCorrection} />
+    </section>
+  );
+}
+
 /** Beside a decision whose reply waits: "Answer this reply", for whoever may ([reply.admin] where only an admin may). */
 export function AnswerControl({ decision, role, disabled, onAnswer }: { decision: CaseDecision; role: StaffRole; disabled: boolean; onAnswer(decision: CaseDecision): void }) {
   if (!answerable(decision, role)) return null;
@@ -662,7 +804,11 @@ function RetireNotes({ view, chosen, closed }: { view: CaseView; chosen: boolean
 export function ComposerView(shown: ComposerViewProps) {
   const { view, role } = shown;
   // 3e Task 4: a correction that answers a reply, and one that withdraws an announced measure, have views of their own.
-  if (shown.draft.kind === "correction") return shown.draft.answer !== undefined ? <AnswerView {...shown} /> : shown.draft.replaced === true ? <WithdrawView {...shown} /> : <CorrectionView {...shown} />;
+  // Task 5: so has a correction that withdraws a "No breach" decision's marks.
+  if (shown.draft.kind === "correction") {
+    if (shown.draft.withdrawMarks === true) return <MarksView {...shown} />;
+    return shown.draft.answer !== undefined ? <AnswerView {...shown} /> : shown.draft.replaced === true ? <WithdrawView {...shown} /> : <CorrectionView {...shown} />;
+  }
   if (shown.draft.kind === "review") return <ReviewView {...shown} />;
   // What the draft holds is shown as far as it is offered, and that is what the key confirms.
   const draft = offeredDraft(view, role, shown.draft);
@@ -864,6 +1010,9 @@ export function ComposerView(shown: ComposerViewProps) {
             <StandingMeasureControl props={props} control="announce" />
             <StandingMeasureControl props={props} control="announceTerminate" />
             <StandingMeasureControl props={props} control="terminateAtOnce" />
+            {/* 3e Task 5: the warning about reporting and the restriction of it. */}
+            <ReportingMeasureControl props={props} control="warn" />
+            <ReportingMeasureControl props={props} control="restrict" />
             {kind === "interim" && view.target.type === "post" && hiddenWhileDeciding(view) ? (
               <li>
                 <p className="hint">{COMPOSER.alreadyHidden}</p>
@@ -872,6 +1021,9 @@ export function ComposerView(shown: ComposerViewProps) {
           </ul>
         </fieldset>
       ) : null}
+
+      {/* 3e Task 5 (design, section 8.4): "No breach" may mark the reports it answers "manifestly unfounded". */}
+      <Marks props={props} />
 
       {/* A restriction needs both texts; a decision without a measure may carry them, for the case's record. */}
       <TextField id="compose-facts" label="Facts" kind="facts" rows={4} props={props} under={underTexts} />
@@ -907,6 +1059,16 @@ export function CorrectControl({ view, decision, role, disabled, onCorrect }: { 
   return (
     <button type="button" onClick={() => onCorrect(decision)} disabled={disabled}>
       {offered.label}
+    </button>
+  );
+}
+
+/** Beside a "No breach" decision whose marks stand: "Withdraw this decision's marks" ([mark.withdraw]), for whoever may correct it. */
+export function WithdrawMarksControl({ view, decision, role, disabled, onWithdrawMarks }: { view: CaseView; decision: CaseDecision; role: StaffRole; disabled: boolean; onWithdrawMarks(decision: CaseDecision): void }) {
+  if (marksWithdrawable(view, decision, role).length === 0) return null;
+  return (
+    <button type="button" onClick={() => onWithdrawMarks(decision)} disabled={disabled}>
+      {STANDING_WORDS.mark.withdrawLabel}
     </button>
   );
 }

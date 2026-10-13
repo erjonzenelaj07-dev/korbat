@@ -862,7 +862,25 @@ async function removeCasesIn(tx: DbTx, caseIds: SQL, intakeIds: SQL): Promise<vo
   await tx.execute(sql`delete from evidence_snapshots where case_id = any(${caseIds})`);
   await tx.execute(sql`delete from case_access_log where case_id = any(${caseIds})`);
   await tx.execute(sql`delete from cases where id = any(${caseIds})`);
+  await untally(tx, intakeIds);
   await tx.execute(sql`delete from intakes where id = any(${intakeIds})`);
+}
+
+/**
+ * Takes back what report_tallies_count added for these intakes before they are deleted (3e Task 5): every signed-in
+ * report under a rule added 1 to its sender's tally of the UTC day it was received, and the API cannot write the table,
+ * so a suite's cleanup lowers each such row by the intakes it deletes, as the migrator, and deletes a row that reaches
+ * none. A sender whose profile goes too loses its rows outright (removeFixtures). `intakeIds` is a uuid[] parameter.
+ */
+export async function untally(tx: DbTx, intakeIds: SQL): Promise<void> {
+  await tx.execute(sql`
+    with counted as (
+      select n.reporter_id as account_id, (n.received_at at time zone 'UTC')::date as day, count(*)::int as n from intakes n
+       where n.id = any(${intakeIds}) and n.kind = 'user' and n.reporter_id is not null and not n.alleges_illegal and not n.csam
+       group by 1, 2
+    )
+    update report_tallies t set reports = t.reports - c.n from counted c where t.account_id = c.account_id and t.day = c.day`);
+  await tx.execute(sql`delete from report_tallies where reports <= 0`);
 }
 
 /**
@@ -1008,7 +1026,7 @@ export async function retireHandleForTest(migrateDb: Db, profileId: string): Pro
  * months, since the predicate reads the clock, every time is forced by a trigger, and no configuration shortens a number of
  * standing_rules(). It moves the decisions of every case about the account or its posts (their times, their notice
  * mail's time) with their ledger rows (created_at, starts_at, ends_at), the appeals of those decisions, the account's
- * replies, the marks of the reports it sent, and its posts, so that a post made before or after a decision stays so (the
+ * replies, the marks of the reports it sent with those reports' times and its daily tallies of them, and its posts, so that a post made before or after a decision stays so (the
  * strike rule and the second threat compare the two). The interval is PostgreSQL's, such as "91 days". It commits.
  */
 export async function ageStandingForTest(migrateDb: Db, accountId: string, interval: string): Promise<void> {
@@ -1024,6 +1042,15 @@ export async function ageStandingForTest(migrateDb: Db, accountId: string, inter
     await tx.execute(sql`update appeals set filed_at = filed_at - ${by}, answered_at = answered_at - ${by} where decision_id in ${decisions}`);
     await tx.execute(sql`update suspension_replies set filed_at = filed_at - ${by}, answered_at = answered_at - ${by}, erased_at = erased_at - ${by} where account_id = ${account}`);
     await tx.execute(sql`update unfounded_marks set reported_at = reported_at - ${by}, marked_at = marked_at - ${by}, withdrawn_at = withdrawn_at - ${by} where account_id = ${account}`);
+    // 3e Task 5: the reports the account sent move with their marks, and its tallies by the interval's whole days, so that
+    // a report and its mark leave the frame of report_frame_days together. A tally's row is a day, so it is moved by
+    // deleting the account's rows and writing them again, which no two rows of one day can meet half way.
+    await tx.execute(sql`update intakes set received_at = received_at - ${by} where reporter_id = ${account}`);
+    const tallies = await tx.execute<{ day: string; reports: number }>(sql`delete from report_tallies where account_id = ${account} returning day::text as day, reports`);
+    for (const tally of tallies) {
+      await tx.execute(sql`insert into report_tallies (account_id, day, reports) values (${account}, (${tally.day}::date - date_trunc('day', justify_hours(${by})))::date, ${tally.reports}::int)
+                           on conflict (account_id, day) do update set reports = report_tallies.reports + excluded.reports`);
+    }
     await tx.execute(sql`update posts set created_at = created_at - ${by}, deleted_at = deleted_at - ${by} where author_id = ${account}`);
     await tx.execute(sql`select public.standing_apply(${account})`);
   });

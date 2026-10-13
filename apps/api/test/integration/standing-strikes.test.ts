@@ -102,7 +102,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: strikes through the rout
     expect((await actionsOf(apiDb, await decided(admin, older.caseId, { kind: "final", actions: [act("remove")] }))).map((a) => a.kind)).toEqual(["remove"]);
   });
 
-  test("the routes accept 3c's kinds, a strike and its overruling, a handle's retirement and its reversal, suspensions and terminations with their lift and the kept answer, and nothing else yet: the reporting kinds and marks are refused, and the database refuses a measure or a kept correction that has no ground", async () => {
+  test("the routes accept every kind since Task 5 (3c's, a strike and its overruling, a handle's retirement and its reversal, suspensions and terminations with their lift and the kept answer, the reporting measures, their lift and the marks), and the database refuses a measure, a kept correction or a mark that has no ground", async () => {
     const author = await account();
     const post = await reportedPost(author.id);
     const removal = await decided(admin, post.caseId, { kind: "final", actions: [act("remove")] });
@@ -113,6 +113,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: strikes through the rout
     expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", ruleId: "R6", actions: [timed("suspend", 3, true)] }))).toBe("invalid_decision");
     // 3e Task 4 opened the kept correction, which answers a reply: the database refuses one that answers none.
     expect(await refusedWith(world.decideAs(admin, post.caseId, { kind: "correction", reviewsDecisionId: removal, outcome: "kept", actions: [] }))).toBe("invalid_decision");
+    // 3e Task 5 opened the marks and the reporting kinds: the database refuses a mark that names no item this decision
+    // answered (here a report's id, not an item's), and a lift of a reporting measure the reviewed decision does not hold.
     expect(await refusedWith(world.decideAs(admin, accountCase, { kind: "final", outcome: "no_violation", actions: [], unfounded: [post.intakeId] }))).toBe("invalid_decision");
     await appealOf(apiDb, removal, author.id);
     expect(await refusedWith(world.reviewAs(reviewer, removal, { outcome: "reversed", actions: [act("lift_reporting")] }))).toBe("invalid_decision");

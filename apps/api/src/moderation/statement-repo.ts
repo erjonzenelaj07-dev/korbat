@@ -122,12 +122,14 @@ export interface StatementActionRow {
    * stood at this decision's time (by suspension_periods, whose end a lift cuts to the lift's time), and whether the lift
    * was signed `replaced`.
    */
-  liftedKind: "suspend" | "terminate" | null;
+  liftedKind: "suspend" | "terminate" | "warn_reporting" | "restrict_reporting" | null;
   liftedDecidedAt: string | null;
   periodThen: { state: "not_started" | "running" | "ended"; startedAt: string | null; endedAt: string | null } | null;
   replaced: boolean | null;
   /** 3e Task 4, on such a lift: when the person had replied to the lifted measure, or null when they had not. */
   replyFiledAt: string | null;
+  /** 3e Task 5, on a restriction of reporting: the time of the warning it follows (its decision's). */
+  warnedAt: string | null;
 }
 
 /** A decision's measures and reversals, in the ledger's order of kinds. */
@@ -140,10 +142,13 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
                (select coalesce(sum(s.images), 0)::int from seal_posts s where s.action_id = a.id) as sealed_images,
                (select coalesce(sum(s.images), 0)::int from seal_posts s join posts p on p.id = s.post_id
                  where s.action_id = a.id and p.state = 'deleted_by_author' and p.deleted_at <= a.created_at) as sealed_deleted,
-               case when a.kind = 'strike' then ${iso("a.ends_at")}
-                    when a.kind = 'suspend' and a.announced is false then ${iso("(a.created_at + make_interval(days => a.days))")} end as ends_at,
-               case when a.kind in ('suspend', 'terminate') then a.days end as days,
-               case when a.kind in ('suspend', 'terminate') then a.basis end as basis,
+               case when a.kind in ('strike', 'warn_reporting') then ${iso("a.ends_at")}
+                    when a.kind = 'suspend' and a.announced is false then ${iso("(a.created_at + make_interval(days => a.days))")}
+                    when a.kind = 'restrict_reporting' then ${iso("(a.starts_at + make_interval(days => a.days))")} end as ends_at,
+               case when a.kind in ('suspend', 'terminate', 'restrict_reporting') then a.days end as days,
+               case when a.kind in ('suspend', 'terminate', 'warn_reporting', 'restrict_reporting') then a.basis end as basis,
+               -- 3e Task 5: the warning a restriction of reporting follows, by its decision's time (the one entry of rests_on).
+               case when a.kind = 'restrict_reporting' then (select ${iso("x.decided_at")} from decisions x where x.id = a.rests_on[1]) end as warned_at,
                case when a.kind in ('suspend', 'terminate') then ${iso("a.starts_at")} end as earliest_start,
                -- The decisions a standing measure rests on, in the ledger's order: what korbat fixed for good about each.
                case when a.kind in ('suspend', 'terminate') and a.rests_on is not null then (
@@ -154,17 +159,21 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
                    join decisions x on x.id = u.id
                    join cases xc on xc.id = x.case_id
                    left join posts xp on xc.target_type = 'post' and xp.id = xc.target_id) end as rests_on,
-               case when a.kind = 'lift_suspension' then l.kind::text end as lifted_kind,
-               case when a.kind = 'lift_suspension' then ${iso("ld.decided_at")} end as lifted_decided_at,
+               case when a.kind in ('lift_suspension', 'lift_reporting') then l.kind::text end as lifted_kind,
+               case when a.kind in ('lift_suspension', 'lift_reporting') then ${iso("ld.decided_at")} end as lifted_decided_at,
                case when a.kind = 'lift_suspension' then a.replaced end as replaced,
                -- Whether the person had replied to the lifted measure before this lift: a withdrawal then says it is no answer to it.
                case when a.kind = 'lift_suspension' then (select ${iso("r.filed_at")} from suspension_replies r where r.action_id = l.id and r.filed_at <= a.created_at) end as reply_filed_at,
                -- Where the lifted measure's period stood at this lift's time: the lift cuts its end to that time, so a period
                -- that ends before it had already ended, and one with no start, or a start not before it, never started.
                ${iso("lp.starts_at")} as lifted_started_at, ${finite("lp.ends_at")} as lifted_ended_at,
-               case when a.kind <> 'lift_suspension' then null
+               case when a.kind = 'lift_reporting' and l.kind = 'restrict_reporting'
+                      then case when l.starts_at + make_interval(days => l.days) <= a.created_at then 'ended' else 'running' end
+                    when a.kind <> 'lift_suspension' then null
                     when lp.starts_at is null or lp.starts_at >= a.created_at then 'not_started'
                     when lp.ends_at < a.created_at then 'ended' else 'running' end as lifted_state,
+               -- 3e Task 5: a lifted restriction of reporting started with its decision and ran its days, unless lifted first.
+               ${iso("l.starts_at")} as lifted_restriction_started_at, ${iso("(l.starts_at + make_interval(days => l.days))")} as lifted_restriction_ends_at,
                -- What the ledger held at the decision's time, never later: a strike that counted then, and was not overruled by then.
                case when a.kind = 'strike' then (select count(*)::int from decision_actions s
                      where s.subject_account_id = a.subject_account_id and s.kind = 'strike' and s.created_at <= a.created_at and s.ends_at > a.created_at
@@ -204,13 +213,21 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
     periodThen:
       row.lifted_state === null
         ? null
-        : {
-            state: row.lifted_state as "not_started" | "running" | "ended",
-            startedAt: row.lifted_state === "not_started" ? null : (row.lifted_started_at as string | null),
-            endedAt: row.lifted_state === "ended" ? (row.lifted_ended_at as string | null) : null,
-          },
+        : row.kind === "lift_reporting"
+          ? {
+              // A restriction of reporting starts with its decision: it ran, or had run its days, when it was lifted.
+              state: row.lifted_state as "running" | "ended",
+              startedAt: row.lifted_restriction_started_at as string | null,
+              endedAt: row.lifted_state === "ended" ? (row.lifted_restriction_ends_at as string | null) : null,
+            }
+          : {
+              state: row.lifted_state as "not_started" | "running" | "ended",
+              startedAt: row.lifted_state === "not_started" ? null : (row.lifted_started_at as string | null),
+              endedAt: row.lifted_state === "ended" ? (row.lifted_ended_at as string | null) : null,
+            },
     replaced: row.replaced as boolean | null,
     replyFiledAt: row.reply_filed_at as string | null,
+    warnedAt: row.warned_at as string | null,
   }));
 }
 
@@ -251,9 +268,9 @@ export async function endedMeasures(q: Runner, decisionId: string): Promise<Ende
   return found.map((row) => ({ kind: row.kind as ActionKind, mediaId: row.media_id as string | null, decisionId: row.decision_id as string, ruleId: row.rule_id as string | null, noEffect: row.no_effect as string | null, snapshotKept: row.snapshot_kept as boolean }));
 }
 
-/** A standing measure whose basis a reversal of a decision broke (3e design, sections 6.2 and 10.2). */
+/** A standing measure, or a restriction of reporting, whose basis a reversal of a decision broke (3e design, sections 6.2 and 10.2). */
 export interface EndedStandingRow {
-  kind: "suspend" | "terminate";
+  kind: "suspend" | "terminate" | "restrict_reporting";
   decidedAt: string;
   periodThen: { state: "not_started" | "running" | "ended"; startedAt: string | null; endedAt: string | null };
   seal: boolean;
@@ -264,24 +281,32 @@ export interface EndedStandingRow {
  * The suspensions and terminations whose basis this review or correction broke: those that name the reviewed decision in
  * rests_on and whose basis broke at this decision's time (standing_basis_broken_at answers the time of the reversal that
  * broke it, which is this decision's own). For each, where its period stood at this decision's time (the break cut its
- * end to that time), whether the basis was a seal, and the time of its reply when this decision answered it. The
- * restrictions of reporting a lifted warning ends join this list with the reporting task.
+ * end to that time), whether the basis was a seal, and the time of its reply when this decision answered it. Task 5:
+ * the restrictions of reporting whose warning this decision lifted, unless a lift of their own came first; a restriction
+ * starts with its decision, so it was running, or had run its days (ended), at this decision's time.
  */
 export async function endedStanding(q: Runner, decisionId: string): Promise<EndedStandingRow[]> {
-  const found = await rows<{ kind: "suspend" | "terminate"; decided_at: string; state: "not_started" | "running" | "ended"; started_at: string | null; ended_at: string | null; seal: boolean; reply_filed_at: string | null }>(
+  const found = await rows<{ kind: EndedStandingRow["kind"]; decided_at: string; state: "not_started" | "running" | "ended"; started_at: string | null; ended_at: string | null; seal: boolean; reply_filed_at: string | null }>(
     q,
-    sql`select m.kind::text as kind, ${iso("md.decided_at")} as decided_at,
-               case when p.starts_at is null or p.starts_at >= d.decided_at then 'not_started'
-                    when p.ends_at < d.decided_at then 'ended' else 'running' end as state,
-               ${iso("p.starts_at")} as started_at, ${finite("p.ends_at")} as ended_at,
+    sql`select m.kind::text as kind, ${iso("md.decided_at")} as decided_at, t.state,
+               ${iso("t.started_at")} as started_at, ${finite("t.ended_at")} as ended_at,
                m.basis = 'protective' as seal,
                (select ${iso("r.filed_at")} from suspension_replies r where r.action_id = m.id and r.answered_by = d.id) as reply_filed_at
           from decisions d
-          join decision_actions m on m.kind in ('suspend', 'terminate') and d.reviews_decision_id = any(m.rests_on)
+          join decision_actions m on m.kind in ('suspend', 'terminate', 'restrict_reporting') and d.reviews_decision_id = any(m.rests_on)
           join decisions md on md.id = m.decision_id
           left join suspension_periods p on p.action_id = m.id
+          cross join lateral (
+            select case when m.kind = 'restrict_reporting'
+                        then case when m.starts_at + make_interval(days => m.days) <= d.decided_at then 'ended' else 'running' end
+                        when p.starts_at is null or p.starts_at >= d.decided_at then 'not_started'
+                        when p.ends_at < d.decided_at then 'ended' else 'running' end as state,
+                   case when m.kind = 'restrict_reporting' then m.starts_at else p.starts_at end as started_at,
+                   case when m.kind = 'restrict_reporting' then m.starts_at + make_interval(days => m.days) else p.ends_at end as ended_at
+          ) t
          where d.id = ${decisionId}::uuid and d.kind in ('review', 'correction')
            and public.standing_basis_broken_at(m.id) = d.decided_at
+           and (m.kind <> 'restrict_reporting' or not exists (select 1 from decision_actions x where x.reverses_action_id = m.id and x.created_at < d.decided_at))
          order by md.decided_at, m.id`,
   );
   return found.map((row) => ({

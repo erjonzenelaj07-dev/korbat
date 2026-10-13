@@ -263,7 +263,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
       else if (value !== null && typeof value === "object") for (const [name, member] of Object.entries(value)) (names.add(name), collect(member));
     };
     collect([page, view, whileDeciding]);
-    expect([...names].filter((name) => /report|intake|notice|notifier|sender|count$|items?$/i.test(name))).toEqual(["imageCount"]);
+    // 3e Task 5: `reportingStanding` is where the author's own restriction of reporting stands, never a report about them.
+    expect([...names].filter((name) => /report|intake|notice|notifier|sender|count$|items?$/i.test(name))).toEqual(["imageCount", "reportingStanding"]);
     expect(view.source).toBe("report");
   });
 
@@ -433,7 +434,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
   const waiting = { suspect: false, sealed: false, unseen: false, quotedBy: null, outcome: null, decidedOn: null, changed: false, reexamines: false, reexamination: null };
   // In Your reports each item also carries its id, which is what "Ask for a re-examination" names there; the status
   // page names an item by its position and carries none.
-  const reported = { ...waiting, id: expect.stringMatching(/^[0-9a-f-]{36}$/) };
+  const reported = { ...waiting, id: expect.stringMatching(/^[0-9a-f-]{36}$/), unfounded: false };
 
   test("Your reports lists the account's own reports, newest first, each item under the link it named and silent until the daily release; then in the words of the mail, an account still under the handle the report named", async () => {
     const reporter = await signUp();

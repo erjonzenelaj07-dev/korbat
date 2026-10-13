@@ -290,6 +290,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
     }, "R5");
   });
 
+  test("3e Task 5: a No breach decision over HTTP marks the items its key signed, and its answer reads them marked; a list that names an item the decision does not answer is refused 422 invalid_decision with nothing stored, and the answer carries no detail", async () => {
+    await withReported(async ({ caseId }) => {
+      const [item] = await apiDb.execute<{ id: string }>(sql`select id from intake_items where case_id = ${caseId}::uuid`);
+      // An id the decision does not answer: the case's own id. The trigger refuses it as the decision's marks are inserted.
+      const wrong = await decide(moderator, caseId, { kind: "final", outcome: "no_violation", unfounded: [caseId] });
+      expect(wrong.status).toBe(422);
+      const body = (await wrong.json()) as { error: Record<string, unknown> };
+      expect(body.error.code).toBe("invalid_decision");
+      expect(JSON.stringify(body)).not.toMatch(/mark|answered|detail/);
+      expect(await decisionsOf(caseId)).toBe(0);
+      const taken = await answered(await decide(moderator, caseId, { kind: "final", outcome: "no_violation", unfounded: [item!.id] }));
+      expect(taken.view.items.find((each) => each.id === item!.id)).toMatchObject({ markable: true, unfounded: true, markWithdrawn: false });
+      const [mark] = await apiDb.execute<{ decision_id: string }>(sql`select decision_id from unfounded_marks where item_id = ${item!.id}::uuid`);
+      expect(mark).toEqual({ decision_id: taken.decisionId });
+    });
+  });
+
   test("a key revoked, or an account demoted to user, between the confirmation and the decision's transaction ends the session: 401 with both staff cookies cleared, and nothing stored", async () => {
     type Staff = typeof moderator;
     const ends: [string, (s: Staff) => Promise<unknown>][] = [
@@ -330,9 +347,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
     expect(res.status).toBe(200);
     const raw = (await res.json()) as unknown;
     const lists = StandingLists.parse(raw);
-    // The answer holds nothing but what its contract names, and the reporting records wait for the reporting measures.
+    // The answer holds nothing but what its contract names; 3e Task 5 fills the reporting records, by handle and in reports.
     expect(raw).toEqual(lists);
-    expect(lists.reportingRecords).toEqual({ total: 0, items: [] });
+    expect(lists.reportingRecords.items.length).toBeLessThanOrEqual(lists.reportingRecords.total);
     expect(JSON.stringify(raw)).not.toMatch(/email|accountId|userId/);
     const queue = await moderator.b.fetch("/api/staff/queue", { headers: MARKED });
     const page = QueuePage.parse(await queue.json());

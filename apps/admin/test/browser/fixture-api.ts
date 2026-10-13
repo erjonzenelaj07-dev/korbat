@@ -414,6 +414,10 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
       }
     }
   }
+  // 3e Task 5: a kept correction of a "No breach" decision withdraws all of its marks together.
+  if (params.kind === "correction" && params.outcome === "kept" && corrected && corrected.outcome === "no_violation") {
+    view.items = view.items.map((item) => (item.answeredBy === corrected.id && item.unfounded ? { ...item, unfounded: false, markWithdrawn: true } : item));
+  }
   const suspect = view.items.some((item) => item.outcome === null && item.suspect);
   view.decisions = [
     ...view.decisions,
@@ -454,7 +458,8 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
   if (actions.some((action) => action.kind === "seal_media") && view.suspicion) view.suspicion = { ...view.suspicion, reach: { ...view.suspicion.reach, sealed: view.suspicion.reach.images, served: 0 } };
   if (params.kind !== "final" || (params.outcome !== "restricted" && params.outcome !== "no_violation" && params.outcome !== "not_evident")) return;
   const outcome = params.outcome === "restricted" ? ITEM_OUTCOMES.restricted[params.ground ?? "incompatible"] : ITEM_OUTCOMES[params.outcome];
-  view.items = view.items.map((item) => (item.outcome === null && item.seq <= params.throughSeq ? { ...item, outcome, answeredBy: id } : item));
+  // 3e Task 5: the items it answers, each marked when the key signed its mark.
+  view.items = view.items.map((item) => (item.outcome === null && item.seq <= params.throughSeq ? { ...item, outcome, answeredBy: id, unfounded: params.unfounded.includes(item.id) } : item));
   view.answeredSeq = params.throughSeq;
   if (view.items.some((item) => item.outcome === null)) return;
   // The case is closed: what was done while deciding has ended, and the post reads as the decision's measure left it.
@@ -1104,6 +1109,12 @@ export function createFixtureApi() {
           }
           if (saved) saved.used = true;
           texts.push(saved?.text ?? null);
+        }
+        // 3e Task 5: a mark names an item this decision answers that can be marked, as unfounded_marks_check holds it.
+        const unmarkable = params.unfounded.filter((itemId) => !found.items.some((each) => each.id === itemId && each.markable && each.outcome === null && each.seq <= params.throughSeq));
+        if (unmarkable.length > 0) {
+          problem(`${what}: a mark on an item this decision does not answer or that cannot be marked`);
+          throw new Refusal(422, "invalid_decision");
         }
         state.decisions.push({ caseId: found.id, params });
         applyDecision(found, params, { facts: texts[0] ?? null, reason: texts[1] ?? null, legalReference: texts[2] ?? null }, PERSON_HANDLE);

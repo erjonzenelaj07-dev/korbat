@@ -21,8 +21,9 @@ export async function reporterList(deps: Pick<ModerationDeps, "apiDb" | "auth" |
   const reports: ReportRow[] = [];
   for (const notice of page) {
     const rows: ReportRow["items"] = [];
-    // Each item as the status page gives it, and its id, by which its sender asks for a re-examination.
-    for (const item of listedItems(items.get(notice.id) ?? [])) rows.push({ ...(await itemStatus(deps, item)), id: item.id });
+    // Each item as the status page gives it, and its id, by which its sender asks for a re-examination. 3e Task 5: and
+    // whether a moderator's mark "manifestly unfounded" on it counts, told with the released outcome and not before it.
+    for (const item of listedItems(items.get(notice.id) ?? [])) rows.push({ ...(await itemStatus(deps, item)), id: item.id, unfounded: item.released && item.markCounts });
     reports.push({ ref: notice.ref, receivedAt: notice.receivedAt, items: rows });
   }
   const last = page.at(-1);

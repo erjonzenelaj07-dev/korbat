@@ -80,6 +80,10 @@ export interface AuthorDecisionRow {
   appeal: "pending" | "kept" | "partly_reversed" | "reversed" | null;
   /** The strike the decision gave: until when it counts and when it was overruled; null for a decision without one. */
   strike: { countsUntil: string; overruledAt: string | null } | null;
+  /** 3e Task 5: the days of the decision's restriction of reporting; null for a decision without one. */
+  reportingDays: number | null;
+  /** 3e Task 5: the kinds of the measures whose basis a reversal of this decision broke, as its statement's endedStanding lists them. */
+  endedStanding: ("suspend" | "terminate" | "restrict_reporting")[];
 }
 
 /**
@@ -97,7 +101,13 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                d.ended_interim, d.rule_id, d.ground is not distinct from 'illegal' as legal,
                ${appealUntil} as appeal_until, ${reversedOn} as reversed_on,
                (select coalesce(ap.result::text, 'pending') from appeals ap where ap.decision_id = d.id) as appeal,
-               ${strikeColumns}
+               ${strikeColumns},
+               (select a.days from decision_actions a where a.decision_id = d.id and a.kind = 'restrict_reporting') as reporting_days,
+               -- The measures whose basis this review or correction broke, as the statement's endedStanding reads them.
+               coalesce((select array_agg(m.kind::text order by m.created_at, m.id) from decision_actions m
+                          where d.kind in ('review', 'correction') and m.kind in ('suspend', 'terminate', 'restrict_reporting') and d.reviews_decision_id = any(m.rests_on)
+                            and public.standing_basis_broken_at(m.id) = d.decided_at
+                            and not exists (select 1 from decision_actions x where x.reverses_action_id = m.id and x.created_at < d.decided_at)), '{}') as ended_standing
           from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
          where d.author_mail <> 'none'
            ${after === null ? sql`` : sql`and (d.decided_at, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
@@ -118,6 +128,8 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
     reversedOn: row.reversed_on as string | null,
     appeal: row.appeal as AuthorDecisionRow["appeal"],
     strike: row.strike_until === null ? null : { countsUntil: row.strike_until as string, overruledAt: row.strike_overruled_at as string | null },
+    reportingDays: row.reporting_days as number | null,
+    endedStanding: row.ended_standing as AuthorDecisionRow["endedStanding"],
   }));
 }
 

@@ -10,7 +10,7 @@ import { clampRatio } from "@/components/social/MediaGrid";
 import { API_BASE } from "@/lib/api";
 import { appealWaitWords, dailyLimitFailure, utcMinute } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
-import { nowSentence, replyStandsLine, restsOnLine, STANDING_TEXTS, standingMeasureOf, strikeLine } from "@/lib/standing";
+import { nowSentence, replyStandsLine, reportingNowLine, restsOnLine, STANDING_TEXTS, standingMeasureOf, strikeLine } from "@/lib/standing";
 
 const Line = ({ children, strong = false }: { children: string; strong?: boolean }) => <Text className={`mt-3 text-base leading-6 ${strong ? "font-semibold text-zinc-100" : "text-zinc-200"}`}>{children}</Text>;
 const Note = ({ children }: { children: string }) => <Text className="mt-3 text-sm leading-5 text-zinc-400">{children}</Text>;
@@ -218,6 +218,23 @@ function StandingNow({ view }: { view: DecisionView }) {
 }
 
 /**
+ * 3e Task 5 (design, section 9.2): "Where it stands now" under the statement of a decision that restricts the account's
+ * reports, from DecisionView.reportingStanding read fresh, since it can end before its date: it runs, it ended, korbat
+ * lifted it, or it ended with the warning it rested on; the last two link to the decision that did it.
+ */
+function ReportingNow({ view }: { view: DecisionView }) {
+  const standing = view.reportingStanding ?? null;
+  if (standing === null) return null;
+  const line = reportingNowLine(standing);
+  return (
+    <Section title={STANDING_TEXTS.reporting.title}>
+      <Line strong>{line.text}</Line>
+      {line.link !== null ? <DecisionLink id={line.link} label={STANDING_TEXTS.now.endedBy} /> : null}
+    </Section>
+  );
+}
+
+/**
  * 3e Task 4 (design, section 9.2): what the appeal of a standing measure adds above D 9's control: [appeal.early] while an
  * announced measure has not started, [appeal.again] after a kept answer to a reply sent before the start, and
  * [terminate.delete] beside a termination's appeal.
@@ -271,6 +288,7 @@ export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppea
       </Section>
 
       <StandingNow view={view} />
+      <ReportingNow view={view} />
 
       <Section title={DECISION_WORDS.content}>
         <Content content={view.content} />

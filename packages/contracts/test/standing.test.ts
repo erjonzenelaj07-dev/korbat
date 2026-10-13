@@ -36,6 +36,10 @@ import {
   ReplyResponse,
   StandingLists,
   StatementRepliedTo,
+  AuthorCaseRow,
+  DecisionView,
+  ReportItem,
+  ReportingStanding,
   type ItemOutcome,
 } from "../src/index";
 
@@ -329,5 +333,67 @@ describe("announced measures, replies and termination (3e design, sections 10.1 
       const row = (list.shape.items.element as unknown as { shape: Record<string, unknown> }).shape;
       for (const member of Object.keys(row)) expect(member, member).not.toMatch(/accountId|email|address/i);
     }
+  });
+});
+
+describe("the restriction of reporting (3e design, sections 7.9, 10.1 to 10.3, Task 5)", () => {
+  const T = "2026-10-12T10:00:00.000Z";
+  const ID = "5b1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+
+  test("/me carries the warning that counts and the restriction that runs, each null when none stands", () => {
+    const reporting = { warning: { decisionId: ID, countsUntil: T }, restriction: { decisionId: ID, until: T } };
+    const standing = { activeStrikes: 0, measure: null, reporting, handleRetired: false };
+    expect(AccountStanding.parse(standing).reporting).toEqual(reporting);
+    expect(AccountStanding.parse({ ...standing, reporting: { warning: reporting.warning, restriction: null } }).reporting?.restriction).toBeNull();
+    expect(AccountStanding.safeParse({ ...standing, reporting: { warning: reporting.warning } }).success).toBe(false);
+  });
+
+  test("a sender's own report says whether a mark on its item counts; the status page by reference never does", () => {
+    const status = {
+      position: 1,
+      link: "https://korbat.example/post/x",
+      scope: null,
+      suspect: false,
+      sealed: false,
+      unseen: false,
+      quotedBy: null,
+      outcome: "no_violation",
+      decidedOn: "2026-10-12",
+      changed: false,
+      reexamines: false,
+      reexamination: { open: true, until: "2026-10-26" },
+    };
+    expect(ReportItem.parse({ ...status, id: ID, unfounded: true }).unfounded).toBe(true);
+    expect(ReportItem.safeParse({ ...status, id: ID }).success).toBe(false);
+    expect(Object.keys(NoticeItemStatus.shape)).not.toContain("unfounded");
+  });
+
+  test("a statement's warning and restriction carry their basis, their end and the restriction's days and warning; a lift of either names it; a restriction ended with its warning is an entry of endedStanding; all optional, so older data parses", () => {
+    const warning = { kind: "warn_reporting", mediaId: null, noEffect: null, sealed: null, basis: "reports", endsAt: T };
+    expect(StatementMeasure.parse(warning)).toEqual(warning);
+    const restriction = { kind: "restrict_reporting", mediaId: null, noEffect: null, sealed: null, basis: "reports", days: 30, endsAt: T, warnedAt: T };
+    expect(StatementMeasure.parse(restriction)).toEqual(restriction);
+    expect(StatementMeasure.shape.warnedAt.parse(undefined)).toBeUndefined();
+    const lift = { kind: "lift_reporting", mediaId: null, resetDecisionId: null, oldValueKept: false, resetRuleId: null, liftedKind: "restrict_reporting", liftedDecidedAt: T, periodThen: { state: "ended", startedAt: T, endedAt: T } };
+    expect(StatementReversal.parse(lift)).toEqual(lift);
+    expect(StatementReversal.safeParse({ ...lift, liftedKind: "strike" }).success).toBe(false);
+    const ended = { kind: "restrict_reporting", decidedAt: T, periodThen: { state: "running", startedAt: T, endedAt: null }, seal: false, replyFiledAt: null };
+    expect(StatementEndedStanding.parse(ended)).toEqual(ended);
+  });
+
+  test("a decision's screen says where its restriction of reporting stands now, in four states; a case row names the restriction's days and what a reversal ended", () => {
+    for (const state of ["running", "ended", "lifted", "basis_ended"]) expect(ReportingStanding.parse({ state, until: T, endedAt: null, endedBy: null }).state).toBe(state);
+    expect(ReportingStanding.safeParse({ state: "held", until: T, endedAt: null, endedBy: null }).success).toBe(false);
+    expect(DecisionView.shape.reportingStanding.safeParse(undefined).success).toBe(true);
+    expect(AuthorCaseRow.shape.reportingDays.parse(30)).toBe(30);
+    expect(AuthorCaseRow.shape.reportingDays.safeParse(31).success).toBe(false);
+    expect(AuthorCaseRow.shape.endedStanding.parse(["restrict_reporting"])).toEqual(["restrict_reporting"]);
+    expect(AuthorCaseRow.shape.endedStanding.safeParse(undefined).success).toBe(true);
+  });
+
+  test("the Standing screen's reporting records count reports, by handle, with the warning's day and the marked reports since", () => {
+    const row = { handle: "someone", caseId: null, reports: 9, unfounded: 5, warnedOn: "2026-09-01", marksSince: 1 };
+    expect(StandingLists.shape.reportingRecords.parse({ total: 1, items: [row] }).items[0]).toEqual(row);
+    expect(UNFOUNDED_MAX).toBe(100);
   });
 });

@@ -222,12 +222,15 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
   await tx.execute(sql`select set_config('lock_timeout', ${`${LOCK_TIMEOUT_MS}ms`}::text, true)`);
 
   // 1. 3e (design, section 7.9 step 7): the reporter's standing is read from the row this statement locks. A report
-  // under a korbat rule is refused while the reporter's suspension runs; a notice of illegality and the path for child
-  // sexual abuse material read nothing of it (DSA Art. 16(6)). The request was counted against the sender's limit
-  // already, as an already_reported one is.
+  // under a korbat rule is refused while the reporter's suspension runs (account_suspended), and else while a
+  // restriction of the reporter's reports runs (reporting_restricted, Task 5); a notice of illegality and the path for
+  // child sexual abuse material read neither (DSA Art. 16(6)), and a re-examination is no intake. The request was counted
+  // against the sender's limit already, as an already_reported one is.
   if (ground.reporterId !== null) {
     const [reporter] = await deps.social.lockAccounts(tx, [ground.reporterId], "key share", true);
-    if (ground.kind === "user" && !ground.allegesIllegal && !ground.csam && reporter!.suspended) throw new ModerationError("account_suspended");
+    const underRule = ground.kind === "user" && !ground.allegesIllegal && !ground.csam;
+    if (underRule && reporter!.suspended) throw new ModerationError("account_suspended");
+    if (underRule && reporter!.reportsRestricted) throw new ModerationError("reporting_restricted");
   }
 
   // 2. The token is stored only as its hash; the answer carries it once.

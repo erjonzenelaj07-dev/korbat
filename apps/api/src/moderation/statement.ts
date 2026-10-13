@@ -75,6 +75,9 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
             }
           : {}),
         ...(action.kind === "retire_handle" ? { handle: action.handle, placeholder: action.placeholder } : {}),
+        // 3e Task 5: a warning's end of counting; a restriction's days, its end and the warning it follows.
+        ...(action.kind === "warn_reporting" ? { basis: action.basis as StandingBasis | null, endsAt: action.endsAt } : {}),
+        ...(action.kind === "restrict_reporting" ? { basis: action.basis as StandingBasis | null, days: action.days, endsAt: action.endsAt, warnedAt: action.warnedAt } : {}),
       })),
     reversals: actions
       .filter((action) => MEASURES[action.kind].lifts !== null)
@@ -88,6 +91,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         ...(action.kind === "lift_suspension"
           ? { liftedKind: action.liftedKind, liftedDecidedAt: action.liftedDecidedAt, periodThen: action.periodThen, replaced: action.replaced, replyFiledAt: action.replyFiledAt }
           : {}),
+        // 3e Task 5: what a lift of a reporting measure lifted, and for a restriction whether its days still ran.
+        ...(action.kind === "lift_reporting" ? { liftedKind: action.liftedKind, liftedDecidedAt: action.liftedDecidedAt, periodThen: action.periodThen } : {}),
       })),
     endedMeasures: ended.map((measure) => ({ kind: measure.kind as MeasureKind, mediaId: measure.mediaId, ...resetFacts(measure.kind, measure) })),
     ...(brokenBasis.length > 0 ? { endedStanding: brokenBasis } : {}),
@@ -132,7 +137,8 @@ export function mailSubjectOf(statement: DecisionStatement): Extract<DecisionMes
  * table that fits, and moderation_decision otherwise, so that a strike, a retirement and their reversals ride on 3c's
  * mail. In order: an announced suspension or termination; one taken at once; the answer to a reply (a statement with
  * `repliedTo`); a lift of one (a withdrawal signed `replaced` under its own lead), or a decision whose reversal ended one by
- * breaking its basis. The reporting measures join with the task that builds them.
+ * breaking its basis; a final warning about reporting; a final restriction of reporting. A lift of a reporting measure,
+ * also one that ends a restriction with its warning, rides on moderation_decision.
  */
 export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonly string[]): DecisionMessage {
   const standing = statement.measures.find((measure) => measure.kind === "suspend" || measure.kind === "terminate");
@@ -168,6 +174,12 @@ export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonl
   }
   const broken = (statement.endedStanding ?? []).find((entry) => entry.kind === "suspend" || entry.kind === "terminate");
   if (broken !== undefined) return { template: "suspension_lifted", measure: broken.kind === "terminate" ? "terminate" : "suspend", why: "basis", period: broken.periodThen.state, paragraphs };
+  if (statement.kind === "final" && statement.measures.some((measure) => measure.kind === "warn_reporting")) return { template: "reporting_warned", paragraphs };
+  const restriction = statement.measures.find((measure) => measure.kind === "restrict_reporting");
+  if (statement.kind === "final" && restriction !== undefined) {
+    if (typeof restriction.days !== "number" || typeof restriction.endsAt !== "string") throw new Error("a restriction of reporting's mail names its days and its end: the statement's data holds neither");
+    return { template: "reporting_restricted", days: restriction.days, endsAt: restriction.endsAt, paragraphs };
+  }
   return { template: "moderation_decision", subject: mailSubjectOf(statement), paragraphs };
 }
 

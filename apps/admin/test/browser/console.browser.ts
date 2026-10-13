@@ -34,6 +34,7 @@ import {
   CASE_REPLIED,
   CASE_STRUCK,
   CASE_WITHDRAW,
+  CASE_MARK,
   DECISION_APPEALED,
   DECISION_ONE,
   DECISION_REPLIED,
@@ -49,6 +50,7 @@ import {
   REPLY_TEXT,
   atOnceCase,
   ladderCase,
+  markCase,
   repliedCase,
   struckCase,
   withdrawCase,
@@ -1457,6 +1459,52 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await shown(page.getByRole("heading", { name: "Case about a post" }));
     expect(fixtures.state.findings).toHaveLength(findings + 1);
     expect(fixtures.state.findings.at(-1)).toEqual({ target: { kind: "account", handle: STANDING_HANDLE }, ground: "rule", ruleId: "R1", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC" });
+    await texts();
+    await clean();
+  });
+
+  test("3e Task 5: a No breach decision that marks one item manifestly unfounded: the mark offered beside the reporter's item only, [mark.never] said once, the key confirming the signed list, and the item shown marked", async () => {
+    fixtures.state.cases.set(CASE_MARK, markCase());
+    const before = await signatures();
+    await page.goto(`${origin}/cases/${CASE_MARK}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    await composer.getByLabel(COMPOSER_OUTCOMES.no_violation, { exact: true }).check();
+    await shown(composer.getByText(STANDING_WORDS.mark.rule, { exact: true }));
+    await shown(composer.getByText(STANDING_WORDS.mark.never, { exact: true }));
+    // The notice of illegality, item 2, has no mark to tick.
+    expect(await composer.getByLabel(`${STANDING_WORDS.mark.label}: item 2`, { exact: true }).count()).toBe(0);
+    await composer.getByLabel(`${STANDING_WORDS.mark.label}: item 1`, { exact: true }).check();
+    expect(await inspect(page)).toEqual([]);
+    await composer.getByRole("button", { name: "Confirm with your staff key" }).click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({ caseId: CASE_MARK, params: { kind: "final", outcome: "no_violation", actions: [], unfounded: [ITEM_REPORTER], replaced: false } });
+    await shown(page.getByText(STANDING_WORDS.mark.marked, { exact: true }));
+    await texts();
+    await clean();
+  });
+
+  test("3e Task 5: Withdraw this decision's marks: a kept correction that lifts nothing and signs no list, its reason saved, no statement shown as sent, and the item shown with its mark withdrawn", async () => {
+    const before = await signatures();
+    await page.goto(`${origin}/cases/${CASE_MARK}`);
+    await shown(page.getByRole("heading", { name: "Case about a post" }));
+    const marked = fixtures.state.cases.get(CASE_MARK)!.decisions.find((decided) => decided.outcome === "no_violation")!;
+    await page.getByRole("button", { name: STANDING_WORDS.mark.withdrawLabel }).click();
+    const withdraw = page.getByRole("region", { name: STANDING_WORDS.mark.withdrawLabel });
+    await shown(withdraw);
+    await shown(withdraw.getByText(STANDING_WORDS.mark.withdrawWhat, { exact: true }));
+    await shown(withdraw.getByText(STANDING_WORDS.mark.noStatement, { exact: true }));
+    expect(await withdraw.locator(".frame.preview").count()).toBe(0);
+    await withdraw.getByLabel("Reason of the correction").fill(`The report was arguable after all ${HOSTILE.img}`);
+    await withdraw.getByLabel("Reason of the correction").press("Tab");
+    expect(await inspect(page)).toEqual([]);
+    await withdraw.getByRole("button", { name: "Confirm with your staff key" }).click();
+    await shown(page.getByText(COMPOSER.recorded));
+    expect(await signatures()).toBe(before + 1);
+    expect(fixtures.state.decisions.at(-1)).toMatchObject({ caseId: CASE_MARK, params: { kind: "correction", outcome: "kept", reviewsDecisionId: marked.id, actions: [], unfounded: [], replaced: false } });
+    await shown(page.getByText(STANDING_WORDS.mark.withdrawn, { exact: true }));
+    expect(await page.getByRole("button", { name: STANDING_WORDS.mark.withdrawLabel }).count()).toBe(0);
     await texts();
     await clean();
   });

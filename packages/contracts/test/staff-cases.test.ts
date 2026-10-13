@@ -241,6 +241,9 @@ describe("the case answer", () => {
         answeredBy: null,
         erased: false,
         source: summary,
+        markable: false,
+        unfounded: false,
+        markWithdrawn: false,
       },
     ],
     decisions: [
@@ -320,6 +323,8 @@ describe("the case answer", () => {
       snapshotHandleRetired: false,
       // 3e Task 3: the decision each ground of a suspension at once would rest on now, by its time.
       basisDecidedAt: { threat: TIME, terrorist: null, protective: TIME },
+      // 3e Task 5: the account's record of reporting, in reports.
+      reporting: { reports: 0, unfounded: 0, warnedOn: null, warnedAt: null, marksSince: null, mayWarn: false, mayRestrict: false, restrictedUntil: null, marked: [] },
     };
     const account = { ...view, target: { type: "account", id: POST, handle: "now_named", displayName: "A name", bio: "A bio", deleted: false }, suspicion: null, snapshots: [], items: [], decisions: [], strikeDue: null, authorStanding: null, standing };
     expect(CaseView.parse(account).standing).toEqual(standing);
@@ -348,6 +353,39 @@ describe("the case answer", () => {
     const { period: _period, ...withoutPeriod } = suspend;
     expect(CaseDecisionAction.safeParse(withoutPeriod).success).toBe(false);
   });
+
+  test("3e Task 5: each item says whether it can be marked and whether its mark counts or was withdrawn; an account case carries its record of reporting in reports, by reference and never by person", () => {
+    const item = view.items[0]!;
+    for (const member of ["markable", "unfounded", "markWithdrawn"] as const) {
+      const { [member]: _gone, ...without } = item;
+      expect(CaseView.safeParse({ ...view, items: [without] }).success, member).toBe(false);
+      expect(CaseView.safeParse({ ...view, items: [{ ...item, [member]: null }] }).success, member).toBe(false);
+    }
+    expect(CaseView.parse({ ...view, items: [{ ...item, markable: true, unfounded: true }] }).items[0]).toMatchObject({ markable: true, unfounded: true, markWithdrawn: false });
+    const reporting = {
+      reports: 8,
+      unfounded: 5,
+      warnedOn: "2026-09-01",
+      warnedAt: TIME,
+      marksSince: 2,
+      mayWarn: false,
+      mayRestrict: false,
+      restrictedUntil: null,
+      marked: [{ ref: "N-ABCDEFGHIJ", position: 2, sentOn: "2026-08-30", markedOn: "2026-08-31", sinceWarning: false }],
+    };
+    const parsed = CaseView.shape.standing.unwrap().shape.reporting.parse(reporting);
+    expect(parsed).toEqual(reporting);
+    const Reporting = CaseView.shape.standing.unwrap().shape.reporting;
+    // A marked report is named by its reference and the item's place in it, never by who sent it.
+    expect(Object.keys(Reporting.shape.marked.element.shape).sort()).toEqual(["markedOn", "position", "ref", "sentOn", "sinceWarning"]);
+    expect(Reporting.safeParse({ ...reporting, marked: [{ ...reporting.marked[0], ref: "someone" }] }).success).toBe(false);
+    expect(Reporting.safeParse({ ...reporting, unfounded: -1 }).success).toBe(false);
+    expect(Reporting.safeParse({ ...reporting, restrictedUntil: "2026-10-01" }).success).toBe(false);
+    // A restriction of reporting rests on its warning: the warning's decision says so, for [review.warning].
+    const decision = CaseView.parse(view).decisions[0];
+    if (decision) expect(CaseView.parse({ ...view, decisions: [{ ...decision, standingOn: [{ kind: "restrict_reporting", basis: "reports" }] }] }).decisions[0]!.standingOn).toEqual([{ kind: "restrict_reporting", basis: "reports" }]);
+  });
+
   test("a withheld snapshot carries its id, time and digest and no content, whatever the answer held", () => {
     const withheld = CaseSnapshot.parse({ ...shown, withheld: true });
     expect(Object.keys(withheld).sort()).toEqual(["digest", "id", "takenAt", "withheld"]);

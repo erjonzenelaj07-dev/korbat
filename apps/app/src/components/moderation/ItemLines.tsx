@@ -5,6 +5,7 @@ import { Button, ErrorText, Field } from "@/components/ui";
 import { externalLink } from "@/lib/links";
 import { dailyLimitFailure, itemRedress, quotedExaminedToo, utcMinute } from "@/lib/moderation";
 import { STATUS_WORDS } from "@/lib/moderation-words";
+import { STANDING_TEXTS } from "@/lib/standing";
 
 /**
  * "Ask for a re-examination" (3c design, section 9): an optional statement, free of form, and the button. The request
@@ -46,9 +47,10 @@ function ReexamineControl({ both, onAsk }: { both: boolean; onAsk: (statement: s
  * reads the words the mail reads (the contracts' one composition, from the item's own facts), and beside them what the
  * sender can still do: ask for a re-examination while that is open, with the control when the screen can send one, or go
  * to court; a changed outcome and a re-examination's answer are final within korbat. Until then it says only that it is
- * not decided.
+ * not decided. 3e Task 5 (design, section 9.4): on the sender's own list, an item a moderator marked "manifestly
+ * unfounded" says so while the mark counts, once its outcome is released; the status page's items carry no mark.
  */
-function ItemLine({ item, both, onAsk }: { item: NoticeItemStatus; both: boolean; onAsk?: (statement: string) => Promise<void> }) {
+function ItemLine({ item, both, onAsk }: { item: NoticeItemStatus & { unfounded?: boolean }; both: boolean; onAsk?: (statement: string) => Promise<void> }) {
   const words = itemOutcomeWords(item);
   const redress = itemRedress(item);
   return (
@@ -72,6 +74,7 @@ function ItemLine({ item, both, onAsk }: { item: NoticeItemStatus; both: boolean
           <Text className="mt-2 text-sm leading-5 text-zinc-200">
             {STATUS_WORDS.decided(item.decidedOn)} {words}
           </Text>
+          {item.unfounded === true ? <Text className="mt-2 text-sm leading-5 text-amber-300">{STANDING_TEXTS.reports.marked}</Text> : null}
           {redress === "reexamination" && item.reexamination ? (
             <>
               <Text className="mt-2 text-sm leading-5 text-zinc-400">{STATUS_WORDS.reexaminationOpen(utcMinute(item.reexamination.until))}</Text>

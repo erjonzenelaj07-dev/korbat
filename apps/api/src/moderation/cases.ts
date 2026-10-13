@@ -426,6 +426,10 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
       answeredBy: item.answeredBy,
       erased: item.erased,
       source: sourceOf(item, letters, reporters, contacts, now),
+      // 3e Task 5: the mark "manifestly unfounded": whether one may be set, and whether it stands or was withdrawn.
+      markable: item.markable,
+      unfounded: item.unfounded,
+      markWithdrawn: item.markWithdrawn,
     }),
   );
 

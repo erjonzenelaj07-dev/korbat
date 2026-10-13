@@ -13,7 +13,7 @@ import {
 import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
-import { decisionStandingView } from "./standing";
+import { decisionStandingView, reportingStandingView } from "./standing";
 import { activeStrikesOf } from "./standing-repo";
 
 /**
@@ -76,6 +76,9 @@ export async function authorCases(deps: Pick<ModerationDeps, "apiDb">, viewer: s
       reversedOn: row.reversedOn,
       appeal: row.appeal,
       strike: row.strike,
+      // 3e Task 5: what a row says of a restriction of reporting and of the measures a reversal ended; absent where none.
+      ...(row.reportingDays !== null ? { reportingDays: row.reportingDays } : {}),
+      ...(row.endedStanding.length > 0 ? { endedStanding: row.endedStanding } : {}),
     })),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > AUTHOR_CASES_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,
@@ -146,6 +149,8 @@ export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb">, vi
     strike: facts.strike,
     // 3e Task 4: where the decision's suspension or termination stands now, beside the statement that never changes.
     standing: await decisionStandingView(deps.apiDb, decisionId),
+    // 3e Task 5: and where its restriction of reporting stands now.
+    reportingStanding: await reportingStandingView(deps.apiDb, decisionId),
   };
 }
 

@@ -336,6 +336,24 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       if (words === undefined) throw new Error(`mail template data holds a why or a period that suspension_lifted does not have: "${why}", "${period}"`);
       return userMail(words.subject(what), [words.lead(what), ...statementLines(data), STATEMENT_CLOSING]);
     }
+    case "reporting_warned":
+      // 3e (design, W.6, Task 5): a warning about the account's reports. It restricts nothing; the statement's paragraphs,
+      // exactly as rendered, name the reports concerned and what may follow. No mail names who reported the person.
+      return userMail("korbat warns you about your reports", [
+        "korbat has looked at the reports your account sent under its rules and warns you about them. Nothing is restricted. The reasons, the reports concerned and what may follow are below.",
+        ...statementLines(data),
+        STATEMENT_CLOSING,
+      ]);
+    case "reporting_restricted": {
+      // 3e (design, W.6, Task 5): a restriction of the account's reports under the rules, from its decision to its end.
+      // Notices of illegal content stay open, and the lead says so before the statement's paragraphs.
+      const days = need(data, "days");
+      return userMail("korbat restricted your reports under its rules", [
+        `korbat takes no reports under its rules from your account for ${days} ${days === "1" ? "day" : "days"}, until ${need(data, "endsAt")}. You can still report illegal content. The reasons follow.`,
+        ...statementLines(data),
+        STATEMENT_CLOSING,
+      ]);
+    }
     case "moderation_urgent": {
       // The alert for the urgent lane (3c design, section 7.12): counts and times only, to every staff account. A single
       // case is its own oldest, so its sentence gives one time and is worded for one.

@@ -17,7 +17,7 @@ import type { NoticeSender } from "../../src/moderation/intake";
 import { createProfileStore } from "../../src/profiles/store";
 import { socialForModeration } from "../../src/social";
 import { newTestEmail } from "./flow-harness";
-import { casesMedia, gate, removeFixtures, rowCounts, uuids } from "./moderation-fixtures";
+import { casesMedia, gate, removeFixtures, rowCounts, untally, uuids } from "./moderation-fixtures";
 
 /**
  * What the tests of reports and notices share (3c design, sections 7.1 and 7.2): the real auth and moderation modules
@@ -168,7 +168,9 @@ export function noticesWorld() {
     if (refs.length > 0) {
       await migrateDb.transaction(async (tx) => {
         await tx.execute(sql`set local lock_timeout = '10s'`);
-        // What is left of these notices names nothing live: their items have no case.
+        // What is left of these notices names nothing live: their items have no case. 3e Task 5: a signed-in report under a
+        // rule among them was counted in its sender's tally of the day, which goes with it.
+        await untally(tx, sql`array(select id from intakes where ref = any(${`{${refs.join(",")}}`}::text[]))`);
         await tx.execute(sql`delete from intake_items where intake_id in (select id from intakes where ref = any(${`{${refs.join(",")}}`}::text[]))`);
         await tx.execute(sql`delete from intakes where ref = any(${`{${refs.join(",")}}`}::text[])`);
       });

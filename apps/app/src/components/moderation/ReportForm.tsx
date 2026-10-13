@@ -22,7 +22,7 @@ import {
   type ReportDraft,
 } from "@/lib/moderation";
 import { CATEGORY_LABELS, REPORT_WORDS } from "@/lib/moderation-words";
-import { runningMeasure, STANDING_TEXTS } from "@/lib/standing";
+import { reportsRestrictedUntil, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
 
 const SITE_KEY = process.env.EXPO_PUBLIC_TURNSTILE_SITE_KEY ?? "";
 
@@ -122,10 +122,19 @@ function GivenItem({ given }: { given: GivenTarget }) {
  * `initial` is what a test starts the form with.
  */
 export function ReportForm({ signedIn, given, initial, standing = null }: { signedIn: boolean; given: GivenTarget | null; initial?: Partial<ReportDraft>; standing?: AccountStanding | null }) {
-  // 3e (design, section 9.6): read from /me before anything is sent. While a suspension runs, the first choice is disabled
-  // with its sentence; a notice of illegality and the path for child sexual abuse material stay open.
+  // 3e (design, section 9.6): read from /me before anything is sent. While a suspension runs, or (Task 5) a restriction of
+  // the account's reports, the first choice is disabled with its sentence, the suspension's first as the intake refuses
+  // it first; a notice of illegality and the path for child sexual abuse material stay open.
   const running = runningMeasure(standing);
-  const ruleClosed = running === null ? undefined : running.kind === "suspend" && running.endsAt !== null ? STANDING_TEXTS.report.suspended(running.endsAt) : STANDING_TEXTS.refused.terminated;
+  const restrictedUntil = reportsRestrictedUntil(standing);
+  const ruleClosed =
+    running !== null
+      ? running.kind === "suspend" && running.endsAt !== null
+        ? STANDING_TEXTS.report.suspended(running.endsAt)
+        : STANDING_TEXTS.refused.terminated
+      : restrictedUntil !== null
+        ? STANDING_TEXTS.report.restricted(restrictedUntil)
+        : undefined;
   const grounds = GROUNDS.map((entry) => ("value" in entry && entry.value === "rule" && ruleClosed !== undefined ? { ...entry, disabled: ruleClosed } : entry));
   const turnstile = useRef<TurnstileInstance | null>(null);
   const [draft, setDraft] = useState<ReportDraft>({ ...EMPTY_DRAFT, ...initial });

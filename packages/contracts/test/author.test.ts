@@ -195,7 +195,7 @@ describe("one decision as its author reads it", () => {
 });
 
 describe("the reporter's list", () => {
-  const item = { id: id(5), position: 1, link: "http://localhost:8081/u/ada", scope: "account", suspect: false, sealed: false, unseen: false, quotedBy: null, outcome: null, decidedOn: null, changed: false, reexamines: false, reexamination: null };
+  const item = { id: id(5), position: 1, link: "http://localhost:8081/u/ada", scope: "account", suspect: false, sealed: false, unseen: false, quotedBy: null, outcome: null, decidedOn: null, changed: false, reexamines: false, reexamination: null, unfounded: false };
 
   test("a page holds the account's reports, each with its reference, its time and its items in the status page's shape with their ids, and says whether korbat's report mails to the account are stopped", () => {
     const page = { reports: [{ ref: "N-ABCDEFGH23", receivedAt: TIME, items: [item, { ...item, position: 2, outcome: "no_violation", decidedOn: "2026-10-04", reexamination: { open: true, until: "2027-04-04T07:00:00.000Z" } }] }], nextCursor: null, reportMailStopped: true };

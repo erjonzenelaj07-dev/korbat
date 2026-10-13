@@ -81,6 +81,10 @@ export const STATEMENT_WORDS = {
     suspend: (days: number) => `This applies everywhere korbat is available, for ${days} ${days === 1 ? "day" : "days"} from its start.`,
     // 3e Task 4: a decision that terminates the account.
     terminate: "This applies everywhere korbat is available and has no end date.",
+    // 3e Task 5: a decision that restricts the account's reports, until the restriction's end; and a warning, which
+    // restricts nothing.
+    reporting: (endsAt: string) => `This applies everywhere korbat is available, until ${endsAt}.`,
+    warn: "This restricts nothing.",
     law: "korbat cannot restrict content for one country alone, so this applies everywhere, which is more than the law of a single country asks for.",
   },
   /** The source, as a category only: never a count, a reporter or a report's words. */
@@ -204,6 +208,29 @@ export const STATEMENT_WORDS = {
   replyAlso: (filedAt: string) => `This also answers your reply of ${filedAt}.`,
   /** What the software did for a measure of the ladder: it counted what the measure rests on and listed the account. */
   automationCounted: "korbat's software counted what this rests on and listed your account for a moderator. A moderator read it and decided; no automated means decided it.",
+  // 3e (design, section 18, W.2, Task 5): the warning about reporting and the restriction of it, what both leave open, a
+  // restriction that ended with its warning, and the lift of either. The counts and the marked reports are the facts'
+  // (STANDING_DRAFTS, W.5), worded by the moment the console read them, never a sentence here.
+  /** A warning: that it restricts nothing, and until when it counts. Then the redress version's warnNext. */
+  warn: (endsAt: string) =>
+    `korbat warns you about your reports. Nothing is restricted. The facts below say how many of your reports under korbat's rules a moderator marked as manifestly unfounded, and which. This warning counts until ${endsAt}.`,
+  /** A restriction: its days and end (its start, the decision's time, plus its days), and the warning it follows. */
+  restrict: (days: number, endsAt: string, warnedAt: string) =>
+    `korbat restricted your reports under its rules for ${days} ${days === 1 ? "day" : "days"}, until ${endsAt}: until then it takes no report from your account that says something breaks a korbat rule. It follows korbat's warning of ${warnedAt}, and ends at once if that warning is lifted; the facts below name the reports you sent after it that were marked.`,
+  /** After either reporting measure: what neither ever counts or restricts (DSA Art. 16(6)). */
+  reportingOpen: "Notices of illegal content, reports of child sexual abuse material and requests for re-examination are never counted and never restricted.",
+  /** A restriction of reporting whose warning this decision lifted: the restriction, then where its days stood. */
+  basisEndedReporting: (decidedAt: string) => `The restriction of your reports that korbat decided on ${decidedAt} rested on that warning.`,
+  basisEndedReportingThen: {
+    running: "It ended with this decision: you can report under korbat's rules again.",
+    ended: (startedAt: string, endedAt: string) => `It had run from ${startedAt} to ${endedAt}.`,
+  },
+  /** The lift of a reporting measure: a warning, a restriction that ran, or one whose days had already run out. */
+  reportingLifted: {
+    warning: "korbat lifted its warning about your reports: it no longer counts.",
+    restriction: "korbat lifted the restriction of your reports: you can report under korbat's rules again.",
+    restrictionEnded: (endedAt: string) => `korbat lifted the restriction of your reports that ran until ${endedAt}.`,
+  },
   /**
    * The rule or the law, worded by what korbat knows when it decides. A decision that seals rests on a report that nobody
    * at korbat has checked against the images, since nobody opens them, so it says what the step rests on and never that
@@ -262,10 +289,48 @@ function fieldSentence(field: Field, reset: { oldValueKept: boolean; resetRuleId
 }
 
 /**
- * The kinds of 3e whose sentences this version of the package does not hold yet: none is rendered as another one. The
- * reporting measures are worded with the task that builds them.
+ * The kinds whose sentences this version of the package does not hold yet: none is rendered as another one. Since 3e's
+ * reporting measures were worded (Task 5) every kind is; a kind a later sub-project adds to the ledger waits here until
+ * its sentences exist.
  */
-const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["warn_reporting", "restrict_reporting", "lift_reporting"];
+const UNWORDED: readonly (MeasureKind | ReversalKind)[] = [];
+
+/** A decision's reporting measure (a warning or a restriction of reporting), if it holds one. */
+const reportingOf = (input: StatementInput) => input.measures.find((measure) => measure.kind === "warn_reporting" || measure.kind === "restrict_reporting");
+
+/**
+ * A warning or a restriction of reporting, as a paragraph (3e design, W.2): what it is and until when, the warning's
+ * prior word of what may follow (from the decision's own redress version), and what neither ever counts or restricts.
+ */
+function reportingParagraph(measure: StatementInput["measures"][number], redress: RedressTexts): string {
+  const parts: string[] = [];
+  if (measure.kind === "warn_reporting") {
+    if (measure.endsAt === undefined || measure.endsAt === null) throw new Error("a statement's warn_reporting names its end of counting: the decision's data holds none");
+    parts.push(W.warn(utcMinute(measure.endsAt)));
+    if (redress.warnNext === undefined) throw new Error("a statement's warning needs the redress text of what may follow, which this redress version does not hold");
+    parts.push(redress.warnNext);
+  } else {
+    const { days, endsAt, warnedAt } = measure;
+    if (days === undefined || days === null || endsAt === undefined || endsAt === null || warnedAt === undefined || warnedAt === null) {
+      throw new Error("a statement's restrict_reporting names its days, its end and the warning it follows: the decision's data holds none");
+    }
+    parts.push(W.restrict(days, utcMinute(endsAt), utcMinute(warnedAt)));
+  }
+  if (measure.noEffect === "deleted") parts.push(W.deletedAccount);
+  parts.push(W.reportingOpen);
+  return parts.join(" ");
+}
+
+/** The lift of a reporting measure: the warning, or the restriction by whether its days still ran at this decision's time. */
+function reportingLiftParagraph(reversal: StatementInput["reversals"][number]): string {
+  if (reversal.liftedKind === "warn_reporting") return W.reportingLifted.warning;
+  if (reversal.liftedKind !== "restrict_reporting") throw new Error("a statement's lift_reporting names the warning or the restriction it lifts: the decision's data holds neither");
+  if (reversal.periodThen?.state === "ended") {
+    if (reversal.periodThen.endedAt === null) throw new Error("a statement's lift of a restriction that had run out names its end");
+    return W.reportingLifted.restrictionEnded(utcMinute(reversal.periodThen.endedAt));
+  }
+  return W.reportingLifted.restriction;
+}
 
 /** What a sentence calls a standing measure. */
 const standingWord = (kind: "suspend" | "terminate"): "suspension" | "termination" => (kind === "terminate" ? "termination" : "suspension");
@@ -353,7 +418,7 @@ function suspendParagraphs(input: StatementInput, measure: StatementInput["measu
  */
 function liftParagraph(reversal: StatementInput["reversals"][number]): string {
   const { liftedKind, periodThen } = reversal;
-  if (liftedKind === undefined || liftedKind === null || periodThen === undefined || periodThen === null) {
+  if ((liftedKind !== "suspend" && liftedKind !== "terminate") || periodThen === undefined || periodThen === null) {
     throw new Error("a statement's lift_suspension names the measure it lifts and its period then: the decision's data holds neither");
   }
   const what = standingWord(liftedKind);
@@ -373,8 +438,15 @@ function liftParagraph(reversal: StatementInput["reversals"][number]): string {
 
 /** A standing measure whose basis this decision broke: what it rested on, where its period stood, and a reply that waited. */
 function basisEndedParagraph(entry: NonNullable<StatementInput["endedStanding"]>[number]): string {
-  if (entry.kind === "restrict_reporting") throw new Error("a statement's restriction of reporting ended with its warning is not worded in this version of @korbat/rules");
   const { periodThen } = entry;
+  if (entry.kind === "restrict_reporting") {
+    // A restriction of reporting ends with the warning this decision lifted; one whose days had run out says when it ran.
+    if (periodThen.state === "ended") {
+      if (periodThen.startedAt === null || periodThen.endedAt === null) throw new Error("a statement's ended restriction names its start and its end");
+      return `${W.basisEndedReporting(utcMinute(entry.decidedAt))} ${W.basisEndedReportingThen.ended(utcMinute(periodThen.startedAt), utcMinute(periodThen.endedAt))}`;
+    }
+    return `${W.basisEndedReporting(utcMinute(entry.decidedAt))} ${W.basisEndedReportingThen.running}`;
+  }
   let then: string;
   if (periodThen.state === "ended") {
     if (periodThen.startedAt === null || periodThen.endedAt === null) throw new Error("a statement's ended period names its start and its end");
@@ -422,6 +494,7 @@ function measureParagraph(input: StatementInput, measure: StatementInput["measur
   if (UNWORDED.includes(measure.kind)) throw new Error(`a statement's ${measure.kind} is not worded in this version of @korbat/rules`);
   if (measure.kind === "strike") return strikeParagraph(input, measure, redress);
   if (measure.kind === "retire_handle") return retireParagraph(input, measure);
+  if (measure.kind === "warn_reporting" || measure.kind === "restrict_reporting") return reportingParagraph(measure, redress);
   const field = fieldOf(measure.kind);
   if (measure.kind === "seal_media") {
     const sealed = measure.sealed ?? { posts: 0, images: 0, deletedImages: 0 };
@@ -453,6 +526,7 @@ function reversalParagraph(input: StatementInput, reversal: StatementInput["reve
   if (UNWORDED.includes(reversal.kind)) throw new Error(`a statement's ${reversal.kind} is not worded in this version of @korbat/rules`);
   if (reversal.kind === "overrule") return W.overruled;
   if (reversal.kind === "lift_suspension") return liftParagraph(reversal);
+  if (reversal.kind === "lift_reporting") return reportingLiftParagraph(reversal);
   if (reversal.kind === "unretire_handle") {
     if (reversal.handle === undefined || reversal.handle === null) throw new Error("a statement's unretire_handle names the handle it gives back: the decision's data holds none");
     return W.unretired(reversal.handle);
@@ -581,8 +655,9 @@ export function statementParagraphs(input: StatementInput): string[] {
   if (paragraphs.length === 0) paragraphs.push(W.noAction);
 
   const standing = standingOf(input);
+  const reporting = reportingOf(input);
   // Where and how long: only a decision that restricts has a scope; a suspension's is its days from its start, and a
-  // termination's has no end.
+  // termination's has no end; a restriction of reporting's runs until its end, and a warning restricts nothing.
   if (restricts) {
     paragraphs.push(
       input.kind === "interim"
@@ -591,7 +666,11 @@ export function statementParagraphs(input: StatementInput): string[] {
           ? W.scope.suspend(standing.days)
           : standing?.kind === "terminate"
             ? W.scope.terminate
-            : W.scope.final,
+            : reporting?.kind === "restrict_reporting" && typeof reporting.endsAt === "string"
+              ? W.scope.reporting(utcMinute(reporting.endsAt))
+              : reporting?.kind === "warn_reporting"
+                ? W.scope.warn
+                : W.scope.final,
     );
     if (input.ground === "illegal") paragraphs.push(W.scope.law);
   }
@@ -601,8 +680,8 @@ export function statementParagraphs(input: StatementInput): string[] {
   // A decision that gives a strike says what the software did: it applied korbat's published rule of when one is given.
   // A suspension on a flood rests on a count the software made, and a measure of the ladder on the strikes it counted and
   // the list it put the account on; one on a decision, a threat or a seal rests on nothing the software did, and keeps
-  // 3c's sentence.
-  const counted = standing?.basis === "strikes" || standing?.basis === "ladder_end";
+  // 3c's sentence. A reporting measure rests on the reports the software counted and the list of reporting records.
+  const counted = standing?.basis === "strikes" || standing?.basis === "ladder_end" || reporting !== undefined;
   paragraphs.push(input.measures.some((measure) => measure.kind === "strike") ? W.automationStrike : standing?.basis === "flood" ? W.automationFlood : counted ? W.automationCounted : W.automation);
 
   // The rule or the law: the decision's own, or for a review or a correction the reviewed decision's, from that decision's
@@ -617,7 +696,8 @@ export function statementParagraphs(input: StatementInput): string[] {
   } else if (!about && (standing?.basis === "strikes" || standing?.basis === "ladder_end")) {
     paragraphs.push(ladderGround(input, standing.basis));
   } else {
-    const form: GroundForm = about ? "about" : input.measures.some((measure) => measure.kind === "seal_media") ? "seal" : input.kind === "interim" ? "deciding" : standing ? "conduct" : "found";
+    // A reporting measure, like a measure at once, names the account's conduct under R6 (W.2, "The rule or the term").
+    const form: GroundForm = about ? "about" : input.measures.some((measure) => measure.kind === "seal_media") ? "seal" : input.kind === "interim" ? "deciding" : standing || reporting ? "conduct" : "found";
     const ground = about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, form) : groundParagraph(input, input.rulesVersion, form);
     if (ground !== null) paragraphs.push(ground);
   }

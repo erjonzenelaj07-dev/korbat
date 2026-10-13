@@ -9,8 +9,8 @@ import { Loaded, UserText, type Loadable } from "../ui";
 /**
  * The Standing screen (3e design, section 8.6): four lists from one answer, each newest first, each row ending in a link
  * to its case where one exists: the accounts at the ladder's number of strikes, with "Open a case on this account"; the
- * reporting records (filled by the restriction of reporting); the notices korbat could not send; and the terminations
- * that wait. No list is a queue key and none is weighted; people are handles, shown as text.
+ * reporting records (the accounts at the warning's threshold, and the warned ones with the marked reports sent since),
+ * with the same control under R6; the notices korbat could not send; and the terminations that wait. No list is a queue key and none is weighted; people are handles, shown as text.
  */
 
 /** "Open a case on this account": which row's finding is on its way, and what became of the last one. */
@@ -83,7 +83,7 @@ export function StandingView({ lists, opening, onOpenCase, onOpenFinding }: Stan
               <ul className="plain" aria-labelledby="standing-reporting">
                 {value.reportingRecords.items.map((row) => (
                   <li key={row.handle}>
-                    <UserText>{W.reportingRow(row.handle, row.unfounded, row.reports)}</UserText>{" "}
+                    <UserText>{W.reportingRow(row.handle, row.unfounded, row.reports)}</UserText> {row.warnedOn === null ? W.reportingThreshold : W.reportingWarned(row.warnedOn, row.marksSince ?? 0)}{" "}
                     <button type="button" onClick={() => onOpenFinding(row.handle, "R6")} disabled={opening.handle !== null} aria-busy={opening.handle === row.handle}>
                       {W.openCase}
                     </button>

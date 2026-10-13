@@ -259,6 +259,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, l
       });
     });
 
+    test("3e Task 5: a decision that marked reports verifies with its marks, a mark taken out of the record or a row whose list was altered is reported, and a row signed before 3e reads its missing list as none", async () => {
+      await inWorld(async (tx) => {
+        const p = await imagePost(tx, 0);
+        const first = await report(tx, aPost(p.postId));
+        const second = await intake(tx, ground.rule((await newProfile(tx as unknown as Db)).id, "R1"), aPost(p.postId));
+        const items = [first.recorded.items[0]!.id, second.items[0]!.id].sort();
+        const marked = await decideIn(tx, mod, first.caseId, { kind: "final", outcome: "no_violation", unfounded: items });
+        const q2 = await imagePost(tx, 0);
+        const other = await report(tx, aPost(q2.postId));
+        const plain = await decideIn(tx, mod, other.caseId, { kind: "final", outcome: "no_violation" });
+        const [place, plainPlace] = [(await placesOf(tx, [marked]))[0]!, (await placesOf(tx, [plain]))[0]!];
+        const mine = [marked, plain, place, plainPlace];
+        const found = async () => about((await textVerify(tx, Number.MAX_SAFE_INTEGER)).problems, mine).sort();
+        expect(await found()).toEqual([]);
+        // The params signed both marks; one taken out of the record as the migrator is a difference in `unfounded`.
+        await tx.execute(sql`delete from unfounded_marks where item_id = ${items[0]!}::uuid`);
+        expect(await found()).toEqual([`decision: it differs from the audit row at place ${place} that names it: unfounded`]);
+        // A row signed before 3e carries neither member: its missing list reads as no marks, its missing replaced as false.
+        await tx.execute(sql`update audit_log set metadata = metadata #- '{params,unfounded}' #- '{params,replaced}' where chain_seq = ${plainPlace}::bigint`);
+        expect((await found()).filter((line) => line.includes(String(plainPlace)))).toEqual([]);
+        // And such a row beside a decision that holds a mark is reported: what was not signed is not what korbat holds.
+        await tx.execute(sql`update audit_log set metadata = metadata #- '{params,unfounded}' where chain_seq = ${place}::bigint`);
+        expect(await found()).toEqual([`decision: it differs from the audit row at place ${place} that names it: unfounded`]);
+      });
+    });
+
     test("it reports a post whose level the migrator set by hand, an image whose state was set, and a seal in force one of whose listed posts has lost an image row", async () => {
       await inWorld(async (tx) => {
         const removed = await imagePost(tx, 1);

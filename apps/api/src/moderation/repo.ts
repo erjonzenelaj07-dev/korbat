@@ -237,7 +237,20 @@ export interface NoticeItemRow {
   /** The end of the re-examination window, as toISOString writes it; null before the release. */
   until: string | null;
   inWindow: boolean;
+  /** 3e Task 5: a moderator marked the item "manifestly unfounded" and the mark counts (markCounts); told only once released. */
+  markCounts: boolean;
 }
+
+/**
+ * Whether the mark `m` counts (3e design, section 6.3), exactly as decision_actions_check's restriction and the view
+ * reporting_record count one: its report was sent on a UTC day within report_frame_days, no correction withdrew it, and
+ * no re-examination of its item ended in a restriction. The alias is written here, never input.
+ */
+export const markCounts = (m: string) =>
+  sql.raw(
+    `${m}.withdrawn_by is null and (${m}.reported_at at time zone 'UTC')::date > (now() at time zone 'UTC')::date - (select k.report_frame_days from standing_rules() k)
+     and not exists (select 1 from intake_items x where x.reexamines_item_id = ${m}.item_id and x.outcome in ('restricted_rule', 'restricted_legal'))`,
+  );
 
 const MEASURE_KINDS_SQL = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
 
@@ -282,6 +295,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
     reexamined: boolean;
     until: string | null;
     in_window: boolean;
+    mark_counts: boolean;
   }>(
     q,
     sql`select i.id, i.intake_id, i.position, i.target_type, i.target_id, i.named_handle, i.case_id is not null as has_case, i.suspect,
@@ -297,7 +311,8 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
                (i.answered_by is not null and i.outcome in ('no_violation', 'not_evident')) as no_action,
                exists (select 1 from intake_items r where r.reexamines_item_id = i.id) as reexamined,
                ${iso("public.appeal_deadline(i.outcome_sent_at)")} as until,
-               coalesce(clock_timestamp() < public.appeal_deadline(i.outcome_sent_at), false) as in_window
+               coalesce(clock_timestamp() < public.appeal_deadline(i.outcome_sent_at), false) as in_window,
+               exists (select 1 from unfounded_marks m where m.item_id = i.id and ${markCounts("m")}) as mark_counts
           from intake_items i left join decisions d on d.id = i.answered_by
          where i.intake_id = any(${`{${intakeIds.join(",")}}`}::uuid[])
          order by i.intake_id, (case when i.position > 10 then i.position - 10 else i.position end), (i.position > 10), i.created_at, i.id`,
@@ -326,6 +341,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
     reexamined: row.reexamined,
     until: row.until,
     inWindow: row.in_window,
+    markCounts: row.mark_counts,
   });
   for (const row of found) byNotice.get(row.intake_id)?.push(itemOf(row));
   return byNotice;
@@ -961,6 +977,14 @@ export interface CaseItemRow {
   reexaminesPosition: number | null;
   reexaminesYourDecision: boolean;
   quotedCaseId: string | null;
+  /**
+   * 3e Task 5: whether a final decision that finds no breach may mark the item "manifestly unfounded" (unfounded_marks_check's
+   * rule: no re-examination, a user's report with a sender still known, under a rule), whether its mark stands, and
+   * whether a correction withdrew it.
+   */
+  markable: boolean;
+  unfounded: boolean;
+  markWithdrawn: boolean;
 }
 
 /**
@@ -998,6 +1022,9 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
     reexamines_position: number | null;
     reexamines_your_decision: boolean;
     quoted_case_id: string | null;
+    markable: boolean;
+    unfounded: boolean;
+    mark_withdrawn: boolean;
   }>(
     q,
     sql`select i.id, i.seq, i.position, ${iso("i.created_at")} as created_at, i.lane, i.target_type, i.target_id, i.named_handle, i.media_id, i.suspect, i.reporter_account_id,
@@ -1008,8 +1035,11 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
                coalesce((select d.decided_by = ${personId}::uuid from intake_items r join decisions d on d.id = r.answered_by where r.id = i.reexamines_item_id), false) as reexamines_your_decision,
                case when i.suspect and i.target_type = 'post' then
                  (select a.case_id from posts p join intake_items a on a.intake_id = i.intake_id and a.target_type = 'post' and a.target_id = p.quote_of_id and a.case_id is not null
-                   where p.id = i.target_id order by a.created_at desc, a.id limit 1) end as quoted_case_id
+                   where p.id = i.target_id order by a.created_at desc, a.id limit 1) end as quoted_case_id,
+               (i.reexamines_item_id is null and n.kind = 'user' and n.reporter_id is not null and not n.alleges_illegal and not n.csam) as markable,
+               (m.item_id is not null and m.withdrawn_by is null) as unfounded, (m.withdrawn_by is not null) as mark_withdrawn
           from intake_items i join intakes n on n.id = i.intake_id
+          left join unfounded_marks m on m.item_id = i.id
          where i.case_id = ${caseId}::uuid order by i.seq`,
   );
   return found.map((row) => ({
@@ -1041,6 +1071,9 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
     reexaminesPosition: row.reexamines_position,
     reexaminesYourDecision: row.reexamines_your_decision,
     quotedCaseId: row.quoted_case_id,
+    markable: row.markable,
+    unfounded: row.unfounded,
+    markWithdrawn: row.mark_withdrawn,
   }));
 }
 

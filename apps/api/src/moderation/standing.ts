@@ -8,6 +8,7 @@ import {
   type CaseStanding,
   type DecisionStanding,
   type ReplyRequest,
+  type ReportingStanding,
   type ReplyResponse,
   type StandingLists,
   type StrikeDue,
@@ -26,6 +27,9 @@ import {
   noticesUndelivered,
   openReportsIn,
   replyMeasureOf,
+  reportingFacts,
+  reportingRecords,
+  reportingStanding,
   snapshotHandleRetired,
   standingFacts,
   strikeAccounts,
@@ -107,6 +111,32 @@ export async function caseStanding(q: Runner, caseId: string, accountId: string)
     snapshotHandleRetired: await snapshotHandleRetired(q, caseId),
     // Task 3: the decisions a suspension at once would rest on now, by their times, for the preview's basis sentence.
     basisDecidedAt: facts.basisDecidedAt,
+    // Task 5: the account's record of reporting, read as decision_actions_check reads it.
+    reporting: await caseReporting(q, accountId),
+  };
+}
+
+/**
+ * standing.reporting of an account case (3e design, sections 7.9, 8.1 and 10.3): the account's counts in reports, its
+ * warning that still counts with the marked reports sent since, whether the database would accept a warning or a
+ * restriction now, the restriction that runs, and the marks that count for the drafts of W.5. A warning needs at least
+ * reportWarnMarks marked reports that are at least reportWarnShare of the reports, and no warning that still counts; a
+ * restriction needs that warning, at least reportRestrictMarks marked reports sent since korbat told the account of it,
+ * and no restriction running. The case's own open reports, which refuse both (open_reports), are `openReports`.
+ */
+async function caseReporting(q: Runner, accountId: string): Promise<CaseStanding["reporting"]> {
+  const facts = await reportingFacts(q, accountId, { marked: true });
+  const atThreshold = facts.unfounded >= STANDING_RULES.reportWarnMarks && facts.unfounded >= STANDING_RULES.reportWarnShare * facts.reports;
+  return {
+    reports: facts.reports,
+    unfounded: facts.unfounded,
+    warnedOn: facts.warning === null ? null : facts.warning.decidedAt.slice(0, 10),
+    warnedAt: facts.warning?.decidedAt ?? null,
+    marksSince: facts.marksSince,
+    mayWarn: atThreshold && facts.warning === null,
+    mayRestrict: facts.warning !== null && (facts.marksSince ?? 0) >= STANDING_RULES.reportRestrictMarks && facts.restriction === null,
+    restrictedUntil: facts.restriction?.until ?? null,
+    marked: facts.marked,
   };
 }
 
@@ -115,8 +145,9 @@ export async function caseStanding(q: Runner, caseId: string, accountId: string)
  * cache, so the banner and a refusal's sentence are true of the row: the active strikes; the account's one standing
  * measure with its state now (running from its start; announced once a start is fixed and ahead; held while a reply sent
  * in time waits for its answer; unfixed while the notice mail's outcome is unknown), its times, its reply and its appeal;
- * the reporting measures (null until they exist, Task 5); whether the profile holds a retired handle's placeholder. Null
- * for an account without a live profile. Not auth.account_standing, the boolean grant-role asks.
+ * the reporting measures (Task 5: the warning that still counts and the restriction that runs, null when neither
+ * stands); whether the profile holds a retired handle's placeholder. Null for an account without a live profile. Not
+ * auth.account_standing, the boolean grant-role asks.
  */
 export async function standingFor(q: Runner, accountId: string): Promise<AccountStanding | null> {
   const row = await accountStandingRow(q, accountId);
@@ -142,8 +173,18 @@ export async function standingFor(q: Runner, accountId: string): Promise<Account
             appealUntil: !m.appealed && m.appealOpen ? m.appealDeadline : null,
             appealPending: m.appealPending,
           },
-    reporting: null,
+    reporting: await accountReporting(q, accountId),
     handleRetired: isRetiredPlaceholder(row.handle.toLowerCase()),
+  };
+}
+
+/** /api/me's reporting member: the warning that still counts and the restriction that runs, or null when neither stands. */
+async function accountReporting(q: Runner, accountId: string): Promise<AccountStanding["reporting"]> {
+  const facts = await reportingFacts(q, accountId, { marked: false });
+  if (facts.warning === null && facts.restriction === null) return null;
+  return {
+    warning: facts.warning === null ? null : { decisionId: facts.warning.decisionId, countsUntil: facts.warning.countsUntil },
+    restriction: facts.restriction,
   };
 }
 
@@ -212,9 +253,9 @@ export async function decisionStandingView(q: Runner, decisionId: string): Promi
 /**
  * GET /api/staff/standing (3e design, sections 7.5, 7.12 and 8.6): the Standing screen's four lists. The accounts at the
  * ladder's number of strikes, each with the rung an announced suspension would take now (the ladder's suspensions of the
- * year, read as decision_actions_check reads them) and whether a termination could be announced; the reporting records,
- * which the restriction of reporting fills (empty until then: no mark exists); the notices korbat could not send; and the
- * terminations that wait. People are handles; no row names a reporter.
+ * year, read as decision_actions_check reads them) and whether a termination could be announced; the reporting records
+ * (Task 5: the accounts at the warning's threshold and the warned ones, in reports); the notices korbat could not send;
+ * and the terminations that wait. People are handles; no row names a reporter.
  */
 export async function standingLists(q: Runner): Promise<StandingLists> {
   const rungs = STANDING_RULES.ladderDays;
@@ -232,10 +273,18 @@ export async function standingLists(q: Runner): Promise<StandingLists> {
         mayTerminate: row.inYear >= rungs.length,
       })),
     },
-    reportingRecords: { total: 0, items: [] },
+    reportingRecords: await reportingRecords(q, OVERVIEW_LIST_MAX),
     noticesUndelivered: await noticesUndelivered(q, OVERVIEW_LIST_MAX),
     terminationsWaiting: await terminationsWaiting(q, OVERVIEW_LIST_MAX),
   };
+}
+
+/**
+ * DecisionView.reportingStanding (3e design, sections 9.2 and 10.2): where the decision's restriction of reporting stands
+ * now, read fresh; null for a decision without one.
+ */
+export async function reportingStandingView(q: Runner, decisionId: string): Promise<ReportingStanding | null> {
+  return reportingStanding(q, decisionId);
 }
 
 /** The longest the take-down's transaction waits for a lock: the account's profile, then its terminating decision. */

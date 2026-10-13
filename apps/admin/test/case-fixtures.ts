@@ -93,6 +93,10 @@ export function item(overrides: Partial<CaseItem> = {}): CaseItem {
     answeredBy: null,
     erased: false,
     source: SOURCES.reporter,
+    // 3e Task 5: no mark offered or set unless a test says so.
+    markable: false,
+    unfounded: false,
+    markWithdrawn: false,
     ...overrides,
   };
 }
@@ -466,6 +470,8 @@ export const NO_ACCOUNT_STANDING: CaseStanding = {
   seal: null,
   snapshotHandleRetired: false,
   basisDecidedAt: { threat: null, terrorist: null, protective: null },
+  // 3e Task 5: no report sent, no mark, no warning.
+  reporting: { reports: 0, unfounded: 0, warnedOn: null, warnedAt: null, marksSince: null, mayWarn: false, mayRestrict: false, restrictedUntil: null, marked: [] },
 };
 
 /**
@@ -648,5 +654,137 @@ export function withdrawCase(): CaseView {
     ],
     history: [],
     standing: { ...NO_ACCOUNT_STANDING, activeStrikes: 3, strikes: THREE_STRIKES, ladderRule: "R1", live: true, openReports: false, atOnce: [] },
+  });
+}
+
+// ---------------------------------------------------------------- 3e Task 5: the restriction of reporting and the marks
+
+export const CASE_REPORTING = "4b0c1d2e-3f40-4516-978c-a3b4c5d6e7f8";
+export const ITEM_REPORTING = "5c1d2e3f-4051-4627-889d-b4c5d6e7f809";
+export const CASE_MARK = "6d2e3f40-5162-4738-99ae-c5d6e7f8091a";
+export const CASE_MARKED = "7e3f4051-6273-4849-8abf-d6e7f8091a2b";
+export const DECISION_MARKED = "8f405162-7384-495a-9bc0-e7f8091a2b3c";
+export const ITEM_MARKED = "90516273-8495-4a6b-acd1-f8091a2b3c4d";
+export const CASE_WARNED = "a1627384-95a6-4b7c-bde2-091a2b3c4d5e";
+export const DECISION_WARNED = "b2738495-a6b7-4c8d-8ef3-1a2b3c4d5e6f";
+export const APPEAL_WARNED = "c3849506-b7c8-4d9e-9f04-2b3c4d5e6f70";
+/** The reference of a report the account sent, as the case answer lists its marks. */
+export const MARKED_REF = "N-ABCDEFGHJK";
+
+/**
+ * 3e Task 5: an account case on a moderator's own finding under R6 (no report waits, so the reporting measures, which
+ * answer findings only, are open), with the account's record of reporting: five of eight reports marked, two items of one
+ * report among them, and no warning. A test passes what differs.
+ */
+export function reportingCase(reporting: Partial<CaseStanding["reporting"]> = {}, openReports = false): CaseView {
+  return accountCase({
+    id: CASE_REPORTING,
+    lane: 2,
+    stateVersion: 1,
+    intakeSeq: 1,
+    suspicion: null,
+    target: { type: "account", id: ACCOUNT_ID, handle: "re_porter", displayName: "Reporter", bio: "", deleted: false },
+    items: [item({ id: ITEM_REPORTING, ruleId: "R6", suspect: false, category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", link: "http://localhost:8081/u/re_porter", explanation: null, source: SOURCES.staff })],
+    history: [],
+    standing: {
+      ...NO_ACCOUNT_STANDING,
+      openReports,
+      reporting: {
+        reports: 8,
+        unfounded: 5,
+        warnedOn: null,
+        warnedAt: null,
+        marksSince: null,
+        mayWarn: true,
+        mayRestrict: false,
+        restrictedUntil: null,
+        marked: [
+          { ref: "N-AAAAAAAAAA", position: 1, sentOn: "2026-09-01", markedOn: "2026-09-02", sinceWarning: false },
+          { ref: MARKED_REF, position: 1, sentOn: "2026-09-03", markedOn: "2026-09-04", sinceWarning: false },
+          { ref: MARKED_REF, position: 3, sentOn: "2026-09-03", markedOn: "2026-09-05", sinceWarning: false },
+          { ref: "N-BBBBBBBBBB", position: 2, sentOn: "2026-09-06", markedOn: "2026-09-07", sinceWarning: false },
+          { ref: "N-CCCCCCCCCC", position: 1, sentOn: "2026-09-08", markedOn: "2026-09-09", sinceWarning: false },
+          { ref: "N-DDDDDDDDDD", position: 1, sentOn: "2026-09-10", markedOn: "2026-09-11", sinceWarning: false },
+        ],
+        ...reporting,
+      },
+    },
+  });
+}
+
+/** The same account once warned on 2026-09-20, with three marked reports sent since: a restriction is open. */
+export const WARNED_REPORTING: Partial<CaseStanding["reporting"]> = {
+  reports: 11,
+  unfounded: 8,
+  warnedOn: "2026-09-20",
+  warnedAt: "2026-09-20T08:00:00.000Z",
+  marksSince: 3,
+  mayWarn: false,
+  mayRestrict: true,
+  marked: [
+    { ref: "N-AAAAAAAAAA", position: 1, sentOn: "2026-09-01", markedOn: "2026-09-02", sinceWarning: false },
+    { ref: "N-EEEEEEEEEE", position: 1, sentOn: "2026-09-21", markedOn: "2026-09-22", sinceWarning: true },
+    { ref: "N-FFFFFFFFFF", position: 2, sentOn: "2026-09-23", markedOn: "2026-09-24", sinceWarning: true },
+    { ref: "N-GGGGGGGGGG", position: 1, sentOn: "2026-09-25", markedOn: "2026-09-26", sinceWarning: true },
+  ],
+};
+
+/**
+ * 3e Task 5: a post's case whose reporter's item can be marked, beside a notice of illegality that cannot: a final "No
+ * breach" decision offers the mark on the first only, and says once why not on the second.
+ */
+export function markCase(id: string = CASE_MARK): CaseView {
+  const base = postCase();
+  return postCase({ id, items: base.items.map((each) => (each.id === ITEM_REPORTER ? { ...each, markable: true } : each)), decisions: [], history: [], strikeDue: { due: false, why: "due" } });
+}
+
+/** 3e Task 5: a closed post's case whose "No breach" decision marked the reporter's item; with `withdrawn` a correction withdrew the mark. */
+export function markedCase(withdrawn = false): CaseView {
+  return postCase({
+    id: CASE_MARKED,
+    stateVersion: 4,
+    intakeSeq: 1,
+    answeredSeq: 1,
+    closedAt: "2026-10-05T09:00:00.000Z",
+    items: [item({ id: ITEM_MARKED, outcome: "no_violation", answeredBy: DECISION_MARKED, markable: true, unfounded: !withdrawn, markWithdrawn: withdrawn })],
+    decisions: [decision({ id: DECISION_MARKED, kind: "final", outcome: "no_violation", ground: null, ruleId: null, rulesVersion: 3, redressVersion: 2, throughSeq: 1, answersFromSeq: 1, decidedAt: "2026-10-05T09:00:00.000Z", facts: null, reason: null, actions: [] })],
+    history: [],
+  });
+}
+
+/**
+ * 3e Task 5: an account case whose final decision warned the account about its reporting, appealed and open to this
+ * person's review, with a restriction of reporting that rests on the warning ([review.warning]).
+ */
+export function warnedCase(): CaseView {
+  return accountCase({
+    id: CASE_WARNED,
+    lane: 2,
+    stateVersion: 2,
+    intakeSeq: 1,
+    answeredSeq: 1,
+    closedAt: "2026-09-20T08:00:00.000Z",
+    suspicion: null,
+    target: { type: "account", id: ACCOUNT_ID, handle: "re_porter", displayName: "Reporter", bio: "", deleted: false },
+    items: [item({ id: "d4950617-c8d9-4eaf-8015-3c4d5e6f7081", ruleId: "R6", outcome: "restricted_rule", answeredBy: DECISION_WARNED, link: "http://localhost:8081/u/re_porter", explanation: null, source: SOURCES.staff })],
+    decisions: [
+      decision({
+        id: DECISION_WARNED,
+        kind: "final",
+        ruleId: "R6",
+        rulesVersion: 3,
+        redressVersion: 2,
+        throughSeq: 1,
+        answersFromSeq: 1,
+        decidedAt: "2026-09-20T08:00:00.000Z",
+        facts: "In the 90 days up to 2026-09-20 the account sent 8 reports under korbat's rules.",
+        reason: "They named nothing a rule could cover.",
+        actions: [{ ...decision().actions[0]!, id: "e5a61728-d9ea-4fb0-9126-4d5e6f708192", kind: "warn_reporting", countsUntil: "2026-12-19T08:00:00.000Z", basis: "reports" }],
+        standingOn: [{ kind: "restrict_reporting", basis: "reports" }],
+      }),
+    ],
+    appeals: [{ id: APPEAL_WARNED, decisionId: DECISION_WARNED, filedAt: "2026-09-25T10:00:00.000Z", statement: "These reports were made in good faith.", answeredAt: null, result: null, answeredBy: null, reviewer: "available", needsAdmin: false, mayReview: true }],
+    history: [],
+    standing: { ...NO_ACCOUNT_STANDING, openReports: false },
   });
 }

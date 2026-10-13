@@ -4,7 +4,7 @@ import { MEASURES, type AccountStanding, type AuthorCaseRow, type ReportItem, ty
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
 import { CASES_WORDS } from "@/lib/moderation-words";
-import { CASE_ROW_WORDS, rowStrike, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
+import { CASE_ROW_WORDS, reportingLine, rowStrike, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
 
 /** 3e: the kinds whose words in a row are the row's own (9.4), not the measure's label. */
@@ -14,6 +14,9 @@ const ROW_KINDS: Partial<Record<AuthorCaseRow["actions"][number], string>> = {
   unretire_handle: CASE_ROW_WORDS.unretired,
   suspend: CASE_ROW_WORDS.suspended,
   lift_suspension: CASE_ROW_WORDS.lifted,
+  // Task 5: a warning about the account's reports, and the lift of either reporting measure.
+  warn_reporting: CASE_ROW_WORDS.warned,
+  lift_reporting: CASE_ROW_WORDS.reportingLifted,
 };
 
 /**
@@ -25,7 +28,15 @@ function done(row: AuthorCaseRow, now: Date): string {
   if (row.kind === "review" && row.outcome === "kept") return CASES_WORDS.keptDecision;
   // 3e (design, section 9.4): a strike is named with where it stands, its overruling, a retirement and its reversal in
   // the row's own words.
-  const labels: string[] = row.actions.map((kind) => (kind === "strike" && row.strike ? rowStrike(row.strike, now) : (ROW_KINDS[kind] ?? MEASURES[kind].label)));
+  const labels: string[] = row.actions.map((kind) =>
+    kind === "strike" && row.strike
+      ? rowStrike(row.strike, now)
+      : kind === "restrict_reporting" && row.reportingDays !== undefined
+        ? CASE_ROW_WORDS.restricted(row.reportingDays)
+        : (ROW_KINDS[kind] ?? MEASURES[kind].label),
+  );
+  // Task 5: a reversal that ended a restriction of reporting resting on the decision it reversed says so.
+  if ((row.endedStanding ?? []).includes("restrict_reporting")) labels.push(CASE_ROW_WORDS.restrictionEnded);
   if (row.endedInterim) labels.push(CASES_WORDS.ended);
   return labels.length > 0 ? labels.join(", ") : CASES_WORDS.noAction;
 }
@@ -72,11 +83,13 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
 
 /**
  * "Your standing" (3e design, section 9.4), above "About you": how many of the account's strikes count now, and what that
- * many leads to; then (Task 3) the line of a suspension that runs, in the banner's words, from /me's standing. The lines of
- * an announced or held measure and of the reporting measures come with the tasks that build them.
+ * many leads to; then (Task 3) the line of a suspension that runs, in the banner's words, from /me's standing; and (Task 5)
+ * [cases.reporting]: a restriction of the account's reports that runs, or a warning about them that counts. The line of
+ * an announced or held measure comes with the task that builds it.
  */
 export function StandingBlock({ activeStrikes, standing = null }: { activeStrikes: number; standing?: AccountStanding | null }) {
   const running = runningMeasure(standing);
+  const reporting = reportingLine(standing);
   return (
     <View className="border-b border-zinc-800 px-4 pb-4 pt-3">
       <Text accessibilityRole="header" aria-level={2} className="text-base font-semibold text-zinc-50">
@@ -84,6 +97,7 @@ export function StandingBlock({ activeStrikes, standing = null }: { activeStrike
       </Text>
       <Text className="mt-1 text-sm leading-5 text-zinc-200">{activeStrikes > 0 ? STANDING_TEXTS.cases.strikes(activeStrikes) : STANDING_TEXTS.cases.none}</Text>
       {running !== null && running.kind === "suspend" && running.endsAt !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{STANDING_TEXTS.banner.running(running.endsAt)}</Text> : null}
+      {reporting !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{reporting}</Text> : null}
     </View>
   );
 }

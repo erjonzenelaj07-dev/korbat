@@ -236,6 +236,9 @@ export const STANDING_WORDS = {
     openCase: "Open a case on this account",
     reportingTitle: "Reporting records",
     reportingRow: (handle: string, unfounded: number, reports: number) => `@${handle}: ${unfounded} of the ${reports} rule reports sent in the last ${STANDING_RULES.reportFrameDays} days hold a mark manifestly unfounded.`,
+    /** Task 5: after a reporting record's row, whether the account is at the warning's threshold or was warned. */
+    reportingThreshold: "At the warning threshold.",
+    reportingWarned: (warnedOn: string, marksSince: number) => `Warned on ${warnedOn}; ${marksSince} of the reports sent since then are marked.`,
     noticesTitle: "Notices not sent",
     noticesRow: (handle: string, decidedOn: string, startsAt: string) =>
       `@${handle}: korbat's mail service could not send the notice of ${decidedOn}: it refused the address, or the mail was given up after ${RETENTION.mailGiveUpDays} days. Only the app carries the notice, so it starts on ${startsAt}, ${STANDING_RULES.undeliveredHours} hours after the decision.`,
@@ -254,6 +257,60 @@ export const STANDING_WORDS = {
       `Replies waiting: ${n}, the oldest for ${age}. A held suspension does not start until its reply is answered, and a terminated account is not deleted before its reply is.`,
     strikes: (n: number) => `Accounts at ${STANDING_RULES.ladderStrikes} strikes: ${n}.`,
   },
+  // ---------------------------------------------------------------- 3e Task 5 (design, sections 8.3, 8.4 and 8.7)
+  /** 8.3: the warning about reporting and the restriction of it. Both cite R6; the composer sets it. */
+  reporting: {
+    warnLabel: "Warn about reporting",
+    restrictLabel: "Restrict reporting",
+    /** Beside both controls. */
+    rule: "Both measures cite R6; the composer sets it.",
+    /** [warn.what], with the account's counts as this page read them. */
+    warnWhat: (unfounded: number, reports: number) =>
+      `A warning restricts nothing. It tells the account that ${unfounded} of the ${reports} reports it sent under the rules in the last ${STANDING_RULES.reportFrameDays} days were marked manifestly unfounded, lists them, and says that ${STANDING_RULES.reportRestrictMarks} marked reports among those it sends after the warning may lead to a restriction. A report counts once, however many of its items were marked, and by the day it was sent. A notice of illegal content is never counted.`,
+    /** [warn.short] */
+    warnShort: (unfounded: number, reports: number) =>
+      `Not open: a warning needs at least ${STANDING_RULES.reportWarnMarks} marked reports among those the account sent in the last ${STANDING_RULES.reportFrameDays} days, and they must be at least half of its rule reports sent in that time. This account has ${unfounded} of ${reports}. One report never reaches the number alone.`,
+    /** [warn.standing] */
+    warnStanding: (warnedOn: string) => `Not open: the warning of ${warnedOn} still counts.`,
+    /** [restrict.what], with the days chosen. */
+    restrictWhat: (days: number) =>
+      `This stops the account's reports under korbat's rules for ${days} ${days === 1 ? "day" : "days"}, from the moment you confirm; the warning was its notice, and the restriction ends with it if the warning is lifted. At most ${STANDING_RULES.reportRestrictDays} days. Notices of illegal content, reports of child sexual abuse material and requests for re-examination stay open to it.`,
+    /** [restrict.noWarning] */
+    restrictNoWarning: "Not open: the account has no warning that still counts. Warn first.",
+    /** [restrict.short] */
+    restrictShort: (marksSince: number, warnedOn: string) => `Not open: ${marksSince} of the reports the account sent since the warning of ${warnedOn} were marked; a restriction needs ${STANDING_RULES.reportRestrictMarks}.`,
+    /** [restrict.running] */
+    restrictRunning: (restrictedUntil: string) => `Not open: a restriction runs until ${restrictedUntil}.`,
+    /** How many days, at most the restriction's own number. */
+    daysLabel: `Days (1 to ${STANDING_RULES.reportRestrictDays})`,
+    /** 8.7: the reversal of each reporting measure, named by what it lifts. */
+    liftWarning: "Lift the warning about reporting",
+    liftRestriction: "Lift the restriction of reporting",
+  },
+  /** 8.4: the mark "manifestly unfounded" beside the items a "No breach" decision answers, and its withdrawal. */
+  mark: {
+    /** [mark.label] */
+    label: "Manifestly unfounded",
+    /** [mark.rule] */
+    rule: `Tick only a report that anyone could see was unfounded without weighing it: it names nothing the rule could cover. A report you had to think about is not manifestly unfounded, also when you found no breach. Your key signs the mark. What counts toward a warning about reporting is the report, once, for ${STANDING_RULES.reportFrameDays} days from the day it was sent, however many of its items are ticked. The person who sent it sees the mark on their own list of reports once this answer is released to them, and can ask for a re-examination.`,
+    /** [mark.never], once, when an item the decision answers cannot be marked. */
+    never: "Only a signed-in person's report under a rule can be marked: never a notice of illegal content, a report on the path for child sexual abuse material, or a report sent without an account.",
+    /** [mark.undone] */
+    undone: "A mark stops counting when a re-examination of its report ends in a restriction, and when a correction of the decision that set it withdraws it.",
+    /** [mark.withdraw]: the control, and what it does. */
+    withdrawLabel: "Withdraw this decision's marks",
+    withdrawWhat:
+      "Use this when the reports were arguable after all: it was wrong to call them manifestly unfounded, also if no rule was broken. All marks this decision set are withdrawn together. The outcome of each report stays. The marks stop counting when you confirm, so a warning lifted because its marks were wrong cannot be given again on them.",
+    /** On the case page, beside an item whose mark stands and one whose mark was withdrawn (CaseItem.markWithdrawn). */
+    marked: "Marked manifestly unfounded",
+    withdrawn: "Mark withdrawn",
+    /** In place of the preview: the withdrawal sends the author nothing. */
+    noStatement: "No statement is sent: withdrawing marks changes nothing for the author of what was reported, and the people who reported see it on their own lists.",
+    /** The fieldset's legend. */
+    legend: "Reports this decision answers",
+  },
+  /** 8.7: [review.warning], when a restriction of reporting rests on the reviewed decision's warning. */
+  reviewWarning: "A restriction of this account's reports rests on this warning. If you lift the warning, the restriction ends when you confirm, and this decision's statement says so.",
   /** 8.5: [appeals.order] */
   appealsOrder: "Appeals of a running suspension or of a termination come first.",
   /** 8.5: the mark of an appeal listed first. */

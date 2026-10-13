@@ -42,12 +42,15 @@ export type TemplateName =
   // Account sanctions (3e design, sections 7.15 and 18, W.6): a decision's statement under a subject and a lead of its
   // own, for a suspension or termination announced or taken at once, for the answer to the person's reply, and for the
   // lift, the withdrawal or the end of one. And the auth module's own flat template, which no decision sends: the last
-  // mail of a terminated account, after its take-down.
+  // mail of a terminated account, after its take-down. And (Task 5) the statement of a warning about the account's
+  // reports and of a restriction of them.
   | "suspension_announced"
   | "suspension_started_at_once"
   | "reply_answered"
   | "suspension_lifted"
-  | "termination_final";
+  | "termination_final"
+  | "reporting_warned"
+  | "reporting_restricted";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

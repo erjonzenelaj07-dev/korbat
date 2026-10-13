@@ -276,7 +276,7 @@ describe("Ask for a re-examination", () => {
   });
 
   test("Your reports asks by the item's id, which only the signed-in sender's list carries", () => {
-    const listed: ReportItem = { ...open, id: id(8) };
+    const listed: ReportItem = { ...open, id: id(8), unfounded: false };
     const out = html(<ReportsList page={{ reports: [{ ref: "N-ABCDEFGH23", receivedAt: TIME, items: [listed] }], reportMailStopped: false }} onReexamine={noop} />);
     expect(buttons(out)).toEqual([STATUS_WORDS.reexamine]);
     expect(buttons(html(<ReportsList page={{ reports: [{ ref: "N-ABCDEFGH23", receivedAt: TIME, items: [listed] }], reportMailStopped: false }} />))).toEqual([]);

@@ -494,6 +494,7 @@ describe("the case page", () => {
       onReview: noop,
       onAnswer: noop,
       onWithdraw: noop,
+      onWithdrawMarks: noop,
     };
     const out = page(view, { compose });
     // The composer comes last, after the notes.

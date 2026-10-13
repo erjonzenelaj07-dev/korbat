@@ -23,9 +23,10 @@ export type DecideOutcome = { decisionId: string } | "ended" | "late";
 /**
  * The kinds of the ledger the decide and review routes accept (3e design, section 7.1 item 2). The params' schema knows
  * all 22 kinds from the first task of 3e on; this list holds 3c's twelve, a strike with its overruling, (Task 2) a
- * handle's retirement with its reversal, (Task 3) a suspension with its lift and (Task 4) a termination, and each later
- * task of 3e adds the kinds whose flow it builds, so no route records a measure whose flow is not built yet. Any other
- * kind is refused before the transaction (invalid_decision), as is a non-empty list of marks until the task that opens it.
+ * handle's retirement with its reversal, (Task 3) a suspension with its lift, (Task 4) a termination and (Task 5) the
+ * warning about reporting, the restriction of it and their lift: every kind, since each task of 3e added the kinds whose
+ * flow it built, so that no route recorded a measure whose flow was not built yet. A kind outside it is refused before
+ * the transaction (invalid_decision).
  */
 export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
   ...MEASURE_KINDS.slice(0, 7),
@@ -37,6 +38,9 @@ export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
   "suspend",
   "lift_suspension",
   "terminate",
+  "warn_reporting",
+  "restrict_reporting",
+  "lift_reporting",
 ]);
 
 /**
@@ -51,21 +55,22 @@ export function insertionOrder<T extends { kind: ActionKind }>(actions: readonly
 }
 
 /**
- * How the module's own tests reach the database's rules below the routes: `allKinds` lifts the routes' list of kinds and
- * the outcomes and members not open yet, so that a test stores every kind of 3e as a route will once its task is built.
- * The routes never pass it.
+ * How the module's own tests reach the database's rules below the routes: `allKinds` lifts the routes' list of kinds, so
+ * that a test could store every kind of 3e before the task that opened it was built. Since Task 5 the list holds every
+ * kind, and the flag changes nothing; the fixtures still pass it. The routes never pass it.
  */
 export interface DecideOptions {
   allKinds?: boolean;
 }
 
-/** The route's refusal of what it does not accept yet; nothing when the options lift the list. */
-export function refuseUnopened(params: { actions: readonly { kind: ActionKind }[]; unfounded?: readonly string[] }, options: DecideOptions): void {
+/**
+ * The route's refusal of a kind it does not accept; nothing when the options lift the list. Task 5 opened the marks
+ * "manifestly unfounded" too: the database's check of every mark (unfounded_marks_check), and decision_holds at commit,
+ * decide whether a mark can stand.
+ */
+export function refuseUnopened(params: { actions: readonly { kind: ActionKind }[] }, options: DecideOptions): void {
   if (options.allKinds) return;
   if (params.actions.some((action) => !ROUTE_KINDS.has(action.kind))) throw new ModerationError("invalid_decision");
-  // Task 4 opens a suspension and a termination, announced or at once, the correction that keeps its decision (it answers
-  // a reply; the database refuses one that answers none) and `replaced`; the marks wait for the reporting task.
-  if ((params.unfounded ?? []).length > 0) throw new ModerationError("invalid_decision");
 }
 
 /**

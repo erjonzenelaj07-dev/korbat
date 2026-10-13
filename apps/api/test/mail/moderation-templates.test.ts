@@ -23,7 +23,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 39 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3 and the three of its Task 4", () => {
+  test("holds 41 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4 and the two of its Task 5", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -32,11 +32,12 @@ describe("the closed union of templates", () => {
       "notice_received", "notice_update", "moderation_decision", "moderation_urgent", "moderation_waiting", "moderation_burst", "moderation_reads", "moderation_reveal", "moderation_csam_lifted",
       "suspension_started_at_once", "suspension_lifted",
       "suspension_announced", "reply_answered", "termination_final",
+      "reporting_warned", "reporting_restricted",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(39);
+    expect(new Set(names).size).toBe(41);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(39);
+    expect(Object.keys(all)).toHaveLength(41);
   });
 });
 
@@ -443,5 +444,40 @@ describe("3e Task 4: the mails of an announced measure, of the answer to a reply
     );
     for (const mail of [r, sealed]) expect(mail.text).not.toMatch(/https?:|www[.]|@[a-z]/);
     expect(() => renderTemplate("termination_final", { imagesSealed: "false" })).toThrow(/decided/);
+  });
+});
+
+describe("3e Task 5: the statement mails of a warning about reporting and of a restriction of it (design, sections 7.15 and 18, W.6)", () => {
+  const lines = ["korbat warns you about your reports. Nothing is restricted.", "The facts: In the 90 days up to 2026-10-04 the account sent 8 reports."];
+  const statement = lines.join(String.fromCharCode(10));
+  const READ = "Read it in korbat under Settings, Cases. korbat's emails never contain a link to act on a decision.";
+
+  test("reporting_warned: its subject, its lead, then the statement's paragraphs, where to read it, and no link", () => {
+    const r = renderTemplate("reporting_warned", { statement });
+    expect(r.subject).toBe("korbat warns you about your reports");
+    expect(paragraphs(r.text)).toEqual([
+      "korbat has looked at the reports your account sent under its rules and warns you about them. Nothing is restricted. The reasons, the reports concerned and what may follow are below.",
+      ...lines,
+      READ,
+      LAST_USER,
+    ]);
+    expect(r.text).not.toMatch(/https?:|www[.]/);
+    expect(r.html).not.toMatch(/<img|<a |href=/);
+    expect(() => renderTemplate("reporting_warned", {})).toThrow(/statement/);
+  });
+
+  test("reporting_restricted: its subject, its lead with the days and the end and that illegal content can still be reported, then the statement", () => {
+    const r = renderTemplate("reporting_restricted", { days: "30", endsAt: "2026-11-03 09:30 UTC", statement });
+    expect(r.subject).toBe("korbat restricted your reports under its rules");
+    expect(paragraphs(r.text)).toEqual([
+      "korbat takes no reports under its rules from your account for 30 days, until 2026-11-03 09:30 UTC. You can still report illegal content. The reasons follow.",
+      ...lines,
+      READ,
+      LAST_USER,
+    ]);
+    expect(paragraphs(renderTemplate("reporting_restricted", { days: "1", endsAt: "2026-10-05 09:30 UTC", statement }).text)[0]).toContain("for 1 day, until");
+    expect(r.text).not.toMatch(/https?:|www[.]/);
+    expect(() => renderTemplate("reporting_restricted", { endsAt: "2026-11-03 09:30 UTC", statement })).toThrow(/days/);
+    expect(() => renderTemplate("reporting_restricted", { days: "30", statement })).toThrow(/endsAt/);
   });
 });

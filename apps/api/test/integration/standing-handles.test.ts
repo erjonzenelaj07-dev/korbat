@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ACCOUNT_MEASURE_SCOPE, OUTCOME_PHRASES, itemOutcomeWords } from "@korbat/contracts";
+import { ACCOUNT_MEASURE_SCOPE, ACTION_KINDS, OUTCOME_PHRASES, itemOutcomeWords } from "@korbat/contracts";
 import { STATEMENT_WORDS, statementParagraphs } from "@korbat/rules";
 import type { Db } from "@korbat/db";
 import { closeDb, createDb } from "@korbat/db";
@@ -95,12 +95,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retirement of a hand
     (await apiDb.execute<{ profile_id: string; retired: boolean }>(sql`select profile_id, retired_at is not null as retired from handle_history where handle_lower = ${handle.toLowerCase()}`))[0] ?? null;
   const retirementRow = async (decisionId: string) => (await actionsOf(apiDb, decisionId)).find((a) => a.kind === "retire_handle")!;
 
-  test("the routes take the retirement and its reversal now (7.1 item 2)", () => {
+  test("the routes take the retirement and its reversal, and since Task 5 every kind of the ledger (7.1 item 2)", () => {
     expect(ROUTE_KINDS.has("retire_handle")).toBe(true);
     expect(ROUTE_KINDS.has("unretire_handle")).toBe(true);
-    // Task 3 opened a suspension at once and its lift, Task 4 a termination; the reporting kinds come with Task 5.
-    for (const kind of ["suspend", "lift_suspension", "terminate"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(true);
-    for (const kind of ["warn_reporting", "restrict_reporting", "lift_reporting"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(false);
+    // Task 3 opened a suspension at once and its lift, Task 4 a termination, Task 5 the reporting kinds: the list holds
+    // every kind of the ledger now.
+    for (const kind of ["suspend", "lift_suspension", "terminate", "warn_reporting", "restrict_reporting", "lift_reporting"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(true);
+    expect([...ACTION_KINDS].filter((kind) => !ROUTE_KINDS.has(kind))).toEqual([]);
   });
 
   test("invariant 15: a retirement swaps the handle for the placeholder made from the measure's id and clears the change time; the handle is refused to everyone, its former holder included, and the new handle is chosen at once", async () => {

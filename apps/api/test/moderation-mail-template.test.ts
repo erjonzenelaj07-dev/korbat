@@ -113,6 +113,29 @@ describe("mailTemplateOf, row by row in the order of 7.15", () => {
     expect(mailTemplateOf(broken, PARAGRAPHS)).toMatchObject({ template: "suspension_lifted", measure: "terminate", why: "basis", period: "running" });
   });
 
+  test("5: a final warning about reporting is reporting_warned", () => {
+    const warning = { kind: "warn_reporting" as const, mediaId: null, noEffect: null, sealed: null, basis: "reports" as const, endsAt: EARLIEST };
+    expect(mailTemplateOf(statement({ ruleId: "R6", measures: [warning] }), PARAGRAPHS)).toEqual({ template: "reporting_warned", paragraphs: PARAGRAPHS });
+  });
+
+  test("6: a final restriction of reporting is reporting_restricted, with its days and its end; one without them is no mail", () => {
+    const restriction = { kind: "restrict_reporting" as const, mediaId: null, noEffect: null, sealed: null, basis: "reports" as const, days: 30, endsAt: EARLIEST, warnedAt: DECIDED };
+    expect(mailTemplateOf(statement({ ruleId: "R6", measures: [restriction] }), PARAGRAPHS)).toEqual({ template: "reporting_restricted", days: 30, endsAt: EARLIEST, paragraphs: PARAGRAPHS });
+    expect(() => mailTemplateOf(statement({ ruleId: "R6", measures: [{ ...restriction, days: null }] }), PARAGRAPHS)).toThrow(/restriction/);
+    // A suspension taken at once in the same decision comes first, by the order of 7.15.
+    expect(mailTemplateOf(statement({ measures: [standing("suspend", false), restriction] }), PARAGRAPHS)).toMatchObject({ template: "suspension_started_at_once" });
+  });
+
+  test("a lift of a reporting measure, also one that ends a restriction with its warning, rides on moderation_decision", () => {
+    const liftReporting = lift({ kind: "lift_reporting", liftedKind: "warn_reporting", periodThen: null, replaced: undefined, replyFiledAt: undefined });
+    const ended = { kind: "restrict_reporting" as const, decidedAt: DECIDED, periodThen: { state: "running" as const, startedAt: DECIDED, endedAt: null }, seal: false, replyFiledAt: null };
+    expect(mailTemplateOf(statement({ kind: "review", outcome: "reversed", ground: null, ruleId: null, reviewed, reversals: [liftReporting], endedStanding: [ended] }), PARAGRAPHS)).toEqual({
+      template: "moderation_decision",
+      subject: "reversed",
+      paragraphs: PARAGRAPHS,
+    });
+  });
+
   test("otherwise moderation_decision: a strike, a retirement and every decision of 3c", () => {
     expect(mailTemplateOf(statement({ measures: [{ kind: "retire_handle", mediaId: null, noEffect: null, sealed: null, handle: "ada", placeholder: "retired_0a1b2c3d4e5f" }] }), PARAGRAPHS)).toMatchObject({
       template: "moderation_decision",

@@ -4,6 +4,9 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
+import { itemStatus } from "../../src/moderation/intake";
+import { noticeItems } from "../../src/moderation/repo";
+import { reporterList } from "../../src/moderation/reports";
 import {
   aPost,
   act,
@@ -13,7 +16,9 @@ import {
   imagePost,
   insertItem,
   intake,
+  moderationDeps,
   newTestStaff,
+  noAuthForModeration,
   newestSnapshot,
   report,
   rowCounts,
@@ -283,6 +288,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release of outcomes,
         const columns = await tx.execute<{ name: string; type: string }>(sql`select attname::text as name, atttypid::regtype::text as type from pg_attribute where attrelid = 'public.case_history'::regclass and attnum > 0`);
         expect(columns.filter((column) => column.type === "text").map((column) => column.name).sort()).toEqual(["event", "rule_id"]);
       }, apiDb);
+    });
+  });
+
+  describe("3e Task 5: the mark on the reporter's own line", () => {
+    test("a mark is told with the released outcome and not before it, on the sender's own list only; a withdrawn mark leaves the line", async () => {
+      await inWorld(async (tx) => {
+        await release(tx, "1 hour");
+        const reporter = await profile(tx);
+        const p = await imagePost(tx);
+        const recorded = await intake(tx, ground.rule(reporter.id, "R3"), aPost(p.postId));
+        const item = recorded.items[0]!;
+        const decision = await decideIn(tx, mod, item.caseId!, { kind: "final", outcome: "no_violation", unfounded: [item.id] });
+        await decidedAgo(tx, decision, "5 hours");
+        // The reporter's list, as GET /api/moderation/reports answers it; the auth module is asked only about stopped mails.
+        const deps = moderationDeps(tx, { auth: { ...noAuthForModeration(), accountReportMailStopped: async () => false } });
+        const line = async () => (await reporterList(deps, reporter.id)).reports.flatMap((row) => row.items).find((listed) => listed.id === item.id)!;
+        expect(await line()).toMatchObject({ outcome: null, unfounded: false });
+        expect(await release(tx, "1 hour")).toBe(1);
+        expect(await line()).toMatchObject({ outcome: "no_violation", unfounded: true, reexamination: { open: true } });
+        // The status page by reference and token carries no mark: a mark exists only on a signed-in person's report.
+        const [status] = await Promise.all((await noticeItems(tx, recorded.intakeId)).map((stored) => itemStatus(deps, stored)));
+        expect(Object.keys(status!)).not.toContain("unfounded");
+        // A correction that withdraws the decision's marks takes the sentence off the line; the outcome stays.
+        await decideIn(tx, mod, item.caseId!, { kind: "correction", reviewsDecisionId: decision, outcome: "kept", actions: [] });
+        expect(await line()).toMatchObject({ outcome: "no_violation", unfounded: false });
+      });
     });
   });
 

@@ -1160,6 +1160,29 @@ export const CaseStanding = z.object({
      */
     threatRepeat: z.object({ earlier: z.iso.datetime(), newer: z.iso.datetime() }).nullable().optional(),
   }),
+  /**
+   * 3e Task 5 (design, sections 8.1 and 10.3): the account's record of reporting, in reports (intakes) and never items, by
+   * the day each was sent: `reports` its rule reports sent in the frame of reportFrameDays, `unfounded` those of them that
+   * hold a mark "manifestly unfounded" that counts (never more than `reports`); `warnedOn` the day of its warning that still
+   * counts, and `marksSince` the marked reports sent since korbat told it of that warning (both null without one);
+   * `mayWarn` and `mayRestrict` whether the database would accept the warning or the restriction now (the case's open
+   * reports aside, which `openReports` says); `restrictedUntil` the end of a restriction that runs; and `marked`, one row
+   * for each mark that counts, oldest report first: its report's reference, the item's position in it, the day the report
+   * was sent, the day of the mark, and whether the report was sent after korbat told the account of its warning, for the
+   * drafts of W.5. People are never named: a report is its reference.
+   */
+  reporting: z.object({
+    reports: Count,
+    unfounded: Count,
+    warnedOn: UtcDay.nullable(),
+    /** The warning's decision time, which a restriction's statement names ({warnedAt}); null without a warning. */
+    warnedAt: z.iso.datetime().nullable(),
+    marksSince: Count.nullable(),
+    mayWarn: z.boolean(),
+    mayRestrict: z.boolean(),
+    restrictedUntil: z.iso.datetime().nullable(),
+    marked: z.array(z.object({ ref: NoticeRef, position: z.number().int().min(1).max(20), sentOn: UtcDay, markedOn: UtcDay, sinceWarning: z.boolean() })),
+  }),
 });
 export type CaseStanding = z.infer<typeof CaseStanding>;
 const TargetKind = z.enum(["post", "account"]);
@@ -1327,6 +1350,16 @@ export const CaseItem = z.object({
   answeredBy: z.uuid().nullable(),
   erased: z.boolean(),
   source: SourceSummary,
+  /**
+   * 3e Task 5 (design, sections 8.4 and 10.3): `markable`, a final decision that finds no breach and answers the item may
+   * mark it "manifestly unfounded": it is no re-examination and came from a signed-in person's report under a rule (never
+   * a notice of illegality, the path for child sexual abuse material, a finding or a signed-out notice), and its sender is
+   * still known; `unfounded`, its answering decision marked it and no correction withdrew the mark; `markWithdrawn`, a
+   * correction withdrew it.
+   */
+  markable: z.boolean(),
+  unfounded: z.boolean(),
+  markWithdrawn: z.boolean(),
 });
 export type CaseItem = z.infer<typeof CaseItem>;
 
@@ -1419,9 +1452,10 @@ export const CaseDecision = z.object({
    * 3e Task 3: the suspensions and terminations of the account that stand, whose basis holds, and that rest on this
    * decision (a strike of it, the R5 or terrorist-content decision, or the seal), each with its basis, so that a review or
    * a correction of this decision says before the key is asked what reversing it ends ([review.rests], [review.basis]).
+   * Task 5 adds the restrictions of reporting that rest on this decision's warning and still run with it ([review.warning]).
    * Absent where none rests on it.
    */
-  standingOn: z.array(z.object({ kind: z.enum(["suspend", "terminate"]), basis: z.enum(STANDING_BASES) })).optional(),
+  standingOn: z.array(z.object({ kind: z.enum(["suspend", "terminate", "restrict_reporting"]), basis: z.enum(STANDING_BASES) })).optional(),
 });
 export type CaseDecision = z.infer<typeof CaseDecision>;
 
@@ -1607,6 +1641,12 @@ export const StatementMeasure = z.object({
    * time of the post it was about; for a protective suspension the one entry is the sealing decision, with its time only.
    */
   restsOn: z.array(z.object({ decidedAt: z.iso.datetime(), ruleId: z.enum(RULE_IDS).nullable(), postCreatedAt: z.iso.datetime().nullable() })).nullable().optional(),
+  /**
+   * 3e Task 5: on a restriction of reporting, the time of the warning it follows (its decision's), which its statement
+   * names. A warning and a restriction also carry `basis` (`reports`) and `endsAt` (a warning's end of counting; a
+   * restriction's start plus its days), and a restriction its `days`.
+   */
+  warnedAt: z.iso.datetime().nullable().optional(),
 });
 export type StatementMeasure = z.infer<typeof StatementMeasure>;
 
@@ -1646,10 +1686,16 @@ export const StatementReversal = z.object({
   ...ResetFacts,
   /** 3e: on the reversal of a retirement, the handle it gives back, as the lifted decision's snapshot holds it, in lower case. */
   handle: z.string().nullable().optional(),
-  /** 3e: on the lift of a suspension or a termination, the lifted measure's kind and its decision's time. */
-  liftedKind: z.enum(["suspend", "terminate"]).nullable().optional(),
+  /**
+   * 3e: on the lift of a suspension or a termination, the lifted measure's kind and its decision's time. Task 5: on the
+   * lift of a reporting measure, the lifted warning's or restriction's kind and its decision's time too.
+   */
+  liftedKind: z.enum(["suspend", "terminate", "warn_reporting", "restrict_reporting"]).nullable().optional(),
   liftedDecidedAt: z.iso.datetime().nullable().optional(),
-  /** 3e: on such a lift, where the lifted measure's period stood at this decision's time. */
+  /**
+   * 3e: on such a lift, where the lifted measure's period stood at this decision's time. Task 5: on the lift of a
+   * restriction of reporting, whether it still ran (`running`) or its days had run out (`ended`, with its end).
+   */
   periodThen: PeriodThen.nullable().optional(),
   /** 3e: on such a lift, whether the correction withdrew an announced measure to make room for another (signed `replaced`). */
   replaced: z.boolean().nullable().optional(),
@@ -1763,6 +1809,13 @@ export const AuthorCaseRow = z.object({
   appeal: z.enum(["pending", "kept", "partly_reversed", "reversed"]).nullable(),
   /** The strike the decision gave (3e design, section 10.2): until when it counts, and when it was overruled; null for a decision without one. */
   strike: z.object({ countsUntil: z.iso.datetime(), overruledAt: z.iso.datetime().nullable() }).nullable(),
+  /**
+   * 3e Task 5 (design, sections 9.4 and 10.2): the days of the decision's restriction of reporting, which its row names;
+   * and the kinds of the measures whose basis a reversal of this decision broke (its statement's endedStanding), which the
+   * row says ended with it. Absent where the decision holds none.
+   */
+  reportingDays: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).optional(),
+  endedStanding: z.array(z.enum(["suspend", "terminate", "restrict_reporting"])).optional(),
 });
 export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 
@@ -1874,6 +1927,20 @@ export const DecisionStanding = z.object({
 });
 export type DecisionStanding = z.infer<typeof DecisionStanding>;
 
+/**
+ * 3e Task 5 (design, sections 9.2 and 10.2): where a decision's restriction of reporting stands now, read fresh: `running`
+ * until its end; `ended` once its days ran out; `lifted` by a review or a correction of its own decision; `basis_ended`
+ * when it ended with the warning it rested on, which korbat lifted. `until` is its end as decided (its start plus its
+ * days); `endedAt` and `endedBy` the time and the decision that lifted it, or that lifted its warning (null otherwise).
+ */
+export const ReportingStanding = z.object({
+  state: z.enum(["running", "ended", "lifted", "basis_ended"]),
+  until: z.iso.datetime(),
+  endedAt: z.iso.datetime().nullable(),
+  endedBy: z.uuid().nullable(),
+});
+export type ReportingStanding = z.infer<typeof ReportingStanding>;
+
 export const DecisionView = DecisionStatement.extend({
   id: z.uuid(),
   appealUntil: z.iso.datetime().nullable(),
@@ -1884,6 +1951,8 @@ export const DecisionView = DecisionStatement.extend({
   strike: DecisionStrike.nullable(),
   /** 3e Task 4: where the decision's suspension or termination stands now; null for a decision without one. */
   standing: DecisionStanding.nullable(),
+  /** 3e Task 5: where the decision's restriction of reporting stands now; null (or absent) for a decision without one. */
+  reportingStanding: ReportingStanding.nullable().optional(),
 });
 export type DecisionView = z.infer<typeof DecisionView>;
 
@@ -1895,7 +1964,16 @@ export const REPORTS_PAGE_SIZE = 20;
  * sender asks for its re-examination. The status page, which anyone holding a link may open, names an item by its
  * position and never carries an id.
  */
-export const ReportItem = NoticeItemStatus.extend({ id: z.uuid() });
+export const ReportItem = NoticeItemStatus.extend({
+  id: z.uuid(),
+  /**
+   * 3e Task 5 (design, sections 7.9 step 3, 9.4 and 10.2): a moderator marked this item "manifestly unfounded" and the mark
+   * still counts (no correction withdrew it, no re-examination of it ended in a restriction, its report is within the
+   * frame); false until the item's outcome is released, so the mark tells the sender nothing before the release does.
+   * The status page by reference and token never carries it.
+   */
+  unfounded: z.boolean(),
+});
 export type ReportItem = z.infer<typeof ReportItem>;
 
 /** One report or notice in its sender's list: its reference, when korbat received it, and its items as the status page gives them, each with its id. */

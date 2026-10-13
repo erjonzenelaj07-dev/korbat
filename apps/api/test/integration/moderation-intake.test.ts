@@ -333,6 +333,44 @@ describe.skipIf(!process.env.INTEGRATION)("integration: taking in a report, a no
     }
   });
 
+  test("3e Task 5: while a restriction of its reports runs, a signed-in reporter's report under a rule is refused reporting_restricted, after a running suspension's account_suspended; its notice of illegality and its report of child sexual abuse material are taken, and a refused report counts nothing", async () => {
+    const [reporter, target] = [await profile(apiDb), await profile(apiDb)];
+    const tallies = async (tx: DbTx) => (await tx.execute<{ n: number }>(sql`select coalesce(sum(reports), 0)::int as n from report_tallies where account_id = ${reporter.id}::uuid`))[0]!.n;
+    try {
+      await suspendRowForTest(migrateDb, reporter.id, { from: "-2 hours", until: "-1 hour", reportsUntil: "1 day" });
+      await rolledBack(apiDb, async (tx) => {
+        const postId = await newPostRow(tx, target.id);
+        const deps = moderationDeps(tx);
+        expect(await refusal(recordIntake(deps, { ground: ground.rule(reporter.id, "R1"), live: [aPost(postId)] }))).toBe("reporting_restricted");
+        expect(await tallies(tx)).toBe(0);
+        // A notice of illegality reads neither the suspension nor the restriction (DSA Art. 16(6)), and is never counted.
+        expect((await recordIntake(deps, { ground: ground.illegal(reporter.id), live: [aPost(postId)] })).items).toHaveLength(1);
+        expect((await recordIntake(deps, { ground: ground.csam(), live: [aPost(postId)] })).items).toHaveLength(1);
+        expect(await tallies(tx)).toBe(0);
+      });
+      // A running suspension is refused first, as account_suspended.
+      await suspendRowForTest(migrateDb, reporter.id, { reportsUntil: "1 day" });
+      await rolledBack(apiDb, async (tx) => {
+        const postId = await newPostRow(tx, target.id);
+        expect(await refusal(recordIntake(moderationDeps(tx), { ground: ground.rule(reporter.id, "R1"), live: [aPost(postId)] }))).toBe("account_suspended");
+      });
+      // A restriction that has ended refuses nothing, and the report is counted once, on its UTC day.
+      await suspendRowForTest(migrateDb, reporter.id, { from: "-2 hours", until: "-1 hour", reportsUntil: "-1 minute" });
+      await rolledBack(apiDb, async (tx) => {
+        const postId = await newPostRow(tx, target.id);
+        const other = await newPostRow(tx, target.id);
+        expect((await recordIntake(moderationDeps(tx), { ground: ground.rule(reporter.id, "R1"), live: [aPost(postId), aPost(other, 2)] })).items).toHaveLength(2);
+        const [row] = await tx.execute<{ day: string; reports: number; today: string }>(
+          sql`select day::text as day, reports, (now() at time zone 'UTC')::date::text as today from report_tallies where account_id = ${reporter.id}::uuid`,
+        );
+        // One report naming two posts is one report.
+        expect(row).toEqual({ day: row!.today, reports: 1, today: row!.today });
+      });
+    } finally {
+      await removeFixtures(migrateDb, [reporter.id, target.id]);
+    }
+  });
+
   test("this file left no row behind: the tables it writes hold what they held before it", async () => {
     expect(await rowCounts(apiDb)).toEqual(before);
   });

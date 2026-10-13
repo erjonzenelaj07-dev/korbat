@@ -1,6 +1,6 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { DbTx } from "@korbat/db";
-import { iso, rows, type Runner, type SaltedText } from "./repo";
+import { iso, markCounts, rows, type Runner, type SaltedText } from "./repo";
 
 /**
  * The queries of account sanctions (3e design, sections 6.2 and 7.12): an account's standing as the views of the standing
@@ -8,6 +8,9 @@ import { iso, rows, type Runner, type SaltedText } from "./repo";
  * from the database's own standing_rules(), and every "now" is the database's clock, so the case answer reads what the
  * ledger's triggers would read at the same moment. Nothing here is stored: each answer is computed at the request.
  */
+
+/** What may rest on a decision: a suspension or a termination, or (Task 5) a restriction of reporting on its warning. */
+export type StandingOnKind = "suspend" | "terminate" | "restrict_reporting";
 
 /** A UTC day of a timestamptz expression. The expression is written here, never input. */
 const day = (expression: string) => sql.raw(`to_char(${expression} at time zone 'UTC', 'YYYY-MM-DD')`);
@@ -413,20 +416,21 @@ export async function accountStandingRow(q: Runner, accountId: string): Promise<
 
 /**
  * The standing measures that rest on each decision of a case (3e Task 3): for every decision of the case, the suspensions
- * and terminations that stand (no reversal), whose basis holds and that name it in rests_on, with their bases. A review
- * or a correction of such a decision ends them, which the console says before the key is asked.
+ * and terminations that stand (no reversal), whose basis holds and that name it in rests_on, with their bases; and (Task
+ * 5) the restrictions of reporting that rest on its warning in the same way. A review or a correction of such a decision
+ * ends them, which the console says before the key is asked ([review.rests], [review.basis], [review.warning]).
  */
-export async function standingOnDecisions(q: Runner, caseId: string): Promise<Map<string, { kind: "suspend" | "terminate"; basis: string }[]>> {
-  const found = await rows<{ decision_id: string; kind: "suspend" | "terminate"; basis: string }>(
+export async function standingOnDecisions(q: Runner, caseId: string): Promise<Map<string, { kind: StandingOnKind; basis: string }[]>> {
+  const found = await rows<{ decision_id: string; kind: StandingOnKind; basis: string }>(
     q,
     sql`select x.id as decision_id, m.kind::text as kind, m.basis
-          from decisions x join decision_actions m on m.kind in ('suspend', 'terminate') and x.id = any(m.rests_on)
+          from decisions x join decision_actions m on m.kind in ('suspend', 'terminate', 'restrict_reporting') and x.id = any(m.rests_on)
          where x.case_id = ${caseId}::uuid
            and not exists (select 1 from decision_actions r where r.reverses_action_id = m.id)
            and public.standing_basis_broken_at(m.id) is null
          order by m.created_at, m.id`,
   );
-  const byDecision = new Map<string, { kind: "suspend" | "terminate"; basis: string }[]>();
+  const byDecision = new Map<string, { kind: StandingOnKind; basis: string }[]>();
   for (const row of found) byDecision.set(row.decision_id, [...(byDecision.get(row.decision_id) ?? []), { kind: row.kind, basis: row.basis }]);
   return byDecision;
 }
@@ -751,4 +755,167 @@ export async function decisionStanding(q: Runner, decisionId: string): Promise<D
 /** Bounds every lock wait of the transaction it runs in: the reply's and the take-down's, as an appeal's is bounded. */
 export async function boundWaits(tx: DbTx, ms: number): Promise<void> {
   await tx.execute(sql`select set_config('lock_timeout', ${`${ms}ms`}::text, true)`);
+}
+
+// ---------------------------------------------------------------- 3e Task 5: the restriction of reporting
+
+/** Whether a mark counts: repo.ts's markCounts, the one statement of the rule the API reads. */
+const counting = markCounts;
+
+/**
+ * The account's warning about reporting that still counts, as decision_actions_check reads it: a warning of the account
+ * that no reversal lifted, whose end of counting is ahead, the newest first. One row or none.
+ */
+const warningOf = (account: SQL) =>
+  sql`select w.decision_id, wd.decided_at, wd.informed_at, w.ends_at from decision_actions w join decisions wd on wd.id = w.decision_id
+       where w.subject_account_id = ${account} and w.kind = 'warn_reporting' and w.ends_at > now()
+         and not exists (select 1 from decision_actions r where r.reverses_action_id = w.id)
+       order by w.created_at desc, w.id desc limit 1`;
+
+/**
+ * The marked reports, counted once each, that the account sent after korbat told it of its warning (`told`): what a
+ * restriction needs (report_restrict_marks). Both expressions are written here, never input.
+ */
+const marksSince = (account: SQL, told: SQL) =>
+  sql`(select count(distinct m.intake_id)::int from unfounded_marks m where m.account_id = ${account} and m.reported_at > ${told} and ${counting("m")})`;
+
+/** An account's record of reporting (3e design, sections 7.9, 7.12 and 10.3), in reports, by the day each was sent. */
+export interface ReportingFacts {
+  reports: number;
+  unfounded: number;
+  /** The warning that still counts: its decision, the decision's time, and its end of counting. */
+  warning: { decisionId: string; decidedAt: string; countsUntil: string } | null;
+  /** The marked reports sent after korbat told the account of that warning; null without one. */
+  marksSince: number | null;
+  /** The restriction that runs (it stands, its warning stands, its days are not over): its decision and its end. */
+  restriction: { decisionId: string; until: string } | null;
+  /** One row a mark that counts, oldest report first, when asked for (the console's drafts read them). */
+  marked: { ref: string; position: number; sentOn: string; markedOn: string; sinceWarning: boolean }[];
+}
+
+/** How many marks the case answer lists at most, for the drafts of W.5. */
+const MARKED_MAX = 100;
+
+/**
+ * What the account's record of reporting is now, read as the ledger's check reads it: the counts of reporting_record,
+ * the warning that still counts with the marked reports sent since korbat told the account of it, the restriction that
+ * runs, and, with `marked`, the marks that count by their report's reference and the item's position. People are never
+ * named: a report is its reference.
+ */
+export async function reportingFacts(q: Runner, accountId: string, options: { marked: boolean }): Promise<ReportingFacts> {
+  const account = sql`${accountId}::uuid`;
+  const [row] = await rows<{
+    reports: number;
+    unfounded: number;
+    warning_id: string | null;
+    warned_at: string | null;
+    counts_until: string | null;
+    marks_since: number | null;
+    restriction_id: string | null;
+    restricted_until: string | null;
+  }>(
+    q,
+    sql`select coalesce((select r.reports from reporting_record r where r.account_id = ${account}), 0)::int as reports,
+               coalesce((select r.unfounded from reporting_record r where r.account_id = ${account}), 0)::int as unfounded,
+               w.decision_id as warning_id, ${iso("w.decided_at")} as warned_at, ${iso("w.ends_at")} as counts_until,
+               case when w.decision_id is null then null else ${marksSince(account, sql.raw("w.informed_at"))} end as marks_since,
+               x.decision_id as restriction_id, ${iso("x.until")} as restricted_until
+          from (select 1) one
+          left join lateral (${warningOf(account)}) w on true
+          left join lateral (select a.decision_id, a.starts_at + make_interval(days => a.days) as until from decision_actions a
+                              where a.subject_account_id = ${account} and a.kind = 'restrict_reporting'
+                                and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)
+                                and public.standing_basis_broken_at(a.id) is null and a.starts_at + make_interval(days => a.days) > now()
+                              order by until desc, a.id limit 1) x on true`,
+  );
+  const marked = options.marked
+    ? await rows<{ ref: string; position: number; sent_on: string; marked_on: string; since: boolean }>(
+        q,
+        sql`select n.ref, i.position, ${day("m.reported_at")} as sent_on, ${day("m.marked_at")} as marked_on, coalesce(m.reported_at > w.informed_at, false) as since
+              from unfounded_marks m join intakes n on n.id = m.intake_id join intake_items i on i.id = m.item_id
+              left join lateral (${warningOf(account)}) w on true
+             where m.account_id = ${account} and ${counting("m")}
+             order by m.reported_at, n.ref, i.position limit ${MARKED_MAX}::int`,
+      )
+    : [];
+  return {
+    reports: row!.reports,
+    unfounded: row!.unfounded,
+    warning: row!.warning_id === null ? null : { decisionId: row!.warning_id, decidedAt: row!.warned_at!, countsUntil: row!.counts_until! },
+    marksSince: row!.marks_since,
+    restriction: row!.restriction_id === null ? null : { decisionId: row!.restriction_id, until: row!.restricted_until! },
+    marked: marked.map((mark) => ({ ref: mark.ref, position: mark.position, sentOn: mark.sent_on, markedOn: mark.marked_on, sinceWarning: mark.since })),
+  };
+}
+
+/**
+ * The Standing screen's reporting records (3e design, sections 7.9 step 4 and 8.6): the accounts at the warning's
+ * threshold (at least report_warn_marks marked reports, at least report_warn_share of their rule reports, in the frame)
+ * and the accounts whose warning still counts, each with its handle, its open account case if one is open, its counts in
+ * reports, the day of its warning and the marked reports sent since; the account with the newest mark first. No row
+ * names a reporter of anything: the people listed are the senders themselves, by handle.
+ */
+export async function reportingRecords(
+  q: Runner,
+  limit: number,
+): Promise<{ total: number; items: { handle: string; caseId: string | null; reports: number; unfounded: number; warnedOn: string | null; marksSince: number | null }[] }> {
+  const found = await rows<{ total: number; handle: string; case_id: string | null; reports: number; unfounded: number; warned_on: string | null; marks_since: number | null }>(
+    q,
+    sql`with listed as (
+          select r.account_id, r.reports, r.unfounded, w.decided_at as warned_at, w.informed_at,
+                 (select max(m.marked_at) from unfounded_marks m where m.account_id = r.account_id and ${counting("m")}) as newest
+            from reporting_record r cross join standing_rules() k
+            left join lateral (${warningOf(sql.raw("r.account_id"))}) w on true
+           where (r.unfounded >= k.report_warn_marks and r.unfounded >= k.report_warn_share * r.reports) or w.decision_id is not null
+        )
+        select count(*) over ()::int as total, p.handle,
+               (select c.id from cases c where c.target_type = 'account' and c.target_id = l.account_id and c.closed_at is null) as case_id,
+               l.reports, l.unfounded, ${day("l.warned_at")} as warned_on,
+               case when l.informed_at is null then null else ${marksSince(sql.raw("l.account_id"), sql.raw("l.informed_at"))} end as marks_since
+          from listed l join profiles p on p.id = l.account_id and p.deleted_at is null
+         order by l.newest desc nulls last, l.account_id limit ${limit}::int`,
+  );
+  return {
+    total: found[0]?.total ?? 0,
+    items: found.map((row) => ({ handle: row.handle, caseId: row.case_id, reports: row.reports, unfounded: row.unfounded, warnedOn: row.warned_on, marksSince: row.marks_since })),
+  };
+}
+
+/** Where a decision's restriction of reporting stands now (3e design, sections 9.2 and 10.2). */
+export interface ReportingStandingRow {
+  state: "running" | "ended" | "lifted" | "basis_ended";
+  until: string;
+  endedAt: string | null;
+  endedBy: string | null;
+}
+
+/**
+ * The decision's restriction of reporting as its author's screen shows it, read fresh: lifted by a reversal of its own;
+ * ended with the warning it rested on, when korbat lifted that warning before the restriction's days ran out; ended by
+ * its days; or running. `until` is its end as decided; `endedAt` and `endedBy` the lift's, or the warning's lift's. Null
+ * for a decision without one.
+ */
+export async function reportingStanding(q: Runner, decisionId: string): Promise<ReportingStandingRow | null> {
+  const [row] = await rows<{ until: string; lifted_at: string | null; lifted_by: string | null; broken_at: string | null; broken_by: string | null; state: ReportingStandingRow["state"] }>(
+    q,
+    sql`select ${iso("(a.starts_at + make_interval(days => a.days))")} as until,
+               ${iso("l.created_at")} as lifted_at, l.decision_id as lifted_by,
+               ${iso("b.at")} as broken_at,
+               (select x.decision_id from decision_actions x join decision_actions y on y.id = x.reverses_action_id
+                 where y.decision_id = any(a.rests_on) and y.kind = 'warn_reporting' and x.created_at = b.at order by x.id limit 1) as broken_by,
+               case
+                 when l.id is not null then 'lifted'
+                 when b.at is not null and b.at < a.starts_at + make_interval(days => a.days) then 'basis_ended'
+                 when a.starts_at + make_interval(days => a.days) <= clock_timestamp() then 'ended'
+                 else 'running'
+               end as state
+          from decision_actions a
+          left join decision_actions l on l.reverses_action_id = a.id
+          cross join lateral (select public.standing_basis_broken_at(a.id) as at) b
+         where a.decision_id = ${decisionId}::uuid and a.kind = 'restrict_reporting'`,
+  );
+  if (!row) return null;
+  if (row.state === "lifted") return { state: row.state, until: row.until, endedAt: row.lifted_at, endedBy: row.lifted_by };
+  if (row.state === "basis_ended") return { state: row.state, until: row.until, endedAt: row.broken_at, endedBy: row.broken_by };
+  return { state: row.state, until: row.until, endedAt: null, endedBy: null };
 }

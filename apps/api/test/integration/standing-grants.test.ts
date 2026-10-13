@@ -115,9 +115,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
     });
   });
 
-  test("the three new tables: a reply is inserted and read, marks and tallies only read (until the reporting counts' migration)", async () => {
+  test("the three new tables: a reply is inserted and read, a mark is inserted (since the reporting counts' migration, beside its check) and read, tallies only read", async () => {
     expect(await tablePrivileges("korbat_api", "public.suspension_replies")).toEqual(["INSERT", "SELECT"]);
-    expect(await tablePrivileges("korbat_api", "public.unfounded_marks")).toEqual(["SELECT"]);
+    expect(await tablePrivileges("korbat_api", "public.unfounded_marks")).toEqual(["INSERT", "SELECT"]);
     expect(await tablePrivileges("korbat_api", "public.report_tallies")).toEqual(["SELECT"]);
     const policies = await apiDb.execute<{ table: string; name: string; cmd: string }>(
       sql`select tablename::text as table, policyname::text as name, cmd from pg_policies where tablename in ('suspension_replies', 'unfounded_marks', 'report_tallies') order by 1`,
@@ -159,6 +159,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
         "public.suspension_replies_apply": [true, false, false],
         "public.decisions_mail_forward": [false, false, false],
         "public.decisions_mail_standing": [true, false, false],
+        // 3e Task 5, the reporting counts: the check of a mark, its recheck at commit, the one writer of the tallies, and
+        // forget_reporter, replaced, which the API runs at an account's purge.
+        "public.unfounded_marks_check": [true, false, false],
+        "public.unfounded_marks_recheck": [true, false, false],
+        "public.report_tallies_count": [true, false, false],
+        "public.forget_reporter": [true, true, false],
       };
       const all = await functions();
       for (const [name, [definer, api, auth]] of Object.entries(expected)) {
@@ -190,8 +196,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
       expect(matching(/'retired_' [|][|]/)).toEqual(["public.decision_actions_apply"]);
       expect(matching(/UPDATE public[.]suspension_replies[^;]*answered_by/i)).toEqual(["public.decision_actions_apply", "public.decisions_apply"]);
       expect(matching(/UPDATE public[.]unfounded_marks[^;]*withdrawn_by/i)).toEqual(["public.decisions_apply"]);
-      // No function writes a tally or Explore's three columns before the tasks that give them their writers.
-      expect(matching(/(INSERT INTO|UPDATE) public[.]report_tallies/i)).toEqual([]);
+      // Task 5: report_tallies_count is the one writer of a tally; forget_reporter and the retention of a later task
+      // only delete. A mark's reporter, report and times are forced by its check alone.
+      expect(matching(/(INSERT INTO|UPDATE) public[.]report_tallies/i)).toEqual(["public.report_tallies_count"]);
+      expect(matching(/NEW[.](account_id|intake_id|reported_at|marked_at) :=/)).toEqual(["public.unfounded_marks_check"]);
+      // No function writes Explore's three columns before the task that gives them their writer.
       expect(matching(/(hidden_at|restored_at|explore_from) = /)).toEqual([]);
     });
 
@@ -218,14 +227,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
         "public.appeals_check",
         "public.decision_final_at",
         "public.item_current_outcome",
+        // Task 5, the reporting counts.
+        "public.unfounded_marks_check",
+        "public.unfounded_marks_recheck",
+        "public.report_tallies_count",
+        "public.forget_reporter",
       ];
       for (const name of fresh) expect(all.get(name)!.definition, name).not.toMatch(/interval '/i);
       expect([...all.get("public.decisions_record")!.definition.matchAll(/interval '/gi)]).toHaveLength(2);
       const views = await apiDb.execute<{ name: string; definition: string; options: string[] | null }>(
         sql`select c.relname::text as name, pg_get_viewdef(c.oid) as definition, c.reloptions as options from pg_class c
-             where c.relkind = 'v' and c.relname in ('measures_in_force', 'active_strikes', 'suspension_periods', 'standing_live') order by 1`,
+             where c.relkind = 'v' and c.relname in ('measures_in_force', 'active_strikes', 'suspension_periods', 'standing_live', 'reporting_record') order by 1`,
       );
-      expect(views.map((v) => v.name)).toEqual(["active_strikes", "measures_in_force", "standing_live", "suspension_periods"]);
+      expect(views.map((v) => v.name)).toEqual(["active_strikes", "measures_in_force", "reporting_record", "standing_live", "suspension_periods"]);
       for (const view of views) {
         expect(view.definition, view.name).not.toMatch(/interval '/i);
         expect(view.options, view.name).toEqual(["security_invoker=true"]);
@@ -244,9 +258,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
       const triggers = await apiDb.execute<{ name: string; definition: string }>(
         sql`select t.tgname::text as name, pg_get_triggerdef(t.oid) as definition from pg_trigger t
              where not t.tgisinternal and t.tgname in ('profiles_standing_insert', 'handle_history_insert', 'profiles_handle_guard', 'suspension_replies_check',
-                                                       'suspension_replies_apply', 'decisions_mail_forward', 'decisions_mail_standing') order by 1`,
+                                                       'suspension_replies_apply', 'decisions_mail_forward', 'decisions_mail_standing',
+                                                       'unfounded_marks_check', 'unfounded_marks_recheck', 'report_tallies_count') order by 1`,
       );
-      const timing = Object.fromEntries(triggers.map((t) => [t.name, t.definition.replace(/^CREATE TRIGGER [a-z_]+ /, "").replace(/ EXECUTE FUNCTION .*$/, "")]));
+      const timing = Object.fromEntries(triggers.map((t) => [t.name, t.definition.replace(/^CREATE (CONSTRAINT )?TRIGGER [a-z_]+ /, "").replace(/ EXECUTE FUNCTION .*$/, "")]));
       expect(timing).toEqual({
         decisions_mail_forward: "BEFORE UPDATE OF author_mail, author_mail_at ON public.decisions FOR EACH ROW",
         decisions_mail_standing: expect.stringMatching(/^AFTER UPDATE OF author_mail ON public[.]decisions FOR EACH ROW WHEN [(].*IS DISTINCT FROM.*[)]$/),
@@ -255,6 +270,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
         profiles_standing_insert: "BEFORE INSERT ON public.profiles FOR EACH ROW",
         suspension_replies_apply: "AFTER INSERT ON public.suspension_replies FOR EACH ROW",
         suspension_replies_check: "BEFORE INSERT ON public.suspension_replies FOR EACH ROW",
+        // Task 5: the check of a mark before it is stored, its recheck at commit, and the tally of a report after it is.
+        unfounded_marks_check: "BEFORE INSERT ON public.unfounded_marks FOR EACH ROW",
+        unfounded_marks_recheck: "AFTER INSERT ON public.unfounded_marks DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
+        report_tallies_count: "AFTER INSERT ON public.intakes FOR EACH ROW",
       });
     });
   });

@@ -85,6 +85,7 @@ function casePage(view: CaseView, role: StaffMe["role"]) {
       onReview: noop,
       onAnswer: noop,
       onWithdraw: noop,
+      onWithdrawMarks: noop,
     },
   };
   return html(<CaseScreenView {...base} />);

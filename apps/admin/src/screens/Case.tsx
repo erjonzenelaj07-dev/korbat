@@ -29,6 +29,7 @@ import {
   reviewDraft,
   saveDraftText,
   withdrawDraft,
+  withdrawMarksDraft,
   withSavedTexts,
   withSeal,
   type CaseDraft,
@@ -46,7 +47,7 @@ import { normalised, saveStaffText, type RandomBytes } from "../texts";
 import { dateTime, Loaded, UserText, type Loadable } from "../ui";
 import { categoryLabel, COLLAPSED_RULES, counted, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
 import type { CredentialsLike } from "../webauthn";
-import { AnswerControl, ComposerView, CorrectControl, ReviewControl, WithdrawControl, type ComposerViewProps } from "./Composer";
+import { AnswerControl, ComposerView, CorrectControl, ReviewControl, WithdrawControl, WithdrawMarksControl, type ComposerViewProps } from "./Composer";
 
 /**
  * The case page (3c design, sections 7.3 and 8): the header, the banners, the evidence with its images, the items with
@@ -181,7 +182,14 @@ export interface CaseScreenViewProps {
    * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
    * beside the decisions. Without it the page shows the case and decides nothing.
    */
-  compose?: Omit<ComposerViewProps, "view"> & { onCorrect(decision: CaseDecision): void; onReview(decision: CaseDecision): void; onAnswer(decision: CaseDecision): void; onWithdraw(decision: CaseDecision): void };
+  compose?: Omit<ComposerViewProps, "view"> & {
+    onCorrect(decision: CaseDecision): void;
+    onReview(decision: CaseDecision): void;
+    onAnswer(decision: CaseDecision): void;
+    onWithdraw(decision: CaseDecision): void;
+    /** 3e Task 5: "Withdraw this decision's marks" beside a "No breach" decision whose marks stand. */
+    onWithdrawMarks(decision: CaseDecision): void;
+  };
 }
 
 /** Whether the target as it stands differs from the case's newest snapshot: then the moderator takes a fresh one before deciding. */
@@ -438,6 +446,8 @@ function Item({ item, props }: { item: CaseItem; props: CaseScreenViewProps }) {
       {item.explanation === null ? null : <Frame by={`Explanation. ${by}`} text={item.explanation} collapsedLabel={collapsed} />}
       {item.statement === null ? null : <Frame by={`Statement for the re-examination. ${by}`} text={item.statement} collapsedLabel={collapsed} />}
       <p>{item.outcome === null ? "Unanswered." : `Answered: ${OUTCOME_WORDS[item.outcome]}.`}</p>
+      {/* 3e Task 5 (design, section 8.4): the mark "manifestly unfounded" the answering decision set, or its withdrawal. */}
+      {item.unfounded ? <p className="notice">{STANDING_WORDS.mark.marked}</p> : item.markWithdrawn ? <p className="hint">{STANDING_WORDS.mark.withdrawn}</p> : null}
       {revealable(item.source) ? (
         <button type="button" onClick={() => props.onRevealOpen(item.id)} disabled={props.reveal !== null}>
           Reveal who sent this
@@ -624,6 +634,8 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
               {action.noEffect === null ? "" : "; changed nothing when imposed"}
               {action.kind === "strike" && action.countsUntil !== null ? `; counts until ${dateTime(action.countsUntil)}` : ""}
               {action.kind === "retire_handle" && action.handle !== undefined ? `; the handle @${action.handle}` : ""}
+              {action.kind === "warn_reporting" && action.countsUntil !== null ? `; counts until ${dateTime(action.countsUntil)}` : ""}
+              {action.kind === "restrict_reporting" && action.days !== null ? `; ${action.days} ${action.days === 1 ? "day" : "days"}` : ""}
               {action.kind === "reset_display_name" || action.kind === "reset_bio" ? "; written once; the field as it reads now is shown above" : ""}
               {action.sealed === null ? null : <SealList sealed={action.sealed} />}
             </li>
@@ -632,6 +644,7 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
       )}
       {compose === undefined ? null : <CorrectControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onCorrect={compose.onCorrect} />}
       {compose === undefined ? null : <WithdrawControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdraw={compose.onWithdraw} />}
+      {compose === undefined ? null : <WithdrawMarksControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdrawMarks={compose.onWithdrawMarks} />}
       <ReplyBlock decision={decision} compose={compose} />
     </li>
   );
@@ -1088,6 +1101,8 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
           // 3e Task 4: an answer to the reply, and the withdrawal of an announced measure, open as a correction does.
           onAnswer: (decision) => openAnother(value, answerDraft(id, value, decision, role)),
           onWithdraw: (decision) => openAnother(value, withdrawDraft(id, value, decision, role)),
+          // 3e Task 5: the withdrawal of a decision's marks opens as a correction does.
+          onWithdrawMarks: (decision) => openAnother(value, withdrawMarksDraft(id, value, decision, role)),
           onCancelCorrection: () => {
             setComposeError(null);
             setTextErrors({});

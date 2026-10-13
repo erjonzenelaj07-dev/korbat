@@ -49,10 +49,21 @@ export type DecisionMessage =
   | { template: "reply_answered"; outcome: "kept" | "reversed"; paragraphs: readonly string[] }
   | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "lifted" | "basis"; period: "not_started" | "running" | "ended"; paragraphs: readonly string[] }
   // 3e Task 4: a withdrawal signed `replaced`, with the withdrawn decision's time and whether the person had replied to it.
-  | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "replaced"; decidedAt: string; replied: boolean; paragraphs: readonly string[] };
+  | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "replaced"; decidedAt: string; replied: boolean; paragraphs: readonly string[] }
+  // 3e Task 5: a warning about the account's reports; a restriction of them, with its days and its end.
+  | { template: "reporting_warned"; paragraphs: readonly string[] }
+  | { template: "reporting_restricted"; days: number; endsAt: string; paragraphs: readonly string[] };
 
 /** The templates of a decision's statement mail: a stop of the address never holds one back. */
-const DECISION_TEMPLATES: ReadonlySet<string> = new Set(["moderation_decision", "suspension_announced", "suspension_started_at_once", "reply_answered", "suspension_lifted"]);
+const DECISION_TEMPLATES: ReadonlySet<string> = new Set([
+  "moderation_decision",
+  "suspension_announced",
+  "suspension_started_at_once",
+  "reply_answered",
+  "suspension_lifted",
+  "reporting_warned",
+  "reporting_restricted",
+]);
 
 /** Whether an account's message is a decision's statement. */
 const isDecisionMessage = (message: { template: string }): message is DecisionMessage => DECISION_TEMPLATES.has(message.template);
@@ -76,6 +87,10 @@ function decisionData(message: DecisionMessage): Record<string, string> {
       return message.why === "replaced"
         ? { measure: message.measure, why: message.why, decidedAt: noticeTime(new Date(message.decidedAt)), replied: String(message.replied), statement }
         : { measure: message.measure, why: message.why, period: message.period, statement };
+    case "reporting_warned":
+      return { statement };
+    case "reporting_restricted":
+      return { statement, days: String(message.days), endsAt: noticeTime(new Date(message.endsAt)) };
   }
 }
 

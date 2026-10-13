@@ -459,11 +459,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
       });
     });
 
-    test("forget_reporter forgets a deleted account's reports and changes nothing for a live one, whatever its profile says", async () => {
+    test("forget_reporter forgets a deleted account's reports, with (3e Task 5) its marks and its tallies, and changes nothing for a live one, whatever its profile says", async () => {
       await inWorld(async (tx) => {
         const p = await imagePost(tx, 0);
         const reporter = await newProfile(tx as unknown as Db);
         const recorded = await intake(tx, ground.rule(reporter.id), aPost(p.postId));
+        // 3e Task 5: the report was counted on its day, and a decision that found no breach marked it.
+        await decideIn(tx, mod, recorded.items[0]!.caseId!, { kind: "final", outcome: "no_violation", unfounded: [recorded.items[0]!.id] });
+        const counted = () => one(tx, sql`select (select count(*)::int from unfounded_marks where account_id = ${reporter.id}::uuid) as marks, (select count(*)::int from report_tallies where account_id = ${reporter.id}::uuid) as tallies`);
+        expect(await counted()).toEqual({ marks: 1, tallies: 1 });
         const linked = () => one(tx, sql`select (select reporter_id from intakes where id = ${recorded.intakeId}::uuid) as intake, (select reporter_account_id from intake_items where id = ${recorded.items[0]!.id}::uuid) as item`);
         const forget = sql`select public.forget_reporter(${reporter.id}::uuid) as n`;
         expect(await count(tx, forget)).toBe(0);
@@ -473,11 +477,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention functions 
         expect(await linked()).toEqual({ intake: reporter.id, item: reporter.id });
         // The take-down marks the auth row; from then on the purge's call forgets the links, and its rerun finds none.
         await tx.execute(sql`update auth.users set deleted_at = now() where id = ${reporter.id}::uuid`);
-        expect(await count(tx, forget)).toBe(2);
+        expect(await counted()).toEqual({ marks: 1, tallies: 1 });
+        // The intake's and the item's links, the mark and the day's tally.
+        expect(await count(tx, forget)).toBe(4);
         expect(await linked()).toEqual({ intake: null, item: null });
+        expect(await counted()).toEqual({ marks: 0, tallies: 0 });
         expect(await count(tx, forget)).toBe(0);
-        // The intake goes on: its item is still unanswered in its case.
-        expect(await count(tx, sql`select count(*)::int as n from intake_items where id = ${recorded.items[0]!.id}::uuid and case_id is not null and outcome is null`)).toBe(1);
+        // The intake goes on: its item is still in its case, with the outcome its decision gave.
+        expect(await count(tx, sql`select count(*)::int as n from intake_items where id = ${recorded.items[0]!.id}::uuid and case_id is not null and outcome = 'no_violation'`)).toBe(1);
       });
     });
 

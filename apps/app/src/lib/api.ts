@@ -105,6 +105,9 @@ const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "account_su
   reply_not_open: "You cannot reply to this decision: you already replied, or it has ended or was lifted.",
   // 3e (design, section 9.8): the fallback when /me cannot be read; with it the screens say until when (9.4).
   account_suspended: "Your account is suspended, so you cannot do this now.",
+  // 3e Task 5 (design, section 9.8): [report.restricted] without its date, which the report form adds from /me (9.6).
+  reporting_restricted:
+    'korbat has restricted your reports under its rules, after a warning, because several of them were plainly unfounded. The decision is under Settings, Cases, where you can appeal it. You can still report illegal content: choose "It is illegal". For the sexual abuse or exploitation of a child, choose the third answer.',
   unauthenticated: "Sign in to continue.",
   invalid_request: "Some details are missing or invalid.",
   not_found: "That no longer exists.",

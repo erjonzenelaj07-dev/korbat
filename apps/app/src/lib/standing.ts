@@ -43,6 +43,9 @@ export const STANDING_TEXTS = {
       `Active strikes: ${n} of ${STANDING_RULES.ladderStrikes}. At ${STANDING_RULES.ladderStrikes}, a moderator may announce a suspension; you would be told first and could reply.`,
     /** [cases.none] */
     none: "You have no active strikes.",
+    /** [cases.reporting] (Task 5): a restriction of the account's reports that runs, else a warning that counts. */
+    restricted: (until: string) => `Your reports under korbat's rules are restricted until ${standingTime(until)}.`,
+    warned: (countsUntil: string) => `A warning about your reports counts until ${standingTime(countsUntil)}.`,
   },
   /** 9.2: a strike, on its post decision's screen. */
   strike: {
@@ -219,11 +222,28 @@ export const STANDING_TEXTS = {
     /** The link beside the sentence. */
     read: "Read the decision",
   },
-  /** 9.6: the report form while the account is suspended: the rule choice is disabled. */
+  /** 9.6: the report form while the account is suspended, or (Task 5) while its reports are restricted: the rule choice is disabled. */
   report: {
     /** [report.suspended] */
     suspended: (endsAt: string) =>
       `Your account is suspended until ${standingTime(endsAt)}, so it cannot report under korbat's rules. You can still report illegal content: choose "It is illegal". For the sexual abuse or exploitation of a child, choose the third answer.`,
+    /** [report.restricted] */
+    restricted: (until: string) =>
+      `korbat has restricted your reports under its rules until ${standingTime(until)}, after a warning, because several of them were plainly unfounded. The decision is under Settings, Cases, where you can appeal it. You can still report illegal content: choose "It is illegal". For the sexual abuse or exploitation of a child, choose the third answer.`,
+  },
+  /** 9.2 (Task 5): where a decision's restriction of reporting stands now, from DecisionView.reportingStanding. */
+  reporting: {
+    title: "Where it stands now",
+    running: (until: string) => `Runs until ${standingTime(until)}.`,
+    ended: (endedAt: string) => `Ended on ${standingDay(endedAt)}.`,
+    lifted: (liftedAt: string) => `Lifted on ${standingDay(liftedAt)}.`,
+    /** [now.warningGone] */
+    warningGone: (endedAt: string) => `Ended on ${standingDay(endedAt)} with the warning it rested on, which korbat lifted.`,
+  },
+  /** 9.4 (Task 5): on the line of an item a moderator marked, once its outcome is released. */
+  reports: {
+    /** [reports.marked] */
+    marked: "A moderator marked this report as manifestly unfounded (Terms, Reporting in bad faith). You can ask for a re-examination.",
   },
 } as const;
 
@@ -257,7 +277,41 @@ export const CASE_ROW_WORDS = {
   /** Task 3: a suspension (its days and whether it was announced come with Task 4's row members), and its lift. */
   suspended: "a suspension",
   lifted: "suspension lifted",
+  /** Task 5: a warning about the account's reports, a restriction of them with its days, and the lift of either. */
+  warned: "a warning about your reports",
+  restricted: (days: number) => `your reports under the rules restricted for ${days} ${days === 1 ? "day" : "days"}`,
+  reportingLifted: "warning or restriction lifted",
+  /** Task 5: on a decision whose reversal ended a restriction of reporting that rested on it. */
+  restrictionEnded: "a restriction of your reports that rested on it ended",
 } as const;
+
+/** 9.4 (Task 5): the Cases block's reporting line, from /me's standing: the restriction that runs, else the warning that counts, else none. */
+export function reportingLine(standing: AccountStanding | null | undefined): string | null {
+  const reporting = standing?.reporting ?? null;
+  if (reporting === null) return null;
+  if (reporting.restriction !== null) return STANDING_TEXTS.cases.restricted(reporting.restriction.until);
+  return reporting.warning === null ? null : STANDING_TEXTS.cases.warned(reporting.warning.countsUntil);
+}
+
+/** 9.6 (Task 5): the end of the restriction of /me's reports while it runs, or null. */
+export const reportsRestrictedUntil = (standing: AccountStanding | null | undefined): string | null => standing?.reporting?.restriction?.until ?? null;
+
+/**
+ * 9.2 (Task 5): the sentence of "Where it stands now" for a decision's restriction of reporting, and the decision to link
+ * to when it was lifted or ended with its warning.
+ */
+export function reportingNowLine(standing: NonNullable<DecisionView["reportingStanding"]>): { text: string; link: string | null } {
+  switch (standing.state) {
+    case "running":
+      return { text: STANDING_TEXTS.reporting.running(standing.until), link: null };
+    case "ended":
+      return { text: STANDING_TEXTS.reporting.ended(standing.until), link: null };
+    case "lifted":
+      return { text: STANDING_TEXTS.reporting.lifted(standing.endedAt ?? standing.until), link: standing.endedBy };
+    case "basis_ended":
+      return { text: STANDING_TEXTS.reporting.warningGone(standing.endedAt ?? standing.until), link: standing.endedBy };
+  }
+}
 
 /** The sentence of a decision's strike on its screen. */
 export function strikeLine(strike: DecisionStrike): string {
