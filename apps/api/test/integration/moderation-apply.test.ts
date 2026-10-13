@@ -62,7 +62,19 @@ interface Derived {
   level: string;
   state: string;
   images: string[];
+  /**
+   * Explore's three columns, which the same statement as the level writes (3e design, section 6.4): whether hidden_at
+   * and restored_at are set, and explore_from's distance from created_at in microseconds, null while it is unset. Every
+   * arrival of a sequence runs in the test's one transaction, whose now() never moves, so every span here is 0; the
+   * spans themselves are standing-explore.test.ts's, over decisions that each commit.
+   */
+  hidden: boolean;
+  restored: boolean;
+  exploreShift: number | null;
 }
+
+/** A step's fields in one fixed order, so a step read from the database and one from the reference compare as text. */
+const canonical = (step: Derived): string => JSON.stringify([step.level, step.state, step.images, step.hidden, step.restored, step.exploreShift]);
 
 /**
  * What the post's level, its state and its two images' states must be after each arrival, computed here from the rules
@@ -83,6 +95,12 @@ function reference(sequence: readonly Arrival[]): Derived[] {
   let erased = false;
   let deleted = false;
   const erasedImages = [false, false];
+  // Explore's columns: set when the level leaves visible (hidden_at) and when it comes back to it (restored_at and
+  // explore_from, which grows by the span just ended: 0 inside one transaction); a move between withheld and removed sets none.
+  let previous = "visible";
+  let hidden = false;
+  let restored = false;
+  let exploreShift: number | null = null;
   const inForce = (m: (typeof ledger)[number]) =>
     !m.lifted && (m.d !== "interim" || (m.k === "seal_media" ? cases[m.c]!.items.some((item) => item.suspect && !item.answered && item.at <= m.at) : !cases[m.c]!.closed));
   const out: Derived[] = [];
@@ -114,7 +132,14 @@ function reference(sequence: readonly Arrival[]): Derived[] {
             ? "withheld"
             : "visible",
     );
-    out.push({ level, state: deleted ? "deleted_by_author" : level, images });
+    if (previous === "visible" && level !== "visible") hidden = true;
+    if (previous !== "visible" && level === "visible") {
+      restored = true;
+      // The span that just ended is added to it; inside one transaction that span is 0.
+      exploreShift = exploreShift ?? 0;
+    }
+    previous = level;
+    out.push({ level, state: deleted ? "deleted_by_author" : level, images, hidden, restored, exploreShift });
   });
   return out;
 }
@@ -265,7 +290,9 @@ begin
         perform public.moderation_apply(array[p_post], true);
         steps := steps || (
           select jsonb_build_object('level', p.moderation_level, 'state', p.state,
-                                    'images', (select jsonb_agg(m.moderation_state order by m.position) from public.post_media m where m.post_id = p.id))
+                                    'images', (select jsonb_agg(m.moderation_state order by m.position) from public.post_media m where m.post_id = p.id),
+                                    'hidden', p.hidden_at is not null, 'restored', p.restored_at is not null,
+                                    'exploreShift', (extract(epoch from p.explore_from - p.created_at) * 1000000)::bigint)
             from public.posts p where p.id = p_post);
       end loop;
       raise exception 'undo' using errcode = 'KB001';
@@ -385,7 +412,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the derivation of a post
       expect(results).toHaveLength(sequences.length);
       sequences.forEach((sequence, index) => {
         const expected = reference(sequence);
-        if (JSON.stringify(results[index]) !== JSON.stringify(expected)) {
+        if (results[index]!.map(canonical).join() !== expected.map(canonical).join()) {
           // The whole sequence, so a failure can be replayed by hand.
           expect({ sequence, derived: results[index] }).toEqual({ sequence, derived: expected });
         }
@@ -414,9 +441,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the derivation of a post
         "visible/visible visible,removed",
         "deleted_by_author/visible visible,removed",
       ]);
+      // Explore's columns: hidden_at from the first step, which takes the post out of view; the moves between withheld and
+      // removed set nothing; restored_at and explore_from when the case's closure gives the post back; deletion, nothing.
+      const hiddenOnly = { hidden: true, restored: false, exploreShift: null };
+      const given = { hidden: true, restored: true, exploreShift: 0 };
+      expect(steps.map(({ hidden, restored, exploreShift }) => ({ hidden, restored, exploreShift }))).toEqual([hiddenOnly, hiddenOnly, hiddenOnly, hiddenOnly, hiddenOnly, hiddenOnly, given, given]);
     });
 
-    const ends = (results: Derived[]) => [...new Set(results.map((end) => JSON.stringify(end)))].map((end) => JSON.parse(end) as Derived);
+    /** The distinct ends of the sequences, by level, state and images; Explore's columns depend on the path, not only on the end. */
+    const ends = (results: Derived[]) =>
+      [...new Set(results.map(({ level, state, images }) => JSON.stringify({ level, state, images })))].map((end) => JSON.parse(end) as Pick<Derived, "level" | "state" | "images">);
 
     test("a removal from an earlier case with its reversal, and a withhold and an image's removal from the open case with its closure, in every order of arrival: each step is the reference's, and every order ends the same", async () => {
       const sequences = orders([
@@ -509,6 +543,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the derivation of a post
       expect(new Set(results.map((end) => end.level))).toEqual(new Set(["visible", "withheld", "removed"]));
       expect(new Set(results.flatMap((end) => end.images))).toEqual(new Set(["visible", "withheld", "removed", "sealed"]));
       expect(results.some((end) => end.state === "deleted_by_author")).toBe(true);
+      // And Explore's columns in each of their states: never hidden, hidden and not given back, and given back.
+      expect(new Set(results.map((end) => `${end.hidden}/${end.restored}`))).toEqual(new Set(["false/false", "true/false", "true/true"]));
     });
   });
 
@@ -660,7 +696,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the derivation of a post
       });
     });
 
-    test("the API role inserts a post only as visible, at level visible and unerased", async () => {
+    test("the API role inserts a post only as visible, at level visible and unerased, and with Explore's three columns forced null", async () => {
       await inWorld(async (tx) => {
         const author = await profile(tx);
         const insert = (columns: string, values: string) => run(tx, sql`insert into posts (author_id, body${sql.raw(columns)}) values (${author.id}::uuid, 'a post'${sql.raw(values)})`);
@@ -669,6 +705,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the derivation of a post
         expect(await insert(", erased_at", ", now()")).toMatchObject({ code: "42501" });
         expect(await insert(", state", ", 'visible'")).toBeNull();
         expect(await insert("", "")).toBeNull();
+        // 3e (explore_resume): whatever the insert supplies for hidden_at, restored_at and explore_from, the row holds null.
+        const [row] = await tx.execute<{ hidden: string | null; restored: string | null; from: string | null }>(sql`
+          insert into posts (author_id, body, hidden_at, restored_at, explore_from) values (${author.id}::uuid, 'forced', now() - interval '1 day', now(), now() - interval '1 hour')
+          returning hidden_at as hidden, restored_at as restored, explore_from as from`);
+        expect(row).toEqual({ hidden: null, restored: null, from: null });
       });
     });
 
@@ -685,6 +726,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the derivation of a post
         expect(await run(tx, sql`update posts set moderation_level = 'removed' where id = ${p.postId}::uuid`)).toBeNull();
         const author = await profile(tx);
         expect(await run(tx, sql`insert into posts (author_id, body, state, moderation_level) values (${author.id}::uuid, 'restored', 'removed', 'removed')`)).toBeNull();
+        // The migrator's insert keeps Explore's three columns as given (3e, explore_resume), as a restore of a copy needs.
+        const [row] = await tx.execute<{ kept: boolean }>(sql`
+          insert into posts (author_id, body, hidden_at, restored_at, explore_from) values (${author.id}::uuid, 'restored', now() - interval '1 day', now(), now() - interval '1 hour')
+          returning hidden_at = now() - interval '1 day' and restored_at = now() and explore_from = now() - interval '1 hour' as kept`);
+        expect(row!.kept).toBe(true);
       }, migrateDb);
     });
 

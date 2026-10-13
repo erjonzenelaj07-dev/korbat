@@ -1,4 +1,4 @@
-import { EXPLORE_V1 } from "@korbat/contracts";
+import { EXPLORE_V2 } from "@korbat/contracts";
 import { createJob, type JobLock } from "../lib/jobs";
 import type { SocialDeps } from "./context";
 
@@ -6,7 +6,7 @@ import type { SocialDeps } from "./context";
 const NAME = "explore-refresh";
 
 /** A round every refresh interval of the published formula (5 minutes); the lock outlives a crash by as long. */
-const INTERVAL_MS = EXPLORE_V1.refreshMinutes * 60_000;
+const INTERVAL_MS = EXPLORE_V2.refreshMinutes * 60_000;
 
 /**
  * The Explore refresh as a job (2c design, section 9): one instance at a time, a round every five minutes, each ranking

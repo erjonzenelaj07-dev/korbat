@@ -1051,7 +1051,10 @@ export async function ageStandingForTest(migrateDb: Db, accountId: string, inter
       await tx.execute(sql`insert into report_tallies (account_id, day, reports) values (${account}, (${tally.day}::date - date_trunc('day', justify_hours(${by})))::date, ${tally.reports}::int)
                            on conflict (account_id, day) do update set reports = report_tallies.reports + excluded.reports`);
     }
-    await tx.execute(sql`update posts set created_at = created_at - ${by}, deleted_at = deleted_at - ${by} where author_id = ${account}`);
+    // 3e Task 6: Explore's three columns of the posts move with them, so that explore_from - created_at still equals the
+    // hidden spans the moved ledger gives.
+    await tx.execute(sql`update posts set created_at = created_at - ${by}, deleted_at = deleted_at - ${by}, hidden_at = hidden_at - ${by}, restored_at = restored_at - ${by},
+                                          explore_from = explore_from - ${by} where author_id = ${account}`);
     await tx.execute(sql`select public.standing_apply(${account})`);
   });
 }

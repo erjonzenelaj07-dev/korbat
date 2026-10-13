@@ -595,6 +595,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         post_media_guard: 'BEFORE UPDATE OF post_id, owner_id, alt_text, "position", width, height, blurhash ON public.post_media FOR EACH ROW',
         post_media_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
         post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
+        // 3e's reporting counts (0022_reporting_counts) add the tally of each report after it is stored, on the same table.
+        report_tallies_count: "AFTER INSERT ON public.intakes FOR EACH ROW",
         staff_texts_insert: "BEFORE INSERT ON public.staff_texts FOR EACH ROW",
       });
     });

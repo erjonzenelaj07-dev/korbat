@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { CaseDecidedParams, STANDING_RULES } from "@korbat/contracts";
+import { CaseDecidedParams, EXPLORE_V2, STANDING_RULES } from "@korbat/contracts";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../../src/auth";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
@@ -54,6 +54,12 @@ import { newPost, newProfile } from "../integration/social-fixtures";
  * and when it passes; LAB_C_SUBJECTS and LAB_D_SUBJECTS set their accounts. To run only them:
  *
  *     node ../../node_modules/vitest/vitest.mjs run --config vitest.lab.config.ts test/lab/standing.lab.ts -t "labs? [CD]"
+ *
+ * Task 6 adds lab F (3e design, section 12.3) in a block of its own at the end: Explore's round under formula version 1,
+ * copied into this file, and under version 2, the repository's own refreshExplore, on the same generated data. Its comment
+ * says what it generates and when it passes; LAB_F_POSTS, LAB_F_LIKED_POSTS and LAB_F_ROUNDS set its sizes. To run only it:
+ *
+ *     node ../../node_modules/vitest/vitest.mjs run --config vitest.lab.config.ts test/lab/standing.lab.ts -t "lab F"
  */
 
 /** Where the measurements go, one line of JSON each: the file LAB_OUT names, or lab-standing.jsonl in the repository's .data folder (the lab runs from apps/api). */
@@ -1121,6 +1127,201 @@ describe.skipIf(!process.env.INTEGRATION)("lab: announced starts and replies on 
       expect(r.admittedAfterLateStart).toBe(0);
     } finally {
       await closeDb(writersDb);
+    }
+  }, 1_800_000);
+});
+
+/**
+ * Explore's round under formula version 1, as 2c built it and as it ran until 3e's Task 6, copied here (lab F's baseline;
+ * never a switch in the code): the candidates by created_at alone with live authors, the engagement with live engagers,
+ * the score by the age since created_at, and the same transaction around it as refreshExplore's, writing a ranking of
+ * formula 1. It answers the round's counts.
+ */
+async function roundV1(db: Db, asOf: Date): Promise<{ generation: number; candidates: number; items: number }> {
+  // Version 2 keeps every number of version 1 (3e design, section 10.1).
+  const f = EXPLORE_V2;
+  const at = sql`${asOf.toISOString()}::timestamptz`;
+  const since = sql`${at} - (${f.windowHours}::float8 * interval '1 hour')`;
+  const settled = sql`${at} - (${f.standingMinutes}::float8 * interval '1 minute')`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`set local statement_timeout = '30s'`);
+    await tx.execute(sql`set local lock_timeout = '5s'`);
+    const [run] = await tx.execute<{ generation: number }>(sql`insert into explore_runs (as_of, formula, candidates, items, took_ms) values (${at}, 1, 0, 0, 0) returning generation`);
+    const generation = run!.generation;
+    const [counts] = await tx.execute<{ candidates: number; items: number }>(sql`
+      with c as (
+        select p.id, p.author_id, p.created_at from posts p join profiles a on a.id = p.author_id
+        where p.reply_to_id is null and p.quote_of_id is null and p.state = 'visible' and p.created_at > ${since} and p.created_at <= ${at}
+          and a.deleted_at is null and a.show_in_explore),
+      e as (
+        select x.post_id, x.user_id from (
+          select post_id, user_id, created_at from likes where created_at > ${since} and created_at <= ${settled}
+          union all
+          select post_id, user_id, created_at from reposts where created_at > ${since} and created_at <= ${settled}
+        ) x
+        join c on c.id = x.post_id
+        join profiles u on u.id = x.user_id
+        where x.user_id <> c.author_id and u.deleted_at is null and u.created_at <= x.created_at - (${f.engagerMinAgeHours}::float8 * interval '1 hour')),
+      ap as (select post_id, count(distinct user_id)::int as approvers from e group by post_id having count(distinct user_id) >= ${f.threshold}),
+      s as (
+        select c.id as post_id, c.author_id,
+          ap.approvers / power(greatest(0, extract(epoch from (${at} - c.created_at))::float8 / 3600) + ${f.offsetHours}::float8, ${f.gravity}::float8) as score
+        from ap join c on c.id = ap.post_id),
+      r as (select s.post_id, s.author_id, s.score, row_number() over (partition by s.author_id order by s.score desc, s.post_id desc) as author_rank from s),
+      k as (
+        select r.post_id, r.author_id, row_number() over (order by r.score desc, r.post_id desc) as position
+        from r where r.author_rank <= ${f.perAuthor} order by position limit ${f.listLength}),
+      ins as (insert into explore_items (generation, position, post_id, author_id) select ${generation}::int, k.position, k.post_id, k.author_id from k returning 1)
+      select (select count(*) from c)::int as candidates, (select count(*) from ins)::int as items`);
+    await tx.execute(sql`update explore_runs set candidates = ${counts!.candidates}, items = ${counts!.items} where generation = ${generation}`);
+    await tx.execute(sql`delete from explore_runs where generation < (select min(generation) from (select generation from explore_runs order by generation desc limit ${f.kept}) g)`);
+    return { generation, candidates: counts!.candidates, items: counts!.items };
+  });
+}
+
+/** What one round of lab F answered. */
+type LabFRound = { generation: number; candidates: number; items: number };
+
+/**
+ * Writes lab F's rows as the migrator (the comment of lab F says what), as of `asOf`, under two display names that mark
+ * them; answers the sizes it wrote.
+ */
+async function labFData(migrateDb: Db, asOf: Date, names: { authors: string; engagers: string; mark: string }, n: { posts: number; likedPosts: number; authors: number; engagers: number; likesPerPost: number }) {
+  const at = sql`${asOf.toISOString()}::timestamptz`;
+  const since = sql`${at} - (${EXPLORE_V2.windowHours}::float8 * interval '1 hour')`;
+  // The accounts, a month old at the round, with handles of twenty characters that nothing else holds.
+  for (const [name, count, tag] of [[names.authors, n.authors, "a"], [names.engagers, n.engagers, "e"]] as const) {
+    await migrateDb.execute(sql`
+      insert into profiles (id, handle, display_name, created_at)
+      select gen_random_uuid(), 'lf_' || substr(md5(${names.mark} || ${tag} || g::text), 1, 17), ${name}, ${at} - interval '30 days' from generate_series(1, ${count}::int) g`);
+  }
+  // One post every so many milliseconds back from the round, over 72 hours, the authors in turn.
+  const spacingMs = (72 * 3_600_000) / n.posts;
+  await migrateDb.execute(sql`
+    with a as (select id, row_number() over (order by id) - 1 as n from profiles where display_name = ${names.authors})
+    insert into posts (author_id, body, created_at)
+    select a.id, 'lab F', ${at} - (g * ${spacingMs}::float8 * interval '1 millisecond')
+      from generate_series(0, ${n.posts}::int - 1) g join a on a.n = g % ${n.authors}::int`);
+  // Restored: one post in a hundred of those before the window, hidden from its creation for 30 hours and given that time
+  // back, as moderation_apply writes it.
+  await migrateDb.execute(sql`
+    with old as (
+      select p.id, row_number() over (order by p.created_at, p.id) as n from posts p join profiles a on a.id = p.author_id
+       where a.display_name = ${names.authors} and p.created_at <= ${since})
+    update posts p set hidden_at = p.created_at, restored_at = p.created_at + interval '30 hours', explore_from = p.created_at + interval '30 hours'
+      from old where p.id = old.id and old.n % 100 = 0`);
+  // Six likes on each of the newest posts, seven minutes apart, each by another engager.
+  await migrateDb.execute(sql`
+    with p as (
+      select p.id, p.created_at, row_number() over (order by p.created_at desc, p.id) - 1 as n from posts p join profiles a on a.id = p.author_id
+       where a.display_name = ${names.authors}),
+    e as (select id, row_number() over (order by id) - 1 as n from profiles where display_name = ${names.engagers})
+    insert into likes (user_id, post_id, created_at)
+    select e.id, p.id, p.created_at + ((k + 1) * interval '7 minutes')
+      from p cross join generate_series(0, ${n.likesPerPost}::int - 1) k join e on e.n = (p.n * 7 + k * 131) % ${n.engagers}::int
+     where p.n < ${n.likedPosts}::int`);
+  // One author in twenty and one engager in twenty suspended over the round's time.
+  for (const name of [names.authors, names.engagers]) {
+    await migrateDb.execute(sql`
+      update profiles set suspended_from = ${at} - interval '1 day', suspended_until = ${at} + interval '1 day'
+       where id in (select id from (select id, row_number() over (order by id) as n from profiles where display_name = ${name}) s where s.n % 20 = 0)`);
+  }
+  for (const table of ["profiles", "posts", "likes"]) await migrateDb.execute(sql.raw(`analyze ${table}`));
+  const [sizes] = await migrateDb.execute<{ posts: number; likes: number; restored: number; suspendedAuthors: number; suspendedEngagers: number }>(sql`
+    select (select count(*)::int from posts p join profiles a on a.id = p.author_id where a.display_name = ${names.authors}) as posts,
+           (select count(*)::int from likes l join profiles u on u.id = l.user_id where u.display_name = ${names.engagers}) as likes,
+           (select count(*)::int from posts p join profiles a on a.id = p.author_id where a.display_name = ${names.authors} and p.explore_from is not null) as restored,
+           (select count(*)::int from profiles where display_name = ${names.authors} and suspended_from is not null) as "suspendedAuthors",
+           (select count(*)::int from profiles where display_name = ${names.engagers} and suspended_from is not null) as "suspendedEngagers"`);
+  return { ...sizes! };
+}
+
+/**
+ * Lab F (3e design, section 12.3; Task 6): Explore's round on generated data, under version 1 (roundV1 above) and under
+ * version 2 (the repository's own refreshExplore), in turns on the same rows, as of one time in 2019, a past no suite
+ * ranks in. As the migrator it writes LAB_F_POSTS posts (60,000 unless set) by 3,000 authors, one every 4.32 seconds
+ * back from the round over 72 hours, so a third lie before the window; 1,000 engaging accounts; six likes on each of the
+ * newest LAB_F_LIKED_POSTS posts (50,100 unless set: 300,600 likes, the design's LAB F); one author in twenty and one
+ * engager in twenty suspended over the round's time; and one post in a hundred of those before the window hidden for 30
+ * hours and given its time back (labFData). Each version then ranks LAB_F_ROUNDS times (5 unless set), after one round
+ * each to warm up. It passes when both medians are of the same order (neither more than three times the other), when
+ * version 2 ranks no suspended author, and when restored posts are among its candidates. It records the sizes, each
+ * version's times, medians and counts, and how busy the machine was. What it wrote is deleted at the end, with every
+ * ranking.
+ */
+describe.skipIf(!process.env.INTEGRATION)("lab: Explore's round under formula versions 1 and 2 (Task 6)", () => {
+  test("lab F: the round's statement under version 1 (copied here) and version 2 on the same generated data: the same order of cost", async () => {
+    const n = { posts: Number(process.env.LAB_F_POSTS ?? 60_000), likedPosts: Number(process.env.LAB_F_LIKED_POSTS ?? 50_100), authors: 3_000, engagers: 1_000, likesPerPost: 6 };
+    const rounds = Number(process.env.LAB_F_ROUNDS ?? 5);
+    const asOf = new Date(Date.UTC(2019, 5, 1, 12));
+    const at = sql`${asOf.toISOString()}::timestamptz`;
+    const since = sql`${at} - (${EXPLORE_V2.windowHours}::float8 * interval '1 hour')`;
+    const mark = randomBytes(4).toString("hex");
+    const names = { authors: `lab F author ${mark}`, engagers: `lab F engager ${mark}`, mark };
+    const apiDb = createDb(loadConfig().DATABASE_URL_API, { max: 2 });
+    const migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
+    const repo = createSocialRepo(apiDb);
+    try {
+      await apiDb.execute(sql`delete from explore_runs`);
+      const sizes = await labFData(migrateDb, asOf, names, n);
+      const busyPercent = await busy();
+      // A round of each version in turn, the first of each to warm up; version 2 with no minimum gap, so every round ranks.
+      const again = { ...EXPLORE_V2, minGapMinutes: 0 };
+      const times = { v1: [] as number[], v2: [] as number[] };
+      let v1: LabFRound | null = null;
+      let v2: LabFRound | null = null;
+      for (let i = 0; i <= rounds; i++) {
+        let started = performance.now();
+        v1 = await roundV1(apiDb, asOf);
+        const v1Ms = performance.now() - started;
+        started = performance.now();
+        const ranked = await repo.refreshExplore(asOf, again);
+        const v2Ms = performance.now() - started;
+        if (ranked.skipped) throw new Error("lab F: a round of version 2 skipped");
+        v2 = { generation: ranked.generation, candidates: ranked.candidates, items: ranked.items };
+        if (i === 0) continue;
+        times.v1.push(v1Ms);
+        times.v2.push(v2Ms);
+      }
+      const median = (list: number[]) => Math.round(percentile([...list].sort((x, y) => x - y), 0.5)!);
+      const [v1Median, v2Median] = [median(times.v1), median(times.v2)];
+      // Version 2's newest ranking holds no post of a suspended author; the restored posts it could count as candidates.
+      const [check] = await migrateDb.execute<{ suspendedItems: number; restoredCandidates: number }>(sql`
+        select (select count(*)::int from explore_items i join profiles a on a.id = i.author_id
+                 where i.generation = ${v2!.generation}::int and a.suspended_from <= ${at} and ${at} < a.suspended_until) as "suspendedItems",
+               (select count(*)::int from posts p join profiles a on a.id = p.author_id
+                 where a.display_name = ${names.authors} and p.explore_from is not null and p.created_at <= ${since} and p.explore_from > ${since} and p.explore_from <= ${at}
+                   and not (a.suspended_from is not null and a.suspended_from <= ${at} and ${at} < a.suspended_until)) as "restoredCandidates"`);
+      line("lab-F", {
+        ...sizes,
+        authors: n.authors,
+        engagers: n.engagers,
+        rounds,
+        v1MedianMs: v1Median,
+        v2MedianMs: v2Median,
+        ratio: Math.round((v2Median / Math.max(1, v1Median)) * 100) / 100,
+        v1Ms: times.v1.map(Math.round),
+        v2Ms: times.v2.map(Math.round),
+        v1: { candidates: v1!.candidates, items: v1!.items },
+        v2: { candidates: v2!.candidates, items: v2!.items },
+        ...check!,
+        busyPercent,
+      });
+      expect(sizes.posts).toBe(n.posts);
+      expect(sizes.likes).toBe(n.likedPosts * n.likesPerPost);
+      expect(v2Median).toBeLessThan(3 * v1Median);
+      expect(v1Median).toBeLessThan(3 * v2Median);
+      expect(check!.suspendedItems).toBe(0);
+      expect(check!.restoredCandidates).toBeGreaterThan(0);
+    } finally {
+      try {
+        await apiDb.execute(sql`delete from explore_runs`);
+        await migrateDb.execute(sql`delete from likes where user_id in (select id from profiles where display_name = ${names.engagers})`);
+        await migrateDb.execute(sql`delete from posts where author_id in (select id from profiles where display_name = ${names.authors})`);
+        await migrateDb.execute(sql`delete from profiles where display_name in (${names.authors}, ${names.engagers})`);
+      } finally {
+        await Promise.all([closeDb(apiDb), closeDb(migrateDb)]);
+      }
     }
   }, 1_800_000);
 });

@@ -301,8 +301,11 @@ describe("the freeze's source pins", () => {
  *     itself whether an account is suspended. Their one writer is the database's standing_apply (the function pin of 6.6).
  */
 const STANDING_PREDICATE = {
-  liveNotSuspended: { "lib/standing.ts": 1, "media/repo.ts": 2, "profiles/store.ts": 3, "social/repo.ts": 2 },
-  suspendedAt: { "lib/standing.ts": 2, "social/repo.ts": 6 },
+  // social/repo.ts, 3e Task 6: Explore's round applies the predicate to the candidates' authors and to the engagers at the
+  // round's time, and the page and the chip to the authors at the read's (explorePage, listedInExplore).
+  liveNotSuspended: { "lib/standing.ts": 1, "media/repo.ts": 2, "profiles/store.ts": 3, "social/repo.ts": 6 },
+  // social/repo.ts, 3e Task 6: the author's Explore status reads whether the author is suspended (exploreFacts).
+  suspendedAt: { "lib/standing.ts": 2, "social/repo.ts": 7 },
   reportsRestrictedAt: { "lib/standing.ts": 1, "social/repo.ts": 2 },
 };
 const STANDING_COLUMNS_ALLOWED = new Set(["lib/standing.ts", "social/repo.ts", "moderation/standing-repo.ts"]);

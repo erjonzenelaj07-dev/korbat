@@ -1,4 +1,4 @@
-import { EXPLORE_V1, type ExploreFormula, type ExplorePage, type ExploreSettingResponse, type ExploreStatus, type ExploreStatusKind, type Pagination } from "@korbat/contracts";
+import { EXPLORE_V2, type ExploreFormula, type ExplorePage, type ExploreSettingResponse, type ExploreStatus, type ExploreStatusKind, type Pagination } from "@korbat/contracts";
 import { SocialError, type SocialDeps, type ViewerId } from "../context";
 import { decodeExploreCursor, encodeExploreCursor } from "../cursor";
 import { postViews } from "../views";
@@ -12,7 +12,7 @@ import { postViews } from "../views";
  * before this flow); one more row is read through the same filters, and `signInForMore` says whether it came back. The
  * cursor follows the repository's rows, not the views, which the view builder may still drop.
  */
-export async function explorePage(deps: SocialDeps, viewer: ViewerId, query: Pagination, formula: ExploreFormula = EXPLORE_V1): Promise<ExplorePage> {
+export async function explorePage(deps: SocialDeps, viewer: ViewerId, query: Pagination, formula: ExploreFormula = EXPLORE_V2): Promise<ExplorePage> {
   const cursor = query.cursor ? decodeExploreCursor(query.cursor) : undefined;
   const limit = viewer ? query.limit : Math.min(query.limit, formula.signedOutPage);
   const read = await deps.repo.explorePage(viewer, cursor, viewer ? limit : limit + 1);
@@ -47,9 +47,14 @@ export async function explorePage(deps: SocialDeps, viewer: ViewerId, query: Pag
  * post that does not exist, get not_found. The reasons are tried in the design's order, the first that applies answering;
  * the last four come from one bounded statement about this post alone, which applies every rule of the ranking as of the
  * request time (the standing of engagement included) and again as of the ranking's time. `formula` is the published one
- * unless a test ranks and judges with another.
+ * unless a test ranks and judges with another; one of any version but 2 throws (3e design, section 7.13).
+ *
+ * 3e (section 7.13 item 7): `suspended` follows not_visible, judged at the database's clock as the page and the chip
+ * judge it; the window counts from when moderation last gave the post back its time; a post restored after the ranking's
+ * time is pending, since that ranking could not see it; and while the newest ranking is of another formula version only
+ * the request time is judged.
  */
-export async function exploreStatus(deps: SocialDeps, viewer: string, postId: string, formula: ExploreFormula = EXPLORE_V1): Promise<ExploreStatus> {
+export async function exploreStatus(deps: SocialDeps, viewer: string, postId: string, formula: ExploreFormula = EXPLORE_V2): Promise<ExploreStatus> {
   const now = deps.now();
   const facts = await deps.repo.exploreFacts(postId, now, formula);
   if (!facts || facts.authorId !== viewer) throw new SocialError("not_found", 404);
@@ -60,16 +65,21 @@ export async function exploreStatus(deps: SocialDeps, viewer: string, postId: st
   if (facts.quote) return answer("quote");
   // Withheld, removed or deleted: out for every reader, its author too.
   if (!facts.visible) return answer("not_visible");
+  // The author's account is suspended now: its posts are out of the page and the chip at this read, listed or not.
+  if (facts.suspended) return answer("suspended");
   if (!facts.shown) return answer("hidden_by_author");
   // A listed post stays listed until the next round, even past its window.
   if (ranking?.holdsPost) return answer("listed");
   if (facts.outsideWindow) return answer("outside_window");
   if (!ranking) return answer("no_ranking");
   if (ranking.postIsNewer) return answer("new_since_ranking");
+  // Moderation gave the post back after the ranking was computed, which therefore never saw it: the next refresh considers it.
+  if (ranking.restoredSince) return answer("pending");
   const judged = await deps.repo.exploreJudgement({ id: postId, authorId: facts.authorId }, now, ranking, formula);
   if (!judged.metNow) return answer("below_threshold");
-  // Met now but not at the ranking's time: the next refresh considers it.
-  if (!judged.metAtRanking) return answer("pending");
+  // Met now but not at the ranking's time, or the ranking applied another version's rules, which are not judged: the
+  // next refresh considers it.
+  if (judged.metAtRanking !== true) return answer("pending");
   // The cap keeps an author's best posts: with the author's places full, this one scored below them, and no score is needed to say so.
   if (judged.authorPlaces >= formula.perAuthor) return answer("author_cap");
   if (judged.places >= formula.listLength) return answer("below_cutoff");

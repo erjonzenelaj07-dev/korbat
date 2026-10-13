@@ -76,7 +76,7 @@ export const exploreRuns = pgTable(
     generation: integer("generation").primaryKey().generatedAlwaysAsIdentity(),
     /** The refresh time the round was given; the ranking is computed as of this time. */
     asOf: ts("as_of").notNull(),
-    /** The version of the formula the round ranked with (EXPLORE_V1.version in @korbat/contracts). */
+    /** The version of the formula the round ranked with (EXPLORE_V2.version in @korbat/contracts; rankings from before 3e hold 1). */
     formula: smallint("formula").notNull(),
     /** Posts that passed the candidate predicate at as_of. */
     candidates: integer("candidates").notNull(),

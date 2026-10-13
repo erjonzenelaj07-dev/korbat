@@ -1,10 +1,10 @@
-import { EXPLORE_V1, type ExploreFormula, type ExplorePage, type ExploreStatusKind, type TimelineItem } from "@korbat/contracts";
+import { EXPLORE_V2, type ExploreFormula, type ExplorePage, type ExploreStatusKind, type TimelineItem } from "@korbat/contracts";
 import { ApiError } from "./api";
 import type { ExploreAnswer } from "./social";
 
 /**
  * Explore's texts and the list's decisions (2c design, section 11). Every number in a sentence comes from the formula it
- * is given, EXPLORE_V1 unless a test passes another, so the app says what the refresh does.
+ * is given, EXPLORE_V2 unless a test passes another, so the app says what the refresh does.
  */
 
 /** A ranking older than this when it is read is stale: rounds run every 5 minutes, so by then several have failed or been skipped. */
@@ -14,7 +14,7 @@ export const STALE_AFTER_MS = 15 * 60 * 1000;
 export const EXPLORE_REFRESHED_NOTICE = "Explore was refreshed; the posts below come from the new ranking.";
 
 /** A page of Explore is the API's default of 20 posts, and a ranking holds at most listLength: one read never needs more pages than this. */
-export const MAX_PAGES = Math.ceil(EXPLORE_V1.listLength / 20) + 1;
+export const MAX_PAGES = Math.ceil(EXPLORE_V2.listLength / 20) + 1;
 
 /** "1 minute", "5 minutes". */
 function plural(count: number, unit: string): string {
@@ -66,7 +66,7 @@ function ageAtRead(ranking: RankingRead): number {
  * read by the time on screen, which the device's clock measures alone. Refresh is offered once the ranking on screen is
  * as old as the refresh interval, when a newer one should exist.
  */
-export function rankingAge(ranking: RankingRead, now: number, formula: ExploreFormula = EXPLORE_V1): { stale: boolean; text: string; offerRefresh: boolean } {
+export function rankingAge(ranking: RankingRead, now: number, formula: ExploreFormula = EXPLORE_V2): { stale: boolean; text: string; offerRefresh: boolean } {
   const atRead = ageAtRead(ranking);
   // The minute clock may last have ticked before the answer arrived: then there has been no time on screen yet.
   const age = atRead + Math.max(0, now - ranking.receivedAt);
@@ -199,7 +199,7 @@ export function exploreReader(fetchPage: (cursor?: string) => Promise<ExploreAns
 }
 
 /** The empty list's sentence (2c design, section 11): when a post appears in Explore, and how often it is refreshed. */
-export function exploreEmptyText(formula: ExploreFormula = EXPLORE_V1): string {
+export function exploreEmptyText(formula: ExploreFormula = EXPLORE_V2): string {
   return (
     `Nothing to show in Explore right now. A post appears here when at least ${formula.threshold} other accounts, ` +
     `each at least ${duration(formula.engagerMinAgeHours)} old, like or repost it in its first ${plural(formula.windowHours, "hour")}. ` +
@@ -211,7 +211,7 @@ export function exploreEmptyText(formula: ExploreFormula = EXPLORE_V1): string {
  * The one sentence beside "Show my posts in Explore". Off takes the posts out at the next read. On lets them back at the
  * next refresh (a post still in the current ranking may show again sooner), so the sentence promises no earlier than that.
  */
-export function exploreSwitchText(formula: ExploreFormula = EXPLORE_V1): string {
+export function exploreSwitchText(formula: ExploreFormula = EXPLORE_V2): string {
   return (
     "Your public posts can appear in Explore when other accounts like or repost them: turning this off takes them out at " +
     `once, and turning it back on takes effect at the next refresh, which comes every ${plural(formula.refreshMinutes, "minute")}.`
@@ -222,19 +222,23 @@ export function exploreSwitchText(formula: ExploreFormula = EXPLORE_V1): string 
  * The author's status line under their own post, in the formula's words and without any count (2c design, sections 8 and
  * 11). Replies and quotes never enter Explore, and their line is left out: null.
  */
-export function exploreStatusText(status: ExploreStatusKind, formula: ExploreFormula = EXPLORE_V1): string | null {
+export function exploreStatusText(status: ExploreStatusKind, formula: ExploreFormula = EXPLORE_V2): string | null {
   switch (status) {
     case "reply":
     case "quote":
       return null;
     case "not_visible":
       return "Not in Explore: posts under review or removed never appear there.";
+    case "suspended":
+      // 3e design, section 9.7: what a suspension does to Explore, by its published rule, and when the post may come back.
+      return "Not in Explore: your account is suspended, and posts of suspended accounts do not appear there. A post still in its window when the suspension ends can appear from the next refresh.";
     case "hidden_by_author":
       return "Not in Explore: you turned off Show my posts in Explore.";
     case "listed":
       return "In Explore";
     case "outside_window":
-      return `Not in Explore: posts can appear only in their first ${plural(formula.windowHours, "hour")}.`;
+      // Version 2 gives a restored post back the time moderation kept it hidden, so the window says so.
+      return `Not in Explore: posts can appear only in their first ${plural(formula.windowHours, "hour")}, not counting time in which korbat's moderation kept them from being shown.`;
     case "no_ranking":
       return "Not in Explore yet: the first ranking has not been computed.";
     case "new_since_ranking":
@@ -259,31 +263,32 @@ export function exploreStatusText(status: ExploreStatusKind, formula: ExploreFor
  * what else takes a post out, and the author's controls, with every number from the formula. The page adds the formula's
  * version and change log.
  */
-export function exploreRules(formula: ExploreFormula = EXPLORE_V1): { title: string; body: string }[] {
+export function exploreRules(formula: ExploreFormula = EXPLORE_V2): { title: string; body: string }[] {
   const engagerAge = duration(formula.engagerMinAgeHours);
   return [
     {
       title: "What is ranked",
       body:
         `Original posts from the last ${plural(formula.windowHours, "hour")}: posts that are not replies or quotes, by accounts that ` +
-        "have not switched Explore off. Replies belong to their threads. Quotes do not enter, because a quote that mocks " +
-        "another post would put that post under the mockery on a public page.",
+        "have not switched Explore off and are not suspended when the ranking is computed. Replies belong to their threads. " +
+        "Quotes do not enter, because a quote that mocks another post would put that post under the mockery on a public page.",
     },
     {
       title: "What counts",
       body:
         "One thing: the post's approving accounts, meaning the accounts other than its author that liked or reposted it. An " +
         "account that both liked and reposted a post counts once. A like or repost counts when its account still exists, " +
-        `was at least ${engagerAge} old when it liked or reposted, and the like or repost has stood for at least ` +
-        `${plural(formula.standingMinutes, "minute")}. Replies and quotes do not count, so a pile-on of replies cannot lift a ` +
-        "post. Followers, the verified badge and reports are never used.",
+        `is not suspended when the ranking is computed, was at least ${engagerAge} old when it liked or reposted, and the ` +
+        `like or repost has stood for at least ${plural(formula.standingMinutes, "minute")}. Replies and quotes do not count, ` +
+        "so a pile-on of replies cannot lift a post. Followers, the verified badge and reports are never used.",
     },
     {
       title: "The score",
       body:
         `A post needs at least ${formula.threshold} approving accounts. Its score is the number of approving accounts divided ` +
-        `by (the hours since it was posted + ${formula.offsetHours}) to the power ${formula.gravity}, so a newer post needs ` +
-        "fewer approving accounts to rank as high as an older one.",
+        `by (the hours it has been shown since it was posted + ${formula.offsetHours}) to the power ${formula.gravity}, so a ` +
+        "newer post needs fewer approving accounts to rank as high as an older one. A post that korbat's moderation hid and " +
+        "then restored gets that time back: its window and its age stand still while it is not shown.",
     },
     {
       title: "The list",
@@ -309,8 +314,11 @@ export function exploreRules(formula: ExploreFormula = EXPLORE_V1): { title: str
     {
       title: "What else takes a post out",
       body:
-        "Besides the formula, only these take a post out of Explore: its moderation state, set by a moderator or by the " +
-        "automatic R1 and R2 checks for every list at once; its author's switch or deletion; a block between you and the " +
+        // 3e design, section 9.7: a suspension takes the author's posts out by a published rule, never as a lever on
+        // Explore alone; the automatic R1 and R2 checks are gone, since rulebook version 2 has none.
+        "Besides the formula, only these take a post out of Explore: its moderation state, set by a moderator for every " +
+        "list at once; a suspension of its author, which a moderator decides with a statement of reasons and which stops " +
+        "everything the account writes, never Explore alone; its author's switch or deletion; a block between you and the " +
         "author in either direction; your mute. No moderator or automatic lever acts on Explore alone.",
     },
     {

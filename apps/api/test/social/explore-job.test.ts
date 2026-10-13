@@ -1,6 +1,6 @@
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { EXPLORE_V1 } from "@korbat/contracts";
+import { EXPLORE_V2 } from "@korbat/contracts";
 import { MemoryJobLock, type JobLock } from "../../src/lib/jobs";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { WITHOUT_MEDIA, type SocialDeps } from "../../src/social/context";
@@ -9,7 +9,7 @@ import type { ExploreRefresh, SocialRepo } from "../../src/social/repo";
 
 const MINUTE = 60_000;
 /** The refresh interval of the published formula: five minutes. */
-const INTERVAL = EXPLORE_V1.refreshMinutes * MINUTE;
+const INTERVAL = EXPLORE_V2.refreshMinutes * MINUTE;
 
 interface LogLine {
   level: number;

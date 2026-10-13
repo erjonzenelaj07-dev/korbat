@@ -3,7 +3,7 @@ import path from "node:path";
 import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
-import { EXPLORE_V1, ExploreStatusKind, type ExploreFormula, type ExplorePage, type MeResponse, type PostView, type TimelineItem } from "@korbat/contracts";
+import { EXPLORE_V2, ExploreStatusKind, type ExploreFormula, type ExplorePage, type MeResponse, type PostView, type TimelineItem } from "@korbat/contracts";
 import ExploreAbout, { ExploreRules } from "../src/app/explore/about";
 import Home, { homeListKey, homeTab, homeTabs } from "../src/app/index";
 import { ExploreSwitch, useExploreSwitch } from "../src/app/settings/privacy";
@@ -311,18 +311,18 @@ describe("the Explore list", () => {
     expect(days.text).toContain(old.toLocaleDateString());
   });
 
-  test("Refresh is offered once the ranking on screen is as old as EXPLORE_V1's refresh interval, when a newer one should exist", () => {
+  test("Refresh is offered once the ranking on screen is as old as EXPLORE_V2's refresh interval, when a newer one should exist", () => {
     const computedAt = "2026-09-28T12:00:00.000Z";
     const t0 = Date.parse(computedAt);
     // Read a minute after it was computed, then left on screen.
     const read: RankingRead = { computedAt, date: new Date(t0 + 60_000).toUTCString(), receivedAt: t0 + 60_000 };
-    expect(EXPLORE_V1.refreshMinutes).toBe(5);
+    expect(EXPLORE_V2.refreshMinutes).toBe(5);
     expect(rankingAge(read, read.receivedAt + 4 * 60_000 - 1000).offerRefresh).toBe(false);
     expect(rankingAge(read, read.receivedAt + 4 * 60_000).offerRefresh).toBe(true);
     // A ranking that was stale when read is offered at once.
     expect(rankingAge({ ...read, date: new Date(t0 + 16 * 60_000).toUTCString() }, read.receivedAt)).toMatchObject({ stale: true, offerRefresh: true });
     // The interval is the formula's.
-    const slower: ExploreFormula = { ...EXPLORE_V1, refreshMinutes: 10 };
+    const slower: ExploreFormula = { ...EXPLORE_V2, refreshMinutes: 10 };
     expect(rankingAge(read, read.receivedAt + 9 * 60_000 - 1000, slower).offerRefresh).toBe(false);
     expect(rankingAge(read, read.receivedAt + 9 * 60_000, slower).offerRefresh).toBe(true);
   });
@@ -542,17 +542,17 @@ describe("the Explore list", () => {
     expect(list).toContain("if (lineFocus > 0) (line.current as unknown as { focus?: () => void } | null)?.focus?.();");
   });
 
-  test("the empty state is worded from EXPLORE_V1, links to How Explore works and offers Show Latest", () => {
+  test("the empty state is worded from EXPLORE_V2, links to How Explore works and offers Show Latest", () => {
     expect(exploreEmptyText()).toBe(
       "Nothing to show in Explore right now. A post appears here when at least 3 other accounts, each at least 2 days old, like or repost it in its first 48 hours. Explore is refreshed every 5 minutes.",
     );
     // Every number comes from the formula: another formula words another sentence.
-    const other: ExploreFormula = { ...EXPLORE_V1, threshold: 5, engagerMinAgeHours: 72, windowHours: 24, refreshMinutes: 10 };
+    const other: ExploreFormula = { ...EXPLORE_V2, threshold: 5, engagerMinAgeHours: 72, windowHours: 24, refreshMinutes: 10 };
     expect(exploreEmptyText(other)).toBe(
       "Nothing to show in Explore right now. A post appears here when at least 5 other accounts, each at least 3 days old, like or repost it in its first 24 hours. Explore is refreshed every 10 minutes.",
     );
-    expect(exploreEmptyText({ ...EXPLORE_V1, engagerMinAgeHours: 36 })).toContain("each at least 36 hours old");
-    expect(exploreEmptyText({ ...EXPLORE_V1, engagerMinAgeHours: 24 })).toContain("each at least 1 day old");
+    expect(exploreEmptyText({ ...EXPLORE_V2, engagerMinAgeHours: 36 })).toContain("each at least 36 hours old");
+    expect(exploreEmptyText({ ...EXPLORE_V2, engagerMinAgeHours: 24 })).toContain("each at least 1 day old");
     const out = html(<ExploreEmpty onShowLatest={() => undefined} />);
     expect(out).toContain(exploreEmptyText());
     expect(linkTexts(out, "/explore/about")).toEqual(["How Explore works"]);
@@ -562,30 +562,48 @@ describe("the Explore list", () => {
 });
 
 describe("How Explore works", () => {
-  test("states every number of the formula from EXPLORE_V1, with the version and the change log", () => {
+  test("states every number of the formula from EXPLORE_V2, with the version and the change log", () => {
     const out = textOf(html(<ExploreRules />));
     for (const phrase of [
       "Original posts from the last 48 hours",
       "was at least 2 days old when it liked or reposted",
       "has stood for at least 10 minutes",
       "A post needs at least 3 approving accounts.",
-      "divided by (the hours since it was posted + 2) to the power 1.8",
+      "divided by (the hours it has been shown since it was posted + 2) to the power 1.8",
       "Explore holds the 300 posts with the highest scores, with at most 2 posts of one account",
       "A new ranking is computed every 5 minutes, never sooner than 4.5 minutes after the last one.",
       "The newest 2 rankings are kept",
       "Signed out, you see the first 20 posts.",
       "Explore stays empty for about 2 days after it opens",
-      "This is version 1 of the formula.",
+      "This is version 2 of the formula.",
       "Version 1, 2026-09-28: First version.",
+      // The second entry of the change log, word for word (3e design, section 9.7).
+      "Version 2, 2026-10-12: Posts of suspended accounts are not ranked, and a suspended account's likes and reposts do not count. A post that moderation hid and then restored gets back the time it was hidden.",
     ]) {
       expect(out, phrase).toContain(phrase);
     }
   });
 
+  test("version 2's rules in the design's words: what is ranked, what counts and the score name suspension and the time given back (3e)", () => {
+    const body = (title: string) => exploreRules().find((section) => section.title === title)?.body;
+    expect(body("What is ranked")).toBe(
+      "Original posts from the last 48 hours: posts that are not replies or quotes, by accounts that have not switched Explore off and are not suspended when the ranking is computed. Replies belong to their threads. Quotes do not enter, because a quote that mocks another post would put that post under the mockery on a public page.",
+    );
+    expect(body("What counts")).toBe(
+      "One thing: the post's approving accounts, meaning the accounts other than its author that liked or reposted it. An account that both liked and reposted a post counts once. A like or repost counts when its account still exists, is not suspended when the ranking is computed, was at least 2 days old when it liked or reposted, and the like or repost has stood for at least 10 minutes. Replies and quotes do not count, so a pile-on of replies cannot lift a post. Followers, the verified badge and reports are never used.",
+    );
+    expect(body("The score")).toBe(
+      "A post needs at least 3 approving accounts. Its score is the number of approving accounts divided by (the hours it has been shown since it was posted + 2) to the power 1.8, so a newer post needs fewer approving accounts to rank as high as an older one. A post that korbat's moderation hid and then restored gets that time back: its window and its age stand still while it is not shown.",
+    );
+    // Server-rendered on How Explore works, each whole.
+    const out = textOf(html(<ExploreRules />));
+    for (const title of ["What is ranked", "What counts", "The score"]) expect(out, title).toContain(body(title)!);
+  });
+
   test("follows the formula it is given: another formula's numbers, version and change log", () => {
     const other: ExploreFormula = {
-      ...EXPLORE_V1,
-      version: 2,
+      ...EXPLORE_V2,
+      version: 3,
       windowHours: 72,
       engagerMinAgeHours: 96,
       standingMinutes: 15,
@@ -598,7 +616,7 @@ describe("How Explore works", () => {
       minGapMinutes: 9,
       kept: 3,
       signedOutPage: 10,
-      changes: [...EXPLORE_V1.changes, { version: 2, date: "2026-12-01", summary: "A later version." }],
+      changes: [...EXPLORE_V2.changes, { version: 3, date: "2026-12-01", summary: "A later version." }],
     };
     const out = textOf(html(<ExploreRules formula={other} />));
     for (const phrase of [
@@ -606,26 +624,29 @@ describe("How Explore works", () => {
       "was at least 4 days old when it liked or reposted",
       "has stood for at least 15 minutes",
       "A post needs at least 7 approving accounts.",
-      "(the hours since it was posted + 3) to the power 1.5",
+      "(the hours it has been shown since it was posted + 3) to the power 1.5",
       "Explore holds the 100 posts with the highest scores, with at most 4 posts of one account",
       "every 10 minutes, never sooner than 9 minutes after the last one",
       "The newest 3 rankings are kept",
       "Signed out, you see the first 10 posts.",
       "Explore stays empty for about 4 days after it opens",
-      "This is version 2 of the formula.",
+      "This is version 3 of the formula.",
       "Version 1, 2026-09-28: First version.",
-      "Version 2, 2026-12-01: A later version.",
+      "Version 2, 2026-10-12: Posts of suspended accounts are not ranked",
+      "Version 3, 2026-12-01: A later version.",
     ]) {
       expect(out, phrase).toContain(phrase);
     }
-    for (const phrase of ["48 hours", "2 days", "at least 3 approving", "300 posts", "power 1.8", "version 1 of"]) expect(out, phrase).not.toContain(phrase);
+    for (const phrase of ["48 hours", "2 days", "at least 3 approving", "300 posts", "power 1.8", "version 2 of"]) expect(out, phrase).not.toContain(phrase);
   });
 
-  test("says what takes a post out besides the formula, in the design's words", () => {
+  test("says what takes a post out besides the formula, in the design's words: a suspension, never Explore alone, and no longer the automatic checks", () => {
     const rule = exploreRules().find((section) => section.title === "What else takes a post out");
     expect(rule?.body).toBe(
-      "Besides the formula, only these take a post out of Explore: its moderation state, set by a moderator or by the automatic R1 and R2 checks for every list at once; its author's switch or deletion; a block between you and the author in either direction; your mute. No moderator or automatic lever acts on Explore alone.",
+      "Besides the formula, only these take a post out of Explore: its moderation state, set by a moderator for every list at once; a suspension of its author, which a moderator decides with a statement of reasons and which stops everything the account writes, never Explore alone; its author's switch or deletion; a block between you and the author in either direction; your mute. No moderator or automatic lever acts on Explore alone.",
     );
+    // Rulebook version 2 has no automatic R1 and R2 checks, so the page names none.
+    expect(rule?.body).not.toContain("automatic R1 and R2 checks");
     expect(textOf(html(<ExploreRules />))).toContain(rule!.body);
   });
 
@@ -673,7 +694,7 @@ describe("Settings > Privacy: Show my posts in Explore", () => {
     expect(exploreSwitchText()).toBe(
       "Your public posts can appear in Explore when other accounts like or repost them: turning this off takes them out at once, and turning it back on takes effect at the next refresh, which comes every 5 minutes.",
     );
-    expect(exploreSwitchText({ ...EXPLORE_V1, refreshMinutes: 10 })).toContain("at the next refresh, which comes every 10 minutes.");
+    expect(exploreSwitchText({ ...EXPLORE_V2, refreshMinutes: 10 })).toContain("at the next refresh, which comes every 10 minutes.");
     session.state = signedIn(true);
     const out = html(<SessionSwitch />);
     expect(out).toContain(exploreSwitchText());
@@ -711,14 +732,17 @@ describe("Settings > Privacy: Show my posts in Explore", () => {
 });
 
 describe("the author's status line", () => {
-  test("words every status in the formula's words, with EXPLORE_V1's numbers, and nothing for a reply or a quote", () => {
+  test("words every status in the formula's words, with EXPLORE_V2's numbers, and nothing for a reply or a quote", () => {
     const expected: Record<ExploreStatusKind, string | null> = {
       reply: null,
       quote: null,
       not_visible: "Not in Explore: posts under review or removed never appear there.",
+      // 3e design, section 9.7, word for word.
+      suspended:
+        "Not in Explore: your account is suspended, and posts of suspended accounts do not appear there. A post still in its window when the suspension ends can appear from the next refresh.",
       hidden_by_author: "Not in Explore: you turned off Show my posts in Explore.",
       listed: "In Explore",
-      outside_window: "Not in Explore: posts can appear only in their first 48 hours.",
+      outside_window: "Not in Explore: posts can appear only in their first 48 hours, not counting time in which korbat's moderation kept them from being shown.",
       no_ranking: "Not in Explore yet: the first ranking has not been computed.",
       new_since_ranking: "Not in Explore yet: it is newer than the current ranking, so the next refresh will consider it.",
       below_threshold:
@@ -731,14 +755,16 @@ describe("the author's status line", () => {
   });
 
   test("takes its numbers from the formula", () => {
-    const other: ExploreFormula = { ...EXPLORE_V1, threshold: 5, engagerMinAgeHours: 72, standingMinutes: 15, windowHours: 24, perAuthor: 3, listLength: 100 };
+    const other: ExploreFormula = { ...EXPLORE_V2, threshold: 5, engagerMinAgeHours: 72, standingMinutes: 15, windowHours: 24, perAuthor: 3, listLength: 100 };
     expect(exploreStatusText("below_threshold", other)).toBe(
       "Not in Explore: fewer than 5 approving accounts. Your own likes, accounts under 3 days old and likes from the last 15 minutes do not count.",
     );
     expect(exploreStatusText("author_cap", other)).toBe("Not in Explore: three of your posts rank above it.");
-    expect(exploreStatusText("author_cap", { ...EXPLORE_V1, perAuthor: 1 })).toBe("Not in Explore: one of your posts ranks above it.");
+    expect(exploreStatusText("author_cap", { ...EXPLORE_V2, perAuthor: 1 })).toBe("Not in Explore: one of your posts ranks above it.");
     expect(exploreStatusText("below_cutoff", other)).toBe("Not in Explore: it ranks below the 100 posts Explore holds.");
-    expect(exploreStatusText("outside_window", other)).toBe("Not in Explore: posts can appear only in their first 24 hours.");
+    expect(exploreStatusText("outside_window", other)).toBe(
+      "Not in Explore: posts can appear only in their first 24 hours, not counting time in which korbat's moderation kept them from being shown.",
+    );
   });
 
   test("shows under the author's own top-level post only, never a reply's or a quote's, with links to How Explore works and to the switch", () => {

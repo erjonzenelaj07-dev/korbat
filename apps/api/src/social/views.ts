@@ -55,6 +55,7 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
   const states = viewer ? await repo.viewerPostStates(viewer, [...all.keys()]) : null;
   const images = await media.forPosts([...all.keys()]);
   // A withheld or removed post is never in Explore for anyone, its author included, so only visible ones are asked about.
+  // Whether the author is suspended when this reads is listedInExplore's to judge (3e), so the chip goes with the page.
   const own = viewer ? [...primary.values()].filter((row) => row.authorId === viewer && row.state === "visible").map((row) => row.id) : [];
   const inExplore = viewer && own.length > 0 ? await repo.listedInExplore(viewer, own) : new Set<string>();
   // The chip of a withheld or removed post is its author's alone, so only the viewer's own such posts are asked about.

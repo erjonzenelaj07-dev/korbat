@@ -1,14 +1,14 @@
 import { ScrollView, Text, View } from "react-native";
-import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
+import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { TextLink } from "@/components/ui";
 import { exploreRules } from "@/lib/explore";
 
 /**
- * Every rule of a formula with its numbers, then its version and dated change log. The page shows EXPLORE_V1, the
+ * Every rule of a formula with its numbers, then its version and dated change log. The page shows EXPLORE_V2, the
  * constant the refresh ranks with, so the published rules are the ones in force; tests pass other formulas.
  */
-export function ExploreRules({ formula = EXPLORE_V1 }: { formula?: ExploreFormula }) {
+export function ExploreRules({ formula = EXPLORE_V2 }: { formula?: ExploreFormula }) {
   return (
     <View>
       {exploreRules(formula).map((section) => (

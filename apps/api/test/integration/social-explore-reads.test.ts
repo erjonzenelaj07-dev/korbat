@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { EXPLORE_V1, ExplorePage, ExploreStatus, type ExploreFormula, type ExploreStatusKind } from "@korbat/contracts";
+import { EXPLORE_V2, ExplorePage, ExploreStatus, type ExploreFormula, type ExploreStatusKind } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { createProfileStore } from "../../src/profiles/store";
@@ -299,7 +299,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
   test("outside_window comes before the ranking is asked about; no_ranking before the first round; new_since_ranking for a post written after it", async () => {
     const asOf = nextAsOf();
     const [author, ...fans] = await accounts(db, asOf, 4);
-    const window = EXPLORE_V1.windowHours * HOUR;
+    const window = EXPLORE_V2.windowHours * HOUR;
     // Exactly 48 hours old at the request time, which is outside: the window takes posts younger than that.
     const old = await approvedPost(repo, author!, before(asOf, window), fans, before(asOf, window - HOUR));
     const recent = await approvedPost(repo, author!, before(asOf, 2 * HOUR), fans, before(asOf, HOUR));
@@ -362,7 +362,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
     expect(await status(c!.id, c1)).toEqual({ status: "listed", computedAt });
 
     // A formula whose list holds three posts, ranking and judging alike: c1 meets every rule, but the list was full.
-    const short: ExploreFormula = { ...EXPLORE_V1, minGapMinutes: 0, listLength: 3 };
+    const short: ExploreFormula = { ...EXPLORE_V2, minGapMinutes: 0, listLength: 3 };
     expect(await listed(db, (await rank(repo, asOf, short)).generation)).toEqual([b1, a1, a2]);
     expect(await status(c!.id, c1, short)).toEqual({ status: "below_cutoff", computedAt });
     expect(await status(a!.id, a3, short)).toEqual({ status: "author_cap", computedAt });
@@ -372,7 +372,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
   test("a post listed at the ranking's time stays listed until the next round, even once its 48 hours have passed; then it is outside_window", async () => {
     const asOf = nextAsOf();
     const [a, b, ...fans] = await accounts(db, asOf, 5);
-    const window = EXPLORE_V1.windowHours * HOUR;
+    const window = EXPLORE_V2.windowHours * HOUR;
     // Five minutes short of 48 hours old at the ranking.
     const at = before(asOf, window - 5 * MINUTE);
     const kept = await approvedPost(repo, a!, at, fans, before(asOf, window - HOUR));
@@ -456,6 +456,78 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reading Explore", () => 
     await setShowInExplore(deps, b!.id, false);
     expect(await getPost(deps, b!.id, b1)).not.toHaveProperty("inExplore");
     expect(new Set(await listed(db, g))).toEqual(new Set([a1, b1]));
+  });
+
+  /** Version 2's status (3e design, section 7.13 item 7): the window from explore_from, a restore after the ranking, a ranking of version 1. */
+  describe("the status under version 2", () => {
+    let migrateDb: Db;
+    const resumed: string[] = [];
+    beforeAll(() => {
+      migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
+    });
+    afterAll(async () => {
+      try {
+        await migrateDb.execute(sql`update posts set hidden_at = null, restored_at = null, explore_from = null where id = any(${`{${resumed.join(",")}}`}::uuid[])`);
+      } finally {
+        await closeDb(migrateDb);
+      }
+    });
+
+    test("outside_window reads the resume time: a post created past its 48 hours whose time moderation gave back is still inside", async () => {
+      const asOf = nextAsOf();
+      const [author, ...fans] = await accounts(db, asOf, 4);
+      const window = EXPLORE_V2.windowHours * HOUR;
+      const resumedPost = await approvedPost(repo, author!, before(asOf, window + DAY), fans, before(asOf, HOUR));
+      const plain = await approvedPost(repo, author!, before(asOf, window + DAY), fans, before(asOf, HOUR));
+      // As moderation_apply writes it, set here as the migrator: hidden for a day, so the post resumes inside its window.
+      resumed.push(resumedPost);
+      await migrateDb.execute(sql`update posts set hidden_at = created_at, restored_at = created_at + interval '1 day', explore_from = created_at + interval '1 day' + interval '1 hour' where id = ${resumedPost}::uuid`);
+      setNow(asOf);
+      expect(await status(author!.id, plain)).toEqual({ status: "outside_window", computedAt: null });
+      expect(await status(author!.id, resumedPost)).toEqual({ status: "no_ranking", computedAt: null });
+      expect(await listed(db, (await rank(repo, asOf)).generation)).toEqual([resumedPost]);
+      setNow(after(asOf, MINUTE));
+      expect(await status(author!.id, resumedPost)).toEqual({ status: "listed", computedAt: asOf.toISOString() });
+      expect(await status(author!.id, plain)).toEqual({ status: "outside_window", computedAt: asOf.toISOString() });
+    });
+
+    test("a post restored after the ranking's time is pending: the ranking never saw it, whatever the author's places", async () => {
+      const asOf = nextAsOf();
+      const [a] = await accounts(db, asOf, 1);
+      const fans = await accounts(db, asOf, 5);
+      const [at, likedAt] = [before(asOf, 2 * HOUR), before(asOf, HOUR)];
+      const a1 = await approvedPost(repo, a!, at, fans.slice(0, 5), likedAt);
+      const a2 = await approvedPost(repo, a!, at, fans.slice(0, 4), likedAt);
+      const a3 = await approvedPost(repo, a!, at, fans.slice(0, 3), likedAt);
+      // Withheld before the ranking, and given back after it by a real decision: restored_at is the decision's time.
+      await setState(a3, "withheld");
+      expect(await listed(db, (await rank(repo, asOf)).generation)).toEqual([a1, a2]);
+      await decideForTest(db, a3, "visible");
+      setNow(after(asOf, 11 * MINUTE));
+      // Met now and at the ranking's time with the author's two places full, it would read author_cap; the next round decides.
+      expect(await status(a!.id, a3)).toEqual({ status: "pending", computedAt: asOf.toISOString() });
+      expect(await status(a!.id, a1)).toEqual({ status: "listed", computedAt: asOf.toISOString() });
+    });
+
+    test("while the newest ranking is of version 1, only now is judged: pending when every rule is met now, else below_threshold", async () => {
+      const asOf = nextAsOf();
+      const [a] = await accounts(db, asOf, 1);
+      const fans = await accounts(db, asOf, 5);
+      const [at, likedAt] = [before(asOf, 2 * HOUR), before(asOf, HOUR)];
+      const a1 = await approvedPost(repo, a!, at, fans.slice(0, 5), likedAt);
+      const a2 = await approvedPost(repo, a!, at, fans.slice(0, 4), likedAt);
+      const a3 = await approvedPost(repo, a!, at, fans.slice(0, 3), likedAt);
+      const quiet = await approvedPost(repo, a!, at, fans.slice(0, 2), likedAt);
+      // The ranking the last round before the deploy wrote, under version 1, holding a1 and a2.
+      const [run] = await db.execute<{ generation: number }>(sql`insert into explore_runs (as_of, formula, candidates, items, took_ms) values (${asOf.toISOString()}::timestamptz, 1, 4, 2, 0) returning generation`);
+      await db.execute(sql`insert into explore_items (generation, position, post_id, author_id) values (${run!.generation}::int, 1, ${a1}::uuid, ${a!.id}::uuid), (${run!.generation}::int, 2, ${a2}::uuid, ${a!.id}::uuid)`);
+      setNow(after(asOf, 11 * MINUTE));
+      const computedAt = asOf.toISOString();
+      expect(await status(a!.id, a1)).toEqual({ status: "listed", computedAt });
+      // Judged at the ranking's time by version 2's rules it would read author_cap; that ranking applied other rules.
+      expect(await status(a!.id, a3)).toEqual({ status: "pending", computedAt });
+      expect(await status(a!.id, quiet)).toEqual({ status: "below_threshold", computedAt });
+    });
   });
 
   leavesNoModerationRows(() => db);

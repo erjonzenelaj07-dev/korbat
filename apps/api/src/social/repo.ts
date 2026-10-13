@@ -1,5 +1,5 @@
 import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
-import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
+import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import { handleRefusal, isUniqueViolation } from "../auth";
 import { WRITE_CLOCK, liveNotSuspended, reportsRestrictedAt, suspendedAt } from "../lib/standing";
@@ -165,27 +165,30 @@ export interface ExplorePageRead {
 
 /**
  * What the author's status needs to know about one post before any judgement: who wrote it, whether it is a reply or a
- * quote, whether it is visible, whether its author shows in Explore, whether it is older than the window at the request
- * time, and the current ranking, if there is one, with its time, whether it holds the post and whether the post was
- * written after it.
+ * quote, whether it is visible, whether its author is suspended now (3e), whether its author shows in Explore, whether
+ * its window has passed at the request time, and the current ranking, if there is one, with its time, its formula's
+ * version, whether it holds the post, whether the post was written after it and whether moderation gave the post back
+ * after it (3e).
  */
 export interface ExploreFacts {
   authorId: string;
   reply: boolean;
   quote: boolean;
   visible: boolean;
+  suspended: boolean;
   shown: boolean;
   outsideWindow: boolean;
-  ranking: { generation: number; asOf: Date; holdsPost: boolean; postIsNewer: boolean } | null;
+  ranking: { generation: number; asOf: Date; formula: number; holdsPost: boolean; postIsNewer: boolean; restoredSince: boolean } | null;
 }
 
 /**
  * The status's judgement of one post: whether it meets every rule of the formula as of the request time and as of the
- * ranking's time, and how many places the ranking gives the post's author and holds in all.
+ * ranking's time (null when the ranking was computed under another version of the formula, whose rules are not judged),
+ * and how many places the ranking gives the post's author and holds in all.
  */
 export interface ExploreJudgement {
   metNow: boolean;
-  metAtRanking: boolean;
+  metAtRanking: boolean | null;
   authorPlaces: number;
   places: number;
 }
@@ -301,12 +304,15 @@ interface RawExploreFacts {
   reply: boolean;
   quote: boolean;
   visible: boolean;
+  suspended: boolean;
   shown: boolean;
   outside_window: boolean;
   generation: number | null;
   as_of: string | null;
+  formula: number | null;
   holds_post: boolean;
   newer: boolean | null;
+  restored: boolean;
 }
 
 /** A timestamptz expression as ISO text with milliseconds, in UTC. The expression is a column reference written here, never input. */
@@ -427,13 +433,32 @@ const LIST_COLUMNS = sql`i.post_id, ${iso("i.sort_at")} as sort_at, i.reposter_i
 const hours = (n: number): SQL => sql`(${n}::float8 * interval '1 hour')`;
 const minutes = (n: number): SQL => sql`(${n}::float8 * interval '1 minute')`;
 
+/** The one version of the Explore formula whose rules exploreRules writes (3e design, section 7.13). */
+const EXPLORE_RULES_VERSION = 2;
+
 /**
- * The rules of one Explore formula as of one time (2c design, section 7), as SQL fragments. The refresh ranks with them
- * and the author's status judges one post with them, so the two cannot disagree; the time and every number of the formula
- * travel as parameters. `post` narrows the candidates and the engagement to one post, which the status reads through that
- * post's own indexes; the rules are the same either way.
+ * The time Explore's reads (the page, the chip and the author's status) judge an author's suspension by (3e design,
+ * section 7.13 item 6): the database's clock when the statement reads, the same clock a write is judged by. A round
+ * judges by its own time instead (exploreRules).
+ */
+const READ_CLOCK = WRITE_CLOCK;
+
+/**
+ * The rules of one Explore formula as of one time (2c design, section 7; 3e design, section 7.13: version 2), as SQL
+ * fragments. The refresh ranks with them and the author's status judges one post with them, so the two cannot disagree;
+ * the time and every number of the formula travel as parameters. `post` narrows the candidates and the engagement to one
+ * post, which the status reads through that post's own indexes; the rules are the same either way. A formula of any
+ * other version throws here, before any SQL, so no ranking is stored under a version whose rules were not applied.
+ *
+ * Version 2's two rules: an account suspended at the time `asOf` (the round's own time, never the clock) is neither a
+ * candidate's author nor an engager, by the one predicate of lib/standing.ts applied to rows the round only reads; and a
+ * post's window and age count from coalesce(explore_from, created_at), its `starts_at`, where explore_from is created_at
+ * plus every span moderation kept the post hidden, which the database's moderation_apply alone writes.
  */
 function exploreRules(asOf: Date, formula: ExploreFormula) {
+  if (formula.version !== EXPLORE_RULES_VERSION) {
+    throw new Error(`Explore's round applies the rules of formula version ${EXPLORE_RULES_VERSION} only, not version ${formula.version}`);
+  }
   const at = sql`${asOf.toISOString()}::timestamptz`;
   // A candidate is younger than the window, and only engagement inside the window counts.
   const since = sql`${at} - ${hours(formula.windowHours)}`;
@@ -441,16 +466,20 @@ function exploreRules(asOf: Date, formula: ExploreFormula) {
   const settled = sql`${at} - ${minutes(formula.standingMinutes)}`;
   const onePost = (column: SQL, post?: string): SQL => (post ? sql` and ${column} = ${post}::uuid` : sql.empty());
   /**
-   * The one candidate predicate: visible top-level posts that are not quotes, by live authors who have not switched
-   * Explore off, created in the window up to the time. Later rules about imports, suspension and restoration belong here.
+   * The one candidate predicate: visible top-level posts that are not quotes, by authors who are live and not suspended
+   * at the time and have not switched Explore off, whose starts_at lies in the window up to the time. The window test is
+   * written in two arms so that each uses its own index: a post never given back its time by its created_at, a restored
+   * one by its explore_from (a partial index holds only those). Later rules about imports belong here.
    */
   const candidates = (post?: string): SQL => sql`
-    select p.id, p.author_id, p.created_at from posts p join profiles a on a.id = p.author_id
-    where p.reply_to_id is null and p.quote_of_id is null and p.state = 'visible' and p.created_at > ${since} and p.created_at <= ${at}
-      and a.deleted_at is null and a.show_in_explore${onePost(sql`p.id`, post)}`;
+    select p.id, p.author_id, coalesce(p.explore_from, p.created_at) as starts_at from posts p join profiles a on a.id = p.author_id
+    where p.reply_to_id is null and p.quote_of_id is null and p.state = 'visible'
+      and ((p.explore_from is null and p.created_at > ${since} and p.created_at <= ${at}) or (p.explore_from > ${since} and p.explore_from <= ${at}))
+      and ${liveNotSuspended("a", at)} and a.show_in_explore${onePost(sql`p.id`, post)}`;
   /**
    * The engagement that counts, read from the candidates `c`: likes and reposts in the window that have stood long enough,
-   * by live accounts other than the author that were old enough when they engaged.
+   * by accounts other than the author that are live and not suspended at the time and were old enough when they engaged.
+   * The engager is judged at the round, never at the time of the like: a ring's earlier likes stop counting at once.
    */
   const engagement = (post?: string): SQL => sql`
     select x.post_id, x.user_id from (
@@ -460,7 +489,7 @@ function exploreRules(asOf: Date, formula: ExploreFormula) {
     ) x
     join c on c.id = x.post_id
     join profiles u on u.id = x.user_id
-    where x.user_id <> c.author_id and u.deleted_at is null and u.created_at <= x.created_at - ${hours(formula.engagerMinAgeHours)}`;
+    where x.user_id <> c.author_id and ${liveNotSuspended("u", at)} and u.created_at <= x.created_at - ${hours(formula.engagerMinAgeHours)}`;
   /** The approving accounts per post, read from the engagement `e`: each counted once however it engaged, for the posts that reach the threshold. */
   const approvers = sql`select post_id, count(distinct user_id)::int as approvers from e group by post_id having count(distinct user_id) >= ${formula.threshold}`;
   return {
@@ -871,18 +900,20 @@ export function createSocialRepo(db: Db) {
     /**
      * One round of the Explore refresh (2c design, section 7): a new ranking as of `asOf`, written by one statement that
      * takes every number of the formula as a parameter, in a transaction that gives up after 30 seconds of work or 5 of
-     * waiting on a lock. The round writes nothing while the newest ranking is younger than the formula's minimum gap, so
-     * at most one ranking lands per interval however many instances run the job or restart. The newest `kept` rankings
-     * stay, so a reader paging through the one before the current one can finish; older ones go with their items.
+     * waiting on a lock. The round writes nothing while the newest ranking of its formula's version is younger than the
+     * formula's minimum gap, so at most one ranking lands per interval however many instances run the job or restart. The
+     * newest `kept` rankings stay, so a reader paging through the one before the current one can finish; older ones go
+     * with their items. A formula of a version other than 2 throws before the transaction (exploreRules).
      *
      * The statement's CTEs: `c` the candidates, `e` the engagement that counts and `ap` the approving accounts per post
      * reaching the threshold, all three the shared rules of `exploreRules`, which the author's status judges with too; `s`
-     * the score, approvers over (hours since posted, never negative, + offset) ^ gravity; `r` each author's posts numbered
+     * the score, approvers over (hours since the post's window started, never negative, + offset) ^ gravity, the window
+     * starting at `starts_at` (3e: when moderation last gave the post back its time, else when it was posted); `r` each author's posts numbered
      * by score, a level of its own because a window cannot order by an alias of its own select; `k` the posts within the
      * per-author cap, numbered by score from 1 and cut at the list length, a tie going to the higher post id; `ins` the
      * items. Nothing about a post but its place is stored, and nothing about any post is answered or logged.
      */
-    async refreshExplore(asOf: Date, formula: ExploreFormula = EXPLORE_V1): Promise<ExploreRefresh> {
+    async refreshExplore(asOf: Date, formula: ExploreFormula = EXPLORE_V2): Promise<ExploreRefresh> {
       const started = performance.now();
       const rules = exploreRules(asOf, formula);
       return db.transaction(async (tx): Promise<ExploreRefresh> => {
@@ -890,7 +921,11 @@ export function createSocialRepo(db: Db) {
         await tx.execute(sql`set local statement_timeout = '30s'`);
         await tx.execute(sql`set local lock_timeout = '5s'`);
         // A ranking later than the minimum gap before `asOf` (one from an instance whose clock runs ahead included) is fresh: the round ends having written nothing.
-        const [recent] = (await tx.execute(sql`select exists (select 1 from explore_runs where as_of > ${rules.at} - ${minutes(formula.minGapMinutes)}) as fresh`)) as unknown as { fresh: boolean }[];
+        // Only a ranking of this formula's version counts (3e design, section 7.13 item 5), so the first round after a
+        // change of version ranks at once rather than leave the old rules' ranking up for another gap.
+        const [recent] = (await tx.execute(
+          sql`select exists (select 1 from explore_runs where as_of > ${rules.at} - ${minutes(formula.minGapMinutes)} and formula = ${formula.version}) as fresh`,
+        )) as unknown as { fresh: boolean }[];
         if (recent!.fresh) return { skipped: true };
         // The counts are written once the statement below has them; until the commit nobody sees this row.
         const [run] = (await tx.execute(sql`
@@ -902,7 +937,7 @@ export function createSocialRepo(db: Db) {
           ap as (${rules.approvers}),
           s as (
             select c.id as post_id, c.author_id,
-              ap.approvers / power(greatest(0, extract(epoch from (${rules.at} - c.created_at))::float8 / 3600) + ${formula.offsetHours}::float8, ${formula.gravity}::float8) as score
+              ap.approvers / power(greatest(0, extract(epoch from (${rules.at} - c.starts_at))::float8 / 3600) + ${formula.offsetHours}::float8, ${formula.gravity}::float8) as score
             from ap join c on c.id = ap.post_id
           ),
           r as (select s.post_id, s.author_id, s.score, row_number() over (partition by s.author_id order by s.score desc, s.post_id desc) as author_rank from s),
@@ -925,8 +960,10 @@ export function createSocialRepo(db: Db) {
      * A page of Explore (2c design, section 8), read by one statement, so a round that prunes a ranking between the checks
      * and the page cannot turn one answer into another: the current generation; the ranking read (the cursor's, or else
      * the current one) when it is kept, with its time; the position of the cursor's post in it; and after that position,
-     * in order, the items whose post is visible (for every reader, its author too), whose author is live and shows in
-     * Explore, and, for a signed-in reader, with no block either way between reader and author and no mute of the author.
+     * in order, the items whose post is visible (for every reader, its author too), whose author is live, not suspended
+     * when the page is read (3e: by the database's clock, so a suspended author's posts leave at the next read and come
+     * back with the next round once the suspension ends) and shows in Explore, and, for a signed-in reader, with no block
+     * either way between reader and author and no mute of the author.
      * The filters come before the limit, so a page is full whenever the ranking holds that many posts the reader may see.
      * The statement answers one row per post, or a lone row without one for an empty page; the flow decides what a missing
      * ranking or post means.
@@ -939,7 +976,7 @@ export function createSocialRepo(db: Db) {
         page as (
           select i.post_id, i.position from explore_items i join posts p on p.id = i.post_id join profiles a on a.id = p.author_id
           where i.generation = (select generation from run) and i.position > (select position from pos)
-            and p.state = 'visible' and a.deleted_at is null and a.show_in_explore and ${viewer ? otherWelcome(viewer, sql`p.author_id`) : sql`true`}
+            and p.state = 'visible' and ${liveNotSuspended("a", READ_CLOCK)} and a.show_in_explore and ${viewer ? otherWelcome(viewer, sql`p.author_id`) : sql`true`}
           order by i.position limit ${limit}
         )
         select cur.generation as current, run.generation, ${iso("run.as_of")} as as_of, pos.position as after, page.post_id, page.position
@@ -956,15 +993,18 @@ export function createSocialRepo(db: Db) {
 
     /**
      * What the author's status needs about one post before any judgement (2c design, section 8), as of `now`: the window is
-     * the formula's, through the same rules the refresh ranks with. Null when there is no such post.
+     * the formula's, through the same rules the refresh ranks with, and counts from the post's starts_at (3e: when
+     * moderation last gave it back its time, else when it was posted). Whether the author is suspended is read at the
+     * database's clock, as the page and the chip read it, so the status says why the post is not shown now. The ranking
+     * comes with its formula's version and whether the post was restored after it. Null when there is no such post.
      */
-    async exploreFacts(postId: string, now: Date, formula: ExploreFormula = EXPLORE_V1): Promise<ExploreFacts | null> {
+    async exploreFacts(postId: string, now: Date, formula: ExploreFormula = EXPLORE_V2): Promise<ExploreFacts | null> {
       const rules = exploreRules(now, formula);
       const [r] = await rows<RawExploreFacts>(sql`
-        with run as (select generation, as_of from explore_runs order by generation desc limit 1)
+        with run as (select generation, as_of, formula from explore_runs order by generation desc limit 1)
         select p.author_id, p.reply_to_id is not null as reply, p.quote_of_id is not null as quote, p.state = 'visible' as visible,
-          a.show_in_explore as shown, p.created_at <= ${rules.since} as outside_window,
-          run.generation, ${iso("run.as_of")} as as_of, p.created_at > run.as_of as newer,
+          ${suspendedAt("a", READ_CLOCK)} as suspended, a.show_in_explore as shown, coalesce(p.explore_from, p.created_at) <= ${rules.since} as outside_window,
+          run.generation, ${iso("run.as_of")} as as_of, run.formula, p.created_at > run.as_of as newer, coalesce(p.restored_at > run.as_of, false) as restored,
           exists (select 1 from explore_items i where i.generation = run.generation and i.post_id = p.id) as holds_post
         from posts p join profiles a on a.id = p.author_id left join run on true
         where p.id = ${postId}::uuid`);
@@ -974,9 +1014,13 @@ export function createSocialRepo(db: Db) {
         reply: r.reply,
         quote: r.quote,
         visible: r.visible,
+        suspended: r.suspended,
         shown: r.shown,
         outsideWindow: r.outside_window,
-        ranking: r.generation === null ? null : { generation: r.generation, asOf: new Date(r.as_of!), holdsPost: r.holds_post, postIsNewer: r.newer! },
+        ranking:
+          r.generation === null
+            ? null
+            : { generation: r.generation, asOf: new Date(r.as_of!), formula: r.formula!, holdsPost: r.holds_post, postIsNewer: r.newer!, restoredSince: r.restored },
       };
     },
 
@@ -984,32 +1028,36 @@ export function createSocialRepo(db: Db) {
      * The status's judgement of one post, from one statement about that post alone and never a ranking: whether it meets
      * every rule of the formula (the candidate predicate, the engagement that counts, the threshold) as of `now` and again
      * as of the ranking's time, through the very fragments the refresh ranks with, and how many places the ranking gives
-     * the post's author and holds in all. Each count reads at most the ranking's items.
+     * the post's author and holds in all. Each count reads at most the ranking's items. A ranking computed under another
+     * version of the formula applied other rules, so only `now` is judged then: metAtRanking is null (3e design, section
+     * 7.13 item 7).
      */
     async exploreJudgement(
       post: { id: string; authorId: string },
       now: Date,
-      ranking: { generation: number; asOf: Date },
-      formula: ExploreFormula = EXPLORE_V1,
+      ranking: { generation: number; asOf: Date; formula: number },
+      formula: ExploreFormula = EXPLORE_V2,
     ): Promise<ExploreJudgement> {
-      const [r] = await rows<{ met_now: boolean; met_at_ranking: boolean; author_places: number; places: number }>(sql`
-        select ${exploreRules(now, formula).met(post.id)} as met_now, ${exploreRules(ranking.asOf, formula).met(post.id)} as met_at_ranking,
+      const sameRules = ranking.formula === formula.version;
+      const [r] = await rows<{ met_now: boolean; met_at_ranking: boolean | null; author_places: number; places: number }>(sql`
+        select ${exploreRules(now, formula).met(post.id)} as met_now, ${sameRules ? exploreRules(ranking.asOf, formula).met(post.id) : sql`null::boolean`} as met_at_ranking,
           (select count(*) from explore_items where generation = ${ranking.generation}::int and author_id = ${post.authorId}::uuid)::int as author_places,
           (select count(*) from explore_items where generation = ${ranking.generation}::int)::int as places`);
       return { metNow: r!.met_now, metAtRanking: r!.met_at_ranking, authorPlaces: r!.author_places, places: r!.places };
     },
 
     /**
-     * Of the viewer's own posts given, those the current Explore ranking holds while the viewer's switch is on: with the
-     * visible posts only, which the caller passes, exactly those whose status would be listed, and so the posts that carry
-     * the author's chip. One statement for any number of posts.
+     * Of the viewer's own posts given, those the current Explore ranking holds while the viewer's switch is on and the
+     * viewer is not suspended when this reads (3e: by the database's clock, as the page reads it): with the visible posts
+     * only, which the caller passes, exactly those whose status would be listed, and so the posts that carry the author's
+     * chip. One statement for any number of posts.
      */
     async listedInExplore(viewer: string, postIds: string[]): Promise<Set<string>> {
       if (postIds.length === 0) return new Set();
       const raw = await rows<{ post_id: string }>(sql`
         select i.post_id from explore_items i join profiles a on a.id = i.author_id
         where i.generation = (select max(generation) from explore_runs) and i.post_id = any(${uuidArray(postIds)})
-          and i.author_id = ${viewer}::uuid and a.deleted_at is null and a.show_in_explore`);
+          and i.author_id = ${viewer}::uuid and ${liveNotSuspended("a", READ_CLOCK)} and a.show_in_explore`);
       return new Set(raw.map((r) => r.post_id));
     },
 

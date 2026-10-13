@@ -200,8 +200,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
       // only delete. A mark's reporter, report and times are forced by its check alone.
       expect(matching(/(INSERT INTO|UPDATE) public[.]report_tallies/i)).toEqual(["public.report_tallies_count"]);
       expect(matching(/NEW[.](account_id|intake_id|reported_at|marked_at) :=/)).toEqual(["public.unfounded_marks_check"]);
-      // No function writes Explore's three columns before the task that gives them their writer.
-      expect(matching(/(hidden_at|restored_at|explore_from) = /)).toEqual([]);
+      // Task 6: moderation_apply, the one writer of a post's level, is the one writer of Explore's three columns, in the
+      // statement that moves the level; only the posts' guard forces them, null on an insert by any role but the migrator.
+      expect(matching(/(hidden_at|restored_at|explore_from) = /)).toEqual(["public.moderation_apply"]);
+      expect(matching(/NEW[.](hidden_at|restored_at|explore_from) :=/)).toEqual(["public.posts_guard"]);
     });
 
     test("every number of 3e comes from standing_rules(): no new function or view holds an interval literal, and decisions_record keeps its caps' two", async () => {
@@ -232,6 +234,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
         "public.unfounded_marks_recheck",
         "public.report_tallies_count",
         "public.forget_reporter",
+        // Task 6, Explore's resume rule: the two functions explore_resume replaces.
+        "public.moderation_apply",
+        "public.posts_guard",
       ];
       for (const name of fresh) expect(all.get(name)!.definition, name).not.toMatch(/interval '/i);
       expect([...all.get("public.decisions_record")!.definition.matchAll(/interval '/gi)]).toHaveLength(2);

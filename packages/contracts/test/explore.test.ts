@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { EXPLORE_V1, ExplorePage, ExploreSettingResponse, ExploreStatus, ExploreStatusKind, TimelineItem, type ExploreFormula } from "../src/index";
+import * as contracts from "../src/index";
+import { EXPLORE_V2, ExplorePage, ExploreSettingResponse, ExploreStatus, ExploreStatusKind, TimelineItem, type ExploreFormula } from "../src/index";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const author = { id: id(1), handle: "ada", displayName: "Ada", verified: false };
@@ -19,9 +20,12 @@ const at = "2026-09-28T12:05:00.000Z";
 const repost = { kind: "repost", post: post(2), repostedBy: author, repostedAt: at };
 
 describe("the Explore formula", () => {
-  test("EXPLORE_V1 holds exactly the numbers of the 2c design, section 5, and the change log", () => {
-    expect(EXPLORE_V1).toStrictEqual({
-      version: 1,
+  /** The day formula version 2 reached the repository (3e design, sections 9.7 and 10.1). */
+  const V2_DATE = "2026-10-12";
+
+  test("EXPLORE_V2 holds the numbers of the 2c design, section 5, unchanged, version 2 and both entries of the change log", () => {
+    expect(EXPLORE_V2).toStrictEqual({
+      version: 2,
       windowHours: 48,
       engagerMinAgeHours: 48,
       standingMinutes: 10,
@@ -34,36 +38,50 @@ describe("the Explore formula", () => {
       minGapMinutes: 4.5,
       kept: 2,
       signedOutPage: 20,
-      changes: [{ version: 1, date: "2026-09-28", summary: "First version." }],
+      changes: [
+        { version: 1, date: "2026-09-28", summary: "First version." },
+        {
+          version: 2,
+          date: V2_DATE,
+          summary:
+            "Posts of suspended accounts are not ranked, and a suspended account's likes and reposts do not count. A post that moderation hid and then restored gets back the time it was hidden.",
+        },
+      ],
     });
   });
 
-  test("EXPLORE_V1 is frozen all the way down, so nothing at run time can change the published numbers", () => {
-    expect(Object.isFrozen(EXPLORE_V1)).toBe(true);
-    expect(Object.isFrozen(EXPLORE_V1.changes)).toBe(true);
-    for (const change of EXPLORE_V1.changes) expect(Object.isFrozen(change)).toBe(true);
+  test("EXPLORE_V1 is no longer exported: version 2 is the one formula the code ranks and words with", () => {
+    expect(Object.keys(contracts)).toContain("EXPLORE_V2");
+    expect(Object.keys(contracts)).not.toContain("EXPLORE_V1");
+  });
+
+  test("EXPLORE_V2 is frozen all the way down, so nothing at run time can change the published numbers", () => {
+    expect(Object.isFrozen(EXPLORE_V2)).toBe(true);
+    expect(Object.isFrozen(EXPLORE_V2.changes)).toBe(true);
+    for (const change of EXPLORE_V2.changes) expect(Object.isFrozen(change)).toBe(true);
     // Modules run in strict mode, where writing to a frozen object throws instead of failing silently.
     expect(() => {
-      (EXPLORE_V1 as { threshold: number }).threshold = 1;
+      (EXPLORE_V2 as { threshold: number }).threshold = 1;
     }).toThrow(TypeError);
     expect(() => {
-      (EXPLORE_V1.changes as unknown as unknown[]).push({ version: 2, date: "2026-10-01", summary: "Changed." });
+      (EXPLORE_V2.changes as unknown as unknown[]).push({ version: 3, date: "2026-12-01", summary: "Changed." });
     }).toThrow(TypeError);
     expect(() => {
-      (EXPLORE_V1.changes[0] as { summary: string }).summary = "Changed.";
+      (EXPLORE_V2.changes[1] as { summary: string }).summary = "Changed.";
     }).toThrow(TypeError);
-    expect(EXPLORE_V1.threshold).toBe(3);
-    expect(EXPLORE_V1.changes).toHaveLength(1);
+    expect(EXPLORE_V2.threshold).toBe(3);
+    expect(EXPLORE_V2.changes).toHaveLength(2);
   });
 
-  test("the change log ends with the formula's own version", () => {
-    expect(EXPLORE_V1.changes.at(-1)?.version).toBe(EXPLORE_V1.version);
+  test("the change log runs oldest first and ends with the formula's own version", () => {
+    expect(EXPLORE_V2.changes.map((change) => change.version)).toEqual([1, 2]);
+    expect(EXPLORE_V2.changes.at(-1)?.version).toBe(EXPLORE_V2.version);
   });
 
-  test("a formula with other numbers has the same type, so the refresh can take one, and EXPLORE_V1 is untouched", () => {
-    const changed: ExploreFormula = { ...EXPLORE_V1, threshold: 5, perAuthor: 1, listLength: 10, minGapMinutes: 0 };
-    expect(changed).toMatchObject({ version: 1, threshold: 5, perAuthor: 1, listLength: 10, minGapMinutes: 0, gravity: 1.8 });
-    expect(EXPLORE_V1).toMatchObject({ threshold: 3, perAuthor: 2, listLength: 300, minGapMinutes: 4.5 });
+  test("a formula with other numbers has the same type, so the refresh can take one, and EXPLORE_V2 is untouched", () => {
+    const changed: ExploreFormula = { ...EXPLORE_V2, threshold: 5, perAuthor: 1, listLength: 10, minGapMinutes: 0 };
+    expect(changed).toMatchObject({ version: 2, threshold: 5, perAuthor: 1, listLength: 10, minGapMinutes: 0, gravity: 1.8 });
+    expect(EXPLORE_V2).toMatchObject({ threshold: 3, perAuthor: 2, listLength: 300, minGapMinutes: 4.5 });
   });
 });
 
@@ -117,11 +135,12 @@ describe("the Explore page", () => {
 });
 
 describe("the author's Explore status", () => {
-  test("names one of twelve reasons, in the order the status route tries them", () => {
+  test("names one of thirteen reasons, in the order the status route tries them: suspended after not_visible (3e)", () => {
     expect(ExploreStatusKind.options).toEqual([
       "reply",
       "quote",
       "not_visible",
+      "suspended",
       "hidden_by_author",
       "listed",
       "outside_window",

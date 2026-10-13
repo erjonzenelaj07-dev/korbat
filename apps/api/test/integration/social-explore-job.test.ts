@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import type { MiddlewareHandler } from "hono";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { EXPLORE_V1 } from "@korbat/contracts";
+import { EXPLORE_V2 } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import type { AppEnv } from "../../src/env";
@@ -10,6 +10,7 @@ import { MemoryJobLock } from "../../src/lib/jobs";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createSocial } from "../../src/social";
 import { createExploreJob } from "../../src/social/explore";
+import { leavesNoModerationRows } from "./moderation-decide";
 import { newPost, newProfile, ticker } from "./social-fixtures";
 
 const MINUTE = 60_000;
@@ -96,6 +97,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore job", () => 
     return (await db.execute(sql`select generation, candidates, items, took_ms as "tookMs" from explore_runs order by generation`)) as unknown as RunRow[];
   }
 
+  /** The formula version of every ranking kept, oldest first. */
+  async function formulas(): Promise<number[]> {
+    return ((await db.execute(sql`select formula from explore_runs order by generation`)) as unknown as { formula: number }[]).map((row) => row.formula);
+  }
+
   async function listed(generation: number): Promise<string[]> {
     const rows = (await db.execute(sql`select post_id from explore_items where generation = ${generation} order by position`)) as unknown as { post_id: string }[];
     return rows.map((row) => row.post_id);
@@ -117,6 +123,24 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore job", () => 
     expect(run).toEqual({ generation: expect.any(Number), candidates: 1, items: 1, tookMs: expect.any(Number) });
     expect(m.lines).toEqual([{ level: 30, msg: "explore: ranking refreshed", generation: run!.generation, candidates: 1, items: 1, tookMs: run!.tookMs }]);
     expect(await listed(run!.generation)).toEqual([target]);
+    // The job ranks with the published formula, version 2 (3e design, section 7.13).
+    expect(await formulas()).toEqual([2]);
+  });
+
+  test("the first round after the formula changed ranks at once: a ranking of version 1 younger than the minimum gap does not hold it back (3e)", async () => {
+    const m = socialModule();
+    const target = await approvedPost(m);
+    // The ranking the last round before the deploy wrote, a minute ago, under version 1.
+    await db.execute(sql`insert into explore_runs (as_of, formula, candidates, items, took_ms) values (${new Date(m.clock.now().getTime() - MINUTE).toISOString()}::timestamptz, 1, 0, 0, 0)`);
+    const job = createExploreJob(m.social.deps, new MemoryJobLock());
+    expect(await job.round()).toBe("ran");
+    expect(await formulas()).toEqual([1, 2]);
+    const [, current] = await runs();
+    expect(await listed(current!.generation)).toEqual([target]);
+    // A ranking of version 2 does hold the next round back, as before.
+    m.clock.jump(MINUTE);
+    expect(await job.round()).toBe("ran");
+    expect(await formulas()).toEqual([1, 2]);
   });
 
   test("the job's rounds follow the minimum gap: one inside it writes and logs nothing, the next one past it ranks again", async () => {
@@ -127,12 +151,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore job", () => 
     const first = await runs();
     expect(first).toHaveLength(1);
 
-    m.clock.jump(EXPLORE_V1.minGapMinutes * MINUTE - 1_000);
+    m.clock.jump(EXPLORE_V2.minGapMinutes * MINUTE - 1_000);
     expect(await job.round()).toBe("ran");
     expect(await runs()).toEqual(first);
     expect(m.lines).toHaveLength(1);
 
-    m.clock.jump(EXPLORE_V1.refreshMinutes * MINUTE);
+    m.clock.jump(EXPLORE_V2.refreshMinutes * MINUTE);
     expect(await job.round()).toBe("ran");
     const [, second] = await runs();
     expect(second!.generation).toBeGreaterThan(first[0]!.generation);
@@ -151,7 +175,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore job", () => 
       expect(await createExploreJob(m.social.deps, lock).round()).toBe("ran");
       const previous = await runs();
       expect(previous).toHaveLength(1);
-      m.clock.jump(EXPLORE_V1.refreshMinutes * MINUTE);
+      m.clock.jump(EXPLORE_V2.refreshMinutes * MINUTE);
 
       // A transaction holds the listed post's row for update, as a write to it would: the next ranking cannot insert an
       // item referencing that post until it ends, and gives up on its own lock timeout instead.
@@ -197,4 +221,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore job", () => 
       expect(await listed(current!.generation)).toEqual([target]);
     },
   );
+
+  leavesNoModerationRows(() => db);
 });

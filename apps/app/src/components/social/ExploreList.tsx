@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
-import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
+import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
 import { errorMessage } from "@/lib/api";
 import { EXPLORE_REFRESHED_NOTICE, exploreEmptyText, exploreReader, NOTHING_SHOWN, rankingAge, type ExploreShown, type RankingRead } from "@/lib/explore";
 import { social } from "@/lib/social";
@@ -54,7 +54,7 @@ export function ExploreHeader({ ranking, onRefresh, lineRef }: { ranking: Rankin
 }
 
 /** An empty Explore (2c design, section 11): when a post appears there, in the formula's numbers, with the rules and a way on. */
-export function ExploreEmpty({ onShowLatest, formula = EXPLORE_V1 }: { onShowLatest: () => void; formula?: ExploreFormula }) {
+export function ExploreEmpty({ onShowLatest, formula = EXPLORE_V2 }: { onShowLatest: () => void; formula?: ExploreFormula }) {
   return (
     <View className="items-center px-4 py-10">
       <Text className="mb-3 text-center text-base leading-6 text-zinc-400">{exploreEmptyText(formula)}</Text>

@@ -19,6 +19,7 @@ import { createSocial, type Social } from "../../src/social";
 import { HOUR, MINUTE, accounts, after, approvedPost, before, listed, pageIds, rank, spans } from "./explore-fixtures";
 import { Browser } from "./http-client";
 import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 import { newPost } from "./social-fixtures";
 
 type App = ReturnType<typeof createApp>;
@@ -220,6 +221,38 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Explore over HTTP", () =
     expect(unknown.status).toBe(404);
     expect((await errorOf(unknown)).code).toBe("not_found");
     expect((await ada.b.fetch(statusPath("not-a-post"))).status).toBe(400);
+  });
+
+  test("a suspended author (3e): the status route answers suspended, and the page and the author's chip leave the listed post at the next read, before any round", async () => {
+    const asOf = nextAsOf();
+    const ada = await signUp();
+    const fans = await accounts(apiDb, asOf, 3);
+    const id = await approvedPost(social.deps.repo, { id: ada.userId }, before(asOf, 2 * HOUR), fans, before(asOf, HOUR));
+    await rank(social.deps.repo, asOf);
+    clock = after(asOf, MINUTE);
+    const computedAt = asOf.toISOString();
+    const statusOf = async () => ExploreStatus.parse(await (await ada.b.fetch(`/api/posts/${id}/explore`)).json());
+    const chip = async () => ((await (await ada.b.fetch(`/api/posts/${id}`)).json()) as { inExplore?: boolean }).inExplore;
+    expect(await statusOf()).toEqual({ status: "listed", computedAt });
+    expect(pageIds(await explore(""))).toEqual([id]);
+    expect(await chip()).toBe(true);
+    const migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
+    try {
+      // Suspended from a minute ago by the database's clock, which the reads judge by; the ranking of 2023 judged the
+      // author at its own time and listed the post. The status is a read, which a suspended account may make.
+      await suspendRowForTest(migrateDb, ada.userId);
+      expect(await statusOf()).toEqual({ status: "suspended", computedAt });
+      expect(pageIds(await explore(""))).toEqual([]);
+      expect(pageIds(await explore("", ada.b))).toEqual([]);
+      expect(await chip()).toBeUndefined();
+    } finally {
+      await liftRowForTest(migrateDb, ada.userId);
+      await closeDb(migrateDb);
+    }
+    // Lifted, the post is back at the next read: the ranking still holds it.
+    expect(pageIds(await explore(""))).toEqual([id]);
+    expect(await statusOf()).toEqual({ status: "listed", computedAt });
+    expect(await chip()).toBe(true);
   });
 
   test("POST turns the Explore switch on and DELETE off, for an onboarded session and without an event; /api/me reads it, and a listed post leaves at the next read", async () => {

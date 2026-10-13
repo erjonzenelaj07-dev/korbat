@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
+import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
 import { closeDb, createDb, likes, posts, profiles, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { createSocialRepo, type SocialRepo } from "../../src/social/repo";
@@ -21,10 +21,10 @@ const EPOCH = Date.UTC(2020, 0, 1);
 const SPAN = 10 * DAY;
 
 /** The published formula without its minimum gap, for a test that ranks the same rows again at the same time. */
-const AGAIN: ExploreFormula = { ...EXPLORE_V1, minGapMinutes: 0 };
+const AGAIN: ExploreFormula = { ...EXPLORE_V2, minGapMinutes: 0 };
 
 /** The score as the published formula states it, for the orders the tests expect. */
-const score = (approvers: number, hours: number): number => approvers / Math.pow(Math.max(0, hours) + EXPLORE_V1.offsetHours, EXPLORE_V1.gravity);
+const score = (approvers: number, hours: number): number => approvers / Math.pow(Math.max(0, hours) + EXPLORE_V2.offsetHours, EXPLORE_V2.gravity);
 
 interface RunRow {
   generation: number;
@@ -99,7 +99,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     const result = await rank(asOf);
     expect(result).toEqual({ skipped: false, generation: expect.any(Number), candidates: 2, items: 1, tookMs: expect.any(Number) });
     expect(Number.isInteger(result.tookMs) && result.tookMs >= 0).toBe(true);
-    expect(await runs()).toEqual([{ generation: result.generation, asOf: asOf.toISOString(), formula: EXPLORE_V1.version, candidates: 2, items: 1, tookMs: result.tookMs }]);
+    expect(await runs()).toEqual([{ generation: result.generation, asOf: asOf.toISOString(), formula: EXPLORE_V2.version, candidates: 2, items: 1, tookMs: result.tookMs }]);
     expect(await listed(result.generation)).toEqual([approved]);
     const [item] = (await db.execute(sql`select author_id from explore_items where generation = ${result.generation}`)) as unknown as { author_id: string }[];
     expect(item?.author_id).toBe(author!.id);
@@ -108,7 +108,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
   test("the window's edges: a post enters from a millisecond after 48 hours before the refresh up to the refresh's own millisecond", async () => {
     const asOf = nextAsOf();
     const [a, b, c, ...fans] = await accounts(asOf, 6);
-    const window = EXPLORE_V1.windowHours * HOUR;
+    const window = EXPLORE_V2.windowHours * HOUR;
     const tooOld = await post(a!, before(asOf, window));
     const oldest = await post(b!, before(asOf, window - 1));
     const newest = await post(c!, asOf);
@@ -181,7 +181,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
   test("likes and reposts from accounts under 48 hours old at the time do not count, even once the account is older", async () => {
     const asOf = nextAsOf();
     const [a, b, c, ...fans] = await accounts(asOf, 5);
-    const minAge = EXPLORE_V1.engagerMinAgeHours * HOUR;
+    const minAge = EXPLORE_V2.engagerMinAgeHours * HOUR;
     const at = before(asOf, 2 * HOUR);
     // A millisecond short of 48 hours old when it liked, and past 49 hours at the refresh.
     const youngLiker = await newProfile(db, { createdAt: new Date(at.getTime() - minAge + 1) });
@@ -219,7 +219,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
   test("likes and reposts younger than 10 minutes do not count, and ones exactly 10 minutes old do", async () => {
     const asOf = nextAsOf();
     const [a, b, c, d, late, ...fans] = await accounts(asOf, 7);
-    const standing = EXPLORE_V1.standingMinutes * MINUTE;
+    const standing = EXPLORE_V2.standingMinutes * MINUTE;
     const likedInTime = await post(a!, before(asOf, HOUR));
     const repostedInTime = await post(b!, before(asOf, 2 * HOUR));
     const likedLate = await post(c!, before(asOf, HOUR));
@@ -338,7 +338,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
   test("a ranking holds at most 300 posts: of 301 qualifying posts, the lowest scoring is left out", async () => {
     const asOf = nextAsOf();
     const fans = await accounts(asOf, 3);
-    const n = EXPLORE_V1.listLength + 1;
+    const n = EXPLORE_V2.listLength + 1;
     // One post by each of 301 authors, so the per-author cap plays no part, written in bulk; each is a second older than
     // the one before, so the scores fall in the order the posts were written.
     const authors = Array.from({ length: n }, () => ({ id: randomUUID(), handle: `x_${randomBytes(6).toString("hex")}`, displayName: "An author", createdAt: before(asOf, 30 * DAY) }));
@@ -352,8 +352,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     await db.insert(likes).values(fans.flatMap((fan) => order.map((postId) => ({ userId: fan.id, postId, createdAt: before(asOf, 30 * MINUTE) }))));
 
     const result = await rank(asOf);
-    expect(result).toMatchObject({ candidates: n, items: EXPLORE_V1.listLength });
-    expect(await listed(result.generation)).toEqual(order.slice(0, EXPLORE_V1.listLength));
+    expect(result).toMatchObject({ candidates: n, items: EXPLORE_V2.listLength });
+    expect(await listed(result.generation)).toEqual(order.slice(0, EXPLORE_V2.listLength));
   });
 
   test("a round less than 4.5 minutes after the newest ranking writes nothing, and one 4.5 minutes after it ranks", async () => {
@@ -361,7 +361,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     const [author, ...fans] = await accounts(asOf, 4);
     const target = await post(author!, before(asOf, 2 * HOUR));
     await likedBy(target, fans, before(asOf, HOUR));
-    const gap = EXPLORE_V1.minGapMinutes * MINUTE;
+    const gap = EXPLORE_V2.minGapMinutes * MINUTE;
     const first = await rank(asOf);
     const written = await runs();
 
@@ -397,12 +397,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     ]);
 
     // A formula that keeps one ranking leaves only the newest.
-    const g4 = (await rank(after(asOf, 15 * MINUTE), { ...EXPLORE_V1, kept: 1 })).generation;
+    const g4 = (await rank(after(asOf, 15 * MINUTE), { ...EXPLORE_V2, kept: 1 })).generation;
     expect(await generations()).toEqual([g4]);
     expect(await itemCounts()).toEqual([{ generation: g4, n: 1 }]);
   });
 
-  test("a round with another threshold, per-author cap and list length follows them, and records its formula's version", async () => {
+  test("a round with another threshold, per-author cap and list length follows them, and records its formula's version, 2", async () => {
     const asOf = nextAsOf();
     const [a, b, c] = await accounts(asOf, 3);
     const fans = await accounts(asOf, 4);
@@ -418,9 +418,77 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     expect(await listed((await rank(asOf, AGAIN)).generation)).toEqual([a1, a2]);
 
     // Two approving accounts are enough, one post per author, two posts in all: the author's best, then the better of the other two.
-    const result = await rank(asOf, { ...AGAIN, version: 9, threshold: 2, perAuthor: 1, listLength: 2 });
+    const result = await rank(asOf, { ...AGAIN, threshold: 2, perAuthor: 1, listLength: 2 });
     expect(await listed(result.generation)).toEqual([a1, b1]);
-    expect((await runs()).at(-1)).toMatchObject({ generation: result.generation, formula: 9, candidates: 4, items: 2 });
+    expect((await runs()).at(-1)).toMatchObject({ generation: result.generation, formula: 2, candidates: 4, items: 2 });
+    // Version 2's rules are the only ones the round applies: a formula of any other version is refused before any SQL,
+    // so no ranking is stored under a version whose rules it did not apply (3e design, section 7.13).
+    const written = await runs();
+    for (const version of [1, 3, 9]) await expect(repo.refreshExplore(asOf, { ...AGAIN, version }), String(version)).rejects.toThrow(/version 2/);
+    expect(await runs()).toEqual(written);
+  });
+
+  /**
+   * Version 2 counts a post's window and age from coalesce(explore_from, created_at) (3e design, section 7.13). Only
+   * moderation_apply writes explore_from, as created_at plus the time the post spent hidden; these tests set it as the
+   * migrator to chosen times, so the arms of the window and the score can be held to the millisecond, and clear it again.
+   */
+  describe("version 2: the window and the age count from explore_from when moderation hid the post", () => {
+    let migrateDb: Db;
+    const resumed: string[] = [];
+    beforeAll(() => {
+      migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
+    });
+    afterAll(async () => {
+      try {
+        await migrateDb.execute(sql`update posts set hidden_at = null, restored_at = null, explore_from = null where id = any(${`{${resumed.join(",")}}`}::uuid[])`);
+      } finally {
+        await closeDb(migrateDb);
+      }
+    });
+    /** Writes the post's resume time as moderation_apply would, with the span before it as hidden. */
+    async function resume(postId: string, from: Date): Promise<void> {
+      resumed.push(postId);
+      await migrateDb.execute(sql`update posts set hidden_at = created_at, restored_at = ${from.toISOString()}::timestamptz, explore_from = ${from.toISOString()}::timestamptz where id = ${postId}::uuid`);
+    }
+
+    test("the window's two arms: a post past its 48 hours enters while its resume time is inside them, and one whose resume time is past or after the round does not", async () => {
+      const asOf = nextAsOf();
+      const [a, b, c, d, ...fans] = await accounts(asOf, 7);
+      const window = EXPLORE_V2.windowHours * HOUR;
+      // Created three days before the round, hidden and given back its time: it resumes a millisecond inside the window.
+      const resumedIn = await post(a!, before(asOf, 3 * DAY));
+      // Created before the window and resumed exactly at its edge: out, as a post created at the edge is.
+      const resumedOut = await post(b!, before(asOf, window + HOUR));
+      // Its resume time is after the round's: not yet a candidate.
+      const resumedLater = await post(c!, before(asOf, HOUR));
+      // Never hidden: the created_at arm, as in version 1.
+      const plain = await post(d!, before(asOf, 2 * HOUR));
+      for (const id of [resumedIn, resumedOut, resumedLater, plain]) await likedBy(id, fans, before(asOf, HOUR));
+      await resume(resumedIn, before(asOf, window - 1));
+      await resume(resumedOut, before(asOf, window));
+      await resume(resumedLater, after(asOf, 1));
+
+      const result = await rank(asOf);
+      expect(new Set(await listed(result.generation))).toEqual(new Set([resumedIn, plain]));
+      expect(result.candidates).toBe(2);
+    });
+
+    test("the score's age is the time since the resume time: a post restored an hour ago ranks above one of the same approvers posted 10 hours ago", async () => {
+      const asOf = nextAsOf();
+      const [a, b] = await accounts(asOf, 2);
+      const fans = await accounts(asOf, 4);
+      // Posted 40 hours ago and hidden until 39 hours later: shown for about an hour in all.
+      const restored = await post(a!, before(asOf, 40 * HOUR));
+      const older = await post(b!, before(asOf, 10 * HOUR));
+      await likedBy(restored, fans, before(asOf, 30 * MINUTE));
+      await likedBy(older, fans, before(asOf, 30 * MINUTE));
+      // Without a resume time the restored post is the older, and ranks second.
+      expect(await listed((await rank(asOf, AGAIN)).generation)).toEqual([older, restored]);
+      await resume(restored, before(asOf, HOUR));
+      expect(score(4, 1)).toBeGreaterThan(score(4, 10));
+      expect(await listed((await rank(asOf, AGAIN)).generation)).toEqual([restored, older]);
+    });
   });
 
   test("a round with another window, engager age, standing, gravity and offset follows them", async () => {

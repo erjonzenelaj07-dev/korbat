@@ -9,7 +9,7 @@ import { TimelineItem, page } from "./social";
 export interface ExploreFormula {
   /** Stored with every ranking and printed with the change log. */
   readonly version: number;
-  /** A post is a candidate for this many hours after it was created. */
+  /** A post is a candidate for this many hours after it was created, not counting (from v2) time moderation kept it hidden. */
   readonly windowHours: number;
   /** A like or repost counts only when its account was at least this many hours old when it engaged. */
   readonly engagerMinAgeHours: number;
@@ -17,7 +17,7 @@ export interface ExploreFormula {
   readonly standingMinutes: number;
   /** The fewest approving accounts (distinct accounts other than the author that liked or reposted it) a post needs. */
   readonly threshold: number;
-  /** The score is approvers / (hours since the post was created + offsetHours) ^ gravity. */
+  /** The score is approvers / (hours since the post was created, from v2 less the time moderation kept it hidden, + offsetHours) ^ gravity. */
   readonly gravity: number;
   readonly offsetHours: number;
   /** At most this many posts of one author in a ranking. */
@@ -36,9 +36,16 @@ export interface ExploreFormula {
   readonly changes: readonly { readonly version: number; readonly date: string; readonly summary: string }[];
 }
 
-/** Explore v1. Frozen all the way down: nothing at run time may change what How Explore works publishes. */
-export const EXPLORE_V1: ExploreFormula = Object.freeze({
-  version: 1,
+/**
+ * Explore v2 (3e design, sections 7.13 and 10.1), in place of v1, which is no longer exported: the same numbers, two
+ * changed rules. Posts of accounts suspended when the ranking is computed are not candidates, and their likes and reposts
+ * do not count; a post's window and age count from when moderation last gave it back its time (posts.explore_from, which
+ * only the database's moderation_apply writes) or else from when it was posted. The round, the status and the app take
+ * this one constant, and the round refuses any other version, so no ranking is stored under rules it did not apply.
+ * Frozen all the way down: nothing at run time may change what How Explore works publishes.
+ */
+export const EXPLORE_V2: ExploreFormula = Object.freeze({
+  version: 2,
   windowHours: 48,
   engagerMinAgeHours: 48,
   standingMinutes: 10,
@@ -51,7 +58,16 @@ export const EXPLORE_V1: ExploreFormula = Object.freeze({
   minGapMinutes: 4.5,
   kept: 2,
   signedOutPage: 20,
-  changes: Object.freeze([Object.freeze({ version: 1, date: "2026-09-28", summary: "First version." })]),
+  changes: Object.freeze([
+    Object.freeze({ version: 1, date: "2026-09-28", summary: "First version." }),
+    // Dated the day the task that builds version 2 reached the repository (3e design, section 10.1), worded as section 9.7.
+    Object.freeze({
+      version: 2,
+      date: "2026-10-12",
+      summary:
+        "Posts of suspended accounts are not ranked, and a suspended account's likes and reposts do not count. A post that moderation hid and then restored gets back the time it was hidden.",
+    }),
+  ]),
 });
 
 /** A timeline item of kind post. Explore ranks original posts only, so a repost item is refused. */
@@ -72,11 +88,13 @@ export const ExploreStatusKind = z.enum([
   "quote",
   // Withheld, removed or deleted.
   "not_visible",
+  // The author's account is suspended now (3e): its posts leave Explore at the next read.
+  "suspended",
   // The author switched Explore off.
   "hidden_by_author",
   // In the current ranking; a listed post stays listed until the next round, even past its window.
   "listed",
-  // Older than the window now.
+  // Older than the window now, counted (from v2) without the time moderation kept it hidden.
   "outside_window",
   // No round has run yet.
   "no_ranking",
