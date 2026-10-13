@@ -2,6 +2,7 @@ import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle
 import { EXPLORE_V1, type ExploreFormula } from "@korbat/contracts";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import { handleRefusal, isUniqueViolation } from "../auth";
+import { WRITE_CLOCK, liveNotSuspended, reportsRestrictedAt, suspendedAt } from "../lib/standing";
 import { SocialError } from "./context";
 import type { Cursor, ExploreCursor } from "./cursor";
 import type { StoredPostState } from "./visibility";
@@ -73,7 +74,7 @@ export interface ProfileRow {
 }
 
 /** How a handle change ended: the handle the profile had before, or why nothing was written. */
-export type HandleChangeResult = { ok: true; from: string } | { ok: false; reason: "not_found" | "unchanged" | "handle_taken" | "handle_retired" | "handle_reserved" };
+export type HandleChangeResult = { ok: true; from: string } | { ok: false; reason: "not_found" | "unchanged" | "handle_taken" | "handle_retired" | "handle_reserved" | "account_suspended" };
 
 /** A post as its author wrote it, for the data export; a deleted one keeps its row with an empty body and its deletion time. */
 export interface ExportedPostRow {
@@ -189,8 +190,19 @@ export interface ExploreJudgement {
   places: number;
 }
 
-/** The two modes a profile row is locked in for a moderation case: a decision's on its subject, and a report's on its sender. */
-export type AccountLockMode = "no key update" | "key share";
+/**
+ * The modes a profile row is locked in for a moderation case: a decision's on its subject (3e: `update` when it takes or
+ * may start a suspension or a termination, section 5's lock order; `no key update` otherwise), and a report's on its sender.
+ */
+export type AccountLockMode = "update" | "no key update" | "key share";
+
+/** One row lockAccounts locked: whether its account is deleted, and, read in the same statement by the clock, suspended and restricted in its reports. */
+export interface LockedAccount {
+  id: string;
+  deleted: boolean;
+  suspended: boolean;
+  reportsRestricted: boolean;
+}
 
 /** A post as a case's evidence copies it. `body` is empty when the post's content was erased (`erased`). */
 export interface CapturedPost {
@@ -481,7 +493,10 @@ export function createSocialRepo(db: Db) {
      * between them refused inside the transaction, so a reply cannot land across a concurrent block.
      * The author's profile row is locked and a deleted one refused (not_found), and so is the row of the
      * author of the post replied to or quoted (post_unavailable, as for a post that is gone), so no post
-     * lands behind a concurrent purge of either account (lockLive). A post that both replies and quotes writes two
+     * lands behind a concurrent purge of either account (lockLive). 3e (design, section 5, the lock order, item 2): the
+     * author's row is taken in its own statement, FOR NO KEY UPDATE when its post counter will change (a post or a quote)
+     * and FOR KEY SHARE for a reply, with the one predicate on it (account_suspended); the other author's row FOR KEY
+     * SHARE: those two modes never wait for each other. A post that both replies and quotes writes two
      * other posts' counters: their rows are taken first, in id order, the order in which a report takes the posts it
      * copies (3c design, section 2, Lock order), so the new post never holds one of them while it waits for the other.
      */
@@ -496,7 +511,7 @@ export function createSocialRepo(db: Db) {
     }): Promise<string> {
       return db.transaction(async (tx) => {
         if (input.lockWith) await guardPair(tx, input.authorId, input.lockWith, "post_unavailable");
-        await lockLive(tx, sql`id = ${input.authorId}::uuid`);
+        await lockActing(tx, input.authorId, input.replyToId ? "key share" : "no key update");
         if (input.replyToId || input.quoteOfId) {
           await lockLive(tx, sql`id in (select author_id from posts where id in (${input.replyToId}::uuid, ${input.quoteOfId}::uuid))`, "post_unavailable");
         }
@@ -588,11 +603,12 @@ export function createSocialRepo(db: Db) {
      * `other` is the post's author when that is someone else: the pair is locked and a block refused inside the
      * transaction. The liker's and the author's profile rows are locked too and a deleted one refused, so a like
      * cannot land on an account a concurrent purge is removing (lockLive); the same goes for reposts and bookmarks.
+     * 3e: the liker is the acting account, refused account_suspended while its suspension runs; the author need only be live.
      */
     async like(userId: string, postId: string, now: Date, other?: string): Promise<boolean> {
       return db.transaction(async (tx) => {
         if (other) await guardPair(tx, userId, other, "not_found");
-        await lockLive(tx, actorAndAuthor(userId, postId));
+        await lockLive(tx, actorAndAuthor(userId, postId), "not_found", userId);
         const inserted = await tx.insert(likes).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: likes.postId });
         if (inserted.length > 0) await tx.update(posts).set({ likeCount: bump(posts.likeCount, 1) }).where(eq(posts.id, postId));
         return inserted.length > 0;
@@ -608,7 +624,7 @@ export function createSocialRepo(db: Db) {
     async repost(userId: string, postId: string, now: Date, other?: string): Promise<boolean> {
       return db.transaction(async (tx) => {
         if (other) await guardPair(tx, userId, other, "not_found");
-        await lockLive(tx, actorAndAuthor(userId, postId));
+        await lockLive(tx, actorAndAuthor(userId, postId), "not_found", userId);
         const inserted = await tx.insert(reposts).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: reposts.postId });
         if (inserted.length > 0) await tx.update(posts).set({ repostCount: bump(posts.repostCount, 1) }).where(eq(posts.id, postId));
         return inserted.length > 0;
@@ -624,7 +640,7 @@ export function createSocialRepo(db: Db) {
     async bookmark(userId: string, postId: string, now: Date): Promise<boolean> {
       // A transaction of its own only for the lock: a bookmark counts nothing, but it must not outlive a purge of either account.
       return db.transaction(async (tx) => {
-        await lockLive(tx, actorAndAuthor(userId, postId));
+        await lockLive(tx, actorAndAuthor(userId, postId), "not_found", userId);
         const inserted = await tx.insert(bookmarks).values({ userId, postId, createdAt: now }).onConflictDoNothing().returning({ postId: bookmarks.postId });
         return inserted.length > 0;
       });
@@ -656,12 +672,14 @@ export function createSocialRepo(db: Db) {
     /**
      * With `guard`, the pair is locked and a block refused inside the transaction, so a follow cannot land across a
      * concurrent block. Both profile rows are locked and a deleted one refused either way, so a follow cannot land
-     * on an account a concurrent purge is removing and stay behind it (lockLive).
+     * on an account a concurrent purge is removing and stay behind it. 3e (design, section 5, the lock order, item 2):
+     * both rows are taken FOR NO KEY UPDATE, the mode the counter updates need, in one statement ordered by id, before
+     * the insert; the follower is the acting account and is refused account_suspended while its suspension runs.
      */
     async follow(followerId: string, followeeId: string, now: Date, guard = false): Promise<boolean> {
       return db.transaction(async (tx) => {
         if (guard) await guardPair(tx, followerId, followeeId, "not_found");
-        await lockLive(tx, sql`id in (${followerId}::uuid, ${followeeId}::uuid)`);
+        await lockPair(tx, followerId, followeeId, followerId);
         const inserted = await tx.insert(follows).values({ fromId: followerId, toId: followeeId, createdAt: now }).onConflictDoNothing().returning({ toId: follows.toId });
         if (inserted.length > 0) {
           await tx.update(profiles).set({ followerCount: bump(profiles.followerCount, 1) }).where(eq(profiles.id, followeeId));
@@ -670,8 +688,15 @@ export function createSocialRepo(db: Db) {
         return inserted.length > 0;
       });
     },
+    /**
+     * 3e (design, section 5, the lock order, item 2): both profile rows FOR NO KEY UPDATE in one statement ordered by id,
+     * as a follow takes them, before the delete writes their counters. Withdrawing a follow is open to a suspended account.
+     */
     async unfollow(followerId: string, followeeId: string): Promise<boolean> {
-      return db.transaction(async (tx) => removeFollow(tx, followerId, followeeId));
+      return db.transaction(async (tx) => {
+        await lockPair(tx, followerId, followeeId, null);
+        return removeFollow(tx, followerId, followeeId);
+      });
     },
 
     /**
@@ -1084,12 +1109,15 @@ export function createSocialRepo(db: Db) {
       return exportPage(raw, limit, (row) => ({ handle: row.handle, since: new Date(row.since) }));
     },
 
-    /** Sets the display name, the bio, or both (`patch` names at least one). False when there is no such live profile. */
+    /**
+     * Sets the display name, the bio, or both (`patch` names at least one). False when there is no such live profile, and
+     * (3e, section 7.2) while its suspension runs: the predicate is part of the update's own WHERE, so the update decides.
+     */
     async updateProfile(id: string, patch: { displayName?: string; bio?: string }): Promise<boolean> {
       const updated = await db
         .update(profiles)
         .set({ ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}), ...(patch.bio !== undefined ? { bio: patch.bio } : {}) })
-        .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)))
+        .where(and(eq(profiles.id, id), liveNotSuspended("profiles", WRITE_CLOCK)))
         .returning({ id: profiles.id });
       return updated.length === 1;
     },
@@ -1107,13 +1135,17 @@ export function createSocialRepo(db: Db) {
      * 3e (design, section 7.10): a handle korbat retired is nobody's, its former holder's included, so the claim answers
      * handle_retired before it asks whether the handle is free; a handle of the account's own history counts as free
      * only while it is not retired. The database's guard of handles refuses the same, and a placeholder's form, to a
-     * change that lost a race with a retirement or skipped the handle rule; its code is answered alike.
+     * change that lost a race with a retirement or skipped the handle rule; its code is answered alike. The locking
+     * statement also answers whether the account's suspension runs (3e, section 7.2), and then nothing is written.
      */
     async changeHandle(id: string, to: string, now: Date): Promise<HandleChangeResult> {
       try {
         return await db.transaction(async (tx): Promise<HandleChangeResult> => {
-          const [current] = (await tx.execute(sql`select handle from profiles where id = ${id}::uuid and deleted_at is null for update`)) as unknown as { handle: string }[];
+          const [current] = (await tx.execute(
+            sql`select handle, ${suspendedAt("profiles", WRITE_CLOCK)} as suspended from profiles where id = ${id}::uuid and deleted_at is null for update`,
+          )) as unknown as { handle: string; suspended: boolean }[];
           if (!current) return { ok: false, reason: "not_found" };
+          if (current.suspended) return { ok: false, reason: "account_suspended" };
           if (current.handle.toLowerCase() === to) return { ok: false, reason: "unchanged" };
           const [claim] = (await tx.execute(sql`
             select exists (select 1 from handle_history where handle_lower = ${to} and retired_at is not null) as retired,
@@ -1141,16 +1173,23 @@ export function createSocialRepo(db: Db) {
      * subject: two decisions about one account then run one after the other, while the likes and follows of others,
      * which take `key share`, never wait for it. `key share` is what a report takes on its sender. It answers each row
      * found with whether its account is deleted; with `live`, a missing or deleted account is refused (not_found).
+     *
+     * 3e (design, sections 5 and 7.2): `update` is what a decision takes on its subject when it holds a suspension or a
+     * termination, the mode the ledger's trigger takes again: left at `no key update`, the trigger's lock would be an
+     * upgrade behind the case's lock, which deadlocks with followers' counter updates. Each row's answer also says whether
+     * the account is suspended and whether its reports are restricted, read in the locking statement by the clock, which
+     * is what the intake judges a report's sender by.
      */
-    async lockAccounts(tx: DbTx, ids: readonly string[], mode: AccountLockMode, live = false): Promise<{ id: string; deleted: boolean }[]> {
+    async lockAccounts(tx: DbTx, ids: readonly string[], mode: AccountLockMode, live = false): Promise<LockedAccount[]> {
       const wanted = [...new Set(ids)];
       if (wanted.length === 0) return [];
-      // The mode is one of two literals of this file, never input.
+      // The mode is one of three literals of this file, never input.
       const found = (await tx.execute(
-        sql`select id, deleted_at is not null as deleted from profiles where id = any(${uuidArray(wanted)}) order by id for ${sql.raw(mode)}`,
-      )) as unknown as { id: string; deleted: boolean }[];
+        sql`select id, deleted_at is not null as deleted, ${suspendedAt("profiles", WRITE_CLOCK)} as suspended, ${reportsRestrictedAt("profiles", WRITE_CLOCK)} as reports_restricted
+              from profiles where id = any(${uuidArray(wanted)}) order by id for ${sql.raw(mode)}`,
+      )) as unknown as { id: string; deleted: boolean; suspended: boolean; reports_restricted: boolean }[];
       if (live && (found.length !== wanted.length || found.some((row) => row.deleted))) throw new SocialError("not_found", 404);
-      return found.map((row) => ({ id: row.id, deleted: row.deleted }));
+      return found.map((row) => ({ id: row.id, deleted: row.deleted, suspended: row.suspended, reportsRestricted: row.reports_restricted }));
     },
 
     /**
@@ -1238,10 +1277,22 @@ export function createSocialRepo(db: Db) {
      * before any post is written (3c design, section 7.10): a report that holds two of them holds them in that
      * order. What stays unordered are the counters of other accounts' posts that this account replied to, quoted,
      * liked or reposted, which are written after.
+     *
+     * 3e (design, section 5, the lock order, item 3): right after its own row, the purge takes the rows of every account
+     * whose counter it will write (those it follows and its followers) FOR NO KEY UPDATE, in id order, before any post.
+     * With the posts first, a decision holding its subject FOR UPDATE, a third account's reply and a follower's purge
+     * formed a cycle. An unfollow, a second follow or a quote between the purged account and its own counterparts can
+     * still cross it; PostgreSQL detects that, the flows of follow, unfollow and createPost try once more, and the purge
+     * is tried again by its job's next round.
      */
     async purgeProfile(id: string, now: Date, within: (tx: DbTx) => Promise<void>): Promise<void> {
       await db.transaction(async (tx) => {
         const [row] = (await tx.execute(sql`select handle from profiles where id = ${id}::uuid for update`)) as unknown as { handle: string }[];
+        await tx.execute(sql`
+          select p.id from profiles p
+           where p.id <> ${id}::uuid
+             and p.id in (select followee_id from follows where follower_id = ${id}::uuid union select follower_id from follows where followee_id = ${id}::uuid)
+           order by p.id for no key update`);
         // Every post of the account is locked first, in id order, before any of them is written. A report holds the posts it
         // copies for share in that order, and one about a post that quotes or replies to its author's own post holds two
         // posts of this account. The counter statements below write such a quoted or replied-to post, in their scan's
@@ -1343,10 +1394,44 @@ function actorAndAuthor(userId: string, postId: string): SQL {
  * the weakest that conflicts with `for update`: `for share` would also conflict with the counter updates
  * these same transactions make on the row (an update takes `for no key update`), so two follows of one
  * account at once would each hold the lock the other's update waits for, and deadlock.
+ *
+ * 3e (design, section 7.2): `acting` is the account that writes (the engager of a like, a repost or a bookmark); the
+ * locking statement answers for each row whether its suspension runs, and the write is refused account_suspended when the
+ * acting account's does. Any other row need only be live. A block and a mute name no acting account: both stay open.
  */
-async function lockLive(tx: Tx, accounts: SQL, code: "not_found" | "post_unavailable" = "not_found"): Promise<void> {
-  const found = (await tx.execute(sql`select deleted_at from profiles where ${accounts} for key share`)) as unknown as { deleted_at: string | null }[];
-  if (found.some((row) => row.deleted_at !== null)) throw new SocialError(code, code === "not_found" ? 404 : 400);
+async function lockLive(tx: Tx, accounts: SQL, code: "not_found" | "post_unavailable" = "not_found", acting: string | null = null): Promise<void> {
+  const found = (await tx.execute(
+    sql`select id, deleted_at is not null as deleted, ${suspendedAt("profiles", WRITE_CLOCK)} as suspended from profiles where ${accounts} for key share`,
+  )) as unknown as { id: string; deleted: boolean; suspended: boolean }[];
+  if (found.some((row) => row.deleted)) throw new SocialError(code, code === "not_found" ? 404 : 400);
+  if (acting !== null && found.some((row) => row.id === acting && row.suspended)) throw new SocialError("account_suspended", 403);
+}
+
+/**
+ * The author's own row for a new post, in its own statement and in the mode its counter needs (3e design, section 5, the
+ * lock order, item 2), with the predicate on it: a deleted author is refused not_found, a suspended one account_suspended.
+ */
+async function lockActing(tx: Tx, accountId: string, mode: "no key update" | "key share"): Promise<void> {
+  // The mode is one of two literals of this file, never input.
+  const [row] = (await tx.execute(
+    sql`select deleted_at is not null as deleted, ${suspendedAt("profiles", WRITE_CLOCK)} as suspended from profiles where id = ${accountId}::uuid for ${sql.raw(mode)}`,
+  )) as unknown as { deleted: boolean; suspended: boolean }[];
+  if (!row || row.deleted) throw new SocialError("not_found", 404);
+  if (row.suspended) throw new SocialError("account_suspended", 403);
+}
+
+/**
+ * Both profile rows of a follow or an unfollow FOR NO KEY UPDATE, the mode their counter updates take, in one statement
+ * ordered by id (3e design, section 5, the lock order, item 2). A deleted row is refused not_found when `acting` is given
+ * (a follow), and the acting account's running suspension account_suspended; an unfollow refuses neither.
+ */
+async function lockPair(tx: Tx, a: string, b: string, acting: string | null): Promise<void> {
+  const found = (await tx.execute(
+    sql`select id, deleted_at is not null as deleted, ${suspendedAt("profiles", WRITE_CLOCK)} as suspended from profiles where id in (${a}::uuid, ${b}::uuid) order by id for no key update`,
+  )) as unknown as { id: string; deleted: boolean; suspended: boolean }[];
+  if (acting === null) return;
+  if (found.some((row) => row.deleted)) throw new SocialError("not_found", 404);
+  if (found.some((row) => row.id === acting && row.suspended)) throw new SocialError("account_suspended", 403);
 }
 
 /** Removes `userId`'s reposts and likes of `authorId`'s posts and takes them off the counters, in the same transaction. */

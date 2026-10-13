@@ -462,6 +462,7 @@ export const NO_ACCOUNT_STANDING: CaseStanding = {
   flood: { posts: 0, from: "2026-10-01T08:00:00.000Z", to: "2026-10-01T09:00:00.000Z" },
   seal: null,
   snapshotHandleRetired: false,
+  basisDecidedAt: { threat: null, terrorist: null, protective: null },
 };
 
 /**
@@ -484,5 +485,35 @@ export function retireCase(live = "Ada_L", snapped = "Ada_L", standing: Partial<
     items: [item({ id: ITEM_RETIRE, ruleId: "R4", category: "STATEMENT_CATEGORY_DATA_PROTECTION_AND_PRIVACY_VIOLATIONS", link: "http://localhost:8081/u/ada_l" })],
     history: [],
     standing: { ...NO_ACCOUNT_STANDING, ...standing },
+  });
+}
+
+// 3e Task 3 (design, section 8.3): an account case on an admin's own finding, where a suspension at once is decided.
+export const CASE_AT_ONCE = "8a9b0c1d-2e3f-4a5b-9c6d-7e8f9a0b1c2d";
+export const ITEM_AT_ONCE = "9b0c1d2e-3f4a-4b5c-8d6e-8f9a0b1c2d3e";
+
+/**
+ * 3e Task 3: an account's case that holds an admin's own finding under R5, unanswered (no report waits, so a measure that
+ * answers findings only is open), with the account's standing: the grounds of a suspension at once that the database
+ * would accept now (`atOnce`), and the decisions each would rest on. A test passes what differs.
+ */
+export function atOnceCase(standing: Partial<CaseStanding> = {}, rule: "R2" | "R5" | "R6" = "R5"): CaseView {
+  return accountCase({
+    id: CASE_AT_ONCE,
+    lane: 1,
+    stateVersion: 1,
+    intakeSeq: 1,
+    suspicion: rule === "R2" ? accountCase().suspicion : null,
+    target: { type: "account", id: ACCOUNT_ID, handle: "flood_er", displayName: "Flooder", bio: "", deleted: false },
+    items: [item({ id: ITEM_AT_ONCE, ruleId: rule, suspect: rule === "R2", category: "STATEMENT_CATEGORY_OTHER_VIOLATION_TC", link: "http://localhost:8081/u/flood_er", explanation: null, source: SOURCES.staff })],
+    history: [],
+    standing: {
+      ...NO_ACCOUNT_STANDING,
+      openReports: false,
+      atOnce: ["threat", "flood"],
+      flood: { posts: 23, from: "2026-10-12T08:30:00.000Z", to: "2026-10-12T09:30:00.000Z" },
+      basisDecidedAt: { threat: "2026-10-10T08:00:00.000Z", terrorist: null, protective: null },
+      ...standing,
+    },
   });
 }

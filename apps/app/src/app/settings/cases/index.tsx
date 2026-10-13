@@ -9,6 +9,7 @@ import { ErrorText, TextButton } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { moderation } from "@/lib/moderation";
 import { CASES_WORDS, STATUS_WORDS } from "@/lib/moderation-words";
+import { useSession } from "@/lib/session";
 
 type Tab = "about" | "reports";
 
@@ -32,6 +33,8 @@ const EMPTY = { rows: [], next: null, loaded: false, busy: false, error: null };
 export default function Cases() {
   const params = useLocalSearchParams<{ tab?: string }>();
   const [tab, setTab] = useState<Tab>(params.tab === "reports" ? "reports" : "about");
+  // 3e: the block "Your standing" reads the account's measure from /me, which the session holds fresh.
+  const { state } = useSession();
   const [decisions, setDecisions] = useState<Pages<AuthorCaseRow>>(EMPTY);
   const [reports, setReports] = useState<Pages<ReportRow>>(EMPTY);
   const [mailStopped, setMailStopped] = useState(false);
@@ -110,7 +113,7 @@ export default function Cases() {
             ))}
           </View>
         </View>
-        {tab === "about" && decisions.loaded ? <StandingBlock activeStrikes={activeStrikes} /> : null}
+        {tab === "about" && decisions.loaded ? <StandingBlock activeStrikes={activeStrikes} standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
         {tab === "about" && decisions.loaded ? <DecisionsList decisions={decisions.rows} /> : null}
         {tab === "reports" && reports.loaded ? <ReportsList page={{ reports: reports.rows, reportMailStopped: mailStopped }} onResume={() => void resume()} onReexamine={reexamine} busy={resuming} error={resumeError} /> : null}
         <View className="px-4 pb-10">

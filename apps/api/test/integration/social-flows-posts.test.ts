@@ -6,7 +6,14 @@ import { loadConfig } from "../../src/config";
 import { setEngagement } from "../../src/social/flows/engagement";
 import { createPost, deletePost, getPost, thread } from "../../src/social/flows/posts";
 import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
+
+/** An error as PostgreSQL's deadlock reaches a flow, for the tests of the one retry (3e design, section 5): SQLSTATE 40P01. */
+function deadlock(): Error {
+  return Object.assign(new Error("deadlock detected"), { code: "40P01" });
+}
+
 
 // Several tests here put posts into a moderation state, each through a real, confirmed decision (a staff key's enrolment
 // and sign-in once, then a step-up for each): on a loaded machine that takes longer than the five seconds a test gets by default.
@@ -14,15 +21,49 @@ vi.setConfig({ testTimeout: 30_000 });
 
 describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flows", () => {
   let db: Db;
+  let migrateDb: Db;
   let h: SocialHarness;
 
   beforeAll(() => {
     db = createDb(loadConfig().DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator writes a suspension into a profile row, as the ledger's standing_apply does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     h = socialHarness(db);
   });
   afterAll(async () => {
     await closeDecisions();
-    await closeDb(db);
+    await Promise.all([closeDb(db), closeDb(migrateDb)]);
+  });
+
+  test("3e: a suspended account's post, reply, quote, like, repost and bookmark are refused account_suspended; it may delete its posts and undo, and others may engage with its posts", async () => {
+    const [ada, bob] = await Promise.all([h.established(), h.established()]);
+    const own = await createPost(h.deps, ada.id, { body: "before", media: [] });
+    const theirs = await createPost(h.deps, bob.id, { body: "theirs", media: [] });
+    await setEngagement(h.deps, ada.id, theirs.id, "like", true);
+    await suspendRowForTest(migrateDb, ada.id);
+    expect(await rejection(createPost(h.deps, ada.id, { body: "during", media: [] }))).toBe("account_suspended");
+    expect(await rejection(createPost(h.deps, ada.id, { body: "a reply", media: [], replyToId: theirs.id }))).toBe("account_suspended");
+    expect(await rejection(createPost(h.deps, ada.id, { body: "a quote", media: [], quoteOfId: theirs.id }))).toBe("account_suspended");
+    for (const kind of ["like", "repost", "bookmark"] as const) expect(await rejection(setEngagement(h.deps, ada.id, theirs.id, kind, kind !== "like")), kind).toBe(kind === "like" ? null : "account_suspended");
+    expect((await setEngagement(h.deps, bob.id, own.id, "like", true)).counts.likes).toBe(1);
+    expect((await createPost(h.deps, bob.id, { body: "a reply to a suspended author", media: [], replyToId: own.id })).replyTo?.id).toBe(own.id);
+    await deletePost(h.deps, ada.id, own.id);
+    expect(await rejection(getPost(h.deps, bob.id, own.id))).toBe("not_found");
+    await liftRowForTest(migrateDb, ada.id);
+  });
+
+  test("3e: a post that meets one deadlock is tried once more and answers as the second try does", async () => {
+    const ada = await h.established();
+    const real = h.deps.repo.createPost;
+    let failures = 1;
+    try {
+      h.deps.repo.createPost = (input) => (failures-- > 0 ? Promise.reject(deadlock()) : real(input));
+      const view = await createPost(h.deps, ada.id, { body: "after a deadlock", media: [] });
+      expect(view.body).toBe("after a deadlock");
+      expect(failures).toBe(-1);
+    } finally {
+      h.deps.repo.createPost = real;
+    }
   });
 
   const post = (viewer: string, body: string, extra: { replyToId?: string; quoteOfId?: string } = {}) => {

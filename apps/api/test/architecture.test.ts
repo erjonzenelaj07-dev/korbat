@@ -289,6 +289,72 @@ describe("the freeze's source pins", () => {
   });
 });
 
+/**
+ * The source pins of account sanctions (3e design, sections 11 and 12.2; invariant 23): no write of an account is added
+ * without the one predicate.
+ *   - The predicate's three fragments, exported by lib/standing.ts (`liveNotSuspended`, and the two halves that a locking
+ *     statement answers separately, `suspendedAt` and `reportsRestrictedAt`), are named in a pinned list of files, each a
+ *     pinned number of times, comments included, as REQUEST_DELETION is: whoever adds a write on behalf of an account adds
+ *     its site to the list, and the auth module never names one.
+ *   - The profile's three derived columns are named in apps/api/src only in lib/standing.ts, social/repo.ts's
+ *     lockAccounts and the moderation module's standing-repo.ts, in SQL or by drizzle's names: no other file decides by
+ *     itself whether an account is suspended. Their one writer is the database's standing_apply (the function pin of 6.6).
+ */
+const STANDING_PREDICATE = {
+  liveNotSuspended: { "lib/standing.ts": 1, "media/repo.ts": 2, "profiles/store.ts": 3, "social/repo.ts": 2 },
+  suspendedAt: { "lib/standing.ts": 2, "social/repo.ts": 6 },
+  reportsRestrictedAt: { "lib/standing.ts": 1, "social/repo.ts": 2 },
+};
+const STANDING_COLUMNS_ALLOWED = new Set(["lib/standing.ts", "social/repo.ts", "moderation/standing-repo.ts"]);
+const STANDING_COLUMNS = ["suspended_from", "suspended_until", "reports_restricted_until", "suspendedFrom", "suspendedUntil", "reportsRestrictedUntil"];
+/** Whether a file names one of the derived columns as a whole word, by the same cut as `mentions`. */
+const namesStandingColumn = (file: SourceFile): boolean => STANDING_COLUMNS.some((name) => mentions([file], name)[file.path] !== undefined);
+
+function findStandingViolations(files: SourceFile[]): string[] {
+  return files.filter((file) => namesStandingColumn(file) && !STANDING_COLUMNS_ALLOWED.has(file.path)).map(({ path }) => `${path}: names a derived column of an account's standing, which only lib/standing.ts, social/repo.ts and moderation/standing-repo.ts may`);
+}
+
+describe("the source pins of account sanctions (3e)", () => {
+  test("the predicate's fragments are named in exactly the pinned files, each the pinned number of times; the auth module names none", () => {
+    for (const [name, pinned] of Object.entries(STANDING_PREDICATE)) expect(mentions(loadSources(), name), name).toEqual(pinned);
+    // The auth module names none: no file of it is in any of the pinned lists.
+    for (const pinned of Object.values(STANDING_PREDICATE)) expect(Object.keys(pinned).filter((path) => path.startsWith("auth/"))).toEqual([]);
+  });
+
+  test("catches a new write that names the predicate, in a pinned file and in one outside the list", () => {
+    const real = loadSources();
+    const withWrites = real
+      .map((file) => (file.path === "media/repo.ts" ? { ...file, source: file.source + String.fromCharCode(10) + 'sql`update post_media set alt = null where ${liveNotSuspended("p", WRITE_CLOCK)}`;' } : file))
+      .concat([{ path: "moderation/texts.ts", source: 'await tx.execute(sql`select 1 from profiles p where ${suspendedAt("p", WRITE_CLOCK)}`);' }]);
+    expect(mentions(withWrites, "liveNotSuspended")).not.toEqual(STANDING_PREDICATE.liveNotSuspended);
+    expect(mentions(withWrites, "liveNotSuspended")).toMatchObject({ "media/repo.ts": 3 });
+    expect(mentions(withWrites, "suspendedAt")).toMatchObject({ "moderation/texts.ts": 1 });
+    expect(mentions(withWrites, "suspendedAt")).not.toEqual(STANDING_PREDICATE.suspendedAt);
+  });
+
+  test("the three derived columns are named only in lib/standing.ts, social/repo.ts and moderation/standing-repo.ts, and lib/standing.ts does name them", () => {
+    expect(findStandingViolations(loadSources())).toEqual([]);
+    expect(namesStandingColumn(loadSources().find((file) => file.path === "lib/standing.ts")!)).toBe(true);
+  });
+
+  test("catches a derived column named elsewhere, in SQL and by drizzle's name", () => {
+    const files: SourceFile[] = [
+      { path: "lib/standing.ts", source: "sql`(${p}.suspended_from is not null and ${p}.suspended_from <= ${at} and ${at} < ${p}.suspended_until)`" },
+      { path: "moderation/standing-repo.ts", source: "sql`select reports_restricted_until from profiles`" },
+      { path: "social/flows/posts.ts", source: "const [row] = await db.execute(sql`select suspended_until from profiles where id = ${viewer}::uuid`);" },
+      { path: "media/repo.ts", source: "await db.select({ until: profiles.suspendedUntil }).from(profiles);" },
+      { path: "auth/flows/badge.ts", source: "if (profile.reportsRestrictedUntil) return;" },
+      // A word that only contains the name is not the name.
+      { path: "social/views.ts", source: "const unsuspended_from_now = 1;" },
+    ];
+    expect(findStandingViolations(files)).toEqual([
+      "social/flows/posts.ts: names a derived column of an account's standing, which only lib/standing.ts, social/repo.ts and moderation/standing-repo.ts may",
+      "media/repo.ts: names a derived column of an account's standing, which only lib/standing.ts, social/repo.ts and moderation/standing-repo.ts may",
+      "auth/flows/badge.ts: names a derived column of an account's standing, which only lib/standing.ts, social/repo.ts and moderation/standing-repo.ts may",
+    ]);
+  });
+});
+
 describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);

@@ -764,6 +764,41 @@ describe.skipIf(!process.env.INTEGRATION)("integration: committed decisions and 
     });
   });
 
+  test("3e: the decide route takes the subject's profile FOR UPDATE first exactly when the decision holds a suspension: a write's shared lock on the account makes it wait, and a lift or a removal does not wait", async () => {
+    const account = await newProfile(apiDb);
+    const social = world.moderation.deps.social;
+    const lockAccounts = social.lockAccounts;
+    const modes: string[] = [];
+    social.lockAccounts = (tx, ids, mode, live) => {
+      modes.push(mode);
+      return lockAccounts(tx, ids, mode, live);
+    };
+    try {
+      // The basis of a suspension at once: a final R5 removal of a post of the account.
+      const postCase = (await recordIntake(world.moderation.deps, { ground: ground.finding(admin.id, "R5"), live: [aPost(await newPostRow(apiDb, account.id))] })).items[0]!.caseId!;
+      const removal = await prepared(admin, postCase, { kind: "final", ruleId: "R5", actions: [act("remove")] });
+      const removed = await whileHeld(sql`select 1 from profiles where id = ${account.id}::uuid for key share`, () => removal());
+      if (typeof removed === "string") throw new Error(`the removal was not recorded: ${removed}`);
+      const accountCase = (await recordIntake(world.moderation.deps, { ground: ground.finding(admin.id, "R5"), live: [{ type: "account", id: account.id, position: 1, namedHandle: account.handle }] })).items[0]!.caseId!;
+      const suspension = await prepared(admin, accountCase, { kind: "final", ruleId: "R5", actions: [{ kind: "suspend", mediaId: null, days: 3, announced: false }] });
+      const suspended = await whileHeld(sql`select 1 from profiles where id = ${account.id}::uuid for key share`, async (letGo) => {
+        const deciding = suspension();
+        // FOR UPDATE waits for the shared lock every write about the account holds.
+        await untilBlocked(apiDb, "from profiles where id = any");
+        await letGo();
+        return deciding;
+      });
+      if (typeof suspended === "string") throw new Error(`the suspension was not recorded: ${suspended}`);
+      const lift = await prepared(admin, accountCase, { kind: "correction", reviewsDecisionId: suspended.decisionId, actions: [act("lift_suspension")] });
+      const lifted = await whileHeld(sql`select 1 from profiles where id = ${account.id}::uuid for key share`, () => lift());
+      expect(typeof lifted).not.toBe("string");
+      expect(modes).toEqual(["no key update", "update", "no key update"]);
+    } finally {
+      social.lockAccounts = lockAccounts;
+      await removeFixtures(migrateDb, [account.id]);
+    }
+  });
+
   test("this file left no row behind: the tables it writes, the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
     expect(await counts()).toEqual(before);
   });

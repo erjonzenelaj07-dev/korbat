@@ -84,6 +84,44 @@ export const STANDING_WORDS = {
   },
   /** 8.7: [review.handle], beside "Give the handle back" in a correction or a review. */
   reviewHandle: "Giving the handle back clears its retirement. A profile that still holds the placeholder gets the handle again; one that chose another handle since may change back at once.",
+  /** 8.3: [reports.first], greying a measure that rests on the account's record, or on a seal in another decision, while the case holds a report. */
+  reportsFirst: "Not open: this case holds a report that is not answered yet. Decide the reports in this case first; the measure gets a case of its own.",
+  /** 8.3: [facts], beside a standing measure's drafted facts. */
+  facts: "The facts are drafted from the record as this page read it (W.5): they say when. Write the reason yourself: why this measure, and why this length.",
+  /** 8.3: [preview.times], under the preview of a standing measure. */
+  previewTimes: "The exact start and end are fixed by the database after you confirm; the person's screen shows them.",
+  /** 8.3: a suspension at once, its four grounds, and why the control is greyed. Task 3 builds these. */
+  atOnce: {
+    /** The control's name. */
+    label: "Suspend at once",
+    /** [atOnce.what] */
+    what: "A suspension at once restricts the account when you confirm. Only an admin takes one, and only on a ground the database checks. The statement goes at once; the account may reply and appeal from the first minute, and a reply does not pause it.",
+    /** [atOnce.threat] */
+    threat: `Direct threat (R5): a final decision under R5 that restricts a post of this account stands and is at most ${STANDING_RULES.basisAgeDays} days old. Up to ${STANDING_RULES.threatDays} days. It ends by itself if that decision is reversed.`,
+    /** [atOnce.terrorist] */
+    terrorist: `Terrorist content: a final decision on the law, marked terrorist content, that restricts a post of this account stands and is at most ${STANDING_RULES.basisAgeDays} days old. Up to ${STANDING_RULES.terroristDays} days. It ends by itself if that decision is reversed.`,
+    /** [atOnce.flood], with standing.flood's count and interval. */
+    flood: (posts: number, from: string, to: string) =>
+      `Spam flood (R6): the account made ${posts} posts between ${from} and ${to}; the ground needs at least ${STANDING_RULES.floodPosts} in ${STANDING_RULES.floodMinutes} minutes. Up to ${STANDING_RULES.floodDays} days. The count alone is no flood: say in the facts what made the posts repetitive and unsolicited.`,
+    /** [atOnce.protective], with the day of the seal for good it would rest on (standing.seal.decidedOn), when there is one. */
+    protective: (sealedOn: string) =>
+      `Protective: an admin sealed images of this account for good on ${sealedOn}, at most ${STANDING_RULES.basisAgeDays} days ago, and no protective suspension has rested on that seal. Up to ${STANDING_RULES.protectiveDays} days, once for that seal. Seal first, in the case the report is in; then suspend here, in a decision of its own. korbat's staff do not open images reported this way, so the facts and the reason never say or imply that the account posted such material, and they promise no later look by staff. It is no finding, gives no strike, is no step of the ladder and supports no termination. It ends on its date, or earlier if the seal is lifted. Its appeal is reviewed at once by an admin who took no part; only the seal's own appeal waits for the authorities.`,
+    /** [atOnce.noSeal], the protective ground when it is not met. */
+    noSeal: `Not met now: a protective suspension rests on a seal for good of images of this account or of one of its posts, decided at most ${STANDING_RULES.basisAgeDays} days ago, on which no protective suspension has rested yet. A report alone, or a seal taken while deciding, is not enough.`,
+    /** [atOnce.admin] */
+    admin: "Only an admin suspends at once. You can withhold the content while deciding; the account measure waits for an admin.",
+    /** [atOnce.other], for a rule that allows none (R1, R3 or R4). */
+    other: "This rule allows no suspension at once: announce it.",
+    /** Beside each ground: whether the database would accept it now. [atOnce.unmet] */
+    met: "Met now",
+    unmet: "Not met now",
+    /** How many days, at most the ground's own number. */
+    days: (max: number) => `Days (1 to ${max})`,
+  },
+  /** 8.7: [review.basis], when a suspension or termination taken at once rests on the reviewed decision. */
+  reviewBasis: "A suspension (or termination) of this account rests on this decision. If you reverse it, or lift the seal, that measure ends when you confirm, and this decision's statement says so.",
+  /** 8.7: [review.protective], beside the review or correction of a protective suspension. */
+  reviewProtective: "A protective suspension is reviewed at once, on what korbat knows: the review does not wait for the authorities, and it may lift the suspension while the seal stays. Only the appeal of the seal's own decision waits.",
 } as const;
 
 /**

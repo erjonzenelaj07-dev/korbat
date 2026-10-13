@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
 import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
-import { NOTICE_LIMITS, REPORT_RULE_IDS, TDB_FORM_CATEGORIES, type CsamKeywordChoice, type NoticeResponse, type ReportRuleId } from "@korbat/contracts";
+import { NOTICE_LIMITS, REPORT_RULE_IDS, TDB_FORM_CATEGORIES, type AccountStanding, type CsamKeywordChoice, type NoticeResponse, type ReportRuleId } from "@korbat/contracts";
 import { RULES } from "@korbat/rules";
 import { Body, Button, ErrorText, Field, TextButton, TextLink, Title } from "@/components/ui";
 import { ApiError } from "@/lib/api";
@@ -22,11 +22,12 @@ import {
   type ReportDraft,
 } from "@/lib/moderation";
 import { CATEGORY_LABELS, REPORT_WORDS } from "@/lib/moderation-words";
+import { runningMeasure, STANDING_TEXTS } from "@/lib/standing";
 
 const SITE_KEY = process.env.EXPO_PUBLIC_TURNSTILE_SITE_KEY ?? "";
 
 /** One entry of a list of choices: a choice with its label and an optional line under it, or a line of text that stands in a choice's place. */
-type ChoiceEntry<T extends string> = { value: T; label: string; hint?: string } | { note: string };
+type ChoiceEntry<T extends string> = { value: T; label: string; hint?: string; disabled?: string } | { note: string };
 
 /**
  * One question with its answers, of which one is chosen: a radio group, each answer a radio that says whether it is
@@ -46,11 +47,15 @@ function Choice<T extends string>({ label, entries, value, onChange }: { label: 
             key={entry.value}
             accessibilityRole="radio"
             aria-checked={value === entry.value}
+            aria-disabled={entry.disabled !== undefined}
+            disabled={entry.disabled !== undefined}
             onPress={() => onChange(entry.value)}
             className={`mt-2 rounded-lg border px-4 py-3 ${value === entry.value ? "border-zinc-50 bg-zinc-900" : "border-zinc-700"}`}
           >
-            <Text className={`text-base ${value === entry.value ? "font-semibold text-zinc-50" : "text-zinc-200"}`}>{entry.label}</Text>
+            <Text className={`text-base ${entry.disabled !== undefined ? "text-zinc-500" : value === entry.value ? "font-semibold text-zinc-50" : "text-zinc-200"}`}>{entry.label}</Text>
             {entry.hint ? <Text className="mt-1 text-sm leading-5 text-zinc-400">{entry.hint}</Text> : null}
+            {/* A disabled choice keeps its reason as text beside it (9.8). */}
+            {entry.disabled !== undefined ? <Text className="mt-1 text-sm leading-5 text-amber-300">{entry.disabled}</Text> : null}
           </Pressable>
         ),
       )}
@@ -116,7 +121,12 @@ function GivenItem({ given }: { given: GivenTarget }) {
  * or null for a form opened on its own, which asks for the link. Signed out, every ground needs the human check.
  * `initial` is what a test starts the form with.
  */
-export function ReportForm({ signedIn, given, initial }: { signedIn: boolean; given: GivenTarget | null; initial?: Partial<ReportDraft> }) {
+export function ReportForm({ signedIn, given, initial, standing = null }: { signedIn: boolean; given: GivenTarget | null; initial?: Partial<ReportDraft>; standing?: AccountStanding | null }) {
+  // 3e (design, section 9.6): read from /me before anything is sent. While a suspension runs, the first choice is disabled
+  // with its sentence; a notice of illegality and the path for child sexual abuse material stay open.
+  const running = runningMeasure(standing);
+  const ruleClosed = running === null ? undefined : running.kind === "suspend" && running.endsAt !== null ? STANDING_TEXTS.report.suspended(running.endsAt) : STANDING_TEXTS.refused.terminated;
+  const grounds = GROUNDS.map((entry) => ("value" in entry && entry.value === "rule" && ruleClosed !== undefined ? { ...entry, disabled: ruleClosed } : entry));
   const turnstile = useRef<TurnstileInstance | null>(null);
   const [draft, setDraft] = useState<ReportDraft>({ ...EMPTY_DRAFT, ...initial });
   const [token, setToken] = useState<string | null>(null);
@@ -152,7 +162,7 @@ export function ReportForm({ signedIn, given, initial }: { signedIn: boolean; gi
       <Title>{REPORT_WORDS.title}</Title>
       {given ? <GivenItem given={given} /> : <Field label={REPORT_WORDS.link} autoCapitalize="none" inputMode="url" value={draft.link} onChangeText={(link) => set({ link })} />}
 
-      <Choice label={REPORT_WORDS.question} entries={GROUNDS} value={draft.ground} onChange={(ground) => set({ ground })} />
+      <Choice label={REPORT_WORDS.question} entries={grounds} value={draft.ground} onChange={(ground) => set({ ground })} />
 
       {draft.ground === "rule" ? (
         <>

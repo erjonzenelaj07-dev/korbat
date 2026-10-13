@@ -16,6 +16,15 @@ const web = globalThis as unknown as {
 };
 
 let onUnauthenticated: (() => void) | null = null;
+let onSuspended: (() => void) | null = null;
+
+/**
+ * 3e (design, sections 7.2 and 9.1): called when a write answers 403 account_suspended. The refusal carries no detail;
+ * the session provider registers this to read /api/me again, which carries the standing fresh from the row.
+ */
+export function setSuspendedHandler(handler: (() => void) | null): void {
+  onSuspended = handler;
+}
 
 /**
  * Called when a request outside the sign-in flow answers 401: the session ended elsewhere (signed
@@ -41,7 +50,7 @@ export class ApiError extends Error {
   }
 }
 
-const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "unauthenticated" | "invalid_request" | "not_found" | "internal" | "network", string>> = {
+const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "account_suspended" | "unauthenticated" | "invalid_request" | "not_found" | "internal" | "network", string>> = {
   invalid_code: "That code is not valid. Check the latest email or request a new code.",
   code_expired: "That code has expired. Request a new one.",
   too_many_attempts: "Too many attempts. Start again.",
@@ -92,6 +101,8 @@ const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "unauthenti
   appeal_exists: "You have already appealed this decision.",
   reexamination_not_open: "A re-examination cannot be asked for this item now.",
   reexamination_exists: "A re-examination of this item has already been asked for.",
+  // 3e (design, section 9.8): the fallback when /me cannot be read; with it the screens say until when (9.4).
+  account_suspended: "Your account is suspended, so you cannot do this now.",
   unauthenticated: "Sign in to continue.",
   invalid_request: "Some details are missing or invalid.",
   not_found: "That no longer exists.",
@@ -199,6 +210,8 @@ export async function apiResponse(path: string, options: Omit<RequestOptions<unk
     const parsed = ErrorEnvelope.safeParse(await res.json().catch(() => null));
     const code = parsed.success ? parsed.data.error.code : "internal";
     const details = parsed.success ? parsed.data.error.details : undefined;
+    // 3e: a write refused for a running suspension: /me is read again, so the screens say until when.
+    if (res.status === 403 && code === "account_suspended") onSuspended?.();
     // The server's message is written for people and can be more specific than the generic text for
     // its code ("Two-factor setup expired. Start again."). Only validation and internal errors use
     // the local wording, because their server messages are technical, and the passkey bounds do, so

@@ -15,6 +15,7 @@ import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { createSocial } from "../../src/social";
 import { Browser } from "./http-client";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 
 type App = ReturnType<typeof createApp>;
 
@@ -31,6 +32,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the verified badge over 
   let config: Config;
   let authDb: Db;
   let apiDb: Db;
+  let migrateDb: Db;
   let auth: Auth;
   let app: App;
   /** The same server with the provider off, as a korbat without an SMS account runs. */
@@ -42,6 +44,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the verified badge over 
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator writes a suspension into a profile row, as the ledger's standing_apply does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     const shared = { config, logger, authDb, mailer, turnstile: { verify: async () => true }, breachChecker: { isBreached: async () => false } };
     auth = createAuth({ ...shared, kv: new MemoryKv(), profiles: createProfileStore(apiDb), verify: devProvider() });
     const rateLimitStore = new MemoryStore();
@@ -51,7 +55,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the verified badge over 
     appOff = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth: authOff });
   });
   afterAll(async () => {
-    await Promise.all([closeDb(authDb), closeDb(apiDb)]);
+    await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
 
   /** A signed-in web account on the given app, onboarded unless told otherwise. */
@@ -182,5 +186,26 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the verified badge over 
     expect(verified.status).toBe(404);
     expect(await errorCode(verified)).toBe("badge_unavailable");
     expect((await ada.b.fetch("/api/auth/badge", { method: "DELETE" })).status).toBe(204);
+  });
+  test("3e: while the account's suspension runs, the start answers 403 account_suspended before any code is texted; a code that is right once the suspension began is refused the same, and the phone hash it wrote is cleared; removing the badge stays open", async () => {
+    const ada = await signUp();
+    const phone = newPhone();
+    const flowId = await start(ada.b, phone);
+    await suspendRowForTest(migrateDb, ada.userId);
+    const refusedStart = await ada.b.fetch("/api/auth/badge/start", { json: { phone: newPhone() } });
+    expect(refusedStart.status).toBe(403);
+    expect(await errorCode(refusedStart)).toBe("account_suspended");
+    const refusedVerify = await verify(ada.b, flowId, DEV_CODE);
+    expect(refusedVerify.status).toBe(403);
+    expect(await errorCode(refusedVerify)).toBe("account_suspended");
+    expect(await storedHash(ada.userId)).toBeNull();
+    expect(await verifiedOnMe(ada.b)).toBe(false);
+    expect(mailsTo(ada.email)).not.toContain("badge_verified");
+    expect(await eventTypes(ada.userId)).not.toContain("badge_verified");
+    expect((await ada.b.fetch("/api/auth/badge", { method: "DELETE" })).status).toBe(204);
+    await liftRowForTest(migrateDb, ada.userId);
+    const again = await start(ada.b, phone);
+    expect((await verify(ada.b, again, DEV_CODE)).status).toBe(200);
+    expect(await verifiedOnMe(ada.b)).toBe(true);
   });
 });

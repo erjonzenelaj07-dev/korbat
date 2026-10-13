@@ -15,7 +15,7 @@ import { recordIntake } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { flowHarness } from "./flow-harness";
-import { act, casesMedia, decisionParams, ground, moderationCounts, newPostRow, noAuthForModeration, removeDecided, reviewParams, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
+import { act, casesMedia, decisionParams, ground, moderationCounts, newPostRow, noAuthForModeration, removeDecided, reviewParams, timed, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { TEST_CONSOLE, issueEnrolment, newStaffAccount } from "./staff-fixtures";
 import { signedIn, stepUpAssertion } from "./staff-step-up";
@@ -151,6 +151,8 @@ let world: DeciderWorld | null = null;
 let admin: Promise<RealStaff> | null = null;
 /** The posts decideForTest decided in this test file. */
 const decidedPosts = new Set<string>();
+/** The accounts suspendForTest suspended in this test file: their account cases go with closeDecisions. */
+const decidedAccounts = new Set<string>();
 
 /** The id of a committed decision, or a failure that says why none committed. */
 function decided(outcome: DecideOutcome, what: string): string {
@@ -215,6 +217,38 @@ export async function strikeForTest(apiDb: Db, accountId: string, n: number, rul
   return decisions;
 }
 
+/** What suspendForTest made: the suspension's decision and case, and the decision it rests on. */
+export interface SuspendedForTest {
+  decisionId: string;
+  caseId: string;
+  basisDecisionId: string;
+}
+
+/**
+ * Suspends an account at once the way a suspension at once comes about (3e design, section 12): through the decide
+ * route's own code (moderation.forStaff.decide, with a real confirmation by an admin's key), on the basis `threat`, which
+ * it makes first: a post the account makes now, an admin's own finding on it under R5 and a final removal, which gives
+ * the strike the database computes. Then an admin's finding under R5 on the account opens its case, and a final decision
+ * on it holds `{ kind: "suspend", days, announced: false }`. The suspension starts with that decision, and every write of
+ * the account is refused from then on. Task 4 adds `announced: true`. closeDecisions removes what it committed, the
+ * account's case included; the account's posts and profile stay.
+ */
+export async function suspendForTest(apiDb: Db, accountId: string, options: { days?: number; announced?: false } = {}): Promise<SuspendedForTest> {
+  world ??= deciderWorld(apiDb);
+  admin ??= world.staff("admin");
+  const [w, staff] = [world, await admin];
+  const postId = await newPostRow(apiDb, accountId, { createdAt: sql`clock_timestamp()`, body: "a post with a direct threat" });
+  decidedPosts.add(postId);
+  decidedAccounts.add(accountId);
+  const finding = await recordIntake(w.moderation.deps, { ground: ground.finding(staff.id, "R5"), live: [{ type: "post", id: postId, position: 1 }] });
+  const basisDecisionId = decided(await w.decideAs(staff, finding.items[0]!.caseId!, { kind: "final", ruleId: "R5", actions: [act("remove")] }), "the R5 removal a suspension at once rests on");
+  const [profile] = await apiDb.execute<{ handle: string }>(sql`select handle from profiles where id = ${accountId}::uuid`);
+  const onAccount = await recordIntake(w.moderation.deps, { ground: ground.finding(staff.id, "R5"), live: [{ type: "account", id: accountId, position: 1, namedHandle: profile!.handle }] });
+  const caseId = onAccount.items[0]!.caseId!;
+  const decisionId = decided(await w.decideAs(staff, caseId, { kind: "final", ruleId: "R5", actions: [timed("suspend", options.days ?? 7, false)] }), "the suspension at once");
+  return { decisionId, caseId, basisDecisionId };
+}
+
 /**
  * Removes what decideForTest committed in this test file, if it was used, and closes the pools it opened: the cases of
  * the posts it decided with their items, decisions, measures, texts, snapshots and intakes, and the staff account's
@@ -225,14 +259,15 @@ export async function strikeForTest(apiDb: Db, accountId: string, n: number, rul
  * nothing.
  */
 export async function closeDecisions(): Promise<void> {
-  const [used, member, posts] = [world, admin, [...decidedPosts]];
+  const [used, member, posts, accounts] = [world, admin, [...decidedPosts], [...decidedAccounts]];
   world = null;
   admin = null;
   decidedPosts.clear();
+  decidedAccounts.clear();
   if (!used) return;
   try {
     const staff = member ? await member.catch(() => null) : null;
-    await removeDecided(used.migrateDb, posts, staff ? [staff.id] : []);
+    await removeDecided(used.migrateDb, posts, staff ? [staff.id] : [], accounts);
   } finally {
     await used.close({ keepStaff: true });
   }

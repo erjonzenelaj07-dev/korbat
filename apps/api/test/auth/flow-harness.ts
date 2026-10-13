@@ -508,6 +508,8 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
   const mailer = new MemoryMailer();
   /** profiles.verified_at by account, as the badge flows set and clear it through the profile store. */
   const verified = new Map<string, Date | null>();
+  /** 3e: the accounts whose suspension runs, as the profile store's predicate would read them; a test adds to it. */
+  const suspended = new Set<string>();
   const config: AuthConfig = {
     appOrigin: "http://localhost:8081",
     allowedOrigins: ["http://localhost:8081"],
@@ -543,9 +545,13 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
         const handle = handles.get(id);
         return handle === undefined ? null : { id, handle, displayName: handle, handleChangedAt: null, verified: (verified.get(id) ?? null) !== null, showInExplore: true };
       },
+      // 3e: setting the badge is refused while the account's suspension runs, as the predicate refuses the real write.
       setVerified: async (id, at) => {
+        if (at !== null && suspended.has(id)) return false;
         verified.set(id, at);
+        return true;
       },
+      suspended: async (id) => suspended.has(id),
     },
     // The development provider, which accepts exactly 000000; a test swaps it for null or a scripted one.
     verify: devProvider(),
@@ -601,6 +607,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     devices,
     passkeys,
     verified,
+    suspended,
     faults,
     now,
     advance(ms: number) {

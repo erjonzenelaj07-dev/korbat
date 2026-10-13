@@ -3,8 +3,15 @@ import { AuthError, type AuthDeps } from "../context";
 import type { Session } from "../sessions";
 import { notifyAccount } from "./notify";
 
-/** The signed-in account. The only response in the API that contains the email address. */
-export async function me(deps: AuthDeps, session: Session): Promise<MeResponse> {
+/** /api/me without the account's standing, which the moderation module reads (3e design, section 7.12). */
+export type MeWithoutStanding = Omit<MeResponse, "standing">;
+
+/**
+ * The signed-in account. The only response in the API that contains the email address. 3e: everything of /api/me but
+ * the standing, which this module cannot read (it names no public table); the app composes the route from this and the
+ * moderation module's standingFor.
+ */
+export async function me(deps: AuthDeps, session: Session): Promise<MeWithoutStanding> {
   const user = await deps.repo.findUserById(session.userId);
   if (!user) throw new AuthError("invalid_credentials", 401);
   return {

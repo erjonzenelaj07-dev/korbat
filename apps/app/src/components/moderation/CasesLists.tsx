@@ -1,14 +1,20 @@
 import { Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
-import { MEASURES, type AuthorCaseRow, type ReportItem, type ReportsPage } from "@korbat/contracts";
+import { MEASURES, type AccountStanding, type AuthorCaseRow, type ReportItem, type ReportsPage } from "@korbat/contracts";
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
 import { CASES_WORDS } from "@/lib/moderation-words";
-import { CASE_ROW_WORDS, rowStrike, STANDING_TEXTS } from "@/lib/standing";
+import { CASE_ROW_WORDS, rowStrike, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
 
 /** 3e: the kinds whose words in a row are the row's own (9.4), not the measure's label. */
-const ROW_KINDS: Partial<Record<AuthorCaseRow["actions"][number], string>> = { overrule: CASE_ROW_WORDS.overrule, retire_handle: CASE_ROW_WORDS.retired, unretire_handle: CASE_ROW_WORDS.unretired };
+const ROW_KINDS: Partial<Record<AuthorCaseRow["actions"][number], string>> = {
+  overrule: CASE_ROW_WORDS.overrule,
+  retire_handle: CASE_ROW_WORDS.retired,
+  unretire_handle: CASE_ROW_WORDS.unretired,
+  suspend: CASE_ROW_WORDS.suspended,
+  lift_suspension: CASE_ROW_WORDS.lifted,
+};
 
 /**
  * What a decision did, in the measures' own labels; a decision without a measure ended what was done while deciding, or
@@ -66,15 +72,18 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
 
 /**
  * "Your standing" (3e design, section 9.4), above "About you": how many of the account's strikes count now, and what that
- * many leads to. The lines of a suspension and of the reporting measures come with the tasks that build them.
+ * many leads to; then (Task 3) the line of a suspension that runs, in the banner's words, from /me's standing. The lines of
+ * an announced or held measure and of the reporting measures come with the tasks that build them.
  */
-export function StandingBlock({ activeStrikes }: { activeStrikes: number }) {
+export function StandingBlock({ activeStrikes, standing = null }: { activeStrikes: number; standing?: AccountStanding | null }) {
+  const running = runningMeasure(standing);
   return (
     <View className="border-b border-zinc-800 px-4 pb-4 pt-3">
       <Text accessibilityRole="header" aria-level={2} className="text-base font-semibold text-zinc-50">
         {STANDING_TEXTS.cases.title}
       </Text>
       <Text className="mt-1 text-sm leading-5 text-zinc-200">{activeStrikes > 0 ? STANDING_TEXTS.cases.strikes(activeStrikes) : STANDING_TEXTS.cases.none}</Text>
+      {running !== null && running.kind === "suspend" && running.endsAt !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{STANDING_TEXTS.banner.running(running.endsAt)}</Text> : null}
     </View>
   );
 }

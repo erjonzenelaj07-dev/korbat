@@ -1,5 +1,5 @@
-import { STANDING_RULES, type AtOnceGround, type AuthorStanding, type CaseStanding, type StrikeDue } from "@korbat/contracts";
-import { openReportsIn, snapshotHandleRetired, standingFacts, strikeDueOf, type StandingFacts } from "./standing-repo";
+import { STANDING_RULES, isRetiredPlaceholder, type AccountStanding, type AtOnceGround, type AuthorStanding, type CaseStanding, type StrikeDue } from "@korbat/contracts";
+import { accountStandingRow, openReportsIn, snapshotHandleRetired, standingFacts, strikeDueOf, type StandingFacts } from "./standing-repo";
 import type { Runner } from "./repo";
 
 /**
@@ -71,5 +71,44 @@ export async function caseStanding(q: Runner, caseId: string, accountId: string)
     seal: facts.sealOn === null ? null : { decidedOn: facts.sealOn },
     // Task 2: whether a retirement now would change nothing, the newest snapshot's handle being retired already.
     snapshotHandleRetired: await snapshotHandleRetired(q, caseId),
+    // Task 3: the decisions a suspension at once would rest on now, by their times, for the preview's basis sentence.
+    basisDecidedAt: facts.basisDecidedAt,
+  };
+}
+
+/**
+ * /api/me's standing (3e design, sections 7.12 and 10.2), read fresh at the request and never kept in a session or a
+ * cache, so the banner and a refusal's sentence are true of the row: the active strikes; the account's one standing
+ * measure with its state now (running from its start; announced once a start is fixed and ahead; held while a reply sent
+ * in time waits for its answer; unfixed while the notice mail's outcome is unknown), its times, its reply and its appeal;
+ * the reporting measures (null until they exist, Task 5); whether the profile holds a retired handle's placeholder. Null
+ * for an account without a live profile. Not auth.account_standing, the boolean grant-role asks.
+ */
+export async function standingFor(q: Runner, accountId: string): Promise<AccountStanding | null> {
+  const row = await accountStandingRow(q, accountId);
+  if (row === null) return null;
+  const m = row.measure;
+  return {
+    activeStrikes: row.activeStrikes,
+    measure:
+      m === null
+        ? null
+        : {
+            decisionId: m.decisionId,
+            kind: m.kind,
+            days: m.kind === "terminate" ? null : m.days,
+            state: m.running ? "running" : m.startsAt !== null ? "announced" : m.reply?.onTime && !m.replyAnswered ? "held" : "unfixed",
+            earliestStart: m.earliestStart,
+            startsAt: m.startsAt,
+            endsAt: m.kind === "terminate" ? null : m.endsAt,
+            reply: m.reply,
+            // One reply a measure; the reply route that takes it is Task 4's.
+            replyOpen: m.reply === null,
+            // Open while no appeal was filed and its six months run; one filed (pending or answered) closes it.
+            appealUntil: !m.appealed && m.appealOpen ? m.appealDeadline : null,
+            appealPending: m.appealPending,
+          },
+    reporting: null,
+    handleRetired: isRetiredPlaceholder(row.handle.toLowerCase()),
   };
 }

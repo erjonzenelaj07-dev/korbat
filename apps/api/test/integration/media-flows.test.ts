@@ -9,20 +9,24 @@ import { status } from "../../src/media/flows/status";
 import { upload } from "../../src/media/flows/upload";
 import { createSocialRepo } from "../../src/social/repo";
 import { BYTES, bodyOf, mediaHarness, type MediaHarness } from "./media-harness";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 import { rejection } from "./social-harness";
 import { newPost } from "./social-fixtures";
 
 describe.skipIf(!process.env.INTEGRATION)("integration: media upload, status and removal", () => {
   let db: Db;
+  let migrateDb: Db;
   let h: MediaHarness;
 
   beforeAll(async () => {
     db = createDb(loadConfig().DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator writes a suspension into a profile row, as the ledger's standing_apply does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     h = await mediaHarness(db);
   });
   afterAll(async () => {
     h.cleanup();
-    await closeDb(db);
+    await Promise.all([closeDb(db), closeDb(migrateDb)]);
   });
 
   const failure = async (promise: Promise<unknown>) => {
@@ -131,6 +135,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: media upload, status and
 
   test("an account without a profile cannot upload", async () => {
     expect(await rejection(upload(h.deps, h.newId(), h.jpeg()))).toBe("not_found");
+  });
+
+  test("3e: while the account's suspension runs, an upload is refused account_suspended (403) by the statement that writes its row: no row is left and the received file is discarded", async () => {
+    const ada = await h.established();
+    await suspendRowForTest(migrateDb, ada.id);
+    const before = await h.deps.repo.pendingCount(ada.id);
+    const uploads = readdirSync(h.files.uploads.incoming).length;
+    expect(await failure(upload(h.deps, ada.id, h.jpeg()))).toMatchObject({ code: "account_suspended", status: 403 });
+    expect(await h.deps.repo.pendingCount(ada.id)).toBe(before);
+    expect(readdirSync(h.files.uploads.tmp)).toEqual([]);
+    expect(readdirSync(h.files.uploads.incoming).length).toBe(uploads);
+    await liftRowForTest(migrateDb, ada.id);
+    expect((await upload(h.deps, ada.id, h.jpeg())).status).toBe("processing");
   });
 
   test("removing an upload deletes its row and file and asks the worker to delete what it made", async () => {

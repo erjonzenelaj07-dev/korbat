@@ -139,8 +139,8 @@ describe("profiles", () => {
     expect(Object.keys(ProfileView.shape)).not.toContain("showInExplore");
     expect(ProfileView.parse({ ...base, showInExplore: false })).not.toHaveProperty("showInExplore");
   });
-  test("the error codes are exactly the six social ones", () => {
-    expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed"]);
+  test("the error codes are exactly the seven social ones, 3e's account_suspended last", () => {
+    expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed", "account_suspended"]);
   });
 });
 

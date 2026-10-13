@@ -6,7 +6,7 @@ import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { authorDecisionView, decodeListCursor, encodeListCursor } from "./author";
 import { reviewerOf } from "./cases";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { recordConfirmed, refuseUnopened, type DecideOptions, type DecideOutcome } from "./decide";
+import { recordConfirmed, refuseUnopened, subjectLockMode, type DecideOptions, type DecideOutcome } from "./decide";
 import { countOrRefuse, saltedStatement } from "./intake";
 import { insertAction, insertAppeal, insertReview, pendingAppeals, raisedMessage, reviewedDecision, violatedUniqueConstraint } from "./repo";
 
@@ -139,10 +139,19 @@ export async function review(deps: ModerationDeps, session: ActiveStaffSession, 
   // As for a decision: a case's target and a post's author never change, so the subject is read before the transaction.
   const subject = reviewed.target.type === "account" ? reviewed.target.id : await deps.social.postAuthor(reviewed.target.id);
 
-  return recordConfirmed(deps, session, confirmed, ctx, subject, async (tx, decisionId) => {
-    await insertReview(tx, { id: decisionId, caseId: reviewed.caseId, reviewsDecisionId, decidedBy: session.userId, params });
-    for (const action of params.actions) await insertAction(tx, decisionId, action);
-  });
+  // A review holds reversals only, so its first lock stays FOR NO KEY UPDATE (3e design, section 5): a lift included.
+  return recordConfirmed(
+    deps,
+    session,
+    confirmed,
+    ctx,
+    subject,
+    async (tx, decisionId) => {
+      await insertReview(tx, { id: decisionId, caseId: reviewed.caseId, reviewsDecisionId, decidedBy: session.userId, params });
+      for (const action of params.actions) await insertAction(tx, decisionId, action);
+    },
+    subjectLockMode(params.actions),
+  );
 }
 
 /** The case a reviewed decision belongs to, for the answer to a review that has just committed. */

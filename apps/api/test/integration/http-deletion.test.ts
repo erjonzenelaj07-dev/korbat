@@ -18,6 +18,7 @@ import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { createSocial, enforceWriteLimit } from "../../src/social";
 import { Browser, NativeClient } from "./http-client";
+import { suspendRowForTest } from "./moderation-fixtures";
 
 type App = ReturnType<typeof createApp>;
 
@@ -31,6 +32,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
   let config: Config;
   let authDb: Db;
   let apiDb: Db;
+  let migrateDb: Db;
   let auth: Auth;
   let app: App;
   const root = mkdtempSync(path.join(tmpdir(), "korbat-http-deletion-"));
@@ -41,6 +43,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator writes a suspension into a profile row, as the ledger's standing_apply does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     const rateLimitStore = new MemoryStore();
     auth = createAuth({
       config,
@@ -80,7 +84,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
   });
   afterAll(async () => {
     rmSync(root, { recursive: true, force: true });
-    await Promise.all([closeDb(authDb), closeDb(apiDb)]);
+    await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
 
   /** A signed-in web account, onboarded unless told otherwise. */
@@ -173,6 +177,20 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
     expect((await app.request(`/api/posts/${post.id}`)).status).toBe(404);
     expect(mailer.sent.filter((mail) => mail.to === ada.email).map((mail) => mail.template)).toEqual(["sign_up_code", "delete_account_code", "account_deleted"]);
     expect((await auth.deps.repo.recentEvents(ada.userId)).map((e) => e.type)).toContain("account_deleted");
+    expect(await auth.deps.repo.pendingPurges()).not.toContain(ada.userId);
+  });
+
+  test("3e: while the account's suspension runs, its deletion answers as ever: no hold (GDPR Art. 17)", async () => {
+    const ada = await signUp();
+    const created = await ada.b.fetch("/api/posts", { json: { body: "posted before the suspension" } });
+    expect(created.status).toBe(201);
+    await suspendRowForTest(migrateDb, ada.userId);
+    const refused = await ada.b.fetch("/api/posts", { json: { body: "while suspended" } });
+    expect([refused.status, (await error(refused)).code]).toEqual([403, "account_suspended"]);
+    const { flowId } = DeleteStartResponse.parse(await (await startOf(ada.b)).json());
+    const confirmed = await ada.b.fetch("/api/account/delete/confirm", { json: { flowId, code: mailer.lastCodeFor(ada.email)!, handle: ada.handle } });
+    expect(confirmed.status).toBe(204);
+    expect((await app.request(`/api/profiles/${ada.handle}`)).status).toBe(404);
     expect(await auth.deps.repo.pendingPurges()).not.toContain(ada.userId);
   });
 

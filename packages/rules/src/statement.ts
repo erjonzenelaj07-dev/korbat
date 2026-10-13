@@ -77,6 +77,8 @@ export const STATEMENT_WORDS = {
   scope: {
     interim: "This applies everywhere korbat is available, for as long as korbat decides the case.",
     final: "This applies everywhere korbat is available and has no end date.",
+    // 3e: in place of `final` for a decision that suspends the account.
+    suspend: (days: number) => `This applies everywhere korbat is available, for ${days} ${days === 1 ? "day" : "days"} from its start.`,
     law: "korbat cannot restrict content for one country alone, so this applies everywhere, which is more than the law of a single country asks for.",
   },
   /** The source, as a category only: never a count, a reporter or a report's words. */
@@ -112,6 +114,38 @@ export const STATEMENT_WORDS = {
   /** The reversal of a retirement. */
   unretired: (handle: string) =>
     `korbat lifted the retirement of the handle @${handle}. If your profile still held the placeholder, it has the handle again. If you chose another handle since, you can change back to @${handle} at once in Settings, Profile. Nobody else could take it meanwhile.`,
+  // 3e (design, section 18, W.2, Task 3): a suspension taken at once, the ground it was taken at once on, what any
+  // suspension stops and leaves, its effect on Explore, what the software did for a flood, the lift of a suspension in the
+  // three states of its period, and the end of a suspension whose basis a reversal broke.
+  /** A suspension taken at once: its days and its end, the decision's time plus its days. */
+  suspendAtOnce: (days: number, endsAt: string) => `korbat suspended your account for ${days} ${days === 1 ? "day" : "days"}, from this decision until ${endsAt}, without notice beforehand.`,
+  /** Why it was taken at once, by its basis; `at` is the time of the decision it rests on, or of the seal's decision. */
+  basis: {
+    threat: (at: string) => `It was taken at once because korbat's decision of ${at} found a direct threat of violence in a post of yours (rule R5). It ends at once if that decision is reversed.`,
+    terrorist: (at: string) => `It was taken at once because korbat's decision of ${at} found terrorist content in a post of yours. It ends at once if that decision is reversed.`,
+    flood: "It was taken at once because an admin found that your account was flooding korbat with repetitive, unsolicited posts (rule R6). The facts below say how many posts and what they were.",
+    protective: (sealedAt: string) =>
+      `It was taken at once because korbat's decision of ${sealedAt} keeps images of your account sealed, after they were reported as possible child sexual abuse material. korbat's staff do not open images reported this way, so korbat has not assessed them. This is not a finding that you broke the law or a korbat rule: it is a protective measure, it gives no strike, and it ends on its date by itself, or earlier if that seal is lifted.`,
+  },
+  stops: "While it runs you cannot post, reply, quote, like, repost, bookmark, follow, edit your profile, change your handle, upload images, ask for the verified badge, or report under korbat's rules.",
+  stays:
+    "You can still sign in and read; see your cases and reply to korbat; appeal; ask for a re-examination of a report you sent; export your data; delete your posts or your account; undo likes, reposts, bookmarks and follows; block and mute; and report illegal content. Your profile and posts stay visible to others, without any mark, and others can still follow you and like, repost, reply to and quote your posts.",
+  explore:
+    "While it runs your posts do not appear in Explore, and your likes and reposts of other people's posts do not count there. Both count again from the first refresh after it ends; a post whose time in Explore has passed by then does not return.",
+  automationFlood: "korbat's software counted the posts this rests on. An admin read them and decided; no automated means decided it.",
+  /** The lift of a suspension (or a termination), by where its period stood at the lifting decision's time. */
+  liftedBefore: (what: "suspension" | "termination", decidedAt: string) => `korbat lifted the ${what} it announced on ${decidedAt}: it never starts.`,
+  liftedRunning: (what: "suspension" | "termination") => `korbat lifted the ${what} of your account: it ended with this decision.`,
+  liftedEnded: (startedAt: string, endedAt: string) => `korbat lifted the suspension of your account that ran from ${startedAt} to ${endedAt}: it no longer counts toward a later suspension.`,
+  /** A suspension (or a termination) whose basis this decision broke: the decision or the seal it rested on, then where its period stood. */
+  basisEnded: (what: "suspension" | "termination", decidedAt: string, seal: boolean) => `The ${what} of your account that korbat decided on ${decidedAt} rested on ${seal ? "that seal" : "that decision"}.`,
+  basisEndedThen: {
+    not_started: "It will not start.",
+    running: "It ended with this one.",
+    ended: (startedAt: string, endedAt: string) => `It had run from ${startedAt} to ${endedAt}; it no longer counts toward a later suspension.`,
+  },
+  /** After basisEnded, when the measure had a reply that nobody had answered: this decision answers it. */
+  basisEndedReply: (filedAt: string) => `Your reply of ${filedAt} to it needs no answer now.`,
   /**
    * The rule or the law, worded by what korbat knows when it decides. A decision that seals rests on a report that nobody
    * at korbat has checked against the images, since nobody opens them, so it says what the step rests on and never that
@@ -128,6 +162,12 @@ export const STATEMENT_WORDS = {
     restedOnRule: (id: string, title: string, text: string) => `That decision rested on korbat rule ${id}, "${title}": ${text}`,
     restedOnLaw: (reference: string) => `That decision rested on the law: ${reference}`,
     referenceErased: "its reference was erased under korbat's retention rules.",
+    // 3e (W.2, "The rule or the term"): a protective suspension rests on the terms' clause, never on a finding under R2; a
+    // measure taken at once on a threat or a flood names the account's conduct. The 14 days are a literal of these words,
+    // held to STANDING_RULES.protectiveDays by the rules package's table test.
+    protective: (title: string) =>
+      `This rests on korbat's terms, section Suspension and termination: when korbat keeps images of an account sealed after a report of child sexual abuse material, an admin may suspend the account once, for up to 14 days. The rule such a report is made under is korbat rule R2, "${title}". korbat has not found that your account broke it.`,
+    conduct: (id: string, title: string, text: string) => `Your account's conduct breaks korbat rule ${id}, "${title}": ${text}`,
   },
 } as const;
 
@@ -156,8 +196,70 @@ function fieldSentence(field: Field, reset: { oldValueKept: boolean; resetRuleId
   return parts.join(" ");
 }
 
-/** The kinds of 3e whose sentences this version of the package does not hold yet: none is rendered as another one. */
-const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["suspend", "terminate", "warn_reporting", "restrict_reporting", "lift_suspension", "lift_reporting"];
+/**
+ * The kinds of 3e whose sentences this version of the package does not hold yet: none is rendered as another one. Task 3
+ * words a suspension taken at once and the lift of a suspension; an announced suspension is refused where it is rendered.
+ */
+const UNWORDED: readonly (MeasureKind | ReversalKind)[] = ["terminate", "warn_reporting", "restrict_reporting", "lift_reporting"];
+
+/** What a sentence calls a standing measure. */
+const standingWord = (kind: "suspend" | "terminate"): "suspension" | "termination" => (kind === "terminate" ? "termination" : "suspension");
+
+/** A decision's standing measure (a suspension or a termination), if it holds one: a decision holds at most one. */
+const standingOf = (input: StatementInput) => input.measures.find((measure) => measure.kind === "suspend" || measure.kind === "terminate");
+
+/**
+ * A suspension taken at once, as three paragraphs (3e design, W.2): what was done, until when, and why at once (with the
+ * decision or the seal it rests on, read from the ledger's row), and that it changes nothing for a deleted account; what
+ * it stops and what it leaves; and what it does to Explore. An announced suspension is not worded in this version.
+ */
+function suspendParagraphs(measure: StatementInput["measures"][number]): string[] {
+  if (measure.announced !== false) throw new Error("a statement's suspend is not worded in this version of @korbat/rules unless it is taken at once");
+  const { days, endsAt, basis, restsOn } = measure;
+  if (days === undefined || days === null || endsAt === undefined || endsAt === null || basis === undefined || basis === null) {
+    throw new Error("a statement's suspend names its days, its end and its basis: the decision's data holds none");
+  }
+  const rested = restsOn?.[0]?.decidedAt;
+  let why: string;
+  if (basis === "flood") why = W.basis.flood;
+  else if ((basis === "threat" || basis === "terrorist" || basis === "protective") && rested !== undefined) why = W.basis[basis](utcMinute(rested));
+  else throw new Error(`a statement's suspend at once on the basis ${basis} names the decision it rests on: the decision's data holds none`);
+  const lead = [W.suspendAtOnce(days, utcMinute(endsAt)), why];
+  if (measure.noEffect === "deleted") lead.push(W.deletedAccount);
+  return [lead.join(" "), `${W.stops} ${W.stays}`, W.explore];
+}
+
+/** The lift of a suspension, by where its period stood at this decision's time; a withdrawal signed `replaced` is not worded in this version. */
+function liftParagraph(reversal: StatementInput["reversals"][number]): string {
+  const { liftedKind, periodThen } = reversal;
+  if (liftedKind === undefined || liftedKind === null || periodThen === undefined || periodThen === null) {
+    throw new Error("a statement's lift_suspension names the measure it lifts and its period then: the decision's data holds neither");
+  }
+  if (reversal.replaced === true) throw new Error("a statement's lift_suspension signed replaced is not worded in this version of @korbat/rules");
+  const what = standingWord(liftedKind);
+  if (periodThen.state === "not_started") {
+    if (reversal.liftedDecidedAt === undefined || reversal.liftedDecidedAt === null) throw new Error("a statement's lift_suspension before the start names the lifted decision's time: the decision's data holds none");
+    return W.liftedBefore(what, utcMinute(reversal.liftedDecidedAt));
+  }
+  if (periodThen.state === "running") return W.liftedRunning(what);
+  // A termination has no end, so it has no form for one that had already ended.
+  if (liftedKind === "terminate" || periodThen.startedAt === null || periodThen.endedAt === null) throw new Error("a statement's lift_suspension of a period that ended names its start and its end");
+  return W.liftedEnded(utcMinute(periodThen.startedAt), utcMinute(periodThen.endedAt));
+}
+
+/** A standing measure whose basis this decision broke: what it rested on, where its period stood, and a reply that waited. */
+function basisEndedParagraph(entry: NonNullable<StatementInput["endedStanding"]>[number]): string {
+  if (entry.kind === "restrict_reporting") throw new Error("a statement's restriction of reporting ended with its warning is not worded in this version of @korbat/rules");
+  const { periodThen } = entry;
+  let then: string;
+  if (periodThen.state === "ended") {
+    if (periodThen.startedAt === null || periodThen.endedAt === null) throw new Error("a statement's ended period names its start and its end");
+    then = W.basisEndedThen.ended(utcMinute(periodThen.startedAt), utcMinute(periodThen.endedAt));
+  } else then = W.basisEndedThen[periodThen.state];
+  const parts = [W.basisEnded(standingWord(entry.kind), utcMinute(entry.decidedAt), entry.seal), then];
+  if (entry.replyFiledAt !== null) parts.push(W.basisEndedReply(utcMinute(entry.replyFiledAt)));
+  return parts.join(" ");
+}
 
 /**
  * A retirement, as a paragraph. One that changed the profile names the handle, its placeholder and when a new handle can be
@@ -226,6 +328,7 @@ function measureParagraph(input: StatementInput, measure: StatementInput["measur
 function reversalParagraph(input: StatementInput, reversal: StatementInput["reversals"][number]): string {
   if (UNWORDED.includes(reversal.kind)) throw new Error(`a statement's ${reversal.kind} is not worded in this version of @korbat/rules`);
   if (reversal.kind === "overrule") return W.overruled;
+  if (reversal.kind === "lift_suspension") return liftParagraph(reversal);
   if (reversal.kind === "unretire_handle") {
     if (reversal.handle === undefined || reversal.handle === null) throw new Error("a statement's unretire_handle names the handle it gives back: the decision's data holds none");
     return W.unretired(reversal.handle);
@@ -252,7 +355,7 @@ function endedParagraph(input: StatementInput): string {
  * How a ground is worded (STATEMENT_WORDS.ground): for the decision a review or a correction is about; for a decision
  * that seals; for one taken while deciding; or for a final restriction without a seal, the only one that states a finding.
  */
-type GroundForm = "about" | "seal" | "deciding" | "found";
+type GroundForm = "about" | "seal" | "deciding" | "found" | "conduct";
 
 /** The rule or the law a decision rests on, in the form that fits what the decision is. */
 function groundParagraph(ground: { ground: StatementInput["ground"]; ruleId: string | null; legalReference: string | null }, rulesVersion: number, form: GroundForm): string | null {
@@ -265,7 +368,7 @@ function groundParagraph(ground: { ground: StatementInput["ground"]; ruleId: str
     const rule = getRule(ground.ruleId, rulesVersion);
     // A decision records the version it was made under, and every version is kept: one that is missing is never rendered as another.
     if (!rule) throw new Error(`a statement cites ${ground.ruleId} of rulebook version ${rulesVersion}, which this package does not hold`);
-    const words = form === "about" ? G.restedOnRule : form === "seal" ? G.sealRule : form === "deciding" ? G.checkingRule : G.breaks;
+    const words = form === "about" ? G.restedOnRule : form === "seal" ? G.sealRule : form === "deciding" ? G.checkingRule : form === "conduct" ? G.conduct : G.breaks;
     return words(rule.id, rule.title, rule.text);
   }
   return null;
@@ -290,27 +393,44 @@ export function statementParagraphs(input: StatementInput): string[] {
     if (input.kind === "review") paragraphs.push(W.reviewed(decided, input.outcome === "kept" ? "kept" : input.outcome === "partly_reversed" ? "partly_reversed" : "reversed"));
     else paragraphs.push(input.reviewed.kind === "interim" ? W.interimLifted(decided) : W.corrected(decided, input.outcome === "partly_reversed"));
   }
-  for (const measure of input.measures) paragraphs.push(measureParagraph(input, measure, redress));
+  for (const measure of input.measures) {
+    // 3e: a suspension is three paragraphs of its own (what and why, what it stops and leaves, Explore).
+    if (measure.kind === "suspend") paragraphs.push(...suspendParagraphs(measure));
+    else paragraphs.push(measureParagraph(input, measure, redress));
+  }
   for (const reversal of input.reversals) paragraphs.push(reversalParagraph(input, reversal));
   if (input.endedMeasures.length > 0) paragraphs.push(endedParagraph(input));
+  // 3e: the standing measures whose basis a reversal of this decision broke.
+  for (const entry of input.endedStanding ?? []) paragraphs.push(basisEndedParagraph(entry));
   if (paragraphs.length === 0) paragraphs.push(W.noAction);
 
-  // Where and how long: only a decision that restricts has a scope.
+  const standing = standingOf(input);
+  // Where and how long: only a decision that restricts has a scope; a suspension's is its days from its start.
   if (restricts) {
-    paragraphs.push(input.kind === "interim" ? W.scope.interim : W.scope.final);
+    paragraphs.push(input.kind === "interim" ? W.scope.interim : standing?.kind === "suspend" && typeof standing.days === "number" ? W.scope.suspend(standing.days) : W.scope.final);
     if (input.ground === "illegal") paragraphs.push(W.scope.law);
   }
 
   // How it came to korbat, for a decision of its own; a review or a correction is korbat's own second look.
   if (!about) paragraphs.push(sourceSentence(input.source));
   // A decision that gives a strike says what the software did: it applied korbat's published rule of when one is given.
-  paragraphs.push(input.measures.some((measure) => measure.kind === "strike") ? W.automationStrike : W.automation);
+  // A suspension on a flood rests on a count the software made; one on a decision, a threat or a seal rests on nothing
+  // the software did, and keeps 3c's sentence.
+  paragraphs.push(input.measures.some((measure) => measure.kind === "strike") ? W.automationStrike : standing?.basis === "flood" ? W.automationFlood : W.automation);
 
   // The rule or the law: the decision's own, or for a review or a correction the reviewed decision's, from that decision's
-  // row and in the wording of the rulebook that decision was made under.
-  const form: GroundForm = about ? "about" : input.measures.some((measure) => measure.kind === "seal_media") ? "seal" : input.kind === "interim" ? "deciding" : "found";
-  const ground = about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, form) : groundParagraph(input, input.rulesVersion, form);
-  if (ground !== null) paragraphs.push(ground);
+  // row and in the wording of the rulebook that decision was made under. A decision that holds a standing measure names
+  // the ground it truly rests on (3e, W.2): the terms' clause for a protective suspension, which never says that a rule is
+  // broken, and the account's conduct for one taken at once on a threat or a flood (the law, as ever, on terrorist content).
+  if (!about && standing?.basis === "protective") {
+    const r2 = getRule("R2", input.rulesVersion);
+    if (!r2) throw new Error(`a statement cites R2 of rulebook version ${input.rulesVersion}, which this package does not hold`);
+    paragraphs.push(W.ground.protective(r2.title));
+  } else {
+    const form: GroundForm = about ? "about" : input.measures.some((measure) => measure.kind === "seal_media") ? "seal" : input.kind === "interim" ? "deciding" : standing ? "conduct" : "found";
+    const ground = about ? groundParagraph(input.reviewed!, input.reviewed!.rulesVersion, form) : groundParagraph(input, input.rulesVersion, form);
+    if (ground !== null) paragraphs.push(ground);
+  }
 
   // The facts and the reason, while korbat keeps them.
   if (input.facts !== null) paragraphs.push(`The facts: ${input.facts}`);
@@ -319,6 +439,11 @@ export function statementParagraphs(input: StatementInput): string[] {
   // Redress, from the decision's own kind and outcome.
   if (input.kind === "interim") paragraphs.push(redress.interim);
   else if (input.kind === "final" && input.outcome === "restricted") {
+    // 3e (W.3): a measure taken at once can be replied to at any time while it runs; the reply comes before the appeal.
+    if (standing !== undefined && standing.announced === false) {
+      if (redress.replyAtOnce === undefined) throw new Error(`a statement's measure taken at once needs the reply's text, which redress version ${input.redressVersion} does not hold`);
+      paragraphs.push(redress.replyAtOnce);
+    }
     const appeal = redress.appeal.replace("{deadline}", () => utcMinute(appealDeadline(new Date(input.decidedAt))));
     paragraphs.push(input.measures.some((measure) => measure.kind === "seal_media") ? `${appeal} ${W.sealAppeal}` : appeal);
   } else paragraphs.push(redress.notAppealable);

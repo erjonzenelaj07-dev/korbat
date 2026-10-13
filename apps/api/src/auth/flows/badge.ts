@@ -57,6 +57,9 @@ function unavailable(err: unknown): never {
  */
 export async function startBadge(deps: AuthDeps, session: Session, input: BadgeStartRequest, ctx: RequestContext): Promise<{ flowId: string }> {
   const verify = provider(deps);
+  // 3e (design, section 7.2): the badge is a public mark, which a suspended account cannot ask for. A courtesy read, so
+  // that no code is texted to it; the write in verifyBadge decides.
+  if (await deps.profiles.suspended(session.userId)) throw new AuthError("account_suspended", 403);
   const hashed = phoneHash(deps.config.authHmacKey, input.phone);
   // The narrowest bucket first: a start the account's own limit refuses is not counted against the address or the
   // instance, so one account cannot spend their allowance with starts it was never going to get.
@@ -112,7 +115,12 @@ export async function verifyBadge(deps: AuthDeps, session: Session, input: Badge
     if (isUniqueViolation(err)) throw new AuthError("phone_in_use", 409);
     throw err;
   }
-  await deps.profiles.setVerified(user.id, deps.now());
+  if (!(await deps.profiles.setVerified(user.id, deps.now()))) {
+    // 3e: the one predicate refused the badge's write (a suspension started meanwhile): the phone hash written a moment
+    // before is cleared again, so the account holds nothing of a badge it was refused.
+    await deps.repo.setPhoneHash(user.id, null);
+    throw new AuthError("account_suspended", 403);
+  }
   await notifyAccount(deps, user.email, "badge_verified");
   // No metadata: the event log never holds the number, not even hashed, since the hash leaves the account with the badge.
   await deps.repo.appendEvent({ userId: user.id, type: "badge_verified", deviceId: session.deviceId });

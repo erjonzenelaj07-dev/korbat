@@ -21,6 +21,15 @@ import { commandLineMailer } from "./mail";
 export { SYSTEM_ACTOR_ID } from "../auth";
 export const GRANT_ROLE_USAGE = "usage: node dist/grant-role.js <email> <user|moderator|admin>";
 
+/**
+ * 3e (design, section 18, W.9): what the command prints when it refuses a promotion because the account holds a standing
+ * suspension, termination or restriction of reporting. Nothing was changed, and the command exits 1.
+ */
+export const GRANT_ROLE_WORDS = {
+  standing:
+    "This account holds a suspension, a termination or a restriction of reporting that stands and has not ended, so it cannot be made staff. Nothing was changed. If the measure was wrong, an admin lifts it with a correction first.",
+} as const;
+
 export function parseGrantRoleArgs(args: readonly string[]): { email: string; role: UserRole } {
   if (args.length !== 2) throw new Error(GRANT_ROLE_USAGE);
   const email = Email.safeParse(args[0]);
@@ -34,7 +43,7 @@ export function parseGrantRoleArgs(args: readonly string[]): { email: string; ro
  * The role change and its audit rows in one transaction on the auth role, then the tombstones and the mail; grant-role
  * opens no pool on the API's role.
  */
-export async function runGrantRole(deps: { authDb: Db; kv: KeyValueStore; mailer: Mailer }, email: string, role: UserRole) {
+export async function runGrantRole(deps: { authDb: Db; kv: KeyValueStore; mailer: Mailer }, email: string, role: UserRole): Promise<RoleGranted | "standing"> {
   const repo = createAuthRepo(deps.authDb);
   const sessions = createSessions({ repo, kv: deps.kv });
   try {
@@ -79,6 +88,10 @@ async function main(): Promise<number> {
   try {
     // The same mailer as the staff command line's, built as the API builds its own.
     const granted = await runGrantRole({ authDb, kv: redisKv(redis), mailer: commandLineMailer(process.env) }, parsed.email, parsed.role);
+    if (granted === "standing") {
+      console.error(GRANT_ROLE_WORDS.standing);
+      return 1;
+    }
     const report = grantRoleReport(granted, parsed.role);
     for (const line of report.out) console.log(line);
     for (const line of report.warnings) console.error(line);

@@ -6,6 +6,7 @@ import {
   RETIRED_HANDLE_PREFIX,
   RULE_DEFAULT_CATEGORY,
   SEAL_DRAFTS,
+  STANDING_DRAFTS,
   STANDING_RULES,
   compareDecisionActions,
   isRetiredPlaceholder,
@@ -294,13 +295,15 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
 /**
  * The targets whose measures a correction or a review lifts one by one, each with its own reversal (3c's). A strike falls
  * only with its whole finding: the console adds its overruling to a full reversal (overruleOf) and never offers it alone.
- * 3e's standing measures get their controls from the tasks that build their screens; a retirement is given back with
- * its own reversal (Task 2, 8.7).
+ * A retirement is given back with its own reversal (Task 2, 8.7), and (Task 3) a suspension or a termination is lifted
+ * with lift_suspension: those two share the target `account` with the strike, so they are named by kind.
  */
 const ONE_BY_ONE: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio", "handle"];
+const ONE_BY_ONE_KINDS: readonly ActionKind[] = ["suspend", "terminate"];
 
 /** Whether a decision's action is a measure that a correction or a review lifts one by one. */
-const liftsOneByOne = (action: { kind: ActionKind }): boolean => MEASURES[action.kind].lifts === null && ONE_BY_ONE.includes(MEASURES[action.kind].target);
+const liftsOneByOne = (action: { kind: ActionKind }): boolean =>
+  MEASURES[action.kind].lifts === null && (ONE_BY_ONE.includes(MEASURES[action.kind].target) || ONE_BY_ONE_KINDS.includes(action.kind));
 
 /** The strike a decision gave that stands (no overruling reversed it): what a full reversal of that decision overrules. */
 export const standingStrikeOf = (decision: CaseDecision): CaseDecisionAction | undefined => decision.actions.find((action) => action.kind === "strike" && action.inForce);
@@ -349,6 +352,7 @@ function reversalOf(action: { kind: ActionKind; mediaId: string | null }): Decis
   if (target === "image") return { kind: "restore_media", mediaId: action.mediaId };
   if (target === "images") return { kind: "unseal_media", mediaId: null };
   if (target === "handle") return { kind: "unretire_handle", mediaId: null };
+  if (action.kind === "suspend" || action.kind === "terminate") return { kind: "lift_suspension", mediaId: null };
   return { kind: target === "display_name" ? "restore_display_name" : "restore_bio", mediaId: null };
 }
 
@@ -366,6 +370,107 @@ export function liftable(view: CaseView): DecisionActionParams[] {
 
 /** The measure a reversal of a final decision's draft lifts, for its label. */
 export const liftedKind = (reversal: DecisionActionParams): MeasureKind => (reversal.kind === "restore_media" ? "withhold_media" : "withhold");
+
+// ---------------------------------------------------------------- 3e: a suspension at once (design, section 8.3)
+
+/** The four grounds of a suspension at once, in the composer's order. The termination at once is Task 4's. */
+export type AtOnceKey = "threat" | "terrorist" | "flood" | "protective";
+export const AT_ONCE_ORDER: readonly AtOnceKey[] = ["threat", "terrorist", "flood", "protective"];
+
+/** The most days of a suspension at once on each ground, from STANDING_RULES. */
+export const AT_ONCE_DAYS: Record<AtOnceKey, number> = {
+  threat: STANDING_RULES.threatDays,
+  terrorist: STANDING_RULES.terroristDays,
+  flood: STANDING_RULES.floodDays,
+  protective: STANDING_RULES.protectiveDays,
+};
+
+/**
+ * The ground a draft's rule or law selects (decision_actions_check's table): R5 a threat, R6 a flood, R2 a protective
+ * suspension, the law with the terrorist-content mark terrorist content; any other rule, or the law without the mark,
+ * none ([atOnce.other]).
+ */
+export function atOnceGroundOf(draft: Pick<CaseDraft, "ground" | "ruleId" | "terrorist">): AtOnceKey | null {
+  if (draft.ground === "illegal") return draft.terrorist ? "terrorist" : null;
+  return draft.ruleId === "R5" ? "threat" : draft.ruleId === "R6" ? "flood" : draft.ruleId === "R2" ? "protective" : null;
+}
+
+/** Why "Suspend at once" is greyed, by its key in STANDING_WORDS: a standing measure is live, the person is no admin, the rule allows none, a report waits, or the ground's facts are not there now. */
+export type AtOnceClosed = "conflict" | "admin" | "other" | "reportsFirst" | "noSeal" | "unmet";
+
+/**
+ * Whether "Suspend at once" is open for this draft on this case, and on which ground, or why not; null where the control
+ * is not shown at all: on a post case, while deciding, or for an outcome that restricts nothing. The case answer's
+ * standing says what the database would accept now; the database decides at the commit.
+ */
+export function atOnceState(
+  view: CaseView,
+  role: StaffRole,
+  draft: Pick<CaseDraft, "kind" | "outcome" | "ground" | "ruleId" | "terrorist">,
+): { open: true; ground: AtOnceKey } | { open: false; why: AtOnceClosed; ground: AtOnceKey | null } | null {
+  if (view.target.type !== "account" || view.standing === null || draft.kind !== "final" || draft.outcome !== "restricted") return null;
+  const ground = atOnceGroundOf(draft);
+  if (view.standing.live) return { open: false, why: "conflict", ground };
+  if (role !== "admin") return { open: false, why: "admin", ground };
+  if (ground === null) return { open: false, why: "other", ground };
+  // A protective suspension answers findings only: a report that waits in the case is decided first.
+  if (ground === "protective" && view.standing.openReports) return { open: false, why: "reportsFirst", ground };
+  if (!view.standing.atOnce.includes(ground)) return { open: false, why: ground === "protective" ? "noSeal" : "unmet", ground };
+  return { open: true, ground };
+}
+
+/** The suspension a draft holds, if any. */
+export const suspensionOf = (draft: CaseDraft): DecisionActionParams | undefined => draft.actions.find((action) => action.kind === "suspend");
+
+/** A placeholder of a draft filled in, each by a function, so that no character of a value is read as a pattern. */
+const filled = (text: string, values: Record<string, string>): string => Object.entries(values).reduce((out, [key, value]) => out.split(`{${key}}`).join(value), text);
+
+/**
+ * The draft once "Suspend at once" is chosen with these days: the suspension taken at once beside the draft's other
+ * measures, and, when its facts or its reason are still empty, W.5's drafts for the ground, filled from the case answer as
+ * this page read it (a flood's count and interval, the day of the seal for good). The moderator may edit them.
+ */
+export function withAtOnce(view: CaseView, draft: CaseDraft, ground: AtOnceKey, days: number): CaseDraft {
+  const standing = view.standing;
+  const actions = [...draft.actions.filter((action) => action.kind !== "suspend"), { kind: "suspend" as const, mediaId: null, days, announced: false }];
+  const facts =
+    ground === "flood"
+      ? filled(STANDING_DRAFTS.facts.flood, { posts: String(standing?.flood.posts ?? 0), from: standing?.flood.from ?? "", to: standing?.flood.to ?? "" })
+      : ground === "protective"
+        ? filled(STANDING_DRAFTS.facts.protective, { sealedOn: standing?.seal?.decidedOn ?? "" })
+        : STANDING_DRAFTS.facts[ground];
+  const written = { ...draft.written };
+  if (normalised(written.facts) === "") written.facts = facts;
+  if (ground === "protective" && normalised(written.reason) === "") written.reason = STANDING_DRAFTS.reason.protective;
+  return { ...draft, actions, written };
+}
+
+/** A suspension at once as the preview renders it: what the database will fix, as far as the page can tell now. */
+function previewSuspension(view: CaseView, draft: CaseDraft, action: DecisionActionParams, noEffect: "already" | "deleted" | null, now: Date) {
+  const ground = atOnceGroundOf(draft);
+  const days = action.days ?? 1;
+  const rested = ground === null || ground === "flood" ? null : (view.standing?.basisDecidedAt[ground] ?? now.toISOString());
+  return {
+    kind: "suspend" as MeasureKind,
+    mediaId: null,
+    noEffect,
+    sealed: null,
+    announced: false,
+    days,
+    basis: ground,
+    earliestStart: now.toISOString(),
+    endsAt: new Date(now.getTime() + days * DAY_MS).toISOString(),
+    restsOn: rested === null ? null : [{ decidedAt: rested, ruleId: ground === "threat" ? ("R5" as RuleId) : null, postCreatedAt: null }],
+  };
+}
+
+/** Where a standing measure's period stood, as the case answer reads it now, in the statement's three states: what the preview of its lift prints. */
+function periodNow(action: CaseDecisionAction): { state: "not_started" | "running" | "ended"; startedAt: string | null; endedAt: string | null } {
+  const period = action.period;
+  if (period === null || period.startsAt === null || period.state === "unfixed" || period.state === "announced" || period.state === "held" || period.state === "never") return { state: "not_started", startedAt: null, endedAt: null };
+  if (period.state === "running") return { state: "running", startedAt: period.startsAt, endedAt: null };
+  return { state: "ended", startedAt: period.startsAt, endedAt: period.endsAt };
+}
 
 // ---------------------------------------------------------------- drafts
 
@@ -396,13 +501,18 @@ export function newDraft(caseId: CaseId, view: CaseView, role: StaffRole): CaseD
 }
 
 /** Whether an action of a draft is still among what the composer offers for this kind and outcome, on the case as the page shows it. */
-function actionOffered(view: CaseView, role: StaffRole, kind: "interim" | "final", restricts: boolean, action: DecisionActionParams): boolean {
+function actionOffered(view: CaseView, role: StaffRole, kind: "interim" | "final", restricts: boolean, action: DecisionActionParams, draftLike: Pick<CaseDraft, "ground" | "ruleId" | "terrorist">): boolean {
   // A Lift stands beside a withhold taken while deciding, on a final decision that leaves the case open.
   if (MEASURES[action.kind].lifts !== null) return kind === "final" && leftOpen(view).length > 0 && liftable(view).some((lift) => sameAction(lift, action));
   if (!restricts) return false;
   if (action.kind === "seal_media") return sealOffered(view, kind, role);
   // A retirement while the profile holds a placeholder is greyed, so a draft that held it loses it.
   if (action.kind === "retire_handle" && !retireOpen(view)) return false;
+  // 3e: a suspension at once stays while its control is open for this person, rule and case, with days within its ground's.
+  if (action.kind === "suspend") {
+    const state = atOnceState(view, role, { ...draftLike, kind, outcome: restricts ? "restricted" : "no_violation" });
+    return state?.open === true && action.announced === false && typeof action.days === "number" && action.days >= 1 && action.days <= AT_ONCE_DAYS[state.ground];
+  }
   if (!measuresOffered(view, kind).includes(action.kind as MeasureKind)) return false;
   // An image measure names an image of the snapshot the page shows that it may still name.
   return MEASURES[action.kind].target !== "image" || (action.mediaId !== null && imagesOffered(view, kind, action.kind as MeasureKind).includes(action.mediaId));
@@ -427,7 +537,7 @@ export function offeredDraft(view: CaseView, role: StaffRole, draft: CaseDraft):
   const ground = draft.ground === "illegal" && !lawOffered(view, kind) ? "incompatible" : draft.ground;
   const ruleId = draft.ruleId === "R2" && suspectOpen(view).length === 0 ? openingRule(view) : draft.ruleId;
   const category = ruleId === draft.ruleId ? draft.category : RULE_DEFAULT_CATEGORY[ruleId];
-  const actions = draft.actions.filter((action) => actionOffered(view, role, kind, outcome === "restricted", action));
+  const actions = draft.actions.filter((action) => actionOffered(view, role, kind, outcome === "restricted", action, { ground, ruleId, terrorist: draft.terrorist }));
   const same = kind === draft.kind && outcome === draft.outcome && ground === draft.ground && ruleId === draft.ruleId && actions.length === draft.actions.length;
   return same ? draft : { ...draft, kind, outcome, ground, ruleId, category, actions };
 }
@@ -696,7 +806,12 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
         const lifted = corrected.actions.find((action) => liftsOneByOne(action) && sameAction(reversalOf(action), reversal));
         // 3e: the handle a retirement's reversal gives back, which the case answer names on the retirement's row.
         const handle = reversal.kind === "unretire_handle" ? { handle: lifted?.handle ?? null } : {};
-        return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET), ...handle };
+        // 3e Task 3: what a lift of a suspension lifts, and where its period stands now, which is the lift's time.
+        const lift =
+          reversal.kind === "lift_suspension" && lifted
+            ? { liftedKind: lifted.kind === "terminate" ? ("terminate" as const) : ("suspend" as const), liftedDecidedAt: corrected.decidedAt, periodThen: periodNow(lifted), replaced: false }
+            : {};
+        return { kind: reversal.kind as ReversalKind, mediaId: reversal.mediaId, ...(lifted ? resetFacts(view, corrected, lifted) : NO_RESET), ...handle, ...lift };
       }),
       endedMeasures: [],
       reviewed: { kind: corrected.kind, ground: corrected.ground, ruleId: corrected.ruleId, rulesVersion: corrected.rulesVersion, legalReference: corrected.legalReference, decidedAt: corrected.decidedAt },
@@ -723,6 +838,8 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
       .filter((action) => MEASURES[action.kind].lifts === null)
       .map((action) => {
         const noEffect = noEffectOf(view, action, draft.kind === "final" ? "final" : "interim");
+        // 3e Task 3: a suspension at once, with its basis, its end and the decision it rests on, as the database will fix them.
+        if (action.kind === "suspend") return previewSuspension(view, draft, action, noEffect, now);
         const measure = { kind: action.kind as MeasureKind, mediaId: action.mediaId, noEffect, sealed: action.kind === "seal_media" ? { posts: reach.posts, images: reach.images, deletedImages: 0 } : null };
         // 3e: a retirement names the snapshot's handle, and the placeholder's form when it changes the profile.
         if (action.kind !== "retire_handle") return measure;

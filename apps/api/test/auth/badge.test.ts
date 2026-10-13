@@ -451,3 +451,31 @@ describe("badge: removal", () => {
     expect(h.events.map((e) => e.type)).toEqual(["badge_verified", "badge_removed"]);
   });
 });
+
+describe("badge: a suspended account (3e design, sections 7.2 and 7.3)", () => {
+  test("the start is refused account_suspended before any limit is counted or any code is texted", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const provider = counting();
+    h.deps.verify = provider.provider;
+    h.suspended.add(ada.user.id);
+    expect(await failure(start(h, ada.session))).toMatchObject({ code: "account_suspended", status: 403 });
+    expect(provider.calls.start).toBe(0);
+    expect(await h.kv.get(`rl:badge-start:${ada.user.id}`)).toBeNull();
+  });
+
+  test("a code that is right after the suspension began is refused: the phone hash written a moment before is cleared again, nobody is told and nothing is recorded", async () => {
+    const h = memoryFlowHarness();
+    const ada = h.user("ada@korbat.local");
+    const flowId = await start(h, ada.session);
+    h.suspended.add(ada.user.id);
+    expect(await failure(verifyBadge(h.deps, ada.session, { flowId, code: DEV_CODE }))).toMatchObject({ code: "account_suspended", status: 403 });
+    expect(h.users.get(ada.user.id)!.phoneHash).toBeNull();
+    expect(h.verified.has(ada.user.id)).toBe(false);
+    expect(h.mailer.sent).toEqual([]);
+    expect(h.events).toEqual([]);
+    // Removing a badge stays open to a suspended account: it withdraws a phone hash.
+    await removeBadge(h.deps, ada.session);
+    expect(h.verified.get(ada.user.id)).toBeNull();
+  });
+});

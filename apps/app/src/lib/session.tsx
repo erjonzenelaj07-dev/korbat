@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { AppState, Pressable, Text, View } from "react-native";
 import { MeResponse } from "@korbat/contracts";
-import { api, ApiError, errorMessage, setUnauthenticatedHandler } from "./api";
+import { api, ApiError, errorMessage, setSuspendedHandler, setUnauthenticatedHandler } from "./api";
 
 type SessionState =
   | { status: "loading" }
@@ -65,6 +65,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setUnauthenticatedHandler(() => setState((current) => (current.status === "signed-in" ? { status: "signed-out" } : current)));
     return () => setUnauthenticatedHandler(null);
+  }, []);
+
+  // 3e (design, section 9.1): /me again when the app gains focus and after a refusal account_suspended, so the banner and
+  // a refusal's sentence are true of the row. Quietly: a read that fails keeps what is shown, and never the failure screen.
+  useEffect(() => {
+    const quiet = () => {
+      loadSession()
+        .then(setState)
+        .catch(() => undefined);
+    };
+    setSuspendedHandler(quiet);
+    const focus = AppState.addEventListener("change", (next) => {
+      if (next === "active") quiet();
+    });
+    return () => {
+      setSuspendedHandler(null);
+      focus.remove();
+    };
   }, []);
 
   const value = useMemo(() => ({ state, refresh }), [state, refresh]);

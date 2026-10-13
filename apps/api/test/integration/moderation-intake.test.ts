@@ -7,7 +7,7 @@ import { loadConfig } from "../../src/config";
 import { socialForModeration } from "../../src/social";
 import { createSocialRepo } from "../../src/social/repo";
 import { recordIntake } from "../../src/moderation/intake";
-import { aPost, anAccount, gate, ground, intake, moderationDeps, newPostRow, refusal, removeFixtures, rowCounts, untilBlocked, uuids } from "./moderation-fixtures";
+import { aPost, anAccount, gate, ground, intake, moderationDeps, newPostRow, refusal, removeFixtures, rowCounts, suspendRowForTest, untilBlocked, uuids } from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
 import { pgError, rolledBack, withLockTimeout } from "./staff-fixtures";
 
@@ -256,9 +256,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: taking in a report, a no
         const [live, deleted] = [await profile(tx), await profile(tx)];
         await tx.execute(sql`update profiles set deleted_at = now() where id = ${deleted.id}::uuid`);
         const byId = (rows: { id: string; deleted: boolean }[]) => [...rows].sort((a, b) => (a.id < b.id ? -1 : 1));
-        expect(byId(await social.lockAccounts(tx, [live.id, deleted.id, live.id, randomUUID()], "no key update"))).toEqual(byId([{ id: live.id, deleted: false }, { id: deleted.id, deleted: true }]));
+        // 3e: each row also says whether the account is suspended and restricted in its reports, read in the same statement.
+        const none = { suspended: false, reportsRestricted: false };
+        expect(byId(await social.lockAccounts(tx, [live.id, deleted.id, live.id, randomUUID()], "no key update"))).toEqual(byId([{ id: live.id, deleted: false, ...none }, { id: deleted.id, deleted: true, ...none }]));
         expect(await social.lockAccounts(tx, [], "key share", true)).toEqual([]);
-        expect(await social.lockAccounts(tx, [live.id], "key share", true)).toEqual([{ id: live.id, deleted: false }]);
+        expect(await social.lockAccounts(tx, [live.id], "key share", true)).toEqual([{ id: live.id, deleted: false, ...none }]);
         expect(await refusal(tx.transaction((sp) => social.lockAccounts(sp, [live.id, deleted.id], "key share", true)))).toBe("not_found");
         expect(await refusal(tx.transaction((sp) => social.lockAccounts(sp, [randomUUID()], "key share", true)))).toBe("not_found");
 
@@ -304,6 +306,31 @@ describe.skipIf(!process.env.INTEGRATION)("integration: taking in a report, a no
         await removeFixtures(migrateDb, [author.id]);
       }
     });
+  });
+
+  test("3e: while its suspension runs, a signed-in reporter's report under a rule is refused account_suspended, from the row the intake locks; its notice of illegality and its report of child sexual abuse material are taken", async () => {
+    const [reporter, target] = [await profile(apiDb), await profile(apiDb)];
+    try {
+      await suspendRowForTest(migrateDb, reporter.id);
+      await rolledBack(apiDb, async (tx) => {
+        const postId = await newPostRow(tx, target.id);
+        const deps = moderationDeps(tx);
+        expect(await refusal(recordIntake(deps, { ground: ground.rule(reporter.id, "R1"), live: [aPost(postId)] }))).toBe("account_suspended");
+        const illegal = await recordIntake(deps, { ground: ground.illegal(reporter.id), live: [aPost(postId)] });
+        expect(illegal.items).toHaveLength(1);
+        // The refused report left nothing behind: only the notice of illegality names the reporter.
+        const [count] = await tx.execute<{ n: number }>(sql`select count(*)::int as n from intakes where reporter_id = ${reporter.id}::uuid`);
+        expect(count!.n).toBe(1);
+      });
+      // A suspension that ended refuses nothing.
+      await suspendRowForTest(migrateDb, reporter.id, { from: "-2 hours", until: "-1 hour" });
+      await rolledBack(apiDb, async (tx) => {
+        const postId = await newPostRow(tx, target.id);
+        expect((await recordIntake(moderationDeps(tx), { ground: ground.rule(reporter.id, "R1"), live: [aPost(postId)] })).items).toHaveLength(1);
+      });
+    } finally {
+      await removeFixtures(migrateDb, [reporter.id, target.id]);
+    }
   });
 
   test("this file left no row behind: the tables it writes hold what they held before it", async () => {

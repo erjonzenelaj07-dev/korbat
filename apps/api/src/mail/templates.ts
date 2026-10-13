@@ -47,6 +47,39 @@ export const DECISION_MAIL_SUBJECTS = {
 } as const;
 export type DecisionMailSubject = keyof typeof DECISION_MAIL_SUBJECTS;
 
+/** What every statement mail ends with, before userMail's closing sentence. */
+const STATEMENT_CLOSING = "Read it in korbat under Settings, Cases. korbat's emails never contain a link to act on a decision.";
+
+/** A statement mail's paragraphs, one per line of its data's `statement`, exactly as statementParagraphs rendered them. */
+function statementLines(data: Record<string, string>): string[] {
+  return need(data, "statement")
+    .split(String.fromCharCode(10))
+    .filter((paragraph) => paragraph.trim() !== "");
+}
+
+/** 3e (W.6): suspension_lifted's subject and lead for a lift that answers no reply, by the period's state at the lifting decision's time. */
+const LIFTED: Record<string, { subject: (what: string) => string; lead: (what: string) => string }> = {
+  not_started: { subject: (what) => `korbat lifted the ${what} of your account`, lead: (what) => `korbat lifted the ${what} of your korbat account that it had announced: it never starts.` },
+  running: { subject: (what) => `korbat lifted the ${what} of your account`, lead: (what) => `korbat lifted the ${what} of your korbat account. This ${what} no longer restricts your account.` },
+  ended: { subject: (what) => `korbat lifted the ${what} of your account`, lead: (what) => `korbat lifted a past ${what} of your korbat account: it no longer counts toward a later suspension.` },
+};
+
+/** 3e (W.6): suspension_lifted's subject and lead when a reversal broke the measure's basis, by the period's state then. */
+const LIFTED_BASIS: Record<string, { subject: (what: string) => string; lead: (what: string) => string }> = {
+  not_started: {
+    subject: (what) => `A ${what} of your account will not start`,
+    lead: (what) => `korbat reversed a decision that the ${what} it announced for your korbat account rested on. The ${what} will not start.`,
+  },
+  running: {
+    subject: (what) => `A ${what} of your account has ended`,
+    lead: (what) => `The ${what} of your korbat account has ended, because a decision it rested on was reversed. This ${what} no longer restricts your account.`,
+  },
+  ended: {
+    subject: (what) => `A past ${what} of your account no longer counts`,
+    lead: (what) => `korbat reversed a decision that a past ${what} of your account rested on; that ${what} no longer counts.`,
+  },
+};
+
 /** What a decision that lifted the protection of reported images did, as moderation_csam_lifted prints it. */
 const CSAM_LIFTED_WHAT: Record<string, string> = {
   unsealed: "lifted a seal",
@@ -235,7 +268,28 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       const lines = need(data, "statement")
         .split("\n")
         .filter((paragraph) => paragraph.trim() !== "");
-      return userMail(DECISION_MAIL_SUBJECTS[key as DecisionMailSubject], [...lines, "Read it in korbat under Settings, Cases. korbat's emails never contain a link to act on a decision."]);
+      return userMail(DECISION_MAIL_SUBJECTS[key as DecisionMailSubject], [...lines, STATEMENT_CLOSING]);
+    }
+    case "suspension_started_at_once": {
+      // 3e (design, W.6): a suspension or a termination taken at once. The lead, then the statement's paragraphs exactly
+      // as rendered, then what every statement mail ends with.
+      const terminated = need(data, "measure") === "terminate";
+      const days = terminated ? "" : need(data, "days");
+      const lead = terminated
+        ? "korbat terminated your korbat account. It did so at once, without notice beforehand; the reasons follow. You can reply and appeal in korbat from now: sign in and use the banner on any screen."
+        : `korbat suspended your korbat account for ${days} ${days === "1" ? "day" : "days"}, until ${need(data, "endsAt")}. It did so at once, without notice beforehand; the reasons follow. You can reply and appeal in korbat from now: sign in and use the banner on any screen.`;
+      return userMail(terminated ? "korbat terminated your account" : "korbat suspended your account", [lead, ...statementLines(data), STATEMENT_CLOSING]);
+    }
+    case "suspension_lifted": {
+      // 3e (design, W.6): a lift of a suspension or a termination, or its end because a decision it rested on was
+      // reversed, by where its period stood at that decision's time. No lead says "you can use your account as before":
+      // another measure may still stand, so each says only that this one no longer restricts the account.
+      const what = need(data, "measure") === "terminate" ? "termination" : "suspension";
+      const period = need(data, "period");
+      const why = need(data, "why");
+      const words = why === "basis" ? LIFTED_BASIS[period] : why === "lifted" ? LIFTED[period] : undefined;
+      if (words === undefined) throw new Error(`mail template data holds a why or a period that suspension_lifted does not have: "${why}", "${period}"`);
+      return userMail(words.subject(what), [words.lead(what), ...statementLines(data), STATEMENT_CLOSING]);
     }
     case "moderation_urgent": {
       // The alert for the urgent lane (3c design, section 7.12): counts and times only, to every staff account. A single

@@ -26,6 +26,7 @@ import { profile } from "../../src/social/flows/profiles";
 import { latestTimeline } from "../../src/social/flows/timelines";
 import { flowHarness, newTestDevice, onboardedUser, type FlowHarness } from "./flow-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
+import { suspendRowForTest } from "./moderation-fixtures";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
 
 const newHandle = () => `d_${randomBytes(5).toString("hex")}`;
@@ -241,6 +242,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     const before = { auth: await authRow(userId), profile: gone, bob: await profileRow(bob.id), bobsPost: await postRow(bobsPost.id), requests: (await m.files.deletionRequests()).sort() };
     await purge(deps(), userId);
     expect({ auth: await authRow(userId), profile: await profileRow(userId), bob: await profileRow(bob.id), bobsPost: await postRow(bobsPost.id), requests: (await m.files.deletionRequests()).sort() }).toEqual(before);
+  });
+
+  test("3e: a suspended account deletes itself its 1b way, with no hold: the purge takes the rows of its followers and those it follows before any post, writes their counters exactly, and writes no standing into the deleted row", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const [bob, carol] = await Promise.all([s.established(), s.established()]);
+    const own = await createPost(s.deps, userId, { body: "posted before the suspension", media: [] });
+    expect(await s.repo.follow(bob.id, userId, s.clock.next())).toBe(true);
+    expect(await s.repo.follow(userId, carol.id, s.clock.next())).toBe(true);
+    await suspendRowForTest(migrateDb, userId);
+    // The suspended account cannot post, but it can delete itself (GDPR Art. 17): no hold (3e design, section 2, row 27).
+    expect(await rejection(createPost(s.deps, userId, { body: "while suspended", media: [] }))).toBe("account_suspended");
+    const { flowId } = await startDeletion(deps(), owner.session, h.ctx);
+    await confirmDeletion(deps(), owner.session, { flowId, code: h.mailer.lastCodeFor(owner.email)!, handle: owner.handle });
+    expect((await authRow(userId))!.purgedAt).not.toBeNull();
+    expect(await profileRow(userId)).toMatchObject({ displayName: "Deleted account", followerCount: 0, followingCount: 0, postCount: 0 });
+    expect(await postRow(own.id)).toMatchObject({ state: "deleted_by_author", body: "" });
+    expect(await profileRow(bob.id)).toMatchObject({ followingCount: 0 });
+    expect(await profileRow(carol.id)).toMatchObject({ followerCount: 0 });
   });
 
   test("sign-in with a deleted address behaves as for an unknown one before the purge ran, and one round of the job finishes deletions left half done, oldest first", async () => {

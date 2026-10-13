@@ -7,8 +7,8 @@ import type { MediaForCases } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
 
-/** The moderation codes plus the shared ones the module also raises. */
-export type ModerationErrorKind = ModerationErrorCode | "not_found" | "invalid_request" | "onboarding_required" | "rate_limited" | "service_unavailable";
+/** The moderation codes plus the shared ones the module also raises; 3e's account_suspended is the social module's code, shared. */
+export type ModerationErrorKind = ModerationErrorCode | "not_found" | "invalid_request" | "onboarding_required" | "rate_limited" | "service_unavailable" | "account_suspended";
 export type ModerationErrorStatus = 400 | 403 | 404 | 409 | 422 | 429 | 503;
 
 /** What each code answers with over HTTP (3c design, section 10). */
@@ -50,6 +50,7 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   onboarding_required: 403,
   rate_limited: 429,
   service_unavailable: 503,
+  account_suspended: 403,
 };
 
 // Those of the notice routes, of the appeal and of the re-examination are written for the person reporting or reported; the
@@ -97,6 +98,8 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   onboarding_required: "Choose a handle to finish setting up your account.",
   rate_limited: "Too many requests. Wait a moment and try again.",
   service_unavailable: "That could not be done right now. Try again in a moment.",
+  // 3e (design, section 7.9 step 7): a report under a rule by an account whose suspension runs, in the social module's words.
+  account_suspended: "Your account is suspended, so you cannot do this now.",
 };
 
 /** An expected failure of a moderation flow. The HTTP layer turns it into an ErrorEnvelope with this code and status. */

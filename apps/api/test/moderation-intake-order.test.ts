@@ -84,7 +84,8 @@ function recording(openCases: Record<string, (string | null)[]>) {
     },
   };
   const social = {
-    lockAccounts: async () => (events.push("lock sender"), []),
+    // 3e: each row says whether its account is suspended and restricted in its reports; this sender is neither.
+    lockAccounts: async (_tx: unknown, ids: readonly string[]) => (events.push("lock sender"), ids.map((id) => ({ id, deleted: false, suspended: false, reportsRestricted: false }))),
     capturePost: async (_tx: unknown, id: string) => (
       events.push(`copy post ${id}`),
       { id, authorId: randomUUID(), authorHandle: "author", body: "a post", state: "visible", createdAt: new Date(TAKEN), replyToId: null, quoteOfId: null, erased: false }

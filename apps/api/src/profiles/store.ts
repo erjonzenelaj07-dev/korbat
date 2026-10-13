@@ -1,6 +1,7 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { handleHistory, profiles, type Db } from "@korbat/db";
 import { handleRefusal, isUniqueViolation, type ProfileStore } from "../auth";
+import { WRITE_CLOCK, liveNotSuspended } from "../lib/standing";
 
 /**
  * Public profiles through the korbat_api pool. Onboarding writes the profile and the reservation of
@@ -47,8 +48,23 @@ export function createProfileStore(apiDb: Db): ProfileStore {
       // author's Explore switch, which the privacy screen shows and the public profile never carries.
       return { ...pub, handleChangedAt: handleChangedAt?.toISOString() ?? null, verified: verifiedAt !== null, showInExplore };
     },
+    /**
+     * The badge, profiles.verified_at, which the auth module decides and cannot write. 3e (design, section 7.2): setting it
+     * is a write of the account, so the one predicate joins the update's WHERE and the answer says whether a row changed;
+     * removing it is open to everyone, and answers true.
+     */
     async setVerified(id, at) {
-      await apiDb.update(profiles).set({ verifiedAt: at }).where(eq(profiles.id, id));
+      if (at === null) {
+        await apiDb.update(profiles).set({ verifiedAt: null }).where(eq(profiles.id, id));
+        return true;
+      }
+      const updated = await apiDb.update(profiles).set({ verifiedAt: at }).where(and(eq(profiles.id, id), liveNotSuspended("profiles", WRITE_CLOCK))).returning({ id: profiles.id });
+      return updated.length === 1;
+    },
+    /** A plain read of the same fact, which startBadge asks first as a courtesy, so that no code is sent to a suspended account; the write decides. */
+    async suspended(id) {
+      const [row] = (await apiDb.execute(sql`select not ${liveNotSuspended("p", WRITE_CLOCK)} as suspended from profiles p where p.id = ${id}::uuid and p.deleted_at is null`)) as unknown as { suspended: boolean }[];
+      return row?.suspended ?? false;
     },
   };
 }

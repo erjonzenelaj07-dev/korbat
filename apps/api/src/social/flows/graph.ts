@@ -4,7 +4,7 @@ import { decodeCursor } from "../cursor";
 import { enforceWriteLimit } from "../limits";
 import type { ProfileRow, Relation } from "../repo";
 import { authorOf, pageCursor } from "../views";
-import { ownProfile } from "./posts";
+import { onceMoreOnDeadlock, ownProfile } from "./posts";
 import { lookupProfile } from "./profiles";
 
 /**
@@ -23,6 +23,9 @@ async function target(deps: SocialDeps, viewer: string, handle: string, on: bool
 /**
  * Follow or unfollow. Following someone you block is `blocked`; someone who blocks you is
  * `not_found`, like every other read or write towards them. Only the follow itself is limited.
+ * 3e (design, section 5, the lock order, item 3): a follow or an unfollow between an account being purged and one of its
+ * counterparts can cross the purge's locks; PostgreSQL ends one of the two, and the follow or unfollow, which changed
+ * nothing, is run once more and then finds the purge committed. A suspended account's follow is refused account_suspended.
  */
 export async function setFollow(deps: SocialDeps, viewer: string, handle: string, on: boolean): Promise<FollowResponse> {
   const { profile, relation } = await target(deps, viewer, handle, on);
@@ -31,9 +34,9 @@ export async function setFollow(deps: SocialDeps, viewer: string, handle: string
   if (on) {
     const me = await ownProfile(deps, viewer);
     await enforceWriteLimit(deps.limits, viewer, "follow", me.createdAt, deps.now());
-    await deps.repo.follow(viewer, profile.id, deps.now(), true);
+    await onceMoreOnDeadlock(() => deps.repo.follow(viewer, profile.id, deps.now(), true));
   } else {
-    await deps.repo.unfollow(viewer, profile.id);
+    await onceMoreOnDeadlock(() => deps.repo.unfollow(viewer, profile.id));
   }
   const fresh = (await deps.repo.findProfiles([profile.id])).get(profile.id)!;
   return { following: on, followerCount: fresh.followerCount };

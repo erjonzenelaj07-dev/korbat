@@ -31,6 +31,8 @@ const MESSAGES: Record<SocialErrorKind, string> = {
   handle_cooldown: "Handles can change once every 30 days.",
   // 3e (design, section 9.5): the auth module's words for the same code.
   handle_retired: "That handle was retired by korbat. Nobody can use it.",
+  // 3e (design, sections 7.2 and 9.8): a write of an account while its suspension runs; no detail, the app reads /me.
+  account_suspended: "Your account is suspended, so you cannot do this now.",
 };
 
 /** An expected, user-facing failure. The HTTP layer turns it into an ErrorEnvelope with this code and status. */

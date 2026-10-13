@@ -318,11 +318,20 @@ describe("the case answer", () => {
       flood: { posts: 2, from: TIME, to: TIME },
       seal: { decidedOn: "2026-10-01" },
       snapshotHandleRetired: false,
+      // 3e Task 3: the decision each ground of a suspension at once would rest on now, by its time.
+      basisDecidedAt: { threat: TIME, terrorist: null, protective: TIME },
     };
     const account = { ...view, target: { type: "account", id: POST, handle: "now_named", displayName: "A name", bio: "A bio", deleted: false }, suspicion: null, snapshots: [], items: [], decisions: [], strikeDue: null, authorStanding: null, standing };
     expect(CaseView.parse(account).standing).toEqual(standing);
     expect(CaseView.safeParse({ ...account, standing: { ...standing, maxDays: 31 } }).success).toBe(false);
     expect(CaseView.safeParse({ ...account, standing: { ...standing, atOnce: ["ladder"] } }).success).toBe(false);
+    expect(CaseView.safeParse({ ...account, standing: { ...standing, basisDecidedAt: { threat: TIME } } }).success).toBe(false);
+    // A decision says which standing measures rest on it, when any does; older answers carry no such member.
+    const decision = CaseView.parse(view).decisions[0];
+    if (decision) {
+      expect(CaseView.parse({ ...view, decisions: [{ ...decision, standingOn: [{ kind: "suspend", basis: "threat" }] }] }).decisions[0]!.standingOn).toEqual([{ kind: "suspend", basis: "threat" }]);
+      expect(CaseView.safeParse({ ...view, decisions: [{ ...decision, standingOn: [{ kind: "suspend", basis: "spam" }] }] }).success).toBe(false);
+    }
     // Each member is always there: on the other kind of case it is null.
     const { standing: _standing, ...without } = account;
     expect(CaseView.safeParse(without).success).toBe(false);

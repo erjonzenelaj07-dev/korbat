@@ -23,18 +23,19 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 34 templates: the 25 before moderation cases and the nine of 3c", () => {
+  test("holds 36 templates: the 25 before moderation cases, the nine of 3c and the two of 3e's Task 3", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
       "email_change_code", "email_changed", "email_change_reverted", "badge_verified", "badge_removed", "delete_account_code", "account_deleted", "passkey_added", "passkey_removed", "passkey_suspect",
       "recovery_code_used", "staff_key_added", "staff_session_started", "staff_key_suspect", "staff_keys_revoked",
       "notice_received", "notice_update", "moderation_decision", "moderation_urgent", "moderation_waiting", "moderation_burst", "moderation_reads", "moderation_reveal", "moderation_csam_lifted",
+      "suspension_started_at_once", "suspension_lifted",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(34);
+    expect(new Set(names).size).toBe(36);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(34);
+    expect(Object.keys(all)).toHaveLength(36);
   });
 });
 
@@ -316,5 +317,48 @@ describe("the mailers take the union of messages", () => {
 
   test("a time in a mail is printed as noticeTime prints it", () => {
     expect(noticeTime(new Date("2026-10-04T06:59:59.999Z"))).toBe(TIME);
+  });
+});
+
+describe("3e: the statement mails of a suspension taken at once and of its lift (design, sections 7.15 and 18, W.6)", () => {
+  const lines = ["korbat suspended your account for 7 days, from this decision until 2026-10-11 09:30 UTC, without notice beforehand.", "The facts: The account posted a threat."];
+  const statement = lines.join(String.fromCharCode(10));
+  const READ = "Read it in korbat under Settings, Cases. korbat's emails never contain a link to act on a decision.";
+
+  test("suspension_started_at_once: its subject, its lead with the days and the end, the statement's paragraphs, where to read it, and no link", () => {
+    const r = renderTemplate("suspension_started_at_once", { measure: "suspend", days: "7", endsAt: "2026-10-11 09:30 UTC", statement });
+    expect(r.subject).toBe("korbat suspended your account");
+    expect(paragraphs(r.text)).toEqual([
+      "korbat suspended your korbat account for 7 days, until 2026-10-11 09:30 UTC. It did so at once, without notice beforehand; the reasons follow. You can reply and appeal in korbat from now: sign in and use the banner on any screen.",
+      ...lines,
+      READ,
+      LAST_USER,
+    ]);
+    expect(r.text).not.toMatch(/https?:|www[.]/);
+    expect(paragraphs(renderTemplate("suspension_started_at_once", { measure: "suspend", days: "1", endsAt: "2026-10-05 09:30 UTC", statement }).text)[0]).toContain("for 1 day, until");
+    // A termination's lead names no days and no end.
+    const t = renderTemplate("suspension_started_at_once", { measure: "terminate", statement });
+    expect(t.subject).toBe("korbat terminated your account");
+    expect(paragraphs(t.text)[0]).toBe("korbat terminated your korbat account. It did so at once, without notice beforehand; the reasons follow. You can reply and appeal in korbat from now: sign in and use the banner on any screen.");
+    expect(() => renderTemplate("suspension_started_at_once", { measure: "suspend", statement })).toThrow(/days/);
+  });
+
+  test("suspension_lifted: a lead for each state of the period, for a lift and for a basis that broke, and none says the account is free of every measure", () => {
+    const lead = (why: string, period: string) => {
+      const r = renderTemplate("suspension_lifted", { measure: "suspend", why, period, statement });
+      expect(paragraphs(r.text).slice(1)).toEqual([...lines, READ, LAST_USER]);
+      return [r.subject, paragraphs(r.text)[0]];
+    };
+    expect(lead("lifted", "not_started")).toEqual(["korbat lifted the suspension of your account", "korbat lifted the suspension of your korbat account that it had announced: it never starts."]);
+    expect(lead("lifted", "running")).toEqual(["korbat lifted the suspension of your account", "korbat lifted the suspension of your korbat account. This suspension no longer restricts your account."]);
+    expect(lead("lifted", "ended")).toEqual(["korbat lifted the suspension of your account", "korbat lifted a past suspension of your korbat account: it no longer counts toward a later suspension."]);
+    expect(lead("basis", "not_started")).toEqual(["A suspension of your account will not start", "korbat reversed a decision that the suspension it announced for your korbat account rested on. The suspension will not start."]);
+    expect(lead("basis", "running")).toEqual(["A suspension of your account has ended", "The suspension of your korbat account has ended, because a decision it rested on was reversed. This suspension no longer restricts your account."]);
+    expect(lead("basis", "ended")).toEqual(["A past suspension of your account no longer counts", "korbat reversed a decision that a past suspension of your account rested on; that suspension no longer counts."]);
+    for (const why of ["lifted", "basis"]) {
+      for (const period of ["not_started", "running", "ended"]) expect(renderTemplate("suspension_lifted", { measure: "suspend", why, period, statement }).text).not.toMatch(/as before|handed to your mail provider|delivered/);
+    }
+    expect(renderTemplate("suspension_lifted", { measure: "terminate", why: "lifted", period: "running", statement }).subject).toBe("korbat lifted the termination of your account");
+    expect(() => renderTemplate("suspension_lifted", { measure: "suspend", why: "replaced", period: "running", statement })).toThrow(/why/);
   });
 });

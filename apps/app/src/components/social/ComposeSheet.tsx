@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
 import type { PostView } from "@korbat/contracts";
+import { useSession } from "@/lib/session";
+import { refusalSentence, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
 import { Composer } from "./Composer";
 
 interface ComposeSheetProps {
@@ -19,6 +21,10 @@ interface ComposeSheetProps {
  */
 export function ComposeSheet({ open, onClose, onPosted, replyTo, quoteOf }: ComposeSheetProps) {
   const still = useReducedMotion();
+  // 3e (design, section 9.4): while /me shows a running suspension or termination, the sheet says so in place of its fields.
+  const { state } = useSession();
+  const standing = state.status === "signed-in" ? state.me.standing : null;
+  const refused = runningMeasure(standing) !== null;
   const [dirty, setDirty] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const close = () => {
@@ -53,6 +59,14 @@ export function ComposeSheet({ open, onClose, onPosted, replyTo, quoteOf }: Comp
               </Pressable>
             </View>
           ) : null}
+          {refused ? (
+            <View className="px-4 pt-3">
+              <Text accessibilityRole="alert" className="text-base leading-6 text-zinc-200">
+                {refusalSentence(standing)}
+              </Text>
+              <Text className="mt-2 text-sm text-zinc-400">{STANDING_TEXTS.refused.read}: Settings, Cases.</Text>
+            </View>
+          ) : (
           <Composer
             replyTo={replyTo}
             quoteOf={quoteOf}
@@ -65,6 +79,7 @@ export function ComposeSheet({ open, onClose, onPosted, replyTo, quoteOf }: Comp
               onClose();
             }}
           />
+          )}
         </View>
       </Pressable>
     </Modal>

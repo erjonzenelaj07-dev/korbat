@@ -14,7 +14,9 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createSocial } from "../../src/social";
 import { Browser } from "./http-client";
 import { leavesNoModerationRows } from "./moderation-decide";
-import { retireHandleForTest } from "./moderation-fixtures";
+import { casesMedia, liftRowForTest, retireHandleForTest, suspendRowForTest } from "./moderation-fixtures";
+import { createModeration } from "../../src/moderation";
+import { socialForModeration } from "../../src/social";
 
 type App = ReturnType<typeof createApp>;
 
@@ -32,6 +34,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
   let migrateDb: Db;
   let auth: Auth;
   let app: App;
+  /** 3e: the same app with the moderation module, as the server builds it: its /api/me carries the account's standing. */
+  let full: App;
   const mailer = new MemoryMailer();
 
   beforeAll(() => {
@@ -54,6 +58,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
     });
     const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth(), events: { append: auth.appendEvent } });
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social });
+    const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: casesMedia(apiDb), rateLimitStore, config, logger });
+    full = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, moderation });
   });
   afterAll(async () => {
     await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
@@ -173,6 +179,53 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
     const fresh = newHandle();
     expect(await profileOf(await ada.b.fetch("/api/me/handle", { json: { handle: fresh } }))).toMatchObject({ id: ada.userId, handle: fresh });
   });
+
+  test("3e: while the account's suspension runs, the profile's edit (a blanked bio included) and the handle change answer 403 account_suspended with no detail, and nothing changes", async () => {
+    const ada = await signUp();
+    await suspendRowForTest(migrateDb, ada.userId);
+    for (const res of [
+      await ada.b.fetch("/api/me/profile", { method: "PATCH", json: { displayName: "korbat moderation" } }),
+      await ada.b.fetch("/api/me/profile", { method: "PATCH", json: { bio: "" } }),
+      await ada.b.fetch("/api/me/handle", { json: { handle: newHandle() } }),
+    ]) {
+      expect(res.status).toBe(403);
+      const body = ErrorEnvelope.parse(await res.json());
+      expect(body.error.code).toBe("account_suspended");
+      expect(body.error.details).toBeUndefined();
+    }
+    expect(MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).profile).toMatchObject({ handle: ada.handle, displayName: `User ${ada.handle}` });
+    expect(await eventTypes(ada.userId)).not.toContain("profile_updated");
+    await liftRowForTest(migrateDb, ada.userId);
+    expect(await profileOf(await ada.b.fetch("/api/me/profile", { method: "PATCH", json: { bio: "Back." } }))).toMatchObject({ bio: "Back." });
+  });
+
+  test("3e: /api/me carries the standing, read fresh from the row at each request: null from an app without the moderation module and for an account without a profile, the empty standing for an onboarded account that holds no measure", async () => {
+    const ada = await signUp();
+    expect(MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).standing).toBeNull();
+    const fullSession = new Browser(full, config.APP_ORIGIN);
+    const signed = await signUpOn(fullSession);
+    expect(MeResponse.parse(await (await fullSession.fetch("/api/me")).json()).standing).toEqual({ activeStrikes: 0, measure: null, reporting: null, handleRetired: false });
+    const pending = new Browser(full, config.APP_ORIGIN);
+    await signUpOn(pending, false);
+    expect(MeResponse.parse(await (await pending.fetch("/api/me")).json())).toMatchObject({ profile: null, standing: null });
+    // A retired handle's placeholder shows in the standing.
+    await retireHandleForTest(migrateDb, signed.userId);
+    expect(MeResponse.parse(await (await fullSession.fetch("/api/me")).json()).standing?.handleRetired).toBe(true);
+  });
+
+  /** A sign-up on the given browser, as signUp does on the app without the moderation module. */
+  async function signUpOn(b: Browser, onboard = true) {
+    const email = `profile-${randomUUID()}@korbat.local`;
+    const handle = newHandle();
+    const start = await b.fetch("/api/auth/email/start", { json: { email, turnstileToken: "ok", deviceId: randomToken(), platform: "web" } });
+    expect(start.status).toBe(200);
+    const { flowId } = FlowResponse.parse(await start.json());
+    expect((await b.fetch("/api/auth/email/verify", { json: { flowId, code: mailer.lastCodeFor(email) } })).status).toBe(200);
+    expect((await b.fetch("/api/auth/signup/complete", { json: { flowId, dateOfBirth: "1990-05-17", termsVersion: config.TERMS_VERSION } })).status).toBe(200);
+    if (onboard) expect((await b.fetch("/api/auth/onboarding/handle", { json: { handle, displayName: `User ${handle}` } })).status).toBe(200);
+    const me = MeResponse.parse(await (await b.fetch("/api/me")).json());
+    return { handle, userId: me.user.id };
+  }
 
   leavesNoModerationRows(() => apiDb);
 });

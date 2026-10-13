@@ -20,6 +20,7 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createSocial, enforceWriteLimit } from "../../src/social";
 import { DAY_MS } from "../../src/social/tiers";
 import { Browser } from "./http-client";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 import { BYTES, fakeWorker } from "./media-harness";
 import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 
@@ -33,6 +34,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
   let config: Config;
   let authDb: Db;
   let apiDb: Db;
+  let migrateDb: Db;
   let app: App;
   const root = mkdtempSync(path.join(tmpdir(), "korbat-http-media-"));
   const uploads = uploadsLayout(path.join(root, "uploads"));
@@ -47,6 +49,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator writes a suspension into a profile row, as the ledger's standing_apply does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     const rateLimitStore = new MemoryStore(() => now().getTime());
     const auth = createAuth({
       config,
@@ -78,7 +82,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
   afterAll(async () => {
     rmSync(root, { recursive: true, force: true });
     await closeDecisions();
-    await Promise.all([closeDb(authDb), closeDb(apiDb)]);
+    await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
 
   async function signUp() {
@@ -166,6 +170,21 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     expect((await ada.b.fetch(`/api/media/${id}`)).status).toBe(404);
     expect(existsSync(uploads.deletion(id))).toBe(true);
     expect((await ada.b.fetch("/api/media/not-an-id")).status).toBe(400);
+  });
+
+  test("3e: while the account's suspension runs, an upload answers 403 account_suspended with no detail; removing an upload stays open", async () => {
+    const ada = await signUp();
+    const id = await readyImage(ada.b);
+    const [row] = await apiDb.execute<{ id: string }>(sql`select id from profiles where handle = ${ada.handle}`);
+    await suspendRowForTest(migrateDb, row!.id);
+    const refused = await ada.b.fetch("/api/media", { raw: jpeg });
+    expect(refused.status).toBe(403);
+    const body = ErrorEnvelope.parse(await refused.json());
+    expect(body.error.code).toBe("account_suspended");
+    expect(body.error.details).toBeUndefined();
+    expect((await ada.b.fetch(`/api/media/${id}`, { method: "DELETE" })).status).toBe(204);
+    await liftRowForTest(migrateDb, row!.id);
+    expect((await ada.b.fetch("/api/media", { raw: jpeg })).status).toBe(202);
   });
 
   test("a post takes only the author's own ready images, at most four, each described", async () => {

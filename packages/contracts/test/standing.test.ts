@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
   ACCOUNT_ITEM_SCOPE,
+  AccountStanding,
+  DecisionStatement,
+  MeResponse,
+  PeriodThen,
+  SocialErrorCode,
+  StatementEndedStanding,
   ACCOUNT_MEASURE_SCOPE,
   ACCOUNT_SUSPECT_SCOPE,
   CaseDecisionAction,
@@ -134,7 +140,7 @@ describe("the retirement of a handle (3e design, sections 10.1, 10.2, 10.3 and W
     outcomeWords({ outcome, rule: outcome === "restricted_rule" ? { id: "R4", title: "No doxxing" } : null, suspect: false, sealed: false, unseen: false, noEffect: false, scope });
 
   test("a reporter's line for an item that a retirement answered carries the retired phrase in place of ACCOUNT_ITEM_SCOPE, after a restriction and nowhere else", () => {
-    expect(NoticeItemStatus.shape.scope.unwrap().options).toEqual(["account", "quote", "account_suspect", "account_retired"]);
+    expect(NoticeItemStatus.shape.scope.unwrap().options).toEqual(["account", "quote", "account_suspect", "account_retired", "account_measure"]);
     expect(words("restricted_rule", "account_retired")).toBe(`access restricted: it breaks korbat rule R4 (No doxxing). ${ACCOUNT_MEASURE_SCOPE.retired}`);
     expect(words("restricted_legal", "account_retired")).toBe(`${OUTCOME_PHRASES.restricted_legal}. ${ACCOUNT_MEASURE_SCOPE.retired}`);
     // A reversal's phrase stands alone: the handle given back is never followed by "korbat retired the handle".
@@ -162,5 +168,94 @@ describe("the retirement of a handle (3e design, sections 10.1, 10.2, 10.3 and W
     expect(CaseStanding.shape.snapshotHandleRetired.safeParse(null).success).toBe(false);
     expect(CaseDecisionAction.shape.handle.parse("ada_l")).toBe("ada_l");
     expect(CaseDecisionAction.shape.handle.parse(undefined)).toBeUndefined();
+  });
+});
+
+describe("suspensions at once and the account's standing (3e design, sections 7.2, 10.2, 10.5 and W.1, Task 3)", () => {
+  const decisionId = "4a1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+
+  test("a refused write of a suspended account answers account_suspended, a code of the social module that the others name as shared", () => {
+    expect(SocialErrorCode.options).toContain("account_suspended");
+  });
+
+  test("/me carries the account's standing: no strike, no measure and no restriction for an account that holds none, and the one standing measure with its state and times", () => {
+    const none = { activeStrikes: 0, measure: null, reporting: null, handleRetired: false };
+    expect(AccountStanding.parse(none)).toEqual(none);
+    const running = {
+      activeStrikes: 1,
+      measure: {
+        decisionId,
+        kind: "suspend",
+        days: 7,
+        state: "running",
+        earliestStart: "2026-10-12T10:00:00.000Z",
+        startsAt: "2026-10-12T10:00:00.000Z",
+        endsAt: "2026-10-19T10:00:00.000Z",
+        reply: null,
+        replyOpen: true,
+        appealUntil: "2027-04-12T10:00:00.000Z",
+        appealPending: false,
+      },
+      reporting: null,
+      handleRetired: false,
+    };
+    expect(AccountStanding.parse(running)).toEqual(running);
+    for (const state of ["unfixed", "announced", "held", "running"]) expect(AccountStanding.shape.measure.unwrap().shape.state.parse(state)).toBe(state);
+    // Only a suspension or a termination is a standing measure, and an ended period is never the account's measure now.
+    expect(AccountStanding.safeParse({ ...running, measure: { ...running.measure, kind: "strike" } }).success).toBe(false);
+    expect(AccountStanding.safeParse({ ...running, measure: { ...running.measure, state: "ended" } }).success).toBe(false);
+    const user = { id: decisionId, email: "a@b.io", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 };
+    expect(MeResponse.parse({ user, profile: null, standing: null }).standing).toBeNull();
+    expect(MeResponse.parse({ user, profile: null, standing: running }).standing?.measure?.state).toBe("running");
+    // The member is always there: null without the moderation module or a profile, never missing.
+    expect(MeResponse.safeParse({ user, profile: null }).success).toBe(false);
+  });
+
+  test("a statement's suspension at once carries its days, its basis, its start and end and the decisions it rests on; a lift its measure and the period as it stood; all optional, so older data parses", () => {
+    const atOnce = {
+      kind: "suspend",
+      mediaId: null,
+      noEffect: null,
+      sealed: null,
+      announced: false,
+      days: 7,
+      basis: "threat",
+      earliestStart: "2026-10-12T10:00:00.000Z",
+      endsAt: "2026-10-19T10:00:00.000Z",
+      restsOn: [{ decidedAt: "2026-10-10T10:00:00.000Z", ruleId: "R5", postCreatedAt: "2026-10-09T10:00:00.000Z" }],
+    };
+    expect(StatementMeasure.parse(atOnce)).toEqual(atOnce);
+    // A protective suspension rests on the seal's decision, which names no rule and no post of its own here.
+    expect(StatementMeasure.parse({ ...atOnce, basis: "protective", restsOn: [{ decidedAt: "2026-10-10T10:00:00.000Z", ruleId: null, postCreatedAt: null }] }).restsOn).toHaveLength(1);
+    expect(StatementMeasure.safeParse({ ...atOnce, basis: "spam" }).success).toBe(false);
+    const lift = {
+      kind: "lift_suspension",
+      mediaId: null,
+      resetDecisionId: null,
+      oldValueKept: false,
+      resetRuleId: null,
+      liftedKind: "suspend",
+      liftedDecidedAt: "2026-10-10T10:00:00.000Z",
+      periodThen: { state: "running", startedAt: "2026-10-10T10:00:00.000Z", endedAt: null },
+      replaced: false,
+    };
+    expect(StatementReversal.parse(lift)).toEqual(lift);
+    for (const state of ["not_started", "running", "ended"]) expect(PeriodThen.parse({ state, startedAt: null, endedAt: null }).state).toBe(state);
+    expect(PeriodThen.safeParse({ state: "lifted", startedAt: null, endedAt: null }).success).toBe(false);
+    const ended = { kind: "suspend", decidedAt: "2026-10-10T10:00:00.000Z", periodThen: { state: "ended", startedAt: "2026-10-10T10:00:00.000Z", endedAt: "2026-10-17T10:00:00.000Z" }, seal: false, replyFiledAt: null };
+    expect(StatementEndedStanding.parse(ended)).toEqual(ended);
+    expect(DecisionStatement.shape.endedStanding.parse(undefined)).toBeUndefined();
+  });
+
+  test("a reporter's line for an item that a measure at once answered carries ACCOUNT_MEASURE_SCOPE.measure through a scope of its own, after a restriction and nowhere else", () => {
+    expect(NoticeItemStatus.shape.scope.unwrap().options).toContain("account_measure");
+    const line = (outcome: ItemOutcome) =>
+      outcomeWords({ outcome, rule: outcome === "restricted_rule" ? { id: "R5", title: "No threats" } : null, suspect: false, sealed: false, unseen: false, noEffect: false, scope: "account_measure" });
+    expect(line("restricted_rule")).toBe(`access restricted: it breaks korbat rule R5 (No threats). ${ACCOUNT_MEASURE_SCOPE.measure}`);
+    expect(line("reversed")).toBe(`${OUTCOME_PHRASES.reversed}.`);
+    for (const outcome of ITEM_OUTCOMES) {
+      expect(line(outcome), outcome).not.toContain(ACCOUNT_ITEM_SCOPE);
+      expect(line(outcome), outcome).not.toContain(ACCOUNT_MEASURE_SCOPE.retired);
+    }
   });
 });

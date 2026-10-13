@@ -33,22 +33,41 @@ export async function targetPost(deps: SocialDeps, viewer: string, id: string, h
   return row;
 }
 
+/**
+ * A post, a reply or a quote by the viewer. 3e (design, section 5, the lock order, item 3): the repository takes the
+ * author's row before the replied-to or quoted author's, and a purge takes its own row before its followers'; a quote of
+ * the purged account's post by one of its followers can cross that purge, and PostgreSQL ends one of the two. The post's
+ * transaction then changed nothing, so it is run once more: the second try finds the purge committed and answers as for
+ * any deleted account. A second deadlock is the caller's.
+ */
 export async function createPost(deps: SocialDeps, viewer: string, input: CreatePostRequest): Promise<PostView> {
   const me = await ownProfile(deps, viewer);
   const action = input.replyToId ? "reply" : input.quoteOfId ? "quote" : "post";
   const targetId = input.replyToId ?? input.quoteOfId;
   const target = targetId ? await targetPost(deps, viewer, targetId, "post_unavailable") : null;
   await enforceWriteLimit(deps.limits, viewer, action, me.createdAt, deps.now());
-  const id = await deps.repo.createPost({
-    authorId: viewer,
-    body: input.body,
-    replyToId: input.replyToId ?? null,
-    quoteOfId: input.quoteOfId ?? null,
-    now: deps.now(),
-    lockWith: target && target.authorId !== viewer ? target.authorId : null,
-    within: (tx, postId) => deps.media.attach(tx, { postId, ownerId: viewer, items: input.media }),
-  });
+  const write = () =>
+    deps.repo.createPost({
+      authorId: viewer,
+      body: input.body,
+      replyToId: input.replyToId ?? null,
+      quoteOfId: input.quoteOfId ?? null,
+      now: deps.now(),
+      lockWith: target && target.authorId !== viewer ? target.authorId : null,
+      within: (tx, postId) => deps.media.attach(tx, { postId, ownerId: viewer, items: input.media }),
+    });
+  const id = await onceMoreOnDeadlock(write);
   return (await postView(deps, viewer, id))!;
+}
+
+/** Runs a write, and once more when the database chose it to give way in a deadlock: it changed nothing (3e design, section 5). */
+export async function onceMoreOnDeadlock<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (err) {
+    if (!isDeadlock(err)) throw err;
+    return write();
+  }
 }
 
 export async function getPost(deps: SocialDeps, viewer: ViewerId, id: string): Promise<PostView> {

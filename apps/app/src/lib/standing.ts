@@ -1,4 +1,4 @@
-import { STANDING_RULES, type AuthorCaseRow, type DecisionStrike } from "@korbat/contracts";
+import { STANDING_RULES, type AccountStanding, type AuthorCaseRow, type DecisionStrike } from "@korbat/contracts";
 
 /**
  * The app's sentences about an account's standing (3e design, section 9), one table with the design's keys in brackets.
@@ -55,8 +55,56 @@ export const STANDING_TEXTS = {
     retired: "korbat retired your handle; the decision is under Settings, Cases. Choose a new one: the 30-day wait does not apply this time.",
     /** The standing sentence above the form. */
     standing: (current: string) => `Your handle is @${current}. You can change it once every 30 days. Handles you used before stay yours, except one that korbat retired.`,
+    /** [handle.retired.suspended] (Task 3), while /me carries a running suspension: the form waits for its end. */
+    retiredSuspended: "korbat retired your handle; the decision is under Settings, Cases. You can choose a new one when your suspension ends: the 30-day wait will not apply.",
+  },
+  /** 9.1: the banner above every signed-in screen while /me carries a standing measure. Task 3 builds its running suspension. */
+  banner: {
+    /** The region's label. */
+    label: "Your account's standing",
+    /** [banner.running] */
+    running: (endsAt: string) =>
+      `Your account is suspended until ${standingTime(endsAt)}. You can read, reply to korbat, appeal, export your data and delete your account. You cannot post, like, repost, bookmark, follow, edit your profile, upload images or report under korbat's rules.`,
+    read: "Read the decision",
+    appeal: "Appeal",
+    export: "Export my data",
+    delete: "Delete account",
+  },
+  /** 9.4: a write refused account_suspended, worded from /me's standing read after the refusal. */
+  refused: {
+    /** [refused.suspended] */
+    suspended: (endsAt: string) => `Your account is suspended until ${standingTime(endsAt)}, so you cannot do this now.`,
+    /** [refused.terminated] */
+    terminated: "korbat has terminated your account, so you cannot do this.",
+    /** [refused.over], when /me then shows no running measure. */
+    over: "The suspension has just ended. Try again.",
+    /** The link beside the sentence. */
+    read: "Read the decision",
+  },
+  /** 9.6: the report form while the account is suspended: the rule choice is disabled. */
+  report: {
+    /** [report.suspended] */
+    suspended: (endsAt: string) =>
+      `Your account is suspended until ${standingTime(endsAt)}, so it cannot report under korbat's rules. You can still report illegal content: choose "It is illegal". For the sexual abuse or exploitation of a child, choose the third answer.`,
   },
 } as const;
+
+/** The measure of /me's standing that runs now (a suspension or a termination), or null: what the banner, the refusals and the forms read. */
+export function runningMeasure(standing: AccountStanding | null | undefined): NonNullable<AccountStanding["measure"]> | null {
+  const measure = standing?.measure ?? null;
+  return measure !== null && measure.state === "running" ? measure : null;
+}
+
+/**
+ * The sentence a refused write shows (9.4), from /me's standing read after the refusal: a running suspension's end, a
+ * termination, or, when /me then shows nothing running, that the suspension has just ended.
+ */
+export function refusalSentence(standing: AccountStanding | null | undefined): string {
+  const running = runningMeasure(standing);
+  if (running === null) return STANDING_TEXTS.refused.over;
+  if (running.kind === "terminate" || running.endsAt === null) return STANDING_TEXTS.refused.terminated;
+  return STANDING_TEXTS.refused.suspended(running.endsAt);
+}
 
 /** 9.4: what a row of "About you" says of a strike and of its overruling (CASE_ROW_WORDS). */
 export const CASE_ROW_WORDS = {
@@ -68,6 +116,9 @@ export const CASE_ROW_WORDS = {
   /** A decision that retired the account's handle, and one that gave it back. */
   retired: "your handle retired",
   unretired: "handle given back",
+  /** Task 3: a suspension (its days and whether it was announced come with Task 4's row members), and its lift. */
+  suspended: "a suspension",
+  lifted: "suspension lifted",
 } as const;
 
 /** The sentence of a decision's strike on its screen. */

@@ -6,9 +6,11 @@ import { FORBIDDEN_FORMAT, visibleLength } from "./text";
 
 /**
  * Every code the social endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited).
- * explore_refreshed (409) refuses a page of an Explore ranking that is no longer kept.
+ * explore_refreshed (409) refuses a page of an Explore ranking that is no longer kept. account_suspended (403, 3e design,
+ * section 10.5) refuses a write of an account while a suspension or termination of it runs; the media, auth and
+ * moderation modules answer it too, as a code they share with this one.
  */
-export const SocialErrorCode = z.enum(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed"]);
+export const SocialErrorCode = z.enum(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed", "account_suspended"]);
 export type SocialErrorCode = z.infer<typeof SocialErrorCode>;
 
 /** Postgres returns lowercase ids; the canonical form, so a lookup by any spelling finds the row. */

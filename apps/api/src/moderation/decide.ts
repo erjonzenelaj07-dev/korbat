@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CaseDecidedParams, MEASURE_KINDS, REVERSAL_KINDS, type ActionKind } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
+import type { AccountLockMode } from "../social";
 import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
@@ -21,12 +22,22 @@ export type DecideOutcome = { decisionId: string } | "ended" | "late";
 
 /**
  * The kinds of the ledger the decide and review routes accept (3e design, section 7.1 item 2). The params' schema knows
- * all 22 kinds from the first task of 3e on; this list holds 3c's twelve, a strike with its overruling and (Task 2) a
- * handle's retirement with its reversal, and each later task of 3e adds the kinds whose flow it builds, so no route
- * records a measure whose flow is not built yet. Any other kind is refused before the transaction (invalid_decision), as
- * are a correction that keeps its decision, a non-empty list of marks and a `replaced` until the tasks that open them.
+ * all 22 kinds from the first task of 3e on; this list holds 3c's twelve, a strike with its overruling, (Task 2) a
+ * handle's retirement with its reversal and (Task 3) a suspension with its lift, and each later task of 3e adds the kinds
+ * whose flow it builds, so no route records a measure whose flow is not built yet. Any other kind is refused before the
+ * transaction (invalid_decision), as are a correction that keeps its decision, a non-empty list of marks and a `replaced`
+ * until the tasks that open them.
  */
-export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([...MEASURE_KINDS.slice(0, 7), ...REVERSAL_KINDS.slice(0, 5), "strike", "overrule", "retire_handle", "unretire_handle"]);
+export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
+  ...MEASURE_KINDS.slice(0, 7),
+  ...REVERSAL_KINDS.slice(0, 5),
+  "strike",
+  "overrule",
+  "retire_handle",
+  "unretire_handle",
+  "suspend",
+  "lift_suspension",
+]);
 
 /**
  * The order in which a decision's actions are inserted (3e design, sections 7.10 and 10.4): the signed list stays in its
@@ -49,9 +60,15 @@ export interface DecideOptions {
 }
 
 /** The route's refusal of what it does not accept yet; nothing when the options lift the list. */
-export function refuseUnopened(params: { actions: readonly { kind: ActionKind }[]; outcome: string; kind?: string; unfounded?: readonly string[]; replaced?: boolean }, options: DecideOptions): void {
+export function refuseUnopened(
+  params: { actions: readonly { kind: ActionKind; announced?: boolean | null }[]; outcome: string; kind?: string; unfounded?: readonly string[]; replaced?: boolean },
+  options: DecideOptions,
+): void {
   if (options.allKinds) return;
   if (params.actions.some((action) => !ROUTE_KINDS.has(action.kind))) throw new ModerationError("invalid_decision");
+  // The second check of the list (3e design, section 13, Task 3): a suspension is open when it is taken at once, and an
+  // announced one waits for the task that builds the notice, the reply and the start.
+  if (params.actions.some((action) => action.kind === "suspend" && action.announced !== false)) throw new ModerationError("invalid_decision");
   // A correction that keeps its decision answers a reply or withdraws marks: neither exists before its task.
   if (params.kind === "correction" && params.outcome === "kept") throw new ModerationError("invalid_decision");
   if ((params.unfounded ?? []).length > 0 || params.replaced === true) throw new ModerationError("invalid_decision");
@@ -125,11 +142,22 @@ export async function afterDecision(deps: Pick<ModerationDeps, "apiDb" | "auth" 
 }
 
 /**
+ * The first lock a decision takes on its subject's profile row (3e design, section 5, the lock order, item 1): FOR UPDATE
+ * exactly when its signed actions hold a suspension or a termination, since the ledger's trigger takes that row FOR
+ * UPDATE again and an upgrade behind the case's lock deadlocks with followers' counter updates (LAB B2); FOR NO KEY UPDATE
+ * for every other decision, a lift and an overruling included. (A kept answer to a reply, Task 4, joins the first.)
+ */
+export function subjectLockMode(actions: readonly { kind: ActionKind }[]): AccountLockMode {
+  return actions.some((action) => action.kind === "suspend" || action.kind === "terminate") ? "update" : "no key update";
+}
+
+/**
  * The transaction of a confirmed decision or review, on the API's pool. In this order:
  *   1. every lock wait is bounded by a fifteenth of what is left of the challenge, at most 15 seconds; with under a
  *      millisecond left nothing is written ("late");
- *   2. the subject account's profile row FOR NO KEY UPDATE, the transaction's first lock, so two decisions about one
- *      account run one after the other while likes and follows of others never wait for it;
+ *   2. the subject account's profile row in `mode` (subjectLockMode), the transaction's first lock: FOR NO KEY UPDATE, so
+ *      two decisions about one account run one after the other while likes and follows of others never wait for it, or
+ *      (3e) FOR UPDATE for a decision that takes a suspension, which every write of the account then waits for;
  *   3. `write`: the decision's row, whose triggers lock the case and check everything about it, and one row for each
  *      measure or reversal, in the params' order, whose triggers derive what the post and its images now are;
  *   4. last, the audit row, through public.append_confirmed_audit, on the target the key confirmed, with the params
@@ -148,6 +176,7 @@ export async function recordConfirmed(
   ctx: { requestId: string },
   subject: string | null,
   write: (tx: DbTx, decisionId: string) => Promise<void>,
+  mode: AccountLockMode = "no key update",
 ): Promise<DecideOutcome> {
   const action = confirmed.action;
   if (action !== "case_decided" && action !== "appeals_reviewed") throw new Error("only a decision or a review is recorded this way");
@@ -155,7 +184,7 @@ export async function recordConfirmed(
     try {
       const outcome = await deps.apiDb.transaction(async (tx): Promise<DecideOutcome> => {
         if (!(await boundLockWaits(tx, confirmed.expiresAt, DECISION_WAITS))) return "late";
-        if (subject !== null) await deps.social.lockAccounts(tx, [subject], "no key update");
+        if (subject !== null) await deps.social.lockAccounts(tx, [subject], mode);
         const decisionId = randomUUID();
         await write(tx, decisionId);
         await appendConfirmedAudit(tx, {
@@ -219,10 +248,18 @@ export async function decide(deps: ModerationDeps, session: ActiveStaffSession, 
   // A case's target never changes, and a post's author never does, so the subject is read before the transaction.
   const subject = target.type === "account" ? target.id : await deps.social.postAuthor(target.id);
 
-  return recordConfirmed(deps, session, confirmed, ctx, subject, async (tx, decisionId) => {
-    await insertDecision(tx, { id: decisionId, caseId, decidedBy: session.userId, params });
-    // The marks come after the decision's row, whose trigger answered the items, and before its measures.
-    await insertMarks(tx, decisionId, params.unfounded);
-    for (const action of insertionOrder(params.actions)) await insertAction(tx, decisionId, action, params.replaced);
-  });
+  return recordConfirmed(
+    deps,
+    session,
+    confirmed,
+    ctx,
+    subject,
+    async (tx, decisionId) => {
+      await insertDecision(tx, { id: decisionId, caseId, decidedBy: session.userId, params });
+      // The marks come after the decision's row, whose trigger answered the items, and before its measures.
+      await insertMarks(tx, decisionId, params.unfounded);
+      for (const action of insertionOrder(params.actions)) await insertAction(tx, decisionId, action, params.replaced);
+    },
+    subjectLockMode(params.actions),
+  );
 }

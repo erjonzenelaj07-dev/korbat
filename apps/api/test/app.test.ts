@@ -45,7 +45,7 @@ function app(checks: Record<string, () => Promise<void>>, advisoryChecks?: Recor
     authDb: createDb(config.DATABASE_URL_AUTH, { max: 1 }),
     kv: new MemoryKv(),
     mailer: new MemoryMailer(),
-    profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null, setVerified: async () => undefined },
+    profiles: { create: async () => ({ ok: false, reason: "handle_taken" }), find: async () => null, setVerified: async () => true, suspended: async () => false },
   });
   const apiDb = createDb(config.DATABASE_URL_API, { max: 1 });
   const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth() });

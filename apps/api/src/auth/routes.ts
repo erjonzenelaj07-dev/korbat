@@ -249,7 +249,10 @@ export function authRoutes(deps: AuthDeps) {
   return r;
 }
 
-/** GET /api/me, mounted by the app behind requireOnboarding. */
+/**
+ * GET /api/me as this module alone answers it: without the moderation module there is no standing to read, so it is
+ * null. The app composes the route it mounts from meFor and the moderation module's standingFor (3e design, section 7.12).
+ */
 export function meHandler(deps: AuthDeps) {
-  return async (c: Context<AppEnv>) => c.json(await me(deps, c.get("session")!));
+  return async (c: Context<AppEnv>) => c.json({ ...(await me(deps, c.get("session")!)), standing: null });
 }

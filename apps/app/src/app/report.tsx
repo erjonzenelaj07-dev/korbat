@@ -23,7 +23,7 @@ export default function Report() {
       <ScrollView contentContainerClassName="px-4 pb-16 pt-6">
         <View className="w-full max-w-xl">
           {/* A form opened on another item starts empty: its key is the item. */}
-          <ReportForm key={given ? JSON.stringify(given) : "link"} signedIn={state.status === "signed-in"} given={given} />
+          <ReportForm key={given ? JSON.stringify(given) : "link"} signedIn={state.status === "signed-in"} given={given} standing={state.status === "signed-in" ? state.me.standing : null} />
         </View>
       </ScrollView>
     </AppShell>

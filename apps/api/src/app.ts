@@ -1,3 +1,4 @@
+import type { MeResponse } from "@korbat/contracts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
@@ -70,7 +71,14 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
 
   app.route("/api/health", healthRoutes(healthChecks, config.KORBAT_VERSION, advisoryChecks));
   app.route("/api/auth", auth.routes);
-  app.get("/api/me", auth.requireOnboarding, auth.me);
+  // 3e (design, section 7.12): /api/me from the auth module's meFor and the moderation module's standingFor, read at
+  // every request; null without the moderation module (an app built for some tests) or without a profile.
+  app.get("/api/me", auth.requireOnboarding, async (c) => {
+    const session = c.get("session")!;
+    const base = await auth.meFor(session);
+    const standing = moderation && base.profile !== null ? await moderation.standingFor(session.userId) : null;
+    return c.json({ ...base, standing } satisfies MeResponse);
+  });
   if (media) app.route("/api/media", media.routes);
   if (account) app.route("/api/account", account.routes);
   // The console is off while CONSOLE_ORIGIN is unset: nothing is mounted, and every staff path is the unknown route below.

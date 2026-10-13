@@ -63,6 +63,8 @@ export interface StandingFacts {
   threatRepeat: boolean;
   /** The day of the newest seal for good of the account's images that a protective suspension may rest on now. */
   sealOn: string | null;
+  /** The time of the decision each ground of a suspension at once would rest on now, or null (Task 3). */
+  basisDecidedAt: { threat: string | null; terrorist: string | null; protective: string | null };
 }
 
 /**
@@ -98,17 +100,28 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
           from standing_live s join decision_actions a on a.id = s.action_id left join suspension_periods p on p.action_id = s.action_id
          where s.account_id = ${account} limit 1`,
   );
-  const [grounds] = await rows<{ posts: number; from_at: string; to_at: string; threat: boolean; terrorist: boolean; threat_repeat: boolean; seal_on: string | null }>(
+  const [grounds] = await rows<{
+    posts: number;
+    from_at: string;
+    to_at: string;
+    threat_at: string | null;
+    terrorist_at: string | null;
+    threat_repeat: boolean;
+    seal_on: string | null;
+    seal_at: string | null;
+  }>(
     q,
     sql`select (select count(*)::int from posts p where p.author_id = ${account} and p.created_at > now() - make_interval(mins => k.flood_minutes)) as posts,
                ${iso("(now() - make_interval(mins => k.flood_minutes))")} as from_at, ${iso("now()")} as to_at,
-               exists (select 1 from decisions x join cases xc on xc.id = x.case_id and xc.target_type = 'post' join posts xp on xp.id = xc.target_id and xp.author_id = ${account}
-                        where x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days)
-                          and exists (select 1 from measures_in_force f where f.decision_id = x.id)) as threat,
-               exists (select 1 from decisions x join cases xc on xc.id = x.case_id and xc.target_type = 'post' join posts xp on xp.id = xc.target_id and xp.author_id = ${account}
-                        where x.kind = 'final' and x.outcome = 'restricted' and x.ground = 'illegal' and x.category_keyword = 'KEYWORD_TERRORIST_CONTENT'
-                          and x.decided_at >= now() - make_interval(days => k.basis_age_days)
-                          and exists (select 1 from measures_in_force f where f.decision_id = x.id)) as terrorist,
+               (select ${iso("x.decided_at")} from decisions x join cases xc on xc.id = x.case_id and xc.target_type = 'post' join posts xp on xp.id = xc.target_id and xp.author_id = ${account}
+                 where x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                   and exists (select 1 from measures_in_force f where f.decision_id = x.id)
+                 order by x.decided_at desc, x.id desc limit 1) as threat_at,
+               (select ${iso("x.decided_at")} from decisions x join cases xc on xc.id = x.case_id and xc.target_type = 'post' join posts xp on xp.id = xc.target_id and xp.author_id = ${account}
+                 where x.kind = 'final' and x.outcome = 'restricted' and x.ground = 'illegal' and x.category_keyword = 'KEYWORD_TERRORIST_CONTENT'
+                   and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                   and exists (select 1 from measures_in_force f where f.decision_id = x.id)
+                 order by x.decided_at desc, x.id desc limit 1) as terrorist_at,
                exists (select 1 from decision_actions a join decisions ad on ad.id = a.decision_id
                          join posts xp on xp.author_id = ${account} and xp.created_at > ad.informed_at
                          join cases xc on xc.target_type = 'post' and xc.target_id = xp.id
@@ -123,8 +136,13 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
                  where m.kind = 'seal_media' and m.decision_kind = 'final' and m.subject_account_id = ${account}
                    and x.decided_at >= now() - make_interval(days => k.basis_age_days)
                    and not exists (select 1 from decision_actions p where p.kind = 'suspend' and p.basis = 'protective' and m.decision_id = any(p.rests_on))
-                 order by x.decided_at desc, x.id desc limit 1) as seal_on
-          from standing_rules() k`,
+                 order by x.decided_at desc, x.id desc limit 1) as seal_on,
+               (select ${iso("x.decided_at")} from measures_in_force m join decisions x on x.id = m.decision_id
+                 where m.kind = 'seal_media' and m.decision_kind = 'final' and m.subject_account_id = ${account}
+                   and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                   and not exists (select 1 from decision_actions p where p.kind = 'suspend' and p.basis = 'protective' and m.decision_id = any(p.rests_on))
+                 order by x.decided_at desc, x.id desc limit 1) as seal_at
+          from standing_rules() k`
   );
   return {
     strikes: strikes.map((row) => ({ decisionId: row.decision_id, caseId: row.case_id, ruleId: row.rule_id, decidedAt: row.decided_at, countsUntil: row.counts_until })),
@@ -134,10 +152,11 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
     lastSuspendedOn: ladder!.last_on,
     live: live ? { kind: live.kind, running: live.running } : null,
     flood: { posts: grounds!.posts, from: grounds!.from_at, to: grounds!.to_at },
-    threat: grounds!.threat,
-    terrorist: grounds!.terrorist,
+    threat: grounds!.threat_at !== null,
+    terrorist: grounds!.terrorist_at !== null,
     threatRepeat: grounds!.threat_repeat,
     sealOn: grounds!.seal_on,
+    basisDecidedAt: { threat: grounds!.threat_at, terrorist: grounds!.terrorist_at, protective: grounds!.seal_at },
   };
 }
 
@@ -277,4 +296,112 @@ export async function exportedStrikes(q: Runner, accountId: string): Promise<Exp
          order by a.created_at desc, a.id desc`,
   );
   return found.map((row) => ({ decisionId: row.decision_id, postId: row.post_id, ruleId: row.rule_id, givenAt: row.given_at, countsUntil: row.counts_until, overruledAt: row.overruled_at }));
+}
+
+/** The facts of /api/me's standing (3e design, sections 7.12 and 10.2), as one statement reads them; null without a live profile. */
+export interface AccountStandingRow {
+  handle: string;
+  activeStrikes: number;
+  measure: {
+    decisionId: string;
+    kind: "suspend" | "terminate";
+    days: number | null;
+    earliestStart: string;
+    startsAt: string | null;
+    endsAt: string | null;
+    running: boolean;
+    reply: { filedAt: string; onTime: boolean; answeredAt: string | null } | null;
+    replyAnswered: boolean;
+    appealed: boolean;
+    appealPending: boolean;
+    appealDeadline: string;
+    appealOpen: boolean;
+  } | null;
+}
+
+/**
+ * An account's standing as /api/me answers it, read at the request from the ledger's views: its active strikes, and its
+ * one standing measure that stands and has not ended (standing_live), with the period suspension_periods gives it, its
+ * reply and its appeal. The appeal's deadline is the database's own, from appeal_informed_at, as every appealUntil reads
+ * it. Nothing here is stored a second time.
+ */
+export async function accountStandingRow(q: Runner, accountId: string): Promise<AccountStandingRow | null> {
+  const [row] = await rows<{
+    handle: string;
+    active_strikes: number;
+    decision_id: string | null;
+    kind: "suspend" | "terminate" | null;
+    days: number | null;
+    earliest_start: string | null;
+    starts_at: string | null;
+    ends_at: string | null;
+    running: boolean;
+    reply_filed_at: string | null;
+    reply_on_time: boolean | null;
+    reply_answered_at: string | null;
+    reply_answered: boolean;
+    appealed: boolean;
+    appeal_pending: boolean;
+    appeal_deadline: string | null;
+    appeal_open: boolean;
+  }>(
+    q,
+    sql`select p.handle, (select count(*)::int from active_strikes s where s.account_id = p.id) as active_strikes,
+               m.decision_id, m.kind, m.days, ${iso("m.starts_at")} as earliest_start,
+               ${iso("sp.starts_at")} as starts_at, ${finite("sp.ends_at")} as ends_at,
+               coalesce(sp.starts_at <= clock_timestamp(), false) as running,
+               ${iso("r.filed_at")} as reply_filed_at, r.on_time as reply_on_time, ${iso("r.answered_at")} as reply_answered_at,
+               coalesce(r.answered_by is not null, false) as reply_answered,
+               exists (select 1 from appeals x where x.decision_id = m.decision_id) as appealed,
+               exists (select 1 from appeals x where x.decision_id = m.decision_id and x.answered_at is null) as appeal_pending,
+               ${iso("public.appeal_deadline(public.appeal_informed_at(m.decision_id))")} as appeal_deadline,
+               coalesce(clock_timestamp() < public.appeal_deadline(public.appeal_informed_at(m.decision_id)), false) as appeal_open
+          from profiles p
+          left join lateral (select a.id, a.decision_id, a.kind::text as kind, a.days, a.starts_at
+                               from standing_live l join decision_actions a on a.id = l.action_id
+                              where l.account_id = p.id order by a.created_at desc limit 1) m on true
+          left join suspension_periods sp on sp.action_id = m.id
+          left join suspension_replies r on r.action_id = m.id
+         where p.id = ${accountId}::uuid and p.deleted_at is null`,
+  );
+  if (!row) return null;
+  const measure =
+    row.decision_id === null || row.kind === null || row.earliest_start === null || row.appeal_deadline === null
+      ? null
+      : {
+          decisionId: row.decision_id,
+          kind: row.kind,
+          days: row.days,
+          earliestStart: row.earliest_start,
+          startsAt: row.starts_at,
+          endsAt: row.ends_at,
+          running: row.running,
+          reply: row.reply_filed_at === null ? null : { filedAt: row.reply_filed_at, onTime: row.reply_on_time === true, answeredAt: row.reply_answered_at },
+          replyAnswered: row.reply_answered,
+          appealed: row.appealed,
+          appealPending: row.appeal_pending,
+          appealDeadline: row.appeal_deadline,
+          appealOpen: row.appeal_open,
+        };
+  return { handle: row.handle, activeStrikes: row.active_strikes, measure };
+}
+
+/**
+ * The standing measures that rest on each decision of a case (3e Task 3): for every decision of the case, the suspensions
+ * and terminations that stand (no reversal), whose basis holds and that name it in rests_on, with their bases. A review
+ * or a correction of such a decision ends them, which the console says before the key is asked.
+ */
+export async function standingOnDecisions(q: Runner, caseId: string): Promise<Map<string, { kind: "suspend" | "terminate"; basis: string }[]>> {
+  const found = await rows<{ decision_id: string; kind: "suspend" | "terminate"; basis: string }>(
+    q,
+    sql`select x.id as decision_id, m.kind::text as kind, m.basis
+          from decisions x join decision_actions m on m.kind in ('suspend', 'terminate') and x.id = any(m.rests_on)
+         where x.case_id = ${caseId}::uuid
+           and not exists (select 1 from decision_actions r where r.reverses_action_id = m.id)
+           and public.standing_basis_broken_at(m.id) is null
+         order by m.created_at, m.id`,
+  );
+  const byDecision = new Map<string, { kind: "suspend" | "terminate"; basis: string }[]>();
+  for (const row of found) byDecision.set(row.decision_id, [...(byDecision.get(row.decision_id) ?? []), { kind: row.kind, basis: row.basis }]);
+  return byDecision;
 }

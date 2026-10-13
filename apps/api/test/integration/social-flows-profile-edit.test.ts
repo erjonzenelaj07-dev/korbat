@@ -9,7 +9,7 @@ import { createPost, getPost } from "../../src/social/flows/posts";
 import { HANDLE_COOLDOWN_MS, changeHandle, editProfile } from "../../src/social/flows/profile-edit";
 import { profile } from "../../src/social/flows/profiles";
 import { leavesNoModerationRows } from "./moderation-decide";
-import { refusal, retireHandleForTest } from "./moderation-fixtures";
+import { liftRowForTest, refusal, retireHandleForTest, suspendRowForTest } from "./moderation-fixtures";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
 
 const newHandle = () => `h_${randomBytes(5).toString("hex")}`;
@@ -27,6 +27,21 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
   });
   afterAll(async () => {
     await Promise.all([closeDb(db), closeDb(migrateDb)]);
+  });
+
+  test("3e: while an account's suspension runs its edit is refused whole, a patch that only blanks the bio included, and so is its handle change; nothing is written", async () => {
+    const ada = await h.established();
+    await editProfile(h.deps, ada.id, { displayName: "Ada", bio: "Before." });
+    await suspendRowForTest(migrateDb, ada.id);
+    expect(await rejection(editProfile(h.deps, ada.id, { displayName: "korbat moderation" }))).toBe("account_suspended");
+    expect(await rejection(editProfile(h.deps, ada.id, { bio: "" }))).toBe("account_suspended");
+    expect(await rejection(changeHandle(h.deps, ada.id, { handle: newHandle() }))).toBe("account_suspended");
+    expect(await profile(h.deps, null, ada.handle)).toMatchObject({ displayName: "Ada", bio: "Before." });
+    expect(h.events.filter((e) => e.userId === ada.id).map((e) => e.type)).toEqual(["profile_updated"]);
+    // A profile that is gone is still not_found.
+    expect(await rejection(editProfile(h.deps, randomUUID(), { bio: "x" }))).toBe("not_found");
+    await liftRowForTest(migrateDb, ada.id);
+    expect((await editProfile(h.deps, ada.id, { bio: "After." })).bio).toBe("After.");
   });
 
   /** The profile the history reserves a handle for, or null when the handle was never left behind. */

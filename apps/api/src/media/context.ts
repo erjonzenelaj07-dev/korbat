@@ -5,9 +5,9 @@ import type { Logger } from "pino";
 import type { MediaFiles } from "./files";
 import type { MediaRepo } from "./repo";
 
-/** The media codes plus the shared ones the module also raises. */
-export type MediaErrorKind = MediaErrorCode | "not_found" | "invalid_request";
-export type MediaErrorStatus = 400 | 404 | 409 | 413 | 415 | 503;
+/** The media codes plus the shared ones the module also raises; 3e's account_suspended is the social module's code, shared. */
+export type MediaErrorKind = MediaErrorCode | "not_found" | "invalid_request" | "account_suspended";
+export type MediaErrorStatus = 400 | 403 | 404 | 409 | 413 | 415 | 503;
 
 const MESSAGES: Record<MediaErrorKind, string> = {
   unsupported_media_type: "That file type is not supported. Use a JPEG, PNG, WebP, AVIF or GIF image.",
@@ -17,6 +17,8 @@ const MESSAGES: Record<MediaErrorKind, string> = {
   media_unavailable: "One of the images is not available. Remove it and add it again.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
+  // 3e (design, sections 7.2 and 9.8): an upload while the account's suspension runs, in the social module's words.
+  account_suspended: "Your account is suspended, so you cannot do this now.",
 };
 
 /** What an iPhone calls a photo. The decoder cannot read it, so the message says what to do instead. */

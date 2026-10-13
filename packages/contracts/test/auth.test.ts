@@ -137,6 +137,7 @@ describe("auth requests and responses", () => {
     const me = {
       user: { id: userId, email: "a@b.io", role: "user", onboarded: false, mfaEnabled: false, hasPassword: false, passkeys: 0 },
       profile: null,
+      standing: null,
     };
     expect(MeResponse.parse(me)).toEqual(me);
     // The count decides whether the app offers a passkey re-authentication and the suggestion card (1c design, section 9), so it is never left out.
@@ -148,12 +149,12 @@ describe("auth requests and responses", () => {
   test("the own profile in the me response says when the handle last changed, whether the badge is held and whether the account's posts show in Explore", () => {
     const user = { id: userId, email: "a@b.io", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 };
     const profile = { id: userId, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: true };
-    expect(MeResponse.parse({ user, profile })).toEqual({ user, profile });
+    expect(MeResponse.parse({ user, profile, standing: null })).toEqual({ user, profile, standing: null });
     expect(MeProfile.parse({ ...profile, handleChangedAt: "2026-09-24T10:00:00.000Z", verified: true }).verified).toBe(true);
     // The author's own switch (2c design, section 8), off as well as on.
     expect(MeProfile.parse({ ...profile, showInExplore: false }).showInExplore).toBe(false);
     // The three fields are facts the account and privacy screens rely on, so a profile without them is not a valid answer.
-    expect(MeResponse.safeParse({ user, profile: { id: userId, handle: "ada", displayName: "Ada" } }).success).toBe(false);
+    expect(MeResponse.safeParse({ user, profile: { id: userId, handle: "ada", displayName: "Ada" }, standing: null }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, handleChangedAt: "yesterday" }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, verified: "yes" }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, showInExplore: undefined }).success).toBe(false);

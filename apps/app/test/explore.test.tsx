@@ -150,6 +150,7 @@ const answer = (posts: number[], nextCursor: string | null, extra: Partial<Explo
 const ME: MeResponse = {
   user: { id: AUTHOR, email: "ada@example.org", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 1 },
   profile: { id: AUTHOR, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: true },
+  standing: null,
 };
 const signedIn = (showInExplore = true) => ({ status: "signed-in", me: { ...ME, profile: { ...ME.profile!, showInExplore } } });
 

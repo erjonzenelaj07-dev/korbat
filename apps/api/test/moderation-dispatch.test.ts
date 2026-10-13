@@ -92,6 +92,7 @@ describe("one line of the daily update", () => {
     decisionUnseen: false,
     sealed: false,
     retired: false,
+    measure: false,
     noEffect: false,
     quotes: false,
     ...over,
@@ -128,6 +129,19 @@ describe("one line of the daily update", () => {
     // A retirement never reaches an item about a post, and a suspect item about an account keeps its own scope.
     expect(line({ retired: true }).outcome).toBe(`${OUTCOME_PHRASES.no_violation}.`);
     expect(line({ ...retired, suspect: true }).outcome).toContain(ACCOUNT_SUSPECT_SCOPE);
+  });
+
+  test("3e: an item about an account that a suspension at once answered reads ACCOUNT_MEASURE_SCOPE.measure through a scope of its own, which names no suspension; a retirement in the same decision reads the retired phrase", () => {
+    const answered = { targetType: "account" as const, namedHandle: "flooder", shownOutcome: "restricted_rule", ruleId: "R6", rulesVersion: 3, measure: true };
+    const outcome = line(answered).outcome;
+    expect(outcome.endsWith(`). ${ACCOUNT_MEASURE_SCOPE.measure}`)).toBe(true);
+    expect(outcome).not.toContain(ACCOUNT_ITEM_SCOPE);
+    expect(outcome).not.toMatch(/suspen|terminat|days|until/i);
+    expect(line({ ...answered, retired: true }).outcome.endsWith(ACCOUNT_MEASURE_SCOPE.retired)).toBe(true);
+    // A reversal of that decision, an item about a post, and a suspect item keep their own words.
+    expect(line({ ...answered, shownOutcome: "reversed", changed: true }).outcome).toBe(`${OUTCOME_PHRASES.reversed}.`);
+    expect(line({ measure: true }).outcome).toBe(`${OUTCOME_PHRASES.no_violation}.`);
+    expect(line({ ...answered, suspect: true }).outcome).toContain(ACCOUNT_SUSPECT_SCOPE);
   });
 
   test("a re-examination's answer, a changed outcome and a link that named nothing are each marked, and none can be re-examined", () => {

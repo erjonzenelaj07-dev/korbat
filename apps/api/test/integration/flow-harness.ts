@@ -35,6 +35,11 @@ export function memoryProfiles(): ProfileStore {
     async setVerified(id, at) {
       const profile = byId.get(id);
       if (profile) profile.verified = at !== null;
+      return true;
+    },
+    // No account of these suites is suspended: the real store and its predicate are http-badge.test.ts's.
+    async suspended() {
+      return false;
     },
   };
 }

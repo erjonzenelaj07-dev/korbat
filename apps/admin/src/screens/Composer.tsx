@@ -14,6 +14,12 @@ import {
   hiddenWhileDeciding,
   imagesOffered,
   measuresOffered,
+  AT_ONCE_DAYS,
+  AT_ONCE_ORDER,
+  atOnceState,
+  suspensionOf,
+  withAtOnce,
+  type AtOnceKey,
   noEffectOf,
   offeredDraft,
   outcomesListed,
@@ -222,6 +228,7 @@ function CorrectionView(props: ComposerViewProps) {
         ))}
       </ul>
       <StrikeNotes decision={decision} />
+      <StandingNotes decision={decision} />
       <TextField id="compose-review-reason" label="Reason of the correction" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
       <Preview view={view} draft={draft} now={props.now} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
@@ -292,10 +299,93 @@ function ReviewView(props: ComposerViewProps) {
         ))}
       </ul>
       <StrikeNotes decision={decision} />
+      <StandingNotes decision={decision} />
       <TextField id="compose-review-reason" label="Reason of the review" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
       <Preview view={view} draft={draft} now={props.now} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
     </section>
+  );
+}
+
+/**
+ * 3e (design, section 8.7): beside a review or a correction, what reversing the decision ends: a suspension (or
+ * termination) taken at once that rests on it ([review.basis]); and for a decision that holds a protective suspension,
+ * that its review does not wait for the authorities ([review.protective]).
+ */
+function StandingNotes({ decision }: { decision: CaseDecision }) {
+  const basis = (decision.standingOn ?? []).some((entry) => entry.basis === "threat" || entry.basis === "terrorist" || entry.basis === "protective" || entry.basis === "threat_repeat");
+  const protective = decision.actions.some((action) => action.kind === "suspend" && action.basis === "protective");
+  if (!basis && !protective) return null;
+  return (
+    <>
+      {basis ? <p className="notice">{STANDING_WORDS.reviewBasis}</p> : null}
+      {protective ? <p className="hint">{STANDING_WORDS.reviewProtective}</p> : null}
+    </>
+  );
+}
+
+/** The sentence of one ground of a suspension at once, with the case answer's numbers where it has them. */
+function groundSentence(view: CaseView, ground: AtOnceKey): string {
+  const standing = view.standing;
+  if (ground === "flood") return STANDING_WORDS.atOnce.flood(standing?.flood.posts ?? 0, dateTime(standing?.flood.from ?? ""), dateTime(standing?.flood.to ?? ""));
+  if (ground === "protective") return standing?.seal ? STANDING_WORDS.atOnce.protective(standing.seal.decidedOn) : STANDING_WORDS.atOnce.noSeal;
+  return STANDING_WORDS.atOnce[ground];
+}
+
+/** The sentence that greys "Suspend at once", by its key. */
+const CLOSED_WORDS = {
+  conflict: STANDING_WORDS.conflict,
+  admin: STANDING_WORDS.atOnce.admin,
+  other: STANDING_WORDS.atOnce.other,
+  reportsFirst: STANDING_WORDS.reportsFirst,
+  noSeal: STANDING_WORDS.atOnce.noSeal,
+  unmet: STANDING_WORDS.atOnce.unmet,
+} as const;
+
+/**
+ * 3e (design, section 8.3): "Suspend at once" on an account case's final restriction, offered to an admin when the ground
+ * of the chosen rule is met, with its days, and greyed with its reason otherwise. The four grounds are listed, each marked
+ * whether the database would accept it now. Choosing it adds the suspension and the ground's drafted facts.
+ */
+function AtOnce({ props }: { props: ComposerViewProps }) {
+  const { view, role, draft } = props;
+  const state = atOnceState(view, role, draft);
+  if (state === null || view.standing === null) return null;
+  const held = suspensionOf(draft);
+  const max = state.ground === null ? 1 : AT_ONCE_DAYS[state.ground];
+  const days = typeof held?.days === "number" ? held.days : max;
+  const choose = (on: boolean, value: number) => {
+    if (!state.open) return;
+    props.onChange(on ? withAtOnce(view, draft, state.ground, Math.min(max, Math.max(1, value))) : { actions: draft.actions.filter((action) => action.kind !== "suspend") });
+  };
+  return (
+    <li>
+      <label>
+        <input type="checkbox" checked={held !== undefined} disabled={props.busy || !state.open} onChange={(event) => choose(event.target.checked, days)} /> <span>{STANDING_WORDS.atOnce.label}</span>
+      </label>
+      {held !== undefined && state.open ? (
+        <>
+          {" "}
+          <label htmlFor="compose-at-once-days">{STANDING_WORDS.atOnce.days(max)}</label>{" "}
+          <input id="compose-at-once-days" type="number" min={1} max={max} value={days} disabled={props.busy} onChange={(event) => choose(true, Number(event.target.value) || 1)} />
+        </>
+      ) : null}
+      {state.open ? null : <p className="hint">{CLOSED_WORDS[state.why]}</p>}
+      <p className="hint">{STANDING_WORDS.atOnce.what}</p>
+      <ul className="plain grounds">
+        {AT_ONCE_ORDER.map((ground) => (
+          <li key={ground}>
+            <strong>{view.standing!.atOnce.includes(ground) ? STANDING_WORDS.atOnce.met : STANDING_WORDS.atOnce.unmet}</strong> <span>{groundSentence(view, ground)}</span>
+          </li>
+        ))}
+      </ul>
+      {held !== undefined ? (
+        <>
+          <p className="hint">{STANDING_WORDS.facts}</p>
+          <p className="hint">{STANDING_WORDS.previewTimes}</p>
+        </>
+      ) : null}
+    </li>
   );
 }
 
@@ -556,6 +646,8 @@ export function ComposerView(shown: ComposerViewProps) {
             {measuresOffered(view, kind).map((measure) => (
               <Measure key={measure} measure={measure} props={props} images={imagesOffered(view, kind, measure)} />
             ))}
+            {/* 3e (design, section 8.3): a suspension at once, on an account case's final restriction. */}
+            <AtOnce props={props} />
             {kind === "interim" && view.target.type === "post" && hiddenWhileDeciding(view) ? (
               <li>
                 <p className="hint">{COMPOSER.alreadyHidden}</p>

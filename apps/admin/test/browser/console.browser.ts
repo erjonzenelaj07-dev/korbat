@@ -29,6 +29,7 @@ import {
   CASE_QUOTED,
   CASE_SEALABLE,
   CASE_STRIKE,
+  CASE_AT_ONCE,
   CASE_STRUCK,
   DECISION_APPEALED,
   DECISION_ONE,
@@ -40,6 +41,7 @@ import {
   LONGEST_NOTE,
   LOOKALIKE,
   POST_ID,
+  atOnceCase,
   struckCase,
 } from "../case-fixtures";
 import { HOSTILE } from "../fixtures";
@@ -1240,6 +1242,71 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await shown(page.getByText(`${MEASURES.remove.label}: lifted by the decision of`, { exact: false }));
     await shown(page.getByText(`${MEASURES.strike.label}: lifted by the decision of`, { exact: false }));
     expect(await texts()).toContain(HOSTILE.script);
+    await clean();
+  });
+
+  test("3e: a suspension at once offered to an admin: the four grounds marked met or not, the protective one greyed with [atOnce.noSeal], the drafted facts, the preview, and the key confirming the suspension with its days and announced false", async () => {
+    // The case is put in place by this run, so that the queue and the appeals listed before it stay as they were.
+    fixtures.state.cases.set(CASE_AT_ONCE, atOnceCase());
+    fixtures.state.role = "admin";
+    try {
+      const before = await signatures();
+      await page.goto(`${origin}/cases/${CASE_AT_ONCE}`);
+      await shown(page.getByRole("heading", { name: "Case about an account" }));
+      const composer = page.getByRole("region", { name: "Decide" });
+      await composer.getByLabel(COMPOSER_KINDS.final).check();
+      const control = composer.getByLabel(STANDING_WORDS.atOnce.label, { exact: true });
+      await shown(control);
+      expect(await control.isDisabled()).toBe(false);
+      await shown(composer.getByText(STANDING_WORDS.atOnce.what, { exact: true }));
+      // The four grounds, two met now and two not: the protective one says why it is not.
+      expect(await composer.locator(".grounds strong").allTextContents()).toEqual([STANDING_WORDS.atOnce.met, STANDING_WORDS.atOnce.unmet, STANDING_WORDS.atOnce.met, STANDING_WORDS.atOnce.unmet]);
+      await shown(composer.getByText(STANDING_WORDS.atOnce.threat, { exact: true }));
+      await shown(composer.getByText(STANDING_WORDS.atOnce.noSeal, { exact: true }));
+      await control.check();
+      const days = composer.getByLabel(STANDING_WORDS.atOnce.days(30));
+      await days.fill("10");
+      expect(await composer.getByLabel("Facts").inputValue()).toBe("A final decision of korbat found a direct threat of violence in a post of this account.");
+      await composer.getByLabel("Facts").press("Tab");
+      await composer.getByLabel("Reason", { exact: true }).fill("The threat names a place and a time.");
+      await composer.getByLabel("Reason", { exact: true }).press("Tab");
+      await arrived(() => fixtures.state.texts.filter((text) => text.caseId === CASE_AT_ONCE).length === 2, "both texts saved when their fields lost focus");
+      const told = (await composer.locator(".frame.preview p.frame-text").allTextContents()).join(" ");
+      expect(told).toContain("korbat suspended your account for 10 days, from this decision until");
+      expect(told).toContain(STATEMENT_WORDS.basis.threat("2026-10-10 08:00 UTC"));
+      await shown(composer.getByText(STANDING_WORDS.previewTimes, { exact: true }));
+      expect(await inspect(page)).toEqual([]);
+      await composer.getByRole("button", { name: "Confirm with your staff key" }).click();
+      await shown(page.getByText(COMPOSER.recorded));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.decisions.at(-1)).toMatchObject({
+        caseId: CASE_AT_ONCE,
+        params: { kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R5", actions: [{ kind: "suspend", mediaId: null, days: 10, announced: false }], unfounded: [], replaced: false },
+      });
+      await texts();
+      await clean();
+    } finally {
+      fixtures.state.role = "moderator";
+    }
+  });
+
+  test("3e: a suspension at once greyed for a moderator with [atOnce.admin], its grounds still listed, and nothing signed", async () => {
+    const id = "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f";
+    fixtures.state.cases.set(id, { ...atOnceCase({}, "R6"), id });
+    const decided = fixtures.state.decisions.length;
+    await page.goto(`${origin}/cases/${id}`);
+    await shown(page.getByRole("heading", { name: "Case about an account" }));
+    const composer = page.getByRole("region", { name: "Decide" });
+    await composer.getByLabel(COMPOSER_KINDS.final).check();
+    await composer.getByLabel("Rule").selectOption("R6");
+    const control = composer.getByLabel(STANDING_WORDS.atOnce.label, { exact: true });
+    await shown(control);
+    expect(await control.isDisabled()).toBe(true);
+    await shown(composer.getByText(STANDING_WORDS.atOnce.admin, { exact: true }));
+    expect(await composer.locator(".grounds li").count()).toBe(4);
+    expect(await inspect(page)).toEqual([]);
+    expect(fixtures.state.decisions).toHaveLength(decided);
+    await texts();
     await clean();
   });
 

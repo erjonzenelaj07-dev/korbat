@@ -5,6 +5,7 @@ import { loadConfig } from "../../src/config";
 import { SocialError } from "../../src/social/context";
 import { createSocialRepo, type ListRow, type SocialRepo } from "../../src/social/repo";
 import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 import { newPost, newProfile, ticker } from "./social-fixtures";
 
 const ids = (rowsList: ListRow[]) => rowsList.map((r) => r.postId);
@@ -381,22 +382,35 @@ describe.skipIf(!process.env.INTEGRATION)("integration: social writes racing an 
   test("a follow that holds the followee's row makes the purge wait, and the purge then removes the follow with its counters", LIMIT, async () => {
     const clock = ticker();
     const [ada, gone] = await Promise.all([newProfile(db), newProfile(db)]);
-    // A shared lock on the follower's row lets the follow take its locks and write the followee's counter, then
-    // stops it at the follower's counter: the follow is in flight, holding the followee's row, when the purge starts.
-    const pause = hold(ada.id, "share");
+    // 3e (design, section 5, the lock order): a follow takes both profile rows in one statement before it writes, so it
+    // is paused after that statement: an uncommitted insert of the same follow row makes its own insert wait. The follow
+    // is then in flight, holding the followee's row, when the purge starts.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let taken!: () => void;
+    const inserted = new Promise<void>((resolve) => (taken = resolve));
+    const pause = db.transaction(async (tx) => {
+      await tx.execute(sql`insert into follows (follower_id, followee_id, created_at) values (${ada.id}::uuid, ${gone.id}::uuid, now())`);
+      taken();
+      await gate;
+      // Rolled back, so the follow's own insert lands.
+      tx.rollback();
+    });
+    pause.catch(() => taken());
     let purge: Promise<void> | undefined;
     try {
-      await pause.locked;
+      await inserted;
       const follow = outcome(repo.follow(ada.id, gone.id, clock.next(), true));
       await untilWaiting(1, follow);
       purge = repo.purgeProfile(gone.id, clock.next(), async () => undefined);
       await untilWaiting(2, purge);
-      pause.release();
-      await pause.done;
+      release();
+      await pause.catch(() => undefined);
       expect(await follow).toBe(true);
       await purge;
     } finally {
-      await pause.finish();
+      release();
+      await pause.catch(() => undefined);
       await purge?.catch(() => undefined);
     }
     expect(await followRows(ada.id, gone.id)).toBe(0);
@@ -517,5 +531,148 @@ describe.skipIf(!process.env.INTEGRATION)("integration: social writes racing an 
     expect(await counts(star.id)).toEqual({ follower_count: fans.length - blocks, following_count: 0 });
     const row = (await repo.findPosts([post])).get(post)!;
     expect([row.likeCount, row.replyCount]).toEqual([fans.length - blocks, kinds.filter((kind) => kind === "reply").length]);
+  });
+});
+
+/**
+ * 3e (design, sections 5 and 7.2): the one predicate on every write of the acting account. A suspension is written into
+ * the profile row as the migrator (suspendRowForTest), as standing_apply derives one; the decisions that take one are
+ * standing-at-once.test.ts's. The account acting is refused account_suspended while the interval runs; what others do
+ * toward it is unchanged, and so is everything that withdraws or protects.
+ */
+describe.skipIf(!process.env.INTEGRATION)("integration: the writes of a suspended account (3e)", () => {
+  let db: Db;
+  let migrateDb: Db;
+  let repo: SocialRepo;
+  const LIMIT = { timeout: 30_000 };
+
+  beforeAll(() => {
+    const url = new URL(loadConfig().DATABASE_URL_API);
+    url.searchParams.set("lock_timeout", "5s");
+    url.searchParams.set("idle_in_transaction_session_timeout", "30s");
+    db = createDb(url.toString(), { max: 6 });
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
+    repo = createSocialRepo(db);
+  });
+  afterAll(async () => {
+    await Promise.all([db.$client.end({ timeout: 5 }), closeDb(migrateDb)]);
+  });
+
+  const outcome = (write: Promise<unknown>): Promise<unknown> => write.catch((err: unknown) => (err instanceof SocialError ? err.code : Promise.reject(err)));
+
+  test("a suspended account's like, repost, bookmark, post, reply, quote and follow are refused account_suspended; its undos, blocks and mutes are not", async () => {
+    const clock = ticker();
+    const [ada, bob] = await Promise.all([newProfile(db), newProfile(db)]);
+    const post = await newPost(repo, bob.id, clock.next());
+    const liked = await newPost(repo, bob.id, clock.next());
+    expect(await repo.like(ada.id, liked, clock.next(), bob.id)).toBe(true);
+    expect(await repo.follow(ada.id, bob.id, clock.next(), true)).toBe(true);
+    await suspendRowForTest(migrateDb, ada.id);
+    expect(await outcome(repo.like(ada.id, post, clock.next(), bob.id))).toBe("account_suspended");
+    expect(await outcome(repo.repost(ada.id, post, clock.next(), bob.id))).toBe("account_suspended");
+    expect(await outcome(repo.bookmark(ada.id, post, clock.next()))).toBe("account_suspended");
+    expect(await outcome(newPost(repo, ada.id, clock.next()))).toBe("account_suspended");
+    expect(await outcome(newPost(repo, ada.id, clock.next(), "reply", { replyToId: post }))).toBe("account_suspended");
+    expect(await outcome(newPost(repo, ada.id, clock.next(), "quote", { quoteOfId: post }))).toBe("account_suspended");
+    const carol = await newProfile(db);
+    expect(await outcome(repo.follow(ada.id, carol.id, clock.next(), true))).toBe("account_suspended");
+    // Withdrawing and protecting oneself stay open.
+    expect(await repo.unlike(ada.id, liked)).toBe(true);
+    expect(await repo.unfollow(ada.id, bob.id)).toBe(true);
+    expect(await repo.block(ada.id, carol.id, clock.next())).toBe(true);
+    expect(await repo.mute(ada.id, bob.id, clock.next())).toBe(true);
+    expect((await repo.findProfiles([ada.id])).get(ada.id)!.postCount).toBe(0);
+  });
+
+  test("what others do toward a suspended account is unchanged: they follow it and like, repost, reply to and quote its posts", async () => {
+    const clock = ticker();
+    const [ada, bob] = await Promise.all([newProfile(db), newProfile(db)]);
+    const post = await newPost(repo, ada.id, clock.next());
+    await suspendRowForTest(migrateDb, ada.id);
+    expect(await repo.follow(bob.id, ada.id, clock.next(), true)).toBe(true);
+    expect(await repo.like(bob.id, post, clock.next(), ada.id)).toBe(true);
+    expect(await repo.repost(bob.id, post, clock.next(), ada.id)).toBe(true);
+    expect(await repo.bookmark(bob.id, post, clock.next())).toBe(true);
+    await newPost(repo, bob.id, clock.next(), "reply", { replyToId: post });
+    await newPost(repo, bob.id, clock.next(), "quote", { quoteOfId: post });
+    const row = (await repo.findPosts([post])).get(post)!;
+    expect([row.likeCount, row.repostCount, row.replyCount, row.quoteCount]).toEqual([1, 1, 1, 1]);
+  });
+
+  test("the profile's edit and the handle change are refused while it runs; an interval that has not begun or has ended refuses nothing", async () => {
+    const clock = ticker();
+    const ada = await newProfile(db);
+    await suspendRowForTest(migrateDb, ada.id);
+    expect(await repo.updateProfile(ada.id, { bio: "" })).toBe(false);
+    expect(await repo.changeHandle(ada.id, `s_${clock.next().getTime().toString(36)}`, clock.next())).toEqual({ ok: false, reason: "account_suspended" });
+    // Not begun yet, and ended: the predicate compares the columns with the clock, and nothing is written at either moment.
+    await suspendRowForTest(migrateDb, ada.id, { from: "1 hour", until: "2 hours" });
+    expect(await repo.updateProfile(ada.id, { bio: "later" })).toBe(true);
+    expect(await outcome(newPost(repo, ada.id, clock.next()).then(() => "posted"))).toBe("posted");
+    await suspendRowForTest(migrateDb, ada.id, { from: "-2 hours", until: "-1 hour" });
+    expect(await repo.updateProfile(ada.id, { bio: "after" })).toBe(true);
+    expect(await outcome(repo.follow(ada.id, (await newProfile(db)).id, clock.next()))).toBe(true);
+    await liftRowForTest(migrateDb, ada.id);
+  });
+
+  test("lockAccounts answers, from its own statement, whether each account is deleted, suspended and restricted in its reports; the mode update takes the row FOR UPDATE", LIMIT, async () => {
+    const [ada, bob, carol] = await Promise.all([newProfile(db), newProfile(db), newProfile(db)]);
+    await suspendRowForTest(migrateDb, ada.id, { reportsUntil: "1 day" });
+    await suspendRowForTest(migrateDb, bob.id, { from: "-2 hours", until: "-1 hour", reportsUntil: "-1 minute" });
+    const rows = await db.transaction((tx) => repo.lockAccounts(tx, [ada.id, bob.id, carol.id], "key share"));
+    const by = new Map(rows.map((row) => [row.id, row]));
+    expect(by.get(ada.id)).toEqual({ id: ada.id, deleted: false, suspended: true, reportsRestricted: true });
+    expect(by.get(bob.id)).toEqual({ id: bob.id, deleted: false, suspended: false, reportsRestricted: false });
+    expect(by.get(carol.id)).toEqual({ id: carol.id, deleted: false, suspended: false, reportsRestricted: false });
+    // FOR UPDATE conflicts with the shared lock every write about the account takes; FOR NO KEY UPDATE does not.
+    for (const mode of ["update", "no key update"] as const) {
+      const blocked = await db.transaction(async (tx) => {
+        await repo.lockAccounts(tx, [carol.id], mode);
+        return db
+          .execute(sql`select 1 from profiles where id = ${carol.id}::uuid for key share nowait`)
+          .then(() => false)
+          .catch(() => true);
+      });
+      expect(blocked, mode).toBe(mode === "update");
+    }
+  });
+
+  test("a purge takes the rows of the accounts whose counters it writes before it takes any post of the account", LIMIT, async () => {
+    const clock = ticker();
+    const [gone, fan] = await Promise.all([newProfile(db), newProfile(db)]);
+    const post = await newPost(repo, gone.id, clock.next());
+    expect(await repo.follow(fan.id, gone.id, clock.next())).toBe(true);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let taken!: () => void;
+    const locked = new Promise<void>((resolve) => (taken = resolve));
+    // A shared lock on the follower's row: the purge's FOR NO KEY UPDATE on it waits.
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from profiles where id = ${fan.id}::uuid for share`);
+      taken();
+      await gate;
+    });
+    let purge: Promise<void> | undefined;
+    try {
+      await locked;
+      purge = repo.purgeProfile(gone.id, clock.next(), async () => undefined);
+      for (let i = 0; i < 250; i++) {
+        const [row] = (await db.execute(sql`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`)) as unknown as { n: number }[];
+        if (row!.n >= 1) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      // While the purge waits for the follower's row, it holds no post of the account yet.
+      const free = await db
+        .execute(sql`select 1 from posts where id = ${post}::uuid for update nowait`)
+        .then(() => true)
+        .catch(() => false);
+      expect(free).toBe(true);
+    } finally {
+      release();
+      await holder.catch(() => undefined);
+      await purge?.catch(() => undefined);
+    }
+    const [row] = (await db.execute(sql`select following_count from profiles where id = ${fan.id}::uuid`)) as unknown as { following_count: number }[];
+    expect(row!.following_count).toBe(0);
   });
 });

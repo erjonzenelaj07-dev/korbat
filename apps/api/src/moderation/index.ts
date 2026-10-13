@@ -28,6 +28,7 @@ import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
+import { standingFor } from "./standing";
 import { reveal, type RevealOutcome } from "./reveal";
 import { moderationRoutes, noSession } from "./routes";
 import { ownTexts, saveText } from "./texts";
@@ -180,6 +181,11 @@ export function createModeration(options: CreateModerationOptions) {
     forSocial,
     /** The interface the account module's purge and export use. */
     forAccount,
+    /**
+     * 3e (design, section 7.12): /api/me's standing, read fresh from the ledger: null for an account without a live
+     * profile. The app composes the route from this and the auth module's meFor.
+     */
+    standingFor: (userId: string) => standingFor(deps.apiDb, userId),
     /**
      * Resolves once every task a request started and did not wait for has ended: the mails after a report, a notice, a
      * finding, a reveal or a refused case read. The tests await it; the server lets the tasks run.

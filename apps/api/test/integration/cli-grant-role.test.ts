@@ -4,10 +4,12 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { auditHead, auditLog, closeDb, createDb, type Db } from "@korbat/db";
 import { createAuthRepo, createSessions } from "../../src/auth";
 import { MemoryKv } from "../../src/auth/kv";
-import { SYSTEM_ACTOR_ID, runGrantRole } from "../../src/cli/grant-role";
+import { GRANT_ROLE_WORDS, SYSTEM_ACTOR_ID, runGrantRole } from "../../src/cli/grant-role";
 import { loadConfig } from "../../src/config";
 import { MemoryMailer } from "../../src/mail/memory";
 import { newUserWithDevice } from "./auth-fixtures";
+import { closeDecisions, suspendForTest } from "./moderation-decide";
+import { removeFixtures } from "./moderation-fixtures";
 
 describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
   let authDb: Db;
@@ -19,9 +21,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
     // Only for reading the record back: grant-role itself no longer opens the API's pool.
     apiDb = createDb(config.DATABASE_URL_API, { max: 2 });
   });
+  /** The profiles this file made for accounts it suspended, removed with everything they hold at the end. */
+  const made: string[] = [];
   afterAll(async () => {
+    await closeDecisions();
+    const migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
+    try {
+      await removeFixtures(migrateDb, made.splice(0));
+    } finally {
+      await closeDb(migrateDb);
+    }
     await Promise.all([closeDb(authDb), closeDb(apiDb)]);
-  });
+  }, 120_000);
 
   const readHead = async () => (await apiDb.select().from(auditHead))[0]!;
 
@@ -113,5 +124,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: grant-role CLI", () => {
     expect((await repo.findUserById(user.id))!.role).toBe("user");
     expect(await sessions.resolve(issued.token)).not.toBeNull();
     expect(await readHead()).toEqual(head);
+  });
+  test("3e: an account whose suspension stands is not made staff: nothing changes, no audit row is written, and the command says why; a demotion is never refused", { timeout: 120_000 }, async () => {
+    const repo = createAuthRepo(authDb);
+    const kv = new MemoryKv();
+    const sessions = createSessions({ repo, kv });
+    const { user, device } = await newUserWithDevice(repo);
+    const issued = await sessions.issue(user.id, device.id, { factors: { email: Date.now() } });
+    await apiDb.execute(sql`insert into profiles (id, handle, display_name) values (${user.id}::uuid, ${`g_${randomUUID().slice(0, 8)}`}, 'Suspended')`);
+    made.push(user.id);
+    await suspendForTest(apiDb, user.id, { days: 3 });
+    const head = await readHead();
+    expect(await runGrantRole({ authDb, kv, mailer: new MemoryMailer() }, user.email, "admin")).toBe("standing");
+    expect((await repo.findUserById(user.id))!.role).toBe("user");
+    expect(await sessions.resolve(issued.token)).not.toBeNull();
+    expect(await readHead()).toEqual(head);
+    expect(GRANT_ROLE_WORDS.standing).toMatch(/^This account holds a suspension, a termination or a restriction of reporting/);
+    const demoted = await runGrantRole({ authDb, kv, mailer: new MemoryMailer() }, user.email, "user");
+    expect(demoted).toMatchObject({ userId: user.id, previousRole: "user" });
   });
 });

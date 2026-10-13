@@ -401,8 +401,13 @@ export function createAuthRepo(db: Db) {
      * waits at most 10 seconds for a lock: an API that holds the head or the row open cannot stall it for longer, and one
      * that times out has changed nothing. The cache tombstones and the mail are not the database's to write, so the caller
      * does them after the commit with what this answers; undefined when no live account has the address.
+     *
+     * 3e (design, section 7.16): no suspended account becomes staff. For a promotion, auth.account_standing is asked in a
+     * statement of its own after the row's lock: a deciding transaction reads the same row FOR SHARE, so it either waited
+     * for this one and then meets staff_target, or committed first and is read here. When the account holds a standing
+     * suspension, termination or restriction of reporting nothing is changed and the answer is "standing".
      */
-    async changeRole(email: string, role: UserRole, audit: { actorId: string; now: Date }): Promise<RoleChange | undefined> {
+    async changeRole(email: string, role: UserRole, audit: { actorId: string; now: Date }): Promise<RoleChange | "standing" | undefined> {
       return db.transaction(async (tx) => {
         await tx.execute(sql`set local lock_timeout = '10s'`);
         const [account] = await tx
@@ -412,6 +417,11 @@ export function createAuthRepo(db: Db) {
           .limit(1)
           .for("no key update");
         if (!account) return undefined;
+        if (role !== "user") {
+          const [standing] = await tx.execute<{ held: boolean }>(sql`select auth.account_standing(${account.id}::uuid) as held`);
+          // Nothing was written: the transaction ends with the row's lock and no audit row.
+          if (standing!.held) return "standing";
+        }
         await tx.update(users).set({ role }).where(eq(users.id, account.id));
         const revoked = await tx
           .update(sessions)

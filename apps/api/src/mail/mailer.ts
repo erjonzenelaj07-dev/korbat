@@ -38,7 +38,11 @@ export type TemplateName =
   | "moderation_burst"
   | "moderation_reads"
   | "moderation_reveal"
-  | "moderation_csam_lifted";
+  | "moderation_csam_lifted"
+  // Account sanctions (3e design, sections 7.15 and 18, W.6): a decision's statement under a subject and a lead of its
+  // own, for a suspension or termination taken at once and for the lift or end of one.
+  | "suspension_started_at_once"
+  | "suspension_lifted";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

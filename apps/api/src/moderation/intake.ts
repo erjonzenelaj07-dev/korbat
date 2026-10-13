@@ -221,8 +221,14 @@ async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, 
   const { ground } = request;
   await tx.execute(sql`select set_config('lock_timeout', ${`${LOCK_TIMEOUT_MS}ms`}::text, true)`);
 
-  // 1.
-  if (ground.reporterId !== null) await deps.social.lockAccounts(tx, [ground.reporterId], "key share", true);
+  // 1. 3e (design, section 7.9 step 7): the reporter's standing is read from the row this statement locks. A report
+  // under a korbat rule is refused while the reporter's suspension runs; a notice of illegality and the path for child
+  // sexual abuse material read nothing of it (DSA Art. 16(6)). The request was counted against the sender's limit
+  // already, as an already_reported one is.
+  if (ground.reporterId !== null) {
+    const [reporter] = await deps.social.lockAccounts(tx, [ground.reporterId], "key share", true);
+    if (ground.kind === "user" && !ground.allegesIllegal && !ground.csam && reporter!.suspended) throw new ModerationError("account_suspended");
+  }
 
   // 2. The token is stored only as its hash; the answer carries it once.
   const ref = newRef();
@@ -719,7 +725,9 @@ export async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">
     // once released, when its decision sealed them. After "not available" the page and the app add no scope sentence.
     // 3e (7.11 item 7): once released, an item whose decision retired the handle reads that in place of the display name
     // and bio; a suspect item keeps its own scope, which speaks of the images.
-    scope = item.suspect || (item.released && item.sealed) ? "account_suspect" : item.released && item.retired ? "account_retired" : "account";
+    // 3e: once released, an item whose decision suspended or terminated the account at once reads its own scope
+    // (ACCOUNT_MEASURE_SCOPE.measure), which says that korbat took a measure and nothing of which or for how long.
+    scope = item.suspect || (item.released && item.sealed) ? "account_suspect" : item.released && item.retired ? "account_retired" : item.released && item.measure ? "account_measure" : "account";
   } else if (item.released && item.hasCase && !item.suspect && (await deps.social.postRef(item.targetId))?.quoteOfId) {
     // Whether a post quotes another can be read only from its row, so this scope comes with the released outcome and not
     // before it. A suspect item about a quoting post has an item of its own for the quoted post, and no such scope.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { MEASURES, MEASURE_KINDS, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
+import { MEASURES, MEASURE_KINDS, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
 import { REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
 
 /**
@@ -524,8 +524,12 @@ describe("3e: the strike's sentences (design, section 18, W.2 and W.3)", () => {
 
   test("a strike without its end of counting is not rendered as another statement; a kind of 3e that is not worded yet is not rendered at all", () => {
     expect(() => statementParagraphs(struck({ measures: [measure("remove"), strike({ endsAt: null })] }))).toThrow(/strike/);
-    expect(() => statementParagraphs(struck({ post: null, measures: [measure("suspend")] }))).toThrow(/suspend/);
+    // Task 3 words a suspension taken at once and its lift; an announced suspension and a termination wait for Task 4.
+    expect(() => statementParagraphs(struck({ post: null, measures: [measure("suspend", { announced: true })] }))).toThrow(/suspend/);
+    expect(() => statementParagraphs(struck({ post: null, measures: [measure("terminate", { announced: false })] }))).toThrow(/terminate/);
+    expect(() => statementParagraphs(struck({ post: null, measures: [measure("warn_reporting")] }))).toThrow(/warn_reporting/);
     const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R3" as const, rulesVersion: 3, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    // A lift whose data names no period is not rendered as another lift.
     expect(() => statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, measures: [], reversals: [reversal("lift_suspension")], reviewed }))).toThrow(/lift_suspension/);
   });
 
@@ -609,6 +613,165 @@ describe("3e: the retirement of a handle and its reversal (design, section 18, W
     // A retirement that changed nothing needs no placeholder.
     expect(() => statementParagraphs(retired({ measures: [retire({ noEffect: "already", placeholder: null })] }))).not.toThrow();
     expect(() => statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, measures: [], reversals: [reversal("unretire_handle")], reviewed }))).toThrow(/unretire_handle/);
+  });
+});
+
+describe("3e: a suspension taken at once, its lift and a basis that breaks (design, section 18, W.2 and W.3, Task 3)", () => {
+  const STARTED = "2026-10-04T09:30:15.250Z";
+  const ENDS = "2026-10-11T09:30:15.250Z";
+  const BASIS_AT = "2026-10-02T08:00:00.000Z";
+  const at = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+  const atOnce = (basis: "threat" | "terrorist" | "flood" | "protective", more: Partial<DecisionStatement["measures"][number]> = {}) =>
+    measure("suspend", {
+      announced: false,
+      days: 7,
+      basis,
+      earliestStart: STARTED,
+      endsAt: ENDS,
+      restsOn: basis === "flood" ? null : [{ decidedAt: BASIS_AT, ruleId: basis === "threat" ? "R5" : null, postCreatedAt: basis === "protective" ? null : POST.createdAt }],
+      ...more,
+    });
+  /** A final decision on an account case that suspends it at once, made under rulebook 3 and redress 2. */
+  const suspended = (basis: "threat" | "terrorist" | "flood" | "protective", more: Partial<StatementInput> = {}) =>
+    statement({
+      ruleId: basis === "threat" ? "R5" : basis === "flood" ? "R6" : basis === "protective" ? "R2" : null,
+      ground: basis === "terrorist" ? "illegal" : "incompatible",
+      legalReference: basis === "terrorist" ? "Regulation (EU) 2021/784, Article 2(7)" : null,
+      rulesVersion: 3,
+      redressVersion: 2,
+      source: "own_initiative",
+      post: null,
+      measures: [atOnce(basis)],
+      ...more,
+    });
+  const appeal2 = REDRESS_TEXTS[2].appeal.replace("{deadline}", at(appealDeadline(new Date(DECIDED)).toISOString()));
+  const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R5" as const, rulesVersion: 3, legalReference: null, decidedAt: BASIS_AT };
+  const joined = (paragraphs: string[]) => paragraphs.join(" | ");
+
+  test("the words, each a constant", () => {
+    expect(W.suspendAtOnce(7, "2026-10-11 09:30 UTC")).toBe("korbat suspended your account for 7 days, from this decision until 2026-10-11 09:30 UTC, without notice beforehand.");
+    expect(W.suspendAtOnce(1, "2026-10-05 09:30 UTC")).toBe("korbat suspended your account for 1 day, from this decision until 2026-10-05 09:30 UTC, without notice beforehand.");
+    expect(W.basis.threat("2026-10-02 08:00 UTC")).toBe("It was taken at once because korbat's decision of 2026-10-02 08:00 UTC found a direct threat of violence in a post of yours (rule R5). It ends at once if that decision is reversed.");
+    expect(W.basis.terrorist("2026-10-02 08:00 UTC")).toBe("It was taken at once because korbat's decision of 2026-10-02 08:00 UTC found terrorist content in a post of yours. It ends at once if that decision is reversed.");
+    expect(W.basis.flood).toBe("It was taken at once because an admin found that your account was flooding korbat with repetitive, unsolicited posts (rule R6). The facts below say how many posts and what they were.");
+    expect(W.basis.protective("2026-10-02 08:00 UTC")).toBe(
+      "It was taken at once because korbat's decision of 2026-10-02 08:00 UTC keeps images of your account sealed, after they were reported as possible child sexual abuse material. korbat's staff do not open images reported this way, so korbat has not assessed them. This is not a finding that you broke the law or a korbat rule: it is a protective measure, it gives no strike, and it ends on its date by itself, or earlier if that seal is lifted.",
+    );
+    expect(W.stops).toBe("While it runs you cannot post, reply, quote, like, repost, bookmark, follow, edit your profile, change your handle, upload images, ask for the verified badge, or report under korbat's rules.");
+    expect(W.stays).toBe(
+      "You can still sign in and read; see your cases and reply to korbat; appeal; ask for a re-examination of a report you sent; export your data; delete your posts or your account; undo likes, reposts, bookmarks and follows; block and mute; and report illegal content. Your profile and posts stay visible to others, without any mark, and others can still follow you and like, repost, reply to and quote your posts.",
+    );
+    expect(W.explore).toBe(
+      "While it runs your posts do not appear in Explore, and your likes and reposts of other people's posts do not count there. Both count again from the first refresh after it ends; a post whose time in Explore has passed by then does not return.",
+    );
+    expect(W.scope.suspend(7)).toBe("This applies everywhere korbat is available, for 7 days from its start.");
+    expect(W.scope.suspend(1)).toBe("This applies everywhere korbat is available, for 1 day from its start.");
+    expect(W.automationFlood).toBe("korbat's software counted the posts this rests on. An admin read them and decided; no automated means decided it.");
+    expect(W.ground.protective("No child sexual abuse material")).toBe(
+      `This rests on korbat's terms, section Suspension and termination: when korbat keeps images of an account sealed after a report of child sexual abuse material, an admin may suspend the account once, for up to 14 days. The rule such a report is made under is korbat rule R2, "No child sexual abuse material". korbat has not found that your account broke it.`,
+    );
+    expect(W.ground.conduct("R5", "No threats", "text")).toBe(`Your account's conduct breaks korbat rule R5, "No threats": text`);
+    expect(W.liftedBefore("suspension", "2026-10-02 08:00 UTC")).toBe("korbat lifted the suspension it announced on 2026-10-02 08:00 UTC: it never starts.");
+    expect(W.liftedRunning("suspension")).toBe("korbat lifted the suspension of your account: it ended with this decision.");
+    expect(W.liftedEnded("2026-10-02 08:00 UTC", "2026-10-09 08:00 UTC")).toBe(
+      "korbat lifted the suspension of your account that ran from 2026-10-02 08:00 UTC to 2026-10-09 08:00 UTC: it no longer counts toward a later suspension.",
+    );
+    expect(W.basisEnded("suspension", "2026-10-02 08:00 UTC", false)).toBe("The suspension of your account that korbat decided on 2026-10-02 08:00 UTC rested on that decision.");
+    expect(W.basisEnded("termination", "2026-10-02 08:00 UTC", true)).toBe("The termination of your account that korbat decided on 2026-10-02 08:00 UTC rested on that seal.");
+    expect(W.basisEndedThen.not_started).toBe("It will not start.");
+    expect(W.basisEndedThen.running).toBe("It ended with this one.");
+    expect(W.basisEndedThen.ended("2026-10-02 08:00 UTC", "2026-10-09 08:00 UTC")).toBe("It had run from 2026-10-02 08:00 UTC to 2026-10-09 08:00 UTC; it no longer counts toward a later suspension.");
+    expect(W.basisEndedReply("2026-10-03 08:00 UTC")).toBe("Your reply of 2026-10-03 08:00 UTC to it needs no answer now.");
+  });
+
+  test("every number the sentences print is the one STANDING_RULES holds", () => {
+    expect(W.ground.protective("x")).toContain(`for up to ${STANDING_RULES.protectiveDays} days`);
+  });
+
+  test("a suspension at once on a threat, paragraph by paragraph: what was done and why at once, what it stops and leaves, Explore, its scope, the source, no automation, the account's conduct under R5, the facts, the reason, the reply and the appeal", () => {
+    const r5 = getRule("R5", 3)!;
+    expect(statementParagraphs(suspended("threat"))).toEqual([
+      `${W.suspendAtOnce(7, at(ENDS))} ${W.basis.threat(at(BASIS_AT))}`,
+      `${W.stops} ${W.stays}`,
+      W.explore,
+      W.scope.suspend(7),
+      "What this decision is about was found by a moderator.",
+      W.automation,
+      W.ground.conduct("R5", r5.title, r5.text),
+      "The facts: The post shows explicit sexual acts.",
+      "korbat's reasons: That is content whose primary purpose is sexual arousal.",
+      REDRESS_TEXTS[2].replyAtOnce,
+      appeal2,
+    ]);
+  });
+
+  test("a protective suspension never says that a rule is broken: its ground is the terms' clause, its basis says korbat has not assessed the images, and its appeal does not wait for the authorities", () => {
+    const out = statementParagraphs(suspended("protective"));
+    expect(joined(out)).not.toContain("It breaks");
+    expect(joined(out)).not.toContain("conduct breaks");
+    expect(out[0]).toBe(`${W.suspendAtOnce(7, at(ENDS))} ${W.basis.protective(at(BASIS_AT))}`);
+    expect(out).toContain(W.ground.protective(getRule("R2", 3)!.title));
+    expect(out).toContain(W.automation);
+    expect(joined(out)).not.toContain(W.sealAppeal);
+    expect(out.slice(-2)).toEqual([REDRESS_TEXTS[2].replyAtOnce, appeal2]);
+  });
+
+  test("a flood says what the software counted, and the account's conduct under R6; terrorist content names the law", () => {
+    const flood = statementParagraphs(suspended("flood"));
+    expect(flood[0]).toBe(`${W.suspendAtOnce(7, at(ENDS))} ${W.basis.flood}`);
+    expect(flood).toContain(W.automationFlood);
+    expect(flood).not.toContain(W.automation);
+    const r6 = getRule("R6", 3)!;
+    expect(flood).toContain(W.ground.conduct("R6", r6.title, r6.text));
+    const terrorist = statementParagraphs(suspended("terrorist"));
+    expect(terrorist[0]).toBe(`${W.suspendAtOnce(7, at(ENDS))} ${W.basis.terrorist(at(BASIS_AT))}`);
+    expect(terrorist).toContain(W.ground.illegal("Regulation (EU) 2021/784, Article 2(7)"));
+    expect(terrorist).toContain(W.automation);
+  });
+
+  test("a suspension of a deleted account says that it changes nothing", () => {
+    expect(statementParagraphs(suspended("threat", { measures: [atOnce("threat", { noEffect: "deleted" })] }))[0]).toBe(`${W.suspendAtOnce(7, at(ENDS))} ${W.basis.threat(at(BASIS_AT))} ${W.deletedAccount}`);
+  });
+
+  test("a suspension at once without its days, its end or the decision it rests on is not rendered as another statement", () => {
+    expect(() => statementParagraphs(suspended("threat", { measures: [atOnce("threat", { days: undefined })] }))).toThrow(/suspend/);
+    expect(() => statementParagraphs(suspended("threat", { measures: [atOnce("threat", { endsAt: null })] }))).toThrow(/suspend/);
+    expect(() => statementParagraphs(suspended("threat", { measures: [atOnce("threat", { restsOn: null })] }))).toThrow(/suspend/);
+  });
+
+  test("its lift in the three states of the period, in a correction and in a review", () => {
+    const lift = (state: "not_started" | "running" | "ended") =>
+      reversal("lift_suspension", { liftedKind: "suspend", liftedDecidedAt: BASIS_AT, periodThen: { state, startedAt: state === "not_started" ? null : STARTED, endedAt: state === "ended" ? ENDS : null }, replaced: false });
+    for (const kind of ["correction", "review"] as const) {
+      const of = (state: "not_started" | "running" | "ended") =>
+        statementParagraphs(statement({ kind, outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, rulesVersion: 3, redressVersion: 2, measures: [], reversals: [lift(state)], reviewed }));
+      expect(of("not_started")[1], kind).toBe(W.liftedBefore("suspension", at(BASIS_AT)));
+      expect(of("running")[1], kind).toBe(W.liftedRunning("suspension"));
+      expect(of("ended")[1], kind).toBe(W.liftedEnded(at(STARTED), at(ENDS)));
+      expect(of("running").at(-1), kind).toBe(REDRESS_TEXTS[2].notAppealable);
+    }
+  });
+
+  test("a reversal that breaks the basis of a suspension says so, by where its period stood, and answers a reply that waited", () => {
+    const ended = (state: "not_started" | "running" | "ended", more: { seal?: boolean; replyFiledAt?: string | null } = {}) => ({
+      kind: "suspend" as const,
+      decidedAt: STARTED,
+      periodThen: { state, startedAt: state === "not_started" ? null : STARTED, endedAt: state === "ended" ? ENDS : null },
+      seal: more.seal ?? false,
+      replyFiledAt: more.replyFiledAt ?? null,
+    });
+    const correction = (entry: ReturnType<typeof ended>) =>
+      statementParagraphs(
+        statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, rulesVersion: 3, redressVersion: 2, measures: [], reversals: [reversal("restore"), reversal("overrule")], reviewed, endedStanding: [entry] }),
+      );
+    const lead = W.basisEnded("suspension", at(STARTED), false);
+    expect(correction(ended("not_started"))).toContain(`${lead} ${W.basisEndedThen.not_started}`);
+    expect(correction(ended("running"))).toContain(`${lead} ${W.basisEndedThen.running}`);
+    expect(correction(ended("ended"))).toContain(`${lead} ${W.basisEndedThen.ended(at(STARTED), at(ENDS))}`);
+    expect(correction(ended("running", { replyFiledAt: BASIS_AT }))).toContain(`${lead} ${W.basisEndedThen.running} ${W.basisEndedReply(at(BASIS_AT))}`);
+    expect(correction(ended("running", { seal: true }))).toContain(`${W.basisEnded("suspension", at(STARTED), true)} ${W.basisEndedThen.running}`);
+    // A statement made before 3e carries no such member and renders as it did.
+    expect(statementParagraphs(statement({ endedStanding: undefined }))).toEqual(statementParagraphs(statement()));
   });
 });
 

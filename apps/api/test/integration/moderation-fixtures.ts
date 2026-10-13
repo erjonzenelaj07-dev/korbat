@@ -868,13 +868,17 @@ async function removeCasesIn(tx: DbTx, caseIds: SQL, intakeIds: SQL): Promise<vo
 /**
  * Removes, as the migrator, what decisions about these posts left: the posts' cases with everything that hangs on them,
  * the findings of these staff accounts, and those accounts' profiles. The posts themselves stay, as their suites leave
- * them, and their levels are derived again, so none keeps a level that no decision gives it any more.
+ * them, and their levels are derived again, so none keeps a level that no decision gives it any more. 3e: the cases of
+ * `accountIds` (those suspendForTest suspended) go too, with the accounts' replies, and their standing is derived again.
  */
-export async function removeDecided(migrateDb: Db, postIds: readonly string[], staffIds: readonly string[]): Promise<void> {
-  if (postIds.length === 0 && staffIds.length === 0) return;
+export async function removeDecided(migrateDb: Db, postIds: readonly string[], staffIds: readonly string[], accountIds: readonly string[] = []): Promise<void> {
+  if (postIds.length === 0 && staffIds.length === 0 && accountIds.length === 0) return;
   await migrateDb.transaction(async (tx) => {
     await tx.execute(sql`set local lock_timeout = '10s'`);
-    const cases = await tx.execute<{ id: string }>(sql`select id from cases where target_type = 'post' and target_id = any(${uuids(postIds)})`);
+    const cases = await tx.execute<{ id: string }>(
+      sql`select id from cases where (target_type = 'post' and target_id = any(${uuids(postIds)})) or (target_type = 'account' and target_id = any(${uuids(accountIds)}))`,
+    );
+    await tx.execute(sql`delete from suspension_replies where account_id = any(${uuids(accountIds)})`);
     const caseIds = uuids(cases.map((row) => row.id));
     const intakes = await tx.execute<{ id: string }>(sql`
       select distinct i.intake_id as id from intake_items i where i.case_id = any(${caseIds})
@@ -883,6 +887,7 @@ export async function removeDecided(migrateDb: Db, postIds: readonly string[], s
     await tx.execute(sql`select public.moderation_apply(${uuids(postIds)}, true)`);
     // And their authors' standing, which a decision removed with its case may have held.
     await tx.execute(sql`select public.standing_apply(p.author_id) from posts p where p.id = any(${uuids(postIds)})`);
+    await tx.execute(sql`select public.standing_apply(a.id) from unnest(${uuids(accountIds)}) as a(id)`);
     await tx.execute(sql`delete from profiles where id = any(${uuids(staffIds)})`);
   });
 }
@@ -1022,4 +1027,24 @@ export async function ageStandingForTest(migrateDb: Db, accountId: string, inter
     await tx.execute(sql`update posts set created_at = created_at - ${by}, deleted_at = deleted_at - ${by} where author_id = ${account}`);
     await tx.execute(sql`select public.standing_apply(${account})`);
   });
+}
+
+/**
+ * Writes a suspension into an account's profile row as the migrator, as standing_apply derives one, without a decision:
+ * for the tests of the write paths that obey the predicate (3e design, section 7.2), as retireHandleForTest stands in for
+ * a retirement. `from` and `until` are PostgreSQL intervals from now (a suspension that runs: "-1 minute" and "1 day");
+ * `reportsUntil`, when given, writes a restriction of reporting that ends that far from now. A real suspension, with its
+ * decision, is suspendForTest's (moderation-decide.ts). It commits; liftRowForTest clears all three columns.
+ */
+export async function suspendRowForTest(migrateDb: Db, profileId: string, window: { from?: string; until?: string; reportsUntil?: string } = {}): Promise<void> {
+  const from = window.from ?? "-1 minute";
+  const until = window.until ?? "1 day";
+  await migrateDb.execute(sql`update profiles set suspended_from = clock_timestamp() + ${from}::interval, suspended_until = clock_timestamp() + ${until}::interval,
+                                 reports_restricted_until = ${window.reportsUntil === undefined ? null : sql`clock_timestamp() + ${window.reportsUntil}::interval`}
+                               where id = ${profileId}::uuid`);
+}
+
+/** Clears what suspendRowForTest wrote. */
+export async function liftRowForTest(migrateDb: Db, profileId: string): Promise<void> {
+  await migrateDb.execute(sql`update profiles set suspended_from = null, suspended_until = null, reports_restricted_until = null where id = ${profileId}::uuid`);
 }

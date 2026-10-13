@@ -13,13 +13,13 @@ import type { ModerationForSocial } from "../moderation";
 import { WITHOUT_MEDIA, type SocialDeps, type SocialEvents } from "./context";
 import { startExplore } from "./explore";
 import { exportProfile, type ProfileExport } from "./flows/export";
-import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile } from "./repo";
+import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile, type LockedAccount } from "./repo";
 import { socialRoutes } from "./routes";
 
 export { SocialError } from "./context";
 export { enforceWriteLimit } from "./limits";
 export type { SocialDeps, SocialEvents, ViewerId } from "./context";
-export type { AccountLockMode, CapturedPost, CapturedProfile } from "./repo";
+export type { AccountLockMode, CapturedPost, CapturedProfile, LockedAccount } from "./repo";
 export type { ExportedMedia, ExportedPost, ProfileExport } from "./flows/export";
 
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account, and the data export. */
@@ -43,8 +43,12 @@ export interface SocialForAccount {
  * The moderation module owns no table of this one and never writes to one.
  */
 export interface SocialForModeration {
-  /** Locks these profile rows in id order, in one statement; with `live`, a missing or deleted account is refused (not_found). */
-  lockAccounts(tx: DbTx, ids: readonly string[], mode: AccountLockMode, live?: boolean): Promise<{ id: string; deleted: boolean }[]>;
+  /**
+   * Locks these profile rows in id order, in one statement; with `live`, a missing or deleted account is refused
+   * (not_found). Each row answers whether its account is deleted and (3e) whether it is suspended and restricted in its
+   * reports, read in the locking statement by the clock.
+   */
+  lockAccounts(tx: DbTx, ids: readonly string[], mode: AccountLockMode, live?: boolean): Promise<LockedAccount[]>;
   /** The post, locked `for share`, as evidence copies it, or null; its body is empty when its content was erased. */
   capturePost(tx: DbTx, postId: string): Promise<CapturedPost | null>;
   /** The account's handle, display name and bio as evidence copies them, or null. */

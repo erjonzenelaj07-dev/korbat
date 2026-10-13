@@ -1,9 +1,9 @@
-import { MEASURES, type DecisionStatement, type MeasureKind, type ReversalKind, type RuleId } from "@korbat/contracts";
+import { MEASURES, type DecisionStatement, type MeasureKind, type ReversalKind, type RuleId, type StandingBasis } from "@korbat/contracts";
 import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
 import type { ModerationDeps } from "./context";
 import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, type MailState } from "./repo";
-import { endedMeasures, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
+import { endedMeasures, endedStanding, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
 
 /**
  * The data a statement of reasons and its mail are rendered from (3c design, sections 7.5 and 10). A decision is the
@@ -32,6 +32,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
   if (!decision) return null;
   const actions = await statementActions(q, decisionId);
   const ended = decision.kind === "final" ? await endedMeasures(q, decisionId) : [];
+  // 3e: the standing measures whose basis a reversal of this decision broke; absent from a statement that holds none.
+  const brokenBasis = decision.kind === "review" || decision.kind === "correction" ? await endedStanding(q, decisionId) : [];
   // The facts and the reason are told with a decision that restricts (it holds a measure), with a correction and with a
   // review. Those of a decision without a measure are the case's record, for staff: such a decision tells its author at
   // most that what korbat did while deciding has ended, so the statement's data holds neither, and no mail, screen or
@@ -60,7 +62,16 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         // 3e: what the ledger fixed for good about a strike, a standing measure and a retirement, so its statement reads as
         // it was sent (a retirement's sentence reads its end from whether the decision suspends or terminates at once).
         ...(action.kind === "strike" ? { endsAt: action.endsAt, activeThen: action.activeThen } : {}),
-        ...(action.kind === "suspend" || action.kind === "terminate" ? { announced: action.announced } : {}),
+        ...(action.kind === "suspend" || action.kind === "terminate"
+          ? {
+              announced: action.announced,
+              days: action.days,
+              basis: action.basis as StandingBasis | null,
+              earliestStart: action.earliestStart,
+              endsAt: action.endsAt,
+              restsOn: action.restsOn === null ? null : action.restsOn.map((entry) => ({ ...entry, ruleId: entry.ruleId as RuleId | null })),
+            }
+          : {}),
         ...(action.kind === "retire_handle" ? { handle: action.handle, placeholder: action.placeholder } : {}),
       })),
     reversals: actions
@@ -71,8 +82,11 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         ...(action.lifted === null ? { resetDecisionId: null, oldValueKept: false, resetRuleId: null } : resetFacts(action.kind, action.lifted)),
         // 3e: the handle a reversal of a retirement gives back.
         ...(action.kind === "unretire_handle" ? { handle: action.handle } : {}),
+        // 3e: what a lift of a suspension lifted, where its period stood then, and whether it was a withdrawal for another measure.
+        ...(action.kind === "lift_suspension" ? { liftedKind: action.liftedKind, liftedDecidedAt: action.liftedDecidedAt, periodThen: action.periodThen, replaced: action.replaced } : {}),
       })),
     endedMeasures: ended.map((measure) => ({ kind: measure.kind as MeasureKind, mediaId: measure.mediaId, ...resetFacts(measure.kind, measure) })),
+    ...(brokenBasis.length > 0 ? { endedStanding: brokenBasis } : {}),
     reviewed:
       decision.reviewed === null
         ? null
@@ -95,7 +109,7 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
  * or on an account; a final restriction; a final decision that restricts nothing but ends or lifts what was done while
  * deciding, and a correction of a decision taken while deciding; a reversal of a final decision; and a kept appeal.
  */
-export function mailSubjectOf(statement: DecisionStatement): DecisionMessage["subject"] {
+export function mailSubjectOf(statement: DecisionStatement): Extract<DecisionMessage, { template: "moderation_decision" }>["subject"] {
   const seals = statement.measures.some((measure) => measure.kind === "seal_media");
   const post = statement.post !== null;
   if (statement.kind === "interim") return seals ? "seal_deciding" : post ? "post_deciding" : "profile_deciding";
@@ -106,6 +120,28 @@ export function mailSubjectOf(statement: DecisionStatement): DecisionMessage["su
   }
   if (statement.kind === "correction") return statement.reviewed?.kind === "interim" ? "lifted_deciding" : "reversed";
   return statement.outcome === "kept" ? "appeal_kept" : "reversed";
+}
+
+/**
+ * The template a decision's statement is mailed under (3e design, sections 7.15 and 18, W.6): the first row of 7.15's
+ * table that fits, and moderation_decision otherwise, so that a strike, a retirement and their reversals ride on 3c's
+ * mail. Task 3 builds two rows: a suspension or a termination taken at once, and a lift of one, or a decision whose
+ * reversal ended one by breaking its basis. The announced measures, the answer to a reply and the reporting measures
+ * join with the tasks that build them.
+ */
+export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonly string[]): DecisionMessage {
+  const standing = statement.measures.find((measure) => measure.kind === "suspend" || measure.kind === "terminate");
+  if (statement.kind === "final" && standing !== undefined && standing.announced === false) {
+    const measure = standing.kind === "terminate" ? "terminate" : "suspend";
+    return { template: "suspension_started_at_once", measure, days: standing.days ?? null, endsAt: standing.endsAt ?? null, paragraphs };
+  }
+  const lift = statement.reversals.find((reversal) => reversal.kind === "lift_suspension");
+  if ((statement.kind === "review" || statement.kind === "correction") && lift !== undefined && lift.periodThen) {
+    return { template: "suspension_lifted", measure: lift.liftedKind === "terminate" ? "terminate" : "suspend", why: "lifted", period: lift.periodThen.state, paragraphs };
+  }
+  const broken = (statement.endedStanding ?? []).find((entry) => entry.kind === "suspend" || entry.kind === "terminate");
+  if (broken !== undefined) return { template: "suspension_lifted", measure: broken.kind === "terminate" ? "terminate" : "suspend", why: "basis", period: broken.periodThen.state, paragraphs };
+  return { template: "moderation_decision", subject: mailSubjectOf(statement), paragraphs };
 }
 
 /**
@@ -123,7 +159,7 @@ export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth">
   if (!found || found.decision.authorMail !== "pending") return "none";
   const subject = found.decision.subjectId;
   // The statement is rendered before anything is sent: one that cannot be rendered is no mail, and stays pending.
-  const message: DecisionMessage = { template: "moderation_decision", subject: mailSubjectOf(found.statement), paragraphs: statementParagraphs(found.statement) };
+  const message = mailTemplateOf(found.statement, statementParagraphs(found.statement));
   return deps.apiDb.transaction(async (tx) => {
     await beginMailRecord(tx);
     if (!(await lockPendingAuthorMail(tx, decisionId))) return "none";

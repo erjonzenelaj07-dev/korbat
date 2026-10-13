@@ -734,7 +734,7 @@ export interface OutcomeWordsInput {
   /** Every measure of the answering decision changed nothing when it was imposed. */
   noEffect: boolean;
   /** What the answer concerns, as the status answer gives it. */
-  scope: "account" | "quote" | "account_suspect" | "account_retired" | null;
+  scope: "account" | "quote" | "account_suspect" | "account_retired" | "account_measure" | null;
 }
 
 const NO_ACTION: readonly ItemOutcome[] = ["no_violation", "not_evident"];
@@ -784,6 +784,8 @@ export function outcomeWords(input: OutcomeWordsInput): string {
     if (scope === "account_suspect") parts.push(ACCOUNT_SUSPECT_SCOPE);
     if (scope === "quote") parts.push(QUOTE_ITEM_SCOPE);
     if (scope === "account_retired" && RESTRICTING.includes(outcome)) parts.push(ACCOUNT_MEASURE_SCOPE.retired);
+    // 3e (7.11 item 7): a suspension or termination taken at once that answered the item, named by no word of what it is.
+    if (scope === "account_measure" && RESTRICTING.includes(outcome)) parts.push(ACCOUNT_MEASURE_SCOPE.measure);
   }
   return parts.join(" ");
 }
@@ -791,9 +793,10 @@ export function outcomeWords(input: OutcomeWordsInput): string {
 /**
  * One item of a notice as its sender reads it. `link` is the item's korbat address, an account's built from the handle
  * as the notice named it and never from the handle the profile holds now. `scope` says what the answer concerns
- * (`account`, `quote`, `account_suspect`, `account_retired`, or null). An item about an account carries its scope from
+ * (`account`, `quote`, `account_suspect`, `account_retired`, `account_measure`, or null). An item about an account carries its scope from
  * the first moment, whatever the handle named: `account_suspect` when the item is suspect or, once released, when its
- * answering decision sealed images; once released, `account_retired` (3e) when that decision retired the handle; and
+ * answering decision sealed images; once released, `account_retired` (3e) when that decision retired the handle,
+ * `account_measure` (3e) when it took a suspension or termination at once and retired no handle; and
  * `account` otherwise. `quote`, for a post that quotes another, comes only with the released outcome, so that before
  * the release nothing tells a live target from a link that names nothing. The page and the app add the
  * scope's sentence after every outcome but `not_available`. `quotedBy` is the position of the item this one was added for,
@@ -809,7 +812,7 @@ export function outcomeWords(input: OutcomeWordsInput): string {
 export const NoticeItemStatus = z.object({
   position: z.number().int().min(1).max(20),
   link: z.string(),
-  scope: z.enum(["account", "quote", "account_suspect", "account_retired"]).nullable(),
+  scope: z.enum(["account", "quote", "account_suspect", "account_retired", "account_measure"]).nullable(),
   suspect: z.boolean(),
   sealed: z.boolean(),
   unseen: z.boolean(),
@@ -1122,6 +1125,13 @@ export const CaseStanding = z.object({
    * (no_effect `already`); the composer keeps the control open and says so.
    */
   snapshotHandleRetired: z.boolean(),
+  /**
+   * 3e Task 3: for each ground of a suspension at once that rests on a decision, the time of the decision it would rest on
+   * now (the newest that fits decision_actions_check's row: a final R5 decision, a final decision on the law marked
+   * terrorist content, a seal for good), or null. The composer's preview prints it in the statement's basis sentence,
+   * which names that decision by its time.
+   */
+  basisDecidedAt: z.object({ threat: z.iso.datetime().nullable(), terrorist: z.iso.datetime().nullable(), protective: z.iso.datetime().nullable() }),
 });
 export type CaseStanding = z.infer<typeof CaseStanding>;
 const TargetKind = z.enum(["post", "account"]);
@@ -1351,6 +1361,13 @@ export const CaseDecision = z.object({
   reason: z.string().nullable(),
   legalReference: z.string().nullable(),
   actions: z.array(CaseDecisionAction),
+  /**
+   * 3e Task 3: the suspensions and terminations of the account that stand, whose basis holds, and that rest on this
+   * decision (a strike of it, the R5 or terrorist-content decision, or the seal), each with its basis, so that a review or
+   * a correction of this decision says before the key is asked what reversing it ends ([review.rests], [review.basis]).
+   * Absent where none rests on it.
+   */
+  standingOn: z.array(z.object({ kind: z.enum(["suspend", "terminate"]), basis: z.enum(STANDING_BASES) })).optional(),
 });
 export type CaseDecision = z.infer<typeof CaseDecision>;
 
@@ -1520,8 +1537,41 @@ export const StatementMeasure = z.object({
   handle: z.string().nullable().optional(),
   /** On a retirement that changed the profile: the placeholder the profile got; null when the measure changed nothing. */
   placeholder: z.string().nullable().optional(),
+  /** On a suspension: its days, as the key signed them. */
+  days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable().optional(),
+  /** On a standing measure: what the database found it rests on. */
+  basis: z.enum(STANDING_BASES).nullable().optional(),
+  /** On a standing measure: its earliest start (the ledger row's starts_at), the decision's time for one taken at once. */
+  earliestStart: z.iso.datetime().nullable().optional(),
+  /**
+   * On a standing measure: one entry for each decision it rests on, in the ledger's order, with its time, its rule and the
+   * time of the post it was about; for a protective suspension the one entry is the sealing decision, with its time only.
+   */
+  restsOn: z.array(z.object({ decidedAt: z.iso.datetime(), ruleId: z.enum(RULE_IDS).nullable(), postCreatedAt: z.iso.datetime().nullable() })).nullable().optional(),
 });
 export type StatementMeasure = z.infer<typeof StatementMeasure>;
+
+/**
+ * 3e (design, section 10.2): where a suspension's or a termination's period stood at a decision's time, as the ledger
+ * fixes it for good: not started, running since `startedAt`, or ended (from `startedAt` to `endedAt`). A member a state
+ * does not need is null.
+ */
+export const PeriodThen = z.object({ state: z.enum(["not_started", "running", "ended"]), startedAt: z.iso.datetime().nullable(), endedAt: z.iso.datetime().nullable() });
+export type PeriodThen = z.infer<typeof PeriodThen>;
+
+/**
+ * 3e (design, section 10.2): a standing measure (or a restriction of reporting) whose basis a reversal of this decision
+ * broke: its kind and decision's time, where its period stood then, whether the basis that broke was a seal, and the time
+ * of its reply when this decision found it unanswered and so answers it.
+ */
+export const StatementEndedStanding = z.object({
+  kind: z.enum(["suspend", "terminate", "restrict_reporting"]),
+  decidedAt: z.iso.datetime(),
+  periodThen: PeriodThen,
+  seal: z.boolean(),
+  replyFiledAt: z.iso.datetime().nullable(),
+});
+export type StatementEndedStanding = z.infer<typeof StatementEndedStanding>;
 
 /**
  * What a statement says of a field reset that ended or was lifted: the decision that holds the reset (whose screen shows
@@ -1537,6 +1587,13 @@ export const StatementReversal = z.object({
   ...ResetFacts,
   /** 3e: on the reversal of a retirement, the handle it gives back, as the lifted decision's snapshot holds it, in lower case. */
   handle: z.string().nullable().optional(),
+  /** 3e: on the lift of a suspension or a termination, the lifted measure's kind and its decision's time. */
+  liftedKind: z.enum(["suspend", "terminate"]).nullable().optional(),
+  liftedDecidedAt: z.iso.datetime().nullable().optional(),
+  /** 3e: on such a lift, where the lifted measure's period stood at this decision's time. */
+  periodThen: PeriodThen.nullable().optional(),
+  /** 3e: on such a lift, whether the correction withdrew an announced measure to make room for another (signed `replaced`). */
+  replaced: z.boolean().nullable().optional(),
 });
 export type StatementReversal = z.infer<typeof StatementReversal>;
 
@@ -1572,6 +1629,8 @@ export const DecisionStatement = z.object({
   measures: z.array(StatementMeasure),
   reversals: z.array(StatementReversal),
   endedMeasures: z.array(StatementEndedMeasure),
+  /** 3e: the standing measures and restrictions of reporting whose basis a reversal of this decision broke; absent before 3e. */
+  endedStanding: z.array(StatementEndedStanding).optional(),
   reviewed: z
     .object({
       kind: z.enum(["interim", "final"]),

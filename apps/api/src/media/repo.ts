@@ -2,6 +2,7 @@ import { and, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } fr
 import { mediaPath } from "@korbat/contracts";
 import { postMedia, posts, profiles, type Db, type DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
+import { WRITE_CLOCK, liveNotSuspended } from "../lib/standing";
 import { MediaError, type PostImage } from "./context";
 
 /**
@@ -117,8 +118,18 @@ export function createMediaRepo(db: Db) {
       return rows[0]?.count ?? 0;
     },
 
+    /**
+     * The upload's row, as one statement that locks its owner's profile row FOR KEY SHARE and inserts only when the one
+     * predicate holds (3e design, section 7.2): read in the statement that locks the row, by the clock. No row inserted
+     * answers account_suspended, and the caller discards the received file.
+     */
     async insertProcessing(input: { id: string; ownerId: string; now: Date }): Promise<void> {
-      await db.insert(postMedia).values({ id: input.id, ownerId: input.ownerId, status: "processing", createdAt: input.now });
+      const inserted = await db.execute(sql`
+        with ok as (select p.id from profiles p where p.id = ${input.ownerId}::uuid and ${liveNotSuspended("p", WRITE_CLOCK)} for key share of p)
+        insert into post_media (id, owner_id, status, created_at)
+        select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz from ok
+        returning id`);
+      if (inserted.length === 0) throw new MediaError("account_suspended", 403);
     },
 
     /**

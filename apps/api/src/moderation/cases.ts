@@ -24,6 +24,7 @@ import {
   type StaffOverview,
   type StaffSnapshotTaken,
   type StaffTextDraft,
+  type StandingBasis,
 } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import type { ActiveStaffSession, NotifierFacts } from "../auth";
@@ -34,7 +35,7 @@ import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
-import { standingColumns } from "./standing-repo";
+import { standingColumns, standingOnDecisions } from "./standing-repo";
 import {
   appealCounts,
   caseActions,
@@ -421,6 +422,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   const actions = await caseActions(q, row.id);
   // The columns of 3e of every ledger row of the case, with a standing measure's period as it stands now.
   const columns = await standingColumns(q, row.id);
+  // 3e Task 3: the standing measures that rest on each decision of the case, which a review or a correction would end.
+  const standingOn = await standingOnDecisions(q, row.id);
   const decisions: CaseDecision[] = [];
   for (const decision of await caseDecisions(q, row.id)) {
     const own: CaseDecision["actions"] = [];
@@ -473,6 +476,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
       reason: decision.reason,
       legalReference: decision.legalReference,
       actions: own,
+      ...(standingOn.has(decision.id) ? { standingOn: standingOn.get(decision.id)!.map((entry) => ({ kind: entry.kind, basis: entry.basis as StandingBasis })) } : {}),
     });
   }
 

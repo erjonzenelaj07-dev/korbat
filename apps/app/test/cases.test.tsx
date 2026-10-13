@@ -699,6 +699,7 @@ describe("3e: a retired handle in the app (design, sections 9.4, 9.5 and 9.8)", 
   const me = (handle: string, handleChangedAt: string | null = null): MeResponse => ({
     user: { id: id(1), email: "ada@example.com", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 },
     profile: { id: id(1), handle, displayName: "Ada", handleChangedAt, verified: false, showInExplore: true },
+    standing: null,
   });
   const section = (handle: string, handleChangedAt: string | null = null) => textOf(html(<HandleSection me={me(handle, handleChangedAt)} run={async () => undefined} refresh={async () => undefined} />));
 

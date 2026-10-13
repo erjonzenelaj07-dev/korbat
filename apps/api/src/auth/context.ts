@@ -79,8 +79,13 @@ export interface ProfileStore {
   create(input: { id: string; handle: string; displayName: string }): Promise<{ ok: true; profile: Profile } | { ok: false; reason: "handle_taken" | "handle_retired" | "handle_reserved" }>;
   /** The owner's view of their profile, which /me returns: the public facts plus the handle-change date, the badge and the Explore switch. */
   find(id: string): Promise<MeProfile | null>;
-  /** Sets or clears the badge (profiles.verified_at), which the auth module decides but cannot write itself. */
-  setVerified(id: string, at: Date | null): Promise<void>;
+  /**
+   * Sets or clears the badge (profiles.verified_at), which the auth module decides but cannot write itself. 3e: setting it
+   * answers false when the one predicate refused the write (the account's suspension runs); clearing it always answers true.
+   */
+  setVerified(id: string, at: Date | null): Promise<boolean>;
+  /** 3e: whether the account's suspension runs now, a plain read that startBadge asks first as a courtesy; the write decides. */
+  suspended(id: string): Promise<boolean>;
 }
 
 export interface AuthDeps {
@@ -117,7 +122,7 @@ export type AuthErrorStatus = 400 | 401 | 403 | 404 | 409 | 429 | 503;
  * AuthErrors, 3a design section 10), plus the shared one the module also raises, as the social and media modules do: a
  * well-formed request that asks for nothing, such as the current address as the new one.
  */
-export type AuthErrorKind = AuthErrorCode | StaffErrorCode | "invalid_request";
+export type AuthErrorKind = AuthErrorCode | StaffErrorCode | "invalid_request" | "account_suspended";
 
 const MESSAGES: Record<AuthErrorKind, string> = {
   invalid_code: "That code is not valid. Check the latest email or request a new code.",
@@ -158,6 +163,8 @@ const MESSAGES: Record<AuthErrorKind, string> = {
   // 3e (design, section 9.5): a handle korbat retired, refused to everyone, its former holder included.
   handle_retired: "That handle was retired by korbat. Nobody can use it.",
   invalid_request: "Some details are missing or invalid.",
+  // 3e (design, sections 7.2 and 9.8): the badge is a public mark a suspended account cannot ask for; the social module's code, shared.
+  account_suspended: "Your account is suspended, so you cannot do this now.",
   // The staff console's (3a design, section 10). Where only the operator can help, they say so; none sends the person to
   // a remedy the console does not have, which is why the staff flows never answer a passkey_* code.
   staff_session_required: "Your staff session ended. Sign in with your staff key.",

@@ -252,6 +252,45 @@ export type NotMeRequest = z.infer<typeof NotMeRequest>;
 export const MeProfile = Profile.extend({ handleChangedAt: z.iso.datetime().nullable(), verified: z.boolean(), showInExplore: z.boolean() });
 export type MeProfile = z.infer<typeof MeProfile>;
 
+/**
+ * 3e (design, section 10.2): where the signed-in account's standing stands now, read from the ledger at the request and
+ * never kept in a session or a cache, so the banner and a refusal's sentence are true of the row. `activeStrikes` counts
+ * the strikes that count now. `measure` is the account's one standing measure that stands and has not ended (a
+ * suspension or a termination), or null: its decision, kind and days (null for a termination); its state now (no start
+ * yet because the notice mail's outcome is unknown, a start fixed and ahead, a start held by a reply sent in time, or
+ * running); the earliest start its statement names, and its start and end once the database has fixed them (the end
+ * null for a termination); the reply and whether one can still be sent; the last moment of its appeal while one can be
+ * filed, and whether one waits. `reporting` (null until the reporting measures exist, and whenever neither stands): the
+ * warning that counts and the restriction that runs. `handleRetired`: the profile holds a placeholder. Defined here
+ * beside MeResponse, which the moderation contracts cannot be imported into without a cycle.
+ */
+export const AccountStanding = z.object({
+  activeStrikes: z.number().int().nonnegative(),
+  measure: z
+    .object({
+      decisionId: z.uuid(),
+      kind: z.enum(["suspend", "terminate"]),
+      days: z.number().int().min(1).max(30).nullable(),
+      state: z.enum(["unfixed", "announced", "held", "running"]),
+      earliestStart: z.iso.datetime(),
+      startsAt: z.iso.datetime().nullable(),
+      endsAt: z.iso.datetime().nullable(),
+      reply: z.object({ filedAt: z.iso.datetime(), onTime: z.boolean(), answeredAt: z.iso.datetime().nullable() }).nullable(),
+      replyOpen: z.boolean(),
+      appealUntil: z.iso.datetime().nullable(),
+      appealPending: z.boolean(),
+    })
+    .nullable(),
+  reporting: z
+    .object({
+      warning: z.object({ decisionId: z.uuid(), countsUntil: z.iso.datetime() }).nullable(),
+      restriction: z.object({ decisionId: z.uuid(), until: z.iso.datetime() }).nullable(),
+    })
+    .nullable(),
+  handleRetired: z.boolean(),
+});
+export type AccountStanding = z.infer<typeof AccountStanding>;
+
 export const MeResponse = z.object({
   user: z.object({
     id: z.uuid(),
@@ -264,6 +303,8 @@ export const MeResponse = z.object({
     passkeys: z.number().int().nonnegative(),
   }),
   profile: MeProfile.nullable(),
+  /** 3e: the account's standing, read fresh; null for an account without a profile and from an API built without the moderation module. */
+  standing: AccountStanding.nullable(),
 });
 export type MeResponse = z.infer<typeof MeResponse>;
 

@@ -23,7 +23,12 @@ export async function editProfile(deps: SocialDeps, viewer: string, input: Profi
   // The contract refuses an empty edit; a caller that skipped it gets the same answer instead of an update with nothing to set.
   if (input.displayName === undefined && input.bio === undefined) throw new SocialError("invalid_request", 400, "Nothing to change.");
   await enforceAccountLimit(deps.limits, "profile-edit", viewer, PROFILE_EDITS_PER_HOUR, HOUR_MS);
-  if (!(await deps.repo.updateProfile(viewer, input))) throw new SocialError("not_found", 404);
+  if (!(await deps.repo.updateProfile(viewer, input))) {
+    // 3e (design, section 7.2): the update itself decided, with the predicate in its WHERE. A live profile that it did
+    // not change is one whose suspension runs; the refusal is whole, a patch that only blanks the bio included.
+    const row = await deps.repo.findProfileById(viewer);
+    throw row ? new SocialError("account_suspended", 403) : new SocialError("not_found", 404);
+  }
   // The event says that the profile changed, not what it says now: the events table holds no content.
   await deps.events?.append(viewer, "profile_updated");
   return profileView(await own(deps, viewer));
@@ -55,6 +60,8 @@ export async function changeHandle(deps: SocialDeps, viewer: string, input: Hand
     if (result.reason === "handle_taken" || result.reason === "handle_retired") throw new SocialError(result.reason, 409);
     // The database's guard refused a placeholder's form that the handle rule let through: answered as that rule answers it.
     if (result.reason === "handle_reserved") throw new SocialError("handle_reserved", 400);
+    // 3e: the locking statement found the account's suspension running; nothing was written.
+    if (result.reason === "account_suspended") throw new SocialError("account_suspended", 403);
     // The row changed under us (a second request of the same account) and already holds this handle.
     if (result.reason === "unchanged") throw new SocialError("invalid_request", 400, "That is already your handle.");
     throw new SocialError("not_found", 404);

@@ -3,6 +3,7 @@ import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { Link, usePathname } from "expo-router";
 import { useSession } from "@/lib/session";
 import { HandleBox } from "./HandleBox";
+import { StandingBanner } from "./StandingBanner";
 import { PopularNow } from "./PopularNow";
 
 interface NavItem {
@@ -27,6 +28,8 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
   const pathname = usePathname();
   const signedIn = state.status === "signed-in";
   const handle = signedIn ? state.me.profile?.handle : undefined;
+  // 3e (design, section 9.1): above every signed-in screen while /me's standing holds a measure.
+  const banner = signedIn ? <StandingBanner standing={state.me.standing} /> : null;
 
   const items: NavItem[] = signedIn
     ? [
@@ -55,7 +58,10 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
           ))}
           {floating ? <View className="mt-6">{floating}</View> : null}
         </View>
-        <View className="w-full max-w-2xl border-r border-zinc-800">{children}</View>
+        <View className="w-full max-w-2xl border-r border-zinc-800">
+          {banner}
+          {children}
+        </View>
         {width >= WIDE ? (
           <View className="w-72 px-4 py-6">
             <PopularNow />
@@ -68,7 +74,10 @@ export function AppShell({ children, floating }: { children: ReactNode; floating
 
   return (
     <View className="flex-1 bg-zinc-950">
-      <View className="flex-1">{children}</View>
+      <View className="flex-1">
+        {banner}
+        {children}
+      </View>
       {floating ? <View className="absolute bottom-16 right-4">{floating}</View> : null}
       <View className="flex-row border-t border-zinc-800 bg-zinc-950">
         {items.map((item) => (

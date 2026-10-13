@@ -7,18 +7,62 @@ import { blockedList, mutedList, setBlock, setFollow, setMute } from "../../src/
 import { createPost, getPost } from "../../src/social/flows/posts";
 import { followers, following, profile } from "../../src/social/flows/profiles";
 import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profilePosts, profileReplies } from "../../src/social/flows/timelines";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
+
+/** An error as PostgreSQL's deadlock reaches a flow, for the tests of the one retry (3e design, section 5): SQLSTATE 40P01. */
+function deadlock(): Error {
+  return Object.assign(new Error("deadlock detected"), { code: "40P01" });
+}
+
 
 describe.skipIf(!process.env.INTEGRATION)("integration: graph, profile and timeline flows", () => {
   let db: Db;
+  let migrateDb: Db;
   let h: SocialHarness;
 
   beforeAll(() => {
     db = createDb(loadConfig().DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator writes a suspension into a profile row, as the ledger's standing_apply does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     h = socialHarness(db);
   });
   afterAll(async () => {
-    await closeDb(db);
+    await Promise.all([closeDb(db), closeDb(migrateDb)]);
+  });
+
+  test("3e: a suspended account's follow is refused account_suspended; it may still unfollow, block and mute, and others may follow it", async () => {
+    const [ada, bob, carol] = await Promise.all([h.established(), h.established(), h.established()]);
+    await setFollow(h.deps, ada.id, bob.handle, true);
+    await suspendRowForTest(migrateDb, ada.id);
+    expect(await rejection(setFollow(h.deps, ada.id, carol.handle, true))).toBe("account_suspended");
+    expect(await setFollow(h.deps, ada.id, bob.handle, false)).toEqual({ following: false, followerCount: 0 });
+    expect(await setFollow(h.deps, carol.id, ada.handle, true)).toEqual({ following: true, followerCount: 1 });
+    expect(await setMute(h.deps, ada.id, carol.handle, true)).toEqual({ muted: true });
+    expect(await setBlock(h.deps, ada.id, carol.handle, true)).toEqual({ blocked: true });
+    await liftRowForTest(migrateDb, ada.id);
+    expect(await setFollow(h.deps, ada.id, bob.handle, true)).toEqual({ following: true, followerCount: 1 });
+  });
+
+  test("3e: a follow and an unfollow that meet one deadlock are tried once more and answer as the second try does; a second deadlock is the caller's", async () => {
+    const [ada, bob] = await Promise.all([h.established(), h.established()]);
+    const { follow, unfollow } = h.deps.repo;
+    let failures = 1;
+    const once = <A extends unknown[], R>(real: (...args: A) => Promise<R>) =>
+      (...args: A): Promise<R> => (failures-- > 0 ? Promise.reject(deadlock()) : real(...args));
+    try {
+      h.deps.repo.follow = once(follow);
+      expect(await setFollow(h.deps, ada.id, bob.handle, true)).toEqual({ following: true, followerCount: 1 });
+      failures = 1;
+      h.deps.repo.unfollow = once(unfollow);
+      expect(await setFollow(h.deps, ada.id, bob.handle, false)).toEqual({ following: false, followerCount: 0 });
+      failures = 2;
+      h.deps.repo.follow = once(follow);
+      expect(await rejection(setFollow(h.deps, ada.id, bob.handle, true).catch((err: unknown) => Promise.reject({ code: (err as { code?: string }).code })))).toBe("40P01");
+    } finally {
+      h.deps.repo.follow = follow;
+      h.deps.repo.unfollow = unfollow;
+    }
   });
 
   const post = (viewer: string, body: string, extra: { replyToId?: string; quoteOfId?: string } = {}) => {

@@ -35,12 +35,30 @@ export interface AccountUpdateMessage {
 
 /**
  * The statement of reasons to the author of what a decision restricts or lifts: the subject by its key, and the
- * statement's paragraphs exactly as they were rendered for the author's screen.
+ * statement's paragraphs exactly as they were rendered for the author's screen. 3e (design, sections 7.15 and 18, W.6):
+ * a suspension or termination taken at once, and the lift of one (or its end when a reversal broke its basis), are
+ * mailed under a subject and a lead of their own, with the same paragraphs; the moderation module picks the template
+ * (mailTemplateOf). Times are instants, printed here as the notices print them.
  */
-export interface DecisionMessage {
-  template: "moderation_decision";
-  subject: DecisionMailSubject;
-  paragraphs: readonly string[];
+export type DecisionMessage =
+  | { template: "moderation_decision"; subject: DecisionMailSubject; paragraphs: readonly string[] }
+  | { template: "suspension_started_at_once"; measure: "suspend" | "terminate"; days: number | null; endsAt: string | null; paragraphs: readonly string[] }
+  | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "lifted" | "basis"; period: "not_started" | "running" | "ended"; paragraphs: readonly string[] };
+
+/** What the statement's paragraphs are joined with in a mail's data: one paragraph per line. */
+const LINE_BREAK = String.fromCharCode(10);
+
+/** A decision's message as its template's flat data: one data value for the statement, one paragraph per line, exactly as it was rendered. */
+function decisionData(message: DecisionMessage): Record<string, string> {
+  const statement = message.paragraphs.join(LINE_BREAK);
+  switch (message.template) {
+    case "moderation_decision":
+      return { subject: message.subject, statement };
+    case "suspension_started_at_once":
+      return { measure: message.measure, statement, ...(message.days === null ? {} : { days: String(message.days) }), ...(message.endsAt === null ? {} : { endsAt: noticeTime(new Date(message.endsAt)) }) };
+    case "suspension_lifted":
+      return { measure: message.measure, why: message.why, period: message.period, statement };
+  }
 }
 
 /** What may be sent to a signed-out notifier's contact by itself: the receipt. Its updates go by address, through mailNotifierUpdates. */
@@ -206,9 +224,9 @@ export async function mailNotifier(deps: AuthDeps, contactId: string, message: N
 export async function mailAccount(deps: AuthDeps, userId: string, message: AccountMessage): Promise<AccountMailResult> {
   const user = await deps.repo.findUserById(userId);
   if (!user) return "no_address";
-  if (message.template === "moderation_decision") {
-    // One data value for the statement, one paragraph per line, exactly as it was rendered.
-    return deliver(deps, { to: user.email, template: "moderation_decision", data: { subject: message.subject, statement: message.paragraphs.join("\n") } });
+  if (message.template === "moderation_decision" || message.template === "suspension_started_at_once" || message.template === "suspension_lifted") {
+    // A statement is never held back by a stop of the address.
+    return deliver(deps, { to: user.email, template: message.template, data: decisionData(message) });
   }
   const hash = emailHash(deps.config.authHmacKey, user.email);
   if ((await deps.repo.suppressedNotifierHashes([hash])).has(hash)) return "suppressed";

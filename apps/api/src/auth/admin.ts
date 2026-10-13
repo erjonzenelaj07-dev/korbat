@@ -33,10 +33,12 @@ export interface RoleGranted {
  * independent of each other: the change has committed, so a step that fails is reported to the caller, undoes nothing,
  * and never keeps the other from running (a Valkey outage must not cost the owner the mail that their keys went).
  */
-export async function grantRole(deps: { repo: AuthRepo; sessions: Sessions; mailer: Mailer }, email: string, role: UserRole): Promise<RoleGranted> {
+export async function grantRole(deps: { repo: AuthRepo; sessions: Sessions; mailer: Mailer }, email: string, role: UserRole): Promise<RoleGranted | "standing"> {
   const now = new Date();
   const changed = await deps.repo.changeRole(email, role, { actorId: SYSTEM_ACTOR_ID, now });
   if (!changed) throw new Error(`no account for ${email}`);
+  // 3e (design, section 7.16): a promotion refused for the account's standing changed nothing; the caller says why.
+  if (changed === "standing") return "standing";
   let tombstoneError: string | null = null;
   try {
     await deps.sessions.tombstone(changed.sessionIds);

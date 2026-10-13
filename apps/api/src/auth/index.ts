@@ -58,6 +58,7 @@ import type { JobLock } from "../lib/jobs";
 import { createJanitor } from "./janitor";
 import { hibpChecker, type BreachChecker } from "./passwords";
 import { createAuthRepo, type AuthEventType } from "./repo";
+import { me } from "./flows/account";
 import { authRoutes, meHandler } from "./routes";
 import { createSessions, type Session } from "./sessions";
 import type { PublicKeyCredentialRequestOptionsJSON } from "./passkeys/webauthn";
@@ -341,6 +342,8 @@ export function createAuth(options: CreateAuthOptions) {
     deps,
     routes: authRoutes(deps),
     me: meHandler(deps),
+    /** 3e (design, section 7.12): /api/me's answer without the standing, which the app adds from the moderation module. */
+    meFor: (session: Session) => me(deps, session),
     appendEvent,
     /** The interface the account module uses. */
     forAccount,

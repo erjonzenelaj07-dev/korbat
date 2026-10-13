@@ -1,7 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import pino from "pino";
+import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { EngagementResponse, ErrorEnvelope, FlowResponse, PostPage, PostView, ProfilePage, ProfileView, ThreadResponse, TimelinePage } from "@korbat/contracts";
+import { EngagementResponse, ErrorEnvelope, FlowResponse, MeResponse, PostPage, PostView, ProfilePage, ProfileView, ThreadResponse, TimelinePage } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { createApp } from "../../src/app";
 import { createAuth } from "../../src/auth";
@@ -14,6 +15,7 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createSocial } from "../../src/social";
 import { DAY_MS } from "../../src/social/tiers";
 import { Browser } from "./http-client";
+import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 
 type App = ReturnType<typeof createApp>;
 
@@ -25,6 +27,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
   let config: Config;
   let authDb: Db;
   let apiDb: Db;
+  let migrateDb: Db;
   let app: App;
   const mailer = new MemoryMailer();
   let offsetMs = 0;
@@ -37,6 +40,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
+    // 3e: only the migrator writes a suspension into a profile row, as the ledger's standing_apply does.
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     const rateLimitStore = new MemoryStore(() => now().getTime());
     const auth = createAuth({
       config,
@@ -52,7 +57,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social });
   });
   afterAll(async () => {
-    await Promise.all([closeDb(authDb), closeDb(apiDb)]);
+    await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
 
   /** A signed-in, onboarded web account. Accounts are as old as the clock offset says. */
@@ -232,6 +237,38 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
     const thread = ThreadResponse.parse(await json(await app.request(`/api/posts/${reply.id}/thread`)));
     expect(thread.ancestors).toEqual([{ id: root.id, deleted: true }]);
     expect(TimelinePage.parse(await json(await app.request(`/api/profiles/${ada.handle}/posts`))).items).toEqual([]);
+  });
+
+  test("3e: while an account's suspension runs, its post, like, repost, bookmark and follow answer 403 account_suspended with no detail; undoing, deleting, blocking and muting answer as ever", async () => {
+    offsetMs = 3 * DAY_MS;
+    const [ada, bob] = await Promise.all([signUp(), signUp()]);
+    const theirs = await post(bob.b, "bob's post");
+    const own = await post(ada.b, "ada's post");
+    expect((await ada.b.fetch(`/api/posts/${theirs.id}/like`, { method: "POST" })).status).toBe(200);
+    expect((await ada.b.fetch(`/api/profiles/${bob.handle}/follow`, { method: "POST" })).status).toBe(200);
+    const [row] = await apiDb.execute<{ id: string }>(sql`select id from profiles where handle = ${ada.handle}`);
+    await suspendRowForTest(migrateDb, row!.id);
+    const refused = async (res: Response) => {
+      expect(res.status).toBe(403);
+      const body = ErrorEnvelope.parse(await res.json());
+      expect(body.error.code).toBe("account_suspended");
+      expect(body.error.details).toBeUndefined();
+    };
+    await refused(await ada.b.fetch("/api/posts", { json: { body: "while suspended" } }));
+    await refused(await ada.b.fetch("/api/posts", { json: { body: "a reply", replyToId: theirs.id } }));
+    for (const kind of ["repost", "bookmark"]) await refused(await ada.b.fetch(`/api/posts/${theirs.id}/${kind}`, { method: "POST" }));
+    // Already following bob makes no difference: the follow's lock statement refuses before anything is written.
+    await refused(await ada.b.fetch(`/api/profiles/${bob.handle}/follow`, { method: "POST" }));
+    expect((await ada.b.fetch(`/api/posts/${theirs.id}/like`, { method: "DELETE" })).status).toBe(200);
+    expect((await ada.b.fetch(`/api/profiles/${bob.handle}/follow`, { method: "DELETE" })).status).toBe(200);
+    expect((await ada.b.fetch(`/api/profiles/${bob.handle}/mute`, { method: "POST" })).status).toBe(200);
+    expect((await ada.b.fetch(`/api/posts/${own.id}`, { method: "DELETE" })).status).toBe(204);
+    // What others do toward it is unchanged.
+    expect((await bob.b.fetch(`/api/profiles/${ada.handle}/follow`, { method: "POST" })).status).toBe(200);
+    // An app built without the moderation module answers /api/me's standing null.
+    expect(MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).standing).toBeNull();
+    await liftRowForTest(migrateDb, row!.id);
+    expect((await ada.b.fetch("/api/posts", { json: { body: "after" } })).status).toBe(201);
   });
 
   test("cursors page the Latest timeline and malformed ones are refused", async () => {

@@ -8,7 +8,7 @@ import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/comp
 import { ApiError, errorMessage } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
-import { STANDING_TEXTS } from "@/lib/standing";
+import { refusalSentence, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
 
 /** The DisplayName contract's limit, in the code points the counter shows. */
 const DISPLAY_NAME_MAX = 50;
@@ -118,8 +118,9 @@ export function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; 
   const until = refusedUntil ?? fromLastChange;
   const allowedAt = until !== null && until > Date.now() ? new Date(until) : null;
   const normalized = handle.trim().replace(/^@/, "").toLowerCase();
-  // Keyed on the placeholder's form alone; what /me says of a running suspension is Task 3's ([handle.retired.suspended]).
+  // Keyed on the placeholder's form; while /me carries a running measure the sentence waits for its end (Task 3).
   const retired = isRetiredPlaceholder(current.toLowerCase());
+  const running = runningMeasure(me.standing);
   const ready = normalized.length > 0 && normalized !== current.toLowerCase();
 
   // Enter in the field calls this as the button does, so the button's conditions come first.
@@ -145,6 +146,19 @@ export function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; 
     }
   }
 
+  // 3e (design, sections 9.4 and 9.5): while a suspension or termination runs, the form is replaced by the refusal's
+  // sentence (a terminated account never chooses one, so it reads that sentence alone).
+  if (running !== null) {
+    return (
+      <View>
+        {retired && running.kind === "suspend" ? <Notice message={STANDING_TEXTS.handle.retiredSuspended} /> : null}
+        <Body>{STANDING_TEXTS.handle.standing(current)}</Body>
+        <Text accessibilityRole="alert" className="mt-4 text-sm text-amber-300">
+          {refusalSentence(me.standing)}
+        </Text>
+      </View>
+    );
+  }
   return (
     <View>
       {retired ? <Notice message={STANDING_TEXTS.handle.retired} /> : null}
@@ -181,7 +195,14 @@ export default function ProfileSettings() {
         <ReenrollNotice me={me} />
 
         <Section title="Name and bio">
-          <ProfileForm handle={me.profile.handle} refresh={refresh} />
+          {/* 3e (design, section 9.4): while a suspension or termination runs, the form is replaced by the refusal's sentence. */}
+          {runningMeasure(me.standing) !== null ? (
+            <Text accessibilityRole="alert" className="mt-3 text-sm text-amber-300">
+              {refusalSentence(me.standing)}
+            </Text>
+          ) : (
+            <ProfileForm handle={me.profile.handle} refresh={refresh} />
+          )}
         </Section>
         <Section title="Handle">
           <HandleSection me={me} run={reauth.run} refresh={refresh} />
