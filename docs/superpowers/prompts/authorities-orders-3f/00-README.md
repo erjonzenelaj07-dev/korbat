@@ -73,7 +73,7 @@ After Task 9, run this from the repo root. It extracts the last version of every
 python docs/superpowers/prompts/authorities-orders-3f/verify_prompts.py
 ```
 
-Expected: `prompts reproduce the repository exactly`.
+Expected: `prompts reproduce the repository exactly`. This holds at Task 9's commit. The docs commit after it, `8dddeea`, appends Tasks 8 and 9's amendments to the 3f design's section 19, so on any later tree the check reports that one file as changed since Task 7's prompt wrote it.
 
 ## Execution findings (2026-10-18)
 
