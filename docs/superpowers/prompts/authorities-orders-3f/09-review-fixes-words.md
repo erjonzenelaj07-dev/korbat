@@ -722,6 +722,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
   test("a push still owed for longer than channel_down_minutes reads as down, and a row past push_owed_minutes no longer counts", async () => {
     await clearAlarms();
     await beat(0, 0);
+    // Rows other files left owed are not this test's to judge: a working watcher would have pushed them.
+    await w.migrateDb.execute(sql`update public.alert_outbox set pushed_at = now() where pushed_at is null`);
     expect((await channelHealth(tickDeps("on"))).channel).toBe("ok");
     const id = await contactMessageForTest(new Date());
     made.push(id);
@@ -744,6 +746,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
   test("a fresh beat with a mailbox not read for channel_down_minutes is mailbox_unreachable, pushed and mailed, once in 24 hours", async () => {
     await clearAlarms();
     await beat(0, ORDER_RULES.channelDownMinutes + 1);
+    // Rows other files left owed are not this test's to judge: a working watcher would have pushed them.
+    await w.migrateDb.execute(sql`update public.alert_outbox set pushed_at = now() where pushed_at is null`);
     expect((await channelHealth(tickDeps("on"))).channel).toBe("mailbox");
     const at = new Date(Date.now() - 1000);
     expect((await round("on")).raised).toEqual(["mailbox_unreachable"]);
