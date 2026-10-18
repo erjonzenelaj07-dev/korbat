@@ -74,3 +74,27 @@ python docs/superpowers/prompts/authorities-orders-3f/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-18)
+
+The nine prompts were replayed into this repository by the scratch tooling's `replay.py`, with no model session, through the same gated runner as the dry run. Every red step failed as recorded and every gate passed, and the four stack rebuilds, in Tasks 1, 4, 7 and 8, ended with the smoke test passing through Caddy on the app's site and the console's. It took five attempts; none of the four stops was a defect of a task as the prompts now have it.
+
+| Task | Commit |
+|---|---|
+| 1 | `0b47f6f` |
+| 2 | `d7a461b` |
+| 3 | `95c7604` |
+| 4 | `0b83a29` |
+| 5 | `5222fec` |
+| 6 | `ea01d7b` |
+| 7 | `79cf5a9` |
+| 8 | `cc5844e` |
+| 9 | `53bda73` |
+
+- **Attempt 1 found a test that depended on the suite's order.** Task 1's integration suite on the upgraded database failed two checks of the alert channel in `alerts-steps.test.ts`, which judged rows other files had left owed. The test was fixed at its source, the dry run's commits were rebuilt and these prompts regenerated; the defect is described above.
+- **Attempt 2 met the scratch stack's network.** Task 1's `up` could not create the push network, because the scratch clone's stack held the same default `PUSH_SUBNET`. The scratch clone now sets a subnet of its own in its ignored `infra/.env`; nothing in this repository changed. Two stacks on one machine need different fixed subnets.
+- **Attempt 3 committed Tasks 1 to 7** and was stopped at the owner's request during Task 8; the replay's partial writes were discarded.
+- **Attempt 4 met another program on port 8080.** Task 8 passed every gate up to the stack, then the smoke test failed: an unrelated program on the machine listened on port 8080 on every interface, so `localhost:8080` reached it over IPv6, while Compose publishes Caddy on `127.0.0.1` only. The same smoke command passed against the same stack once Node resolved IPv4 first. If a smoke test answers 404 on every path of the app's site, look for another program on the port before anything else; free the port, or run the step with `NODE_OPTIONS=--dns-result-order=ipv4first`.
+- **Attempt 5 replayed Tasks 8 and 9** with that option set for the run alone, and passed.
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree is byte-identical to the dry run's except drizzle's snapshots of 0026 to 0032 and its journal, which end with a newline here and with none in the dry run (drizzle writes none and the prompts' file blocks end every file with one). `verify_prompts.py` reproduces all 277 files. The integration suite ends at 1,562 tests in 130 files (1,559 passed, 3 skipped) both on a fresh database and on one upgraded from 0025; the timing gate passed.
+- **The review that shaped Tasks 8 and 9.** After Task 7, one adversarial review read the built code through five lenses and found four high defects: the export and the standing told an author of a decision held with an order's notice, a correction could end a hold for good, and the closed site took effect only once Caddy was recreated. It upheld 32 points in all, which are Tasks 8 and 9. The points left for the owner are in the tooling's record: the mail that says a notice has grown waits for the dispatch's margin; Caddy has no healthcheck; the owner's checks on a real phone; and a gap closed as not needed under another admin's key stands, attributed to the key's holder.
