@@ -15,6 +15,7 @@
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js notification-facts <record>   (3f: cli/records.ts)
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-export [--after <place>]   (3f: cli/restore.ts)
  *   cat <files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js restore-import [<place>:<hash> ...]
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js tco-counts <year>   (3f: cli/counts.ts)
  *
  * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
  * staff member's personal accounts for the recusal check and limits sets the limits on staff, each as the migrator, in
@@ -50,6 +51,7 @@ import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl, l
 import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 import { mailerFor, type CommandLineMailSettings } from "./mail";
+import { COUNT_COMMANDS, COUNT_USAGE, countCommand, parseCountArgs, type CountCommand, type CountCommandName } from "./counts";
 import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCommand, type OrderCommandName } from "./orders";
 import { RECORD_COMMANDS, RECORD_USAGE, authorityHoldsFor, parseRecordArgs, recordCommand, type RecordCommand, type RecordCommandName } from "./records";
 import { RESTORE_COMMANDS, RESTORE_USAGE, auditExport, parseRestoreArgs, restoreImport, type RestoreCommand, type RestoreCommandName } from "./restore";
@@ -80,6 +82,8 @@ export const STAFF_USAGE = [
   ...RECORD_USAGE,
   // 3f Task 6 (design, section 8.11): the keeper's download from the server, and the import after a restore.
   ...RESTORE_USAGE,
+  // 3f Task 7 (design, sections 7.18 and 8.11): the yearly counts, read-only, as the migrator in the migrate service.
+  ...COUNT_USAGE,
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -103,7 +107,9 @@ export type StaffCommand =
   | { command: "order"; order: OrderCommand }
   | { command: "record"; record: RecordCommand }
   // Task 6: audit-export and restore-import, whose words cli/restore.ts reads.
-  | { command: "restore"; restore: RestoreCommand };
+  | { command: "restore"; restore: RestoreCommand }
+  // Task 7: tco-counts, whose words cli/counts.ts reads.
+  | { command: "counts"; counts: CountCommand };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
 const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
@@ -183,6 +189,7 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
       if ((ORDER_COMMANDS as readonly string[]).includes(command)) return { command: "order", order: parseOrderArgs(command as OrderCommandName, rest) };
       if ((RECORD_COMMANDS as readonly string[]).includes(command)) return { command: "record", record: parseRecordArgs(command as RecordCommandName, rest) };
       if ((RESTORE_COMMANDS as readonly string[]).includes(command)) return { command: "restore", restore: parseRestoreArgs(command as RestoreCommandName, rest) };
+      if ((COUNT_COMMANDS as readonly string[]).includes(command)) return { command: "counts", counts: parseCountArgs(command as CountCommandName, rest) };
       throw new Error(`unknown command: ${command}\n${STAFF_USAGE}`);
   }
 }
@@ -968,6 +975,7 @@ export async function runStaffCommand(
   if (command.command === "order") return runOrderCommand(command.order, env, out, input);
   if (command.command === "record") return runRecordCommand(command.record, env, out, input);
   if (command.command === "restore") return runRestoreCommand(command.restore, env, out, input);
+  if (command.command === "counts") return runCountCommand(command.counts, env, out);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -1263,6 +1271,32 @@ async function runRestoreCommand(command: RestoreCommand, env: Record<string, st
     return 0;
   } catch (err) {
     out.error(isLockTimeout(err) ? `restore-import: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
+  }
+}
+
+/** tco-counts, on the migrator's own connection, which reads only DATABASE_URL_MIGRATE; it prints its figures and changes nothing. */
+async function runCountCommand(command: CountCommand, env: Record<string, string | undefined>, out: Output): Promise<number> {
+  let url: string;
+  try {
+    url = migratorUrl(command.command, env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    const done = await countCommand(migrateDb, command);
+    if (!done.ok) {
+      out.error(done.problem);
+      return 1;
+    }
+    for (const line of done.lines) out.log(line);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
     return 1;
   } finally {
     await closeDb(migrateDb);

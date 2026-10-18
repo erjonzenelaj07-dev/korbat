@@ -2162,6 +2162,60 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     }
   });
 
+  // ---------------------------------------------------------------- 3f Task 7: every screen 3f gave the console, in one pass
+
+  test("3f Task 7: at 360 by 740 px, every screen of 8.10 once more in one pass, under the phone's rules: Home with its 3f lines, Contact point, Orders, an order, its case, the audit log with its download and key filter, After a restore", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const oldest = new Date(Date.now() - 20 * 60_000).toISOString();
+    const at = new Date(Date.now() - 26 * 3_600_000).toISOString();
+    const order = orderFixture({ reference: "BKA-2026-ALL", posts: 2 });
+    fixtures.state.orders.push(order);
+    fixtures.state.cases.set(CASE_ORDER, orderCase());
+    fixtures.state.authorities = { contact: { open: 1, oldestAt: oldest, dueAt: new Date(Date.parse(oldest) + ORDER_RULES.hourMinutes * 60_000).toISOString() }, alerts: { channel: "down", since: oldest } };
+    const gap: RestoreGap = {
+      id: "0000000a-7a1b-4c2d-8e3f-4a5b6c7d8e9f",
+      class: "order_effect",
+      actedAt: at,
+      action: "order_effected",
+      caseId: null,
+      orderId: order.id,
+      itemId: order.items[0]!.id,
+      kinds: ["disable_by_order"],
+      closedAt: null,
+      disposition: null,
+      closedByDecisionId: null,
+    };
+    fixtures.state.restore = { importedAt: at, mayOpen: false, retentionMay: false, gaps: [gap], holds: [] };
+    fixtures.state.restoreOverview = { open: 1, measures: 1, importedAt: at };
+    try {
+      const screens: [string, Locator][] = [
+        ["/", page.getByRole("heading", { name: "Authorities" })],
+        ["/contact", page.getByRole("heading", { name: "Contact point" })],
+        ["/orders", page.getByRole("heading", { name: ORDER_WORDS.orders.title })],
+        [`/orders/${order.id}`, page.getByRole("heading", { name: ORDER_KIND_LABELS[order.kind] })],
+        [`/cases/${CASE_ORDER}`, page.getByText(ORDER_WORDS.caseOrder.preserved, { exact: true })],
+        ["/audit", page.getByRole("button", { name: RECOVERY_WORDS.downloadButton })],
+        ["/restore", page.getByRole("heading", { name: RECOVERY_WORDS.title })],
+      ];
+      for (const [path, mark] of screens) {
+        await page.goto(`${origin}${path}`);
+        await shown(mark.first());
+        expect(page.url(), path).toBe(`${origin}${path}`);
+        await texts();
+        await cleanOnPhone();
+      }
+      // The audit log's key filter, at this width too.
+      await page.goto(`${origin}/audit`);
+      await shown(page.getByLabel(RECOVERY_WORDS.keyField));
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.restore = NO_RESTORE;
+      fixtures.state.restoreOverview = { open: 0, measures: 0, importedAt: null };
+      fixtures.state.authorities = { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } };
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
   test("an address the console does not have says so, inside the console", async () => {
     await page.goto(`${origin}/no/such/page`);
     await shown(page.getByRole("heading", { name: "No such page" }));

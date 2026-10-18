@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 import { MediaId } from "./media";
-import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
+import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, ORDER_RULES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -228,6 +228,17 @@ export const RETENTION = {
    * toward the next rung, and a warning's counting. Each is STANDING_RULES' own number.
    */
   standingRecord: { strikeDays: STANDING_RULES.strikeDays, ladderMemoryDays: STANDING_RULES.ladderMemoryDays, warningDays: STANDING_RULES.reportFrameDays },
+  /**
+   * 3f (design, sections 6.8 and 10.1, W.6): how long a handled message at the contact point is kept (one never handled
+   * is kept until a person closes it), how long what a removal order disabled is preserved from its disabling (and a day
+   * more, ORDER_RULES.preserveMarginDays), how long an order's records and those of a notification or a production are
+   * kept after the matter's last event, and a restore gap closed as not needed or imported. Each is order_rules()' own
+   * number, read from ORDER_RULES and printed by the terms; the database holds the same numbers and acts on them.
+   */
+  contactMessageDays: ORDER_RULES.messageKeepDays,
+  orderPreserveMonths: ORDER_RULES.preserveMonths,
+  orderRecordYears: ORDER_RULES.recordKeepYears,
+  restoreGapMonths: ORDER_RULES.gapKeepMonths,
 } as const;
 
 // ---------------------------------------------------------------- account sanctions (3e design, section 10.1)

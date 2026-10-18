@@ -362,3 +362,29 @@ describe("staff.js: the commands for moderation cases (3c design, section 7.13)"
     expect(noOrigin.lines).toEqual(handle.lines);
   });
 });
+
+describe("staff.js tco-counts (3f design, section 8.11, Recovery and the counts)", () => {
+  const MIGRATE_URL = "postgres://korbat_migrate:x@localhost:5432/korbat";
+
+  test("the usage lists it with its first line, in the migrate service", () => {
+    expect(STAFF_USAGE).toContain("  tco-counts <year>");
+    expect(STAFF_USAGE).toMatch(/tco-counts <year> +print the figures of TCO Art\. 7\(3\) and 21\(1\) for that calendar year in UTC/);
+    expect(STAFF_USAGE).toContain("read-only; run it in the migrate service");
+  });
+
+  test("reads a year of four digits and nothing else", () => {
+    expect(parseStaffArgs(["tco-counts", "2025"])).toEqual({ command: "counts", counts: { command: "tco-counts", year: 2025 } });
+    for (const args of [["tco-counts"], ["tco-counts", "25"], ["tco-counts", "2025", "2026"], ["tco-counts", "20x5"], ["tco-counts", "02025"], ["tco-counts", "--year", "2025"]]) {
+      expect(() => parseStaffArgs(args), args.join(" ")).toThrow(/^tco-counts: /);
+    }
+  });
+
+  test("reads the migrator's URL alone: run in the api service it says so, answers 1 and connects to nothing", async () => {
+    expect(migratorUrl("tco-counts", { DATABASE_URL_MIGRATE: MIGRATE_URL, DATABASE_URL_API: "nonsense" })).toBe(MIGRATE_URL);
+    const { lines, out } = capture();
+    expect(await runStaffCommand(["tco-counts", "2025"], { DATABASE_URL_API: API_URL, DATABASE_URL_AUTH: AUTH_URL }, out)).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^err Invalid environment for tco-counts:/);
+    expect(lines[0]).toContain("DATABASE_URL_MIGRATE");
+  });
+});

@@ -7,17 +7,20 @@ import {
   MEASURES,
   MEASURE_KINDS,
   NOTICE_LIMITS,
+  ORDER_RULES,
   OUTCOME_PHRASES,
   REPLY_AIM_HOURS,
   RETENTION,
   RETIRED_HANDLE_PREFIX,
   REVERSAL_KINDS,
   STANDING_RULES,
+  STATE_FACTS,
   SUSPECT_EARLIER_MONTHS,
   SUSPECT_OUTCOME_PHRASES,
   UNSEEN_NO_ACTION,
   type ItemOutcome,
   type MeasureKind,
+  type StateFacts,
 } from "@korbat/contracts";
 import { RULES, RULES_VERSION } from "@korbat/rules";
 import { numberWord } from "./moderation-words";
@@ -153,6 +156,61 @@ const REPORTING_IN_BAD_FAITH = paragraphs(
 
 const HANDLES = `When the breach lies in a handle itself (impersonation, someone's private information, a threat), a moderator may retire it. A retired handle can be used by nobody again, you included. Your profile then shows a placeholder that begins with ${RETIRED_HANDLE_PREFIX}, and you can choose a new handle without the usual wait: at once, or, while your account is suspended, when the suspension ends. If the decision is reversed, the retirement is lifted: your profile gets the handle back if it still shows the placeholder, and otherwise you can change back to it at once; nobody else could take it meanwhile. Handles that begin with ${RETIRED_HANDLE_PREFIX} cannot be chosen. korbat keeps a retired handle, as a handle and nothing else, for as long as it refuses it to everyone, also when the breach was someone's private information (rule R4): refusing it needs it.`;
 
+/**
+ * 3f (design, W.6 and section 5): the contact point for authorities and the Member State korbat is established in, the
+ * web build's two arguments (WEB_CONTACT_POINT and WEB_HOME_STATE in infra/.env), which Expo inlines at export time as it
+ * inlines the contact address. The app's page is built, so it cannot read the API's settings of the same names. While the
+ * contact point is empty the terms print no section on it, and while the state is empty no sentence names one: both are
+ * set, with the API's, as the last step of the README's Before going public.
+ */
+export const CONTACT_POINT = process.env.EXPO_PUBLIC_CONTACT_POINT ?? "";
+export const HOME_STATE = process.env.EXPO_PUBLIC_HOME_STATE ?? "";
+/** The home state's facts, while the contracts fill its entry in. */
+const STATE: StateFacts | undefined = HOME_STATE === "" ? undefined : (STATE_FACTS as Partial<Record<string, StateFacts>>)[HOME_STATE];
+/** The state as a sentence names it: its name from STATE_FACTS, or its code while the contracts have no entry for it. */
+const HOME_STATE_NAME = STATE?.name ?? HOME_STATE;
+
+/** A list inside a sentence: "a", "a and b", "a, b and c". */
+const andList = (items: readonly string[]): string => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+
+/**
+ * 3f's sections (design, W.6), in the design's words. Each number is printed from the constant the code that acts on it
+ * reads: what a removal order disabled is kept for RETENTION.orderPreserveMonths and ORDER_RULES.preserveMarginDays, the
+ * records for RETENTION.orderRecordYears, a message's record for RETENTION.contactMessageDays, a restore gap for
+ * RETENTION.restoreGapMonths and a deleted account's address for ORDER_RULES.reportHoldDays. The hour, the six and twelve
+ * weeks and the 48 hours of a scrutiny are the Regulation's own periods (TCO Art. 3(3), 11(3) and 4(4)), written as it
+ * writes them: ORDER_RULES holds korbat's own numbers built on them (holdDays counts a day more, so as never to be early).
+ */
+const O = ORDER_RULES;
+const PRESERVED = count(RETENTION.orderPreserveMonths, "month");
+
+const AUTHORITIES_ORDERS = paragraphs(
+  "An authority or a court of the European Union or of one of its countries can order korbat to act against a post, or to give information about an account. korbat carries such an order out within the time the law sets and checks that it comes from the authority it names; if it does not, korbat reinstates the post and tells you. A removal order for terrorist content leaves korbat no choice, and has to be carried out within one hour, so korbat may act on it before that check is finished. Any other order korbat checks first, and carries out because the law under which it was issued requires it. korbat does not assess the post under its own rules when it carries out an order: such an order is not a decision of korbat's.",
+  "So korbat gives no reasons of its own for it, and korbat's appeal does not apply. You get a notice instead, under Settings, Cases, announced by an email that says only that there is one. The notice says which authority the order names, under which law, on which day and under which reference, and whether korbat has confirmed that it comes from that authority. It gives the authority's reasons and the ways to challenge the order, in the authority's own words, as soon as korbat has them; when korbat adds them later it sends you an email, and the notice says since when it has held them. The notice also says how to ask korbat for a copy of the order.",
+  "An order can forbid korbat to tell you about it for a time. Then korbat keeps the post from you as from everyone, tells you nothing, and can say nothing about the post by email either. For a removal order the law sets that time (Terrorist content); for another order the authority that issued it does, and korbat tells you when that authority allows. While korbat may not tell you of an order, it cannot tell you of a decision it takes about the same post under its own rules, or answer an appeal you made about that post before: you get those together with the notice.",
+  "korbat lifts what it did only when the authority withdraws the order, when a court annuls it, when the authority of korbat's own country finds that an order from another country infringes the law, when the order turns out not to be authentic, or when korbat disabled a post that the order did not name. For that last case write to the address under Contact, from the email address of your account. When korbat's own rules apply to the same post, that is a second decision, with its own statement of reasons and its own appeal. korbat cannot act for one country alone, so an order takes effect everywhere korbat is available.",
+);
+
+// 3c's section, in full as 3f has it read: the removal order is carried out within the hour now, not once korbat is open.
+const TERRORIST_CONTENT = paragraphs(
+  "korbat removes terrorist content as defined in Article 2(7) of Regulation (EU) 2021/784 when it is told about it in a notice, and carries out a removal order of a competent authority within one hour of receiving it. Material for educational, journalistic, artistic or research purposes, or for preventing or countering terrorism, and polemic or controversial views in public debate are not terrorist content. korbat uses no automated tool to find it.",
+  `A post disabled under a removal order is shown to nobody, you included, for as long as the order stands. korbat keeps it, with its images and a copy of its text, for ${PRESERVED} from the disabling, as the Regulation requires, so that it can be reinstated or examined, and longer only when an authority or a court asks. Deleting the post or your account does not shorten this. Then korbat erases it, and it cannot be reinstated afterwards.`,
+  `The law can oblige korbat to tell you nothing about such an order for six weeks, for twelve at most, and up to a day and a few hours more, because korbat counts the end so that it is never early. During that time the post is simply not there, for you as for everyone, and korbat cannot say why. korbat tells you when that period ends, with the day on which the post was disabled. If the order comes from another country of the European Union than korbat's, you can ask the authority of korbat's country to scrutinise it, within 48 hours of receiving its reasons or a copy of it; the notice says since when it has held the reasons. If you challenge an order in court, ask the court or the authority to tell korbat to keep the post until that is decided, since korbat erases it after the ${PRESERVED} otherwise. korbat publishes the figures the Regulation asks for, for every year in which any of them is not zero.`,
+);
+
+// The languages the contact point declares are the operator's (STATE_FACTS); while the state's entry declares none, the
+// sentence names none rather than print that they are not filled in.
+const CONTACT_POINT_SECTION = `Authorities of the Member States, the European Commission and the European Board for Digital Services reach korbat at ${CONTACT_POINT} (Article 11 of the Digital Services Act; Article 15 of Regulation (EU) 2021/784)${STATE?.languages ? `, in ${andList(STATE.languages)}` : ""}. This address is for authorities. Everyone else writes to the address under Contact, and reports content with the report form.`;
+
+/** "Your data"'s four paragraphs of W.6, and RETENTION's printed list of what concerns authorities, in one paragraph. */
+const AUTHORITIES_DATA = [
+  `Two things the law can oblige korbat to keep for a time when you delete your account; everything else is deleted at once. First, your email address: when korbat has sealed images of your account, the law may oblige it to report them to the authorities. Until it has done so, or has decided that it need not, and for ${count(O.reportHoldDays, "day")} at most, korbat keeps the address, and nothing else of the account; it uses it for that report alone, and the email that confirms your deletion tells you. You can write to korbat about this at the address under Contact, complain to a data protection authority, and go to court. Second, a post that an authority's order obliges korbat to preserve: korbat keeps it, with its images, until that time ends (Terrorist content), also after your account is gone.`,
+  `korbat keeps a record of every report it makes to an authority and of everything it hands to one: which duty, which authority, when, both references, what was asked for and which kinds of data, never a copy of the data. It keeps these records and its records of authorities' orders for ${count(RETENTION.orderRecordYears, "year")} after the matter's last event, an order's record for as long as its measure stands, and a record that says you may not be told of something for as long as that holds. korbat records when a message reaches its contact point for authorities, never who sent it or what it says, and deletes that record ${count(RETENTION.contactMessageDays, "day")} after the message was handled.`,
+  "When an authority lawfully asks who holds an account, korbat gives the handle, the email address and the day the account was created. korbat also holds when and from which kind of device an account signed in; it gives those only when an order names them and the law requires it, and its record says so. korbat tells you when it has given an authority information about your account, with the authority's reasons and the ways to challenge its order, unless the order, or the law under which it was issued, forbids telling you or delays it; korbat records which of these applies and on what basis. While korbat may not tell you, its answer to a data request of yours leaves the matter out, and korbat keeps the reason on record.",
+  "If korbat has to restore its database from a backup, it may have to take a decision about you again; the decision then says so.",
+  `The periods for what concerns authorities: content disabled under a removal order is kept ${PRESERVED} and ${count(O.preserveMarginDays, "day")} from the disabling, and from the new disabling when it was reinstated and disabled again, longer on an authority's or a court's request, and is then erased. An order's records, and the records of a notification or a production, are kept ${count(RETENTION.orderRecordYears, "year")} after the matter's last event; an order's never while its measure stands, and a record of an authority's demand that a person is not told never while that demand holds. The record of a message at the contact point for authorities is kept ${count(RETENTION.contactMessageDays, "day")}, counted from the day the message was handled; the record of a message nobody handled is kept until a person has closed it. A gap a restore left is kept ${count(RETENTION.restoreGapMonths, "month")} when it was closed as not needed or imported; a gap that a decision taken again closed is kept as long as that decision. The email address of a deleted account is kept while a report is owed, ${count(O.reportHoldDays, "day")} at most.`,
+];
+
 export const TERMS_SECTIONS: { title: string; body: string }[] = [
   {
     title: "Draft",
@@ -161,12 +219,13 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
   {
     title: "Who can use korbat",
     // 3e (W.7): what another account may not carry on, which "Suspension and termination" says.
-    body: "You must be at least 16 years old. You can use a pseudonym. One person may hold more than one account, but not to carry on what another of their accounts was suspended or terminated for (Suspension and termination).",
+    // 3f (W.6): the Member State korbat is established in, from the build's argument, while the build names one.
+    body: `You must be at least 16 years old. You can use a pseudonym. One person may hold more than one account, but not to carry on what another of their accounts was suspended or terminated for (Suspension and termination).${HOME_STATE_NAME === "" ? "" : ` korbat is established in ${HOME_STATE_NAME} and offers its service there only.`}`,
   },
   // The 3c design's sentence (section 9), in place of "removed only when it breaks a published rule", which notices of illegality made false. The rules are named from the rulebook.
   {
     title: "What you can post",
-    body: `You can post opinions, including unpopular ones. korbat restricts content only when it breaks a published rule (${RULES.map(ruleName).join(", ")}), or when it is illegal under EU law or the law of an EU country and someone tells korbat so in a notice. Every decision names the rule or the law and says why, and a final decision that restricts your content can be appealed as the section "Appeals" describes.`,
+    body: `You can post opinions, including unpopular ones. korbat restricts content only when it breaks a published rule (${RULES.map(ruleName).join(", ")}), or when it is illegal under EU law or the law of an EU country and someone tells korbat so in a notice. Every decision names the rule or the law and says why, and a final decision that restricts your content can be appealed as the section "Appeals" describes. The one restriction that is not korbat's decision is an authority's order (Authorities' orders).`,
   },
   // The rulebook itself, as @korbat/rules holds it: the grounds on which korbat restricts content (Digital Services Act, Article 14(1)).
   {
@@ -217,6 +276,8 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
       "An appeal of a seal waits, without a time limit, for the assessment of the authority korbat reported the images to. Only an admin lifts a seal, and a seal for good only on that authority's answer that the images are not child sexual abuse material.",
       // 3e (W.7): what an appeal of a standing measure does and does not do.
       `An appeal never holds the start of a suspension; a reply does. When korbat keeps a decision in answer to a reply you sent before its start, the ${count(APPEAL_MONTHS, "month")} to appeal it count from that answer. The appeal of a protective suspension is reviewed at once; only the appeal of a decision that seals images waits for the authorities.`,
+      // 3f (W.6): an order is no decision of korbat's, and what a hold delays counts from the day korbat may tell.
+      "korbat's appeal does not apply to what korbat does on an authority's order. If such an order forbids korbat to tell you about a post, korbat's answer to an appeal you made about that post reaches you only when it may tell you of the order; your time to appeal a decision you are told of late counts from the day you are told.",
       COURTS,
     ),
   },
@@ -225,11 +286,12 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
   { title: "Suspension and termination", body: SUSPENSION },
   { title: "Reporting in bad faith", body: REPORTING_IN_BAD_FAITH },
   { title: "Handles", body: HANDLES },
+  // 3f (W.6): what an authority's order is and what korbat does with one, before the section on removal orders.
+  { title: "Authorities' orders", body: AUTHORITIES_ORDERS },
   // The policy Article 7(1) of Regulation (EU) 2021/784 asks for; its one hour is the Regulation's own figure.
-  {
-    title: "Terrorist content",
-    body: "korbat removes terrorist content, as Article 2(7) of Regulation (EU) 2021/784 defines it, when it is told about it in a notice, and, once korbat is open to the public, complies with an authority's removal order within one hour. Material for educational, journalistic, artistic or research purposes, or for preventing or countering terrorism, and polemic or controversial views in public debate are not terrorist content (Article 1(3) of that Regulation). korbat uses no automated tool to find it.",
-  },
+  { title: "Terrorist content", body: TERRORIST_CONTENT },
+  // 3f (W.6): only while the build has a contact point for authorities to publish.
+  ...(CONTACT_POINT === "" ? [] : [{ title: "Contact point for authorities", body: CONTACT_POINT_SECTION }]),
   // The 2c design's sentence (section 2). It joins the draft without a new TERMS_VERSION, as 1b's and 1c's changes did before any public sign-up.
   {
     title: "Explore",
@@ -254,6 +316,9 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
       `The reasons korbat gave you for a decision are kept while your account exists and for ${count(RETENTION.statementMonths, "month")} after its deletion; the decision itself stays on record without them. korbat's log of which staff member opened a case, viewed an image or was shown who sent a report, with the reason given for that, is kept for ${count(RETENTION.accessLogMonths, "month")}. A text a moderator wrote for a decision and did not confirm is deleted after ${count(RETENTION.draftHours, "hour")}.`,
       // 3e (W.7): what korbat keeps of account sanctions, with RETENTION's three members.
       `korbat keeps the record of every strike, suspension, termination, warning and retired handle with its decision, as it keeps every decision. What ends is its use: a strike counts for ${count(RETENTION.standingRecord.strikeDays, "day")}, a suspension counts toward the next one for ${count(RETENTION.standingRecord.ladderMemoryDays, "day")}, a warning about reporting for ${count(RETENTION.standingRecord.warningDays, "day")}. The text of a reply to a suspension is kept ${RETENTION.replyText}; a reply that is not answered yet is never erased. To decide about reporting in bad faith korbat counts, for each account and day, how many reports under its rules the account sent, and keeps which of them a moderator marked manifestly unfounded; both are deleted after ${count(RETENTION.reportCountDays, "day")} and with the account, so for that long a marked report stays linked to the account that sent it. A retired handle is kept as a handle (Handles). Your export holds all of this.`,
+      // 3f (W.6): what is kept when an account is deleted, korbat's records about authorities, what an authority can get,
+      // after a restore, and the periods of RETENTION that concern authorities.
+      ...AUTHORITIES_DATA,
       "Your account's export holds the decisions its Cases screens list and your own reports. If you ask for your data at the address under Contact, you receive, within a month, every case about you (cases without action included), the copies korbat keeps, where each case came from (a report by another user, a notice, a moderator) and, where the law requires it after weighing the writer's rights, the words of a report without who wrote it.",
     ),
   },

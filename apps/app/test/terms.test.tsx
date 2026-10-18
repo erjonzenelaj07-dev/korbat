@@ -1,14 +1,20 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import * as contracts from "@korbat/contracts";
 import * as rules from "@korbat/rules";
 
-// The build's contact address, which Expo inlines at export time; set before the app's modules read it.
+// The build's contact address, which Expo inlines at export time; set before the app's modules read it. 3f: the build's
+// contact point for authorities and korbat's Member State, the web build's two arguments of the same kind.
 const CONTACT = vi.hoisted(() => {
   process.env.EXPO_PUBLIC_CONTACT_EMAIL = "contact@korbat.local";
+  process.env.EXPO_PUBLIC_CONTACT_POINT = "authorities@korbat.local";
+  process.env.EXPO_PUBLIC_HOME_STATE = "DE";
   return "contact@korbat.local";
 });
+const CONTACT_POINT = "authorities@korbat.local";
 
 import Terms from "../src/app/terms";
 import { CONTACT_WORDS, numberWord } from "../src/lib/moderation-words";
@@ -21,7 +27,9 @@ import * as terms from "../src/lib/terms";
  * not one of the old ones, so no number is typed. The rulebook, the measures' labels and the outcomes' phrases are held
  * the same way. 3e (design, W.7) adds four sections, "Strikes", "Suspension and termination", "Reporting in bad faith" and
  * "Handles", whose numbers are STANDING_RULES', REPLY_AIM_HOURS', RETENTION.mailGiveUpDays' and APPEAL_MONTHS', and grows
- * RETENTION by three members: two numbers and one phrase, which the terms print as they print a rule's text.
+ * RETENTION by three members: two numbers and one phrase, which the terms print as they print a rule's text. 3f (design,
+ * W.6) adds "Authorities' orders" and "Contact point for authorities", rewrites "Terrorist content", grows four sections
+ * by sentences and RETENTION by four members read from ORDER_RULES, whose two other numbers the terms print are held too.
  */
 vi.mock("expo-router", () => ({
   Link: ({ href, children }: { href: string; children: ReactElement }) => cloneElement(children, { href } as object),
@@ -45,7 +53,7 @@ const textOf = (markup: string): string =>
     .trim();
 
 /** The sections 3c and 3e wrote or rewrote whole; of "Your data" they wrote every paragraph after the first, which older designs wrote. */
-const MODERATION_TITLES = ["What you can post", "The rules", "Reports and notices", "How moderators decide", "Appeals", "Strikes", "Suspension and termination", "Reporting in bad faith", "Handles", "Terrorist content"];
+const MODERATION_TITLES = ["What you can post", "The rules", "Reports and notices", "How moderators decide", "Appeals", "Strikes", "Suspension and termination", "Reporting in bad faith", "Handles", "Authorities' orders", "Terrorist content", "Contact point for authorities"];
 const bodyOf = (t: TermsModule, title: string): string => t.TERMS_SECTIONS.find((section: Section) => section.title === title)?.body ?? "";
 const paragraphsOf = (t: TermsModule, title: string): string[] => t.termsParagraphs(bodyOf(t, title));
 /** What 3c added to "Your data". */
@@ -64,7 +72,7 @@ const share = (fraction: number): string => (fraction === 0.5 ? "half" : `${frac
  * with other numbers in the constants.
  */
 function numbersTable(c: Contracts): { constant: string; section: string; phrase: string }[] {
-  const { NOTICE_LIMITS: L, RETENTION: R, DAILY_LIMITS: D, STANDING_RULES: S } = c;
+  const { NOTICE_LIMITS: L, RETENTION: R, DAILY_LIMITS: D, STANDING_RULES: S, ORDER_RULES: O } = c;
   return [
     { constant: "NOTICE_LIMITS.signedOut.perHour", section: "Reports and notices", phrase: `at most ${L.signedOut.perHour} reports an hour and` },
     { constant: "NOTICE_LIMITS.signedOut.perDay", section: "Reports and notices", phrase: `and ${L.signedOut.perDay} a day from one network without an account` },
@@ -131,6 +139,18 @@ function numbersTable(c: Contracts): { constant: string; section: string; phrase
     { constant: "RETENTION.standingRecord.ladderMemoryDays", section: "Your data", phrase: `a suspension counts toward the next one for ${count(R.standingRecord.ladderMemoryDays, "day")}` },
     { constant: "RETENTION.standingRecord.warningDays", section: "Your data", phrase: `a warning about reporting for ${count(R.standingRecord.warningDays, "day")}` },
     { constant: "RETENTION.reportCountDays", section: "Your data", phrase: `both are deleted after ${count(R.reportCountDays, "day")} and with the account` },
+    // 3f (W.6): what a removal order disabled, the records of orders and of authorities, the messages, the gaps, the address.
+    { constant: "RETENTION.orderPreserveMonths", section: "Terrorist content", phrase: `with its images and a copy of its text, for ${count(R.orderPreserveMonths, "month")} from the disabling, as the Regulation requires` },
+    { constant: "RETENTION.orderPreserveMonths", section: "Terrorist content", phrase: `since korbat erases it after the ${count(R.orderPreserveMonths, "month")} otherwise` },
+    { constant: "RETENTION.orderPreserveMonths", section: "Your data", phrase: `content disabled under a removal order is kept ${count(R.orderPreserveMonths, "month")} and ${count(O.preserveMarginDays, "day")} from the disabling` },
+    { constant: "ORDER_RULES.preserveMarginDays", section: "Your data", phrase: `is kept ${count(R.orderPreserveMonths, "month")} and ${count(O.preserveMarginDays, "day")} from the disabling, and from the new disabling` },
+    { constant: "RETENTION.orderRecordYears", section: "Your data", phrase: `its records of authorities' orders for ${count(R.orderRecordYears, "year")} after the matter's last event, an order's record` },
+    { constant: "RETENTION.orderRecordYears", section: "Your data", phrase: `the records of a notification or a production, are kept ${count(R.orderRecordYears, "year")} after the matter's last event` },
+    { constant: "RETENTION.contactMessageDays", section: "Your data", phrase: `and deletes that record ${count(R.contactMessageDays, "day")} after the message was handled` },
+    { constant: "RETENTION.contactMessageDays", section: "Your data", phrase: `contact point for authorities is kept ${count(R.contactMessageDays, "day")}, counted from the day the message was handled` },
+    { constant: "RETENTION.restoreGapMonths", section: "Your data", phrase: `A gap a restore left is kept ${count(R.restoreGapMonths, "month")} when it was closed as not needed or imported` },
+    { constant: "ORDER_RULES.reportHoldDays", section: "Your data", phrase: `and for ${count(O.reportHoldDays, "day")} at most, korbat keeps the address` },
+    { constant: "ORDER_RULES.reportHoldDays", section: "Your data", phrase: `is kept while a report is owed, ${count(O.reportHoldDays, "day")} at most` },
   ];
 }
 
@@ -150,6 +170,9 @@ const constantPaths = (c: Contracts): string[] => [
   ...numberPaths("RETENTION", c.RETENTION),
   ...numberPaths("STANDING_RULES", c.STANDING_RULES),
   ...numberPaths("REPLY_AIM_HOURS", c.REPLY_AIM_HOURS),
+  // 3f: of ORDER_RULES the terms print two numbers by themselves; the others they print through RETENTION, or not at all.
+  ...numberPaths("ORDER_RULES.reportHoldDays", c.ORDER_RULES.reportHoldDays),
+  ...numberPaths("ORDER_RULES.preserveMarginDays", c.ORDER_RULES.preserveMarginDays),
 ];
 
 /** A rule's name inside a sentence: its title without the leading "No". */
@@ -210,7 +233,7 @@ function holds(t: TermsModule, c: Contracts, r: Rules): void {
 }
 
 describe("the terms' sections", () => {
-  test("are these, in this order, under the draft's version: 3c adds five and rewrites two, 3e adds four after Appeals, without a new version", () => {
+  test("are these, in this order, under the draft's version: 3c adds five and rewrites two, 3e adds four after Appeals, 3f two around Terrorist content, without a new version", () => {
     expect(terms.TERMS_SECTIONS.map((section) => section.title)).toEqual([
       "Draft",
       "Who can use korbat",
@@ -223,7 +246,9 @@ describe("the terms' sections", () => {
       "Suspension and termination",
       "Reporting in bad faith",
       "Handles",
+      "Authorities' orders",
       "Terrorist content",
+      "Contact point for authorities",
       "Explore",
       "Your account",
       "Your data",
@@ -252,7 +277,7 @@ describe("the terms' sections", () => {
     const names = rules.RULES.map(ruleName).join(", ");
     expect(names).toBe("sexual or pornographic content, child sexual abuse material, targeted hatred or harassment based on protected traits, doxxing, direct threats of violence, spam, scams, impersonation or coordinated manipulation");
     expect(bodyOf(terms, "What you can post")).toBe(
-      `You can post opinions, including unpopular ones. korbat restricts content only when it breaks a published rule (${names}), or when it is illegal under EU law or the law of an EU country and someone tells korbat so in a notice. Every decision names the rule or the law and says why, and a final decision that restricts your content can be appealed as the section "Appeals" describes.`,
+      `You can post opinions, including unpopular ones. korbat restricts content only when it breaks a published rule (${names}), or when it is illegal under EU law or the law of an EU country and someone tells korbat so in a notice. Every decision names the rule or the law and says why, and a final decision that restricts your content can be appealed as the section "Appeals" describes. The one restriction that is not korbat's decision is an authority's order (Authorities' orders).`,
     );
     // The sentence 3c's code made false is gone from every section.
     for (const section of terms.TERMS_SECTIONS) {
@@ -261,10 +286,14 @@ describe("the terms' sections", () => {
     }
   });
 
-  test("Terrorist content is the policy the Regulation asks for, in the design's words", () => {
-    expect(bodyOf(terms, "Terrorist content")).toBe(
-      "korbat removes terrorist content, as Article 2(7) of Regulation (EU) 2021/784 defines it, when it is told about it in a notice, and, once korbat is open to the public, complies with an authority's removal order within one hour. Material for educational, journalistic, artistic or research purposes, or for preventing or countering terrorism, and polemic or controversial views in public debate are not terrorist content (Article 1(3) of that Regulation). korbat uses no automated tool to find it.",
-    );
+  test("Terrorist content is the policy the Regulation asks for, in the design's words (3f, W.6), its months from RETENTION", () => {
+    expect(paragraphsOf(terms, "Terrorist content")).toEqual([
+      "korbat removes terrorist content as defined in Article 2(7) of Regulation (EU) 2021/784 when it is told about it in a notice, and carries out a removal order of a competent authority within one hour of receiving it. Material for educational, journalistic, artistic or research purposes, or for preventing or countering terrorism, and polemic or controversial views in public debate are not terrorist content. korbat uses no automated tool to find it.",
+      "A post disabled under a removal order is shown to nobody, you included, for as long as the order stands. korbat keeps it, with its images and a copy of its text, for six months from the disabling, as the Regulation requires, so that it can be reinstated or examined, and longer only when an authority or a court asks. Deleting the post or your account does not shorten this. Then korbat erases it, and it cannot be reinstated afterwards.",
+      "The law can oblige korbat to tell you nothing about such an order for six weeks, for twelve at most, and up to a day and a few hours more, because korbat counts the end so that it is never early. During that time the post is simply not there, for you as for everyone, and korbat cannot say why. korbat tells you when that period ends, with the day on which the post was disabled. If the order comes from another country of the European Union than korbat's, you can ask the authority of korbat's country to scrutinise it, within 48 hours of receiving its reasons or a copy of it; the notice says since when it has held the reasons. If you challenge an order in court, ask the court or the authority to tell korbat to keep the post until that is decided, since korbat erases it after the six months otherwise. korbat publishes the figures the Regulation asks for, for every year in which any of them is not zero.",
+    ]);
+    // The sentence that waited for korbat to open is gone: 3f carries an order out within the hour.
+    expect(bodyOf(terms, "Terrorist content")).not.toContain("once korbat is open to the public");
   });
 
   test("Your data keeps what it said and gains 3c's paragraphs; the human check is named for a report sent signed out too", () => {
@@ -355,9 +384,10 @@ describe("the terms' sections", () => {
 
 describe("3e's sections and sentences (design, W.7)", () => {
   test("Who can use korbat names what another account may not carry on, and points to the section that says it", () => {
-    expect(bodyOf(terms, "Who can use korbat")).toBe(
+    // 3f's sentence on the Member State follows it (the block below).
+    expect(bodyOf(terms, "Who can use korbat").startsWith(
       "You must be at least 16 years old. You can use a pseudonym. One person may hold more than one account, but not to carry on what another of their accounts was suspended or terminated for (Suspension and termination).",
-    );
+    )).toBe(true);
     expect(bodyOf(terms, "Who can use korbat")).not.toContain("to evade a suspension");
   });
 
@@ -439,8 +469,96 @@ describe("3e's sections and sentences (design, W.7)", () => {
   });
 });
 
+describe("3f's sections and sentences (design, W.6)", () => {
+  test("Authorities' orders holds the design's four paragraphs", () => {
+    expect(paragraphsOf(terms, "Authorities' orders")).toEqual([
+      "An authority or a court of the European Union or of one of its countries can order korbat to act against a post, or to give information about an account. korbat carries such an order out within the time the law sets and checks that it comes from the authority it names; if it does not, korbat reinstates the post and tells you. A removal order for terrorist content leaves korbat no choice, and has to be carried out within one hour, so korbat may act on it before that check is finished. Any other order korbat checks first, and carries out because the law under which it was issued requires it. korbat does not assess the post under its own rules when it carries out an order: such an order is not a decision of korbat's.",
+      "So korbat gives no reasons of its own for it, and korbat's appeal does not apply. You get a notice instead, under Settings, Cases, announced by an email that says only that there is one. The notice says which authority the order names, under which law, on which day and under which reference, and whether korbat has confirmed that it comes from that authority. It gives the authority's reasons and the ways to challenge the order, in the authority's own words, as soon as korbat has them; when korbat adds them later it sends you an email, and the notice says since when it has held them. The notice also says how to ask korbat for a copy of the order.",
+      "An order can forbid korbat to tell you about it for a time. Then korbat keeps the post from you as from everyone, tells you nothing, and can say nothing about the post by email either. For a removal order the law sets that time (Terrorist content); for another order the authority that issued it does, and korbat tells you when that authority allows. While korbat may not tell you of an order, it cannot tell you of a decision it takes about the same post under its own rules, or answer an appeal you made about that post before: you get those together with the notice.",
+      "korbat lifts what it did only when the authority withdraws the order, when a court annuls it, when the authority of korbat's own country finds that an order from another country infringes the law, when the order turns out not to be authentic, or when korbat disabled a post that the order did not name. For that last case write to the address under Contact, from the email address of your account. When korbat's own rules apply to the same post, that is a second decision, with its own statement of reasons and its own appeal. korbat cannot act for one country alone, so an order takes effect everywhere korbat is available.",
+    ]);
+  });
+
+  test("Contact point for authorities prints the build's address; the languages are left out while the state's entry declares none", () => {
+    expect(terms.CONTACT_POINT).toBe(CONTACT_POINT);
+    expect(contracts.STATE_FACTS.DE!.languages).toBeNull();
+    expect(paragraphsOf(terms, "Contact point for authorities")).toEqual([
+      `Authorities of the Member States, the European Commission and the European Board for Digital Services reach korbat at ${CONTACT_POINT} (Article 11 of the Digital Services Act; Article 15 of Regulation (EU) 2021/784). This address is for authorities. Everyone else writes to the address under Contact, and reports content with the report form.`,
+    ]);
+  });
+
+  test("Who can use korbat names the build's Member State by its name in STATE_FACTS; What you can post points to Authorities' orders", () => {
+    expect(bodyOf(terms, "Who can use korbat")).toBe(
+      "You must be at least 16 years old. You can use a pseudonym. One person may hold more than one account, but not to carry on what another of their accounts was suspended or terminated for (Suspension and termination). korbat is established in Germany and offers its service there only.",
+    );
+    expect(bodyOf(terms, "What you can post")).toContain("The one restriction that is not korbat's decision is an authority's order (Authorities' orders).");
+  });
+
+  test("Appeals says that korbat's appeal does not apply to an order, and when a held answer and a held decision's appeal count from", () => {
+    const appeals = paragraphsOf(terms, "Appeals");
+    const at = appeals.indexOf(
+      "korbat's appeal does not apply to what korbat does on an authority's order. If such an order forbids korbat to tell you about a post, korbat's answer to an appeal you made about that post reaches you only when it may tell you of the order; your time to appeal a decision you are told of late counts from the day you are told.",
+    );
+    expect(at).toBeGreaterThan(-1);
+    // Before the courts, which stay the section's last word.
+    expect(at).toBe(appeals.length - 2);
+  });
+
+  test("Your data gains the four paragraphs and the periods of what concerns authorities, before the export's paragraph", () => {
+    const data = paragraphsOf(terms, "Your data");
+    const added = [
+      "Two things the law can oblige korbat to keep for a time when you delete your account; everything else is deleted at once. First, your email address: when korbat has sealed images of your account, the law may oblige it to report them to the authorities. Until it has done so, or has decided that it need not, and for seven days at most, korbat keeps the address, and nothing else of the account; it uses it for that report alone, and the email that confirms your deletion tells you. You can write to korbat about this at the address under Contact, complain to a data protection authority, and go to court. Second, a post that an authority's order obliges korbat to preserve: korbat keeps it, with its images, until that time ends (Terrorist content), also after your account is gone.",
+      "korbat keeps a record of every report it makes to an authority and of everything it hands to one: which duty, which authority, when, both references, what was asked for and which kinds of data, never a copy of the data. It keeps these records and its records of authorities' orders for three years after the matter's last event, an order's record for as long as its measure stands, and a record that says you may not be told of something for as long as that holds. korbat records when a message reaches its contact point for authorities, never who sent it or what it says, and deletes that record 30 days after the message was handled.",
+      "When an authority lawfully asks who holds an account, korbat gives the handle, the email address and the day the account was created. korbat also holds when and from which kind of device an account signed in; it gives those only when an order names them and the law requires it, and its record says so. korbat tells you when it has given an authority information about your account, with the authority's reasons and the ways to challenge its order, unless the order, or the law under which it was issued, forbids telling you or delays it; korbat records which of these applies and on what basis. While korbat may not tell you, its answer to a data request of yours leaves the matter out, and korbat keeps the reason on record.",
+      "If korbat has to restore its database from a backup, it may have to take a decision about you again; the decision then says so.",
+      "The periods for what concerns authorities: content disabled under a removal order is kept six months and one day from the disabling, and from the new disabling when it was reinstated and disabled again, longer on an authority's or a court's request, and is then erased. An order's records, and the records of a notification or a production, are kept three years after the matter's last event; an order's never while its measure stands, and a record of an authority's demand that a person is not told never while that demand holds. The record of a message at the contact point for authorities is kept 30 days, counted from the day the message was handled; the record of a message nobody handled is kept until a person has closed it. A gap a restore left is kept 12 months when it was closed as not needed or imported; a gap that a decision taken again closed is kept as long as that decision. The email address of a deleted account is kept while a report is owed, seven days at most.",
+    ];
+    const at = data.indexOf(added[0]!);
+    expect(at).toBeGreaterThan(0);
+    expect(data.slice(at, at + added.length)).toEqual(added);
+    expect(data[at + added.length]).toMatch(/^Your account's export holds/);
+  });
+
+  describe("with other values of the build's two arguments and of STATE_FACTS", () => {
+    /** The terms module as a build with these arguments, and these facts of the states, makes it. */
+    async function built(env: { point?: string; state?: string }, facts?: Record<string, unknown>): Promise<TermsModule> {
+      const saved = { point: process.env.EXPO_PUBLIC_CONTACT_POINT, state: process.env.EXPO_PUBLIC_HOME_STATE };
+      vi.resetModules();
+      if (env.point === undefined) delete process.env.EXPO_PUBLIC_CONTACT_POINT;
+      else process.env.EXPO_PUBLIC_CONTACT_POINT = env.point;
+      if (env.state === undefined) delete process.env.EXPO_PUBLIC_HOME_STATE;
+      else process.env.EXPO_PUBLIC_HOME_STATE = env.state;
+      if (facts) vi.doMock("@korbat/contracts", async (importOriginal) => ({ ...(await importOriginal<Contracts>()), STATE_FACTS: facts }));
+      try {
+        return await import("../src/lib/terms");
+      } finally {
+        vi.doUnmock("@korbat/contracts");
+        process.env.EXPO_PUBLIC_CONTACT_POINT = saved.point;
+        process.env.EXPO_PUBLIC_HOME_STATE = saved.state;
+      }
+    }
+
+    test("without them the terms print no contact point and name no state, and every other section stands", async () => {
+      const bare = await built({});
+      const titles = bare.TERMS_SECTIONS.map((section) => section.title);
+      expect(titles).not.toContain("Contact point for authorities");
+      expect(titles).toEqual(terms.TERMS_SECTIONS.map((section) => section.title).filter((title) => title !== "Contact point for authorities"));
+      expect(bodyOf(bare, "Who can use korbat")).not.toContain("korbat is established in");
+      expect(bare.CONTACT_POINT).toBe("");
+    });
+
+    test("with the state's languages declared, the contact point names them; a state the contracts do not fill in is named by its code", async () => {
+      const declared = await built({ point: CONTACT_POINT, state: "DE" }, { DE: { ...contracts.STATE_FACTS.DE!, languages: ["English", "German"] } });
+      expect(bodyOf(declared, "Contact point for authorities")).toContain(`reach korbat at ${CONTACT_POINT} (Article 11 of the Digital Services Act; Article 15 of Regulation (EU) 2021/784), in English and German. This address is for authorities.`);
+      const unknown = await built({ point: CONTACT_POINT, state: "AT" });
+      expect(bodyOf(unknown, "Who can use korbat")).toContain("korbat is established in AT and offers its service there only.");
+      expect(bodyOf(unknown, "Contact point for authorities")).toContain(`(Article 11 of the Digital Services Act; Article 15 of Regulation (EU) 2021/784). This address`);
+    });
+  });
+});
+
 describe("the table tests: the terms' numbers, rules, measures and outcomes are their constants'", () => {
-  test("the table of numbers names every number of NOTICE_LIMITS, CSAM_NOTICE_MAX_ACCOUNTS, SUSPECT_EARLIER_MONTHS, APPEAL_MONTHS, DAILY_LIMITS, RETENTION, STANDING_RULES and REPLY_AIM_HOURS", () => {
+  test("the table of numbers names every number of NOTICE_LIMITS, CSAM_NOTICE_MAX_ACCOUNTS, SUSPECT_EARLIER_MONTHS, APPEAL_MONTHS, DAILY_LIMITS, RETENTION, STANDING_RULES and REPLY_AIM_HOURS, and the two of ORDER_RULES the terms print", () => {
     expect([...new Set(numbersTable(contracts).map((row) => row.constant))].sort()).toEqual(constantPaths(contracts).sort());
   });
 
@@ -466,13 +584,18 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     expect(text["Reporting in bad faith"]).toContain("If at least five of the reports you sent under the rules within 90 days are marked, and they are at least half of the reports you sent under the rules in that time");
     expect(text["Handles"]).toContain("a placeholder that begins with retired_,");
     expect(text["Your data"]).toContain("a strike counts for 90 days, a suspension counts toward the next one for 365 days, a warning about reporting for 90 days.");
+    // 3f's numbers as a reader meets them.
+    expect(text["Terrorist content"]).toContain("korbat keeps it, with its images and a copy of its text, for six months from the disabling");
+    expect(text["Your data"]).toContain("and for seven days at most, korbat keeps the address");
+    expect(text["Your data"]).toContain("A gap a restore left is kept 12 months when it was closed as not needed or imported");
   });
 
-  test("the terms name no measure and no period the constants lack: no preservation for an order and no ban; every kind of the ledger is quoted; and no number but the constants', the emergency switch's 48 hours and the Regulation's own", () => {
+  test("the terms name no measure the constants lack and no ban; every kind of the ledger is quoted; and no number but the constants', the emergency switch's 48 hours and the Regulation's own", () => {
     const text = moderationText(terms);
     const all = Object.values(text).join(" ");
-    // 3e names strikes, suspensions and retired handles (W.7); an order's preservation is 3f's, and korbat bans nobody.
-    for (const absent of [/preserv/i, /\bban(s|ned)?\b/i]) expect(absent.test(all), String(absent)).toBe(false);
+    // 3e names strikes, suspensions and retired handles (W.7), 3f an order's preservation (W.6); korbat bans nobody.
+    expect(all).toMatch(/preserv/i);
+    for (const absent of [/\bban(s|ned)?\b/i]) expect(absent.test(all), String(absent)).toBe(false);
     // The quoted labels are the ledger's 24 kinds (3f adds the order's measure and its reversal) and nothing else.
     const labels = Object.values(LEADS).flatMap((lead) => labelsIn(measuresSentence(terms, lead)));
     expect([...labels].sort()).toEqual(contracts.ACTION_KINDS.map((kind) => contracts.MEASURES[kind].label).sort());
@@ -483,16 +606,20 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       else if (value !== null && typeof value === "object") Object.values(value).forEach(collect);
     };
     collect([contracts.NOTICE_LIMITS, contracts.DAILY_LIMITS, contracts.RETENTION, contracts.CSAM_NOTICE_MAX_ACCOUNTS, contracts.SUSPECT_EARLIER_MONTHS, contracts.APPEAL_MONTHS, contracts.STANDING_RULES, contracts.REPLY_AIM_HOURS]);
+    collect([contracts.ORDER_RULES.reportHoldDays, contracts.ORDER_RULES.preserveMarginDays]);
     const outside = Object.entries(text)
       .filter(([title]) => title !== "The rules")
       .map(([, body]) => body)
       .join(" ")
+      .replace(/Article [0-9]+ of /g, " ")
       .replace(/Article [0-9]+\([0-9]+\)|Regulation \(EU\) [0-9]+\/[0-9]+/g, " ")
       .replace(/\bR[1-6]\b/g, " ");
     const typed = (outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits));
     // The age of an account under the emergency switch has no constant: the queue's own query holds the same 48 hours.
-    expect(typed).toEqual(["48"]);
+    // 3f: and the scrutiny's 48 hours, TCO Art. 4(4)'s own period.
+    expect(typed).toEqual(["48", "48"]);
     expect(text["Reports and notices"]).toContain("from accounts under 48 hours old");
+    expect(text["Terrorist content"]).toContain("within 48 hours of receiving its reasons");
   });
 
   describe("with other numbers, another rulebook, other labels and other phrases in the constants", () => {
@@ -518,6 +645,8 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
           RETENTION: { ...(renumber(actual.RETENTION) as object), replyText: "for the period of a reply's text" },
           STANDING_RULES: renumber(actual.STANDING_RULES),
           REPLY_AIM_HOURS: renumber(actual.REPLY_AIM_HOURS),
+          // 3f: the two numbers of ORDER_RULES the terms print by themselves (the others through RETENTION).
+          ORDER_RULES: renumber(actual.ORDER_RULES),
           ACCOUNT_MEASURE_SCOPE: { retired: "the phrase of a retirement.", measure: "the phrase of an account measure." },
           RETIRED_HANDLE_PREFIX: "gone_",
           APPEAL_MONTHS: renumber(actual.APPEAL_MONTHS),
@@ -549,6 +678,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       expect(changed.contracts.STANDING_RULES.strikeDays).not.toBe(contracts.STANDING_RULES.strikeDays);
       expect(changed.contracts.STANDING_RULES.ladderDays).toHaveLength(3);
       expect(changed.contracts.APPEAL_MONTHS).toBeGreaterThan(100);
+      expect(changed.contracts.ORDER_RULES.reportHoldDays).toBeGreaterThan(100);
       expect(changed.rules.RULES_VERSION).toBe(9);
       expect(changed.terms).not.toBe(terms);
     });
@@ -588,8 +718,9 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       // 3e prints two numbers worked out from a constant: the earlier strikes after a suspension, and the share as a percentage.
       collect([c.NOTICE_LIMITS, c.DAILY_LIMITS, c.RETENTION, c.CSAM_NOTICE_MAX_ACCOUNTS, c.SUSPECT_EARLIER_MONTHS, c.APPEAL_MONTHS, c.APPEAL_MONTHS + Math.ceil(c.RETENTION.intakeDays / 30), changed.rules.RULES_VERSION]);
       collect([c.STANDING_RULES, c.REPLY_AIM_HOURS, c.STANDING_RULES.ladderStrikes - 1, c.STANDING_RULES.reportWarnShare * 100]);
-      const outside = all.replace(/Article [0-9]+\([0-9]+\)|Regulation \(EU\) [0-9]+\/[0-9]+/g, " ").replace(/\bR[1-6]\b/g, " ");
-      expect((outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual(["48"]);
+      collect([c.ORDER_RULES.reportHoldDays, c.ORDER_RULES.preserveMarginDays]);
+      const outside = all.replace(/Article [0-9]+ of /g, " ").replace(/Article [0-9]+\([0-9]+\)|Regulation \(EU\) [0-9]+\/[0-9]+/g, " ").replace(/\bR[1-6]\b/g, " ");
+      expect((outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual(["48", "48"]);
     });
   });
 });
@@ -602,7 +733,8 @@ describe("the terms page", () => {
     let at = 0;
     for (const section of terms.TERMS_SECTIONS) {
       // Each heading after the one before it, with its paragraphs behind it in order.
-      const heading = out.indexOf(`>${section.title}</`, at);
+      // A title's apostrophe is written as the markup escapes it (3f: "Authorities' orders").
+      const heading = out.indexOf(`>${section.title.replaceAll("'", "&#x27;")}</`, at);
       expect(heading, section.title).toBeGreaterThan(at);
       at = heading;
       let within = textOf(out.slice(heading));
@@ -625,5 +757,46 @@ describe("the terms page", () => {
     expect(text.indexOf("Your account's export holds")).toBeLessThan(text.indexOf("Contact Write to korbat"));
     expect(text.indexOf("Contact Write to korbat")).toBeLessThan(text.indexOf(CONTACT_WORDS.report));
     expect(out).toContain('href="/report"');
+  });
+});
+
+describe("the web build's two arguments for the terms (3f, Task 7): the contact point for authorities and the home state", () => {
+  const REPO = path.resolve(import.meta.dirname, "..", "..", "..");
+  const repo = (...parts: string[]) => readFileSync(path.join(REPO, ...parts), "utf8");
+
+  test("the terms read both from the build, and both example files carry the development values: no contact point, the API's state", () => {
+    const source = repo("apps", "app", "src", "lib", "terms.ts");
+    expect(source).toContain('export const CONTACT_POINT = process.env.EXPO_PUBLIC_CONTACT_POINT ?? "";');
+    expect(source).toContain('export const HOME_STATE = process.env.EXPO_PUBLIC_HOME_STATE ?? "";');
+    const infra = repo("infra", ".env.example");
+    expect(infra).toMatch(/^WEB_CONTACT_POINT=$/m);
+    expect(infra).toMatch(/^WEB_HOME_STATE=DE$/m);
+    // The same two values the API holds, which the build cannot read.
+    expect(infra).toMatch(/^API_CONTACT_POINT=$/m);
+    expect(infra).toMatch(/^API_HOME_STATE=DE$/m);
+    const app = repo("apps", "app", ".env.example");
+    expect(app).toMatch(/^EXPO_PUBLIC_CONTACT_POINT=$/m);
+    expect(app).toMatch(/^EXPO_PUBLIC_HOME_STATE=DE$/m);
+  });
+
+  test("the compose service passes both, neither required; the web image checks each when set and passes both to the export", () => {
+    const compose = repo("infra", "compose.yml");
+    expect(compose).toContain("EXPO_PUBLIC_CONTACT_POINT: ${WEB_CONTACT_POINT:-}");
+    expect(compose).toContain("EXPO_PUBLIC_HOME_STATE: ${WEB_HOME_STATE:-}");
+    const dockerfile = repo("infra", "caddy", "Dockerfile");
+    for (const line of [
+      "ARG EXPO_PUBLIC_CONTACT_POINT=",
+      "ARG EXPO_PUBLIC_HOME_STATE=",
+      'RUN case "$EXPO_PUBLIC_CONTACT_POINT" in "") ;; *?@?*.?*) ;; *) echo "the EXPO_PUBLIC_CONTACT_POINT build argument must be empty or an email address" >&2; exit 1;; esac',
+      `RUN case "$EXPO_PUBLIC_HOME_STATE" in "") ;; [A-Z][A-Z]) ;; *) echo "the EXPO_PUBLIC_HOME_STATE build argument must be empty or a Member State's two-letter code" >&2; exit 1;; esac`,
+      'RUN if [ -n "$EXPO_PUBLIC_CONTACT_POINT" ] && [ -z "$EXPO_PUBLIC_HOME_STATE" ]; then echo "EXPO_PUBLIC_CONTACT_POINT needs EXPO_PUBLIC_HOME_STATE: the terms name the state whose authorities write to it" >&2; exit 1; fi',
+      'RUN if [ "$KORBAT_ENV" = "production" ] && [ -n "$EXPO_PUBLIC_CONTACT_POINT" ]; then case "$(printf %s "${EXPO_PUBLIC_CONTACT_POINT##*@}" | tr A-Z a-z)" in *.local|*.localhost|*.test|*.invalid|*.example|example.com|example.org|example.net) echo "EXPO_PUBLIC_CONTACT_POINT is a placeholder address; a production build needs the address authorities write to" >&2; exit 1;; esac; fi',
+      'EXPO_PUBLIC_CONTACT_POINT="$EXPO_PUBLIC_CONTACT_POINT" EXPO_PUBLIC_HOME_STATE="$EXPO_PUBLIC_HOME_STATE" npx expo export --platform web',
+    ]) {
+      expect(dockerfile, line).toContain(line);
+      // Each check after KORBAT_ENV is declared and before the export.
+      expect(dockerfile.indexOf("ARG KORBAT_ENV"), line).toBeLessThan(dockerfile.indexOf(line));
+    }
+    expect(dockerfile.indexOf("needs EXPO_PUBLIC_HOME_STATE")).toBeLessThan(dockerfile.indexOf("npx expo export"));
   });
 });

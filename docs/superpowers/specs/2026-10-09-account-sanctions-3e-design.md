@@ -2133,3 +2133,12 @@ The dry run built this design task by task in a scratch clone (2026-10-09 to 202
 - **[reports.marked] (9.4).** Its second sentence, 'You can ask for a re-examination.', is printed only while a re-examination of the item is open; otherwise the line is its first sentence alone (`STANDING_TEXTS.reports.markedClosed`).
 - **The console's reply row of a termination (8.5).** A late reply to a termination reads 'after the start: the termination runs' and names no end.
 - **Lab C (12.3).** C1's wave behind a holder that only locks the row is asserted (no write commits at or after the start), and two further waves run on accounts of their own, behind a holder that changes the other party's rows and behind a decision that holds the post FOR UPDATE; each of the three waves sends every route of 7.3 that a suspension refuses (post, reply, quote, like, repost, bookmark, follow, the profile's edit, the handle, an upload, the badge, a report under a rule). The integration file `standing-closing.test.ts` holds the same in 24 scenes, and the bound in a test of sixteen likers.
+
+## 20. Changed by 3f (2026-10-17)
+
+`docs/superpowers/specs/2026-10-09-authorities-orders-3f-design.md` changes the deletion's hold, the functions it replaces, the runbook and two words of 3e's.
+
+- **Section 2, row 27** ("no hold") and **section 15's line on 1b 7.6**: a deletion is still never refused or delayed; the address alone is held, for at most seven days, while a report is owed (3f's section 2, row 35; flagged for the owner and counsel, with "no hold" as the stated alternative and one setting, `API_REPORT_HOLD`).
+- **Section 6:** the functions 3f replaces are written from the text "as 3e leaves it"; `measures_in_force`'s list of kinds and `append_confirmed_audit`'s list of actions grow; the enum rule binds 3f's six migrations (0026 to 0031), and `enum-literals.test.ts` covers them.
+- **Section 13**, Task 7's runbook bullet (c): "whoever has the server still runs `staff.js account-facts` before the admin answers the report, since korbat never holds an account against its deletion" is replaced by the README's: `notification-facts` after the seal for good, with the address held meanwhile. Task 4's tests of `PurgeReport.terminated` gain the member `held` (3f's Task 5).
+- **Section 16** is superseded by 3f's design. **W.3:** an order's redress is version 3's `order` texts. **W.6:** the two staff mails end as 3f's W.4 says.

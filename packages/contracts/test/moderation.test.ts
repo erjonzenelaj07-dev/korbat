@@ -10,6 +10,7 @@ import {
   MEASURE_KINDS,
   ModerationErrorCode,
   NOTICE_LIMITS,
+  ORDER_RULES,
   RETENTION,
   REVERSAL_KINDS,
   REVEAL_REASON_CATEGORIES,
@@ -175,12 +176,25 @@ describe("limits and periods", () => {
       replyText: "until korbat has answered it and its decision can no longer be appealed",
       reportCountDays: 90,
       standingRecord: { strikeDays: 90, ladderMemoryDays: 365, warningDays: 90 },
+      // 3f (design, sections 6.8 and 10.1, W.6): a handled message, what a removal order disabled, an order's and an
+      // authority's records, and a restore gap closed as not needed or imported.
+      contactMessageDays: 30,
+      orderPreserveMonths: 6,
+      orderRecordYears: 3,
+      restoreGapMonths: 12,
     });
     // Content restricted under R4 goes when its restriction is final: the appeal's window.
     expect(RETENTION.r4FinalMonths).toBe(APPEAL_MONTHS);
     // 3e's periods are the standing rules' own numbers, read from STANDING_RULES and never typed twice.
     expect(RETENTION.reportCountDays).toBe(STANDING_RULES.reportFrameDays);
     expect(RETENTION.standingRecord).toEqual({ strikeDays: STANDING_RULES.strikeDays, ladderMemoryDays: STANDING_RULES.ladderMemoryDays, warningDays: STANDING_RULES.reportFrameDays });
+    // 3f's are order_rules()' own numbers, read from ORDER_RULES, which mirrors the function, and never typed twice.
+    expect([RETENTION.contactMessageDays, RETENTION.orderPreserveMonths, RETENTION.orderRecordYears, RETENTION.restoreGapMonths]).toEqual([
+      ORDER_RULES.messageKeepDays,
+      ORDER_RULES.preserveMonths,
+      ORDER_RULES.recordKeepYears,
+      ORDER_RULES.gapKeepMonths,
+    ]);
   });
 });
 

@@ -24,7 +24,18 @@ RUN case "$EXPO_PUBLIC_BADGE" in on|off) ;; *) echo "EXPO_PUBLIC_BADGE must be o
 ARG EXPO_PUBLIC_CONTACT_EMAIL
 RUN case "$EXPO_PUBLIC_CONTACT_EMAIL" in *?@?*.?*) ;; *) echo "the EXPO_PUBLIC_CONTACT_EMAIL build argument must be an email address" >&2; exit 1;; esac
 RUN if [ "$KORBAT_ENV" = "production" ]; then case "$(printf %s "${EXPO_PUBLIC_CONTACT_EMAIL##*@}" | tr A-Z a-z)" in *.local|*.localhost|*.test|*.invalid|*.example|example.com|example.org|example.net) echo "EXPO_PUBLIC_CONTACT_EMAIL is a placeholder address; a production build needs the address people can write to" >&2; exit 1;; esac; fi
-RUN cd apps/app && EXPO_PUBLIC_TURNSTILE_SITE_KEY="$EXPO_PUBLIC_TURNSTILE_SITE_KEY" EXPO_PUBLIC_BADGE="$EXPO_PUBLIC_BADGE" EXPO_PUBLIC_CONTACT_EMAIL="$EXPO_PUBLIC_CONTACT_EMAIL" npx expo export --platform web
+# 3f: the contact point for authorities and the Member State korbat is established in (WEB_CONTACT_POINT and WEB_HOME_STATE
+# in infra/.env), inlined like the contact address for the terms' sections on them: the page is built, so it cannot read
+# the API's settings of the same values. Both may stay empty until the last step of the README's Before going public; the
+# terms then print no contact point and name no state. When set, a point is an address and needs its state, a state is a
+# two-letter code, and a production build refuses a placeholder domain for the point as it does for the contact address.
+ARG EXPO_PUBLIC_CONTACT_POINT=
+ARG EXPO_PUBLIC_HOME_STATE=
+RUN case "$EXPO_PUBLIC_CONTACT_POINT" in "") ;; *?@?*.?*) ;; *) echo "the EXPO_PUBLIC_CONTACT_POINT build argument must be empty or an email address" >&2; exit 1;; esac
+RUN case "$EXPO_PUBLIC_HOME_STATE" in "") ;; [A-Z][A-Z]) ;; *) echo "the EXPO_PUBLIC_HOME_STATE build argument must be empty or a Member State's two-letter code" >&2; exit 1;; esac
+RUN if [ -n "$EXPO_PUBLIC_CONTACT_POINT" ] && [ -z "$EXPO_PUBLIC_HOME_STATE" ]; then echo "EXPO_PUBLIC_CONTACT_POINT needs EXPO_PUBLIC_HOME_STATE: the terms name the state whose authorities write to it" >&2; exit 1; fi
+RUN if [ "$KORBAT_ENV" = "production" ] && [ -n "$EXPO_PUBLIC_CONTACT_POINT" ]; then case "$(printf %s "${EXPO_PUBLIC_CONTACT_POINT##*@}" | tr A-Z a-z)" in *.local|*.localhost|*.test|*.invalid|*.example|example.com|example.org|example.net) echo "EXPO_PUBLIC_CONTACT_POINT is a placeholder address; a production build needs the address authorities write to" >&2; exit 1;; esac; fi
+RUN cd apps/app && EXPO_PUBLIC_TURNSTILE_SITE_KEY="$EXPO_PUBLIC_TURNSTILE_SITE_KEY" EXPO_PUBLIC_BADGE="$EXPO_PUBLIC_BADGE" EXPO_PUBLIC_CONTACT_EMAIL="$EXPO_PUBLIC_CONTACT_EMAIL" EXPO_PUBLIC_CONTACT_POINT="$EXPO_PUBLIC_CONTACT_POINT" EXPO_PUBLIC_HOME_STATE="$EXPO_PUBLIC_HOME_STATE" npx expo export --platform web
 
 # The staff console (apps/admin), in a stage of its own: its page takes no build argument and holds no secret, and its
 # packages never meet the app's. esbuild writes dist/: index.html, favicon.svg and the hashed script and stylesheet.

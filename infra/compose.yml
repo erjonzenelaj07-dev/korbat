@@ -314,6 +314,9 @@ services:
         TUNNEL: ${TUNNEL:-off}
         EXPO_PUBLIC_BADGE: ${WEB_BADGE:-off}
         EXPO_PUBLIC_CONTACT_EMAIL: ${WEB_CONTACT_EMAIL:?set WEB_CONTACT_EMAIL in infra/.env}
+        # 3f: the terms' contact point for authorities and korbat's Member State; neither is required (Before going public).
+        EXPO_PUBLIC_CONTACT_POINT: ${WEB_CONTACT_POINT:-}
+        EXPO_PUBLIC_HOME_STATE: ${WEB_HOME_STATE:-}
     depends_on:
       api: { condition: service_healthy }
     environment:
