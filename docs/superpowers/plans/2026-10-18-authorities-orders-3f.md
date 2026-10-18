@@ -1,0 +1,885 @@
+# korbat — Authorities' Orders (3f) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** What korbat does when an authority writes to it, and how it keeps its own records and comes back from a loss: the contact point's mailbox read by a watcher that rings the phone on call, orders recorded with their clock and given effect within the hour, an author told or held as the order says, what is preserved kept and then ended, records of reports and productions to authorities with the address a report needs held past an account's deletion, the keeper's copy of the audit chain and the restore that takes lost decisions again, the yearly counts, the terms and the runbook.
+
+**Architecture:** Nine commits: the watcher and the alert channel (0026), order records and the clock (0027), giving effect to an order (0028), preservation, retention and the page status (0029), records to authorities (0030), recovery (0031), counts, terms and the record, and what one adversarial review of the built code upheld, in two halves: the database, access, the channel and the services (0032), then the words and the proofs.
+
+**Tech Stack:** Node 24, TypeScript 7, Hono 4.13, zod 4, drizzle and hand-written SQL (SECURITY DEFINER triggers and functions, column grants), PostgreSQL 18, Valkey, ntfy v2.28.0 behind Caddy 2.11, React 19 with esbuild 0.28 for the console and playwright-core 1.63 for its browser check, Expo for the web app, vitest 4. No new package.
+
+**Complete code:** each task's full files, commands and observed output are in `docs/superpowers/prompts/authorities-orders-3f/NN-<slug>.md`, generated from a verified dry run. This plan is the map. Where it and a prompt differ, the prompt wins.
+
+**Spec:** `docs/superpowers/specs/2026-10-09-authorities-orders-3f-design.md`.
+
+---
+
+## File structure
+
+- `apps/admin/src/screens/`: `Contact.tsx` (Task 1), `Order.tsx` (Task 2), `Orders.tsx` (Task 2), `Restore.tsx` (Task 6)
+- `apps/admin/test/`: `contact.test.tsx` (Task 1), `orders.test.tsx` (Task 2), `order-case.test.tsx` (Task 3), `recovery.test.tsx` (Task 6)
+- `apps/api/src/`: `handover.ts` (Task 5)
+- `apps/api/src/cli/`: `orders.ts` (Task 2), `records.ts` (Task 5), `restore.ts` (Task 6), `counts.ts` (Task 7)
+- `apps/api/src/moderation/`: `orders-repo.ts` (Task 1), `orders.ts` (Task 1), `gaps.ts` (Task 6)
+- `apps/api/src/notify/`: `imap.ts` (Task 1), `main.ts` (Task 1), `push.ts` (Task 1)
+- `apps/api/src/staff/`: `orders.ts` (Task 1)
+- `apps/api/test/`: `handover.test.ts` (Task 5), `cli-restore.test.ts` (Task 6)
+- `apps/api/test/integration/`: `alerts-grants.test.ts` (Task 1), `alerts-steps.test.ts` (Task 1), `http-staff-contact.test.ts` (Task 1), `notify-fixtures.ts` (Task 1), `notify-loop.test.ts` (Task 1), `cli-orders.test.ts` (Task 2), `http-staff-orders.test.ts` (Task 2), `orders-clock.test.ts` (Task 2), `orders-correct.test.ts` (Task 2), `orders-fixtures.ts` (Task 2), `orders-grants.test.ts` (Task 2), `orders-hold-end.test.ts` (Task 2), `orders-records.test.ts` (Task 2), `orders-effect.test.ts` (Task 3), `orders-keep.test.ts` (Task 3), `orders-ledger.test.ts` (Task 3), `orders-notice.test.ts` (Task 3), `orders-reinstate.test.ts` (Task 3), `orders-route-walk.test.ts` (Task 3), `http-post-status.test.ts` (Task 4), `orders-preservation.test.ts` (Task 4), `orders-retention.test.ts` (Task 4), `cli-records.test.ts` (Task 5), `records-fixtures.ts` (Task 5), `records-grants.test.ts` (Task 5), `records-hold.test.ts` (Task 5), `records-notifications.test.ts` (Task 5), `http-staff-restore.test.ts` (Task 6), `recovery-export.test.ts` (Task 6), `recovery-gaps.test.ts` (Task 6), `recovery-harness.ts` (Task 6), `recovery-import.test.ts` (Task 6), `cli-counts.test.ts` (Task 7)
+- `apps/api/test/lab/orders/`: `00-roles.sql` (Task 1), `20-proto.sql` (Task 1), `20-tables.sql` (Task 1), `21-helpers.sql` (Task 1), `22-seed.sql` (Task 1), `RUN.txt` (Task 1), `b2-clock.sql` (Task 1), `bd-clock-effect.sql` (Task 1), `c-derivation.sql` (Task 1), `d-waivers.sql` (Task 1), `e-hold.sql` (Task 1), `f1-lost-work.sql` (Task 1), `f2-restore.sql` (Task 1), `make_proto.py` (Task 1), `out-A.txt` (Task 1), `out-B2.txt` (Task 1), `out-BD.txt` (Task 1), `out-C.txt` (Task 1), `out-E.txt` (Task 1), `out-F.txt` (Task 1), `reset.sh` (Task 1), `tail.jsonl` (Task 1)
+- `apps/api/test/notify/`: `fake-imap.ts` (Task 1), `fake-ntfy.ts` (Task 1), `imap.test.ts` (Task 1), `publish.test.ts` (Task 1)
+- `apps/app/src/lib/`: `orders.ts` (Task 3)
+- `apps/app/test/`: `orders.test.tsx` (Task 3)
+- `infra/ntfy/`: `server.yml.example` (Task 1)
+- `packages/contracts/src/`: `orders.ts` (Task 1)
+- `packages/contracts/test/`: `orders.test.ts` (Task 1), `order-records.test.ts` (Task 2), `records.test.ts` (Task 5), `recovery.test.ts` (Task 6)
+- `packages/db/migrations/`: `0026_messages_alerts.sql` (Task 1), `0027_orders.sql` (Task 2), `0028_orders_ledger.sql` (Task 3), `0029_orders_retention.sql` (Task 4), `0030_authority_records.sql` (Task 5), `0031_recovery.sql` (Task 6), `0032_orders_review.sql` (Task 8)
+- `packages/db/migrations/meta/`: `0026_snapshot.json` (Task 1), `0027_snapshot.json` (Task 2), `0028_snapshot.json` (Task 3), `0029_snapshot.json` (Task 4), `0030_snapshot.json` (Task 5), `0031_snapshot.json` (Task 6), `0032_snapshot.json` (Task 8)
+- `scripts/`: `dev-mailbox.mjs` (Task 1)
+
+## Tasks
+
+### Task 1: The watcher and the alert channel
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/01-watcher-and-alert-channel.md`
+
+**Files:**
+- Create: `apps/admin/src/screens/Contact.tsx`
+- Create: `apps/admin/test/contact.test.tsx`
+- Create: `apps/api/src/moderation/orders-repo.ts`
+- Create: `apps/api/src/moderation/orders.ts`
+- Create: `apps/api/src/notify/imap.ts`
+- Create: `apps/api/src/notify/main.ts`
+- Create: `apps/api/src/notify/push.ts`
+- Create: `apps/api/src/staff/orders.ts`
+- Create: `apps/api/test/integration/alerts-grants.test.ts`
+- Create: `apps/api/test/integration/alerts-steps.test.ts`
+- Create: `apps/api/test/integration/http-staff-contact.test.ts`
+- Create: `apps/api/test/integration/notify-fixtures.ts`
+- Create: `apps/api/test/integration/notify-loop.test.ts`
+- Create: `apps/api/test/lab/orders/00-roles.sql`
+- Create: `apps/api/test/lab/orders/20-proto.sql`
+- Create: `apps/api/test/lab/orders/20-tables.sql`
+- Create: `apps/api/test/lab/orders/21-helpers.sql`
+- Create: `apps/api/test/lab/orders/22-seed.sql`
+- Create: `apps/api/test/lab/orders/RUN.txt`
+- Create: `apps/api/test/lab/orders/b2-clock.sql`
+- Create: `apps/api/test/lab/orders/bd-clock-effect.sql`
+- Create: `apps/api/test/lab/orders/c-derivation.sql`
+- Create: `apps/api/test/lab/orders/d-waivers.sql`
+- Create: `apps/api/test/lab/orders/e-hold.sql`
+- Create: `apps/api/test/lab/orders/f1-lost-work.sql`
+- Create: `apps/api/test/lab/orders/f2-restore.sql`
+- Create: `apps/api/test/lab/orders/make_proto.py`
+- Create: `apps/api/test/lab/orders/out-A.txt`
+- Create: `apps/api/test/lab/orders/out-B2.txt`
+- Create: `apps/api/test/lab/orders/out-BD.txt`
+- Create: `apps/api/test/lab/orders/out-C.txt`
+- Create: `apps/api/test/lab/orders/out-E.txt`
+- Create: `apps/api/test/lab/orders/out-F.txt`
+- Create: `apps/api/test/lab/orders/reset.sh`
+- Create: `apps/api/test/lab/orders/tail.jsonl`
+- Create: `apps/api/test/notify/fake-imap.ts`
+- Create: `apps/api/test/notify/fake-ntfy.ts`
+- Create: `apps/api/test/notify/imap.test.ts`
+- Create: `apps/api/test/notify/publish.test.ts`
+- Create: `infra/ntfy/server.yml.example`
+- Create: `packages/contracts/src/orders.ts`
+- Create: `packages/contracts/test/orders.test.ts`
+- Create: `packages/db/migrations/0026_messages_alerts.sql`
+- Create: `packages/db/migrations/meta/0026_snapshot.json`
+- Create: `scripts/dev-mailbox.mjs`
+- Modify: `.gitignore`
+- Modify: `README.md`
+- Modify: `apps/admin/src/App.tsx`
+- Modify: `apps/admin/src/Layout.tsx`
+- Modify: `apps/admin/src/api.ts`
+- Modify: `apps/admin/src/app.css`
+- Modify: `apps/admin/src/messages.ts`
+- Modify: `apps/admin/src/router.ts`
+- Modify: `apps/admin/src/screens/Home.tsx`
+- Modify: `apps/admin/src/ui.tsx`
+- Modify: `apps/admin/test/browser/console.browser.ts`
+- Modify: `apps/admin/test/browser/fixture-api.ts`
+- Modify: `apps/admin/test/browser/watch.ts`
+- Modify: `apps/admin/test/caddyfile.ts`
+- Modify: `apps/admin/test/case-fixtures.ts`
+- Modify: `apps/admin/test/cases.test.tsx`
+- Modify: `apps/admin/test/console-site.test.ts`
+- Modify: `apps/admin/test/fixtures.ts`
+- Modify: `apps/admin/test/screens.test.tsx`
+- Modify: `apps/admin/test/source.test.ts`
+- Modify: `apps/api/.env.example`
+- Modify: `apps/api/build.mjs`
+- Modify: `apps/api/package.json`
+- Modify: `apps/api/src/auth/flows/notifiers.ts`
+- Modify: `apps/api/src/auth/index.ts`
+- Modify: `apps/api/src/config.ts`
+- Modify: `apps/api/src/mail/mailer.ts`
+- Modify: `apps/api/src/mail/templates.ts`
+- Modify: `apps/api/src/moderation/alerts.ts`
+- Modify: `apps/api/src/moderation/cases.ts`
+- Modify: `apps/api/src/moderation/context.ts`
+- Modify: `apps/api/src/moderation/decide.ts`
+- Modify: `apps/api/src/moderation/index.ts`
+- Modify: `apps/api/src/moderation/reveal.ts`
+- Modify: `apps/api/src/staff/routes.ts`
+- Modify: `apps/api/test/architecture.test.ts`
+- Modify: `apps/api/test/config.test.ts`
+- Modify: `apps/api/test/integration/http-staff-decisions.test.ts`
+- Modify: `apps/api/test/integration/moderation-dispatch.test.ts`
+- Modify: `apps/api/test/integration/moderation-fixtures.ts`
+- Modify: `apps/api/test/integration/moderation-intake.test.ts`
+- Modify: `apps/api/test/integration/moderation-retention.test.ts`
+- Modify: `apps/api/test/integration/moderation-schema.test.ts`
+- Modify: `apps/api/test/integration/test-env.ts`
+- Modify: `apps/api/test/lab/README.md`
+- Modify: `apps/api/test/mail/moderation-templates.test.ts`
+- Modify: `apps/api/test/mail/templates.test.ts`
+- Modify: `apps/api/test/moderation-alerts.test.ts`
+- Modify: `apps/api/test/moderation-context.test.ts`
+- Modify: `apps/api/test/moderation-dispatch.test.ts`
+- Modify: `apps/api/test/staff/route-table.test.ts`
+- Modify: `apps/api/test/test-env.test.ts`
+- Modify: `infra/.env.example`
+- Modify: `infra/caddy/Caddyfile`
+- Modify: `infra/caddy/Dockerfile`
+- Modify: `infra/compose.dev.yml`
+- Modify: `infra/compose.yml`
+- Modify: `infra/postgres/init/01-roles.sh`
+- Modify: `packages/contracts/src/index.ts`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/test/appeals.test.ts`
+- Modify: `packages/contracts/test/moderation.test.ts`
+- Modify: `packages/contracts/test/outcomes.test.ts`
+- Modify: `packages/contracts/test/staff-cases.test.ts`
+- Modify: `packages/db/migrations/meta/_journal.json`
+- Modify: `packages/db/src/schema/helpers.ts`
+- Modify: `packages/db/src/schema/safety.ts`
+- Modify: `packages/db/test/schema.test.ts`
+- Modify: `scripts/gen-dev-env.mjs`
+- Modify: `scripts/smoke-auth-stack.mjs`
+- Modify: `scripts/test-db.mjs`
+
+- [ ] **Step 1: Write the failing tests: `apps/admin/test/contact.test.tsx`, `apps/api/test/integration/alerts-grants.test.ts`, `apps/api/test/integration/alerts-steps.test.ts`, `apps/api/test/integration/http-staff-contact.test.ts`, `apps/api/test/integration/notify-fixtures.ts`, `apps/api/test/integration/notify-loop.test.ts`, `apps/api/test/lab/orders/00-roles.sql`, `apps/api/test/lab/orders/20-proto.sql`, `apps/api/test/lab/orders/20-tables.sql`, `apps/api/test/lab/orders/21-helpers.sql`, `apps/api/test/lab/orders/22-seed.sql`, `apps/api/test/lab/orders/RUN.txt`, `apps/api/test/lab/orders/b2-clock.sql`, `apps/api/test/lab/orders/bd-clock-effect.sql`, `apps/api/test/lab/orders/c-derivation.sql`, `apps/api/test/lab/orders/d-waivers.sql`, `apps/api/test/lab/orders/e-hold.sql`, `apps/api/test/lab/orders/f1-lost-work.sql`, `apps/api/test/lab/orders/f2-restore.sql`, `apps/api/test/lab/orders/make_proto.py`, `apps/api/test/lab/orders/out-A.txt`, `apps/api/test/lab/orders/out-B2.txt`, `apps/api/test/lab/orders/out-BD.txt`, `apps/api/test/lab/orders/out-C.txt`, `apps/api/test/lab/orders/out-E.txt`, `apps/api/test/lab/orders/out-F.txt`, `apps/api/test/lab/orders/reset.sh`, `apps/api/test/lab/orders/tail.jsonl`, `apps/api/test/notify/fake-imap.ts`, `apps/api/test/notify/fake-ntfy.ts`, `apps/api/test/notify/imap.test.ts`, `apps/api/test/notify/publish.test.ts`, `packages/contracts/test/orders.test.ts`, `apps/admin/test/browser/console.browser.ts`, `apps/admin/test/browser/fixture-api.ts`, `apps/admin/test/browser/watch.ts`, `apps/admin/test/caddyfile.ts`, `apps/admin/test/case-fixtures.ts`, `apps/admin/test/cases.test.tsx`, `apps/admin/test/console-site.test.ts`, `apps/admin/test/fixtures.ts`, `apps/admin/test/screens.test.tsx`, `apps/admin/test/source.test.ts`, `apps/api/test/architecture.test.ts`, `apps/api/test/config.test.ts`, `apps/api/test/integration/http-staff-decisions.test.ts`, `apps/api/test/integration/moderation-dispatch.test.ts`, `apps/api/test/integration/moderation-fixtures.ts`, `apps/api/test/integration/moderation-intake.test.ts`, `apps/api/test/integration/moderation-retention.test.ts`, `apps/api/test/integration/moderation-schema.test.ts`, `apps/api/test/integration/test-env.ts`, `apps/api/test/lab/README.md`, `apps/api/test/mail/moderation-templates.test.ts`, `apps/api/test/mail/templates.test.ts`, `apps/api/test/moderation-alerts.test.ts`, `apps/api/test/moderation-context.test.ts`, `apps/api/test/moderation-dispatch.test.ts`, `apps/api/test/staff/route-table.test.ts`, `apps/api/test/test-env.test.ts`, `packages/contracts/test/appeals.test.ts`, `packages/contracts/test/moderation.test.ts`, `packages/contracts/test/outcomes.test.ts`, `packages/contracts/test/staff-cases.test.ts`, `packages/db/test/schema.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `apps/admin/src/screens/Contact.tsx`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/orders.ts`, `apps/api/src/notify/imap.ts`, `apps/api/src/notify/main.ts`, `apps/api/src/notify/push.ts`, `apps/api/src/staff/orders.ts`, `infra/ntfy/server.yml.example`, `packages/contracts/src/orders.ts`, `packages/db/migrations/0026_messages_alerts.sql`, `packages/db/migrations/meta/0026_snapshot.json`, `scripts/dev-mailbox.mjs`, `.gitignore`, `README.md`, `apps/admin/src/App.tsx`, `apps/admin/src/Layout.tsx`, `apps/admin/src/api.ts`, `apps/admin/src/app.css`, `apps/admin/src/messages.ts`, `apps/admin/src/router.ts`, `apps/admin/src/screens/Home.tsx`, `apps/admin/src/ui.tsx`, `apps/api/.env.example`, `apps/api/build.mjs`, `apps/api/package.json`, `apps/api/src/auth/flows/notifiers.ts`, `apps/api/src/auth/index.ts`, `apps/api/src/config.ts`, `apps/api/src/mail/mailer.ts`, `apps/api/src/mail/templates.ts`, `apps/api/src/moderation/alerts.ts`, `apps/api/src/moderation/cases.ts`, `apps/api/src/moderation/context.ts`, `apps/api/src/moderation/decide.ts`, `apps/api/src/moderation/index.ts`, `apps/api/src/moderation/reveal.ts`, `apps/api/src/staff/routes.ts`, `infra/.env.example`, `infra/caddy/Caddyfile`, `infra/caddy/Dockerfile`, `infra/compose.dev.yml`, `infra/compose.yml`, `infra/postgres/init/01-roles.sh`, `packages/contracts/src/index.ts`, `packages/contracts/src/moderation.ts`, `packages/db/migrations/meta/_journal.json`, `packages/db/src/schema/helpers.ts`, `packages/db/src/schema/safety.ts`, `scripts/gen-dev-env.mjs`, `scripts/smoke-auth-stack.mjs`, `scripts/test-db.mjs`**
+- [ ] **Step 4: notify-env: run the `notify-env` command in the prompt, expecting `notify-env-ok`**
+- [ ] **Step 5: notify-postgres: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait postgres > /dev/null 2>&1; echo pg-exit=$?`, expecting `pg-exit=0`**
+- [ ] **Step 6: notify-role: run the `notify-role` command in the prompt, expecting `GRANT`, `role-ok`**
+- [ ] **Step 7: notify-grant: run the `notify-grant` command in the prompt, expecting `notify-grant=true`**
+- [ ] **Step 8: install: run `pnpm install --config.package-import-method=copy`, expecting `Done in`**
+- [ ] **Step 9: frozen-install: run `pnpm install --frozen-lockfile`, expecting `Done in`**
+- [ ] **Step 10: lockfile-age: run `node scripts/check-lockfile-age.mjs --base HEAD`, expecting `all at least 7 days old`**
+- [ ] **Step 11: typecheck: run `pnpm typecheck`**
+- [ ] **Step 12: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 13: generate: run `pnpm --filter @korbat/db generate`, expecting `No schema changes`**
+- [ ] **Step 14: apply-migrations: run the `apply-migrations` command in the prompt, expecting `migrations applied`, `count=27`**
+- [ ] **Step 15: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 16: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  47 passed (47)`**
+- [ ] **Step 17: test-database-fresh: run `node scripts/test-db.mjs --fresh -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `test database ready: korbat_test`**
+- [ ] **Step 18: integration-fresh: run the `integration-fresh` command in the prompt, expecting `Tests  `**
+- [ ] **Step 19: test-database-upgrade: run `node scripts/test-db.mjs --upgrade-from 25 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations up to 0025_standing_review applied and committed`, `later migrations applied as one batch`, `test database ready: korbat_test`**
+- [ ] **Step 20: integration-upgraded: run the `integration-upgraded` command in the prompt, expecting `Tests  `**
+- [ ] **Step 21: timing: run the `timing` command in the prompt, expecting `timing-ok=1`**
+- [ ] **Step 22: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 23: stack-down: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml down && echo down-ok`, expecting `down-ok`**
+- [ ] **Step 24: build: run the `build` command in the prompt, expecting `build-exit=0`**
+- [ ] **Step 25: stack-up: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait && echo up-ok`, expecting `up-ok`**
+- [ ] **Step 26: test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 27: smoke: run the `smoke` command in the prompt, expecting `smoke test passed`**
+- [ ] **Step 28: stack-stop: run the `stack-stop` command in the prompt, expecting `postgres-1 Up`**
+- [ ] **Step 29: Commit: `feat(db,contracts,api,admin,infra): the watcher and the alert channel: migration 0026_messages_alerts stops unless the role korbat_notify exists with USAGE on public, then adds order_rules(), contact_messages with its insert, guard and alert triggers and the flood bound, alert_outbox with its two legs and step key, notify_state, notify_folders and alert_steps() for a message's escalation and reminders and the daily test; the notify service reads INBOX and the junk folder over IMAP, two numbers a message, and publishes owed rows to ntfy v2.28.0 behind Caddy's push site, which passes only the two topics' subscriptions while the app's and the console's sites refuse the push network; staffAlert writes an outbox row for every 3c and 3e kind, and the alert tick mails the sentence kinds and judges the channel; ORDER_RULES, ALERT_KINDS and ALERT_TEXTS; the console gains Contact point with its close route and Home's authorities lines, checked on a phone at 360 by 740`**
+
+### Task 2: Order records and the clock
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/02-order-records-and-clock.md`
+
+**Files:**
+- Create: `apps/admin/src/screens/Order.tsx`
+- Create: `apps/admin/src/screens/Orders.tsx`
+- Create: `apps/admin/test/orders.test.tsx`
+- Create: `apps/api/src/cli/orders.ts`
+- Create: `apps/api/test/integration/cli-orders.test.ts`
+- Create: `apps/api/test/integration/http-staff-orders.test.ts`
+- Create: `apps/api/test/integration/orders-clock.test.ts`
+- Create: `apps/api/test/integration/orders-correct.test.ts`
+- Create: `apps/api/test/integration/orders-fixtures.ts`
+- Create: `apps/api/test/integration/orders-grants.test.ts`
+- Create: `apps/api/test/integration/orders-hold-end.test.ts`
+- Create: `apps/api/test/integration/orders-records.test.ts`
+- Create: `packages/contracts/test/order-records.test.ts`
+- Create: `packages/db/migrations/0027_orders.sql`
+- Create: `packages/db/migrations/meta/0027_snapshot.json`
+- Modify: `apps/admin/src/App.tsx`
+- Modify: `apps/admin/src/Layout.tsx`
+- Modify: `apps/admin/src/api.ts`
+- Modify: `apps/admin/src/app.css`
+- Modify: `apps/admin/src/messages.ts`
+- Modify: `apps/admin/src/nav.tsx`
+- Modify: `apps/admin/src/router.ts`
+- Modify: `apps/admin/src/screens/Contact.tsx`
+- Modify: `apps/admin/src/screens/Home.tsx`
+- Modify: `apps/admin/src/step-up.ts`
+- Modify: `apps/admin/src/store.ts`
+- Modify: `apps/admin/test/browser/console.browser.ts`
+- Modify: `apps/admin/test/browser/fixture-api.ts`
+- Modify: `apps/admin/test/browser/watch.ts`
+- Modify: `apps/admin/test/cases.test.tsx`
+- Modify: `apps/admin/test/contact.test.tsx`
+- Modify: `apps/admin/test/fixtures.ts`
+- Modify: `apps/admin/test/source.test.ts`
+- Modify: `apps/api/.env.example`
+- Modify: `apps/api/src/app.ts`
+- Modify: `apps/api/src/auth/context.ts`
+- Modify: `apps/api/src/auth/flows/notifiers.ts`
+- Modify: `apps/api/src/auth/staff/sessions.ts`
+- Modify: `apps/api/src/cli/staff.ts`
+- Modify: `apps/api/src/config.ts`
+- Modify: `apps/api/src/mail/mailer.ts`
+- Modify: `apps/api/src/mail/templates.ts`
+- Modify: `apps/api/src/media/index.ts`
+- Modify: `apps/api/src/media/repo.ts`
+- Modify: `apps/api/src/moderation/alerts.ts`
+- Modify: `apps/api/src/moderation/author-repo.ts`
+- Modify: `apps/api/src/moderation/context.ts`
+- Modify: `apps/api/src/moderation/decide.ts`
+- Modify: `apps/api/src/moderation/index.ts`
+- Modify: `apps/api/src/moderation/links.ts`
+- Modify: `apps/api/src/moderation/orders-repo.ts`
+- Modify: `apps/api/src/moderation/orders.ts`
+- Modify: `apps/api/src/moderation/repo.ts`
+- Modify: `apps/api/src/social/index.ts`
+- Modify: `apps/api/src/social/visibility.ts`
+- Modify: `apps/api/src/staff/orders.ts`
+- Modify: `apps/api/test/auth/flow-harness.ts`
+- Modify: `apps/api/test/config.test.ts`
+- Modify: `apps/api/test/integration/alerts-steps.test.ts`
+- Modify: `apps/api/test/integration/flow-harness.ts`
+- Modify: `apps/api/test/integration/media-gates.test.ts`
+- Modify: `apps/api/test/integration/moderation-author.test.ts`
+- Modify: `apps/api/test/integration/moderation-fixtures.ts`
+- Modify: `apps/api/test/integration/moderation-schema.test.ts`
+- Modify: `apps/api/test/integration/standing-ledger.test.ts`
+- Modify: `apps/api/test/mail/moderation-templates.test.ts`
+- Modify: `apps/api/test/moderation-context.test.ts`
+- Modify: `apps/api/test/moderation-links.test.ts`
+- Modify: `apps/api/test/social/visibility.test.ts`
+- Modify: `apps/api/test/staff/route-table.test.ts`
+- Modify: `infra/.env.example`
+- Modify: `infra/compose.yml`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/src/orders.ts`
+- Modify: `packages/contracts/src/staff.ts`
+- Modify: `packages/contracts/test/moderation.test.ts`
+- Modify: `packages/contracts/test/staff.test.ts`
+- Modify: `packages/db/migrations/meta/_journal.json`
+- Modify: `packages/db/src/schema/content.ts`
+- Modify: `packages/db/src/schema/moderation.ts`
+- Modify: `packages/db/test/enum-literals.test.ts`
+- Modify: `packages/db/test/schema.test.ts`
+- Modify: `scripts/clean-dev-fixtures.mjs`
+
+- [ ] **Step 1: Write the failing tests: `apps/admin/test/orders.test.tsx`, `apps/api/test/integration/cli-orders.test.ts`, `apps/api/test/integration/http-staff-orders.test.ts`, `apps/api/test/integration/orders-clock.test.ts`, `apps/api/test/integration/orders-correct.test.ts`, `apps/api/test/integration/orders-fixtures.ts`, `apps/api/test/integration/orders-grants.test.ts`, `apps/api/test/integration/orders-hold-end.test.ts`, `apps/api/test/integration/orders-records.test.ts`, `packages/contracts/test/order-records.test.ts`, `apps/admin/test/browser/console.browser.ts`, `apps/admin/test/browser/fixture-api.ts`, `apps/admin/test/browser/watch.ts`, `apps/admin/test/cases.test.tsx`, `apps/admin/test/contact.test.tsx`, `apps/admin/test/fixtures.ts`, `apps/admin/test/source.test.ts`, `apps/api/test/auth/flow-harness.ts`, `apps/api/test/config.test.ts`, `apps/api/test/integration/alerts-steps.test.ts`, `apps/api/test/integration/flow-harness.ts`, `apps/api/test/integration/media-gates.test.ts`, `apps/api/test/integration/moderation-author.test.ts`, `apps/api/test/integration/moderation-fixtures.ts`, `apps/api/test/integration/moderation-schema.test.ts`, `apps/api/test/integration/standing-ledger.test.ts`, `apps/api/test/mail/moderation-templates.test.ts`, `apps/api/test/moderation-context.test.ts`, `apps/api/test/moderation-links.test.ts`, `apps/api/test/social/visibility.test.ts`, `apps/api/test/staff/route-table.test.ts`, `packages/contracts/test/moderation.test.ts`, `packages/contracts/test/staff.test.ts`, `packages/db/test/enum-literals.test.ts`, `packages/db/test/schema.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `apps/admin/src/screens/Order.tsx`, `apps/admin/src/screens/Orders.tsx`, `apps/api/src/cli/orders.ts`, `packages/db/migrations/0027_orders.sql`, `packages/db/migrations/meta/0027_snapshot.json`, `apps/admin/src/App.tsx`, `apps/admin/src/Layout.tsx`, `apps/admin/src/api.ts`, `apps/admin/src/app.css`, `apps/admin/src/messages.ts`, `apps/admin/src/nav.tsx`, `apps/admin/src/router.ts`, `apps/admin/src/screens/Contact.tsx`, `apps/admin/src/screens/Home.tsx`, `apps/admin/src/step-up.ts`, `apps/admin/src/store.ts`, `apps/api/.env.example`, `apps/api/src/app.ts`, `apps/api/src/auth/context.ts`, `apps/api/src/auth/flows/notifiers.ts`, `apps/api/src/auth/staff/sessions.ts`, `apps/api/src/cli/staff.ts`, `apps/api/src/config.ts`, `apps/api/src/mail/mailer.ts`, `apps/api/src/mail/templates.ts`, `apps/api/src/media/index.ts`, `apps/api/src/media/repo.ts`, `apps/api/src/moderation/alerts.ts`, `apps/api/src/moderation/author-repo.ts`, `apps/api/src/moderation/context.ts`, `apps/api/src/moderation/decide.ts`, `apps/api/src/moderation/index.ts`, `apps/api/src/moderation/links.ts`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/orders.ts`, `apps/api/src/moderation/repo.ts`, `apps/api/src/social/index.ts`, `apps/api/src/social/visibility.ts`, `apps/api/src/staff/orders.ts`, `infra/.env.example`, `infra/compose.yml`, `packages/contracts/src/moderation.ts`, `packages/contracts/src/orders.ts`, `packages/contracts/src/staff.ts`, `packages/db/migrations/meta/_journal.json`, `packages/db/src/schema/content.ts`, `packages/db/src/schema/moderation.ts`, `scripts/clean-dev-fixtures.mjs`**
+- [ ] **Step 4: typecheck: run `pnpm typecheck`**
+- [ ] **Step 5: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 6: generate: run `pnpm --filter @korbat/db generate`, expecting `No schema changes`**
+- [ ] **Step 7: apply-migrations: run the `apply-migrations` command in the prompt, expecting `migrations applied`, `count=28`**
+- [ ] **Step 8: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 9: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  54 passed (54)`**
+- [ ] **Step 10: test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 11: integration-own: run the `integration-own` command in the prompt, expecting `Tests  `**
+- [ ] **Step 12: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 13: Commit: `feat(db,contracts,api,admin,infra): order records and the clock: migration 0027_orders adds the eight enum values, legal_orders, legal_order_items and legal_order_events with their insert triggers and grants, and the deferred legal_order_events_confirmed, which lets a console's event stand only with its audit row; order_hold_end, order_hold_until, order_preserve_until and the view legal_order_clock; order_event_record and order_correct, the one writer each of the clock's events and of a correction under entry, caution or admin; append_confirmed_audit's five actions and alert_steps() with an order's restart, order_due and order_unverified; the API opens an order from a message or without one, adds links, records the clock's events with the key and corrects without one but under admin; staff.js gains the order commands; HOME_STATE and CONTACT_POINT; the console gains Orders, an order's page, Open an order from this message and Home's deadline lines, checked on a phone at 360 by 740`**
+
+### Task 3: Giving effect to an order
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/03-giving-effect-to-orders.md`
+
+**Files:**
+- Create: `apps/admin/test/order-case.test.tsx`
+- Create: `apps/api/test/integration/orders-effect.test.ts`
+- Create: `apps/api/test/integration/orders-keep.test.ts`
+- Create: `apps/api/test/integration/orders-ledger.test.ts`
+- Create: `apps/api/test/integration/orders-notice.test.ts`
+- Create: `apps/api/test/integration/orders-reinstate.test.ts`
+- Create: `apps/api/test/integration/orders-route-walk.test.ts`
+- Create: `apps/app/src/lib/orders.ts`
+- Create: `apps/app/test/orders.test.tsx`
+- Create: `packages/db/migrations/0028_orders_ledger.sql`
+- Create: `packages/db/migrations/meta/0028_snapshot.json`
+- Modify: `apps/admin/src/App.tsx`
+- Modify: `apps/admin/src/api.ts`
+- Modify: `apps/admin/src/compose.ts`
+- Modify: `apps/admin/src/messages.ts`
+- Modify: `apps/admin/src/screens/Case.tsx`
+- Modify: `apps/admin/src/screens/Composer.tsx`
+- Modify: `apps/admin/src/screens/Home.tsx`
+- Modify: `apps/admin/src/screens/Order.tsx`
+- Modify: `apps/admin/src/step-up.ts`
+- Modify: `apps/admin/src/words.ts`
+- Modify: `apps/admin/test/browser/console.browser.ts`
+- Modify: `apps/admin/test/browser/fixture-api.ts`
+- Modify: `apps/admin/test/case-fixtures.ts`
+- Modify: `apps/admin/test/cases.test.tsx`
+- Modify: `apps/admin/test/orders.test.tsx`
+- Modify: `apps/admin/test/screens.test.tsx`
+- Modify: `apps/admin/test/source.test.ts`
+- Modify: `apps/api/src/auth/flows/notifiers.ts`
+- Modify: `apps/api/src/cli/orders.ts`
+- Modify: `apps/api/src/cli/staff-cases.ts`
+- Modify: `apps/api/src/cli/staff.ts`
+- Modify: `apps/api/src/mail/mailer.ts`
+- Modify: `apps/api/src/mail/templates.ts`
+- Modify: `apps/api/src/media/repo.ts`
+- Modify: `apps/api/src/moderation/access.ts`
+- Modify: `apps/api/src/moderation/alerts.ts`
+- Modify: `apps/api/src/moderation/appeals.ts`
+- Modify: `apps/api/src/moderation/author-repo.ts`
+- Modify: `apps/api/src/moderation/author.ts`
+- Modify: `apps/api/src/moderation/cases.ts`
+- Modify: `apps/api/src/moderation/context.ts`
+- Modify: `apps/api/src/moderation/decide.ts`
+- Modify: `apps/api/src/moderation/dispatch.ts`
+- Modify: `apps/api/src/moderation/index.ts`
+- Modify: `apps/api/src/moderation/intake.ts`
+- Modify: `apps/api/src/moderation/orders-repo.ts`
+- Modify: `apps/api/src/moderation/orders.ts`
+- Modify: `apps/api/src/moderation/repo.ts`
+- Modify: `apps/api/src/moderation/statement-repo.ts`
+- Modify: `apps/api/src/moderation/statement.ts`
+- Modify: `apps/api/src/social/flows/posts.ts`
+- Modify: `apps/api/src/social/repo.ts`
+- Modify: `apps/api/src/staff/orders.ts`
+- Modify: `apps/api/test/integration/audit-verify.test.ts`
+- Modify: `apps/api/test/integration/cli-orders.test.ts`
+- Modify: `apps/api/test/integration/moderation-decide.ts`
+- Modify: `apps/api/test/integration/moderation-fixtures.ts`
+- Modify: `apps/api/test/integration/moderation-retention.test.ts`
+- Modify: `apps/api/test/integration/moderation-schema.test.ts`
+- Modify: `apps/api/test/integration/orders-correct.test.ts`
+- Modify: `apps/api/test/integration/orders-fixtures.ts`
+- Modify: `apps/api/test/integration/staff-signin.test.ts`
+- Modify: `apps/api/test/integration/standing-handles.test.ts`
+- Modify: `apps/api/test/integration/standing-ledger.test.ts`
+- Modify: `apps/api/test/mail/moderation-templates.test.ts`
+- Modify: `apps/api/test/moderation-context.test.ts`
+- Modify: `apps/api/test/staff/route-table.test.ts`
+- Modify: `apps/app/src/components/moderation/CasesLists.tsx`
+- Modify: `apps/app/src/components/moderation/DecisionDetail.tsx`
+- Modify: `apps/app/src/lib/api.ts`
+- Modify: `apps/app/src/lib/moderation.ts`
+- Modify: `apps/app/src/lib/terms.ts`
+- Modify: `apps/app/test/terms.test.tsx`
+- Modify: `packages/contracts/src/account.ts`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/src/orders.ts`
+- Modify: `packages/contracts/src/social.ts`
+- Modify: `packages/contracts/src/staff.ts`
+- Modify: `packages/contracts/test/account.test.ts`
+- Modify: `packages/contracts/test/appeals.test.ts`
+- Modify: `packages/contracts/test/moderation.test.ts`
+- Modify: `packages/contracts/test/order-records.test.ts`
+- Modify: `packages/contracts/test/outcomes.test.ts`
+- Modify: `packages/contracts/test/staff-cases.test.ts`
+- Modify: `packages/contracts/test/staff.test.ts`
+- Modify: `packages/db/migrations/meta/_journal.json`
+- Modify: `packages/rules/src/index.ts`
+- Modify: `packages/rules/src/statement.ts`
+- Modify: `packages/rules/test/rules.test.ts`
+- Modify: `packages/rules/test/statement.test.ts`
+
+- [ ] **Step 1: Write the failing tests: `apps/admin/test/order-case.test.tsx`, `apps/api/test/integration/orders-effect.test.ts`, `apps/api/test/integration/orders-keep.test.ts`, `apps/api/test/integration/orders-ledger.test.ts`, `apps/api/test/integration/orders-notice.test.ts`, `apps/api/test/integration/orders-reinstate.test.ts`, `apps/api/test/integration/orders-route-walk.test.ts`, `apps/app/test/orders.test.tsx`, `apps/admin/test/browser/console.browser.ts`, `apps/admin/test/browser/fixture-api.ts`, `apps/admin/test/case-fixtures.ts`, `apps/admin/test/cases.test.tsx`, `apps/admin/test/orders.test.tsx`, `apps/admin/test/screens.test.tsx`, `apps/admin/test/source.test.ts`, `apps/api/test/integration/audit-verify.test.ts`, `apps/api/test/integration/cli-orders.test.ts`, `apps/api/test/integration/moderation-decide.ts`, `apps/api/test/integration/moderation-fixtures.ts`, `apps/api/test/integration/moderation-retention.test.ts`, `apps/api/test/integration/moderation-schema.test.ts`, `apps/api/test/integration/orders-correct.test.ts`, `apps/api/test/integration/orders-fixtures.ts`, `apps/api/test/integration/staff-signin.test.ts`, `apps/api/test/integration/standing-handles.test.ts`, `apps/api/test/integration/standing-ledger.test.ts`, `apps/api/test/mail/moderation-templates.test.ts`, `apps/api/test/moderation-context.test.ts`, `apps/api/test/staff/route-table.test.ts`, `apps/app/test/terms.test.tsx`, `packages/contracts/test/account.test.ts`, `packages/contracts/test/appeals.test.ts`, `packages/contracts/test/moderation.test.ts`, `packages/contracts/test/order-records.test.ts`, `packages/contracts/test/outcomes.test.ts`, `packages/contracts/test/staff-cases.test.ts`, `packages/contracts/test/staff.test.ts`, `packages/rules/test/rules.test.ts`, `packages/rules/test/statement.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `apps/app/src/lib/orders.ts`, `packages/db/migrations/0028_orders_ledger.sql`, `packages/db/migrations/meta/0028_snapshot.json`, `apps/admin/src/App.tsx`, `apps/admin/src/api.ts`, `apps/admin/src/compose.ts`, `apps/admin/src/messages.ts`, `apps/admin/src/screens/Case.tsx`, `apps/admin/src/screens/Composer.tsx`, `apps/admin/src/screens/Home.tsx`, `apps/admin/src/screens/Order.tsx`, `apps/admin/src/step-up.ts`, `apps/admin/src/words.ts`, `apps/api/src/auth/flows/notifiers.ts`, `apps/api/src/cli/orders.ts`, `apps/api/src/cli/staff-cases.ts`, `apps/api/src/cli/staff.ts`, `apps/api/src/mail/mailer.ts`, `apps/api/src/mail/templates.ts`, `apps/api/src/media/repo.ts`, `apps/api/src/moderation/access.ts`, `apps/api/src/moderation/alerts.ts`, `apps/api/src/moderation/appeals.ts`, `apps/api/src/moderation/author-repo.ts`, `apps/api/src/moderation/author.ts`, `apps/api/src/moderation/cases.ts`, `apps/api/src/moderation/context.ts`, `apps/api/src/moderation/decide.ts`, `apps/api/src/moderation/dispatch.ts`, `apps/api/src/moderation/index.ts`, `apps/api/src/moderation/intake.ts`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/orders.ts`, `apps/api/src/moderation/repo.ts`, `apps/api/src/moderation/statement-repo.ts`, `apps/api/src/moderation/statement.ts`, `apps/api/src/social/flows/posts.ts`, `apps/api/src/social/repo.ts`, `apps/api/src/staff/orders.ts`, `apps/app/src/components/moderation/CasesLists.tsx`, `apps/app/src/components/moderation/DecisionDetail.tsx`, `apps/app/src/lib/api.ts`, `apps/app/src/lib/moderation.ts`, `apps/app/src/lib/terms.ts`, `packages/contracts/src/account.ts`, `packages/contracts/src/moderation.ts`, `packages/contracts/src/orders.ts`, `packages/contracts/src/social.ts`, `packages/contracts/src/staff.ts`, `packages/db/migrations/meta/_journal.json`, `packages/rules/src/index.ts`, `packages/rules/src/statement.ts`**
+- [ ] **Step 4: typecheck: run `pnpm typecheck`**
+- [ ] **Step 5: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 6: generate: run `pnpm --filter @korbat/db generate`, expecting `No schema changes`**
+- [ ] **Step 7: apply-migrations: run the `apply-migrations` command in the prompt, expecting `migrations applied`, `count=29`**
+- [ ] **Step 8: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 9: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  58 passed (58)`**
+- [ ] **Step 10: export: run the `export` command in the prompt, expecting `Exported`**
+- [ ] **Step 11: test-database-fresh: run `node scripts/test-db.mjs --fresh -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `test database ready: korbat_test`**
+- [ ] **Step 12: integration-fresh: run the `integration-fresh` command in the prompt, expecting `Tests  `**
+- [ ] **Step 13: test-database-upgrade: run `node scripts/test-db.mjs --upgrade-from 25 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations up to 0025_standing_review applied and committed`, `later migrations applied as one batch`, `test database ready: korbat_test`**
+- [ ] **Step 14: integration-upgraded: run the `integration-upgraded` command in the prompt, expecting `Tests  `**
+- [ ] **Step 15: timing: run the `timing` command in the prompt, expecting `timing-ok=1`**
+- [ ] **Step 16: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 17: Commit: `feat(db,contracts,rules,api,admin,app): giving effect to an order: migration 0028_orders_ledger adds disable_by_order, reinstate_by_order, the level disabled and the decision kind order; decisions_record, decision_actions_check, decision_holds and moderation_apply take an order decision, which waives recusal and the caps for a cap of its own, is final when taken and refuses an appeal (not_appealable); a notice under Section C is held with every decision about its post and released by order_notices_release; post_preserved freezes what a removal order disabled; the API gives effect with one key at POST /api/staff/orders/:order/effect, reinstates on an admin's correction, releases held notices in the dispatch round and mails the notices; staff.js gains the hold commands; the console gains Disable for an order, Extension received, the order's case with Reinstate and Home's unverified orders; the app renders the notice, its row and its chip`**
+
+### Task 4: Preservation, retention and the page status
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/04-preservation-retention-page-status.md`
+
+**Files:**
+- Create: `apps/api/test/integration/http-post-status.test.ts`
+- Create: `apps/api/test/integration/orders-preservation.test.ts`
+- Create: `apps/api/test/integration/orders-retention.test.ts`
+- Create: `packages/db/migrations/0029_orders_retention.sql`
+- Create: `packages/db/migrations/meta/0029_snapshot.json`
+- Modify: `apps/admin/src/messages.ts`
+- Modify: `apps/admin/src/screens/Composer.tsx`
+- Modify: `apps/admin/src/screens/Order.tsx`
+- Modify: `apps/admin/test/browser/fixture-api.ts`
+- Modify: `apps/admin/test/caddyfile.ts`
+- Modify: `apps/admin/test/case-fixtures.ts`
+- Modify: `apps/admin/test/console-site.test.ts`
+- Modify: `apps/admin/test/order-case.test.tsx`
+- Modify: `apps/admin/test/orders.test.tsx`
+- Modify: `apps/api/src/app.ts`
+- Modify: `apps/api/src/cli/orders.ts`
+- Modify: `apps/api/src/media/index.ts`
+- Modify: `apps/api/src/media/repo.ts`
+- Modify: `apps/api/src/moderation/author.ts`
+- Modify: `apps/api/src/moderation/cases.ts`
+- Modify: `apps/api/src/moderation/orders-repo.ts`
+- Modify: `apps/api/src/moderation/orders.ts`
+- Modify: `apps/api/src/moderation/retention.ts`
+- Modify: `apps/api/src/moderation/statement-repo.ts`
+- Modify: `apps/api/src/social/index.ts`
+- Modify: `apps/api/src/social/routes.ts`
+- Modify: `apps/api/test/integration/cli-orders.test.ts`
+- Modify: `apps/api/test/integration/http-social.test.ts`
+- Modify: `apps/api/test/integration/media-gates.test.ts`
+- Modify: `apps/api/test/integration/moderation-retention.test.ts`
+- Modify: `apps/api/test/integration/moderation-schema.test.ts`
+- Modify: `apps/api/test/lab/README.md`
+- Modify: `apps/api/test/lab/contention.lab.ts`
+- Modify: `infra/.env.example`
+- Modify: `infra/caddy/Caddyfile`
+- Modify: `infra/compose.yml`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/src/orders.ts`
+- Modify: `packages/contracts/test/order-records.test.ts`
+- Modify: `packages/contracts/test/staff-cases.test.ts`
+- Modify: `packages/db/migrations/meta/_journal.json`
+- Modify: `packages/rules/src/statement.ts`
+- Modify: `packages/rules/test/statement.test.ts`
+- Modify: `scripts/smoke-auth-stack.mjs`
+
+- [ ] **Step 1: Write the failing tests: `apps/api/test/integration/http-post-status.test.ts`, `apps/api/test/integration/orders-preservation.test.ts`, `apps/api/test/integration/orders-retention.test.ts`, `apps/admin/test/browser/fixture-api.ts`, `apps/admin/test/caddyfile.ts`, `apps/admin/test/case-fixtures.ts`, `apps/admin/test/console-site.test.ts`, `apps/admin/test/order-case.test.tsx`, `apps/admin/test/orders.test.tsx`, `apps/api/test/integration/cli-orders.test.ts`, `apps/api/test/integration/http-social.test.ts`, `apps/api/test/integration/media-gates.test.ts`, `apps/api/test/integration/moderation-retention.test.ts`, `apps/api/test/integration/moderation-schema.test.ts`, `apps/api/test/lab/README.md`, `apps/api/test/lab/contention.lab.ts`, `packages/contracts/test/order-records.test.ts`, `packages/contracts/test/staff-cases.test.ts`, `packages/rules/test/statement.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `packages/db/migrations/0029_orders_retention.sql`, `packages/db/migrations/meta/0029_snapshot.json`, `apps/admin/src/messages.ts`, `apps/admin/src/screens/Composer.tsx`, `apps/admin/src/screens/Order.tsx`, `apps/api/src/app.ts`, `apps/api/src/cli/orders.ts`, `apps/api/src/media/index.ts`, `apps/api/src/media/repo.ts`, `apps/api/src/moderation/author.ts`, `apps/api/src/moderation/cases.ts`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/orders.ts`, `apps/api/src/moderation/retention.ts`, `apps/api/src/moderation/statement-repo.ts`, `apps/api/src/social/index.ts`, `apps/api/src/social/routes.ts`, `infra/.env.example`, `infra/caddy/Caddyfile`, `infra/compose.yml`, `packages/contracts/src/moderation.ts`, `packages/contracts/src/orders.ts`, `packages/db/migrations/meta/_journal.json`, `packages/rules/src/statement.ts`, `scripts/smoke-auth-stack.mjs`**
+- [ ] **Step 4: typecheck: run `pnpm typecheck`**
+- [ ] **Step 5: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 6: generate: run `pnpm --filter @korbat/db generate`, expecting `No schema changes`**
+- [ ] **Step 7: apply-migrations: run the `apply-migrations` command in the prompt, expecting `migrations applied`, `count=30`**
+- [ ] **Step 8: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 9: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  58 passed (58)`**
+- [ ] **Step 10: test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 11: integration-own: run the `integration-own` command in the prompt, expecting `Tests  `**
+- [ ] **Step 12: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 13: stack-down: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml down && echo down-ok`, expecting `down-ok`**
+- [ ] **Step 14: build: run the `build` command in the prompt, expecting `build-exit=0`**
+- [ ] **Step 15: stack-up: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait && echo up-ok`, expecting `up-ok`**
+- [ ] **Step 16: stack-test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 17: smoke: run the `smoke` command in the prompt, expecting `smoke test passed`**
+- [ ] **Step 18: site-closed: run the `site-closed` command in the prompt, expecting `closed-up=0`**
+- [ ] **Step 19: smoke-closed: run the `smoke-closed` command in the prompt, expecting `smoke test passed`**
+- [ ] **Step 20: site-reopen: run the `site-reopen` command in the prompt, expecting `open-up=0`, `home=200`, `health=200`**
+- [ ] **Step 21: stack-stop: run the `stack-stop` command in the prompt, expecting `postgres-1 Up`**
+- [ ] **Step 22: Commit: `feat(db,contracts,rules,api,admin,infra): preservation, retention and the page status: migration 0029_orders_retention adds order_preservation_end, which takes the cases, the item, the post and its images and, once a removal order's six months and a day are over and the post is no longer frozen, blanks the post, erases its images and every copy of it and removes it for good while the measure stands, and otherwise ends the preservation and erases nothing; order_records_due and erase_order_records, which delete an order's records three years after its last event once nothing of it stands or is untold; and delete_contact_messages, which never deletes an unhandled message nor the alerts of an open subject; the retention job runs the three steps with their audit rows; staff.js gains order-preserve-extend and order-access, which reads through the media module's preservedImages; GET /api/posts/:id/status answers 204 or 404 before any session is read, Caddy serves a post's page under that status, and APP_SITE=closed answers 503 to every path; the notice, the order's page and the reinstatement say when the content was erased`**
+
+### Task 5: Records to authorities
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/05-records-to-authorities.md`
+
+**Files:**
+- Create: `apps/api/src/cli/records.ts`
+- Create: `apps/api/src/handover.ts`
+- Create: `apps/api/test/handover.test.ts`
+- Create: `apps/api/test/integration/cli-records.test.ts`
+- Create: `apps/api/test/integration/records-fixtures.ts`
+- Create: `apps/api/test/integration/records-grants.test.ts`
+- Create: `apps/api/test/integration/records-hold.test.ts`
+- Create: `apps/api/test/integration/records-notifications.test.ts`
+- Create: `packages/contracts/test/records.test.ts`
+- Create: `packages/db/migrations/0030_authority_records.sql`
+- Create: `packages/db/migrations/meta/0030_snapshot.json`
+- Modify: `apps/admin/src/messages.ts`
+- Modify: `apps/admin/src/screens/Case.tsx`
+- Modify: `apps/admin/src/screens/Home.tsx`
+- Modify: `apps/admin/test/browser/console.browser.ts`
+- Modify: `apps/admin/test/browser/fixture-api.ts`
+- Modify: `apps/admin/test/case-fixtures.ts`
+- Modify: `apps/admin/test/order-case.test.tsx`
+- Modify: `apps/admin/test/screens.test.tsx`
+- Modify: `apps/api/.env.example`
+- Modify: `apps/api/build.mjs`
+- Modify: `apps/api/src/account/flows/deletion.ts`
+- Modify: `apps/api/src/account/purge.ts`
+- Modify: `apps/api/src/auth/context.ts`
+- Modify: `apps/api/src/auth/flows/deletion.ts`
+- Modify: `apps/api/src/auth/index.ts`
+- Modify: `apps/api/src/auth/repo.ts`
+- Modify: `apps/api/src/cli/orders.ts`
+- Modify: `apps/api/src/cli/staff-cases.ts`
+- Modify: `apps/api/src/cli/staff.ts`
+- Modify: `apps/api/src/config.ts`
+- Modify: `apps/api/src/mail/templates.ts`
+- Modify: `apps/api/src/media/files.ts`
+- Modify: `apps/api/src/media/index.ts`
+- Modify: `apps/api/src/media/repo.ts`
+- Modify: `apps/api/src/moderation/access.ts`
+- Modify: `apps/api/src/moderation/cases.ts`
+- Modify: `apps/api/src/moderation/orders-repo.ts`
+- Modify: `apps/api/src/moderation/retention.ts`
+- Modify: `apps/api/test/account/deletion.test.ts`
+- Modify: `apps/api/test/architecture.test.ts`
+- Modify: `apps/api/test/auth/flow-harness.ts`
+- Modify: `apps/api/test/cli-staff.test.ts`
+- Modify: `apps/api/test/config.test.ts`
+- Modify: `apps/api/test/integration/account-deletion.test.ts`
+- Modify: `apps/api/test/integration/alerts-steps.test.ts`
+- Modify: `apps/api/test/integration/cli-orders.test.ts`
+- Modify: `apps/api/test/integration/cli-staff-cases.test.ts`
+- Modify: `apps/api/test/integration/flow-harness.ts`
+- Modify: `apps/api/test/integration/http-deletion.test.ts`
+- Modify: `apps/api/test/integration/media-gates.test.ts`
+- Modify: `apps/api/test/integration/moderation-decisions.test.ts`
+- Modify: `apps/api/test/integration/moderation-fixtures.ts`
+- Modify: `apps/api/test/integration/moderation-notices.test.ts`
+- Modify: `apps/api/test/integration/moderation-retention.test.ts`
+- Modify: `apps/api/test/integration/moderation-schema.test.ts`
+- Modify: `apps/api/test/integration/moderation-seal.test.ts`
+- Modify: `apps/api/test/mail/moderation-templates.test.ts`
+- Modify: `apps/api/test/mail/templates.test.ts`
+- Modify: `apps/app/src/app/settings/account.tsx`
+- Modify: `apps/app/src/lib/orders.ts`
+- Modify: `apps/app/test/lifecycle.test.tsx`
+- Modify: `infra/.env.example`
+- Modify: `infra/compose.yml`
+- Modify: `packages/contracts/src/account.ts`
+- Modify: `packages/contracts/src/canonical.ts`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/src/orders.ts`
+- Modify: `packages/contracts/test/account.test.ts`
+- Modify: `packages/contracts/test/appeals.test.ts`
+- Modify: `packages/contracts/test/outcomes.test.ts`
+- Modify: `packages/contracts/test/staff-cases.test.ts`
+- Modify: `packages/db/migrations/meta/_journal.json`
+- Modify: `packages/db/src/schema/auth.ts`
+- Modify: `packages/db/src/schema/safety.ts`
+- Modify: `packages/db/test/schema.test.ts`
+- Modify: `scripts/clean-dev-fixtures.mjs`
+
+- [ ] **Step 1: Write the failing tests: `apps/api/test/handover.test.ts`, `apps/api/test/integration/cli-records.test.ts`, `apps/api/test/integration/records-fixtures.ts`, `apps/api/test/integration/records-grants.test.ts`, `apps/api/test/integration/records-hold.test.ts`, `apps/api/test/integration/records-notifications.test.ts`, `packages/contracts/test/records.test.ts`, `apps/admin/test/browser/console.browser.ts`, `apps/admin/test/browser/fixture-api.ts`, `apps/admin/test/case-fixtures.ts`, `apps/admin/test/order-case.test.tsx`, `apps/admin/test/screens.test.tsx`, `apps/api/test/account/deletion.test.ts`, `apps/api/test/architecture.test.ts`, `apps/api/test/auth/flow-harness.ts`, `apps/api/test/cli-staff.test.ts`, `apps/api/test/config.test.ts`, `apps/api/test/integration/account-deletion.test.ts`, `apps/api/test/integration/alerts-steps.test.ts`, `apps/api/test/integration/cli-orders.test.ts`, `apps/api/test/integration/cli-staff-cases.test.ts`, `apps/api/test/integration/flow-harness.ts`, `apps/api/test/integration/http-deletion.test.ts`, `apps/api/test/integration/media-gates.test.ts`, `apps/api/test/integration/moderation-decisions.test.ts`, `apps/api/test/integration/moderation-fixtures.ts`, `apps/api/test/integration/moderation-notices.test.ts`, `apps/api/test/integration/moderation-retention.test.ts`, `apps/api/test/integration/moderation-schema.test.ts`, `apps/api/test/integration/moderation-seal.test.ts`, `apps/api/test/mail/moderation-templates.test.ts`, `apps/api/test/mail/templates.test.ts`, `apps/app/test/lifecycle.test.tsx`, `packages/contracts/test/account.test.ts`, `packages/contracts/test/appeals.test.ts`, `packages/contracts/test/outcomes.test.ts`, `packages/contracts/test/staff-cases.test.ts`, `packages/db/test/schema.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `apps/api/src/cli/records.ts`, `apps/api/src/handover.ts`, `packages/db/migrations/0030_authority_records.sql`, `packages/db/migrations/meta/0030_snapshot.json`, `apps/admin/src/messages.ts`, `apps/admin/src/screens/Case.tsx`, `apps/admin/src/screens/Home.tsx`, `apps/api/.env.example`, `apps/api/build.mjs`, `apps/api/src/account/flows/deletion.ts`, `apps/api/src/account/purge.ts`, `apps/api/src/auth/context.ts`, `apps/api/src/auth/flows/deletion.ts`, `apps/api/src/auth/index.ts`, `apps/api/src/auth/repo.ts`, `apps/api/src/cli/orders.ts`, `apps/api/src/cli/staff-cases.ts`, `apps/api/src/cli/staff.ts`, `apps/api/src/config.ts`, `apps/api/src/mail/templates.ts`, `apps/api/src/media/files.ts`, `apps/api/src/media/index.ts`, `apps/api/src/media/repo.ts`, `apps/api/src/moderation/access.ts`, `apps/api/src/moderation/cases.ts`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/retention.ts`, `apps/app/src/app/settings/account.tsx`, `apps/app/src/lib/orders.ts`, `infra/.env.example`, `infra/compose.yml`, `packages/contracts/src/account.ts`, `packages/contracts/src/canonical.ts`, `packages/contracts/src/moderation.ts`, `packages/contracts/src/orders.ts`, `packages/db/migrations/meta/_journal.json`, `packages/db/src/schema/auth.ts`, `packages/db/src/schema/safety.ts`, `scripts/clean-dev-fixtures.mjs`**
+- [ ] **Step 4: typecheck: run `pnpm typecheck`**
+- [ ] **Step 5: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 6: generate: run `pnpm --filter @korbat/db generate`, expecting `No schema changes`**
+- [ ] **Step 7: apply-migrations: run the `apply-migrations` command in the prompt, expecting `migrations applied`, `count=31`**
+- [ ] **Step 8: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 9: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  59 passed (59)`**
+- [ ] **Step 10: export: run the `export` command in the prompt, expecting `Exported`**
+- [ ] **Step 11: test-database-fresh: run `node scripts/test-db.mjs --fresh -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `test database ready: korbat_test`**
+- [ ] **Step 12: integration-fresh: run the `integration-fresh` command in the prompt, expecting `Tests  `**
+- [ ] **Step 13: test-database-upgrade: run `node scripts/test-db.mjs --upgrade-from 25 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations up to 0025_standing_review applied and committed`, `later migrations applied as one batch`, `test database ready: korbat_test`**
+- [ ] **Step 14: integration-upgraded: run the `integration-upgraded` command in the prompt, expecting `Tests  `**
+- [ ] **Step 15: timing: run the `timing` command in the prompt, expecting `timing-ok=1`**
+- [ ] **Step 16: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 17: Commit: `feat(db,contracts,api,admin,app,infra): records to authorities: migration 0030_authority_records adds authority_notifications, their events and productions, which only the command line reads and writes, and auth.report_holds; report_open() opens one owed record and the address hold when a seal is taken, locking the hold before it reads the records, and report_close_unsealed closes it when no seal of the account is left; reports_owed() tells the console a case, a kind and a time; seal_report answers the report, its answer and when it was sent; staff.js gains records, the notification and production commands and the hand-over's list and record, and notification-facts replaces account-facts; order-access records an authority's access as a production; the handover program copies one seal's files into a stored zip with no database and no network; a deletion keeps the address alone while a report is owed (REPORT_HOLD) and its mail says until when; access-request marks a case an authority asked to keep from the person; the retention job erases the records three years old; Home shows the reports owed, a case page its own, and the app's deletion screen what may be kept`**
+
+### Task 6: Recovery
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/06-recovery.md`
+
+**Files:**
+- Create: `apps/admin/src/screens/Restore.tsx`
+- Create: `apps/admin/test/recovery.test.tsx`
+- Create: `apps/api/src/cli/restore.ts`
+- Create: `apps/api/src/moderation/gaps.ts`
+- Create: `apps/api/test/cli-restore.test.ts`
+- Create: `apps/api/test/integration/http-staff-restore.test.ts`
+- Create: `apps/api/test/integration/recovery-export.test.ts`
+- Create: `apps/api/test/integration/recovery-gaps.test.ts`
+- Create: `apps/api/test/integration/recovery-harness.ts`
+- Create: `apps/api/test/integration/recovery-import.test.ts`
+- Create: `packages/contracts/test/recovery.test.ts`
+- Create: `packages/db/migrations/0031_recovery.sql`
+- Create: `packages/db/migrations/meta/0031_snapshot.json`
+- Modify: `README.md`
+- Modify: `apps/admin/src/App.tsx`
+- Modify: `apps/admin/src/Layout.tsx`
+- Modify: `apps/admin/src/api.ts`
+- Modify: `apps/admin/src/audit-log.ts`
+- Modify: `apps/admin/src/compose.ts`
+- Modify: `apps/admin/src/messages.ts`
+- Modify: `apps/admin/src/router.ts`
+- Modify: `apps/admin/src/screens/Audit.tsx`
+- Modify: `apps/admin/src/screens/Case.tsx`
+- Modify: `apps/admin/src/screens/Home.tsx`
+- Modify: `apps/admin/src/screens/Order.tsx`
+- Modify: `apps/admin/src/step-up.ts`
+- Modify: `apps/admin/test/api.test.ts`
+- Modify: `apps/admin/test/audit-log.test.ts`
+- Modify: `apps/admin/test/browser/console.browser.ts`
+- Modify: `apps/admin/test/browser/fixture-api.ts`
+- Modify: `apps/admin/test/browser/watch.ts`
+- Modify: `apps/admin/test/case-fixtures.ts`
+- Modify: `apps/admin/test/order-case.test.tsx`
+- Modify: `apps/admin/test/screens.test.tsx`
+- Modify: `apps/admin/test/signins.test.ts`
+- Modify: `apps/admin/test/source.test.ts`
+- Modify: `apps/api/src/auth/flows/notifiers.ts`
+- Modify: `apps/api/src/cli/records.ts`
+- Modify: `apps/api/src/cli/staff-cases.ts`
+- Modify: `apps/api/src/cli/staff.ts`
+- Modify: `apps/api/src/mail/mailer.ts`
+- Modify: `apps/api/src/mail/templates.ts`
+- Modify: `apps/api/src/moderation/alerts.ts`
+- Modify: `apps/api/src/moderation/appeals.ts`
+- Modify: `apps/api/src/moderation/cases.ts`
+- Modify: `apps/api/src/moderation/context.ts`
+- Modify: `apps/api/src/moderation/decide.ts`
+- Modify: `apps/api/src/moderation/index.ts`
+- Modify: `apps/api/src/moderation/orders-repo.ts`
+- Modify: `apps/api/src/moderation/orders.ts`
+- Modify: `apps/api/src/moderation/repo.ts`
+- Modify: `apps/api/src/moderation/retention.ts`
+- Modify: `apps/api/src/moderation/statement-repo.ts`
+- Modify: `apps/api/src/moderation/statement.ts`
+- Modify: `apps/api/src/staff/audit.ts`
+- Modify: `apps/api/src/staff/cases.ts`
+- Modify: `apps/api/src/staff/index.ts`
+- Modify: `apps/api/src/staff/orders.ts`
+- Modify: `apps/api/src/staff/routes.ts`
+- Modify: `apps/api/test/integration/alerts-steps.test.ts`
+- Modify: `apps/api/test/integration/cli-records.test.ts`
+- Modify: `apps/api/test/integration/cli-staff-cases.test.ts`
+- Modify: `apps/api/test/integration/http-staff-sessions.test.ts`
+- Modify: `apps/api/test/integration/moderation-decide.ts`
+- Modify: `apps/api/test/integration/moderation-fixtures.ts`
+- Modify: `apps/api/test/integration/moderation-retention.test.ts`
+- Modify: `apps/api/test/integration/moderation-schema.test.ts`
+- Modify: `apps/api/test/integration/staff-audit.test.ts`
+- Modify: `apps/api/test/mail/moderation-templates.test.ts`
+- Modify: `apps/api/test/moderation-context.test.ts`
+- Modify: `apps/api/test/staff/route-table.test.ts`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/src/orders.ts`
+- Modify: `packages/contracts/src/staff.ts`
+- Modify: `packages/contracts/test/appeals.test.ts`
+- Modify: `packages/contracts/test/moderation.test.ts`
+- Modify: `packages/contracts/test/outcomes.test.ts`
+- Modify: `packages/contracts/test/staff-cases.test.ts`
+- Modify: `packages/contracts/test/staff.test.ts`
+- Modify: `packages/db/migrations/meta/_journal.json`
+- Modify: `packages/db/src/schema/safety.ts`
+- Modify: `packages/db/test/schema.test.ts`
+- Modify: `packages/rules/src/statement.ts`
+- Modify: `packages/rules/test/statement.test.ts`
+
+- [ ] **Step 1: Write the failing tests: `apps/admin/test/recovery.test.tsx`, `apps/api/test/cli-restore.test.ts`, `apps/api/test/integration/http-staff-restore.test.ts`, `apps/api/test/integration/recovery-export.test.ts`, `apps/api/test/integration/recovery-gaps.test.ts`, `apps/api/test/integration/recovery-harness.ts`, `apps/api/test/integration/recovery-import.test.ts`, `packages/contracts/test/recovery.test.ts`, `apps/admin/test/api.test.ts`, `apps/admin/test/audit-log.test.ts`, `apps/admin/test/browser/console.browser.ts`, `apps/admin/test/browser/fixture-api.ts`, `apps/admin/test/browser/watch.ts`, `apps/admin/test/case-fixtures.ts`, `apps/admin/test/order-case.test.tsx`, `apps/admin/test/screens.test.tsx`, `apps/admin/test/signins.test.ts`, `apps/admin/test/source.test.ts`, `apps/api/test/integration/alerts-steps.test.ts`, `apps/api/test/integration/cli-records.test.ts`, `apps/api/test/integration/cli-staff-cases.test.ts`, `apps/api/test/integration/http-staff-sessions.test.ts`, `apps/api/test/integration/moderation-decide.ts`, `apps/api/test/integration/moderation-fixtures.ts`, `apps/api/test/integration/moderation-retention.test.ts`, `apps/api/test/integration/moderation-schema.test.ts`, `apps/api/test/integration/staff-audit.test.ts`, `apps/api/test/mail/moderation-templates.test.ts`, `apps/api/test/moderation-context.test.ts`, `apps/api/test/staff/route-table.test.ts`, `packages/contracts/test/appeals.test.ts`, `packages/contracts/test/moderation.test.ts`, `packages/contracts/test/outcomes.test.ts`, `packages/contracts/test/staff-cases.test.ts`, `packages/contracts/test/staff.test.ts`, `packages/db/test/schema.test.ts`, `packages/rules/test/statement.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `apps/admin/src/screens/Restore.tsx`, `apps/api/src/cli/restore.ts`, `apps/api/src/moderation/gaps.ts`, `packages/db/migrations/0031_recovery.sql`, `packages/db/migrations/meta/0031_snapshot.json`, `README.md`, `apps/admin/src/App.tsx`, `apps/admin/src/Layout.tsx`, `apps/admin/src/api.ts`, `apps/admin/src/audit-log.ts`, `apps/admin/src/compose.ts`, `apps/admin/src/messages.ts`, `apps/admin/src/router.ts`, `apps/admin/src/screens/Audit.tsx`, `apps/admin/src/screens/Case.tsx`, `apps/admin/src/screens/Home.tsx`, `apps/admin/src/screens/Order.tsx`, `apps/admin/src/step-up.ts`, `apps/api/src/auth/flows/notifiers.ts`, `apps/api/src/cli/records.ts`, `apps/api/src/cli/staff-cases.ts`, `apps/api/src/cli/staff.ts`, `apps/api/src/mail/mailer.ts`, `apps/api/src/mail/templates.ts`, `apps/api/src/moderation/alerts.ts`, `apps/api/src/moderation/appeals.ts`, `apps/api/src/moderation/cases.ts`, `apps/api/src/moderation/context.ts`, `apps/api/src/moderation/decide.ts`, `apps/api/src/moderation/index.ts`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/orders.ts`, `apps/api/src/moderation/repo.ts`, `apps/api/src/moderation/retention.ts`, `apps/api/src/moderation/statement-repo.ts`, `apps/api/src/moderation/statement.ts`, `apps/api/src/staff/audit.ts`, `apps/api/src/staff/cases.ts`, `apps/api/src/staff/index.ts`, `apps/api/src/staff/orders.ts`, `apps/api/src/staff/routes.ts`, `packages/contracts/src/moderation.ts`, `packages/contracts/src/orders.ts`, `packages/contracts/src/staff.ts`, `packages/db/migrations/meta/_journal.json`, `packages/db/src/schema/safety.ts`, `packages/rules/src/statement.ts`**
+- [ ] **Step 4: typecheck: run `pnpm typecheck`**
+- [ ] **Step 5: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 6: generate: run `pnpm --filter @korbat/db generate`, expecting `No schema changes`**
+- [ ] **Step 7: apply-migrations: run the `apply-migrations` command in the prompt, expecting `migrations applied`, `count=32`**
+- [ ] **Step 8: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 9: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  62 passed (62)`**
+- [ ] **Step 10: test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 11: integration-own: run the `integration-own` command in the prompt, expecting `Tests  `**
+- [ ] **Step 12: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 13: Commit: `feat(db,contracts,rules,api,admin,docs): recovery: migration 0031_recovery adds restore_gaps and copy_marks; gap_close closes a gap with the decision its transaction made when it fits the gap's class and target, or by an admin as not needed, which restore_gaps_confirmed holds to its confirmed audit row at commit; delete_restore_gaps; alert_steps() with copy_overdue; the audit log's tail is downloaded as JSON lines under the step-up audit_exported, and the copy is marked only once the console holds the whole file and the hash is at the place; staff.js gains audit-export and restore-import, which checks the keeper's files against the restored head, refuses a changed file, reports a hole, writes the lost orders and records again with their times and one gap for each lost decision, never a measure; the decide, review and effect routes close the gap a decision takes again, whose statement names the lost day; the record commands take --gap; the console gains the download, the key filter, After a restore and two home lines; the README gains Restoring`**
+
+### Task 7: Counts, terms and the record
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/07-counts-terms-record.md`
+
+**Files:**
+- Create: `apps/api/src/cli/counts.ts`
+- Create: `apps/api/test/integration/cli-counts.test.ts`
+- Modify: `README.md`
+- Modify: `apps/admin/test/browser/console.browser.ts`
+- Modify: `apps/admin/test/readme.test.ts`
+- Modify: `apps/api/src/cli/staff.ts`
+- Modify: `apps/api/test/cli-staff.test.ts`
+- Modify: `apps/app/.env.example`
+- Modify: `apps/app/src/lib/terms.ts`
+- Modify: `apps/app/test/report.test.tsx`
+- Modify: `apps/app/test/terms.test.tsx`
+- Modify: `docs/superpowers/specs/2026-09-03-korbat-design.md`
+- Modify: `docs/superpowers/specs/2026-09-18-images-2b-design.md`
+- Modify: `docs/superpowers/specs/2026-09-24-account-lifecycle-1b-design.md`
+- Modify: `docs/superpowers/specs/2026-09-28-staff-console-3a-design.md`
+- Modify: `docs/superpowers/specs/2026-10-02-moderation-cases-3c-design.md`
+- Modify: `docs/superpowers/specs/2026-10-09-account-sanctions-3e-design.md`
+- Modify: `docs/superpowers/specs/2026-10-09-authorities-orders-3f-design.md`
+- Modify: `infra/.env.example`
+- Modify: `infra/caddy/Dockerfile`
+- Modify: `infra/compose.yml`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/test/moderation.test.ts`
+
+- [ ] **Step 1: Write the failing tests: `apps/api/test/integration/cli-counts.test.ts`, `apps/admin/test/browser/console.browser.ts`, `apps/admin/test/readme.test.ts`, `apps/api/test/cli-staff.test.ts`, `apps/app/test/report.test.tsx`, `apps/app/test/terms.test.tsx`, `packages/contracts/test/moderation.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `apps/api/src/cli/counts.ts`, `README.md`, `apps/api/src/cli/staff.ts`, `apps/app/.env.example`, `apps/app/src/lib/terms.ts`, `docs/superpowers/specs/2026-09-03-korbat-design.md`, `docs/superpowers/specs/2026-09-18-images-2b-design.md`, `docs/superpowers/specs/2026-09-24-account-lifecycle-1b-design.md`, `docs/superpowers/specs/2026-09-28-staff-console-3a-design.md`, `docs/superpowers/specs/2026-10-02-moderation-cases-3c-design.md`, `docs/superpowers/specs/2026-10-09-account-sanctions-3e-design.md`, `docs/superpowers/specs/2026-10-09-authorities-orders-3f-design.md`, `infra/.env.example`, `infra/caddy/Dockerfile`, `infra/compose.yml`, `packages/contracts/src/moderation.ts`**
+- [ ] **Step 4: typecheck: run `pnpm typecheck`**
+- [ ] **Step 5: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 6: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 7: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  63 passed (63)`**
+- [ ] **Step 8: export: run the `export` command in the prompt, expecting `Exported`**
+- [ ] **Step 9: test-database-fresh: run `node scripts/test-db.mjs --fresh -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `test database ready: korbat_test`**
+- [ ] **Step 10: integration-fresh: run the `integration-fresh` command in the prompt, expecting `Tests  `**
+- [ ] **Step 11: test-database-upgrade: run `node scripts/test-db.mjs --upgrade-from 25 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations up to 0025_standing_review applied and committed`, `later migrations applied as one batch`, `test database ready: korbat_test`**
+- [ ] **Step 12: integration-upgraded: run the `integration-upgraded` command in the prompt, expecting `Tests  `**
+- [ ] **Step 13: timing: run the `timing` command in the prompt, expecting `timing-ok=1`**
+- [ ] **Step 14: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 15: stack-down: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml down && echo down-ok`, expecting `down-ok`**
+- [ ] **Step 16: build: run the `build` command in the prompt, expecting `build-exit=0`**
+- [ ] **Step 17: stack-up: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait && echo up-ok`, expecting `up-ok`**
+- [ ] **Step 18: test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 19: smoke: run the `smoke` command in the prompt, expecting `smoke test passed`**
+- [ ] **Step 20: stack-stop: run the `stack-stop` command in the prompt, expecting `postgres-1 Up`**
+- [ ] **Step 21: Commit: `feat(contracts,api,app,admin,infra,docs): counts, terms and the record: staff.js tco-counts prints, as the migrator and read-only, the figures of TCO Art. 7(3) and 21(1) for a calendar year in UTC from rows, a line a figure, and not recorded, never 0, where the retention job erased the rows a figure rests on or no receipt was recorded; RETENTION gains contactMessageDays, orderPreserveMonths, orderRecordYears and restoreGapMonths, read from ORDER_RULES; the terms gain Authorities' orders, Terrorist content as 3f has it, Contact point for authorities while the web build has one, and the sentences of Who can use korbat, What you can post, Appeals and Your data, every number from its constant; the web build takes WEB_CONTACT_POINT and WEB_HOME_STATE as two checked arguments; the README gains the runbook of authorities' orders, the owner's list before going public and the hard gate as 3f leaves it, and loses the lines 3f made false; the docs test holds its numbers to ORDER_RULES and ALERT_RULES; the designs gain their dated amendments and 3f's from the dry run; the browser check walks every 3f screen once more at 360 px`**
+
+### Task 8: The first half of the review's fixes: the database, access, the alert channel and the services, with migration 0032_orders_review.
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/08-review-fixes-services.md`
+
+**Files:**
+- Create: `packages/db/migrations/0032_orders_review.sql`
+- Create: `packages/db/migrations/meta/0032_snapshot.json`
+- Modify: `README.md`
+- Modify: `apps/admin/src/messages.ts`
+- Modify: `apps/admin/test/readme.test.ts`
+- Modify: `apps/api/src/auth/flows/deletion.ts`
+- Modify: `apps/api/src/auth/flows/notifiers.ts`
+- Modify: `apps/api/src/auth/repo.ts`
+- Modify: `apps/api/src/cli/orders.ts`
+- Modify: `apps/api/src/cli/staff-cases.ts`
+- Modify: `apps/api/src/cli/staff.ts`
+- Modify: `apps/api/src/handover.ts`
+- Modify: `apps/api/src/mail/mailer.ts`
+- Modify: `apps/api/src/mail/templates.ts`
+- Modify: `apps/api/src/media/repo.ts`
+- Modify: `apps/api/src/moderation/alerts.ts`
+- Modify: `apps/api/src/moderation/author-repo.ts`
+- Modify: `apps/api/src/moderation/author.ts`
+- Modify: `apps/api/src/moderation/index.ts`
+- Modify: `apps/api/src/moderation/orders-repo.ts`
+- Modify: `apps/api/src/moderation/orders.ts`
+- Modify: `apps/api/src/moderation/standing-repo.ts`
+- Modify: `apps/api/src/moderation/statement-repo.ts`
+- Modify: `apps/api/src/notify/main.ts`
+- Modify: `apps/api/src/notify/push.ts`
+- Modify: `apps/api/src/staff/audit.ts`
+- Modify: `apps/api/test/auth/deletion.test.ts`
+- Modify: `apps/api/test/auth/flow-harness.ts`
+- Modify: `apps/api/test/cli-staff.test.ts`
+- Modify: `apps/api/test/handover.test.ts`
+- Modify: `apps/api/test/integration/alerts-steps.test.ts`
+- Modify: `apps/api/test/integration/cli-staff-cases.test.ts`
+- Modify: `apps/api/test/integration/moderation-retention.test.ts`
+- Modify: `apps/api/test/integration/moderation-schema.test.ts`
+- Modify: `apps/api/test/integration/notify-loop.test.ts`
+- Modify: `apps/api/test/integration/orders-correct.test.ts`
+- Modify: `apps/api/test/integration/orders-grants.test.ts`
+- Modify: `apps/api/test/integration/orders-notice.test.ts`
+- Modify: `apps/api/test/integration/orders-reinstate.test.ts`
+- Modify: `apps/api/test/integration/orders-route-walk.test.ts`
+- Modify: `apps/api/test/integration/records-grants.test.ts`
+- Modify: `apps/api/test/integration/records-hold.test.ts`
+- Modify: `apps/api/test/integration/recovery-export.test.ts`
+- Modify: `apps/api/test/lab/README.md`
+- Modify: `apps/api/test/lab/contention.lab.ts`
+- Modify: `apps/api/test/mail/moderation-templates.test.ts`
+- Modify: `apps/api/test/moderation-dispatch.test.ts`
+- Modify: `apps/api/test/notify/fake-ntfy.ts`
+- Modify: `apps/api/test/notify/publish.test.ts`
+- Modify: `apps/app/test/orders.test.tsx`
+- Modify: `infra/.env.example`
+- Modify: `infra/compose.yml`
+- Modify: `infra/ntfy/server.yml.example`
+- Modify: `packages/contracts/src/orders.ts`
+- Modify: `packages/contracts/test/order-records.test.ts`
+- Modify: `packages/db/migrations/meta/_journal.json`
+- Modify: `packages/db/src/schema/moderation.ts`
+- Modify: `packages/db/test/schema.test.ts`
+- Modify: `packages/rules/src/statement.ts`
+- Modify: `packages/rules/test/statement.test.ts`
+
+- [ ] **Step 1: Write the failing tests: `apps/admin/test/readme.test.ts`, `apps/api/test/auth/deletion.test.ts`, `apps/api/test/auth/flow-harness.ts`, `apps/api/test/cli-staff.test.ts`, `apps/api/test/handover.test.ts`, `apps/api/test/integration/alerts-steps.test.ts`, `apps/api/test/integration/cli-staff-cases.test.ts`, `apps/api/test/integration/moderation-retention.test.ts`, `apps/api/test/integration/moderation-schema.test.ts`, `apps/api/test/integration/notify-loop.test.ts`, `apps/api/test/integration/orders-correct.test.ts`, `apps/api/test/integration/orders-grants.test.ts`, `apps/api/test/integration/orders-notice.test.ts`, `apps/api/test/integration/orders-reinstate.test.ts`, `apps/api/test/integration/orders-route-walk.test.ts`, `apps/api/test/integration/records-grants.test.ts`, `apps/api/test/integration/records-hold.test.ts`, `apps/api/test/integration/recovery-export.test.ts`, `apps/api/test/lab/README.md`, `apps/api/test/lab/contention.lab.ts`, `apps/api/test/mail/moderation-templates.test.ts`, `apps/api/test/moderation-dispatch.test.ts`, `apps/api/test/notify/fake-ntfy.ts`, `apps/api/test/notify/publish.test.ts`, `apps/app/test/orders.test.tsx`, `packages/contracts/test/order-records.test.ts`, `packages/db/test/schema.test.ts`, `packages/rules/test/statement.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `packages/db/migrations/0032_orders_review.sql`, `packages/db/migrations/meta/0032_snapshot.json`, `README.md`, `apps/admin/src/messages.ts`, `apps/api/src/auth/flows/deletion.ts`, `apps/api/src/auth/flows/notifiers.ts`, `apps/api/src/auth/repo.ts`, `apps/api/src/cli/orders.ts`, `apps/api/src/cli/staff-cases.ts`, `apps/api/src/cli/staff.ts`, `apps/api/src/handover.ts`, `apps/api/src/mail/mailer.ts`, `apps/api/src/mail/templates.ts`, `apps/api/src/media/repo.ts`, `apps/api/src/moderation/alerts.ts`, `apps/api/src/moderation/author-repo.ts`, `apps/api/src/moderation/author.ts`, `apps/api/src/moderation/index.ts`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/orders.ts`, `apps/api/src/moderation/standing-repo.ts`, `apps/api/src/moderation/statement-repo.ts`, `apps/api/src/notify/main.ts`, `apps/api/src/notify/push.ts`, `apps/api/src/staff/audit.ts`, `infra/.env.example`, `infra/compose.yml`, `infra/ntfy/server.yml.example`, `packages/contracts/src/orders.ts`, `packages/db/migrations/meta/_journal.json`, `packages/db/src/schema/moderation.ts`, `packages/rules/src/statement.ts`**
+- [ ] **Step 4: ntfy-exempt: run the `ntfy-exempt` command in the prompt, expecting `exempt=1`**
+- [ ] **Step 5: typecheck: run `pnpm typecheck`**
+- [ ] **Step 6: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 7: generate: run `pnpm --filter @korbat/db generate`, expecting `No schema changes`**
+- [ ] **Step 8: apply-migrations: run the `apply-migrations` command in the prompt, expecting `migrations applied`, `count=33`**
+- [ ] **Step 9: admin-build: run `pnpm --filter @korbat/admin build 2>&1 | tail -2 && ls apps/admin/dist apps/admin/dist/assets | sed -E 's/-[A-Z0-9]{8}[.]/-HASH./'`, expecting `Build success`, `index.html`, `main-HASH.js`, `main-HASH.css`**
+- [ ] **Step 10: admin-browser: run `pnpm --filter @korbat/admin test:browser`, expecting `Tests  63 passed (63)`**
+- [ ] **Step 11: export: run the `export` command in the prompt, expecting `Exported`**
+- [ ] **Step 12: test-database-fresh: run `node scripts/test-db.mjs --fresh -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `test database ready: korbat_test`**
+- [ ] **Step 13: integration-fresh: run the `integration-fresh` command in the prompt, expecting `Tests  `**
+- [ ] **Step 14: test-database-upgrade: run `node scripts/test-db.mjs --upgrade-from 25 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations up to 0025_standing_review applied and committed`, `later migrations applied as one batch`, `test database ready: korbat_test`**
+- [ ] **Step 15: integration-upgraded: run the `integration-upgraded` command in the prompt, expecting `Tests  `**
+- [ ] **Step 16: timing: run the `timing` command in the prompt, expecting `timing-ok=1`**
+- [ ] **Step 17: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 18: stack-down: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml down && echo down-ok`, expecting `down-ok`**
+- [ ] **Step 19: build: run the `build` command in the prompt, expecting `build-exit=0`**
+- [ ] **Step 20: stack-up: run `docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d --wait && echo up-ok`, expecting `up-ok`**
+- [ ] **Step 21: stack-test-database: run `node scripts/test-db.mjs -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations applied`, `test database ready: korbat_test`**
+- [ ] **Step 22: smoke: run the `smoke` command in the prompt, expecting `smoke test passed`**
+- [ ] **Step 23: stack-stop: run the `stack-stop` command in the prompt, expecting `postgres-1 Up`**
+- [ ] **Step 24: Commit: `fix(db,contracts,rules,api,admin,infra,docs): what the review of 3f as built upheld in the database, access, the channel and the services: migration 0032_orders_review counts a strike and rests a measure at once only on a decision its subject was told of, holds a second order's notice with the first and tells both at its release, clears a not_ordered end when Section C is set again, preserves again an item a kind flip ended, keeps a record while a seal it answers for stands, and takes a correction's locks in the effect's order; the export leaves out a disabled post's images; the deletion mail says nothing of an untold seal; a released sibling decision shows no content; the notice holds the reasons from their own record; the alert tick's mail leg is a job of its own and mails report_owed and handover_undestroyed; notify has a fixed address ntfy exempts from its request limit, publishes an order's rows first and takes a 429 as throttled, never down; copy_taken alerts when the newest copy is not the caller's; the hand-over never leaves a partial archive; staff.js gains alert-test; the restore runbook recreates Caddy and the API`**
+
+### Task 9: What the review of 3f as built upheld in the words and the proofs: a statement's appeal counted from the telling, the staff mails with phone alerts off, the yearly counts after an erasure, the notice's and the terms' words, the day the author was told on Cases, and the tests that prove the checks nothing tested.
+
+**Prompt:** `docs/superpowers/prompts/authorities-orders-3f/09-review-fixes-words.md`
+
+**Files:**
+- Modify: `apps/api/src/auth/flows/notifiers.ts`
+- Modify: `apps/api/src/cli/counts.ts`
+- Modify: `apps/api/src/mail/templates.ts`
+- Modify: `apps/api/src/moderation/alerts.ts`
+- Modify: `apps/api/src/moderation/author-repo.ts`
+- Modify: `apps/api/src/moderation/author.ts`
+- Modify: `apps/api/src/moderation/dispatch.ts`
+- Modify: `apps/api/src/moderation/orders-repo.ts`
+- Modify: `apps/api/src/moderation/retention.ts`
+- Modify: `apps/api/src/moderation/statement-repo.ts`
+- Modify: `apps/api/src/moderation/statement.ts`
+- Modify: `apps/api/test/integration/account-deletion.test.ts`
+- Modify: `apps/api/test/integration/alerts-steps.test.ts`
+- Modify: `apps/api/test/integration/auth-notifiers.test.ts`
+- Modify: `apps/api/test/integration/cli-counts.test.ts`
+- Modify: `apps/api/test/integration/cli-orders.test.ts`
+- Modify: `apps/api/test/integration/http-deletion.test.ts`
+- Modify: `apps/api/test/integration/moderation-notices.test.ts`
+- Modify: `apps/api/test/integration/orders-ledger.test.ts`
+- Modify: `apps/api/test/integration/orders-notice.test.ts`
+- Modify: `apps/api/test/integration/orders-retention.test.ts`
+- Modify: `apps/api/test/integration/recovery-gaps.test.ts`
+- Modify: `apps/api/test/integration/recovery-import.test.ts`
+- Modify: `apps/api/test/mail/moderation-templates.test.ts`
+- Modify: `apps/api/test/mail/templates.test.ts`
+- Modify: `apps/api/test/moderation-alerts.test.ts`
+- Modify: `apps/app/src/components/moderation/CasesLists.tsx`
+- Modify: `apps/app/src/components/moderation/DecisionDetail.tsx`
+- Modify: `apps/app/src/lib/orders.ts`
+- Modify: `apps/app/src/lib/terms.ts`
+- Modify: `apps/app/test/orders.test.tsx`
+- Modify: `apps/app/test/terms.test.tsx`
+- Modify: `packages/contracts/src/moderation.ts`
+- Modify: `packages/contracts/src/orders.ts`
+- Modify: `packages/rules/src/statement.ts`
+- Modify: `packages/rules/test/statement.test.ts`
+
+- [ ] **Step 1: Write the failing tests: `apps/api/test/integration/account-deletion.test.ts`, `apps/api/test/integration/alerts-steps.test.ts`, `apps/api/test/integration/auth-notifiers.test.ts`, `apps/api/test/integration/cli-counts.test.ts`, `apps/api/test/integration/cli-orders.test.ts`, `apps/api/test/integration/http-deletion.test.ts`, `apps/api/test/integration/moderation-notices.test.ts`, `apps/api/test/integration/orders-ledger.test.ts`, `apps/api/test/integration/orders-notice.test.ts`, `apps/api/test/integration/orders-retention.test.ts`, `apps/api/test/integration/recovery-gaps.test.ts`, `apps/api/test/integration/recovery-import.test.ts`, `apps/api/test/mail/moderation-templates.test.ts`, `apps/api/test/mail/templates.test.ts`, `apps/api/test/moderation-alerts.test.ts`, `apps/app/test/orders.test.tsx`, `apps/app/test/terms.test.tsx`, `packages/rules/test/statement.test.ts`**
+- [ ] **Step 2: Run them and confirm they fail: `pnpm test`, expecting `Tests  `, `failed`**
+- [ ] **Step 3: Write the implementation: `apps/api/src/auth/flows/notifiers.ts`, `apps/api/src/cli/counts.ts`, `apps/api/src/mail/templates.ts`, `apps/api/src/moderation/alerts.ts`, `apps/api/src/moderation/author-repo.ts`, `apps/api/src/moderation/author.ts`, `apps/api/src/moderation/dispatch.ts`, `apps/api/src/moderation/orders-repo.ts`, `apps/api/src/moderation/retention.ts`, `apps/api/src/moderation/statement-repo.ts`, `apps/api/src/moderation/statement.ts`, `apps/app/src/components/moderation/CasesLists.tsx`, `apps/app/src/components/moderation/DecisionDetail.tsx`, `apps/app/src/lib/orders.ts`, `apps/app/src/lib/terms.ts`, `packages/contracts/src/moderation.ts`, `packages/contracts/src/orders.ts`, `packages/rules/src/statement.ts`**
+- [ ] **Step 4: typecheck: run `pnpm typecheck`**
+- [ ] **Step 5: test: run `pnpm -r --if-present run test --testTimeout=20000`, expecting `Tests  `**
+- [ ] **Step 6: export: run the `export` command in the prompt, expecting `Exported`**
+- [ ] **Step 7: test-database-fresh: run `node scripts/test-db.mjs --fresh -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `test database ready: korbat_test`**
+- [ ] **Step 8: integration-fresh: run the `integration-fresh` command in the prompt, expecting `Tests  `**
+- [ ] **Step 9: test-database-upgrade: run `node scripts/test-db.mjs --upgrade-from 25 -- docker compose -f infra/compose.yml -f infra/compose.dev.yml`, expecting `migrations up to 0025_standing_review applied and committed`, `later migrations applied as one batch`, `test database ready: korbat_test`**
+- [ ] **Step 10: integration-upgraded: run the `integration-upgraded` command in the prompt, expecting `Tests  `**
+- [ ] **Step 11: timing: run the `timing` command in the prompt, expecting `timing-ok=1`**
+- [ ] **Step 12: api-bundle: run the `api-bundle` command in the prompt, expecting `Build success`, `bundle-ok`**
+- [ ] **Step 13: Commit: `fix(contracts,rules,api,app): what the review of 3f as built upheld in the words and the proofs: a statement carries informedAt and counts the appeal's six months from the telling, so a decision held with an order's notice no longer prints a deadline weeks short of its appealUntil; the urgent-lane and waiting mails take phones and say they are the only alert when NOTIFY is off; the order_records step's audit row names the order's kind, receipt and opening as erased, and tco-counts reads that row alone; a DSA order that does not withhold gets its own note, and the terms qualify its measure and keep a message an order came with as long as that order's records; an extended preservation prints its first end and the later one apart, an erasure says that the preservation ended, and a disabling taken again names no six months its notice does not show; an order's row on Cases shows and sorts by the day its author was told; and tests for the order decision's actor check, the admin check of a gap closed as not needed, the lost decision's copy, the give-up counted from the telling and the credentials cleared at a held purge`**
