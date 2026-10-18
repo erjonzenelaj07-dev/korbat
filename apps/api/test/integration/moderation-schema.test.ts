@@ -448,8 +448,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.case_evidence_due_at",
         "public.decision_final_at",
         "public.delete_access_log",
+        // Task 4 (0029_orders_retention): the retention job's three steps of 3f.
+        "public.delete_contact_messages",
         "public.erase_case_evidence",
         "public.erase_intake",
+        "public.erase_order_records",
         "public.erase_reply_statements",
         "public.erase_statement_texts",
         "public.forget_report_counts",
@@ -463,7 +466,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.order_hold_until",
         // Task 3 (0028_orders_ledger): the release of held notices, which the dispatch round calls, and the preservation's predicate.
         "public.order_notices_release",
+        "public.order_preservation_end",
         "public.order_preserve_until",
+        "public.order_records_due",
         "public.order_rules",
         "public.post_frozen",
         "public.post_preserved",
@@ -496,14 +501,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       }
     });
 
-    test("frozen_for is named only by post_frozen and by the keep trigger's function; post_frozen only by decisions_record, erase_snapshots and redact_r4_body", async () => {
+    test("frozen_for is named only by post_frozen and by the keep trigger's function; post_frozen only by decisions_record, erase_snapshots, redact_r4_body and order_preservation_end", async () => {
       const all = await functions();
       const naming = (word: RegExp) => all.filter((f) => word.test(f.definition)).map((f) => f.name);
       // Each function's own definition holds its name.
       expect(naming(/\bfrozen_for\b/)).toEqual(["public.frozen_for", "public.post_frozen", "public.post_media_keep"]);
       // One function of 0016 reads the freeze: the one that stores whether a decision was taken while nobody could open the images.
       // And two of 0018: the one function that erases a snapshot (gate E), and the R4 redaction, which waits while its post is frozen.
-      expect(naming(/\bpost_frozen\b/)).toEqual(["public.decisions_record", "public.erase_snapshots", "public.post_frozen", "public.redact_r4_body"]);
+      // And (3f, 0029) the end of an order's preservation, which waits as the redaction does.
+      expect(naming(/\bpost_frozen\b/)).toEqual(["public.decisions_record", "public.erase_snapshots", "public.order_preservation_end", "public.post_frozen", "public.redact_r4_body"]);
       // Nor does a view, a trigger, a constraint, an index or a policy name either.
       const others = (await otherDefinitions()).filter((d) => /\b(frozen_for|post_frozen)\b/.test(d.definition));
       expect(others.map((d) => `${d.kind} ${d.name}`)).toEqual([]);
@@ -520,8 +526,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const calls = /\bmoderation_apply\s*\(/i;
       expect(matching(sealList)).toEqual(["public.decision_actions_apply"]);
       expect(matching(imageState)).toEqual(["public.moderation_apply"]);
-      // Of the three columns of posts, the level and the state are moderation_apply's alone; the erasure mark is the R4 redaction's.
-      expect(matching(postColumns)).toEqual(["public.moderation_apply", "public.redact_r4_body"]);
+      // Of the three columns of posts, the level and the state are moderation_apply's alone; the erasure mark is the R4
+      // redaction's and (3f, 0029) the end of an order's preservation's.
+      expect(matching(postColumns)).toEqual(["public.moderation_apply", "public.order_preservation_end", "public.redact_r4_body"]);
       const written = (table: string, columns: string) =>
         new RegExp(String.raw`(update\s+(only\s+)?|merge\s+into\s+(only\s+)?|insert\s+into\s+)("?public"?\s*[.]\s*)?"?${table}"?(?![\w"])[^;]*\bset\b[^;]*"?(${columns})"?\s*=`, "i");
       const postLevel = written("posts", "moderation_level|state");
@@ -529,16 +536,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const imageErased = written("post_media", "erased_at");
       const snapshotErased = written("evidence_snapshots", "erased_at");
       expect(matching(postLevel)).toEqual(["public.moderation_apply"]);
-      expect(matching(postErased)).toEqual(["public.redact_r4_body"]);
-      expect(matching(imageErased)).toEqual(["public.redact_r4_body"]);
+      expect(matching(postErased)).toEqual(["public.order_preservation_end", "public.redact_r4_body"]);
+      expect(matching(imageErased)).toEqual(["public.order_preservation_end", "public.redact_r4_body"]);
       // Gate E: one function writes a snapshot's erasure, no function deletes a snapshot, and that one function is called
       // by the two erasures of 0018 and by nothing else.
       expect(matching(snapshotErased)).toEqual(["public.erase_snapshots"]);
       expect(matching(/delete\s+from\s+(only\s+)?("?public"?\s*[.]\s*)?"?evidence_snapshots"?(?![\w"])/i)).toEqual([]);
-      expect(matching(/\berase_snapshots\s*\(/i)).toEqual(["public.erase_case_evidence", "public.erase_snapshots", "public.redact_r4_body"]);
+      expect(matching(/\berase_snapshots\s*\(/i)).toEqual(["public.erase_case_evidence", "public.erase_snapshots", "public.order_preservation_end", "public.redact_r4_body"]);
       // The writer is called by the two triggers that follow a stored decision and a stored measure, by the R4 redaction,
       // and (3f) by order_correct, whose changed withholding derives the level of its measures' posts again.
-      expect(matching(calls)).toEqual(["public.decision_actions_apply", "public.decisions_apply", "public.moderation_apply", "public.order_correct", "public.redact_r4_body"]);
+      // And (3f, 0029) the end of an order's preservation, by which an erased post is removed for good.
+      expect(matching(calls)).toEqual(["public.decision_actions_apply", "public.decisions_apply", "public.moderation_apply", "public.order_correct", "public.order_preservation_end", "public.redact_r4_body"]);
       for (const statement of [
         "UPDATE public.evidence_snapshots s SET erased_at = now(), body = NULL",
         'update only "public"."evidence_snapshots" set "erased_at" = $1',
@@ -658,11 +666,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(all.find((f) => f.name === "public.order_notices_release")!.definition).toContain("SET informed_at = clock_timestamp(), author_mail = 'pending'");
       expect(all.find((f) => f.name === "public.order_correct")!.definition).toMatch(/SET informed_at = NULL, author_mail = 'none'/);
       // An order's row: written by order_event_record and order_correct alone (and the command line, as the migrator).
-      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]legal_orders /i)).toEqual(["public.order_correct", "public.order_event_record"]);
+      // Task 4 (0029_orders_retention): erase_order_records deletes it with its events and items once its records are due.
+      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]legal_orders /i)).toEqual(["public.erase_order_records", "public.order_correct", "public.order_event_record"]);
       // Task 3: the ledger's events (effect_given, reinstated) and the release's notice_released.
-      expect(writing(/INSERT INTO public[.]legal_order_events/i)).toEqual(["public.decision_actions_apply", "public.order_correct", "public.order_event_record", "public.order_notices_release"]);
+      // Task 4: the end of a preservation's preservation_ended, by the system.
+      expect(writing(/INSERT INTO public[.]legal_order_events/i)).toEqual(["public.decision_actions_apply", "public.order_correct", "public.order_event_record", "public.order_notices_release", "public.order_preservation_end"]);
       // An item's closing: order_correct closes it; an effect clears it (decision_actions_apply).
       expect(writing(/closed_reason = /)).toEqual(["public.decision_actions_apply", "public.order_correct"]);
+      // An item's preservation (design, section 6.7): set and ended by the ledger (decision_actions_apply) and a correction
+      // (order_correct), and ended by time by order_preservation_end (Task 4, 0029) alone.
+      expect(writing(/preserve_(until|ended_at) = /)).toEqual(["public.decision_actions_apply", "public.order_correct", "public.order_preservation_end"]);
       expect(writing(/withhold_author = /)).toEqual(["public.order_correct"]);
       // The two definer functions pin public alone and name auth's table in full, as every function the migrator owns does.
       for (const name of ["public.order_correct", "public.order_event_record", "public.legal_order_events_confirmed"]) {
@@ -670,7 +683,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         expect([f.definer, f.config], name).toEqual([true, ["search_path=public, pg_temp"]]);
       }
       // No function of 0027 holds an interval literal or a number of order_rules(): each is read from there.
-      for (const name of ["public.order_hold_end", "public.order_hold_until", "public.order_preserve_until", "public.order_event_record", "public.order_correct", "public.legal_orders_insert"]) {
+      // Nor any of 0029_orders_retention.
+      for (const name of ["public.order_hold_end", "public.order_hold_until", "public.order_preserve_until", "public.order_event_record", "public.order_correct", "public.legal_orders_insert",
+                          "public.order_preservation_end", "public.order_records_due", "public.erase_order_records", "public.delete_contact_messages"]) {
         expect(all.find((f) => f.name === name)!.definition, name).not.toMatch(/interval '/i);
       }
       const views = (await otherDefinitions()).filter((d) => d.kind === "view" && d.name === "legal_order_clock");

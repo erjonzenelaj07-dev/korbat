@@ -324,3 +324,23 @@ ran on, `make_proto.py` and `20-tables.sql` the prototype of the design's sectio
 API's statements, the lettered SQL files the labs themselves, and `out-*.txt` their raw outputs. It ran on a throwaway
 cluster of PostgreSQL 18.1 over the migrations 0000 to 0016. The task that builds the ledger's migration of 3f runs it
 again on the 18.6 image, as `RUN.txt` lists it, and compares the outputs.
+
+## The numbers of 2026-10-16: the end of an order's preservation (3f, migration 0029)
+
+The test "3f, Task 4" of `contention.lab.ts` (run it alone with `-t "3f, Task 4"`). One order of eleven posts by one
+author, one image each: its first item given effect with a real key and aged past its six months, so every round finds
+its preservation due; the other ten given effect in one transaction with a made-up confirmation of their params. Both
+sides roll back. PostgreSQL 18 in the scratch stack's container, `busyPercent` 19.
+
+| measured | result |
+|---|---|
+| `order_preservation_end` alone (one image) | 71 ms |
+| the ten-item effect alone | 882 ms |
+| 40 rounds of the two, each side first in half of them | 40 ok and 40 ok: no deadlock, no lock timeout; the longest side took 4,823 ms |
+
+- The end takes the cases (the item's decision's and those of the post's other copies) in id order, then the item, the
+  post and its image rows; the effect takes the author's profile, the cases through its intake's items, its items' rows
+  and then each post. The ten posts and the eleventh are different rows, and the end takes no profile, so the two met
+  at no row and neither waited on the other for long.
+- Task 3's part of this lab (the ten-item transaction against intakes on the same posts, a seal on one author and the
+  purge of another) is not here yet.

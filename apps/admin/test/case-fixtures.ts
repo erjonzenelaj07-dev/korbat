@@ -190,6 +190,7 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     // 3f Task 3: no order preserves the post or holds a notice about it.
     preserved: false,
     noticeHeld: null,
+    orderErasedOn: null,
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },

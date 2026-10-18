@@ -183,7 +183,14 @@ describe("a case that holds an order's measure (8.6)", () => {
     // Without a hold, no [reinstate.fake] and no [case.heldToo].
     const told = text(html(<ComposerView {...props} view={orderCase({ noticeHeld: null })} />));
     expect(told).not.toContain(ORDER_WORDS.caseOrder.reinstateFake);
-    expect(told).not.toContain("must not be told");
+    expect(told).not.toContain("must not be told");    expect(read).not.toContain("restores nothing");
+    expect(read).toContain(ORDER_NOTICE.reinstated.now);
+    // Task 4 ([reinstate.erased]): once the preservation's end erased the post, reinstating restores nothing, and the
+    // preview's paragraph says so with the day.
+    const erased = text(html(<ComposerView {...props} view={orderCase({ orderErasedOn: "2027-04-17" })} />));
+    expect(erased).toContain(ORDER_WORDS.caseOrder.reinstateErased("2027-04-17"));
+    expect(erased).toContain(ORDER_NOTICE.reinstated.erased("2027-04-17"));
+    expect(erased).not.toContain(ORDER_NOTICE.reinstated.now);
   });
 
   test("the params the key confirms: a correction that reverses the order decision whole, its one action signing the ground, the reason's digest", () => {

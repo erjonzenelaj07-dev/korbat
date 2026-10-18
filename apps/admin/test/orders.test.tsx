@@ -75,6 +75,7 @@ const item = (over: Partial<OrderView["items"][number]> = {}): OrderView["items"
   noEffect: null,
   preserveUntil: null,
   preserveEndedAt: null,
+  erasedAt: null,
   reinstatedAt: null,
   reinstatedGround: null,
   closedAt: null,
@@ -527,7 +528,12 @@ describe("block 4, Disable for an order (8.5, Task 3)", () => {
     expect(read).toContain(`href="/cases/${CASE}"`);
     const reinstated = text(page(view({ items: [item({ postId: POST_A, disabledAt: t(20), reinstatedAt: t(40), reinstatedGround: "withdrawn" })] })));
     expect(reinstated).toContain(`Reinstated at ${bothTimes(t(40))}: ${ORDER_GROUND_LABELS.withdrawn}`);
-    expect(text(page(view({ items: [item({ postId: POST_A, inForce: true, disabledAt: t(20), noEffect: "already" })] })))).toContain(ORDER_WORDS.order.alreadyNow);
+    expect(text(page(view({ items: [item({ postId: POST_A, inForce: true, disabledAt: t(20), noEffect: "already" })] })))).toContain(ORDER_WORDS.order.alreadyNow);    // Task 4 ([item.erased]): the preservation's end erased the content; the day is UTC's, and "Preserved until" goes.
+    const erasedAt = "2027-04-17T00:10:00.000Z";
+    const erased = text(page(view({ items: [item({ postId: POST_A, inForce: true, disabledAt: t(20), preserveUntil: t(-10), preserveEndedAt: erasedAt, erasedAt })] })));
+    expect(erased).toContain(ORDER_WORDS.order.erased("2027-04-17"));
+    expect(erased).not.toContain("Preserved until");
+    expect(text(read)).not.toContain("the content was erased");
   });
 
   test("block 8's [hold.warn] in the last days before a running hold's end, and not before", () => {

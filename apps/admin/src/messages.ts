@@ -662,6 +662,8 @@ export const ORDER_WORDS = {
     holdWarn: (holdUntil: string) =>
       `The author's notice is released on ${holdUntil}. If the authority has extended or prolonged the silence, record it before then: every staff account is alerted daily until that day.`,
     preservedUntil: (at: string) => `Preserved until ${at}`,
+    // Task 4 (8.5, [item.erased]): the preservation ended while the measure stood, and erased the post's content.
+    erased: (day: string) => `Preservation ended on ${day}: the content was erased.`,
     reinstatedAt: (at: string, ground: string) => `Reinstated at ${at}: ${ground}`,
     effectTitle: "Disable for an order",
     effectWhat: "This disables the ticked posts for everyone, their authors included: each then answers like a post that does not exist, and its images are not served. korbat does not assess them. Nothing is deleted.",
@@ -705,6 +707,8 @@ export const ORDER_WORDS = {
       "Reinstating ends the order's measure on this post and its preservation. korbat never lifts an order's measure on its own view of the content: choose what happened, after you checked the message it came in as you check an order. If another decision still restricts the post, it stays restricted. Should the order be restored later and the post be disabled again, its six months count anew from that disabling.",
     reinstateTold: "If the author was told of the disabling, they are told at once why it ended. If the notice is still held, nothing is told until the hold ends, and then both are told together.",
     reinstateFake: "Tell whoever has the server to end the hold first (staff.js order-hold-end), so that the author learns at once what happened and for how long.",
+    // Task 4 (8.6, [reinstate.erased]): the preservation's end erased the post before the reinstatement.
+    reinstateErased: (day: string) => `The content was erased on ${day} when its preservation ended. Reinstating lifts the measure; it restores nothing.`,
     reinstateButton: "Reinstate: confirm with your staff key",
   },
   /** Home's two lines of a deadline (8.2). */

@@ -12,7 +12,29 @@
   respond `{"error":{"code":"not_found","message":"No such route"}}` 404
 }
 
-:8080 {
+# The page's security headers (3a; 3f, section 7.12): one block for the app's files and for a post's page, so every answer
+# of the page carries the same ones, whatever status the post's page gets.
+(app_page_headers) {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "no-referrer"
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    # challenges.cloudflare.com serves the Turnstile widget script and its iframe (sign-in screens).
+    Content-Security-Policy "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    -Server
+  }
+}
+
+# The app's shell, the same bytes for every post's page: the page itself decides what to show.
+(app_shell) {
+  root * /srv
+  rewrite * /index.html
+}
+
+# The app's site while it is open (APP_SITE=open, the default).
+(app_site_open) {
   # A client from the push network (ntfy and the watcher, 3f) is refused here: until the push site, only cloudflared could
   # reach Caddy. The handles below that reach anything each answer it 403 first: a handle of this matcher alone would be
   # sorted after the path handles. PUSH_SUBNET is the network's fixed subnet, from Compose.
@@ -51,21 +73,47 @@
     }
   }
 
+  # A post's page (3f design, sections 5 and 7.12): the app's shell under the status the API gives the post, so that a
+  # check from outside reads 404 for a post that is not public and never 451. Caddy asks GET /api/posts/<id>/status, with
+  # the visitor's address and cookies as every proxied request carries them (the route reads no session, and the
+  # global limit counts the question against the visitor): 204 gives the shell with 200, 404 the same shell with 404,
+  # and any other answer (a 429 of the global limit) the shell with 200, as before; handle_errors below does the same
+  # when the API cannot be asked. Only the status line differs: the bytes and the headers are the same in every case,
+  # which Task 4's first step checked on this image (Caddy 2.11.4).
+  handle /post/* {
+    respond @push 403
+    import app_page_headers
+    header Cache-Control "no-cache"
+    encode gzip
+    reverse_proxy api:3000 {
+      import /etc/caddy/cf-header.caddy
+      method GET
+      rewrite /api/posts/{http.request.uri.path.1}/status
+      @shown status 204
+      handle_response @shown {
+        import app_shell
+        file_server
+      }
+      @gone status 404
+      handle_response @gone {
+        import app_shell
+        file_server {
+          status 404
+        }
+      }
+      handle_response {
+        import app_shell
+        file_server
+      }
+    }
+  }
+
   # The web app: static files, the page's security headers, and caching by kind of file.
   handle {
     respond @push 403
     root * /srv
     encode gzip
-    header {
-      Strict-Transport-Security "max-age=31536000; includeSubDomains"
-      X-Content-Type-Options "nosniff"
-      X-Frame-Options "DENY"
-      Referrer-Policy "no-referrer"
-      Permissions-Policy "camera=(), microphone=(), geolocation=()"
-      # challenges.cloudflare.com serves the Turnstile widget script and its iframe (sign-in screens).
-      Content-Security-Policy "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-      -Server
-    }
+    import app_page_headers
     # The page is revalidated on every load, so a deploy is seen at once; the hashed bundles never change.
     @immutable path /_expo/* /assets/*
     header @immutable Cache-Control "public, max-age=31536000, immutable"
@@ -76,6 +124,38 @@
     try_files {path} /index.html
     file_server
   }
+
+  # A post's page when the API cannot be asked (stopped, or not answering): the shell with 200, as before the status.
+  # Every other error is answered as Caddy answers it without this block.
+  handle_errors {
+    @postpage path /post/*
+    handle @postpage {
+      import app_page_headers
+      header Cache-Control "no-cache"
+      encode gzip
+      import app_shell
+      file_server {
+        status 200
+      }
+    }
+  }
+}
+
+# The app's site while it is closed (APP_SITE=closed; 3f design, section 7.17, a restore): 503 with one fixed sentence to
+# every path, the API's included, and nothing else asked or served. The console's site is unchanged.
+(app_site_closed) {
+  handle {
+    header -Server
+    header Content-Type "text/plain; charset=utf-8"
+    header Cache-Control "no-store"
+    respond "korbat is closed for maintenance. Please come back later." 503
+  }
+}
+
+# The app's site. APP_SITE (open, the default, or closed) is read when Caddy starts and names the snippet that is the
+# site: any other value names no snippet, and Caddy refuses to start rather than leave the site open during a restore.
+:8080 {
+  import app_site_{$APP_SITE:open}
 }
 
 # The staff console (3a design, section 8): a site of its own for the console's own origin, CONSOLE_ORIGIN. It serves the

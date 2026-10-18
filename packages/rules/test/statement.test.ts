@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { MEASURES, MEASURE_KINDS, ORDER_DRAFTS, ORDER_GROUNDS, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
+import { MEASURES, MEASURE_KINDS, ORDER_DRAFTS, ORDER_GROUNDS, ORDER_RULES, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
 import { ORDER_NOTICE, REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
 
 /**
@@ -1272,6 +1272,24 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
       ]);
     }
     expect(statementParagraphs(reinstatement("withdrawn"), { erasedOn: "2027-04-05" })).toContain(N.reinstated.erased("2027-04-05"));
+  });
+
+  // Task 4 (design, sections 6.4 and 6.8): erase_order_records deletes an order's row, items and events three years after
+  // its last event; its decisions stay in the ledger with no order's facts left to read.
+  const goneOrder = () => statement({ kind: "order", outcome: "restricted", ground: "illegal", ruleId: null, legalReference: null, facts: null, reason: null, source: "order", redressVersion: 3, measures: [measure("disable_by_order")], order: null });
+  const goneReinstatement = () => ({ ...reinstatement("withdrawn"), order: null });
+  const minute = (at: string) => `${at.slice(0, 10)} ${at.slice(11, 16)} UTC`;
+
+  test("Task 4: once the order's records are deleted, its notice says only that an order was given effect, and when, and its reinstatement that it was lifted", () => {
+    const order = goneOrder();
+    expect(statementParagraphs(order)).toEqual([N.recordsDeleted.done(POST_TIME, `/post/${POST.id}`, minute(order.decidedAt)), N.recordsDeleted.gone]);
+    expect(statementParagraphs(goneReinstatement())).toEqual([N.reinstated.lead("2026-10-04 09:30 UTC", POST_TIME, `/post/${POST.id}`), N.recordsDeleted.gone, N.lifted]);
+    expect(N.recordsDeleted.gone).toContain(`${ORDER_RULES.recordKeepYears} years after an order's last event`);
+    // Nothing of the order is left to name, and nothing a notice must never say is said.
+    for (const paragraphs of [statementParagraphs(goneOrder()), statementParagraphs(goneReinstatement())]) {
+      const all = paragraphs.join(NL);
+      expect(all).not.toMatch(/korbat found|It breaks|@|You can appeal|OCLCTIC|TCO-2026-17/);
+    }
   });
 });
 

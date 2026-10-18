@@ -440,6 +440,19 @@ export function createMediaRepo(db: Db) {
       return new Map(found.map((row) => [row.postId!, row.count]));
     },
 
+    /**
+     * 3f (design, sections 5 and 7.11): a post's image rows as staff.js order-access prints them for a preserved post: the
+     * id, the pixel size and when the row was made, in position order. The table holds no digest of a file, and no file
+     * is opened here.
+     */
+    async preservedImages(q: Pick<Db, "select"> | Pick<DbTx, "select">, postId: string): Promise<{ id: string; width: number | null; height: number | null; createdAt: Date }[]> {
+      return q
+        .select({ id: postMedia.id, width: postMedia.width, height: postMedia.height, createdAt: postMedia.createdAt })
+        .from(postMedia)
+        .where(eq(postMedia.postId, postId))
+        .orderBy(postMedia.position, postMedia.id);
+    },
+
     async moderationStates(afterId: string | null, limit: number): Promise<{ id: string; postId: string; moderationState: MediaRow["moderationState"]; erasedAt: Date | null }[]> {
       const found = await db
         .select({ id: postMedia.id, postId: postMedia.postId, moderationState: postMedia.moderationState, erasedAt: postMedia.erasedAt })

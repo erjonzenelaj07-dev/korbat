@@ -290,6 +290,7 @@ describe("the case answer", () => {
     // 3f Task 3: the post is not preserved for an order, and no order's notice about it is held.
     preserved: false,
     noticeHeld: null,
+    orderErasedOn: null,
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {

@@ -296,6 +296,9 @@ services:
     environment:
       # The push network's subnet, which the app's and the console's sites refuse (3f).
       PUSH_SUBNET: ${PUSH_SUBNET:-172.16.91.0/24}
+      # The app's site, open (the default) or closed: closed answers 503 to every path while a restore is checked (3f,
+      # section 7.17). Caddy reads it when it starts and refuses to start on any other value.
+      APP_SITE: ${APP_SITE:-open}
     volumes:
       - caddy-data:/data
       - caddy-config:/config

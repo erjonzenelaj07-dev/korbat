@@ -1678,6 +1678,12 @@ export const CaseView = z.object({
    */
   preserved: z.boolean(),
   noticeHeld: z.object({ until: z.iso.datetime().nullable() }).nullable(),
+  /**
+   * Task 4 (section 8.6, [reinstate.erased]): the UTC day on which an order's preservation ended by erasing the case's
+   * post, so the reinstatement's composer says that reinstating restores nothing; null on an account case and while no
+   * erasure happened.
+   */
+  orderErasedOn: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "must be a UTC day").nullable(),
 });
 export type CaseView = z.infer<typeof CaseView>;
 

@@ -6,6 +6,7 @@ import { createJob, type JobLock } from "../lib/jobs";
 import { DISPOSAL_BATCH } from "../media";
 import { appendAuditRow } from "../staff";
 import type { ModerationDeps } from "./context";
+import { deleteContactMessages, dueOrderRecords, duePreservations, endPreservation, eraseOrderRecords } from "./orders-repo";
 import { deleteAccessLog, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseReplyStatements, eraseStatementTexts, forgetReportCounts, redactR4, sweepStaffTexts } from "./repo";
 
 /**
@@ -13,7 +14,10 @@ import { deleteAccessLog, dueCases, dueIntakes, dueRedactions, dueStatements, er
  * erases the evidence of the cases and the records of the intakes that are due, makes R4 redactions final, erases the
  * statements of accounts deleted for 12 months, erases the texts of replies to suspensions that are answered and final
  * and forgets the reporting counts of the days before their frame (3e design, section 7.14), deletes the old access rows,
- * and deletes the image rows that a case or a freeze kept and nothing retains any more.
+ * and deletes the image rows that a case or a freeze kept and nothing retains any more. 3f adds three steps before the
+ * disposal (design, sections 6.4, 7.11 and 7.18): the end of each order's preservation that is due, which erases the
+ * post's content while the order's measure stands; the records of orders three years after their last event; and the
+ * contact point's messages 30 days after they were handled, with the outbox rows that old.
  *
  * The job only names what it believes is due. Each erase function of migration 0018 checks its own rule again, against
  * values the API role cannot set, and the two gates of the freeze decide for every snapshot and every image row: so a
@@ -37,7 +41,19 @@ export const RETENTION_ACTION = "moderation_retention";
 export const RETENTION_OFF_WARNING = "moderation-retention: off (MODERATION_RETENTION)";
 
 /** The steps, by the name their audit rows and log lines carry. */
-export type RetentionStep = "drafts" | "case_evidence" | "intake_record" | "redaction" | "statements" | "reply_statements" | "report_counts" | "access_log" | "images";
+export type RetentionStep =
+  | "drafts"
+  | "case_evidence"
+  | "intake_record"
+  | "redaction"
+  | "statements"
+  | "reply_statements"
+  | "report_counts"
+  | "access_log"
+  | "order_preservation"
+  | "order_records"
+  | "contact_messages"
+  | "images";
 
 /** What one round did, for its log line and for the tests: counts only. */
 export interface RetentionReport {
@@ -51,6 +67,10 @@ export interface RetentionReport {
   /** 3e: the replies whose text was erased, and the marks and daily tallies of reporting deleted with their frame. */
   replies: number;
   reportCounts: number;
+  /** 3f: the preservations ended (with or without an erasure), the orders whose records were erased, and the rows of messages and outbox deleted. */
+  preservations: number;
+  orderRecords: number;
+  contactMessages: number;
   /** The access rows deleted, with the reveal reasons erased before them. */
   accessLog: number;
   /** The size of each batch of image rows the disposal deleted, in order; the last one is smaller than a full batch. */
@@ -64,6 +84,10 @@ interface StepIds {
   caseId?: string;
   intakeId?: string;
   decisionId?: string;
+  /** 3f: an order's item and order, and whether the end of the item's preservation erased its post's content. */
+  itemId?: string;
+  orderId?: string;
+  erased?: boolean;
 }
 
 /**
@@ -82,8 +106,16 @@ async function inStep(deps: Pick<ModerationDeps, "apiDb">, step: RetentionStep, 
         targetType: null,
         targetId: null,
         requestId: null,
-        // Ids and counts only, never a text.
-        metadata: { step, caseId: ids.caseId ?? null, intakeId: ids.intakeId ?? null, decisionId: ids.decisionId ?? null, count },
+        // Ids and counts only, never a text. 3f's steps add their own ids, and only they, so the rows of 3c's and 3e's keep their form.
+        metadata: {
+          step,
+          caseId: ids.caseId ?? null,
+          intakeId: ids.intakeId ?? null,
+          decisionId: ids.decisionId ?? null,
+          ...(ids.itemId !== undefined ? { itemId: ids.itemId, erased: ids.erased ?? false } : {}),
+          ...(ids.orderId !== undefined ? { orderId: ids.orderId } : {}),
+          count,
+        },
       });
     }
     return count;
@@ -132,7 +164,7 @@ async function dispose(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, re
 
 /** One round. A plain function, so the tests call it directly. */
 export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">): Promise<RetentionReport> {
-  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, accessLog: 0, batches: [], failed: 0 };
+  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, accessLog: 0, batches: [], failed: 0 };
   /** A step in a try of its own: what it raises is logged with the step, and the round goes on. */
   const step = async (name: RetentionStep, run: () => Promise<void>) => {
     try {
@@ -143,7 +175,7 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
     }
   };
   /** Each row of a step in a try of its own, under the row's id. */
-  const each = async (name: RetentionStep, key: keyof StepIds, ids: readonly string[], change: (tx: DbTx, id: string) => Promise<number>): Promise<number> => {
+  const each = async (name: RetentionStep, key: "caseId" | "intakeId" | "decisionId" | "orderId", ids: readonly string[], change: (tx: DbTx, id: string) => Promise<number>): Promise<number> => {
     let done = 0;
     for (const id of ids) {
       try {
@@ -183,11 +215,40 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
   await step("access_log", async () => {
     report.accessLog = await inStep(deps, "access_log", {}, (tx) => deleteAccessLog(tx, RETENTION.accessLogMonths));
   });
+  // 3f: each item whose preservation is due, in a transaction of its own. A post still frozen answers false and writes
+  // nothing, so its item is named again at the next round, as an R4 redaction is; the erased image rows are then taken
+  // by the disposal below, in this same round, and their files requested after its commit.
+  await step("order_preservation", async () => {
+    for (const id of await duePreservations(deps.apiDb)) {
+      const ids: StepIds = { itemId: id };
+      try {
+        const ended = await inStep(deps, "order_preservation", ids, async (tx) => {
+          const done = await endPreservation(tx, id);
+          // Read by the audit row, which inStep writes after this change.
+          ids.erased = done.erased;
+          return done.ended ? 1 : 0;
+        });
+        if (ended > 0) report.preservations++;
+      } catch (err) {
+        report.failed++;
+        deps.log.error({ err, job: RETENTION_JOB, step: "order_preservation", itemId: id }, "moderation-retention: a row failed and was left as it was; the round goes on");
+      }
+    }
+  });
+  await step("order_records", async () => {
+    // Each order in a transaction of its own; its audit row counts the rows of its records deleted.
+    report.orderRecords = await each("order_records", "orderId", await dueOrderRecords(deps.apiDb), eraseOrderRecords);
+  });
+  // One call, which checks its own period against the database's clock: its audit row names no id.
+  await step("contact_messages", async () => {
+    report.contactMessages = await inStep(deps, "contact_messages", {}, (tx) => deleteContactMessages(tx));
+  });
   await step("images", () => dispose(deps, report));
 
   // One line for a round that did something or failed somewhere: counts only.
   const images = report.batches.reduce((sum, size) => sum + size, 0);
-  if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.replies + report.reportCounts + report.accessLog + images + report.failed > 0) {
+  const orders = report.preservations + report.orderRecords + report.contactMessages;
+  if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.replies + report.reportCounts + orders + report.accessLog + images + report.failed > 0) {
     deps.log.info({ job: RETENTION_JOB, ...report, images }, "moderation-retention: round");
   }
   return report;

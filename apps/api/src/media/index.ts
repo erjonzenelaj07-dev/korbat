@@ -60,6 +60,23 @@ export function imageCounts(q: Db | DbTx, postIds: readonly string[]): Promise<M
   return createMediaRepo(q as Db).imageCounts(q, postIds);
 }
 
+/** One image row of a preserved post as staff.js order-access prints it: never a file, and no digest, which the table does not hold. */
+export interface PreservedImage {
+  id: string;
+  width: number | null;
+  height: number | null;
+  createdAt: Date;
+}
+
+/**
+ * 3f (design, sections 5 and 7.11): the image rows of a post that an order preserves, for `staff.js order-access`, which
+ * prints their ids, pixel sizes and creation times and records the access. Read-only, through the caller's own
+ * transaction, with no files and no configuration: no file outside this module may name the image table.
+ */
+export function preservedImages(q: Db | DbTx, postId: string): Promise<PreservedImage[]> {
+  return createMediaRepo(q as Db).preservedImages(q, postId);
+}
+
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
   /**

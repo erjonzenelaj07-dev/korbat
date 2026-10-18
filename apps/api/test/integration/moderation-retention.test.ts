@@ -31,7 +31,8 @@ vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
  * committed rows: the job runs on the API's pool, as the server runs it, over cases that real, confirmed decisions
  * closed. The clock is moved by dating a case back as the migrator (ageCase). Everything a test committed about its
  * profiles is removed at the end; the audit rows stay, as the record does. 3e's two steps (a reply's text and the
- * reporting counts) are in every round's report, at 0 here; standing-retention.test.ts tests what they erase.
+ * reporting counts) are in every round's report, at 0 here; standing-retention.test.ts tests what they erase. So are
+ * 3f's three (an order's preservation, its records and the contact point's messages), which orders-retention.test.ts tests.
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () => {
   let apiDb: Db;
@@ -154,7 +155,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     );
     // A second round changes nothing and writes no audit row.
     const again = recordingMedia();
-    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, accessLog: 0, batches: [0], failed: 0 });
     expect(again.requested).toEqual([]);
     expect(await head()).toBe(start + 3);
   });
@@ -241,7 +242,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     now += ERASURE_OVERDUE_TTL_MS + 1;
     expect(await late()).toEqual({ ...baseline, contacts: 0 });
     const after = await head();
-    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, accessLog: 0, batches: [0], failed: 0 });
     expect(await head()).toBe(after);
   });
 

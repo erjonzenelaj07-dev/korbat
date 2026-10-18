@@ -6,10 +6,11 @@ import { closeDb, createDb, type Db } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { loadConfig } from "../../src/config";
 import { STAFF_USAGE, runStaffCommand } from "../../src/cli/staff";
-import { CHANNEL_TABLES, newPostRow, newTestStaff, removeFixtures, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
+import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
+import { CHANNEL_TABLES, imagePost, newPostRow, newTestStaff, removeDecided, removeFixtures, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 import { closeNotifyFixtures, contactMessageForTest, removeMessages } from "./notify-fixtures";
-import { ORDER_TABLES, orderForTest, removeOrderAlerts, removeOrders } from "./orders-fixtures";
+import { ORDER_TABLES, effectForTest, effectParams, orderForTest, removeOrderAlerts, removeOrders } from "./orders-fixtures";
 import { newProfile } from "./social-fixtures";
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -266,6 +267,122 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the order commands", () 
     await removeOrderAlerts(w.migrateDb, started);
     // The post an order named, once no item names it.
     await w.migrateDb.execute(sql`delete from public.posts where author_id = ${author.id}::uuid`);
+    expect(await rowCounts(w.apiDb, [...ORDER_TABLES, ...CHANNEL_TABLES])).toEqual(before);
+  });
+});
+
+/**
+ * The preservation's two commands (3f design, sections 7.11, 8.11 and 10.5; Task 4): order-preserve-extend moves an
+ * item's preserve_until forward on an authority's or a court's request, never back, and is refused once the
+ * preservation ended (not_preserved); its event preservation_extended names the item and its audit row order_recorded
+ * holds the request's facts, the proceedings only as a digest. order-access prints the preserved snapshot's text, its
+ * alt texts and the images' ids, sizes and creation times, never an image, and records the access as preserved_accessed
+ * with the purpose and the counts; an access for an authority is recorded with its production, which Task 5 builds, so
+ * it is refused until then. The effect commits with a real key; the last test removes what the block made.
+ */
+describe.skipIf(!process.env.INTEGRATION)("integration: the preservation's commands", () => {
+  let w: NoticesWorld;
+  let world: DeciderWorld;
+  let moderator: RealStaff;
+  let migrateDb: Db;
+  let before: Record<string, number>;
+  let appOrigin: string;
+  const posts: string[] = [];
+  const people: string[] = [];
+  const started = new Date();
+
+  beforeAll(async () => {
+    appOrigin = loadConfig().APP_ORIGIN;
+    w = noticesWorld();
+    world = deciderWorld(w.apiDb);
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
+    before = await rowCounts(w.apiDb, [...ORDER_TABLES, ...CHANNEL_TABLES]);
+    moderator = await world.staff("moderator");
+  }, 90_000);
+  afterAll(async () => {
+    await closeDb(migrateDb);
+    await world.close({ keepStaff: true });
+    await closeNotifyFixtures();
+    await w.close();
+  });
+
+  async function cli(args: string[]) {
+    const lines: string[] = [];
+    const env = { DATABASE_URL_MIGRATE: process.env.DATABASE_URL_MIGRATE!, HOME_STATE: "DE", APP_ORIGIN: appOrigin };
+    const code = await runStaffCommand(args, env, { log: (line) => lines.push(`out ${line}`), error: (line) => lines.push(`err ${line}`) }, async () => Buffer.alloc(0));
+    return { code, lines, text: lines.join(NEWLINE) };
+  }
+  /** A post with two images under a removal order given effect with the moderator's real key: its item. */
+  async function preserved(): Promise<{ itemId: string; orderId: string; postId: string; mediaIds: string[] }> {
+    const p = await imagePost(w.apiDb, 2);
+    posts.push(p.postId);
+    people.push(p.authorId);
+    const order = await orderForTest(w.apiDb, moderator, { posts: [p.postId] });
+    const outcome = await effectForTest(world, moderator, order.id, effectParams(order));
+    if (typeof outcome === "string") throw new Error(`the effect was not recorded: ${outcome}`);
+    return { itemId: outcome.items[0]!.id, orderId: order.id, postId: p.postId, mediaIds: p.mediaIds };
+  }
+  const item = async (id: string) =>
+    (await migrateDb.execute<{ until: string; ended: string | null }>(
+      sql`select to_char(preserve_until at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as until, preserve_ended_at::text as ended from public.legal_order_items where id = ${id}::uuid`,
+    ))[0]!;
+  const lastAudit = async (targetId: string) =>
+    (await migrateDb.execute<{ action: string; actor_id: string; target_type: string; metadata: Record<string, unknown> }>(
+      sql`select action, actor_id, target_type, metadata from public.audit_log where target_id = ${targetId} order by chain_seq desc limit 1`,
+    ))[0]!;
+  const digest = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+
+  test("the usage lists both commands", () => {
+    for (const command of ["order-preserve-extend", "order-access"]) expect(STAFF_USAGE, command).toContain(`  ${command} `);
+  });
+
+  test("order-preserve-extend moves preserve_until forward, records the request, and is refused backwards, without a flag and once the preservation ended", async () => {
+    const { itemId, orderId } = await preserved();
+    const was = (await item(itemId)).until;
+    const later = new Date(Date.parse(was) + 90 * 86_400_000).toISOString();
+    const received = new Date(Date.now() - 3_600_000).toISOString();
+    const args = (until: string) => ["order-preserve-extend", itemId, "--until", until, "--by", "Landgericht Berlin", "--reference", "AZ 501/26", "--proceedings", "review of the removal order", "--received", received];
+    expect((await cli(args(new Date(Date.parse(was) - 86_400_000).toISOString()))).text).toBe(`err order-preserve-extend: --until is not later than the preservation's end, ${was}; nothing changed`);
+    expect((await cli(["order-preserve-extend", itemId, "--until", later, "--by", "x"])).code).toBe(1);
+    const done = await cli(args(later));
+    expect(done.text).toBe(`out order-preserve-extend: item ${itemId} is preserved until ${later} (was ${was}).`);
+    expect((await item(itemId)).until).toBe(later);
+    const [event] = await migrateDb.execute<{ kind: string; via: string; effective: string }>(
+      sql`select kind, via, to_char(effective_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as effective from public.legal_order_events where item_id = ${itemId}::uuid and kind = 'preservation_extended'`,
+    );
+    expect([event!.kind, event!.via, event!.effective]).toEqual(["preservation_extended", "cli", received]);
+    const audit = await lastAudit(orderId);
+    expect([audit.action, audit.actor_id, audit.target_type]).toEqual(["order_recorded", SYSTEM_ACTOR_ID, "order"]);
+    expect(audit.metadata).toEqual({ event: "preservation_extended", itemId, until: later, was, received, by: "Landgericht Berlin", reference: "AZ 501/26", proceedingsSha256: digest("review of the removal order") });
+    // Once the preservation ended (here by hand, as the migrator), nothing moves it.
+    await migrateDb.execute(sql`update public.legal_order_items set preserve_ended_at = now() where id = ${itemId}::uuid`);
+    expect((await cli(args(new Date(Date.parse(later) + 86_400_000).toISOString()))).text).toBe(
+      `err order-preserve-extend: not_preserved: item ${itemId} is not preserved, or its preservation has ended; nothing changed`,
+    );
+  });
+
+  test("order-access prints the preserved text, alt texts and image facts, never an image, and records the access; an authority's access waits for its production", async () => {
+    const { itemId, mediaIds } = await preserved();
+    const done = await cli(["order-access", itemId, "--purpose", "review", "--for", "the court asked to see it"]);
+    expect(done.code).toBe(0);
+    expect(done.lines[0]).toBe("out order-access: recorded, purpose review.");
+    expect(done.lines).toContain("out a post");
+    expect(done.lines).toContain("out order-access: alt text of image 1: image 1");
+    for (const id of mediaIds) expect(done.text).toMatch(new RegExp(`order-access: image ${id}: 1200 x 800 pixels, created [0-9]{4}-[0-9]{2}-[0-9]{2}T`));
+    const audit = await lastAudit(itemId);
+    expect([audit.action, audit.actor_id, audit.target_type]).toEqual(["preserved_accessed", SYSTEM_ACTOR_ID, "order_item"]);
+    expect(audit.metadata).toEqual({ purpose: "review", productionId: null, forSha256: digest("the court asked to see it"), images: 2, altTexts: 2, textLength: 6 });
+    expect((await cli(["order-access", itemId, "--purpose", "authority", "--for", "BKA"])).text).toBe(
+      "err order-access: an access for an authority is recorded with its production, which this server cannot record yet; nothing changed",
+    );
+    expect((await cli(["order-access", itemId, "--purpose", "curiosity", "--for", "x"])).code).toBe(1);
+    expect((await cli(["order-access", randomUUID(), "--purpose", "review", "--for", "x"])).text).toMatch(/^err order-access: not_preserved: /);
+  });
+
+  test("leaves no row behind", async () => {
+    await removeDecided(world.migrateDb, posts, [moderator.id]);
+    await removeOrderAlerts(world.migrateDb, started);
+    await removeFixtures(world.migrateDb, people);
     expect(await rowCounts(w.apiDb, [...ORDER_TABLES, ...CHANNEL_TABLES])).toEqual(before);
   });
 });

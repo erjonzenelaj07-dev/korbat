@@ -109,6 +109,13 @@ describe("the reader of the Caddyfile", () => {
     expect(() => matcherTakes(m.get("@e"), "/x")).toThrow(/cannot evaluate/);
   });
 
+  test("3f: an import's name takes Caddy's environment placeholders, from the variables given or their default; one that names no snippet stays a line", () => {
+    const text = ["(site_open) {", "  respond open", "}", "(site_closed) {", "  respond closed", "}", ":1 {", "  import site_{$WHICH:open}", "}"].join("\n");
+    expect(lines(site(parseCaddyfile(text), ":1"))).toEqual(["respond open"]);
+    expect(lines(site(parseCaddyfile(text, { WHICH: "closed" }), ":1"))).toEqual(["respond closed"]);
+    expect(lines(site(parseCaddyfile(text, { WHICH: "clsoed" }), ":1"))).toEqual(["import site_clsoed"]);
+  });
+
   test("refuses a block left open or closed twice, and an unclosed quote", () => {
     expect(() => parseCaddyfile(":1 {\n")).toThrow(/open/);
     expect(() => parseCaddyfile("}\n")).toThrow(/never opened/);
@@ -426,6 +433,73 @@ describe("Compose and infra/.env.example carry the console", () => {
     for (const [from, to] of [range("172.17.0.0", "172.31.255.255"), range("192.168.0.0", "192.168.255.255")]) {
       expect(last < from! || first > to!, subnet).toBe(true);
     }
+  });
+});
+
+/**
+ * 3f (design, sections 5 and 7.12; invariant 19, Caddy's part): a post's page is served under the status the API gives
+ * the post, and APP_SITE closes the app's site. Task 4's first step tried both on Caddy 2.11.4 itself; these tests hold
+ * the Caddyfile to what was tried.
+ */
+describe("3f: the status of a post's page, and APP_SITE", () => {
+  const appSite = (env: Record<string, string> = {}) => site(readCaddyfile(env), APP_SITE);
+
+  test("/post/* asks the API for the post's status and serves the app's shell under it: 200 for 204, 404 for 404, 200 for anything else", () => {
+    const route = routeFor(appSite(), "/post/2b7c1d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e");
+    expect(route.match?.paths).toEqual(["/post/*"]);
+    const block = lines(route.block);
+    expect(block).toContain("respond @push 403");
+    expect(block).toContain("encode gzip");
+    const proxy = route.block.children!.find((node) => node.tokens[0] === "reverse_proxy")!;
+    expect(proxy.tokens).toEqual(["reverse_proxy", "api:3000"]);
+    const asked = lines(proxy);
+    for (const line of ["import /etc/caddy/cf-header.caddy", "method GET", "rewrite /api/posts/{http.request.uri.path.1}/status", "@shown status 204", "@gone status 404"]) expect(asked).toContain(line);
+    const answers = proxy.children!.filter((node) => node.tokens[0] === "handle_response");
+    expect(answers.map((node) => node.tokens)).toEqual([["handle_response", "@shown"], ["handle_response", "@gone"], ["handle_response"]]);
+    // Each answer is the same shell, index.html from /srv; only the 404 changes the status.
+    for (const answer of answers) expect(lines(answer).filter((line) => line !== "file_server" && !line.startsWith("status"))).toEqual(["root * /srv", "rewrite * /index.html"]);
+    expect(lines(answers[1]!)).toContain("status 404");
+    expect(lines(answers[0]!).concat(lines(answers[2]!)).some((line) => line.startsWith("status"))).toBe(false);
+    // Never 451.
+    expect(lines(appSite()).some((line) => line.includes("451"))).toBe(false);
+  });
+
+  test("a post's page carries the same security headers as the app's files, and the API's own headers never reach it", () => {
+    const headerBlock = (handle: Handle) => handle.block.children!.filter((node) => node.tokens[0] === "header" && node.tokens.length === 1).flatMap((node) => lines(node));
+    const page = headerBlock(routeFor(appSite(), "/post/x"));
+    expect(page.length).toBeGreaterThan(5);
+    expect(page).toEqual(headerBlock(routeFor(appSite(), "/")));
+    expect(lines(routeFor(appSite(), "/post/x").block)).toContain("header Cache-Control no-cache");
+    expect(lines(routeFor(appSite(), "/post/x").block).some((line) => /copy_response|header_down/.test(line))).toBe(false);
+  });
+
+  test("when the API cannot be asked, handle_errors serves a post's page the same shell with 200 and the same headers", () => {
+    const errors = appSite().children!.find((node) => node.tokens[0] === "handle_errors")!;
+    expect(lines(errors)).toContain("@postpage path /post/*");
+    const page = errors.children!.find((node) => node.tokens[0] === "handle" && node.tokens[1] === "@postpage")!;
+    const shown = lines(page);
+    for (const line of ["root * /srv", "rewrite * /index.html", "file_server", "status 200", "encode gzip", "header Cache-Control no-cache"]) expect(shown).toContain(line);
+    const headers = page.children!.filter((node) => node.tokens[0] === "header" && node.tokens.length === 1).flatMap((node) => lines(node));
+    expect(headers).toEqual(routeFor(appSite(), "/").block.children!.filter((node) => node.tokens[0] === "header" && node.tokens.length === 1).flatMap((node) => lines(node)));
+  });
+
+  test("APP_SITE names the app's site: open by default; closed answers every path, the API's included, 503 with one fixed sentence; any other value names no snippet, and Caddy refuses to start", () => {
+    expect(readFileSync(path.join(REPO, "infra", "caddy", "Caddyfile"), "utf8")).toContain("import app_site_{$APP_SITE:open}");
+    expect(lines(appSite())).toEqual(lines(appSite({ APP_SITE: "open" })));
+    const closed = appSite({ APP_SITE: "closed" });
+    for (const p of ["/", "/post/x", "/api/me", "/api/staff/me", "/api/media", "/assets/a.js"]) {
+      const route = routeFor(closed, p);
+      expect(route.matcher, p).toBeNull();
+      expect(lines(route.block), p).toContain("respond korbat is closed for maintenance. Please come back later. 503");
+    }
+    expect(lines(closed).some((line) => line.startsWith("reverse_proxy") || line.startsWith("file_server"))).toBe(false);
+    // What Caddy 2.11.4 answered in the first step: "File to import not found: app_site_clsoed", and no site.
+    expect(lines(appSite({ APP_SITE: "clsoed" }))).toEqual(["import app_site_clsoed"]);
+  });
+
+  test("Compose gives Caddy APP_SITE, open by default, and infra/.env.example names it", () => {
+    expect(read("infra", "compose.yml")).toContain("APP_SITE: ${APP_SITE:-open}");
+    expect(read("infra", ".env.example")).toMatch(/^APP_SITE=open$/m);
   });
 });
 

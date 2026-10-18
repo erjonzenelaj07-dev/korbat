@@ -958,6 +958,12 @@ export const OrderItemView = z.strictObject({
   noEffect: z.enum(["deleted", "already"]).nullable(),
   preserveUntil: At.nullable(),
   preserveEndedAt: At.nullable(),
+  /**
+   * Task 4 (sections 6.4 and 8.5, [item.erased]): when the preservation's end erased the post's content, the same instant
+   * as preserveEndedAt; null while nothing was erased, and when the preservation ended without an erasure (a
+   * reinstatement, a correction to another kind, or a measure no longer in force).
+   */
+  erasedAt: At.nullable(),
   reinstatedAt: At.nullable(),
   reinstatedGround: z.enum(ORDER_GROUNDS).nullable(),
   closedAt: At.nullable(),

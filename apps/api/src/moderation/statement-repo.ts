@@ -410,7 +410,11 @@ export async function repliedTo(q: Runner, decisionId: string): Promise<RepliedT
  * (the newest texts_recorded event, or the decision's informed_at when that is later). Null for any other decision.
  * The home state is the API's setting, which the caller passes.
  */
-export async function orderNoticeOf(q: Runner, decisionId: string, homeState: string | null): Promise<{ facts: OrderNoticeFacts; texts: OrderTexts; authorMailAt: string | null } | null> {
+export async function orderNoticeOf(
+  q: Runner,
+  decisionId: string,
+  homeState: string | null,
+): Promise<{ facts: OrderNoticeFacts; texts: OrderTexts; authorMailAt: string | null; erasedOn: string | null } | null> {
   const [row] = await rows<Record<string, unknown>>(
     q,
     sql`select o.kind, o.member_state, o.authority, o.reference, o.verified_at is not null as verified,
@@ -421,6 +425,9 @@ export async function orderNoticeOf(q: Runner, decisionId: string, homeState: st
                ${iso("i.preserve_until")} as preserve_until,
                exists (select 1 from legal_order_events e where e.item_id = i.id and e.kind = 'preservation_extended') as preserve_extended,
                to_char(i.preserve_ended_at at time zone 'UTC', 'YYYY-MM-DD') as preserve_ended_on,
+               -- Task 4: the day the preservation's end erased the post, which sets the post's erased_at and the item's
+               -- preserve_ended_at to the same instant; null for an end without an erasure.
+               case when p.erased_at = i.preserve_ended_at then to_char(i.preserve_ended_at at time zone 'UTC', 'YYYY-MM-DD') end as erased_on,
                (select x.order_ground from decision_actions x where x.decision_id = d.id and x.kind::text = 'reinstate_by_order') as order_ground,
                o.reasons, o.redress, o.scope,
                ${iso("(select max(e.at) from legal_order_events e where e.order_id = o.id and e.kind = 'texts_recorded')")} as texts_recorded_at,
@@ -430,6 +437,7 @@ export async function orderNoticeOf(q: Runner, decisionId: string, homeState: st
           join legal_order_items i on i.id = od.order_item_id
           join legal_orders o on o.id = i.order_id
           join decision_actions a on a.decision_id = od.id and a.kind::text = 'disable_by_order'
+          left join posts p on p.id = i.post_id
          where d.id = ${decisionId}::uuid and d.kind::text in ('order', 'correction')`,
   );
   if (!row) return null;
@@ -461,5 +469,6 @@ export async function orderNoticeOf(q: Runner, decisionId: string, homeState: st
     },
     texts: { reasons: row.reasons as string | null, redress: row.redress as string | null, scope: row.scope as string | null, textsAt },
     authorMailAt: row.author_mail_at as string | null,
+    erasedOn: row.erased_on as string | null,
   };
 }

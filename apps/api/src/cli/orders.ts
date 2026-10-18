@@ -40,6 +40,7 @@ import {
 } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
+import { preservedImages } from "../media";
 import { insertOrder, orderItemsFor } from "../moderation";
 import { appendAuditRow } from "../staff";
 
@@ -61,6 +62,9 @@ export const ORDER_COMMANDS = [
   "order-hold-until",
   "order-hold-extend",
   "order-hold-end",
+  // Task 4: the preservation's two commands (section 7.11); each names an order's item, not the order.
+  "order-preserve-extend",
+  "order-access",
 ] as const;
 export type OrderCommandName = (typeof ORDER_COMMANDS)[number];
 
@@ -82,7 +86,10 @@ export const ORDER_USAGE = [
   "  order-hold-until <order> <instant|none> --basis <text> --how <text> [--release]   the end of non-disclosure the authority stated",
   "  order-hold-extend <order> --received <instant> --how <text>   a removal order's one extension of non-disclosure, or the check of the console's",
   "  order-hold-end <order> --reason <not_authentic|annulled|released_by_authority|not_ordered> --how <text>   end a hold at once",
-  "  An <order> is its id, or <CC>:<reference> while one order of that state has the reference. Every instant has its offset.",
+  "  order-preserve-extend <item> --until <instant> --by <text> --reference <text> --proceedings <text> --received <instant>",
+  "                                         keep a preserved post longer, on an authority's or a court's request; never shorter",
+  "  order-access <item> --purpose <review|complaint|authority> --for <text>   print a preserved post's text and its images' facts, and record it",
+  "  An <order> is its id, or <CC>:<reference> while one order of that state has the reference. An <item> is its id. Every instant has its offset.",
 ];
 
 /** A parsed order command: its name, the order it names (none for order-open) and its flags and positional words. */
@@ -115,7 +122,8 @@ export function parseOrderArgs(command: OrderCommandName, rest: readonly string[
   }
   if (command === "order-open") return { command, order: null, positional, flags };
   const [order, ...others] = positional;
-  if (order === undefined) throw new Error(`${command}: name the order, by its id or as <CC>:<reference>`);
+  // The preservation's commands name an order's item, which has no reference of its own: its id alone.
+  if (order === undefined) throw new Error(command === "order-preserve-extend" || command === "order-access" ? `${command}: name the order's item by its id` : `${command}: name the order, by its id or as <CC>:<reference>`);
   return { command, order, positional: others, flags };
 }
 
@@ -515,6 +523,10 @@ async function run(tx: DbTx, cmd: OrderCommand, settings: OrderSettings, stdin: 
       await recorded(tx, order.id, "hold_ended", { reason, howSha256: sha256(how) }, { ground: reason });
       return [`${c}: the hold ended at ${ended!.at}. The next dispatch round tells the author, within about 10 minutes.`];
     }
+    case "order-preserve-extend":
+      return preserveExtend(tx, cmd);
+    case "order-access":
+      return preservedAccess(tx, cmd);
     case "order-told": {
       const order = await lockOrder(tx, c, cmd.order!);
       if (order.kind !== "dsa_art10") refuse(c, "only the person an order to provide information names is told this way");
@@ -635,4 +647,139 @@ async function open(tx: DbTx, cmd: OrderCommand, settings: OrderSettings): Promi
   const head = `${c}: order ${id} opened: ${kind}, ${state.data}, reference ${reference.data}, ${inserted.items.length} items (${noPost} name no post).`;
   if (inserted.receivedAt === null) return [`${head} Receipt not recorded: the console says deadline unknown.`];
   return [dueAt === null ? `${head} Receipt: ${inserted.receivedAt.toISOString()}.` : `${head} Receipt: ${inserted.receivedAt.toISOString()}; deadline ${dueAt}.`];
+}
+
+// ---------------------------------------------------------------- preservation (Task 4; design, sections 7.11 and 8.11)
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** The facts of an order's item that the two preservation commands read under the item's row lock. */
+interface PreservedItem {
+  id: string;
+  orderId: string;
+  postId: string | null;
+  decisionId: string | null;
+  preserveUntil: string | null;
+  /** Whether the preservation runs now: post_preserved's test for this item. */
+  running: boolean;
+  ended: boolean;
+}
+
+/** The item a command names, under the given row lock, or null when no item has the id. */
+async function lockItem(tx: DbTx, name: string, lock: "update" | "share"): Promise<PreservedItem | null> {
+  if (!UUID.test(name)) return null;
+  await tx.execute(
+    lock === "update" ? sql`select 1 from public.legal_order_items where id = ${name}::uuid for update` : sql`select 1 from public.legal_order_items where id = ${name}::uuid for share`,
+  );
+  const [row] = await rows<Record<string, unknown>>(
+    tx,
+    sql`select i.id, i.order_id, i.post_id, i.decision_id, ${isoOf("i.preserve_until")} as preserve_until,
+               coalesce(i.preserve_until > now() and i.preserve_ended_at is null, false) as running, i.preserve_ended_at is not null as ended
+          from public.legal_order_items i where i.id = ${name}::uuid`,
+  );
+  if (!row) return null;
+  return {
+    id: row.id as string,
+    orderId: row.order_id as string,
+    postId: row.post_id as string | null,
+    decisionId: row.decision_id as string | null,
+    preserveUntil: row.preserve_until as string | null,
+    running: row.running as boolean,
+    ended: row.ended as boolean,
+  };
+}
+
+/** The refusal of a command on an item whose preservation does not run (the design's word not_preserved). */
+const notPreserved = (command: string, name: string): never => refuse(command, `not_preserved: item ${name} is not preserved, or its preservation has ended`);
+
+/**
+ * order-preserve-extend: an authority's or a court's request to keep a preserved post longer (TCO Art. 6(2)). Under the
+ * item's row lock, on an item whose preservation has not ended (its time may have passed while the retention job has
+ * not yet ended it), it moves preserve_until forward, never back, records the event preservation_extended with the
+ * item and the time the request was received, and ends with order_recorded: who asked and their reference as given,
+ * the proceedings only as a digest.
+ */
+async function preserveExtend(tx: DbTx, cmd: OrderCommand): Promise<string[]> {
+  const c = cmd.command;
+  const until = instant(c, flag(cmd, "--until")!);
+  const by = freeText(c, "--by", flag(cmd, "--by")!);
+  const reference = freeText(c, "--reference", flag(cmd, "--reference")!);
+  const proceedings = freeText(c, "--proceedings", flag(cmd, "--proceedings")!);
+  const received = instant(c, flag(cmd, "--received")!);
+  if (received.getTime() > Date.now()) refuse(c, "--received is in the future");
+  const item = await lockItem(tx, cmd.order!, "update");
+  if (!item || item.preserveUntil === null || item.ended) return notPreserved(c, cmd.order!);
+  const was = item.preserveUntil;
+  if (until.getTime() <= Date.parse(was)) refuse(c, `--until is not later than the preservation's end, ${was}`);
+  const [moved] = await rows<{ until: string }>(
+    tx,
+    sql`update public.legal_order_items set preserve_until = ${until.toISOString()}::timestamptz where id = ${item.id}::uuid returning ${isoOf("preserve_until")} as until`,
+  );
+  await tx.execute(sql`insert into public.legal_order_events (order_id, item_id, kind, effective_at, via)
+                       values (${item.orderId}::uuid, ${item.id}::uuid, 'preservation_extended', ${received.toISOString()}::timestamptz, 'cli')`);
+  await appendAuditRow(tx, {
+    actorId: SYSTEM_ACTOR_ID,
+    action: "order_recorded",
+    targetType: "order",
+    targetId: item.orderId,
+    requestId: null,
+    metadata: { event: "preservation_extended", itemId: item.id, until: moved!.until, was, received: received.toISOString(), by, reference, proceedingsSha256: sha256(proceedings) },
+  });
+  return [`${c}: item ${item.id} is preserved until ${moved!.until} (was ${was}).`];
+}
+
+/** The purposes of TCO Art. 6(3) for which preserved content is opened. */
+const ACCESS_PURPOSES = ["review", "complaint", "authority"] as const;
+
+/**
+ * order-access: preserved content opened for a purpose of TCO Art. 6(3), only from here (no console screen and no route
+ * opens it). Under the item's share lock, on an item whose preservation runs, it prints the preserved copy's text (the
+ * snapshot the effect took, else the post's newest copy), its alt texts and the images' ids, pixel sizes and creation
+ * times through the media module's preservedImages, never an image, and records the access as preserved_accessed with
+ * the purpose and the counts. An access for an authority is a production (section 7.14), whose record Task 5 builds: it
+ * is refused until then, since it would otherwise leave without its record.
+ */
+async function preservedAccess(tx: DbTx, cmd: OrderCommand): Promise<string[]> {
+  const c = cmd.command;
+  const purpose = flag(cmd, "--purpose")!;
+  if (!(ACCESS_PURPOSES as readonly string[]).includes(purpose)) refuse(c, "--purpose is review, complaint or authority");
+  const forWhat = freeText(c, "--for", flag(cmd, "--for")!);
+  if (purpose === "authority") refuse(c, "an access for an authority is recorded with its production, which this server cannot record yet");
+  const item = await lockItem(tx, cmd.order!, "share");
+  if (!item || !item.running || item.postId === null) return notPreserved(c, cmd.order!);
+  // The copy the effect took, which the item's decision names; else the post's newest copy that is not erased.
+  const [copy] = await rows<{ taken_at: string; body: string | null; media: { id: string; alt: string | null }[] | null }>(
+    tx,
+    sql`select ${isoOf("s.taken_at")} as taken_at, s.body, s.media
+          from public.evidence_snapshots s
+         where s.target_type = 'post' and s.target_id = ${item.postId}::uuid and s.erased_at is null
+         order by coalesce(s.id = (select d.snapshot_id from public.decisions d where d.id = ${item.decisionId}::uuid), false) desc, s.taken_at desc, s.id
+         limit 1`,
+  );
+  const images = await preservedImages(tx, item.postId);
+  const text = copy?.body ?? null;
+  const media = copy?.media ?? [];
+  const alts = media.filter((image) => image.alt !== null && image.alt !== "");
+  await appendAuditRow(tx, {
+    actorId: SYSTEM_ACTOR_ID,
+    action: "preserved_accessed",
+    targetType: "order_item",
+    targetId: item.id,
+    requestId: null,
+    // The purpose and the counts; the words of --for only as their digest, and never a word of the content.
+    metadata: { purpose, productionId: null, forSha256: sha256(forWhat), images: images.length, altTexts: alts.length, textLength: text === null ? 0 : Array.from(text).length },
+  });
+  const lines = [`${c}: recorded, purpose ${purpose}.`];
+  if (copy === undefined) lines.push(`${c}: no copy of the post's text is kept.`);
+  else {
+    // The author's text as it was copied, between two marker lines, each of its own lines as it stands.
+    lines.push(`${c}: ----- the text of post ${item.postId}, as copied at ${copy.taken_at} -----`);
+    lines.push(...(text ?? "").split(String.fromCharCode(10)));
+    lines.push(`${c}: ----- end of the text -----`);
+  }
+  media.forEach((image, index) => {
+    if (image.alt !== null && image.alt !== "") lines.push(`${c}: alt text of image ${index + 1}: ${image.alt}`);
+  });
+  for (const image of images) lines.push(`${c}: image ${image.id}: ${image.width ?? "?"} x ${image.height ?? "?"} pixels, created ${image.createdAt.toISOString()}`);
+  return lines;
 }

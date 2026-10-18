@@ -35,7 +35,7 @@ import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
-import { caseOrderFacts, noticeHeldOn, postPreserved, unverifiedOrders } from "./orders-repo";
+import { caseOrderFacts, noticeHeldOn, orderErasedOn, postPreserved, unverifiedOrders } from "./orders-repo";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
 import { caseReplies, repliesWaiting, standingColumns, standingOnDecisions, strikeAccounts, unansweredReplies, type ReplyColumns } from "./standing-repo";
 
@@ -546,6 +546,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     // 3f (sections 8.6 and 10.2): whether the post is preserved for an order, and whether an order's notice about it is held.
     preserved: row.targetType === "post" ? await postPreserved(q, row.targetId) : false,
     noticeHeld: row.targetType === "post" ? await noticeHeldOn(q, row.targetId) : null,
+    // Task 4 (section 8.6, [reinstate.erased]): the day an order's preservation ended by erasing the post, if one did.
+    orderErasedOn: row.targetType === "post" ? await orderErasedOn(q, row.targetId) : null,
   };
 }
 

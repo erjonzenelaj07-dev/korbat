@@ -21,6 +21,7 @@ import {
   newPostRow,
   newTestStaff,
   raised,
+  removeDecided,
   removeFixtures,
   report,
   staffProfile,
@@ -30,6 +31,7 @@ import {
 import { ageCase } from "../integration/retention-fixtures";
 import { newProfile } from "../integration/social-fixtures";
 import { rolledBack } from "../integration/staff-fixtures";
+import { ageOrderForTest, effectForTest, effectParams, effectWith, orderForTest, removeOrderAlerts } from "../integration/orders-fixtures";
 
 /**
  * The contention lab of moderation decisions (3c design, sections 2 and 12): what a decision's transaction costs and what
@@ -347,6 +349,75 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
         for (const [who, outcome] of [["redaction", a], ["other", b]] as const) counts[`${who}: ${outcome}`] = (counts[`${who}: ${outcome}`] ?? 0) + 1;
       }
       line("redaction contention", { redaction: "redact_r4_body of a post removal", against: otherName, rounds: ROUNDS, busyPercent: load, outcomes: counts, longestMs: Math.round(longest) });
+    }
+  });
+
+  test("3f, Task 4: the end of an order's preservation against the ten-item effect of the same order on the same author's posts: forty rounds, both orders", async () => {
+    // Migration 0029's order_preservation_end takes the case of the item's decision (and those of the post's other
+    // copies), then the item, then the post, then its image rows (design, section 5, the lock order, item 3); the effect
+    // transaction takes the authors' profiles, the cases through its intake's items, the items' rows and then, post by
+    // post, the snapshot, the decision and the measure. One order of eleven posts by one author: its first item was given
+    // effect with a real key and aged past its six months, so every round finds its preservation due again; the other
+    // ten are given effect in one transaction with a made-up confirmation of their params. Both sides roll back.
+    const started = new Date();
+    world ??= deciderWorld(apiDb);
+    const staff = await world.staff("moderator");
+    const author = await newProfile(apiDb);
+    committed.push(author.id);
+    const posts: string[] = [];
+    for (let n = 0; n < 11; n++) {
+      const postId = await newPostRow(apiDb, author.id);
+      await newImageRow(apiDb, author.id, postId, 0);
+      posts.push(postId);
+    }
+    const order = await orderForTest(apiDb, staff, { posts });
+    const first = order.items[0]!;
+    const done = await effectForTest(world, staff, order.id, effectParams(order, { itemIds: [first.id] }));
+    if (typeof done === "string") throw new Error(`the lab's first effect was not recorded: ${done}`);
+    await ageOrderForTest(migrateDb, order.id, 200 * 24 * 60);
+    const ten = done.items.filter((item) => item.id !== first.id).map((item) => item.id);
+    const params = effectParams(done, { itemIds: ten });
+    const pause = (tx: DbTx) => tx.execute(sql`select pg_sleep(0.015)`);
+    const ending = async (tx: DbTx) => {
+      const [row] = (await tx.execute(sql`select public.order_preservation_end(${first.id}::uuid) as done`)) as unknown as { done: boolean }[];
+      if (!row!.done) throw new Error("the preservation's end changed nothing");
+    };
+    const effect = async (tx: DbTx) => {
+      await effectWith(tx, staff, order.id, params);
+    };
+
+    try {
+      const ROUNDS = 40;
+      const load = await busy();
+      line("preservation end alone", { images: 1, busyPercent: load, ms: await timed(() => rolledBack(apiDb, ending)) });
+      line("ten-item effect alone", { items: ten.length, busyPercent: load, ms: await timed(() => rolledBack(apiDb, effect)) });
+      const counts: Record<string, number> = {};
+      let longest = 0;
+      for (let round = 0; round < ROUNDS; round++) {
+        const side = (fn: (tx: DbTx) => Promise<unknown>, delay: number) => async () => {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          const start = performance.now();
+          const outcome = await rolledBack(apiDb, async (tx) => {
+            await fn(tx);
+            await pause(tx);
+          }).then(
+            () => "ok",
+            (err: unknown) => {
+              const fromDatabase = raised(err);
+              return fromDatabase ? `${fromDatabase.code} ${fromDatabase.message}` : ((err as { code?: string }).code ?? String(err));
+            },
+          );
+          longest = Math.max(longest, performance.now() - start);
+          return outcome;
+        };
+        const ahead = Math.floor(Math.random() * 8);
+        const [a, b] = await Promise.all(round % 2 === 0 ? [side(ending, 0)(), side(effect, ahead)()] : [side(ending, ahead)(), side(effect, 0)()]);
+        for (const [who, outcome] of [["preservation end", a], ["effect", b]] as const) counts[`${who}: ${outcome}`] = (counts[`${who}: ${outcome}`] ?? 0) + 1;
+      }
+      line("preservation end contention", { end: "order_preservation_end of one item", against: "the ten-item effect of the same order", rounds: ROUNDS, busyPercent: load, outcomes: counts, longestMs: Math.round(longest) });
+    } finally {
+      await removeDecided(migrateDb, posts, []);
+      await removeOrderAlerts(migrateDb, started);
     }
   });
 });

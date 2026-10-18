@@ -110,6 +110,8 @@ function ItemFacts({ item }: { item: OrderItemView }) {
       </p>
       {item.inForce && item.noEffect !== null ? <p className="hint">{item.noEffect === "already" ? W.alreadyNow : W.deletedNow}</p> : null}
       {item.inForce && item.preserveUntil !== null && item.preserveEndedAt === null ? <p>{W.preservedUntil(bothTimes(item.preserveUntil))}</p> : null}
+      {/* Task 4: the preservation's end erased the post's content; its UTC day, which the notice names too. */}
+      {item.erasedAt !== null ? <p>{W.erased(item.erasedAt.slice(0, 10))}</p> : null}
       {item.reinstatedAt !== null && !item.inForce ? (
         <p>{W.reinstatedAt(bothTimes(item.reinstatedAt), item.reinstatedGround === null ? "" : (GROUND_WORDS[item.reinstatedGround] ?? item.reinstatedGround))}</p>
       ) : null}

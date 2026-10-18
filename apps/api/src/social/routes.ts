@@ -112,3 +112,24 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
 
   return r;
 }
+
+/**
+ * 3f (design, sections 5 and 7.12): GET /api/posts/:id/status, the one question Caddy asks the API for every request of a
+ * post's page, so that a status check from outside reads what a person sees. A router of its own, mounted after the
+ * global limit and before the session's resolution, as the image files' router is: Caddy's question carries the
+ * visitor's cookies, and a route among the module's others would read a session for every page view. It parses the id
+ * itself, since the validator would answer a malformed one with a JSON body, and answers 204 exactly when a post with
+ * this id is visible, and 404 with no body otherwise (no such post, a malformed id, deleted by its author, withheld,
+ * removed or disabled): the same for everyone, so it tells nothing a signed-out read of the post does not, and never 451.
+ * No interface carries it: nothing outside this module calls it.
+ */
+export function postStatusRoutes(deps: Pick<SocialDeps, "repo">) {
+  const r = new Hono<AppEnv>();
+  r.get("/posts/:id/status", async (c) => {
+    const id = PostId.safeParse(c.req.param("id"));
+    if (!id.success) return c.body(null, 404);
+    const row = (await deps.repo.findPosts([id.data])).get(id.data);
+    return c.body(null, row?.state === "visible" ? 204 : 404);
+  });
+  return r;
+}

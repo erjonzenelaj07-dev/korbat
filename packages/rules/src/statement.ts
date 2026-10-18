@@ -1,4 +1,4 @@
-import { EU_MEMBER_STATES, MEASURES, ORDER_DRAFTS, RETENTION, appealDeadline, type DecisionStatement, type MeasureKind, type OrderTexts, type ReversalKind } from "@korbat/contracts";
+import { EU_MEMBER_STATES, MEASURES, ORDER_DRAFTS, ORDER_RULES, RETENTION, appealDeadline, type DecisionStatement, type MeasureKind, type OrderTexts, type ReversalKind } from "@korbat/contracts";
 // The rulebooks and the redress texts live in the index, which re-exports this module: the two import each other, and
 // each uses the other's functions only when called, never while it loads.
 import { getRedress, getRule, type RedressTexts } from "./index";
@@ -641,6 +641,9 @@ export function statementParagraphs(input: StatementInput, extras: OrderNoticeEx
   // 3f: an order decision and the correction of one are a notice, not a statement of reasons: none of the paragraphs
   // below (no rule, no facts, no reason of korbat's, no appeal) applies to it.
   if (input.order !== null && input.order !== undefined) return orderNoticeParagraphs(input, extras);
+  // Task 4: an order decision, or the correction of one, whose order's records were deleted: no order's facts are left,
+  // and the notice says only that an order was given effect, and when.
+  if (input.kind === "order" || (input.kind === "correction" && input.reviewed?.kind === "order")) return orderGoneParagraphs(input);
   const paragraphs: string[] = [];
   const about = input.kind === "review" || input.kind === "correction";
   const restricts = input.measures.length > 0;
@@ -822,7 +825,32 @@ export const ORDER_NOTICE = {
     erased: (erasedOn: string) => `korbat had already erased the post's content when its six months ended on ${erasedOn}, so nothing can be shown again.`,
   },
   lifted: "Nothing of the order's measure remains on this post. korbat's appeal does not apply to this. Where another decision about the post still stands, its own screen says whether you can appeal it.",
+  /**
+   * Task 4 (sections 6.4 and 6.8): an order's records are deleted three years after its last event once nothing of it
+   * stands or is untold (erase_order_records). Its decisions stay in the ledger, and their notice then says only that an
+   * order was given effect, and when: korbat no longer knows more. The years are ORDER_RULES' (record_keep_years).
+   */
+  recordsDeleted: {
+    done: (createdAt: string, address: string, decidedAt: string) =>
+      `korbat restricted your post of ${createdAt} (${address}) on ${decidedAt}, because it received an authority's order to do so.`,
+    gone: `korbat has since deleted its record of that order, as its Terms say it does ${ORDER_RULES.recordKeepYears} years after an order's last event once nothing of the order still applies, so this notice can say no more about it.`,
+  },
 } as const;
+
+/**
+ * The notice of an order decision, or of the correction that reinstated after one, once the order's records were deleted
+ * three years after its last event (Task 4): what was done and when, that the record is gone, and for the correction that
+ * nothing of the measure remains. The decision's own times and its post are all it reads.
+ */
+function orderGoneParagraphs(input: StatementInput): string[] {
+  const post = input.post;
+  if (post === null) throw new Error("an order's notice is about a post: the decision's data holds none");
+  const N = ORDER_NOTICE;
+  const created = utcMinute(post.createdAt);
+  const address = postAddress(post.id);
+  if (input.kind === "correction") return [N.reinstated.lead(utcMinute(input.reviewed!.decidedAt), created, address), N.recordsDeleted.gone, N.lifted];
+  return [N.recordsDeleted.done(created, address, utcMinute(input.decidedAt)), N.recordsDeleted.gone];
+}
 
 /** What a notice reads besides its statement's data, both read fresh by the API: the authority's words and the day of an erasure. */
 export interface OrderNoticeExtras {

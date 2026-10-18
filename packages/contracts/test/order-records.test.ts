@@ -397,6 +397,7 @@ describe("the answers (10.2)", () => {
           noEffect: null,
           preserveUntil: null,
           preserveEndedAt: null,
+          erasedAt: null,
           reinstatedAt: null,
           reinstatedGround: null,
           closedAt: null,

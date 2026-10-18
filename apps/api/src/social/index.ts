@@ -15,7 +15,7 @@ import type { StoredPostState } from "./visibility";
 import { startExplore } from "./explore";
 import { exportProfile, type ProfileExport } from "./flows/export";
 import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile, type LockedAccount } from "./repo";
-import { socialRoutes } from "./routes";
+import { postStatusRoutes, socialRoutes } from "./routes";
 
 export { SocialError } from "./context";
 export { enforceWriteLimit } from "./limits";
@@ -120,6 +120,11 @@ export function createSocial(options: CreateSocialOptions) {
     /** The interface the account module uses. */
     forAccount,
     routes: socialRoutes(deps, options.requireSession, options.requireFreshAuth),
+    /**
+     * 3f (design, section 7.12): GET /api/posts/:id/status, a router of its own that app.ts mounts after the global limit
+     * and before the session's resolution. No interface member: nothing outside this module calls it.
+     */
+    statusRoutes: postStatusRoutes(deps),
     /**
      * Starts the Explore refresh under the shared job lock: a round at once, then one every five minutes. Returns the
      * function that stops the timer.

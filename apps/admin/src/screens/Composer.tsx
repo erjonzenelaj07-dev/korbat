@@ -643,6 +643,7 @@ function ReinstateView(props: ComposerViewProps) {
       <h3 id="composer-title">{W.reinstate}</h3>
       <p>{`${MEASURES.disable_by_order.label}, by the decision of ${dateTime(decision.decidedAt)}.`}</p>
       <p className="notice">{W.reinstateWhat}</p>
+      {view.orderErasedOn !== null ? <p className="notice">{W.reinstateErased(view.orderErasedOn)}</p> : null}
       <fieldset>
         <legend>What happened</legend>
         {ORDER_GROUNDS.map((each) => (
@@ -663,7 +664,8 @@ function ReinstateView(props: ComposerViewProps) {
           </div>
           <div className="frame preview">
             <h4>Preview: the notice's reinstatement as its author will receive it</h4>
-            {[ORDER_NOTICE.reinstated.ground[ground], ORDER_NOTICE.reinstated.now, ORDER_NOTICE.lifted].map((paragraph) => (
+            {/* Task 4: after the preservation's end erased the post, the notice says that nothing can be shown again. */}
+            {[ORDER_NOTICE.reinstated.ground[ground], view.orderErasedOn === null ? ORDER_NOTICE.reinstated.now : ORDER_NOTICE.reinstated.erased(view.orderErasedOn), ORDER_NOTICE.lifted].map((paragraph) => (
               <p key={paragraph} className="frame-text">
                 <UserText>{paragraph}</UserText>
               </p>

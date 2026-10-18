@@ -286,4 +286,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
     expect(await errorCode(bad)).toBe("invalid_request");
     expect((await app.request("/api/profiles/no_such_handle_xyz")).status).toBe(404);
   });
+
+  // 3f (design, section 7.12; invariant 19): the status of a post's page, which Caddy asks for /post/*, follows what a
+  // signed-out read of the post answers: 204 while it is public, 404 once its author deleted it, with no body either way.
+  test("a post's status is 204 while a signed-out read shows it, and 404 once its author deleted it", async () => {
+    offsetMs = 3 * DAY_MS;
+    const ada = await signUp();
+    const made = await post(ada.b, "a post whose page is checked");
+    const asked = await app.request(`/api/posts/${made.id}/status`);
+    expect([asked.status, await asked.text()]).toEqual([204, ""]);
+    expect((await app.request(`/api/posts/${made.id}`)).status).toBe(200);
+    expect((await ada.b.fetch(`/api/posts/${made.id}`, { method: "DELETE" })).status).toBe(204);
+    const gone = await app.request(`/api/posts/${made.id}/status`);
+    expect([gone.status, await gone.text()]).toEqual([404, ""]);
+    expect((await app.request(`/api/posts/${made.id}`)).status).toBe(404);
+  });
 });

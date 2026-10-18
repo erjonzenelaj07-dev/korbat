@@ -67,6 +67,10 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   // and a public image needs no session. Everything else under /api/media falls through to below.
   if (media) app.route("/api/media", media.fileRoutes);
   app.use(rateLimit({ name: "global", store: rateLimitStore, limit: 300, windowMs: 60_000, key: clientIpKey }));
+  // 3f (design, section 7.12): the status of a post's page, which Caddy asks for every view of /post/*, with the visitor's
+  // cookies: after the global limit, which counts it against the visitor, and before the session's resolution, so it
+  // reads no session. Every other path falls through to below.
+  if (social) app.route("/api", social.statusRoutes);
   app.use((c, next) => (isStaffPath(c.req.path) ? next() : auth.resolveSession(c, next)));
 
   app.route("/api/health", healthRoutes(healthChecks, config.KORBAT_VERSION, advisoryChecks));

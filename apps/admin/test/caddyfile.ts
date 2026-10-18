@@ -70,14 +70,26 @@ function parseTree(text: string): CaddyNode[] {
   return root;
 }
 
-/** Each `import <snippet>` line replaced by the snippet's lines, as Caddy does; an import of a file stays a line. */
-function expand(nodes: CaddyNode[], snippets: Map<string, CaddyNode[]>, depth = 0): CaddyNode[] {
+/**
+ * An import's name with Caddy's environment placeholders put in, as Caddy does when it reads the file: each {$NAME} or
+ * {$NAME:default} becomes the variable's value from `env`, else its default, else nothing. 3f: the app's site is the
+ * snippet APP_SITE names (app_site_{$APP_SITE:open}). Only an import's name is read so: the readers compare every other
+ * placeholder, such as {$PUSH_SUBNET}, as written.
+ */
+function withEnvironment(name: string, env: Record<string, string>): string {
+  return name.replace(/\{\$([A-Z_][A-Z0-9_]*)(?::([^}]*))?\}/g, (_all: string, key: string, fallback: string | undefined) => env[key] ?? fallback ?? "");
+}
+
+/** Each `import <snippet>` line replaced by the snippet's lines, as Caddy does; an import of a file, or of no snippet, stays a line. */
+function expand(nodes: CaddyNode[], snippets: Map<string, CaddyNode[]>, env: Record<string, string>, depth = 0): CaddyNode[] {
   if (depth > 10) throw new Error("the Caddyfile's snippets import each other in a loop");
   return nodes.flatMap((node) => {
-    if (node.tokens[0] === "import" && node.tokens.length === 2 && node.children === undefined && snippets.has(node.tokens[1]!)) {
-      return expand(snippets.get(node.tokens[1]!)!, snippets, depth + 1);
+    if (node.tokens[0] === "import" && node.tokens.length === 2 && node.children === undefined) {
+      const name = withEnvironment(node.tokens[1]!, env);
+      if (snippets.has(name)) return expand(snippets.get(name)!, snippets, env, depth + 1);
+      return [{ tokens: ["import", name] }];
     }
-    return [node.children === undefined ? node : { tokens: node.tokens, children: expand(node.children, snippets, depth) }];
+    return [node.children === undefined ? node : { tokens: node.tokens, children: expand(node.children, snippets, env, depth) }];
   });
 }
 
@@ -85,7 +97,7 @@ function expand(nodes: CaddyNode[], snippets: Map<string, CaddyNode[]>, depth = 
  * The Caddyfile as Caddy sees it: the global options block and the sites, with every snippet (a top-level `(name)` block)
  * imported where it is named and dropped from the top level.
  */
-export function parseCaddyfile(text: string): CaddyNode[] {
+export function parseCaddyfile(text: string, env: Record<string, string> = {}): CaddyNode[] {
   const tree = parseTree(text);
   const snippets = new Map<string, CaddyNode[]>();
   for (const node of tree) {
@@ -95,11 +107,13 @@ export function parseCaddyfile(text: string): CaddyNode[] {
   return expand(
     tree.filter((node) => !/^\(.+\)$/.test(node.tokens[0] ?? "")),
     snippets,
+    env,
   );
 }
 
-export function readCaddyfile(): CaddyNode[] {
-  return parseCaddyfile(readFileSync(CADDYFILE, "utf8"));
+/** The Caddyfile as Caddy reads it with these environment variables set (none: every placeholder takes its default). */
+export function readCaddyfile(env: Record<string, string> = {}): CaddyNode[] {
+  return parseCaddyfile(readFileSync(CADDYFILE, "utf8"), env);
 }
 
 /** The site block for an address such as :8090. */

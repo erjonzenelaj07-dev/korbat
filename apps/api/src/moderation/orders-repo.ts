@@ -442,6 +442,8 @@ export interface OrderItemRow {
   noEffect: "deleted" | "already" | null;
   preserveUntil: string | null;
   preserveEndedAt: string | null;
+  /** When the preservation's end erased the post: its post's erasure at the very instant the preservation ended. */
+  erasedAt: string | null;
   reinstatedAt: string | null;
   reinstatedGround: OrderGround | null;
   closedAt: string | null;
@@ -450,12 +452,21 @@ export interface OrderItemRow {
   post: { authorHandle: string | null; state: string; body: string; createdAt: string; deletedOn: string | null } | null;
 }
 
+/**
+ * When the end of an item's preservation erased its post (Task 4, order_preservation_end): that function sets the post's
+ * erased_at and the item's preserve_ended_at to the same instant, its transaction's start, and no other writer does so,
+ * so the equality tells an erasure from an end without one (a reinstatement, a correction, a measure no longer in force).
+ * `i` is the item and `p` its post.
+ */
+const ERASED_BY_PRESERVATION = "(case when p.erased_at = i.preserve_ended_at then i.preserve_ended_at end)";
+
 /** An order's items in position order, each with its post read live. */
 export async function orderItems(q: Querier, orderId: string): Promise<OrderItemRow[]> {
   const found = await q.execute<Record<string, unknown>>(sql`
     select i.id, i.position, i.link, i.post_id, ${isoOf("i.added_at")} as added_at, i.decision_id, d.case_id,
            exists (select 1 from public.measures_in_force m where m.id = i.action_id) as in_force,
            ${isoOf("i.disabled_at")} as disabled_at, a.no_effect, ${isoOf("i.preserve_until")} as preserve_until, ${isoOf("i.preserve_ended_at")} as preserve_ended_at,
+           ${isoOf(ERASED_BY_PRESERVATION)} as erased_at,
            ${isoOf("i.reinstated_at")} as reinstated_at,
            (select e.ground from public.legal_order_events e where e.item_id = i.id and e.kind = 'reinstated' order by e.at desc, e.id desc limit 1) as reinstated_ground,
            ${isoOf("i.closed_at")} as closed_at, i.closed_reason,
@@ -481,6 +492,7 @@ export async function orderItems(q: Querier, orderId: string): Promise<OrderItem
     noEffect: r.no_effect as "deleted" | "already" | null,
     preserveUntil: r.preserve_until as string | null,
     preserveEndedAt: r.preserve_ended_at as string | null,
+    erasedAt: r.erased_at as string | null,
     reinstatedAt: r.reinstated_at as string | null,
     reinstatedGround: r.reinstated_ground as OrderGround | null,
     closedAt: r.closed_at as string | null,
@@ -689,4 +701,68 @@ export async function postPreserved(q: Querier, postId: string): Promise<boolean
 export async function releaseHeldNotices(tx: DbTx): Promise<number> {
   const [row] = await tx.execute<{ told: number }>(sql`select public.order_notices_release() as told`);
   return row?.told ?? 0;
+}
+
+// ---------------------------------------------------------------- preservation and retention (Task 4)
+
+/**
+ * The items whose preservation is due to end (3f design, sections 7.11 and 7.18): preserve_until passed and no end
+ * recorded, oldest first. The retention job only names them: order_preservation_end checks the same again under its
+ * locks, and answers false, writing nothing, while the post is still frozen, so such an item is named again next round.
+ */
+export async function duePreservations(q: Querier): Promise<string[]> {
+  const found = await q.execute<{ id: string }>(sql`
+    select i.id from public.legal_order_items i
+     where i.preserve_until is not null and i.preserve_until <= now() and i.preserve_ended_at is null
+     order by i.preserve_until, i.id`);
+  return found.map((row) => row.id);
+}
+
+/**
+ * order_preservation_end(item), as its owner (6.4): whether the preservation ended, and whether that erased the post's
+ * content, which is so exactly when the item's measure still stands after the call (step 5; an end without an erasure,
+ * step 3, is the end of a preservation whose measure no longer stands). Raises not_due when the item is not due.
+ */
+export async function endPreservation(tx: DbTx, itemId: string): Promise<{ ended: boolean; erased: boolean }> {
+  const [row] = await tx.execute<{ ended: boolean }>(sql`select public.order_preservation_end(${itemId}::uuid) as ended`);
+  if (!row?.ended) return { ended: false, erased: false };
+  const [after] = await tx.execute<{ erased: boolean }>(sql`
+    select exists (select 1 from public.measures_in_force m where m.id = i.action_id) as erased
+      from public.legal_order_items i where i.id = ${itemId}::uuid`);
+  return { ended: true, erased: after?.erased ?? false };
+}
+
+/** The orders whose records are due (order_records_due(), 6.4): three years after the newest event, once nothing of them stands. */
+export async function dueOrderRecords(q: Querier): Promise<string[]> {
+  const found = await q.execute<{ order_id: string }>(sql`select d.order_id from public.order_records_due() d order by d.order_id`);
+  return found.map((row) => row.order_id);
+}
+
+/** erase_order_records(order), as its owner: how many rows of the order's records it deleted. Raises not_due when it is not due. */
+export async function eraseOrderRecords(tx: DbTx, orderId: string): Promise<number> {
+  const [row] = await tx.execute<{ n: number }>(sql`select public.erase_order_records(${orderId}::uuid) as n`);
+  return row?.n ?? 0;
+}
+
+/**
+ * delete_contact_messages(older_than) with older_than the database's own now() less message_keep_days, computed in the
+ * same statement as the function's check, so no clock of the API's is ever compared with the database's.
+ */
+export async function deleteContactMessages(tx: DbTx): Promise<number> {
+  const [row] = await tx.execute<{ n: number }>(
+    sql`select public.delete_contact_messages(now() - make_interval(days => (select r.message_keep_days from public.order_rules() r))) as n`,
+  );
+  return row?.n ?? 0;
+}
+
+/**
+ * The UTC day on which an order's preservation ended by erasing this post (8.6, CaseView.orderErasedOn), or null when no
+ * preservation's end erased it.
+ */
+export async function orderErasedOn(q: Querier, postId: string): Promise<string | null> {
+  const [row] = await q.execute<{ day: string | null }>(sql`
+    select to_char(max(i.preserve_ended_at) at time zone 'UTC', 'YYYY-MM-DD') as day
+      from public.legal_order_items i join public.posts p on p.id = i.post_id
+     where i.post_id = ${postId}::uuid and p.erased_at = i.preserve_ended_at`);
+  return row?.day ?? null;
 }

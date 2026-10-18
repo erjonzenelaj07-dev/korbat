@@ -39,6 +39,12 @@
  *     it without a user (403); from inside the ntfy container, on the push network, the app's and the console's sites
  *     answer 403. The contact point's routes (/api/staff/contact) stand behind the console's two doors like the case
  *     routes, in step 2.
+ * 17. 3f: a post's page (/post/<id>) answers the app's shell with 200 while the post is public and the same bytes, with
+ *     the same security headers, with 404 once its author deleted it, and 404 for a post that does not exist or a
+ *     malformed id: Caddy asks the API's status route, GET /api/posts/<id>/status, which answers 204 or 404 with no body.
+ * 18. With --closed (3f, the stack started with APP_SITE=closed, as for a restore): every path of the app's site, the
+ *     API's included, answers 503 with Caddy's one sentence, the console's site still serves its page, and nothing else
+ *     runs, since nothing else can be reached through the app's site.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -76,8 +82,10 @@ const terms = option("terms");
 const worstCase = options.includes("--worst-case");
 // 3f: the phones' push site (Caddy's third site), only while the stack runs with the Compose profile notify.
 const pushBase = option("push");
+// 3f: the app's site closed by APP_SITE=closed (step 18).
+const closed = options.includes("--closed");
 if (!base || !consoleBase || !mailpit || !terms || compose.length === 0) {
-  console.error("usage: node scripts/smoke-auth-stack.mjs --base <url> --console <url> --mailpit <url> --terms <version> [--worst-case] [--push <url>] -- <docker compose command>");
+  console.error("usage: node scripts/smoke-auth-stack.mjs --base <url> --console <url> --mailpit <url> --terms <version> [--worst-case] [--push <url>] [--closed] -- <docker compose command>");
   process.exit(2);
 }
 function stop(message) {
@@ -153,6 +161,33 @@ async function send(path, { method = "GET", token, body, type } = {}) {
   if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(`${base}${path}`, { method, headers, body });
   return { status: res.status, headers: res.headers, bytes: Buffer.from(await res.arrayBuffer()) };
+}
+
+/** The headers a page's security rests on, which Caddy sets the same on every answer of the app's page. */
+const SECURITY_HEADERS = ["content-security-policy", "strict-transport-security", "x-content-type-options", "x-frame-options", "referrer-policy", "permissions-policy", "cache-control"];
+
+/**
+ * 3f (design, section 7.12): a post's page as a browser or a checker asks for it, through Caddy: its status, its media
+ * type, its bytes and the security headers.
+ */
+async function postPage(postId) {
+  const res = await fetch(`${base}/post/${postId}`, { headers: { accept: "text/html" } });
+  const security = Object.fromEntries(SECURITY_HEADERS.map((name) => [name, res.headers.get(name) ?? undefined]));
+  return { status: res.status, type: res.headers.get("content-type"), bytes: Buffer.from(await res.arrayBuffer()), security };
+}
+
+/**
+ * 3f (step 18): the app's site closed by APP_SITE=closed answers every path, the API's included, with 503 and Caddy's
+ * one sentence; the console's site is not touched.
+ */
+async function closedSite() {
+  for (const path of ["/", `/post/${randomUUID()}`, "/api/health", "/api/me", "/api/staff/me", "/assets/none.js"]) {
+    const res = await send(path);
+    check(`3f: with APP_SITE=closed, ${path} answers 503 with the fixed sentence`, res.status === 503 && res.bytes.toString("utf8") === "korbat is closed for maintenance. Please come back later.", `HTTP ${res.status}`);
+  }
+  const page = await fetch(`${consoleBase}/`);
+  await page.arrayBuffer();
+  check("3f: the console's site still serves its page", page.status === 200, `HTTP ${page.status}`);
 }
 
 /** Runs a shell command in a service's container. Its stdin is closed, so nothing can wait on it. */
@@ -232,8 +267,18 @@ async function images(token) {
   const leaked = /DATABASE_URL|PASSWORD|SECRET|_KEY=/.test(planted.bytes.toString("latin1"));
   check("a symlink planted in the store by the worker is refused, and nothing leaks", planted.status === 404 && !leaked, `HTTP ${planted.status}`);
 
+  const shown = await postPage(created.body.id);
+  check("3f: the post's page answers the app's shell with 200 while the post is public", shown.status === 200 && shown.type === "text/html; charset=utf-8", `HTTP ${shown.status}, ${shown.type}`);
   const removed = await send(`/api/posts/${created.body.id}`, { method: "DELETE", token });
   check("delete the post", removed.status === 204, `HTTP ${removed.status}`);
+  const gone = await postPage(created.body.id);
+  check("3f: once deleted, its page answers the same shell with 404, never 451", gone.status === 404 && gone.bytes.equals(shown.bytes), `HTTP ${gone.status}`);
+  check("3f: the same security headers on both answers", isDeepStrictEqual(gone.security, shown.security) && shown.security["content-security-policy"] !== undefined, JSON.stringify(gone.security));
+  const missing = await postPage(randomUUID());
+  const malformed = await postPage("not-a-post");
+  check("3f: a post that does not exist and a malformed id answer 404 with the shell", missing.status === 404 && malformed.status === 404 && missing.bytes.equals(shown.bytes), `HTTP ${missing.status}, ${malformed.status}`);
+  const status = await send(`/api/posts/${created.body.id}/status`);
+  check("3f: the API's status route answers 404 with no body for the deleted post", status.status === 404 && status.bytes.length === 0, `HTTP ${status.status}, ${status.bytes.length} bytes`);
   const after = await send(large);
   check("its image is no longer served", after.status === 404, `HTTP ${after.status}`);
   let folder = "present";
@@ -560,6 +605,7 @@ async function accountLifecycle(reportedPostId) {
 }
 
 async function main() {
+  if (closed) return closedSite();
   const page = await fetch(`${base}/`);
   const csp = page.headers.get("content-security-policy") ?? "";
   check("web CSP allows the Turnstile widget", csp.includes("script-src 'self' https://challenges.cloudflare.com") && csp.includes("frame-src https://challenges.cloudflare.com"));
@@ -620,4 +666,8 @@ try {
   check("smoke test ran to the end", false, err instanceof Error ? err.message : String(err));
 }
 console.log(failures === 0 ? "smoke test passed" : `smoke test FAILED: ${failures} check(s)`);
-process.exit(failures === 0 ? 0 : 1);
+// With --closed the run is a few requests long, and Node on Windows aborts (a libuv assertion, exit 127) when the process
+// is ended while fetch's idle connections are still closing. So that run sets its code and ends when they have closed,
+// a few seconds later; the full run, which holds other handles open, ends here as before.
+if (closed) process.exitCode = failures === 0 ? 0 : 1;
+else process.exit(failures === 0 ? 0 : 1);
