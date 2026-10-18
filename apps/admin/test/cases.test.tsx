@@ -1066,7 +1066,8 @@ describe("the whole page for the new addresses", () => {
   test("the layout links to the queue, the appeals and the standing lists, and each address shows its page", async () => {
     const queue = await page("/queue");
     expect(queue.render()).toMatch(/<h2[^>]*>Queue</);
-    expect(hrefs(queue.render()).slice(0, 5)).toEqual(["/", "/queue", "/appeals", "/standing", "/audit"]);
+    // 3f: Contact point stands directly after Home.
+    expect(hrefs(queue.render()).slice(0, 6)).toEqual(["/", "/contact", "/queue", "/appeals", "/standing", "/audit"]);
     expect(queue.render()).toMatch(/<a href="\/queue" aria-current="page"/);
     const appeals = await page("/appeals");
     expect(appeals.render()).toMatch(/<h2[^>]*>Appeals</);

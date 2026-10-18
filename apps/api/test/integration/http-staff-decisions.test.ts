@@ -111,7 +111,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
   });
 
   /** How many rows the tables this file writes, the moderation tables among them, and the four auth tables of moderation cases hold. */
-  const counts = async (): Promise<Record<string, number>> => ({ ...(await rowCounts(apiDb)), ...(await authCaseCounts(migrateDb)) });
+  // 3f: the staff alerts this file raises write their rows of alert_outbox, which the last test removes.
+  const counts = async (): Promise<Record<string, number>> => ({ ...(await rowCounts(apiDb, ["alert_outbox"])), ...(await authCaseCounts(migrateDb)) });
+  const started = new Date();
   const consoleBrowser = () => new Browser(app, TEST_CONSOLE_ORIGIN, { base: TEST_CONSOLE_ORIGIN, csrfCookie: STAFF_CSRF_COOKIE, csrfHeader: "x-staff-csrf" });
   const error = async (res: Response) => ErrorEnvelope.parse(await res.json()).error;
 
@@ -217,6 +219,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
           // The answer was a read like any other, so the case counts as opened today and is read again without a refusal.
           expect((await read(caseId)).status).toBe(200);
           await settle();
+          // 3f: the alert that the person reached the day's limit went to every staff phone as well: its row names the
+          // limit and nobody, and is marked mailed, since its mail is 3c's own.
+          const [alert] = await migrateDb.execute<{ priority: number; scope: string; facts: Record<string, unknown>; mailed: boolean }>(
+            sql`select priority, scope, facts, mailed_at is not null as mailed from public.alert_outbox where kind = 'moderation_reads' and created_at >= ${started.toISOString()}::timestamptz order by id desc limit 1`,
+          );
+          expect({ ...alert! }).toEqual({ priority: 3, scope: "all", facts: { limit: 1 }, mailed: true });
         } finally {
           await migrateDb.execute(sql`update moderation_limits set case_opens_per_day = ${kept!.n} where id = 1`);
         }
@@ -475,6 +483,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: deciding a case over HTT
 
   test("this file left no row behind: the tables it writes, the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
     await settle();
+    await migrateDb.execute(sql`delete from public.alert_outbox where kind like 'moderation_%' and created_at >= ${started.toISOString()}::timestamptz`);
     expect(await counts()).toEqual(before);
   });
 });

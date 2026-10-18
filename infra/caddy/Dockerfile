@@ -45,14 +45,17 @@ ARG TUNNEL=off
 COPY infra/caddy/Caddyfile /etc/caddy/Caddyfile
 # Behind the tunnel cloudflared sets CF-Connecting-IP and the API needs it; anywhere else a client could set it.
 RUN if [ "$TUNNEL" = "on" ]; then : > /etc/caddy/cf-header.caddy; else echo "header_up -CF-Connecting-IP" > /etc/caddy/cf-header.caddy; fi
+# The push site (3f): ntfy reads the client from X-Forwarded-For, which behind the tunnel would name cloudflared for
+# every phone, so that one client's wrong tokens would shut every phone out; there it takes CF-Connecting-IP's value.
+RUN if [ "$TUNNEL" = "on" ]; then echo "header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}" > /etc/caddy/push-header.caddy; else : > /etc/caddy/push-header.caddy; fi
 COPY --from=web /repo/apps/app/dist /srv
 # The console's site serves /console, a folder outside the app's /srv, so the app's site can never serve the console.
 COPY --from=console /repo/apps/admin/dist /console
 # The image's binary carries cap_net_bind_service as a file capability; with every capability dropped, the
-# kernel refuses to run it ("operation not permitted"). Ports 8080 and 8090 need no capability, so it is removed.
+# kernel refuses to run it ("operation not permitted"). Ports 8080, 8090 and 8091 need no capability, so it is removed.
 RUN setcap -r /usr/bin/caddy
 # Caddy runs as its own user on ports it may bind without privileges; its state directories are its own.
 RUN adduser -D -u 10001 caddy && mkdir -p /data /config && chown -R caddy:caddy /data /config
 USER caddy
-# The app's site and the staff console's.
-EXPOSE 8080 8090
+# The app's site, the staff console's and (3f) the phones' push site.
+EXPOSE 8080 8090 8091

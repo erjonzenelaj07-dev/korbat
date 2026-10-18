@@ -371,9 +371,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
         expect(RETENTION_OFF_WARNING).toBe("moderation-retention: off (MODERATION_RETENTION)");
         const dispatched = until("job:moderation-dispatch");
         const retained = setting === "on" ? until("job:moderation-retention") : Promise.resolve();
-        // Nothing runs before the ten minutes are over.
+        // Nothing of these two runs before the ten minutes are over. 3f's alert tick, which startJobs also starts in
+        // both branches, runs every 30 seconds meanwhile.
         await vi.advanceTimersByTimeAsync(RETENTION_INTERVAL_MS - 1);
-        expect(asked).toEqual([]);
+        expect(asked.filter((key) => key !== "job:alert-tick")).toEqual([]);
+        expect(asked).toContain("job:alert-tick");
         await vi.advanceTimersByTimeAsync(2);
         await Promise.all([dispatched, retained]);
       } finally {

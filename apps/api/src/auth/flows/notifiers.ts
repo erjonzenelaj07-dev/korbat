@@ -1,4 +1,4 @@
-import { RETENTION } from "@korbat/contracts";
+import { RETENTION, type AlertFacts } from "@korbat/contracts";
 import { MailRefused, type MailMessage, type NoticeUpdateLine } from "../../mail/mailer";
 import type { DecisionMailSubject } from "../../mail/templates";
 import type { AuthDeps } from "../context";
@@ -119,6 +119,7 @@ export type NotifierUpdateResult = "sent" | "suppressed" | "no_address" | "forgo
  * images reported as child sexual abuse material.
  */
 export type StaffMessage =
+  | StaffAlertMessage
   | { template: "moderation_urgent"; count: number; oldest: Date }
   | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number; replies?: { count: number; oldest: Date } | null }
   | { template: "moderation_burst"; handle: string; count: number }
@@ -126,9 +127,29 @@ export type StaffMessage =
   | { template: "moderation_reveal"; handle: string; at: Date; count: number; limit: number }
   | { template: "moderation_csam_lifted"; handle: string; at: Date; what: "unsealed" | "dismissed" };
 
-/** A staff alert's template data: every member as the text the template prints. */
-function staffData(message: StaffMessage): Record<string, string> {
+/**
+ * 3f (design, sections 7.2, 7.19 and 18, W.4): the staff alerts whose mail is their push's sentence, which the alert tick
+ * mails from a row of alert_outbox: the row's facts, counts and times only, and nothing else. Later tasks of 3f add their
+ * kinds here as they first write them.
+ */
+export type StaffAlertKind = "contact_mail" | "contact_mail_escalated" | "order_due" | "mailbox_unreachable" | "alert_channel_down";
+export interface StaffAlertMessage {
+  template: StaffAlertKind;
+  facts: AlertFacts;
+}
+
+/**
+ * A staff alert's template data: every member as the text the template prints. A 3f alert's facts go as they are, each
+ * count as its digits, with the time it is sent: the template prints a time with its day only when that is not today's.
+ */
+function staffData(message: StaffMessage, now: Date): Record<string, string> {
   switch (message.template) {
+    case "contact_mail":
+    case "contact_mail_escalated":
+    case "order_due":
+    case "mailbox_unreachable":
+    case "alert_channel_down":
+      return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest) };
     case "moderation_waiting": {
@@ -342,7 +363,7 @@ export async function mailNotifierUpdates(deps: AuthDeps, parts: readonly Notifi
  * applies no throttle: the moderation module keeps every throttle, as a key in the shared limit store.
  */
 export async function mailStaff(deps: AuthDeps, message: StaffMessage): Promise<number> {
-  const data = staffData(message);
+  const data = staffData(message, deps.now());
   let addresses: string[];
   try {
     addresses = await deps.repo.liveStaffAddresses();

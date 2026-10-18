@@ -945,9 +945,15 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
   });
 }
 
-/** How many rows each table that these suites write holds. A suite reads it before its first test and after its last. */
-export async function rowCounts(db: Runner): Promise<Record<string, number>> {
-  const tables = ["cases", "intakes", "intake_items", "media_holds", "evidence_snapshots", "staff_texts", "case_access_log", "decisions", "decision_actions", "seal_posts", "appeals", "suspension_replies", "unfounded_marks", "report_tallies", "post_media", "posts", "profiles"];
+/** 3f: the tables of the contact point and the alert channel, which a suite that writes them adds to its counts. */
+export const CHANNEL_TABLES = ["contact_messages", "alert_outbox", "notify_state", "notify_folders"] as const;
+
+/**
+ * How many rows each table that these suites write holds. A suite reads it before its first test and after its last.
+ * 3f: a suite that writes the tables of the contact point or the alert channel names them as `extra`.
+ */
+export async function rowCounts(db: Runner, extra: readonly string[] = []): Promise<Record<string, number>> {
+  const tables = ["cases", "intakes", "intake_items", "media_holds", "evidence_snapshots", "staff_texts", "case_access_log", "decisions", "decision_actions", "seal_posts", "appeals", "suspension_replies", "unfounded_marks", "report_tallies", "post_media", "posts", "profiles", ...extra];
   const columns = tables.map((table) => `(select count(*)::int from public.${table}) as ${table}`).join(", ");
   const [row] = await db.execute<Record<string, number>>(sql.raw(`select ${columns}`));
   return { ...row! };

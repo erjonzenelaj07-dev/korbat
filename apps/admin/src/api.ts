@@ -2,6 +2,7 @@ import {
   AppealsPage,
   AuditPage,
   CaseView,
+  ContactPage,
   ErrorEnvelope,
   FindingResponse,
   QueuePage,
@@ -21,6 +22,7 @@ import {
   StandingLists,
   type AppealReviewRequest,
   type CaseDecisionRequest,
+  type ContactCloseRequest,
   type FindingRequest,
   type IdentityRevealRequest,
   type StaffEnrollOptionsRequest,
@@ -235,6 +237,22 @@ export function createStaffApi(deps: StaffApiDeps) {
     review: async (caseId: string, decisionId: string, body: AppealReviewRequest, call: Call = {}) => {
       if (!isLowerUuid(caseId) || !isLowerUuid(decisionId)) throw new ApiError(0, "invalid_request");
       return sameCase(caseId, await request("POST", `/api/staff/decisions/${decisionId}/review`, CaseView, call, body));
+    },
+    /**
+     * 3f: a page of the messages at the contact point, newest first, all or only those nobody has handled. The cursor is
+     * one the API itself handed out, encoded.
+     */
+    contact: (cursor: string | null, open: boolean, call: Call = {}) => {
+      const params = new URLSearchParams();
+      if (cursor !== null) params.set("cursor", cursor);
+      if (open) params.set("open", "1");
+      const text = params.toString();
+      return request("GET", `/api/staff/contact${text === "" ? "" : `?${text}`}`, ContactPage, call);
+    },
+    /** 3f: closes a message as what it was. Its id must be a lower-case uuid; the route answers 204. */
+    closeContact: async (messageId: string, body: ContactCloseRequest, call: Call = {}) => {
+      if (!isLowerUuid(messageId)) throw new ApiError(0, "invalid_request");
+      return request<void>("POST", `/api/staff/contact/${messageId}/close`, null, call, body);
     },
     /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {

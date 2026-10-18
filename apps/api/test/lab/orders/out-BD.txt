@@ -1,0 +1,82 @@
+B1 an order from the message received 70 minutes ago: the deadline has passed; Annex III stops the clock; a clarification (the message received 1 minute ago) starts a fresh hour
+open|f|73|t
+annex3|t|
+clarified|t||
+1
+effect|t
+D1 ten posts under one order with Section C, one transaction, one audit row; then what the author side would read
+10
+audit rows written|1
+took ms|278.8
+posts|10|disabled|disabled
+decisions|10|0|none|none
+an author-side read (informed_at is not null) returns|0
+hold until is the computed end|t
+release now|0
+D2 the refusals, each rolled back: no audit row; another action; a forged reference; an item the row does not name; a second measure; an account that is not staff
+2
+psql:bd-clock-effect.sql:31: ERROR:  invalid_decision
+DETAIL:  target: the transaction's last audit row is not a confirmed order_effected on this decision's order.
+CONTEXT:  PL/pgSQL function decision_holds(uuid) line 29 at RAISE
+SQL statement "SELECT public.decision_holds(NEW.id)"
+PL/pgSQL function decisions_check() line 3 at PERFORM
+2
+psql:bd-clock-effect.sql:32: ERROR:  invalid_decision
+DETAIL:  target: the transaction's last audit row is not a confirmed order_effected on this decision's order.
+CONTEXT:  PL/pgSQL function decision_holds(uuid) line 29 at RAISE
+SQL statement "SELECT public.decision_holds(NEW.id)"
+PL/pgSQL function decisions_check() line 3 at PERFORM
+2
+psql:bd-clock-effect.sql:33: ERROR:  invalid_decision
+DETAIL:  params: the confirmed order facts differ from the order.
+CONTEXT:  PL/pgSQL function decision_holds(uuid) line 38 at RAISE
+SQL statement "SELECT public.decision_holds(NEW.id)"
+PL/pgSQL function decisions_check() line 3 at PERFORM
+2
+psql:bd-clock-effect.sql:34: ERROR:  invalid_decision
+DETAIL:  items: the confirmed list does not name this item, or names more than it gave effect to.
+CONTEXT:  PL/pgSQL function decision_holds(uuid) line 43 at RAISE
+SQL statement "SELECT public.decision_holds(NEW.id)"
+PL/pgSQL function decisions_check() line 3 at PERFORM
+psql:bd-clock-effect.sql:35: ERROR:  invalid_decision
+DETAIL:  A decision of this kind does not hold this measure or reversal.
+CONTEXT:  PL/pgSQL function decision_actions_check() line 59 at RAISE
+SQL statement "INSERT INTO public.decision_actions (decision_id, kind, subject_account_id, created_at) VALUES (did, 'remove', it.author_id, now())"
+PL/pgSQL function lab_order_effect(uuid,uuid,uuid,text) line 52 at SQL statement
+psql:bd-clock-effect.sql:36: ERROR:  staff_confirmation_ended
+CONTEXT:  PL/pgSQL function append_confirmed_audit(uuid,uuid,text,text,text,jsonb,uuid,text,jsonb,text,bigint) line 15 at RAISE
+SQL statement "SELECT public.append_confirmed_audit(decider, key, CASE WHEN tamper = 'wrong_action' THEN 'case_decided' ELSE 'order_effected' END, 'order', oid::text,
+    jsonb_build_object('decisionIds', ids, 'params', jsonb_build_object('kind', o.kind, 'memberState', o.member_state, 'authority', o.authority,
+      'reference', CASE WHEN tamper = 'wrong_reference' THEN 'forged' ELSE o.reference END, 'sectionC', o.section_c, 'emergency', o.emergency,
+      'withholdFromAuthor', o.withhold_from_author, 'items', items)),
+    gen_random_uuid(), repeat('a', 64), '{}'::jsonb, 'lab', (extract(epoch FROM clock_timestamp()) * 1000)::bigint + 60000)"
+PL/pgSQL function lab_order_effect(uuid,uuid,uuid,text) line 60 at PERFORM
+nothing stuck|2
+D3 the moderator N is linked to a personal account that is the author S: a removal by N is refused; with the decision caps at zero a removal by the admin is refused; the order is given effect by N all the same
+psql:d-waivers.sql:7: ERROR:  staff_recused
+CONTEXT:  PL/pgSQL function decisions_record() line 133 at RAISE
+SQL statement "INSERT INTO public.decisions (case_id, kind, seen_state_version, through_seq, outcome, ground, rule_id, rules_version, redress_version, category, source,
+                                snapshot_id, snapshot_digest, facts_digest, reason_digest, decided_by, decided_at, xact, puid, informed_at, suspect, needs_admin, ended_interim)
+  VALUES (c.id, 'final', c.state_version, c.intake_seq, 'restricted', 'incompatible', rule, 2, 1, 'STATEMENT_CATEGORY_VIOLENCE', 'own_initiative',
+          snap, dg, fd, rd, decider, now(), pg_current_xact_id(), 'x', now(), false, false, false) RETURNING *"
+PL/pgSQL function lab_remove(uuid,uuid,uuid,text) line 19 at SQL statement
+psql:d-waivers.sql:11: ERROR:  decision_cap
+CONTEXT:  PL/pgSQL function decisions_record() line 168 at RAISE
+SQL statement "INSERT INTO public.decisions (case_id, kind, seen_state_version, through_seq, outcome, ground, rule_id, rules_version, redress_version, category, source,
+                                snapshot_id, snapshot_digest, facts_digest, reason_digest, decided_by, decided_at, xact, puid, informed_at, suspect, needs_admin, ended_interim)
+  VALUES (c.id, 'final', c.state_version, c.intake_seq, 'restricted', 'incompatible', rule, 2, 1, 'STATEMENT_CATEGORY_VIOLENCE', 'own_initiative',
+          snap, dg, fd, rd, decider, now(), pg_current_xact_id(), 'x', now(), false, false, false) RETURNING *"
+PL/pgSQL function lab_remove(uuid,uuid,uuid,text) line 19 at SQL statement
+2
+given effect|2
+D4 the release at the end of the hold, with the real clock: the authority gave a written end three seconds from now (set as the migrator)
+before the end|0
+
+one second before the end|0|0
+
+after the end|10
+told|10|pending|t
+events|10
+again|0
+D5 the predicate at the last microsecond of a computed end
+f|t

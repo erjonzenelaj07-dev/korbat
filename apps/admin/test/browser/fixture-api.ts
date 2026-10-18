@@ -6,6 +6,8 @@ import {
   CaseDecisionRequest,
   CEREMONY_CHALLENGE,
   CHALLENGE_PURPOSES,
+  CONTACT_PAGE_SIZE,
+  ContactCloseRequest,
   FindingRequest,
   IdentityRevealRequest,
   MEASURES,
@@ -30,7 +32,9 @@ import {
   type AuditPage,
   type CaseDecision,
   type CaseView,
+  type ContactMessage,
   type QueuePage,
+  type StaffOverview,
   type QueueReply,
   type StandingLists,
   type StaffTextDraft,
@@ -529,6 +533,16 @@ type Answer = { status: number; body?: unknown; raw?: { type: string; bytes: Buf
 
 export type FixtureApi = ReturnType<typeof createFixtureApi>;
 
+/** 3f: a message at the contact point as the API lists it, nobody's yet. */
+function contactMessage(id: string, receivedMs: number, folder: "inbox" | "junk", stale: boolean): ContactMessage {
+  return { id, folder, receivedAt: iso(receivedMs), seenAt: iso(stale ? receivedMs + 5 * HOUR : receivedMs + 20_000), stale, disposition: null, handledAt: null, handledBy: null, orders: [] };
+}
+
+/** 3f: three stale messages an outage left, which the walk closes together. */
+export function staleMessages(now: number): ContactMessage[] {
+  return ["8f3c4d5e-6f70-4182-9394-a5b627c8d9e0", "904d5e6f-7081-4293-a4a5-b6c738d9e0f1", "a15e6f70-8192-43a4-b5b6-c7d849e0f102"].map((id, i) => contactMessage(id, now - (30 + i) * HOUR, "inbox", true));
+}
+
 export function createFixtureApi() {
   const now = Date.now();
   // The account's WebAuthn user handle, which the enrolment's options carry and a discoverable staff key returns.
@@ -619,6 +633,18 @@ export function createFixtureApi() {
     findings: [] as FindingRequest[],
     snapshotsTaken: 0,
     stepUpOptionsServed: 0,
+    /**
+     * 3f: the messages at the contact point, newest first, which the Contact point screen lists and closes: one a few
+     * minutes old in the inbox and one in the junk folder that arrived hours before korbat saw it. The walk adds more.
+     */
+    contactMessages: [
+      contactMessage("6d1a2b3c-4d5e-4f60-8172-839405a6b7c8", now - 4 * 60_000, "inbox", false),
+      contactMessage("7e2b3c4d-5e6f-4071-8283-94a516b7c8d9", now - 5 * HOUR, "junk", true),
+    ] as ContactMessage[],
+    /** Every close the page sent, with the word it chose, in order. */
+    contactClosed: [] as { id: string; disposition: string }[],
+    /** 3f: the home screen's contact point and alert channel, as the overview answers them. */
+    authorities: { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } } as Pick<StaffOverview, "contact" | "alerts">,
     requests: [] as RequestRecord[],
     problems: [] as string[],
   };
@@ -875,13 +901,17 @@ export function createFixtureApi() {
       "GET /api/staff/appeals",
       "POST /api/staff/findings",
       "GET /api/staff/standing",
+      // 3f: the contact point.
+      "GET /api/staff/contact",
     ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
     const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts|decisions))?$/.exec(url.pathname);
     const image = req.method === "GET" ? IMAGE_PATH.exec(url.pathname) : null;
     const reveal = req.method === "POST" ? /^\/api\/staff\/items\/([0-9a-f-]{36})\/reveal$/.exec(url.pathname) : null;
     const review = req.method === "POST" ? /^\/api\/staff\/decisions\/([0-9a-f-]{36})\/review$/.exec(url.pathname) : null;
-    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review) throw new Refusal(404, "not_found");
+    // 3f: a message closed, by its id in the path. An id that is no lower-case uuid is the route's 400, as the API's.
+    const closing = req.method === "POST" ? /^[/]api[/]staff[/]contact[/]([^/]+)[/]close$/.exec(url.pathname) : null;
+    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
     // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
@@ -909,8 +939,36 @@ export function createFixtureApi() {
           interimSeals: { total: seals.length, items: seals },
           // Two due rules are late, so the home screen shows its line for late erasures with the runbook's sentence.
           erasureOverdue: { caseEvidence: 0, intakeRecords: 0, statements: 0, redactions: 0, images: 60, drafts: 0, accessLog: 0, contacts: 2 },
+          // 3f: what the walk's step set, nothing at the contact point and a working channel otherwise.
+          ...state.authorities,
         }),
       };
+    }
+    // 3f: the contact point's messages, newest first, all or only those nobody handled, a page at a time.
+    if (key === "GET /api/staff/contact") {
+      const open = url.searchParams.get("open");
+      const cursor = url.searchParams.get("cursor");
+      if ((open !== null && open !== "1") || (cursor !== null && !/^[0-9]+$/.test(cursor))) throw new Refusal(400, "invalid_request");
+      const listed = state.contactMessages.filter((m) => open === null || m.disposition === null).sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+      const from = cursor === null ? 0 : Number(cursor);
+      const items = listed.slice(from, from + CONTACT_PAGE_SIZE);
+      return { status: 200, body: { items, nextCursor: from + CONTACT_PAGE_SIZE < listed.length ? String(from + CONTACT_PAGE_SIZE) : null } };
+    }
+    if (closing) {
+      const id = closing[1]!;
+      if (!/^[0-9a-f-]{36}$/.test(id)) {
+        problem(`POST ${url.pathname}: an id that is not a lower-case uuid`);
+        throw new Refusal(400, "invalid_request");
+      }
+      const request = parse(ContactCloseRequest, body, "the close of a message");
+      const found = state.contactMessages.find((m) => m.id === id);
+      if (!found) throw new Refusal(404, "not_found");
+      if (found.disposition !== null) throw new Refusal(409, "message_handled");
+      found.disposition = request.disposition;
+      found.handledBy = PERSON_HANDLE;
+      found.handledAt = new Date().toISOString();
+      state.contactClosed.push({ id, disposition: request.disposition });
+      return { status: 204 };
     }
     if (key === "GET /api/staff/standing") return { status: 200, body: standingLists() };
     if (key === "GET /api/staff/queue") {

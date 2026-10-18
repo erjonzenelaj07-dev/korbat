@@ -117,6 +117,11 @@ export interface PathMatcher {
   paths: string[];
   file: boolean;
   not: boolean;
+  /**
+   * 3f: the client addresses of a `remote_ip` matcher (the push network's subnet), which the readers' requests never come
+   * from: such a matcher takes none of them, whatever their path.
+   */
+  remoteIp?: string[];
 }
 
 /** The conditions of one matcher, `path ...` with an optional `file`, as lines of tokens; null when they are anything else. */
@@ -137,7 +142,9 @@ export function pathMatchers(block: CaddyNode): Map<string, PathMatcher | null> 
     const name = node.tokens[0];
     if (!name?.startsWith("@")) continue;
     let matcher: PathMatcher | null = null;
-    if (node.children === undefined) {
+    if (node.children === undefined && node.tokens[1] === "remote_ip" && node.tokens.length > 2) {
+      matcher = { paths: [], file: false, not: false, remoteIp: node.tokens.slice(2) };
+    } else if (node.children === undefined) {
       const found = conditions([node.tokens.slice(1)]);
       matcher = found && { ...found, not: false };
     } else if (node.children.length === 1 && node.children[0]!.tokens[0] === "not") {

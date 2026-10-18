@@ -50,7 +50,15 @@ export type TemplateName =
   | "suspension_lifted"
   | "termination_final"
   | "reporting_warned"
-  | "reporting_restricted";
+  | "reporting_restricted"
+  // Authorities' orders and the alert channel (3f design, sections 7.19 and 18, W.4): the staff alerts whose mail is their
+  // push's sentence, each a kind of alert_outbox's: mail at the contact point, nobody answering it, its deadline
+  // approaching, a mailbox korbat cannot read, and the phone alerts being down. Counts and UTC times only.
+  | "contact_mail"
+  | "contact_mail_escalated"
+  | "order_due"
+  | "mailbox_unreachable"
+  | "alert_channel_down";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

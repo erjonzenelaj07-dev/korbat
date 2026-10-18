@@ -454,6 +454,9 @@ describe("the queue and the overview", () => {
       interimSeals: { total: 1, items: [{ at: TIME, handle: "mod_anna", caseId: CASE, posts: 2, images: 5 }] },
       repliesWaiting: { count: 2, oldestAt: TIME },
       strikeAccounts: 1,
+      // 3f: the contact point and the alert channel.
+      contact: { open: 2, oldestAt: TIME, dueAt: TIME },
+      alerts: { channel: "down", since: TIME },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
     // Each of the three lists holds at most as many rows as the reveals' list does.

@@ -8,6 +8,8 @@ const good = {
   DATABASE_URL_API: "postgres://korbat_api:s3cret-api@localhost:55432/korbat_test",
   DATABASE_URL_AUTH: "postgres://korbat_auth:s3cret-auth@localhost:55432/korbat_test",
   DATABASE_URL_MIGRATE: "postgres://korbat_migrate:s3cret-migrate@localhost:55432/korbat_test",
+  // 3f: the watcher's role, through which the tests insert messages as the watcher does.
+  DATABASE_URL_NOTIFY: "postgres://korbat_notify:s3cret-notify@localhost:55432/korbat_test",
   REDIS_URL: "redis://localhost:56379/15",
 };
 
@@ -17,7 +19,7 @@ describe("integration test targets", () => {
     expect(() => assertTestTargets(good)).not.toThrow();
   });
 
-  test.each(["DATABASE_URL_API", "DATABASE_URL_AUTH", "DATABASE_URL_MIGRATE"] as const)("%s pointing at the development database is refused without leaking the password", (key) => {
+  test.each(["DATABASE_URL_API", "DATABASE_URL_AUTH", "DATABASE_URL_MIGRATE", "DATABASE_URL_NOTIFY"] as const)("%s pointing at the development database is refused without leaking the password", (key) => {
     const env = { ...good, [key]: good[key].replace("/korbat_test", "/korbat") };
     let message = "";
     try {
@@ -34,6 +36,8 @@ describe("integration test targets", () => {
   test("a missing URL is refused", () => {
     const { DATABASE_URL_AUTH: _omitted, ...rest } = good;
     expect(() => assertTestTargets(rest)).toThrow(/DATABASE_URL_AUTH is not set/);
+    const { DATABASE_URL_NOTIFY: _notify, ...noNotify } = good;
+    expect(() => assertTestTargets(noNotify)).toThrow(/DATABASE_URL_NOTIFY is not set/);
     const { REDIS_URL: _redis, ...noRedis } = good;
     expect(() => assertTestTargets(noRedis)).toThrow(/REDIS_URL is not set/);
   });

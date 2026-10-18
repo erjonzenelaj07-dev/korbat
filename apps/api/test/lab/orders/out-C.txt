@@ -1,0 +1,62 @@
+C1 a TCO order without Section C on P1 (two images) and on the post of the moderator, opened and given effect by the moderator N
+2
+post|0b01|disabled|disabled
+post|0c01|disabled|disabled
+decision|order|order|restricted|illegal|KEYWORD_TERRORIST_CONTENT|f|t|pending
+decision|order|order|restricted|illegal|KEYWORD_TERRORIST_CONTENT|f|t|pending
+action|disable_by_order|t|
+action|disable_by_order|t|
+item|1|t|t|183 days
+item|2|t|t|183 days
+case|0b01|t|1|1
+case|0c01|t|1|1
+clock|f|01:00:00|t
+C2 the readers: postAccess as SQL for the author, another account and signed out; isShown of serve on the state of the post; the own state of each image
+postAccess author|hidden|other|hidden|signed out|hidden
+serve isShown(post state)|f
+image|0d01|visible
+image|0d02|visible
+frozen (preserved)|t
+C3 gate K: a delete of the images of a preserved post deletes nothing
+image rows left|2
+C4 a removal under a korbat rule on the same post, after the order: the level stays disabled; the case and the order item
+post after remove|disabled|disabled
+remove no_effect|already
+C5 reinstatement by the moderator is refused (admin); by the admin without a ground is refused; with a ground it lifts the measure of the order: the post is removed, not visible
+psql:c-derivation.sql:37: ERROR:  admin_required
+CONTEXT:  PL/pgSQL function decisions_record() line 159 at RAISE
+SQL statement "INSERT INTO public.decisions (case_id, kind, reviews_decision_id, seen_state_version, through_seq, outcome, rules_version, redress_version, category, source,
+                                snapshot_id, snapshot_digest, reason_digest, decided_by, decided_at, xact, puid, informed_at, suspect, needs_admin, ended_interim)
+  VALUES (c.id, 'correction', o.id, c.state_version, 0, 'reversed', o.rules_version, 1, o.category, 'own_initiative',
+          o.snapshot_id, o.snapshot_digest, rd, decider, now(), pg_current_xact_id(), 'x', now(), false, false, false) RETURNING *"
+PL/pgSQL function lab_correct(uuid,uuid,uuid,text,text) line 12 at SQL statement
+psql:c-derivation.sql:38: ERROR:  invalid_decision
+DETAIL:  A reinstatement is a correction and names its ground.
+CONTEXT:  PL/pgSQL function decision_actions_check() line 120 at RAISE
+SQL statement "INSERT INTO public.decision_actions (decision_id, kind, subject_account_id, order_ground, created_at) VALUES (d.id, reversal::public.action_kind, author, ground, now())"
+PL/pgSQL function lab_correct(uuid,uuid,uuid,text,text) line 16 at SQL statement
+post after reinstatement|removed|removed|shown
+item|t|t|frozen|f
+events|opened, effect_given, effect_given, reinstated:withdrawn
+C6 the removal corrected too: visible again; then the other order: disable first, remove second, reverse the removal first
+245bc034-3059-49b7-a615-0368fb663bfc
+post after both reversals|visible|visible
+1
+P2 removed then disabled|disabled|disabled
+6d2a82e6-39a5-461d-affd-2528f4f9544c
+P2 removal reversed, order stands|disabled|disabled|hidden
+C7 a dsa_art9 order that does not withhold from the author: level removed, shown to its author alone, nothing preserved
+1
+art9 post|removed|removed|shown|hidden|frozen|f
+C8 the author deletes a disabled post by the statement of the API (posts_guard allows it; the route must answer not_found first)
+deleted while disabled|deleted_by_author|disabled
+snapshot kept|2|frozen|t
+C9 what the API role may not do
+psql:c-derivation.sql:63: ERROR:  order_event_cli_only
+DETAIL:  hold_ended
+CONTEXT:  PL/pgSQL function legal_order_events_insert() line 7 at RAISE
+psql:c-derivation.sql:64: ERROR:  permission denied for table legal_orders
+psql:c-derivation.sql:65: ERROR:  permission denied for table legal_order_items
+psql:c-derivation.sql:66: ERROR:  permission denied for table decisions
+psql:c-derivation.sql:67: ERROR:  order_needs_message
+CONTEXT:  PL/pgSQL function legal_orders_insert() line 11 at RAISE

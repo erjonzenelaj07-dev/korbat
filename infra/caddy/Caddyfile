@@ -13,6 +13,11 @@
 }
 
 :8080 {
+  # A client from the push network (ntfy and the watcher, 3f) is refused here: until the push site, only cloudflared could
+  # reach Caddy. The handles below that reach anything each answer it 403 first: a handle of this matcher alone would be
+  # sorted after the path handles. PUSH_SUBNET is the network's fixed subnet, from Compose.
+  @push remote_ip {$PUSH_SUBNET}
+
   # The staff API belongs to the console's site below, on an origin of its own: the app's site never forwards it. Each of
   # these handles matches one path, longer than /api/*, and Caddy puts such handles most specific first, so they come
   # ahead of the API proxy below wherever they are written.
@@ -38,6 +43,7 @@
       max_size 64KB
     }
     header -Server
+    respond @push 403
     reverse_proxy api:3000 {
       # Behind the tunnel cloudflared sets CF-Connecting-IP and the API needs it; anywhere else a
       # client could set it, so Caddy drops it. Decided at build time by the TUNNEL argument.
@@ -47,6 +53,7 @@
 
   # The web app: static files, the page's security headers, and caching by kind of file.
   handle {
+    respond @push 403
     root * /srv
     encode gzip
     header {
@@ -77,6 +84,14 @@
 # handles each match two paths or none, so Caddy keeps them in the order written: the staff API, the rest of the API, the
 # console's files.
 :8090 {
+  # A client from the push network (3f) is refused, as on the app's site. This handle's matcher names no path, like the
+  # two below, so Caddy keeps it first, as written.
+  @push remote_ip {$PUSH_SUBNET}
+  handle @push {
+    header -Server
+    respond 403
+  }
+
   # The staff API, proxied as the app's site proxies /api/*. No header_up Host: the API's staff gate compares the Host the
   # browser sent with CONSOLE_ORIGIN. Caddy still replaces whatever X-Forwarded-* headers a client sent with its own.
   @staff path /api/staff /api/staff/*
@@ -135,5 +150,30 @@
     header @page Cache-Control "no-store, no-transform"
     try_files {path} /index.html
     file_server
+  }
+}
+
+# The phones' push site (3f design, section 5), for the push hostname (API_PUSH_ORIGIN): only the two topics'
+# subscriptions reach ntfy, by GET, which is what the ntfy app sends: the stream a phone holds open (ws, json, sse; both
+# topics joined by a comma in one request, in either order), with its replay of what it missed (since=), and the check of
+# a user's access (auth). Everything else is Caddy's own 404, ntfy's account API, /v1/config and /v1/stats among them:
+# they answer any caller otherwise. Publishing is the watcher's alone, on the push network.
+:8091 {
+  @subscribe {
+    method GET
+    path_regexp ^/(korbat-oncall|korbat-all)(,(korbat-oncall|korbat-all))?/(ws|json|sse|auth)$
+  }
+  handle @subscribe {
+    header -Server
+    reverse_proxy ntfy:2586 {
+      # As on the other sites: a client-set CF-Connecting-IP is dropped unless TUNNEL=on. ntfy reads the client from
+      # X-Forwarded-For (behind-proxy); behind the tunnel that header takes CF-Connecting-IP's value (the Dockerfile).
+      import /etc/caddy/cf-header.caddy
+      import /etc/caddy/push-header.caddy
+    }
+  }
+  handle {
+    header -Server
+    respond 404
   }
 }

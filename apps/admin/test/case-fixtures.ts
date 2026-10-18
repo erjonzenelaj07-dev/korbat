@@ -446,6 +446,9 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     repliesWaiting: { count: 0, oldestAt: null },
     strikeAccounts: 0,
     interimSeals: { total: 0, items: [] },
+    // 3f: no message at the contact point and a working alert channel, unless a test says otherwise.
+    contact: { open: 0, oldestAt: null, dueAt: null },
+    alerts: { channel: "ok", since: null },
     ...overrides,
   };
 }

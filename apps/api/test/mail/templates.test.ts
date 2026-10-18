@@ -313,12 +313,12 @@ describe("mail templates", () => {
       expect(r.text).not.toMatch(/the notifier's own words|Ada/);
     });
 
-    test("moderation_urgent gives the count and the oldest time, no link and no content, and says it is the only alert", () => {
+    test("moderation_urgent gives the count and the oldest time, no link and no content, and says that the same alert went to the phone on call", () => {
       const r = renderTemplate("moderation_urgent", { count: "3", oldest: "2026-10-04 06:59 UTC" });
       expect(r.subject).toBe("korbat: a case is waiting in the urgent lane");
       expect(paragraphs(r.text)).toEqual([
         "3 cases in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) are waiting; the oldest since 2026-10-04 06:59 UTC.",
-        "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only alert.",
+        "Open the staff console. The same alert went to the phone on call.",
         LAST_STAFF,
       ]);
       expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
@@ -328,7 +328,7 @@ describe("mail templates", () => {
       expect(one.subject).toBe("korbat: a case is waiting in the urgent lane");
       expect(paragraphs(one.text)).toEqual([
         "1 case in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) is waiting, since 2026-10-04 06:59 UTC.",
-        "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only alert.",
+        "Open the staff console. The same alert went to the phone on call.",
         LAST_STAFF,
       ]);
       for (const count of ["2", "10", "11", "21"]) {

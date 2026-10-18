@@ -205,6 +205,14 @@ const schema = z.object({
    * While it is off nothing is erased or deleted, the API logs a warning at every start, and the console counts what is late.
    */
   MODERATION_RETENTION: blankAsUnset.pipe(z.enum(["on", "off"]).default("on")),
+  /**
+   * 3f (design, sections 5 and 10.7): whether the alert tick judges the alert channel's health, its third step: `off`
+   * skips that step alone, and the tick still writes and mails every alert; the console's home then says that phone
+   * alerts are switched off on this server. Until the contact point's mailbox exists the operator sets it off; otherwise a
+   * stack without a watcher would mail "Phone alerts are down" daily. Blank means the default: off outside production,
+   * on in production.
+   */
+  NOTIFY: blankAsUnset.pipe(z.enum(["on", "off"]).optional()),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS
@@ -256,6 +264,7 @@ const schema = z.object({
   ...c,
   WEBAUTHN_RP_ID: c.WEBAUTHN_RP_ID ?? hostOf(c.APP_ORIGIN),
   CONSOLE_RP_ID: c.CONSOLE_RP_ID ?? (c.CONSOLE_ORIGIN === undefined ? undefined : hostOf(c.CONSOLE_ORIGIN)),
+  NOTIFY: c.NOTIFY ?? (c.NODE_ENV === "production" ? "on" : "off"),
 }));
 
 export type Config = z.infer<typeof schema>;

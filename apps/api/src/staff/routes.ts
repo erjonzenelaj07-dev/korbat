@@ -8,6 +8,7 @@ import { validate } from "../lib/validate";
 import type { ModerationForStaff } from "../moderation";
 import { caseRoutes } from "./cases";
 import { staffGate } from "./gate";
+import { orderRoutes } from "./orders";
 
 /**
  * The staff routes (3a design, section 7), which createApp mounts at /api/staff only while CONSOLE_ORIGIN is set. The gate
@@ -95,6 +96,8 @@ export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, moderatio
 
   // The console's case routes, behind the gate above like every path here.
   routes.route("/", caseRoutes(auth, moderation));
+  // 3f: the routes of authorities' orders, behind the same gate.
+  routes.route("/", orderRoutes(auth, moderation));
 
   return routes;
 }

@@ -128,6 +128,9 @@ describe("the appeals as the console reads them", () => {
       repliesWaiting: { count: 0, oldestAt: null },
       strikeAccounts: 0,
       interimSeals: { total: 0, items: [] },
+      // 3f: the contact point and the alert channel.
+      contact: { open: 0, oldestAt: null, dueAt: null },
+      alerts: { channel: "off", since: null },
     };
     expect(StaffOverview.parse(overview)).toEqual(overview);
     for (const member of ["appealsWaiting", "appealsYouMayReview", "appealsWithoutReviewer"]) {

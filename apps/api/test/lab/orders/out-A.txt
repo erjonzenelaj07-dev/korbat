@@ -1,0 +1,2 @@
+psql -U korbat_migrate -d lab3f -v ON_ERROR_STOP=1 -q -1 -f 20-proto.sql  (the whole prototype in one transaction on a database at migration 0016)
+exit 0, no output

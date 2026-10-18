@@ -315,3 +315,12 @@ Two runs: the test alone on a machine busy with other work (`busyPercent` 82), t
   that commits between the redaction's check of the freeze and its erasure of the snapshots leaves the body blank, the
   snapshots kept and the decision unmarked, and the round after the answer finishes it. The database test of
   `redact_r4_body` stages exactly that.
+
+## orders/: the lab of authorities' orders (sub-project 3f)
+
+`orders/` is the lab the 3f design rests on (its section 3, LAB A to F), copied here unchanged but for its line ends from
+`korbat-scratch/research-3e/lab-3f/`, which lies outside the repository: `RUN.txt` holds every command and the machine it
+ran on, `make_proto.py` and `20-tables.sql` the prototype of the design's sections 6.2 and 6.3, `21-helpers.sql` the
+API's statements, the lettered SQL files the labs themselves, and `out-*.txt` their raw outputs. It ran on a throwaway
+cluster of PostgreSQL 18.1 over the migrations 0000 to 0016. The task that builds the ledger's migration of 3f runs it
+again on the 18.6 image, as `RUN.txt` lists it, and compares the outputs.

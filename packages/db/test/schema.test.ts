@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { is, type SQL } from "drizzle-orm";
 import { PgDialect, PgTable, getTableConfig, pgTable } from "drizzle-orm/pg-core";
-import { apiRole, authRole, bytea, xid8 } from "../src/schema/helpers";
+import { apiRole, authRole, bytea, notifyRole, xid8 } from "../src/schema/helpers";
 import * as schema from "../src/schema/index";
 
 const tables = Object.values(schema).filter((v) => is(v, PgTable)) as PgTable[];
@@ -46,10 +46,11 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 42 tables in total", () => {
+  test("there are 46 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
-    // three: suspension_replies, unfounded_marks and report_tallies.
-    expect(tables.length).toBe(42);
+    // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
+    // notify_state and notify_folders.
+    expect(tables.length).toBe(46);
   });
   test("the tables 3c retired are gone, with their enums and the reputation column", () => {
     for (const name of ["reports", "strikes", "transparency_log"]) expect(byName.has(name), name).toBe(false);
@@ -1054,5 +1055,121 @@ describe("moderation cases 3c", () => {
       personal_user_id: { table: "users", columns: ["id"], onDelete: "restrict" },
     });
     expect(checks("staff_personal_accounts")).toEqual(["staff_personal_accounts_differ"]);
+  });
+});
+
+describe("the contact point and the alert channel 3f", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** Name, SQL type and not-null of every column, in order. */
+  const shape = (table: string) => byName.get(table)!.columns.map((c) => [c.name, c.getSQLType(), c.notNull]);
+  const checks = (table: string) => byName.get(table)!.checks.map((c) => c.name).sort();
+  const checkSql = (table: string, name: string) => new PgDialect().sqlToQuery(byName.get(table)!.checks.find((c) => c.name === name)!.value).sql;
+  const policies = (table: string) => byName.get(table)!.policies.map((p) => [p.name, p.for, p.to]);
+  const uniques = (table: string) => byName.get(table)!.uniqueConstraints.map((u) => [u.getName(), u.columns.map((c) => c.name)]);
+  const indexes = (table: string) =>
+    byName
+      .get(table)!
+      .indexes.map((i) => [i.config.name, i.config.columns.map((c) => (c as { name?: string }).name), i.config.where ? new PgDialect().sqlToQuery(i.config.where).sql : null])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const TABLES = ["contact_messages", "alert_outbox", "notify_state", "notify_folders"];
+
+  test("the four tables are public, with row level security and one allow-all policy for each role granted anything on them", () => {
+    for (const name of TABLES) {
+      const cfg = byName.get(name);
+      expect(cfg, name).toBeDefined();
+      expect(cfg!.schema, name).toBeUndefined();
+      expect(cfg!.enableRLS, name).toBe(true);
+      expect(policies(name), name).toEqual([
+        [`${name}_api_all`, "all", apiRole],
+        [`${name}_notify_all`, "all", notifyRole],
+      ]);
+    }
+    expect(notifyRole.name).toBe("korbat_notify");
+  });
+
+  test("a message at the contact point holds no sender, no subject and no content: its folder, its two numbers and its times", () => {
+    expect(shape("contact_messages")).toEqual([
+      ["id", "uuid", true],
+      ["folder", "text", true],
+      ["uidvalidity", "bigint", true],
+      ["uid", "bigint", true],
+      ["received_at", "timestamp with time zone", true],
+      ["seen_at", "timestamp with time zone", true],
+      ["stale", "boolean", true],
+      ["disposition", "text", false],
+      ["handled_by", "uuid", false],
+      ["handled_at", "timestamp with time zone", false],
+    ]);
+    expect(column("contact_messages", "id")?.hasDefault).toBe(true);
+    expect(uniques("contact_messages")).toEqual([["contact_messages_uid_key", ["folder", "uidvalidity", "uid"]]]);
+    expect(checks("contact_messages")).toEqual(["contact_messages_disposition", "contact_messages_folder", "contact_messages_handled"]);
+    expect(checkSql("contact_messages", "contact_messages_folder")).toBe(`"contact_messages"."folder" in ('inbox', 'junk')`);
+    expect(checkSql("contact_messages", "contact_messages_disposition")).toBe(
+      `"contact_messages"."disposition" in ('order', 'referral', 'first_order_notice', 'preservation_request', 'scrutiny_decision', 'clarification', 'not_an_order')`,
+    );
+    expect(checkSql("contact_messages", "contact_messages_handled")).toBe(`("contact_messages"."disposition" is null) = ("contact_messages"."handled_at" is null)`);
+    const fk = byName.get("contact_messages")!.foreignKeys.map((k) => [k.reference().columns.map((c) => c.name), getTableConfig(k.reference().foreignTable).name, k.onDelete]);
+    expect(fk).toEqual([[["handled_by"], "profiles", "restrict"]]);
+    expect(indexes("contact_messages")).toEqual([
+      ["contact_messages_open_idx", ["received_at"], "disposition is null"],
+      ["contact_messages_received_idx", ["received_at", "id"], null],
+    ]);
+    for (const c of byName.get("contact_messages")!.columns) expect(c.name).not.toMatch(/sender|subject|from|email|address|body/i);
+  });
+
+  test("an alert's row: its kind, priority, scope and step, its facts, its subject without a key, and its two legs", () => {
+    expect(shape("alert_outbox")).toEqual([
+      ["id", "bigint", true],
+      ["kind", "text", true],
+      ["priority", "smallint", true],
+      ["scope", "text", true],
+      ["step", "smallint", false],
+      ["facts", "jsonb", true],
+      ["message_id", "uuid", false],
+      ["order_id", "uuid", false],
+      ["created_at", "timestamp with time zone", true],
+      ["pushed_at", "timestamp with time zone", false],
+      ["mailed_at", "timestamp with time zone", false],
+      ["push_attempts", "integer", true],
+    ]);
+    expect(column("alert_outbox", "id")?.generatedIdentity?.type).toBe("always");
+    // No foreign keys: a record's erasure never waits for an alert's row.
+    expect(byName.get("alert_outbox")!.foreignKeys).toEqual([]);
+    expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
+    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
+    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted')");
+    expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
+    expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);
+    // Counts and times only: an object of at most six members, each a number or an instant in UTC.
+    const facts = checkSql("alert_outbox", "alert_outbox_facts");
+    expect(facts).toContain(`jsonb_typeof("alert_outbox"."facts") = 'object'`);
+    expect(facts).toContain("<= 6");
+    expect(facts).toContain("like_regex");
+    // The step key is made by hand in the migration (drizzle cannot write NULLS NOT DISTINCT on a partial index).
+    expect(indexes("alert_outbox")).toEqual([
+      ["alert_outbox_mail_idx", ["created_at"], "mailed_at is null"],
+      ["alert_outbox_push_idx", ["created_at"], "pushed_at is null"],
+    ]);
+  });
+
+  test("the watcher's state: one row, its error one of eight words; and one row a folder", () => {
+    expect(shape("notify_state")).toEqual([
+      ["id", "smallint", true],
+      ["beat_at", "timestamp with time zone", false],
+      ["mailbox_ok_at", "timestamp with time zone", false],
+      ["push_ok_at", "timestamp with time zone", false],
+      ["error", "text", false],
+    ]);
+    expect(checks("notify_state")).toEqual(["notify_state_error", "notify_state_single_row"]);
+    expect(checkSql("notify_state", "notify_state_error")).toBe(
+      `"notify_state"."error" in ('imap_connect', 'imap_timeout', 'imap_tls', 'imap_login', 'imap_folder', 'imap_protocol', 'push_connect', 'push_refused')`,
+    );
+    expect(shape("notify_folders")).toEqual([
+      ["folder", "text", true],
+      ["uidvalidity", "bigint", false],
+      ["last_uid", "bigint", false],
+    ]);
+    expect(column("notify_folders", "folder")?.primary).toBe(true);
+    expect(checks("notify_folders")).toEqual(["notify_folders_folder"]);
   });
 });

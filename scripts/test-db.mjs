@@ -6,7 +6,11 @@
  * 1. Reads the test database's name from DATABASE_URL_MIGRATE in apps/api/.env.test, which
  *    `node scripts/gen-dev-env.mjs` derives from apps/api/.env.
  * 2. Creates the database in the Compose Postgres if it is missing, and applies the per-database
- *    grants of infra/postgres/init/01-roles.sh. The roles themselves exist once per server.
+ *    grants of infra/postgres/init/01-roles.sh. The roles themselves exist once per server, but for
+ *    the contact point's watcher (3f): korbat_notify is created here when it is missing, with
+ *    KORBAT_NOTIFY_DB_PASSWORD from infra/.env, since a data directory made before 3f has no such
+ *    role and 01-roles.sh runs only on a new one. Its USAGE on the schema public is the superuser's to
+ *    give, and the first migration of 3f stops without it.
  * 3. Runs the migrations with the migrate role.
  *
  * Two options rebuild the database from nothing, each the way a real database meets the migrations:
@@ -80,11 +84,17 @@ const database = decodeURIComponent(new URL(migrateUrl).pathname.replace(/^\//, 
 // The same rule guards the drop below: only a database whose name ends in _test is ever dropped.
 if (!/^[a-z][a-z0-9_]*_test$/.test(database)) stop(`The test database must have a plain name ending in _test, not "${database}".`);
 
+// The watcher's password, for the role when the server has none yet. It goes to the container in the environment of
+// the compose command, by name only, and from there to psql as a variable: it is never in an argument or printed.
+const infraEnvFile = resolve(root, "infra/.env");
+const notifyPassword = existsSync(infraEnvFile) ? parseEnv(readFileSync(infraEnvFile, "utf8")).KORBAT_NOTIFY_DB_PASSWORD : undefined;
+if (!notifyPassword) stop("infra/.env has no KORBAT_NOTIFY_DB_PASSWORD. Run `node scripts/gen-dev-env.mjs` first.");
+
 // Runs inside the postgres container, where POSTGRES_USER and POSTGRES_DB are set. psql fills in
 // :'db' and :"db" itself, so the name is never pasted into SQL by hand. With DROP_FIRST the database
 // is dropped first; `with (force)` ends the sessions a stopped test run may have left open on it.
 const script = `set -eu
-run() { psql -v ON_ERROR_STOP=1 -q --username "$POSTGRES_USER" --dbname "$1" -v db="$TEST_DB" -tA; }
+run() { psql -v ON_ERROR_STOP=1 -q --username "$POSTGRES_USER" --dbname "$1" -v db="$TEST_DB" -v notify_pw="$NOTIFY_PW" -tA; }
 if [ "$DROP_FIRST" = "yes" ]; then
   printf '%s\\n' 'drop database if exists :"db" with (force);' | run "$POSTGRES_DB"
   echo "database $TEST_DB: dropped"
@@ -96,21 +106,37 @@ else
   printf '%s\\n' 'create database :"db";' | run "$POSTGRES_DB"
   echo "database $TEST_DB: created"
 fi
+# The watcher's role, once per server, when it is missing: a DO block on pg_roles, which reads the password from a
+# setting of this session, since psql fills in no variable inside a DO block's body.
+found_role=$(echo "select 1 from pg_roles where rolname = 'korbat_notify';" | run "$POSTGRES_DB")
+run "$POSTGRES_DB" <<'SQL'
+SET korbat.notify_pw = :'notify_pw';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'korbat_notify') THEN
+    EXECUTE format('CREATE ROLE korbat_notify LOGIN PASSWORD %L', current_setting('korbat.notify_pw'));
+  END IF;
+END $$;
+SQL
+if [ "$found_role" = "1" ]; then echo "role korbat_notify: exists"; else echo "role korbat_notify: created"; fi
 run "$TEST_DB" <<'SQL'
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE USAGE  ON SCHEMA public FROM PUBLIC;
 GRANT CREATE ON DATABASE :"db" TO korbat_migrate;
 GRANT ALL ON SCHEMA public TO korbat_migrate;
 GRANT USAGE ON SCHEMA public TO korbat_api;
+GRANT USAGE ON SCHEMA public TO korbat_notify;
 SQL
 echo "grants applied"
 `;
 
 const dropFirst = fresh || upgradeFrom !== null ? "yes" : "no";
-const created = spawnSync(compose[0], [...compose.slice(1), "exec", "-T", "-e", `TEST_DB=${database}`, "-e", `DROP_FIRST=${dropFirst}`, "postgres", "sh", "-s"], {
+const created = spawnSync(compose[0], [...compose.slice(1), "exec", "-T", "-e", `TEST_DB=${database}`, "-e", `DROP_FIRST=${dropFirst}`, "-e", "NOTIFY_PW", "postgres", "sh", "-s"], {
   cwd: root,
   input: script,
   encoding: "utf8",
+  // NOTIFY_PW is named alone above: compose takes its value from this environment.
+  env: { ...process.env, NOTIFY_PW: notifyPassword },
 });
 if (created.error) stop(`Could not run ${compose[0]}: ${created.error.message}`);
 process.stdout.write(scrub(created.stdout));

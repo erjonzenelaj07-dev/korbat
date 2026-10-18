@@ -63,7 +63,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the dispatch job", () =>
     await w.close();
   });
 
-  const counts = async (): Promise<Record<string, number>> => ({ ...(await moderationCounts(w.apiDb)), ...(await authCaseCounts(w.migrateDb)) });
+  // 3f: the staff alerts the rounds raise write their rows of alert_outbox, which the last test removes.
+  const counts = async (): Promise<Record<string, number>> => ({
+    ...(await moderationCounts(w.apiDb)),
+    ...(await authCaseCounts(w.migrateDb)),
+    alert_outbox: (await w.apiDb.execute<{ n: number }>(sql`select count(*)::int as n from public.alert_outbox`))[0]!.n,
+  });
+  const started = new Date();
+  /** The newest row of alert_outbox, by id, or 0. */
+  const newestAlert = async () => Number((await w.migrateDb.execute<{ id: string | null }>(sql`select max(id) as id from public.alert_outbox`))[0]!.id ?? 0);
   const jobNow = () => new Date(Date.now() + aheadMs);
   const round = (withLock: JobLock = lock) => dispatchRound(w.deps, withLock);
   const ahead = (ms: number) => {
@@ -228,8 +236,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the dispatch job", () =>
     expect((await round()).waiting).toBe("none");
     // A day on, lane 1's case has waited more than its 24 hours; lane 2's seven days are not over, but its measure is a day old.
     ahead(25 * HOUR);
+    const newest = await newestAlert();
     expect((await round()).waiting).toBe("sent");
     expect(waitingMails().length).toBeGreaterThan(mailed);
+    // 3f: the same reminder went to every staff phone: one row of alert_outbox with the count of what waits and nothing
+    // else, marked mailed, since its mail is 3c's own and says more.
+    const pushes = await w.migrateDb.execute<{ priority: number; scope: string; facts: Record<string, unknown>; mailed: boolean }>(
+      sql`select priority, scope, facts, mailed_at is not null as mailed from public.alert_outbox where kind = 'moderation_waiting' and id > ${newest} order by id`,
+    );
+    expect(pushes.map((row) => ({ ...row }))).toEqual([{ priority: 3, scope: "all", facts: { count: 2 }, mailed: true }]);
     const data = waitingMails().at(-1)!.data;
     expect(data).toMatchObject({ lane1Count: "1", interimCount: "1" });
     expect(data.lane1Oldest).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC$/);
@@ -1054,9 +1069,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the dispatch job", () =>
     expect(waitingMails().at(-1)!.data.replyCount).toBeDefined();
   });
 
-  test("this file left no row behind: the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
+  test("this file left no row behind: the moderation tables, the four auth tables of moderation cases and the alerts' rows hold what they held before it", async () => {
     await w.cleanUp();
     await d.close();
+    await w.migrateDb.execute(sql`delete from public.alert_outbox where kind like 'moderation_%' and created_at >= ${started.toISOString()}::timestamptz`);
     expect(await counts()).toEqual(before);
   });
 });

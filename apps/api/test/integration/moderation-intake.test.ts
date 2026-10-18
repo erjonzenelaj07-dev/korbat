@@ -6,6 +6,8 @@ import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { socialForModeration } from "../../src/social";
 import { createSocialRepo } from "../../src/social/repo";
+import type { AuthForModeration, StaffMessage } from "../../src/auth";
+import { alertUrgentLane } from "../../src/moderation/alerts";
 import { recordIntake } from "../../src/moderation/intake";
 import { aPost, anAccount, gate, ground, intake, moderationDeps, newPostRow, refusal, removeFixtures, rowCounts, suspendRowForTest, untilBlocked, uuids } from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
@@ -32,7 +34,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: taking in a report, a no
     apiDb = createDb(loadConfig().DATABASE_URL_API, { max: 6 });
     // The migrate role is not part of the API configuration; the test environment carries it.
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
-    before = await rowCounts(apiDb);
+    before = await rowCounts(apiDb, ["alert_outbox"]);
   });
   afterAll(async () => {
     await Promise.all([closeDb(apiDb), closeDb(migrateDb)]);
@@ -371,7 +373,30 @@ describe.skipIf(!process.env.INTEGRATION)("integration: taking in a report, a no
     }
   });
 
+  test("3f: an intake that puts an item into the urgent lane raises the alert's push beside its mail: one row of alert_outbox, priority 5, to the phone on call, with the count and the oldest time, marked mailed", async () => {
+    await rolledBack(apiDb, async (tx) => {
+      const mailed: StaffMessage[] = [];
+      const auth = { mailStaff: async (message: StaffMessage) => (mailed.push(message), 1) } as unknown as AuthForModeration;
+      const deps = moderationDeps(tx, { auth });
+      const [author] = [await profile(tx)];
+      const postId = await newPostRow(tx, author.id);
+      const recorded = await recordIntake(deps, { ground: ground.csam(), live: [aPost(postId)] });
+      expect(recorded.items[0]!.lane).toBe(0);
+      const from = Number((await tx.execute<{ id: string | null }>(sql`select max(id) as id from public.alert_outbox`))[0]!.id ?? 0);
+      expect(await alertUrgentLane(deps)).toBe("sent");
+      const rows = await tx.execute<{ kind: string; priority: number; scope: string; facts: Record<string, unknown>; mailed: boolean }>(
+        sql`select kind, priority, scope, facts, mailed_at is not null as mailed from public.alert_outbox where id > ${from} order by id`,
+      );
+      expect(rows).toHaveLength(1);
+      const [row] = rows;
+      expect([row!.kind, row!.priority, row!.scope, row!.mailed]).toEqual(["moderation_urgent", 5, "on_call", true]);
+      const message = mailed[0]!;
+      expect(message.template).toBe("moderation_urgent");
+      if (message.template === "moderation_urgent") expect(row!.facts).toEqual({ count: message.count, oldestAt: message.oldest.toISOString() });
+    });
+  });
+
   test("this file left no row behind: the tables it writes hold what they held before it", async () => {
-    expect(await rowCounts(apiDb)).toEqual(before);
+    expect(await rowCounts(apiDb, ["alert_outbox"])).toEqual(before);
   });
 });

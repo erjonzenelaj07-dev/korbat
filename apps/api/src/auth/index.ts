@@ -85,6 +85,8 @@ export type {
   NotifierMessage,
   NotifierUpdatePart,
   NotifierUpdateResult,
+  StaffAlertKind,
+  StaffAlertMessage,
   StaffMessage,
 } from "./flows/notifiers";
 /** One line of the daily update, which the moderation module composes and this module mails: the mailer's own type. */

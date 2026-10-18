@@ -1,12 +1,12 @@
 import { OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, describeError, PROTECTION_LIFTED_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, NavLink } from "../nav";
 import { parseCaseId, type CaseId, type ConsolePath } from "../router";
 import { readSignInsAtOpening } from "../signins";
 import { revokeSessionWithKey } from "../step-up";
-import { clockTime, dateTime, Loaded, UserText, type Loadable } from "../ui";
+import { bothTimes, clockTime, dateTime, Loaded, UserText, type Loadable } from "../ui";
 import type { ReactNode } from "react";
 import type { CredentialsLike } from "../webauthn";
 import { counted, LANE_NAMES, waited } from "../words";
@@ -120,6 +120,44 @@ function StandingLines({ overview, now, onNavigate }: { overview: StaffOverview;
   );
 }
 
+/**
+ * 3f (design, section 8.2): the block "Authorities" above the lanes, each line only while it applies, in the design's
+ * order: mail at the contact point that nobody has handled, with a link to Contact point inside its sentence, and the
+ * alert channel's state when it is not ok. Without a way to move between pages (a test's rendering), the link is text.
+ */
+export function AuthoritiesLines({ overview, onNavigate }: { overview: StaffOverview; onNavigate?: (path: ConsolePath) => void }) {
+  const W = ORDER_WORDS.home;
+  const { contact, alerts } = overview;
+  const since = alerts.since === null ? "" : bothTimes(alerts.since);
+  const lines: ReactNode[] = [];
+  if (contact.open > 0 && contact.oldestAt !== null) {
+    const words = W.contact(bothTimes(contact.oldestAt), contact.open);
+    lines.push(
+      <p key="contact" className="error">
+        {words.before}
+        {onNavigate ? (
+          <NavLink to="/contact" onNavigate={onNavigate}>
+            {words.link}
+          </NavLink>
+        ) : (
+          words.link
+        )}
+        {words.after}
+      </p>,
+    );
+  }
+  if (alerts.channel === "down") lines.push(<p key="channel" className="error">{W.channel(since)}</p>);
+  if (alerts.channel === "mailbox") lines.push(<p key="mailbox" className="error">{W.mailbox(since)}</p>);
+  if (alerts.channel === "off") lines.push(<p key="off" className="notice">{W.off}</p>);
+  if (lines.length === 0) return null;
+  return (
+    <div role="status" className="authorities">
+      <h3>{W.title}</h3>
+      {lines}
+    </div>
+  );
+}
+
 export function OverviewView({ overview, now, onOpenCase, onNavigate }: { overview: StaffOverview; now: number; onOpenCase(id: CaseId): void; onNavigate?: (path: ConsolePath) => void }) {
   const { reveals, mailsWaiting, mailsFailed } = overview;
   const lateErasures = erasureOverdue(overview.erasureOverdue);
@@ -128,6 +166,7 @@ export function OverviewView({ overview, now, onOpenCase, onNavigate }: { overvi
   const mails = (m: StaffOverview["mailsWaiting"]) => `${counted(m.receipts, "receipt", "receipts")}, ${counted(m.authorMails, "statement to an author", "statements to authors")}, ${counted(m.outcomes, "outcome", "outcomes")}`;
   return (
     <>
+      <AuthoritiesLines overview={overview} onNavigate={onNavigate} />
       <h3>Cases</h3>
       <ul className="lanes">
         {overview.lanes.map((lane) => (

@@ -3,17 +3,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { MEASURES, SEAL_DRAFTS } from "@korbat/contracts";
+import { DISPOSITION_LABELS, MEASURES, ORDER_RULES, SEAL_DRAFTS } from "@korbat/contracts";
 import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, PROTECTION_LIFTED_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
 import { SIGN_IN_WINDOW_MS } from "../../src/signins";
-import { clockTime } from "../../src/ui";
+import { bothTimes, clockTime } from "../../src/ui";
 import { consoleSiteHeadersFromCaddyfile } from "../caddyfile";
 import {
   APPEAL_ONE,
@@ -70,6 +70,7 @@ import {
   PERSON_HANDLE,
   REVEALED_HANDLE,
   STANDING_HANDLE,
+  staleMessages,
   TYPED_ADMIN_FACTS,
   TYPED_CHANGED_FACTS,
   TYPED_DECLINE,
@@ -82,7 +83,7 @@ import {
   type FixtureApi,
 } from "./fixture-api";
 import { startConsoleSite, type ConsoleSiteServer } from "./server";
-import { inspect, userTexts, watch, type Watcher } from "./watch";
+import { inspect, phoneProblems, userTexts, watch, type Watcher } from "./watch";
 
 /**
  * The console's browser check (3a design, section 12). It builds the console, serves the build with the routes and headers
@@ -1507,6 +1508,94 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     expect(await page.getByRole("button", { name: STANDING_WORDS.mark.withdrawLabel }).count()).toBe(0);
     await texts();
     await clean();
+  });
+
+  // ---------------------------------------------------------------- 3f Task 1: the contact point, at a phone's width
+
+  /** The end of a step at a phone's width: the checks of every step, and the phone's two rules (design, section 8.10). */
+  async function cleanOnPhone(): Promise<void> {
+    await clean();
+    expect(await phoneProblems(page)).toEqual([]);
+  }
+
+  test("3f: at 360 by 740 px, home shows the block Authorities above the lanes: [home.contact] with its link to Contact point, and [home.channel]", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const oldest = new Date(Date.now() - 20 * 60_000).toISOString();
+    const since = new Date(Date.now() - 6 * 60_000).toISOString();
+    fixtures.state.authorities = {
+      contact: { open: 2, oldestAt: oldest, dueAt: new Date(Date.parse(oldest) + ORDER_RULES.hourMinutes * 60_000).toISOString() },
+      alerts: { channel: "down", since },
+    };
+    await page.goto(`${origin}/`);
+    await shown(page.getByRole("heading", { name: "Authorities" }));
+    const words = ORDER_WORDS.home.contact(bothTimes(oldest), 2);
+    const lines = page.locator(".authorities p");
+    // Its text as written: at this width the link is laid out as a block of its own, which innerText would break apart.
+    expect(await lines.nth(0).textContent()).toBe(`${words.before}${words.link}${words.after}`);
+    expect(await lines.nth(1).textContent()).toBe(ORDER_WORDS.home.channel(bothTimes(since)));
+    expect(await page.locator(".authorities a").getAttribute("href")).toBe("/contact");
+    // The block stands above the lanes.
+    const authorities = await page.getByRole("heading", { name: "Authorities" }).boundingBox();
+    const cases = await page.getByRole("heading", { name: "Cases" }).boundingBox();
+    expect(authorities!.y).toBeLessThan(cases!.y);
+    // Every read the home screen started has finished: the whole screen is measured.
+    await shown(page.locator("ul.signins"));
+    await shown(page.locator("ul.keys"));
+    await shown(page.getByText("This session", { exact: true }));
+    await texts();
+    await cleanOnPhone();
+  });
+
+  test("3f: Contact point, from the navigation after Home, lists the messages newest first, one of them stale, with no sender and no subject", async () => {
+    await page.getByRole("navigation", { name: "Console" }).getByRole("link", { name: "Contact point" }).click();
+    await shown(page.getByRole("heading", { name: "Contact point" }));
+    expect(page.url()).toBe(`${origin}/contact`);
+    await shown(page.getByText(ORDER_WORDS.contact.what));
+    const blocks = page.locator("li.block");
+    expect(await blocks.count()).toBe(2);
+    expect(await blocks.nth(0).innerText()).toContain(ORDER_WORDS.contact.folders.inbox);
+    const stale = blocks.nth(1);
+    expect(await stale.innerText()).toContain(ORDER_WORDS.contact.folders.junk);
+    expect(await stale.innerText()).toContain(ORDER_WORDS.contact.stale);
+    expect(await stale.innerText()).toContain(ORDER_WORDS.contact.notHandled);
+    for (const label of Object.values(DISPOSITION_LABELS).filter((label) => label !== DISPOSITION_LABELS.order)) expect(await stale.getByLabel(label, { exact: true }).count(), label).toBe(1);
+    // Nothing is closed until a word is chosen.
+    expect(await stale.getByRole("button", { name: "Close", exact: true }).isDisabled()).toBe(true);
+    // One stale message alone is closed on its own block: no group for the stale ones.
+    expect(await page.locator("fieldset.stale-together").count()).toBe(0);
+    await cleanOnPhone();
+  });
+
+  test("3f: a message closed as Not an order, without a key: the screen says so and lists it as handled by the person's handle, as text", async () => {
+    const before = await signatures();
+    const stale = page.locator("li.block").filter({ hasText: ORDER_WORDS.contact.folders.junk });
+    await stale.getByLabel(DISPOSITION_LABELS.not_an_order, { exact: true }).check();
+    await stale.getByRole("button", { name: "Close", exact: true }).click();
+    await shown(page.getByText(ORDER_WORDS.contact.closed(DISPOSITION_LABELS.not_an_order)));
+    expect(fixtures.state.contactClosed).toEqual([{ id: "7e2b3c4d-5e6f-4071-8283-94a516b7c8d9", disposition: "not_an_order" }]);
+    expect(await signatures()).toBe(before);
+    const handled = page.locator("li.block").filter({ hasText: ORDER_WORDS.contact.folders.junk });
+    await shown(handled.getByText(`Handled as ${DISPOSITION_LABELS.not_an_order} by @`, { exact: false }));
+    expect(await texts()).toContain(PERSON_HANDLE);
+    expect(await handled.getByRole("button", { name: "Close", exact: true }).count()).toBe(0);
+    await cleanOnPhone();
+  });
+
+  test("3f: three stale messages closed together, one request each with the word chosen for all, and the page read again", async () => {
+    fixtures.state.contactMessages.push(...staleMessages(Date.now()));
+    await page.goto(`${origin}/contact`);
+    await shown(page.getByText(ORDER_WORDS.contact.staleTogether(3)));
+    await shown(page.getByText(ORDER_WORDS.contact.staleAll(3)));
+    const group = page.locator("fieldset.stale-together");
+    await group.getByLabel(DISPOSITION_LABELS.not_an_order, { exact: true }).check();
+    await group.getByRole("button", { name: ORDER_WORDS.contact.staleButton }).click();
+    await shown(page.getByText(ORDER_WORDS.contact.staleClosed(3)));
+    expect(fixtures.state.contactClosed.slice(1).map((closed) => closed.disposition)).toEqual(["not_an_order", "not_an_order", "not_an_order"]);
+    expect(await page.locator("fieldset.stale-together").count()).toBe(0);
+    await cleanOnPhone();
+    // The walk goes on at the desktop's width, with nothing at the contact point.
+    fixtures.state.authorities = { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } };
+    await page.setViewportSize({ width: 1280, height: 900 });
   });
 
   test("an address the console does not have says so, inside the console", async () => {

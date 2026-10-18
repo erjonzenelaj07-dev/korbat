@@ -10,7 +10,8 @@
     "typecheck": "tsc -p .",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "update:disposable": "node scripts/update-disposable-domains.mjs"
+    "update:disposable": "node scripts/update-disposable-domains.mjs",
+    "notify:dev": "tsx --env-file=.env src/notify/main.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.1",

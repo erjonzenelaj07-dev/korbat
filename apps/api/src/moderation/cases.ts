@@ -30,10 +30,11 @@ import type { DbTx } from "@korbat/db";
 import type { ActiveStaffSession, NotifierFacts } from "../auth";
 import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import type { StoredFile } from "../media";
-import { alertUrgentLane, staffAlert } from "./alerts";
+import { alertUrgentLane, channelHealth, staffAlert } from "./alerts";
 import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
+import { contactOverview } from "./orders";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
 import { caseReplies, repliesWaiting, standingColumns, standingOnDecisions, strikeAccounts, unansweredReplies, type ReplyColumns } from "./standing-repo";
 
@@ -226,7 +227,17 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     // 3e (design, section 8.8): the replies no decision answered, and the accounts at the ladder's number of strikes.
     repliesWaiting: await repliesWaiting(q),
     strikeAccounts: (await strikeAccounts(q, 1)).total,
+    // 3f (design, sections 8.2 and 10.2): the contact point's messages nobody has handled, and the alert channel's state,
+    // both read fresh.
+    contact: await contactOverview(deps),
+    alerts: await channelAlerts(deps),
   };
+}
+
+/** StaffOverview.alerts: the channel's state as the tick judges it, with the time since when. */
+async function channelAlerts(deps: Pick<ModerationDeps, "apiDb" | "config">): Promise<StaffOverview["alerts"]> {
+  const health = await channelHealth(deps);
+  return { channel: health.channel, since: health.since?.toISOString() ?? null };
 }
 
 // ---------------------------------------------------------------- the queue

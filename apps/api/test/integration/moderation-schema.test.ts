@@ -436,9 +436,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       ]);
       // Everything the API role may call of what the migrator owns, in both schemas, after the last migration of 3c (design,
       // section 11), and the five of 3e's standing ledger: the constants, a basis, the strike rule, the appeal's start and the terminations due;
-      // and 3e's two steps of the retention job (0024_standing_retention): a reply's text and the reporting counts.
+      // and 3e's two steps of the retention job (0024_standing_retention): a reply's text and the reporting counts; and 3f's
+      // two of 0026_messages_alerts: the order rules and the alert tick's time-driven rows.
       const callable = all.filter((f) => f.owner === "korbat_migrate" && f.api).map((f) => f.name);
       expect(callable).toEqual([
+        "public.alert_steps",
         "public.appeal_deadline",
         "public.appeal_informed_at",
         "public.appeal_reviewer_state",
@@ -454,6 +456,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.forget_reporter",
         "public.frozen_for",
         "public.intake_due_at",
+        "public.order_rules",
         "public.post_frozen",
         "public.redact_r4_body",
         "public.release_outcomes",

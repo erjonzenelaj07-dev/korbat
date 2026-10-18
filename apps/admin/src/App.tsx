@@ -8,6 +8,7 @@ import type { ConsolePath } from "./router";
 import { Appeals } from "./screens/Appeals";
 import { Audit } from "./screens/Audit";
 import { CaseScreen } from "./screens/Case";
+import { Contact } from "./screens/Contact";
 import { Enroll } from "./screens/Enroll";
 import { Home } from "./screens/Home";
 import { Queue } from "./screens/Queue";
@@ -92,6 +93,7 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
       {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} role={session.me.role} drafts={store.drafts} onOpenCase={store.openCase} /> : null}
       {route.name === "appeals" ? <Appeals api={api} onOpenCase={store.openCase} /> : null}
       {route.name === "standing" ? <Standing api={api} onOpenCase={store.openCase} /> : null}
+      {route.name === "contact" ? <Contact api={api} /> : null}
       {route.name === "unknown" ? (
         <section aria-labelledby="unknown-title">
           <h2 id="unknown-title">No such page</h2>

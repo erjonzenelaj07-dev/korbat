@@ -45,6 +45,8 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   strike_mismatch: 409,
   standing_conflict: 409,
   ground_not_established: 422,
+  // 3f (design, section 10.6).
+  message_handled: 409,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -92,6 +94,8 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   strike_mismatch: "The strike rule changed for this post since the case was read. Read it again and decide again.",
   standing_conflict: "A suspension or termination of this account already stands and has not ended.",
   ground_not_established: "No termination can rest on a report of images that korbat has not assessed.",
+  // 3f: for staff; the console words it again.
+  message_handled: "That message was already handled.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.

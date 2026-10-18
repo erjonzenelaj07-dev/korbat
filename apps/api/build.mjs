@@ -6,7 +6,8 @@ await rm("dist", { recursive: true, force: true });
 await build({
   // Each entry is a bundle of its own. The command lines check that they were run directly by comparing import.meta.url,
   // which in a bundle is the bundle's, so no entry may import another entry's file.
-  entryPoints: { index: "src/index.ts", migrate: "src/migrate.ts", "grant-role": "src/cli/grant-role.ts", staff: "src/cli/staff.ts" },
+  // notify (3f) is the contact point's watcher, a service of its own on its own database role.
+  entryPoints: { index: "src/index.ts", migrate: "src/migrate.ts", "grant-role": "src/cli/grant-role.ts", staff: "src/cli/staff.ts", notify: "src/notify/main.ts" },
   outdir: "dist",
   bundle: true,
   format: "esm",

@@ -5,6 +5,7 @@ import { RULEBOOKS } from "@korbat/rules";
 import type { JobLock } from "../src/lib/jobs";
 import { MemoryStore } from "../src/middleware/rate-limit";
 import { createModeration, type CreateModerationOptions } from "../src/moderation";
+import { ALERT_TICK_INTERVAL_MS, ALERT_TICK_JOB } from "../src/moderation/alerts";
 import { DISPATCH_INTERVAL_MS, DISPATCH_JOB, WAITING_ALERT_KEY, WAITING_ALERT_WINDOW_MS, stillCalls, updateLine } from "../src/moderation/dispatch";
 import type { OutcomeLineRow, UrgentItemRow } from "../src/moderation/repo";
 
@@ -194,7 +195,7 @@ describe("the module's background work", () => {
   });
 
   /** The module over stand-ins that fail the test when a round touches them, and a lock that only records what it is asked. */
-  function world(acquire: boolean) {
+  function world(acquire: boolean, retention: "on" | "off" = "off") {
     const asked: { key: string; ttlMs: number }[] = [];
     const lock: JobLock = {
       acquire: async (key, _token, ttlMs) => {
@@ -211,10 +212,12 @@ describe("the module's background work", () => {
       social: untouched as CreateModerationOptions["social"],
       media: untouched as CreateModerationOptions["media"],
       rateLimitStore: new MemoryStore(),
-      config,
+      config: { ...config, MODERATION_RETENTION: retention } as CreateModerationOptions["config"],
       logger: pino({ level: "silent" }),
     });
-    return { moderation, lock, asked };
+    /** What the lock was asked for one job. */
+    const of = (job: string) => asked.filter((entry) => entry.key === `job:${job}`);
+    return { moderation, lock, asked, of };
   }
 
   test("startJobs runs the dispatch job under its own lock every ten minutes, from the end of the round before, until it is stopped", async () => {
@@ -225,14 +228,33 @@ describe("the module's background work", () => {
     expect([DISPATCH_JOB, DISPATCH_INTERVAL_MS]).toEqual(["moderation-dispatch", 10 * 60_000]);
     // The first round comes ten minutes after the start, not at once.
     await vi.advanceTimersByTimeAsync(DISPATCH_INTERVAL_MS - 1);
-    expect(w.asked).toEqual([]);
+    expect(w.of(DISPATCH_JOB)).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
-    expect(w.asked).toEqual([{ key: "job:moderation-dispatch", ttlMs: DISPATCH_INTERVAL_MS }]);
+    expect(w.of(DISPATCH_JOB)).toEqual([{ key: "job:moderation-dispatch", ttlMs: DISPATCH_INTERVAL_MS }]);
     await vi.advanceTimersByTimeAsync(DISPATCH_INTERVAL_MS);
-    expect(w.asked).toHaveLength(2);
+    expect(w.of(DISPATCH_JOB)).toHaveLength(2);
     stop();
+    const asked = w.asked.length;
     await vi.advanceTimersByTimeAsync(3 * DISPATCH_INTERVAL_MS);
-    expect(w.asked).toHaveLength(2);
+    expect(w.asked).toHaveLength(asked);
+  });
+
+  test("3f: startJobs runs the alert tick under its own lock every 30 seconds, also while retention is off, and stops it with the rest", async () => {
+    vi.useFakeTimers();
+    expect([ALERT_TICK_JOB, ALERT_TICK_INTERVAL_MS]).toEqual(["alert-tick", 30_000]);
+    for (const retention of ["off", "on"] as const) {
+      const w = world(false, retention);
+      const stop = w.moderation.startJobs(w.lock);
+      await vi.advanceTimersByTimeAsync(ALERT_TICK_INTERVAL_MS - 1);
+      expect(w.of(ALERT_TICK_JOB), retention).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(w.of(ALERT_TICK_JOB), retention).toEqual([{ key: "job:alert-tick", ttlMs: ALERT_TICK_INTERVAL_MS }]);
+      await vi.advanceTimersByTimeAsync(ALERT_TICK_INTERVAL_MS);
+      expect(w.of(ALERT_TICK_JOB), retention).toHaveLength(2);
+      stop();
+      await vi.advanceTimersByTimeAsync(10 * ALERT_TICK_INTERVAL_MS);
+      expect(w.of(ALERT_TICK_JOB), retention).toHaveLength(2);
+    }
   });
 
   test("the queue-age alert has a key and a window of its own: once a day", () => {

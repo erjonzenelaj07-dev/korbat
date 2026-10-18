@@ -364,6 +364,45 @@ describe("the source pins of account sanctions (3e)", () => {
   });
 });
 
+/**
+ * The watcher's boundary (3f design, section 5): notify, an entry point of its own (dist/notify.js), imports the contracts,
+ * the database package and Node's and its packages' modules, and nothing of the API's: no relative import leaves
+ * src/notify. Nothing outside it imports it either: the API holds no mailbox credential, no ntfy token and no route to the
+ * push network, and the watcher shares no code with the API that could carry one in.
+ */
+function findNotifyViolations(files: SourceFile[]): string[] {
+  const violations: string[] = [];
+  for (const { path, source } of files) {
+    const inside = path.startsWith("notify/");
+    for (const spec of specifiers(source)) {
+      if (!spec.startsWith(".")) continue;
+      const target = posix.normalize(posix.join(posix.dirname(path), spec));
+      if (inside && !target.startsWith("notify/")) violations.push(`${path}: imports ${spec}, outside the watcher`);
+      if (!inside && target.startsWith("notify/")) violations.push(`${path}: imports ${spec}, inside the watcher`);
+    }
+  }
+  return violations;
+}
+
+describe("the watcher's boundary (3f)", () => {
+  test("src/notify imports nothing of the API's modules, and nothing imports src/notify", () => {
+    const files = loadSources();
+    expect(files.filter((file) => file.path.startsWith("notify/")).map((file) => file.path).sort()).toEqual(["notify/imap.ts", "notify/main.ts", "notify/push.ts"]);
+    expect(findNotifyViolations(files)).toEqual([]);
+  });
+
+  test("catches an import of an API module from the watcher, and an import of the watcher from the API", () => {
+    expect(
+      findNotifyViolations([
+        { path: "notify/main.ts", source: 'import { loadConfig } from "../config"; import { publish } from "./push";' },
+        { path: "notify/push.ts", source: 'import { staffAlert } from "../moderation";' },
+        { path: "moderation/alerts.ts", source: 'import { TOPICS } from "../notify/push";' },
+        { path: "index.ts", source: 'import { ALERT_KINDS } from "@korbat/contracts";' },
+      ]),
+    ).toEqual(["notify/main.ts: imports ../config, outside the watcher", "notify/push.ts: imports ../moderation, outside the watcher", "moderation/alerts.ts: imports ../notify/push, inside the watcher"]);
+  });
+});
+
 describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);

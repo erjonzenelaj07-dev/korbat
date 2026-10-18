@@ -200,9 +200,25 @@ describe("the console site sends exactly the headers the development server send
 describe("the console site's routes", () => {
   const consoleSite = () => site(readCaddyfile(), CONSOLE_SITE);
 
-  test("the staff API, then the rest of the API, then the console's files, whatever order Caddy sorts them in", () => {
+  test("the push network's refusal (3f), the staff API, then the rest of the API, then the console's files, whatever order Caddy sorts them in", () => {
     const routes = caddyOrder(handles(consoleSite()));
-    expect(routes.map((route) => route.match ?? null)).toEqual([{ paths: ["/api/staff", "/api/staff/*"], file: false, not: false }, { paths: ["/api", "/api/*"], file: false, not: false }, null]);
+    expect(routes.map((route) => route.match ?? null)).toEqual([
+      { paths: [], file: false, not: false, remoteIp: ["{$PUSH_SUBNET}"] },
+      { paths: ["/api/staff", "/api/staff/*"], file: false, not: false },
+      { paths: ["/api", "/api/*"], file: false, not: false },
+      null,
+    ]);
+    // A client from the push network gets 403 and reaches nothing; the readers' requests never come from there.
+    const push = routes[0]!;
+    expect(lines(push.block)).toEqual(["header -Server", "respond 403"]);
+    for (const p of ["/", "/api/staff/me", "/api/me"]) expect(routeFor(consoleSite(), p).matcher, p).not.toBe("@push");
+  });
+
+  test("3f: on the app's site the API proxy and the app's files each answer a client from the push network 403 first", () => {
+    const app = site(readCaddyfile(), APP_SITE);
+    expect(lines(app)).toContain("@push remote_ip {$PUSH_SUBNET}");
+    expect(lines(routeFor(app, "/api/me").block)).toContain("respond @push 403");
+    expect(lines(routeFor(app, "/").block)).toContain("respond @push 403");
   });
 
   test("/api/staff and /api/staff/* go to the API as on the app's site: 64KB bodies, no Server header, cf-header, the browser's Host", () => {
@@ -299,8 +315,23 @@ describe("the image carries the console", () => {
     const text = dockerfile();
     expect(text).toContain("COPY --from=console /repo/apps/admin/dist /console");
     expect(text).toContain("COPY --from=web /repo/apps/app/dist /srv");
-    expect(text).toMatch(/^EXPOSE 8080 8090$/m);
+    expect(text).toMatch(/^EXPOSE 8080 8090 8091$/m);
     expect(text).toContain("RUN setcap -r /usr/bin/caddy");
+  });
+
+  test("3f: the push site hands ntfy the client's address in X-Forwarded-For, with the tunnel on or off", () => {
+    // Behind the tunnel Caddy's client is cloudflared, so the X-Forwarded-For that Caddy writes would name cloudflared for
+    // every phone, and ntfy, which reads that header (infra/ntfy/server.yml.example), would count all phones as one
+    // visitor: 30 wrong tokens from anyone would then shut every phone out (lab L3). With TUNNEL=on the header takes
+    // the value of CF-Connecting-IP, which cloudflared sets; with it off Caddy's own value stands.
+    expect(dockerfile()).toContain(
+      'RUN if [ "$TUNNEL" = "on" ]; then echo "header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}" > /etc/caddy/push-header.caddy; else : > /etc/caddy/push-header.caddy; fi',
+    );
+    const push = site(readCaddyfile(), ":8091");
+    const subscribe = push.children?.find((node) => node.tokens[0] === "handle" && node.tokens[1] === "@subscribe");
+    const proxy = subscribe?.children?.find((node) => node.tokens[0] === "reverse_proxy");
+    expect(proxy?.tokens).toEqual(["reverse_proxy", "ntfy:2586"]);
+    expect(lines(proxy!)).toEqual(["import /etc/caddy/cf-header.caddy", "import /etc/caddy/push-header.caddy"]);
   });
 });
 
@@ -330,11 +361,13 @@ describe("Compose and infra/.env.example carry the console", () => {
     expect(api).toContain("CONSOLE_RP_ID: ${API_CONSOLE_RP_ID:-}");
   });
 
-  test("Caddy's comment names both of its ports", () => {
+  test("Caddy's comment names its three ports", () => {
     const compose = read("infra", "compose.yml");
     const comment = commentAbove(compose, "  caddy:");
     expect(comment).toContain("8080");
     expect(comment).toContain("8090");
+    // 3f: the phones' push site.
+    expect(comment).toContain("8091");
   });
 
   test("the development stack publishes the console's site on localhost, on a port of its own", () => {
@@ -342,6 +375,8 @@ describe("Compose and infra/.env.example carry the console", () => {
     const caddy = dev.slice(dev.indexOf("\n  caddy:\n"), dev.indexOf("\n  mailpit:\n"));
     expect(caddy).toContain('"127.0.0.1:${DEV_CADDY_PORT:-8080}:8080"');
     expect(caddy).toContain('"127.0.0.1:${DEV_CONSOLE_PORT:-8090}:8090"');
+    // 3f: and the push site, with the profile notify.
+    expect(caddy).toContain('"127.0.0.1:${DEV_PUSH_PORT:-8091}:8091"');
   });
 
   test("infra/.env.example names the console's origin on the published port, and its development port", () => {
@@ -351,7 +386,7 @@ describe("Compose and infra/.env.example carry the console", () => {
     expect(env).toMatch(/^# DEV_CONSOLE_PORT=8090$/m);
     // The note that API_CONSOLE_ORIGIN names the same port on localhost.
     expect(commentAbove(env, "# DEV_CONSOLE_PORT=8090")).toMatch(/API_CONSOLE_ORIGIN must name the same port on localhost/);
-    expect(commentAbove(env, "# DEV_PG_PORT=55432")).toMatch(/Defaults: 55432, 56379, 3000, 8080, 8090, 51025, 58025\./);
+    expect(commentAbove(env, "# DEV_PG_PORT=55432")).toMatch(/Defaults: 55432, 56379, 3000, 8080, 8090, 51025, 58025, 8091, 2586[.]/);
   });
 
   test("the passkey comment says the staff console does not use the app's RP ID, word for word", () => {
@@ -361,17 +396,42 @@ describe("Compose and infra/.env.example carry the console", () => {
     );
   });
 
-  test("the TUNNEL_TOKEN note names both hostnames and the port each points at", () => {
+  test("the TUNNEL_TOKEN note names the three hostnames and the port each points at", () => {
     const note = commentAbove(read("infra", ".env.example"), "TUNNEL_TOKEN=");
     expect(note).toContain("http://caddy:8080");
     expect(note).toContain("http://caddy:8090");
     expect(note).toMatch(/console/i);
+    // 3f: the phones' push hostname.
+    expect(note).toContain("http://caddy:8091");
+    expect(note).toMatch(/push hostname/);
+  });
+
+  test("3f: the push network's default subnet, the one Caddy refuses, lies outside the address pools Docker draws its own networks from", () => {
+    const compose = read("infra", "compose.yml");
+    // Every default of PUSH_SUBNET in compose.yml: the network's and Caddy's, one value.
+    const defaults = compose.split("${PUSH_SUBNET:-").slice(1).map((rest) => rest.slice(0, rest.indexOf("}")));
+    expect(defaults.length).toBe(2);
+    expect(new Set(defaults).size).toBe(1);
+    const subnet = defaults[0]!;
+    // infra/.env.example names the setting with the same default.
+    expect(read("infra", ".env.example").split(String.fromCharCode(10))).toContain(`# PUSH_SUBNET=${subnet}`);
+    const [address, bits] = subnet.split("/");
+    const octets = (address ?? "").split(".").map(Number);
+    expect(octets.length).toBe(4);
+    const first = octets.reduce((sum, octet) => sum * 256 + octet, 0);
+    const last = first + 2 ** (32 - Number(bits)) - 1;
+    const range = (from: string, to: string) => [from, to].map((ip) => ip.split(".").map(Number).reduce((sum, octet) => sum * 256 + octet, 0));
+    // Docker's default pools: 172.17.0.0/16 to 172.31.0.0/16, and 192.168.0.0/16 in /20s. A fixed subnet inside them
+    // collides with a network Docker gave another project on the same host, and the stack does not start.
+    for (const [from, to] of [range("172.17.0.0", "172.31.255.255"), range("192.168.0.0", "192.168.255.255")]) {
+      expect(last < from! || first > to!, subnet).toBe(true);
+    }
   });
 });
 
 /** Nothing in the console site's block is left for a later reader to guess at: every directive is one this test knows. */
 test("the console site holds only the directives these tests check", () => {
-  const known = new Set(["@staff", "@api", "handle"]);
+  const known = new Set(["@staff", "@api", "@push", "handle"]);
   const top = (site(readCaddyfile(), CONSOLE_SITE).children ?? []).map((node: CaddyNode) => node.tokens[0]);
   expect(top.filter((name) => !known.has(name ?? ""))).toEqual([]);
 });

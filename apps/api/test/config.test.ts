@@ -80,6 +80,14 @@ describe("loadConfig", () => {
       }
     });
 
+    test("3f: NOTIFY is off by default outside production and on in production; a blank value is the default, and nothing but on and off is taken", () => {
+      expect(loadConfig(good).NOTIFY).toBe("off");
+      expect(loadConfig({ ...good, NOTIFY: " " }).NOTIFY).toBe("off");
+      expect(loadConfig({ ...good, NOTIFY: "on" }).NOTIFY).toBe("on");
+      expect(loadConfig({ ...good, NODE_ENV: "test" }).NOTIFY).toBe("off");
+      for (const refused of ["yes", "1", "ON", "Off"]) expect(() => loadConfig({ ...good, NOTIFY: refused }), refused).toThrow(/NOTIFY/);
+    });
+
     test("MODERATION_DEFER_UNPROVEN is off unless set to on; a blank value is the default and nothing else is taken", () => {
       expect(loadConfig(good).MODERATION_DEFER_UNPROVEN).toBe("off");
       expect(loadConfig({ ...good, MODERATION_DEFER_UNPROVEN: "" }).MODERATION_DEFER_UNPROVEN).toBe("off");
@@ -111,6 +119,10 @@ describe("loadConfig", () => {
     const prod = { ...good, NODE_ENV: "production", APP_ORIGIN: "https://korbat.example", TURNSTILE_SECRET_KEY: "0x4AAAAAAA-real-widget-secret" };
     test("accepts a production configuration", () => {
       expect(loadConfig(prod).NODE_ENV).toBe("production");
+      // 3f: production judges the alert channel's health unless the operator switches it off.
+      expect(loadConfig(prod).NOTIFY).toBe("on");
+      expect(loadConfig({ ...prod, NOTIFY: "" }).NOTIFY).toBe("on");
+      expect(loadConfig({ ...prod, NOTIFY: "off" }).NOTIFY).toBe("off");
     });
     test("refuses Cloudflare's test secrets", () => {
       for (const secret of ["1x0000000000000000000000000000000AA", "2x0000000000000000000000000000000AA", "3x0000000000000000000000000000000AA"]) {

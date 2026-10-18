@@ -1,0 +1,44 @@
+# ntfy, korbat's push server (3f design, section 5). Copy to infra/ntfy/server.yml, which is git-ignored and which
+# `node scripts/gen-dev-env.mjs` makes from this file when it is missing. Compose mounts it read-only: a user's line holds
+# a bcrypt hash ($2a$10$...), which Compose would blank if it were a variable, and a mounted file is not interpolated.
+#
+# This example holds one development publisher and one development phone user, each with a fixed password and token,
+# committed as examples as Turnstile's test keys are in infra/.env.example. Never use them anywhere else: notify refuses
+# the example's publisher token when NODE_ENV is production. For a real server, make each user's hash and token with
+# ntfy's own commands (`docker compose --profile notify run --rm ntfy user hash`, `ntfy token generate`: a token starts
+# with tk_ and is 32 characters long), put the publisher's token also in NTFY_PUBLISH_TOKEN in infra/.env, and leave no
+# example line here (README, On call).
+
+# Port 2586, above 1024: ntfy runs as an unprivileged user with every capability dropped.
+listen-http: ":2586"
+# Behind Caddy's push site, which sets X-Forwarded-For to the client: the address Caddy sees, or behind the tunnel (a
+# TUNNEL=on build) the CF-Connecting-IP that cloudflared sets, so this one setting holds for both. Without it ntfy would
+# count every phone as Caddy, and 30 wrong tokens from anyone would shut every phone out (3f, lab L3).
+behind-proxy: true
+proxy-forwarded-header: "X-Forwarded-For"
+
+# Private: nobody reads or writes a topic without a user who may, and nobody signs up or logs in to a web app.
+auth-file: "/var/tmp/auth.db"
+auth-default-access: "deny-all"
+enable-signup: false
+enable-login: false
+web-root: disable
+
+# The cache is how a phone gets an alert published while its connection was down: kept on ntfy's volume for 12 hours.
+cache-file: "/var/tmp/cache.db"
+cache-duration: "12h"
+# No attachments (no attachment-cache-dir), no metrics, no upstream server: nothing leaves the push network.
+
+# Users. Rights belong to users, never to tokens: the publisher may only write the two topics, and each phone may only
+# read them. Removing a user's lines and restarting ntfy revokes the user.
+auth-users:
+  - "publisher:$2a$10$izatRusTjNkJX9CpzpseIeEwutWOlV8w/VXyrYlqSDz/9WtDw6pWC:user"
+  - "phone-dev:$2a$10$/O3Rh9tpM/s89FMFRDL8G.lJDLqENxvLgBSLfSrlUihS2.qGbdQ3m:user"
+auth-access:
+  - "publisher:korbat-oncall:write-only"
+  - "publisher:korbat-all:write-only"
+  - "phone-dev:korbat-oncall:read-only"
+  - "phone-dev:korbat-all:read-only"
+auth-tokens:
+  - "publisher:tk_korbatdevpublisher00000000001:notify"
+  - "phone-dev:tk_korbatdevphone000000000000001:development phone"

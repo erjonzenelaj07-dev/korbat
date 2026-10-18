@@ -1,0 +1,28 @@
+LAB 3f, run 2026-10-09 between 15:41 and 15:54 local time.
+
+Where it ran. The brief names throwaway PostgreSQL 18 containers korbat3f-lab-<n>. The Docker engine stopped answering
+before the first lab (docker info: "request returned 500 Internal Server Error", then no answer; `wsl -l -v` showed
+the distribution docker-desktop as Stopped). It was not restarted from here, since that would start other people's
+containers. No container korbat3f-lab-<n> was created. The labs ran instead on a throwaway cluster made with the
+PostgreSQL 18.1 binaries installed on this machine (C:\Program Files\PostgreSQL\18\bin; "PostgreSQL 18.1 on
+x86_64-windows, compiled by msvc"), in a directory of the session's scratchpad, on 127.0.0.1:55441, trust
+authentication, stopped and deleted at the end. The earlier labs ran on 18.6 (alpine): the minor version and the
+platform differ, the migrations and trigger code are the same files. Session time zone: Europe/Budapest (the system's).
+
+Commands (PGBIN = the bin directory, P = -h localhost -p 55441, M = korbat-scratch/repo/packages/db/migrations at HEAD 4be080f):
+  initdb -D <scratchpad>/pg3f -U postgres -A trust -E UTF8 --locale=C ; pg_ctl -D ... -o "-p 55441 -c listen_addresses=localhost" start
+  psql $P -U postgres -f 00-roles.sql ; psql $P -U postgres -d lab -c "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+  for f in M/*.sql (0000 to 0016, name order): psql $P -U korbat_migrate -d lab -v ON_ERROR_STOP=1 -q -1 -f $f     -> 39 tables
+  python make_proto.py M/0015_greedy_zuras.sql M/0016_decisions_and_ledger.sql 20-tables.sql > 20-proto.sql
+  sh reset.sh                                  (lab3f from the template lab: 20-proto.sql with -1, 21-helpers.sql, 22-seed.sql)
+  A: out-A.txt                                 (the prototype's own run, inside reset.sh)
+  C: psql $P -U korbat_api -d lab3f -X -q -f c-derivation.sql      > out-C.txt   (on a fresh reset)
+  E: sh reset.sh ; psql $P -U korbat_api -d lab3f -X -q -f e-hold.sql > out-E.txt
+  B, D: psql -U korbat_api -f bd-clock-effect.sql ; psql -U postgres -f d-waivers.sql   > out-BD.txt (same database as E)
+  F: CREATE DATABASE labf TEMPLATE lab3f ; psql -U postgres -d lab3f -f f1-lost-work.sql (writes tail.jsonl) ; psql -U postgres -d labf -f f2-restore.sql > out-F.txt
+  B2: psql -U korbat_api -d lab3f -f b2-clock.sql ; one query on labf   > out-B2.txt
+Files: 20-tables.sql and make_proto.py are the prototype's source; 20-proto.sql is generated; 21-helpers.sql stands in
+for the API's statements (SECURITY INVOKER, called as korbat_api); out-*.txt are the raw outputs.
+Not measured: lock contention (one session at a time); the API's TypeScript readers (postAccess and serve are mirrored
+in SQL by lab_post_access and one expression); audit-verify against a forged confirmation; anything of notify, ntfy,
+Caddy or a phone; 3e's migrations 0019 to 0023 and 3c's 0017 and 0018, which are not built (the prototype sits on 0016).

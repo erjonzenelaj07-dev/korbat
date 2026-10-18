@@ -6,13 +6,16 @@
  * - `change-me-<word>`          -> 48 random hex characters (passwords)
  * - `change-me-key-<name>`      -> 32 random bytes, base64 (HMAC keys)
  * - `v1:change-me-key-<name>`   -> `v1:` + 32 random bytes, base64 (versioned encryption keys)
- * - `change-me-api|auth|migrate|redis` inside apps/api/.env -> the matching password from infra/.env
+ * - `change-me-api|auth|migrate|notify|redis` inside apps/api/.env -> the matching password from infra/.env
  * - Keys used by both the API in Docker (`API_<NAME>` in infra/.env) and the API on the host
  *   (`<NAME>` in apps/api/.env) are generated once and copied to the other file, so both processes
  *   hash, sign and encrypt with the same keys.
  *
  * A value that already exists in a .env file is never changed. Keys that are new in an example
  * are appended. Values are never printed.
+ *
+ * It also makes infra/ntfy/server.yml (3f) from its committed example when it is missing: the push server's users and
+ * tokens, the example's development ones until a real server's are set by hand.
  *
  * It also writes apps/api/.env.test, the environment of the integration tests: apps/api/.env with
  * the database URLs pointing at `<database>_test` and the Redis URL at database 15. That file is
@@ -25,7 +28,7 @@
  * Usage: node scripts/gen-dev-env.mjs
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,7 +55,7 @@ function generate(name, value, infra, shared) {
   if (value.startsWith("v1:change-me-key-")) return `v1:${randomBytes(32).toString("base64")}`;
   if (value.startsWith("change-me-key-")) return randomBytes(32).toString("base64");
   return value
-    .replace(/change-me-(api|auth|migrate|redis)\b/g, (match, role) => (role === "redis" ? infra.get("REDIS_PASSWORD") : infra.get(`KORBAT_${role.toUpperCase()}_DB_PASSWORD`)) ?? match)
+    .replace(/change-me-(api|auth|migrate|notify|redis)(?![A-Za-z0-9_])/g, (match, role) => (role === "redis" ? infra.get("REDIS_PASSWORD") : infra.get(`KORBAT_${role.toUpperCase()}_DB_PASSWORD`)) ?? match)
     .replace(/change-me-[a-z]+/g, () => randomBytes(24).toString("hex"));
 }
 
@@ -125,6 +128,12 @@ function addRedisPassword(relTarget, password) {
 addRedisPassword("apps/api/.env", infra.get("REDIS_PASSWORD"));
 
 complete("apps/app/.env.example", "apps/app/.env", new Map(), new Map());
+
+// 3f: ntfy's configuration, a mounted file rather than variables (its password hashes hold $), from the example.
+if (!existsSync(resolve(root, "infra/ntfy/server.yml"))) {
+  copyFileSync(resolve(root, "infra/ntfy/server.yml.example"), resolve(root, "infra/ntfy/server.yml"));
+  console.log("infra/ntfy/server.yml: created from its example (development users and tokens)");
+}
 complete("apps/worker/.env.example", "apps/worker/.env", new Map(), new Map());
 
 /** Rewrites apps/api/.env.test from apps/api/.env. Only where the data lives changes; every key stays the same. */
@@ -135,7 +144,8 @@ function deriveTestEnv() {
       const m = LINE.exec(line);
       if (!m) return line;
       const [, name, value] = m;
-      if (/^DATABASE_URL_(API|AUTH|MIGRATE)$/.test(name)) {
+      // 3f: the watcher's role too, whose URL the integration tests insert messages through.
+      if (/^DATABASE_URL_(API|AUTH|MIGRATE|NOTIFY)$/.test(name)) {
         const url = new URL(value);
         if (!url.pathname.endsWith("_test")) url.pathname = `${url.pathname}_test`;
         return `${name}=${url.href}`;

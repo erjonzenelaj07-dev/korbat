@@ -11,6 +11,7 @@ import {
   AuditEntry,
   AuditPage,
   CaseView,
+  ContactPage,
   FindingResponse,
   QueuePage,
   RevealResponse,
@@ -298,6 +299,9 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/cases/:case/texts",
         "GET /api/staff/cases/:case/texts",
         "POST /api/staff/items/:item/reveal",
+        // 3f: the authorities' contact point.
+        "GET /api/staff/contact",
+        "POST /api/staff/contact/:message/close",
       ].sort(),
     );
   });
@@ -327,6 +331,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/cases/:case/texts",
         "POST /api/staff/cases/:case/snapshots",
         "POST /api/staff/findings",
+        // 3f: closing a message at the contact point restricts nothing and tells nobody (design, section 7.3).
+        "POST /api/staff/contact/:message/close",
       ].sort(),
     );
     // Every route stands behind the staff session but enrolment and sign-in, whose credential is the link or the key.
@@ -472,6 +478,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/cases/:case/decisions",
       "POST /api/staff/cases/:case/snapshots",
       "POST /api/staff/cases/:case/texts",
+      // 3f: a message at the contact point.
+      "POST /api/staff/contact/:message/close",
       "POST /api/staff/decisions/:decision/review",
       "POST /api/staff/items/:item/reveal",
     ]);
@@ -494,6 +502,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       RevealResponse,
       AppealsPage,
       StandingLists,
+      ContactPage,
     };
     const members = Object.entries(answers).flatMap(([name, schema]) => memberNames(schema).map((member) => `${name}.${member}`));
     // The walk read every member of every answer: none is of a kind it has not been taught, behind which a name could hide.
@@ -522,7 +531,10 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
     expect(members).toContain("StandingLists.terminationsWaiting.items.handle");
     expect(members).toContain("StaffOverview.repliesWaiting.count");
     // People are handles and a source is a summary: no answer has a member for a reporter, a notifier or a contact.
-    expect(members.filter((member) => /[.](reporter|notifier|contact)(Id)?$/i.test(member))).toEqual([]);
+    // 3f's StaffOverview.contact is the authorities' contact point's counts, not a person's contact.
+    expect(members.filter((member) => member !== "StaffOverview.contact" && /[.](reporter|notifier|contact)(Id)?$/i.test(member))).toEqual([]);
+    expect(members).toContain("ContactPage.items.handledBy");
+    expect(members.filter((member) => member.startsWith("ContactPage.") && /sender|subject|from|address|body/i.test(member))).toEqual([]);
     expect(memberNames(z.object({ list: z.array(z.object({ inner: z.object({ email: z.string() }).nullable() })) }))).toEqual(["list", "list.inner", "list.inner.email"]);
     // The browser's coarse label and the actor's public handle are what the console shows of a session and a row.
     expect(members).toContain("StaffSession.browser");

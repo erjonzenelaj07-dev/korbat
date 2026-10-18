@@ -8,7 +8,7 @@
  * only through the interfaces they export, never names an image row (the media module locks and holds a case's images for
  * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
-import type { AppealsPage, CaseView, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse, StandingLists } from "@korbat/contracts";
+import type { AppealsPage, CaseView, ContactCloseRequest, ContactPage, ContactQuery, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse, StandingLists } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
@@ -19,6 +19,7 @@ import type { JobLock } from "../lib/jobs";
 import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
+import { createAlertTick } from "./alerts";
 import { appealsList, review, reviewedCase } from "./appeals";
 import { authorFacts } from "./author";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
@@ -26,6 +27,7 @@ import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
 import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
+import { closeContact, contactPage } from "./orders";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { standingFor, standingLists, takeDownDue, type TakeDown } from "./standing";
@@ -85,6 +87,13 @@ export interface ModerationForStaff {
    * identity read only after the commit. "ended" and "late" as for a decision.
    */
   reveal(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<RevealOutcome>;
+  /** 3f: a page of the messages at the authorities' contact point, newest first, with no sender and no subject. */
+  contact(query: ContactQuery): Promise<ContactPage>;
+  /**
+   * 3f: closes a message as what it turned out to be, in one transaction with its audit row; message_handled when it
+   * has a disposition already, not_found for an unknown id. No key: closing restricts nothing and tells nobody.
+   */
+  closeContact(session: ActiveStaffSession, messageId: string, request: ContactCloseRequest, ctx: { requestId: string }): Promise<void>;
 }
 
 /**
@@ -168,6 +177,8 @@ export function createModeration(options: CreateModerationOptions) {
     saveText: (session, caseId, request) => saveText(deps, session, caseId, request),
     texts: (session, caseId) => ownTexts(deps, session, caseId),
     reveal: (session, confirmed, ctx) => reveal(deps, session, confirmed, ctx),
+    contact: (query) => contactPage(deps, query),
+    closeContact: (session, messageId, request, ctx) => closeContact(deps, session, messageId, request, ctx),
   };
   const forSocial: ModerationForSocial = {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),
@@ -204,19 +215,26 @@ export function createModeration(options: CreateModerationOptions) {
     settle: () => deps.background.settle(),
     /**
      * Starts the module's background work under the jobs' shared lock, on one API instance at a time: the dispatch job
-     * always, and the retention job only while MODERATION_RETENTION is on. Each one's first round comes ten minutes after
-     * the start. While the switch is off nothing is erased, released or deleted, and the warning is logged at every start,
-     * so a switch left off after a restore is seen. Answers the function that stops both; a round in flight finishes.
+     * and 3f's alert tick always, and the retention job only while MODERATION_RETENTION is on. The dispatch and retention
+     * jobs' first rounds come ten minutes after the start, the tick's 30 seconds after it. While the switch is off nothing
+     * is erased, released or deleted, and the warning is logged at every start, so a switch left off after a restore is
+     * seen; the tick runs all the same, since an alert is never about retention. Answers the function that stops them
+     * all; a round in flight finishes.
      */
     startJobs: (lock: JobLock): (() => void) => {
       const stopDispatch = createDispatchJob(deps, lock).start();
+      const stopTick = createAlertTick(deps, lock).start();
       if (deps.config.MODERATION_RETENTION !== "on") {
         deps.log.warn(RETENTION_OFF_WARNING);
-        return stopDispatch;
+        return () => {
+          stopDispatch();
+          stopTick();
+        };
       }
       const stopRetention = createRetentionJob(deps, lock).start();
       return () => {
         stopDispatch();
+        stopTick();
         stopRetention();
       };
     },

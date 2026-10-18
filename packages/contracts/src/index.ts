@@ -33,6 +33,8 @@ export * from "./explore";
 export * from "./media";
 // Evaluated before ./staff, and importing nothing from it: staff.ts can read this module's constants while it loads.
 export * from "./moderation";
+// 3f: imports nothing from the other modules, so moderation.ts can read its constants while it loads.
+export * from "./orders";
 export * from "./passkeys";
 export * from "./social";
 export * from "./staff";

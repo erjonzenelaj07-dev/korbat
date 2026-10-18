@@ -3,7 +3,8 @@ import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
 
 const ENV_FILE = fileURLToPath(new URL("../../.env.test", import.meta.url));
-const DATABASE_KEYS = ["DATABASE_URL_API", "DATABASE_URL_AUTH", "DATABASE_URL_MIGRATE"] as const;
+/** 3f: the watcher's role is the fourth, so that no test of the watcher can write into the development database. */
+const DATABASE_KEYS = ["DATABASE_URL_API", "DATABASE_URL_AUTH", "DATABASE_URL_MIGRATE", "DATABASE_URL_NOTIFY"] as const;
 
 /** The Redis database the integration tests own. Development uses database 0. */
 export const TEST_REDIS_DATABASE = 15;

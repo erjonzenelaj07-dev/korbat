@@ -2,6 +2,7 @@ import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 import { MediaId } from "./media";
+import { ALERT_CHANNEL_STATES } from "./orders";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -490,6 +491,8 @@ export const ModerationErrorCode = z.enum([
   "strike_mismatch",
   "standing_conflict",
   "ground_not_established",
+  // 3f (design, section 10.6): a message at the contact point that already has its disposition.
+  "message_handled",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -2076,6 +2079,15 @@ export const StaffOverview = z.object({
    */
   repliesWaiting: z.object({ count: Count, oldestAt: z.iso.datetime().nullable() }),
   strikeAccounts: Count,
+  /**
+   * 3f (design, section 10.2): the messages at the authorities' contact point without a disposition, stale ones included,
+   * with the oldest one's time of receipt and the earliest deadline of a message nobody handled, also once it has passed;
+   * and the alert channel's state: `down` while the watcher's beat, or a push still owed, is older than
+   * ORDER_RULES.channelDownMinutes, `mailbox` while the watcher beats and cannot read the mailbox, `off` with NOTIFY=off,
+   * each with the time since when (null while it is ok or off).
+   */
+  contact: z.object({ open: Count, oldestAt: z.iso.datetime().nullable(), dueAt: z.iso.datetime().nullable() }),
+  alerts: z.object({ channel: z.enum(ALERT_CHANNEL_STATES), since: z.iso.datetime().nullable() }),
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
 

@@ -13,3 +13,5 @@ infra/data/
 web-build/
 apps/app/dist/
 infra/.env
+# 3f: ntfy's users, rights and tokens, made from infra/ntfy/server.yml.example
+infra/ntfy/server.yml

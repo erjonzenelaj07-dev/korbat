@@ -372,6 +372,7 @@ describe("moderation error codes", () => {
       "strike_mismatch",
       "standing_conflict",
       "ground_not_established",
+      "message_handled",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

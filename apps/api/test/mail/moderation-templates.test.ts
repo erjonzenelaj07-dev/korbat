@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALREADY_NOT_SHOWN, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, outcomeWords } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, ALREADY_NOT_SHOWN, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, isTimeFact, outcomeWords, renderAlert, type AlertKind } from "@korbat/contracts";
 import { noticeTime } from "../../src/auth/flows/notify";
 import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } from "../../src/mail/mailer";
 import { MemoryMailer } from "../../src/mail/memory";
@@ -23,7 +23,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 41 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4 and the two of its Task 5", () => {
+  test("holds 46 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5 and the five staff mails of 3f's Task 1", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -33,11 +33,12 @@ describe("the closed union of templates", () => {
       "suspension_started_at_once", "suspension_lifted",
       "suspension_announced", "reply_answered", "termination_final",
       "reporting_warned", "reporting_restricted",
+      "contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(41);
+    expect(new Set(names).size).toBe(46);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(41);
+    expect(Object.keys(all)).toHaveLength(46);
   });
 });
 
@@ -131,17 +132,17 @@ describe("the staff alerts of deciding", () => {
       `Lane 1: 1 case waiting longer than 24 hours, since ${TIME}.`,
       `Lane 2: 12 cases waiting longer than 7 days; the oldest since ${TIME}.`,
       "3 cases have held a measure taken while deciding for more than 24 hours; their authors cannot appeal until the case is decided.",
-      "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.",
+      "Open the staff console. The same reminder went to every staff phone.",
       LAST_STAFF,
     ]);
     linkless(r);
     // Only the lanes that have such a case, and the measures' line only when there is one.
     const one = renderTemplate("moderation_waiting", { lane2Count: "1", lane2Oldest: TIME });
-    expect(paragraphs(one.text)).toEqual([`Lane 2: 1 case waiting longer than 7 days, since ${TIME}.`, "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.", LAST_STAFF]);
+    expect(paragraphs(one.text)).toEqual([`Lane 2: 1 case waiting longer than 7 days, since ${TIME}.`, "Open the staff console. The same reminder went to every staff phone.", LAST_STAFF]);
     const held = renderTemplate("moderation_waiting", { interimCount: "1" });
     expect(paragraphs(held.text)).toEqual([
       "1 case has held a measure taken while deciding for more than 24 hours; its author cannot appeal until the case is decided.",
-      "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.",
+      "Open the staff console. The same reminder went to every staff phone.",
       LAST_STAFF,
     ]);
     // 3e: the replies to a suspension or a termination unanswered for longer than korbat's aim, after the lanes and the measures.
@@ -149,7 +150,7 @@ describe("the staff alerts of deciding", () => {
     expect(paragraphs(replies.text)).toEqual([
       `Lane 1: 1 case waiting longer than 24 hours, since ${TIME}.`,
       `2 replies to a suspension or termination have waited more than ${REPLY_AIM_HOURS} hours, the oldest since ${TIME}. A reply sent before the start holds its suspension until someone answers.`,
-      "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder.",
+      "Open the staff console. The same reminder went to every staff phone.",
       LAST_STAFF,
     ]);
     linkless(replies);
@@ -479,5 +480,44 @@ describe("3e Task 5: the statement mails of a warning about reporting and of a r
     expect(r.text).not.toMatch(/https?:|www[.]/);
     expect(() => renderTemplate("reporting_restricted", { endsAt: "2026-11-03 09:30 UTC", statement })).toThrow(/days/);
     expect(() => renderTemplate("reporting_restricted", { days: "30", statement })).toThrow(/endsAt/);
+  });
+});
+
+describe("3f: the staff mails whose words are their push's (W.4)", () => {
+  const NOW = "2026-10-16T09:00:00.000Z";
+  /** A kind's mail as the alert tick sends it: the row's facts as text, and the time it is sent, for the day of its times. */
+  const mail = (template: TemplateName, facts: Record<string, string>) => renderTemplate(template as Parameters<typeof renderTemplate>[0], { ...facts, now: NOW });
+
+  test("each is the kind's title after korbat:, then its sentence and its line of what to do from ALERT_TEXTS, and the staff mails' last sentence", () => {
+    const cases: [TemplateName, AlertKind, Record<string, string>][] = [
+      ["contact_mail", "contact_mail", { receivedAt: "2026-10-16T08:05:00.000Z", dueAt: "2026-10-16T09:05:00.000Z" }],
+      ["contact_mail_escalated", "contact_mail_escalated", { receivedAt: "2026-10-16T08:05:00.000Z", dueAt: "2026-10-16T09:05:00.000Z" }],
+      ["order_due", "order_due", { dueAt: "2026-10-16T09:05:00.000Z", minutesLeft: "15" }],
+      ["mailbox_unreachable", "mailbox_unreachable", { since: "2026-10-15T23:00:00.000Z" }],
+      ["alert_channel_down", "alert_channel_down", { since: "2026-10-16T08:57:00.000Z" }],
+    ];
+    for (const [template, kind, facts] of cases) {
+      const r = mail(template, facts);
+      const counted = Object.fromEntries(Object.entries(facts).map(([name, value]) => [name, isTimeFact(name) ? value : Number(value)]));
+      const text = renderAlert(kind, counted, new Date(NOW));
+      expect(r.subject, template).toBe(`korbat: ${text.title}`);
+      expect(paragraphs(r.text), template).toEqual([text.sentence, text.todo, LAST_STAFF]);
+      linkless(r);
+    }
+    expect(paragraphs(mail("contact_mail", { receivedAt: "2026-10-16T08:05:00.000Z", dueAt: "2026-10-16T09:05:00.000Z" }).text)[0]).toBe(
+      "Mail at the authorities' contact point, received 08:05 UTC. If it is a removal order it is due 09:05 UTC.",
+    );
+    expect(mail("order_due", { dueAt: "2026-10-16T09:05:00.000Z", minutesLeft: "0" }).subject).toBe("korbat: 0 minutes left");
+  });
+
+  test("they carry counts and UTC times only: a fact of another name, a time that is no time and a missing one are refused, and no handle or address is printed", () => {
+    expect(() => mail("contact_mail", { receivedAt: "2026-10-16T08:05:00.000Z" })).toThrow(/dueAt/);
+    expect(() => mail("mailbox_unreachable", { since: "yesterday" })).toThrow(/since/);
+    expect(() => mail("alert_channel_down", { since: "2026-10-16T08:57:00.000Z", handle: "mod_anna" })).toThrow(/handle/);
+    expect(() => renderTemplate("alert_channel_down", { since: "2026-10-16T08:57:00.000Z" })).toThrow(/now/);
+    for (const template of ["contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down"] as const) {
+      const facts = Object.fromEntries(ALERT_KINDS[template].facts.map((name) => [name, isTimeFact(name) ? "2026-10-16T08:00:00.000Z" : "3"]));
+      expect(mail(template, facts).text, template).not.toMatch(/@/);
+    }
   });
 });

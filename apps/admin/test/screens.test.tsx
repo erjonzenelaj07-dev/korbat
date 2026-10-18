@@ -78,6 +78,9 @@ const QUIET: StaffOverview = {
   protectionLifted: { total: 0, items: [] },
   sealsDeclined: { total: 0, items: [] },
   interimSeals: { total: 0, items: [] },
+  // 3f: nothing at the contact point, and the alert channel working.
+  contact: { open: 0, oldestAt: null, dueAt: null },
+  alerts: { channel: "ok", since: null },
   repliesWaiting: { count: 0, oldestAt: null },
   strikeAccounts: 0,
 };

@@ -131,8 +131,10 @@ export async function afterDecision(deps: Pick<ModerationDeps, "apiDb" | "auth" 
       const dismissed = statement.kind === "final" && decision.suspect && !statement.measures.some((measure) => measure.kind === "seal_media");
       if (unsealed || dismissed) {
         const handle = (await handleOf(deps.apiDb, staffId)) ?? "unknown";
-        const accepted = await deps.auth.mailStaff({ template: "moderation_csam_lifted", handle, at: new Date(statement.decidedAt), what: unsealed ? "unsealed" : "dismissed" });
-        if (accepted === 0) deps.log.error({ decisionId }, "moderation: no staff account was mailed about a decision that lifted the protection of reported images; the home screen lists it");
+        // 3f (design, section 7.2): the same way as the throttled alerts, without a key: a push to every staff phone, then
+        // the mail as before.
+        const sent = await staffAlert(deps, null, 0, { template: "moderation_csam_lifted", handle, at: new Date(statement.decidedAt), what: unsealed ? "unsealed" : "dismissed" });
+        if (sent === "unsent") deps.log.error({ decisionId }, "moderation: no staff account was alerted to a decision that lifted the protection of reported images; the home screen lists it");
       }
     }
   } catch (err) {

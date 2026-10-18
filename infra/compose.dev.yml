@@ -11,10 +11,21 @@ services:
   caddy:
     # The web app, and the staff console: open the console at http://localhost:<port>, never 127.0.0.1, and give
     # API_CONSOLE_ORIGIN the same port.
-    ports: ["127.0.0.1:${DEV_CADDY_PORT:-8080}:8080", "127.0.0.1:${DEV_CONSOLE_PORT:-8090}:8090"]
+    # And, with the profile notify, the push site a test client subscribes through (3f).
+    ports: ["127.0.0.1:${DEV_CADDY_PORT:-8080}:8080", "127.0.0.1:${DEV_CONSOLE_PORT:-8090}:8090", "127.0.0.1:${DEV_PUSH_PORT:-8091}:8091"]
   # Development mail catcher: SMTP on 51025, web UI and HTTP API on 58025. Never used in production.
   mailpit:
     image: axllent/mailpit:v1.31.2@sha256:74d609a42ec279aa63c6b4622a6fa9b5408d1ad5b1d76a1c4be40a265ce0863d
     restart: unless-stopped
     ports: ["127.0.0.1:${DEV_SMTP_PORT:-51025}:1025", "127.0.0.1:${DEV_MAILPIT_PORT:-58025}:8025"]
     networks: [data]
+  # 3f, with the profile notify: ntfy's own port on this machine, for `pnpm --filter @korbat/api notify:dev` alone, which
+  # runs the watcher on the host against scripts/dev-mailbox.mjs and publishes here (NOTIFY_PUSH_URL). The push network
+  # is internal and publishes no port, so in development ntfy also joins a network of its own that can. Never in
+  # production: the push site proxies only the topics' subscriptions.
+  ntfy:
+    ports: ["127.0.0.1:${DEV_NTFY_PORT:-2586}:2586"]
+    networks: [push, ntfy-dev]
+
+networks:
+  ntfy-dev:

@@ -35,3 +35,14 @@ export function dateTime(iso: string): string {
 export function dateTimeSeconds(iso: string): string {
   return `${dateTime(iso)}:${two(new Date(iso).getSeconds())}`;
 }
+
+/**
+ * 3f (design, section 8.1): every time of authorities' orders is the database's instant, printed in UTC first and then in
+ * the browser's own zone: "2026-10-16 02:00 UTC (04:00 your time)", the local day too when it is another.
+ */
+export function bothTimes(iso: string): string {
+  const d = new Date(iso);
+  const utcDay = `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())}`;
+  const localDay = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+  return `${utcDay} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())} UTC (${localDay === utcDay ? "" : `${localDay} `}${clockTime(iso)} your time)`;
+}

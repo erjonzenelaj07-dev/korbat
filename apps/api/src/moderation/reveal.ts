@@ -1,6 +1,7 @@
 import { IdentityRevealedParams, type RevealResponse } from "@korbat/contracts";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isBoundReached, isDeadlock } from "../lib/lock-bounds";
+import { staffAlert } from "./alerts";
 import { secondsToUtcMidnight } from "./cases";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
 import { appendConfirmedAudit, dailyLimits, handleOf, insertAccess, raisedMessage, reporterHandle, revealItem, revealReason, revealsToday, staffCaseConflict } from "./repo";
@@ -108,7 +109,9 @@ export async function reveal(deps: ModerationDeps, session: ActiveStaffSession, 
   // The reveal is on the record. Every staff account is told, whatever becomes of the read below.
   deps.background.start(async () => {
     const handle = (await handleOf(deps.apiDb, session.userId)) ?? "unknown";
-    await deps.auth.mailStaff({ template: "moderation_reveal", handle, at: done.at, count: done.count, limit: limits.reveals });
+    // 3f (design, section 7.2): the same way as the throttled alerts, without a key: a push to every staff phone, then the
+    // mail as before.
+    await staffAlert(deps, null, 0, { template: "moderation_reveal", handle, at: done.at, count: done.count, limit: limits.reveals });
   });
 
   if (signedOut) return { handle: null, name: item.contactId === null ? null : await deps.auth.notifierName(item.contactId) };

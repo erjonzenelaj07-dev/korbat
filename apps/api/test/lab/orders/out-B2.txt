@@ -1,0 +1,6 @@
+B2 Annex III now, then a clarification effective now: a fresh hour from the clarification, not the rest of the old one
+annex3|t|
+
+clarified|f|01:00:00|t|60
+B3 the import kept the times of the lost order (labf against the tail)
+opened_at equals the tail|t|received_at equals|t

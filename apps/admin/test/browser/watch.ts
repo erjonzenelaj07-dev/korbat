@@ -137,7 +137,7 @@ const INSPECT_SCRIPT = `
   }
   for (const link of root.querySelectorAll("a")) {
     const href = link.getAttribute("href");
-    if (href !== "/" && href !== "/audit" && href !== "/signin" && href !== "/queue" && href !== "/appeals" && href !== "/standing" && !casePath.test(String(href))) out.push("a link to " + String(href));
+    if (href !== "/" && href !== "/audit" && href !== "/signin" && href !== "/queue" && href !== "/appeals" && href !== "/standing" && href !== "/contact" && !casePath.test(String(href))) out.push("a link to " + String(href));
   }
   for (const form of root.querySelectorAll("form")) {
     if (form.hasAttribute("action")) out.push("a form with an action: " + String(form.getAttribute("action")));
@@ -154,4 +154,44 @@ export function inspect(page: Page): Promise<string[]> {
 /** The text of every element holding a string a person wrote (UserText's <bdi>) and of every <code> (actions, targets, hashes). */
 export function userTexts(page: Page): Promise<string[]> {
   return page.evaluate(`[...document.querySelectorAll("bdi, code")].map((element) => element.textContent ?? "")`) as Promise<string[]>;
+}
+
+/**
+ * 3f (design, sections 8.1 and 8.10): the two rules of a phone's width, which every run at 360 by 740 px is held to. A
+ * horizontal scroll bar, and a control smaller than 44 px in either direction. A control is an a, button, input,
+ * select, textarea or summary element that is shown; a tick box or a radio button is measured together with its label.
+ * Plain text, evaluated in the page, for the reason INIT_SCRIPT is.
+ */
+const PHONE_SCRIPT = `
+(() => {
+  const out = [];
+  const doc = document.documentElement;
+  if (doc.scrollWidth > doc.clientWidth) out.push("a horizontal scroll bar: the page is " + doc.scrollWidth + " px wide in " + doc.clientWidth);
+  const shown = (element) => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  };
+  for (const element of document.querySelectorAll("a, button, input, select, textarea, summary")) {
+    if (!shown(element)) continue;
+    let box = element.getBoundingClientRect();
+    if (element.tagName === "INPUT" && (element.type === "radio" || element.type === "checkbox")) {
+      const label = element.closest("label") || (element.id ? document.querySelector("label[for='" + element.id + "']") : null);
+      if (label) {
+        const other = label.getBoundingClientRect();
+        box = { width: Math.max(box.right, other.right) - Math.min(box.left, other.left), height: Math.max(box.bottom, other.bottom) - Math.min(box.top, other.top) };
+      }
+    }
+    if (box.width < 44 || box.height < 44) {
+      const name = (element.textContent || element.getAttribute("name") || element.getAttribute("aria-label") || "").trim().slice(0, 40);
+      out.push("a control smaller than 44 px: <" + element.tagName.toLowerCase() + "> " + name + " (" + Math.round(box.width) + " by " + Math.round(box.height) + ")");
+    }
+  }
+  return out;
+})()
+`;
+
+/** What the page breaks of the phone's two rules, at the viewport it is shown in. */
+export function phoneProblems(page: Page): Promise<string[]> {
+  return page.evaluate(PHONE_SCRIPT) as Promise<string[]>;
 }

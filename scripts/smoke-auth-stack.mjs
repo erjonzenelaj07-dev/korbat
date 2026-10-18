@@ -34,6 +34,11 @@
  *     post's link, undecided, and the contact as given; another token finds no notice. The receipt arrives in
  *     Mailpit under the reference, and the token in its link opens the same page with the address not yet
  *     confirmed. Nothing here decides the case: a decision needs a staff key.
+ * 16. With --push (3f, the stack under the Compose profile notify): the phones' push site answers 404 itself to ntfy's
+ *     /v1/config, /v1/stats and /v1/account and to a publish, and hands a topic's subscription to ntfy, which refuses
+ *     it without a user (403); from inside the ntfy container, on the push network, the app's and the console's sites
+ *     answer 403. The contact point's routes (/api/staff/contact) stand behind the console's two doors like the case
+ *     routes, in step 2.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -69,8 +74,10 @@ const consoleBase = option("console");
 const mailpit = option("mailpit");
 const terms = option("terms");
 const worstCase = options.includes("--worst-case");
+// 3f: the phones' push site (Caddy's third site), only while the stack runs with the Compose profile notify.
+const pushBase = option("push");
 if (!base || !consoleBase || !mailpit || !terms || compose.length === 0) {
-  console.error("usage: node scripts/smoke-auth-stack.mjs --base <url> --console <url> --mailpit <url> --terms <version> [--worst-case] -- <docker compose command>");
+  console.error("usage: node scripts/smoke-auth-stack.mjs --base <url> --console <url> --mailpit <url> --terms <version> [--worst-case] [--push <url>] -- <docker compose command>");
   process.exit(2);
 }
 function stop(message) {
@@ -302,7 +309,8 @@ async function consoleSite() {
   // The console's case routes (3c design, section 12) stand behind the same two doors: the overview, the queue, a case
   // and the appeals, and since account sanctions (3e design, section 12.2) the Standing screen's lists. The staff session
   // is asked for before anything of the request is read, so a case that does not exist answers like the others.
-  const caseRoutes = ["/api/staff/overview", "/api/staff/queue", `/api/staff/cases/${randomUUID()}`, "/api/staff/appeals", "/api/staff/standing"];
+  // 3f: the contact point's list too.
+  const caseRoutes = ["/api/staff/overview", "/api/staff/queue", `/api/staff/cases/${randomUUID()}`, "/api/staff/appeals", "/api/staff/standing", "/api/staff/contact"];
   const answers = (list) => list.map((answer, index) => `${caseRoutes[index]}: ${answer.summary}`).join("; ");
   const casesOnApp = await Promise.all(caseRoutes.map((path) => getJson(`${base}${path}`)));
   check(
@@ -320,6 +328,29 @@ async function consoleSite() {
   // routes are answered there by Caddy, never by the API.
   const appRoute = await getJson(`${consoleBase}/api/moderation/cases`);
   check("the console's site refuses the app's moderation routes itself, with 404", appRoute.status === 404 && appRoute.body?.error?.code === "not_found" && appRoute.body.error.requestId === undefined, appRoute.summary);
+}
+
+/**
+ * The phones' push site (3f design, sections 5 and 12.2, with --push). Caddy hands ntfy only the two topics'
+ * subscriptions: every path of ntfy's own API answers Caddy's 404 (ntfy's /v1/config and /v1/stats answer any caller
+ * otherwise), and so does a publish; a subscription without a user reaches ntfy, whose deny-all answers 403. And from
+ * inside the ntfy container, on the push network, the app's and the console's sites refuse the request with 403: until the
+ * push site, only cloudflared could reach Caddy.
+ */
+async function pushSite() {
+  for (const path of ["/v1/config", "/v1/stats", "/v1/account", "/v1/health", "/", "/korbat-all"]) {
+    const res = await fetch(`${pushBase}${path}`);
+    check(`the push site answers ${path} with 404 itself`, res.status === 404 && res.headers.get("server") === null, `HTTP ${res.status}`);
+  }
+  const publish = await fetch(`${pushBase}/korbat-all`, { method: "POST", body: "a publish from outside" });
+  check("the push site refuses a publish with 404", publish.status === 404, `HTTP ${publish.status}`);
+  const subscribe = await fetch(`${pushBase}/korbat-oncall,korbat-all/json?poll=1`);
+  const refusal = await subscribe.json().catch(() => null);
+  check("a subscription without a user reaches ntfy, which refuses it", subscribe.status === 403 && refusal?.code === 40301, `HTTP ${subscribe.status} ${JSON.stringify(refusal)}`);
+  for (const [site, port] of [["app's", 8080], ["console's", 8090]]) {
+    const answer = inside("ntfy", `wget -q -S -O /dev/null http://caddy:${port}/ 2>&1; true`);
+    check(`from the push network the ${site} site answers 403`, / 403 /.test(answer), answer.split(String.fromCharCode(10))[0]);
+  }
 }
 
 /**
@@ -534,6 +565,7 @@ async function main() {
   check("web CSP allows the Turnstile widget", csp.includes("script-src 'self' https://challenges.cloudflare.com") && csp.includes("frame-src https://challenges.cloudflare.com"));
 
   await consoleSite();
+  if (pushBase) await pushSite();
   await explore();
 
   const unknown = await withTurnstile("/api/auth/password/signin", { email: `nobody-${randomUUID()}@korbat.local`, password: "not a real password", turnstileToken: TURNSTILE_TOKEN, deviceId, platform: "ios" });

@@ -1,0 +1,15 @@
+E1 300,000 random instants of 2026 to 2030 and the hours around every clock change, in eight zones: hold_end minus the end of the same weekday six weeks later in that zone
+Asia/Nicosia|314408|0|03:00:00|1 day 04:00:00
+Atlantic/Azores|314408|0|00:00:00|1 day 01:00:00
+Europe/Athens|314408|0|03:00:00|1 day 04:00:00
+Europe/Berlin|314408|0|02:00:00|1 day 03:00:00
+Europe/Dublin|314408|0|01:00:00|1 day 02:00:00
+Europe/Helsinki|314408|0|03:00:00|1 day 04:00:00
+Europe/Lisbon|314408|0|01:00:00|1 day 02:00:00
+Europe/Paris|314408|0|02:00:00|1 day 03:00:00
+E2 the hold from the instant itself: shortest and longest; and an extension adds exactly 42 days
+42 days 04:00:00.00337|43 days 03:59:59.531936|42 days|42 days
+E3 the same value in three session time zones; and against the plain "plus 42 days" of the earlier lab
+UTC|2026-11-19 01:00:00|2026-11-17 21:30:00
+Berlin|2026-11-19 01:00:00|2026-11-17 22:30:00
+New York|2026-11-19 01:00:00|2026-11-17 22:30:00

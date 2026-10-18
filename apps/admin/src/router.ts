@@ -5,7 +5,7 @@
  */
 
 /** The pages the console links to by name. Such a link is only ever one of these constants, never an address built from data. */
-export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing";
+export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact";
 
 /** A uuid in the one spelling PostgreSQL writes: the only form an id takes in an address the console builds. */
 const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -32,6 +32,8 @@ export type Route =
   | { name: "queue" }
   | { name: "appeals" }
   | { name: "standing" }
+  // 3f: the authorities' contact point.
+  | { name: "contact" }
   | { name: "case"; id: CaseId }
   | { name: "enroll"; token: string }
   | { name: "unknown" };
@@ -48,6 +50,7 @@ export function parseRoute(pathname: string): Route {
   if (path === "/queue") return { name: "queue" };
   if (path === "/appeals") return { name: "appeals" };
   if (path === "/standing") return { name: "standing" };
+  if (path === "/contact") return { name: "contact" };
   const found = /^\/cases\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(path);
   if (found) {
     const id = parseCaseId(found[1]!);

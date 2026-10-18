@@ -29,10 +29,14 @@ services:
       KORBAT_MIGRATE_DB_PASSWORD: ${KORBAT_MIGRATE_DB_PASSWORD}
       KORBAT_API_DB_PASSWORD: ${KORBAT_API_DB_PASSWORD}
       KORBAT_AUTH_DB_PASSWORD: ${KORBAT_AUTH_DB_PASSWORD}
+      # The contact point's watcher's role (3f), which 01-roles.sh makes on a new data directory. Not required: a stack
+      # without the watcher runs without it.
+      KORBAT_NOTIFY_DB_PASSWORD: ${KORBAT_NOTIFY_DB_PASSWORD:-}
     volumes:
       - pgdata18:/var/lib/postgresql
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
-    networks: [data]
+    # watch: the watcher's own network to the database, which holds nothing else.
+    networks: [data, watch]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -82,6 +86,9 @@ services:
 
   api:
     <<: *node-common
+    # The image's name, the one Compose gives it by default, written out: notify (3f) runs the same image, so it is
+    # built once.
+    image: ${COMPOSE_PROJECT_NAME}-api
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -133,6 +140,9 @@ services:
       MODERATION_DISPATCH_HOUR: ${API_MODERATION_DISPATCH_HOUR:-7}
       MODERATION_DEFER_UNPROVEN: ${API_MODERATION_DEFER_UNPROVEN:-off}
       MODERATION_RETENTION: ${API_MODERATION_RETENTION:-on}
+      # Authorities' orders (3f): whether the alert tick judges the alert channel's health. Empty means on in production;
+      # off until the contact point's mailbox exists (README, Upgrading).
+      NOTIFY: ${API_NOTIFY:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store
@@ -182,8 +192,76 @@ services:
       timeout: 5s
       retries: 4
 
-  # Caddy serves the web app on port 8080, proxying /api, and the staff console on port 8090, proxying only
-  # /api/staff. It runs as its own user, sees only the API, and is the only thing cloudflared can reach.
+  # The contact point's watcher (3f design, section 5): the API's image with dist/notify.js, under the profile notify. It
+  # reads the contact-point mailbox over IMAP and publishes the alerts to ntfy. On the network watch it reaches PostgreSQL
+  # as korbat_notify, whose grants are four tables, and nothing else; on push it reaches ntfy. It never joins data, where
+  # the API listens and the limit store is. It exits rather than hang, and Docker starts it again. No setting of it is
+  # required by Compose: the program names the one it is missing and exits.
+  notify:
+    <<: *node-common
+    image: ${COMPOSE_PROJECT_NAME}-api
+    profiles: ["notify"]
+    command: ["node", "dist/notify.js"]
+    cap_drop: [ALL]
+    # Measured in this image (3f Task 1): about 82 MB resident idle, a peak of 93 MB during a first read of 10,000 old
+    # messages, which took 21 seconds and fell back to 81 MB; under this limit the container's peak was 85 MB, with no
+    # kill. 128 MB keeps more than a third above that peak.
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    environment:
+      NODE_ENV: ${KORBAT_ENV:-production}
+      LOG_LEVEL: ${API_LOG_LEVEL:-info}
+      DATABASE_URL_NOTIFY: postgres://korbat_notify:${KORBAT_NOTIFY_DB_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-}
+      NOTIFY_IMAP_HOST: ${NOTIFY_IMAP_HOST:-}
+      NOTIFY_IMAP_USER: ${NOTIFY_IMAP_USER:-}
+      NOTIFY_IMAP_PASSWORD: ${NOTIFY_IMAP_PASSWORD:-}
+      NOTIFY_IMAP_JUNK: ${NOTIFY_IMAP_JUNK:-}
+      NTFY_PUBLISH_TOKEN: ${NTFY_PUBLISH_TOKEN:-}
+    networks: [watch, push]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      ntfy: { condition: service_started }
+    # The watcher writes the time of every round it ends; two minutes without one is a hang.
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(Date.now() - Number(require('fs').readFileSync('/tmp/korbat-notify-beat', 'utf8')) < 120000 ? 0 : 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # The push server (3f design, section 5), under the profile notify, never linked into korbat's programs: ntfy at its
+  # pinned release, reading its users, rights and tokens from infra/ntfy/server.yml (git-ignored, made from
+  # server.yml.example), mounted read-only, since Compose would blank the $2a$10$ of a password hash in a variable. Only
+  # on push, which is internal: it has no route out, so nothing is forwarded upstream. Its cache and auth files are on its
+  # volume, at /var/tmp, the one directory of the image its user may write to.
+  ntfy:
+    image: binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+    profiles: ["notify"]
+    command: ["serve", "--config", "/etc/ntfy/server.yml"]
+    restart: unless-stopped
+    read_only: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    volumes:
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ntfy-data:/var/tmp
+    networks: [push]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2586/v1/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+
+  # Caddy serves the web app on port 8080, proxying /api, the staff console on port 8090, proxying only /api/staff, and
+  # (3f) the phones' push site on port 8091, proxying only the two topics' subscriptions to ntfy. It runs as its own
+  # user, sees only the API and ntfy, and is the only thing cloudflared can reach. A client from the push network (ntfy,
+  # the watcher) is refused 403 on the app's and the console's sites.
   caddy:
     restart: unless-stopped
     read_only: true
@@ -205,10 +283,13 @@ services:
         EXPO_PUBLIC_CONTACT_EMAIL: ${WEB_CONTACT_EMAIL:?set WEB_CONTACT_EMAIL in infra/.env}
     depends_on:
       api: { condition: service_healthy }
+    environment:
+      # The push network's subnet, which the app's and the console's sites refuse (3f).
+      PUSH_SUBNET: ${PUSH_SUBNET:-172.16.91.0/24}
     volumes:
       - caddy-data:/data
       - caddy-config:/config
-    networks: [edge, app]
+    networks: [edge, app, push]
 
   cloudflared:
     image: cloudflare/cloudflared:2026.9.1@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
@@ -225,11 +306,20 @@ services:
     depends_on:
       - caddy
 
-# cloudflared reaches only Caddy, Caddy reaches only the API, and the API alone reaches the data services.
+# cloudflared reaches only Caddy, Caddy reaches only the API and ntfy, and the API alone reaches the data services, but
+# for the watcher's own network to PostgreSQL (3f).
 networks:
   edge:
   app:
   data:
+  # The watcher and PostgreSQL, nothing else. Not internal: the mail host's port 993 is reached through its gateway.
+  watch:
+  # ntfy, the watcher and Caddy. Internal: no route out. Its fixed subnet is what the app's and the console's sites refuse.
+  push:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${PUSH_SUBNET:-172.16.91.0/24}
 
 volumes:
   # PostgreSQL 18. The earlier pgdata volume (PostgreSQL 16) stays until scripts/pg-major-upgrade.mjs has
@@ -243,3 +333,6 @@ volumes:
   # Caddy's state, owned by its own user; the earlier root-owned caddydata and caddyconfig volumes can go.
   caddy-data:
   caddy-config:
+  # ntfy's message cache and its auth database (3f). The cache is how a phone gets an alert published while its
+  # connection was down; the auth database is rebuilt from infra/ntfy/server.yml at every start.
+  ntfy-data:

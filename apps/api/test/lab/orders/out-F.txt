@@ -1,0 +1,47 @@
+F1 the head at the backup
+3|46c40ba2fa26
+F2 lost work: an order opened (its audit row holds its facts) and given effect on P1; a removal of P14 under R5
+1
+t
+lost state|0b01|disabled
+lost state|0b0e|disabled
+F3 the tail: every audit row after the head at the backup, as JSON lines
+3|order_opened, order_effected, case_decided
+F4 the restored database: the head, and the lost order and measures are not there
+3|46c40ba2fa26
+orders F-1|0
+state|0b01|visible
+state|0b0e|disabled
+F5 a tail whose first row does not follow the restored head is refused
+psql:f2-restore.sql:60: ERROR:  tail_not_continuous
+DETAIL:  place 4 does not follow the restored head or the row before it
+CONTEXT:  PL/pgSQL function lab_restore_import() line 14 at RAISE
+F6 the import
+1 orders imported, 3 gaps
+gaps|4|order_opened|record|imported
+gaps|5|order_effected|order_effect|
+gaps|6|case_decided|restriction|
+order|F-1|t|f|t
+item|t|t|t|frozen already|t
+ledger rows written by the import|0
+P1 still|visible
+F7 the migrator copies the lost decision and its measure into the ledger by hand: (a) with no audit row; (b) with an audit row of the system actor
+forced by the trigger|t|t
+inside the transaction|disabled
+psql:f2-restore.sql:90: ERROR:  invalid_decision
+DETAIL:  target: the transaction's last audit row is not a confirmed order_effected on this decision's order.
+CONTEXT:  PL/pgSQL function decision_holds(uuid) line 29 at RAISE
+SQL statement "SELECT public.decision_holds(NEW.id)"
+PL/pgSQL function decisions_check() line 3 at PERFORM
+psql:f2-restore.sql:94: ERROR:  invalid_decision
+DETAIL:  target: the transaction's last audit row is not a confirmed order_effected on this decision's order.
+CONTEXT:  PL/pgSQL function decision_holds(uuid) line 29 at RAISE
+SQL statement "SELECT public.decision_holds(NEW.id)"
+PL/pgSQL function decisions_check() line 3 at PERFORM
+after the refused commit|visible
+F8 the re-application: the moderator, under a key, "Disable for an order" on the imported order
+1
+P1|disabled
+item|t|t
+notice still held|t|none
+open gaps|restriction|1

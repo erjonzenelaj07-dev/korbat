@@ -4,6 +4,12 @@ import { customType, pgPolicy, pgRole, timestamp, type PgRole } from "drizzle-or
 /** Roles are created by infra/postgres/init/01-roles.sh, not by migrations. */
 export const apiRole = pgRole("korbat_api").existing();
 export const authRole = pgRole("korbat_auth").existing();
+/**
+ * 3f: the contact point's watcher (apps/api/src/notify). The superuser creates it and gives it USAGE on the schema public
+ * (01-roles.sh, scripts/test-db.mjs, the README's Upgrading), since a migration cannot; the migration that creates its
+ * tables stops when either is missing.
+ */
+export const notifyRole = pgRole("korbat_notify").existing();
 
 export const ts = (name: string) => timestamp(name, { withTimezone: true });
 

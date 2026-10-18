@@ -61,6 +61,10 @@ export function Layout({
           <NavLink to="/" current={path === "/"} onNavigate={onNavigate}>
             Home
           </NavLink>
+          {/* 3f: directly after Home, before the queue: at night it is what the person needs. */}
+          <NavLink to="/contact" current={path === "/contact"} onNavigate={onNavigate}>
+            Contact point
+          </NavLink>
           <NavLink to="/queue" current={path === "/queue"} onNavigate={onNavigate}>
             Queue
           </NavLink>

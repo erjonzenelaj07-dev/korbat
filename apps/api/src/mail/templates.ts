@@ -1,4 +1,4 @@
-import { ACCOUNT_DELETION_WORDS, REPLY_AIM_HOURS } from "@korbat/contracts";
+import { ACCOUNT_DELETION_WORDS, REPLY_AIM_HOURS, isTimeFact, renderAlert, type AlertKind } from "@korbat/contracts";
 import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
@@ -360,7 +360,8 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       const lane = "in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm)";
       return staffMail("korbat: a case is waiting in the urgent lane", [
         need(data, "count") === "1" ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.` : `${need(data, "count")} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
-        "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only alert.",
+        // 3f (W.4): the same alert went to the phone on call as a push.
+        "Open the staff console. The same alert went to the phone on call.",
       ]);
     }
     case "moderation_waiting": {
@@ -391,7 +392,8 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
         );
       }
       if (lines.length === 0) throw new Error("mail template data for moderation_waiting names nothing that waits");
-      return staffMail("korbat: cases are waiting longer than their response time", [...lines, "Open the staff console. Until the phone alerts of sub-project 3f, this email is the only reminder."]);
+      // 3f (W.4): the same reminder went to every staff phone as a push.
+      return staffMail("korbat: cases are waiting longer than their response time", [...lines, "Open the staff console. The same reminder went to every staff phone."]);
     }
     case "moderation_burst": {
       // One staff account confirmed many decisions in a short time (3c design, section 7.5, step 4): every staff
@@ -417,6 +419,12 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
         "The staff console's home screen lists every such decision of the last 30 days with its case. A seal for good is lifted only on the answer of the authority korbat reported the images to, and a seal taken while deciding only when it was taken in error: the operator compares this decision with their R2 records. If it was not expected, ask them; if their key may be in someone else's hands, the operator revokes it with staff.js revoke, and whoever is on duty opens a finding citing R2 on the post or the account and seals its images while deciding.",
       ]);
     }
+    case "contact_mail":
+    case "contact_mail_escalated":
+    case "order_due":
+    case "mailbox_unreachable":
+    case "alert_channel_down":
+      return alertMail(template, data);
     case "moderation_reads": {
       // A staff account opened as many different cases today as one account may (3c design, section 7.3): every staff
       // account is told, the account itself included, since a stolen key reads at the speed of requests.
@@ -498,6 +506,22 @@ export function renderMail(message: MailMessage): RenderedMail {
  */
 function userMail(subject: string, paragraphs: string[]): RenderedMail {
   return build(subject, [...paragraphs, "korbat staff never ask for your password or a code, and korbat does not read replies to this email."]);
+}
+
+/**
+ * 3f (design, sections 7.19 and 18, W.4): a staff alert whose mail is its push's sentence. The subject is "korbat: " and
+ * the kind's title, the paragraphs its sentence and its line of what to do, each the contracts' ALERT_TEXTS filled from
+ * the row's facts by renderAlert, which refuses a fact of another name and anything but a count or a UTC time, so the
+ * mail names no person, no content, no authority and no link. The data's `now` is when the mail is sent: a time prints
+ * with its day only when that is not today's.
+ */
+function alertMail(kind: AlertKind, data: Record<string, string>): RenderedMail {
+  const { now, ...facts } = data;
+  if (now === undefined || now === "" || Number.isNaN(Date.parse(now))) throw new Error('mail template data is missing "now"');
+  const counted = Object.fromEntries(Object.entries(facts).map(([name, value]) => [name, isTimeFact(name) ? value : Number(value)]));
+  const text = renderAlert(kind, counted, new Date(now));
+  if (text.todo === null) throw new Error(`mail template ${kind} has no line of what to do: its mail is not its sentence`);
+  return staffMail(`korbat: ${text.title}`, [text.sentence, text.todo]);
 }
 
 /**

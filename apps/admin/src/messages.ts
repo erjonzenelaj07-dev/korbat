@@ -1,4 +1,17 @@
-import { REPLY_AIM_HOURS, RETENTION, STANDING_RULES, type AppealsReviewedParams, type AuthorStanding, type CaseDecision, type ItemOutcome, type ModerationErrorCode, type ReviewerState, type StaffErrorCode } from "@korbat/contracts";
+import {
+  ORDER_RULES,
+  REPLY_AIM_HOURS,
+  RETENTION,
+  STANDING_RULES,
+  type AppealsReviewedParams,
+  type AuthorStanding,
+  type CaseDecision,
+  type ContactDisposition,
+  type ItemOutcome,
+  type ModerationErrorCode,
+  type ReviewerState,
+  type StaffErrorCode,
+} from "@korbat/contracts";
 
 /**
  * The console's own words for every code it can receive (3a design, section 10) and for every outcome it shows (3c
@@ -350,6 +363,8 @@ export const CONSOLE_MODERATION_CODES = [
   "ground_not_established",
   "reply_not_open",
   "reporting_restricted",
+  // 3f (design, section 8.9): a message at the contact point that someone else closed meanwhile.
+  "message_handled",
 ] as const satisfies readonly ModerationErrorCode[];
 export type ConsoleModerationCode = (typeof CONSOLE_MODERATION_CODES)[number];
 
@@ -379,7 +394,72 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
   ground_not_established: STANDING_TERMINATE_R2,
   reply_not_open: "This measure takes no reply: it has ended or was lifted.",
   reporting_restricted: "That account's reports under the rules are restricted.",
+  message_handled: "That message was already handled. Read Contact point again.",
 };
+
+/** A small number as a word, as the design's sentences write it; a larger one in digits. */
+const inWords = (n: number): string => ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"][n] ?? String(n);
+
+/** A removal order's hour (ORDER_RULES.hourMinutes) in the words the console's sentences use. */
+const HOUR_WORDS = ORDER_RULES.hourMinutes === 60 ? "one hour" : `${ORDER_RULES.hourMinutes} minutes`;
+/** The last choice of the form "Open an order" (Task 2), which every sentence that sends a person there names. */
+const NOT_LISTED = '"The message is not listed"';
+
+/**
+ * 3f (design, sections 8.2, 8.3 and 18): the console's sentences of authorities' orders, each under the design's key
+ * (`home.contact` is [home.contact]). Every number in one is printed from the answer or from ORDER_RULES, never typed, and
+ * every time is the database's instant, printed by bothTimes. Later tasks of 3f add their keys here.
+ */
+export const ORDER_WORDS = {
+  home: {
+    title: "Authorities",
+    /** [home.contact], in three parts: the words before the link to Contact point, the link's own words, and the rest. */
+    contact: (oldestAt: string, open: number) => ({
+      before: `Mail at the authorities' contact point since ${oldestAt}: ${open} ${open === 1 ? "message" : "messages"} nobody has handled. Read it in the mail host's app, then open `,
+      link: "Contact point",
+      after: `. A removal order is due ${HOUR_WORDS} after it arrived.`,
+    }),
+    channel: (since: string) =>
+      `Phone alerts are down since ${since}. Alerts arrive by mail only: keep the mail host's app open on the contact-point mailbox until this line is gone. An order you find there that Contact point does not list is opened under Orders, with ${NOT_LISTED}.`,
+    mailbox: (since: string) => `korbat has not been able to read the contact-point mailbox since ${since}. Check it in the mail host's app until this line is gone. An order you find there is opened under Orders, with ${NOT_LISTED}.`,
+    off: "Phone alerts and the contact point's watcher are switched off on this server. Nothing watches the contact-point mailbox: the operator switches them on.",
+  },
+  contact: {
+    title: "Contact point",
+    what: `korbat records that a message arrived and when. It never reads who sent it or what it says: read the message in the mail host's app. Every message here may be a removal order until a person has read it. The junk folder is watched too: an order filed as junk has still arrived. While one message's alarm is less than ${ORDER_RULES.quietMinutes} minutes old, further mail is listed here and raises no new alarm of its own: read every message listed, not only the first. A message that is in the mailbox and not listed here (the watcher was down, or the mail host filed it in another folder) is opened as an order all the same: Orders, "Open an order", ${NOT_LISTED}.`,
+    reply: "Never answer an authority from korbat, and never open an attachment on a device that holds a staff key before you have checked the sender against the register.",
+    received: (at: string) => `Received ${at}`,
+    folders: { inbox: "Inbox", junk: "Junk folder" } as Record<"inbox" | "junk", string>,
+    stale: `korbat first saw this message more than ${ORDER_RULES.staleHours} hours after it arrived (after an outage or a restore). It raised no phone alert.`,
+    notHandled: "Not handled",
+    /** "Handled as {disposition} by @{handle} on {handledAt}", around the handle, which the screen shows as text. */
+    handledBefore: (label: string) => `Handled as ${label} by @`,
+    handledAfter: (at: string) => ` on ${at}`,
+    /** The same when no staff member set it (an order opened from the command line). */
+    handledBySystem: (label: string, at: string) => `Handled as ${label} on ${at}`,
+    handledOrder: "Handled as an order",
+    closeAs: "Close as",
+    closeButton: "Close",
+    close: "Closing ends this message's alerts and cannot be changed. Close it only after you have read it in the mail host's app.",
+    closed: (label: string) => `Closed as ${label}.`,
+    staleTogether: (n: number) => `Close the ${n} stale messages as`,
+    staleButton: "Close them",
+    staleAll: (n: number) =>
+      `These ${n} messages reached korbat's record more than ${ORDER_RULES.staleHours} hours after they arrived and raised no alert. Look at each in the mail host's app before you close them: one of them may be an order, and it is then opened, not closed. Closing cannot be changed.`,
+    staleClosed: (n: number) => `${n} stale messages closed.`,
+    loadOlder: "Load older",
+    empty: "No message has arrived at the contact point.",
+    /** The hint under each choice of "Close as" (8.3's table). */
+    hints: {
+      referral: "An authority points to content and orders nothing. Open a case of your own on it (Queue, Open a case) and decide it under korbat's rules or the law.",
+      first_order_notice: "An authority tells korbat about its procedures and deadlines at least 12 hours before its first removal order (Article 3(2)). Keep the mail and tell the operator: an order from that authority may follow.",
+      preservation_request: `An authority or a court asks korbat to keep disabled content beyond ${inWords(ORDER_RULES.preserveMonths)} months. Whoever has the server records it with staff.js order-preserve-extend.`,
+      scrutiny_decision: "The home authority's decision on a removal order from another Member State (Article 4). An admin acts on it on the order: reinstates, or leaves the order in force.",
+      clarification: `A clarification after an Annex III, a withdrawal, an annulment, or an extension or end of a non-disclosure period. A clarification that restarts the clock is recorded on the order itself ("Clarification received"), and an extension of a removal order's non-disclosure period by an admin on the order itself ("Extension received"), at once: the database releases the author's notice by itself at the old end. Either closes this message. Close it here only for the others, and tell the operator the same day; for a later end that an authority gives for a DSA order's silence, only whoever has the server can record it (staff.js order-hold-until), so call them.`,
+      not_an_order: "Anything else: a question, an advertisement, a user's mail sent to the wrong address.",
+    } as Record<Exclude<ContactDisposition, "order">, string>,
+  },
+} as const;
 
 /**
  * Where one code means more on a screen than the shared words say, that screen's words for it, one table for each place
