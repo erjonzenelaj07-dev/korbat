@@ -3,13 +3,15 @@ import { check, index, integer, pgEnum, pgTable, primaryKey, real, smallint, tex
 import { apiRole, fullAccess, ts } from "./helpers";
 import { profiles } from "./identity";
 
-export const postState = pgEnum("post_state", ["visible", "withheld", "removed", "deleted_by_author"]);
+/** 3f (design, section 6.2): `disabled`, a post an authority's order disables, which every reader answers as missing. */
+export const postState = pgEnum("post_state", ["visible", "withheld", "removed", "deleted_by_author", "disabled"]);
 
 /**
  * What moderation derives for a post from the measures in force (3c design, section 6.1): the strongest of them.
- * posts.state mirrors it unless the author deleted the post, so post_state gains no value.
+ * posts.state mirrors it unless the author deleted the post, so post_state gains no value of 3c's. 3f adds `disabled`
+ * to both (design, section 6.2), above `removed`: no row holds it before an order is given effect.
  */
-export const moderationLevel = pgEnum("moderation_level", ["visible", "withheld", "removed"]);
+export const moderationLevel = pgEnum("moderation_level", ["visible", "withheld", "removed", "disabled"]);
 
 /** An image's own moderation state, beside its post's. Only an image is ever sealed: shown to nobody, its author included. */
 export const mediaModerationState = pgEnum("media_moderation_state", ["visible", "withheld", "removed", "sealed"]);

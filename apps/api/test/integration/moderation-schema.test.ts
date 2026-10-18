@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ACTION_KINDS, CSAM_KEYWORDS, DECISION_KEYWORDS, MEASURES, NOTICE_LIMITS, RULE_IDS, TDB_CATEGORIES, appealDeadline, textDigest } from "@korbat/contracts";
+import { ACTION_KINDS, CSAM_KEYWORDS, DECISION_KEYWORDS, MEASURES, NOTICE_LIMITS, ORDER_ACTION_KINDS, RULE_IDS, TDB_CATEGORIES, appealDeadline, textDigest } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { TEXT_DIGEST_VECTORS } from "../../../../packages/contracts/test/digest-vectors";
 import { createAuthRepo } from "../../src/auth/repo";
@@ -456,6 +456,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.forget_reporter",
         "public.frozen_for",
         "public.intake_due_at",
+        // 3f's Task 2 (0027_orders): the hold and the preservation, and the two writers a key's audit row binds.
+        "public.order_correct",
+        "public.order_event_record",
+        "public.order_hold_end",
+        "public.order_hold_until",
+        "public.order_preserve_until",
         "public.order_rules",
         "public.post_frozen",
         "public.redact_r4_body",
@@ -527,8 +533,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(matching(snapshotErased)).toEqual(["public.erase_snapshots"]);
       expect(matching(/delete\s+from\s+(only\s+)?("?public"?\s*[.]\s*)?"?evidence_snapshots"?(?![\w"])/i)).toEqual([]);
       expect(matching(/\berase_snapshots\s*\(/i)).toEqual(["public.erase_case_evidence", "public.erase_snapshots", "public.redact_r4_body"]);
-      // The writer is called by the two triggers that follow a stored decision and a stored measure, and by the R4 redaction.
-      expect(matching(calls)).toEqual(["public.decision_actions_apply", "public.decisions_apply", "public.moderation_apply", "public.redact_r4_body"]);
+      // The writer is called by the two triggers that follow a stored decision and a stored measure, by the R4 redaction,
+      // and (3f) by order_correct, whose changed withholding derives the level of its measures' posts again.
+      expect(matching(calls)).toEqual(["public.decision_actions_apply", "public.decisions_apply", "public.moderation_apply", "public.order_correct", "public.redact_r4_body"]);
       for (const statement of [
         "UPDATE public.evidence_snapshots s SET erased_at = now(), body = NULL",
         'update only "public"."evidence_snapshots" set "erased_at" = $1',
@@ -638,6 +645,30 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(columns.map((c) => c.name)).toEqual(["case_id", "at", "event", "ref_id", "seq", "intake_kind", "rule_id", "alleges_illegal", "csam", "reexamination", "decision_kind", "outcome", "staff_id", "result"]);
     });
 
+    test("3f's writers (0027_orders; design, section 6.7): who writes a decision's informed_at, an order's row, its events, an item's closing and a measure's withholding", async () => {
+      const all = await functions();
+      const writing = (pattern: RegExp) => all.filter((f) => pattern.test(f.definition)).map((f) => f.name);
+      // A decision's informed_at: decisions_record forces it at the insert; order_correct writes it, and only to null.
+      expect(writing(/[^a-z_]informed_at (:)?= /)).toEqual(["public.decisions_record", "public.order_correct"]);
+      expect(all.find((f) => f.name === "public.order_correct")!.definition).toMatch(/SET informed_at = NULL, author_mail = 'none'/);
+      // An order's row: written by order_event_record and order_correct alone (and the command line, as the migrator).
+      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]legal_orders /i)).toEqual(["public.order_correct", "public.order_event_record"]);
+      expect(writing(/INSERT INTO public[.]legal_order_events/i)).toEqual(["public.order_correct", "public.order_event_record"]);
+      expect(writing(/closed_reason = /)).toEqual(["public.order_correct"]);
+      expect(writing(/withhold_author = /)).toEqual(["public.order_correct"]);
+      // The two definer functions pin public alone and name auth's table in full, as every function the migrator owns does.
+      for (const name of ["public.order_correct", "public.order_event_record", "public.legal_order_events_confirmed"]) {
+        const f = all.find((found) => found.name === name)!;
+        expect([f.definer, f.config], name).toEqual([true, ["search_path=public, pg_temp"]]);
+      }
+      // No function of 0027 holds an interval literal or a number of order_rules(): each is read from there.
+      for (const name of ["public.order_hold_end", "public.order_hold_until", "public.order_preserve_until", "public.order_event_record", "public.order_correct", "public.legal_orders_insert"]) {
+        expect(all.find((f) => f.name === name)!.definition, name).not.toMatch(/interval '/i);
+      }
+      const views = (await otherDefinitions()).filter((d) => d.kind === "view" && d.name === "legal_order_clock");
+      expect(views.map((v) => /interval '/i.test(v.definition))).toEqual([false]);
+    });
+
     test("measures_in_force runs with its reader's rights and names exactly the contracts' measures", async () => {
       const [view] = await apiDb.execute<{ options: string[] | null; definition: string }>(sql`select c.reloptions as options, pg_get_viewdef(c.oid) as definition from pg_class c where c.oid = 'public.measures_in_force'::regclass`);
       expect(view!.options).toEqual(["security_invoker=true"]);
@@ -685,14 +716,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(await checkBound("intakes", "intakes_cited_law_len")).toBe(NOTICE_LIMITS.citedLawMax);
     });
 
-    test("the ledger's kinds are the contracts' action kinds, in their order", async () => {
+    test("the ledger's kinds are the contracts' action kinds, in their order, then the two of an order's measure", async () => {
       const rows = await apiDb.execute<{ label: string }>(sql`select e.enumlabel::text as label from pg_enum e where e.enumtypid = 'public.action_kind'::regtype order by e.enumsortorder`);
-      expect(rows.map((row) => row.label)).toEqual([...ACTION_KINDS]);
+      // 3f: the migration orders adds them; they join ACTION_KINDS with the task that gives effect to an order (Task 3).
+      expect(rows.map((row) => row.label)).toEqual([...ACTION_KINDS, ...ORDER_ACTION_KINDS]);
     });
 
-    test("post_state still has its four values: a seal is a state of images", async () => {
+    test("post_state has its four values and 3f's disabled: a seal is a state of images, a disabling one of posts", async () => {
       const rows = await apiDb.execute<{ label: string }>(sql`select e.enumlabel::text as label from pg_enum e where e.enumtypid = 'public.post_state'::regtype order by e.enumsortorder`);
-      expect(rows.map((row) => row.label)).toEqual(["visible", "withheld", "removed", "deleted_by_author"]);
+      expect(rows.map((row) => row.label)).toEqual(["visible", "withheld", "removed", "deleted_by_author", "disabled"]);
     });
 
     test("no check lets a row through on a null: the database holds the null-safe forms", async () => {

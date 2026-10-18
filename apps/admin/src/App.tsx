@@ -4,13 +4,15 @@ import type { SignalApi } from "./enroll";
 import { Layout, Masthead } from "./Layout";
 import { describeError } from "./messages";
 import { NavLink } from "./nav";
-import type { ConsolePath } from "./router";
+import { parseOrderId, type ConsolePath } from "./router";
 import { Appeals } from "./screens/Appeals";
 import { Audit } from "./screens/Audit";
 import { CaseScreen } from "./screens/Case";
 import { Contact } from "./screens/Contact";
 import { Enroll } from "./screens/Enroll";
 import { Home } from "./screens/Home";
+import { Order } from "./screens/Order";
+import { Orders, type Opened } from "./screens/Orders";
 import { Queue } from "./screens/Queue";
 import { SignIn } from "./screens/SignIn";
 import { Standing } from "./screens/Standing";
@@ -25,6 +27,8 @@ import type { CredentialsLike } from "./webauthn";
 export function App({ store, credentials, signal }: { store: ConsoleStore; credentials: CredentialsLike; signal: SignalApi | undefined }) {
   const state = useSyncExternalStore(store.subscribe, store.get, store.get);
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  // 3f: the order just opened, whose page shows once that it was opened (and, after "I cannot tell", what to do).
+  const [opened, setOpened] = useState<{ id: string; unsure: boolean } | null>(null);
   const { api } = store;
   const { session, route } = state;
 
@@ -74,6 +78,14 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
     }
   };
 
+  /** An order opened from the form: its page, which says once that it was opened. */
+  const onOpened = (done: Opened) => {
+    const id = parseOrderId(done.view.id);
+    if (id === null) return;
+    setOpened({ id, unsure: done.unsure });
+    store.openOrder(id);
+  };
+
   const navigate = (path: ConsolePath) => {
     setSignOutError(null);
     store.navigate(path);
@@ -93,7 +105,12 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
       {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} role={session.me.role} drafts={store.drafts} onOpenCase={store.openCase} /> : null}
       {route.name === "appeals" ? <Appeals api={api} onOpenCase={store.openCase} /> : null}
       {route.name === "standing" ? <Standing api={api} onOpenCase={store.openCase} /> : null}
-      {route.name === "contact" ? <Contact api={api} /> : null}
+      {route.name === "contact" ? <Contact api={api} me={session.me} onOpened={onOpened} onOpenOrder={store.openOrder} /> : null}
+      {route.name === "orders" ? <Orders api={api} me={session.me} onOpenOrder={store.openOrder} onOpened={onOpened} /> : null}
+      {/* Keyed by the order: another order's page starts with nothing of this one's. */}
+      {route.name === "order" ? (
+        <Order key={route.id} id={route.id} api={api} me={session.me} credentials={credentials} opened={opened !== null && opened.id === route.id ? { unsure: opened.unsure } : null} />
+      ) : null}
       {route.name === "unknown" ? (
         <section aria-labelledby="unknown-title">
           <h2 id="unknown-title">No such page</h2>

@@ -1,4 +1,15 @@
-import { STAFF_STEP_UP_CHALLENGE, StaffStepUpOptionsRequest, stepUpActionHash, stepUpBinding, type AppealsReviewedParams, type AuthenticationResponseJSON, type CaseDecidedParams, type IdentityRevealedParams } from "@korbat/contracts";
+import {
+  STAFF_STEP_UP_CHALLENGE,
+  StaffStepUpOptionsRequest,
+  stepUpActionHash,
+  stepUpBinding,
+  type AppealsReviewedParams,
+  type AuthenticationResponseJSON,
+  type CaseDecidedParams,
+  type IdentityRevealedParams,
+  type OrderCorrectFacts,
+  type OrderEventRecordedParams,
+} from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
 import { messageFor } from "./messages";
 import { authenticationResponseToJSON, ceremonyFailure, fromBase64url, requestOptionsFromJSON, type CredentialsLike } from "./webauthn";
@@ -142,4 +153,29 @@ export function decideWithKey(deps: { api: StaffApi; credentials: CredentialsLik
 export function reviewWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, decisionId: string, params: AppealsReviewedParams) {
   const action = reviewAction(decisionId, params);
   return confirmWithKey(deps, action, (stepUp) => deps.api.review(caseId, action.target.id, { ...params, stepUp }, { activity: true }));
+}
+
+/**
+ * 3f: the action that records a clock event, a closing, a reopening or an extension on an order: the order's id as the
+ * target and the event's kind, ground and message as params, as the page chose them.
+ */
+export function orderEventAction(orderId: string, params: OrderEventRecordedParams): StaffStepUpOptionsRequest {
+  return StaffStepUpOptionsRequest.parse({ action: "order_event_recorded", target: { type: "order", id: orderId }, params });
+}
+
+/** 3f: the action that corrects an order under the rule admin: the order's id and, as params, the facts to change. */
+export function orderCorrectAction(orderId: string, facts: OrderCorrectFacts): StaffStepUpOptionsRequest {
+  return StaffStepUpOptionsRequest.parse({ action: "order_corrected", target: { type: "order", id: orderId }, params: { facts } });
+}
+
+/** "Confirm with your staff key" on an order's event; answers the order as it stands after it. */
+export function recordOrderEventWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, orderId: string, params: OrderEventRecordedParams) {
+  const action = orderEventAction(orderId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.recordOrderEvent(action.target.id, { ...params, stepUp }, { activity: true }));
+}
+
+/** "Confirm with your staff key" on an admin's correction; answers the order as it stands after it. */
+export function correctOrderWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, orderId: string, facts: OrderCorrectFacts) {
+  const action = orderCorrectAction(orderId, facts);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.correctOrder(action.target.id, { facts, stepUp }, { activity: true }));
 }

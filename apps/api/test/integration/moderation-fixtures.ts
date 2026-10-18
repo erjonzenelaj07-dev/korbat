@@ -893,6 +893,9 @@ export async function removeDecided(migrateDb: Db, postIds: readonly string[], s
   if (postIds.length === 0 && staffIds.length === 0 && accountIds.length === 0) return;
   await migrateDb.transaction(async (tx) => {
     await tx.execute(sql`set local lock_timeout = '10s'`);
+    // 3f: the orders that name these posts or that these staff accounts opened or wrote an event of, before the intake
+    // items their items point at and the profiles they name.
+    await removeOrderRowsOf(tx, uuids(postIds), uuids(staffIds));
     const cases = await tx.execute<{ id: string }>(
       sql`select id from cases where (target_type = 'post' and target_id = any(${uuids(postIds)})) or (target_type = 'account' and target_id = any(${uuids(accountIds)}))`,
     );
@@ -934,6 +937,8 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
       select distinct i.intake_id as id from intake_items i where i.case_id = any(${caseIds})
       union select n.id from intakes n where n.reporter_id = any(${profiles}) or n.finding_by = any(${profiles})`);
     const intakeIds = uuids(intakes.map((row) => row.id));
+    // 3f: the orders that name these accounts' posts or that they opened, before the intake items their items point at.
+    await removeOrderRowsOf(tx, sql`(select p.id from posts p where p.author_id = any(${profiles}))`, profiles);
     // 3e: what these accounts hold in the tables of account sanctions, before their cases and their profiles.
     await tx.execute(sql`delete from unfounded_marks where account_id = any(${profiles})`);
     await tx.execute(sql`delete from report_tallies where account_id = any(${profiles})`);
@@ -943,6 +948,30 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
     await tx.execute(sql`delete from posts where author_id = any(${profiles})`);
     await tx.execute(sql`delete from profiles where id = any(${profiles})`);
   });
+}
+
+/**
+ * 3f: removes, as the migrator in the caller's transaction, the orders whose items name these posts or that these staff
+ * accounts opened or wrote an event of, with their events, items and outbox rows and the messages they came in with,
+ * and the messages these accounts handled with their outbox rows: an order's row refers to a profile and an item to an
+ * intake item, each with `on delete restrict`.
+ */
+export async function removeOrderRowsOf(tx: DbTx, postIds: SQL, staffIds: SQL): Promise<void> {
+  const orders = await tx.execute<{ id: string; message_id: string | null }>(sql`
+    select o.id, o.message_id from public.legal_orders o
+     where o.opened_by = any(${staffIds})
+        or exists (select 1 from public.legal_order_items i where i.order_id = o.id and i.post_id = any(${postIds}))
+        or exists (select 1 from public.legal_order_events e where e.order_id = o.id and e.by_staff = any(${staffIds}))`);
+  const ids = uuids(orders.map((row) => row.id));
+  const messages = uuids([
+    ...orders.flatMap((row) => (row.message_id === null ? [] : [row.message_id])),
+    ...(await tx.execute<{ id: string }>(sql`select id from public.contact_messages where handled_by = any(${staffIds})`)).map((row) => row.id),
+  ]);
+  await tx.execute(sql`delete from public.alert_outbox where order_id = any(${ids}) or message_id = any(${messages})`);
+  await tx.execute(sql`delete from public.legal_order_events where order_id = any(${ids})`);
+  await tx.execute(sql`delete from public.legal_order_items where order_id = any(${ids})`);
+  await tx.execute(sql`delete from public.legal_orders where id = any(${ids})`);
+  await tx.execute(sql`delete from public.contact_messages m where m.id = any(${messages}) and not exists (select 1 from public.legal_orders o where o.message_id = m.id)`);
 }
 
 /** 3f: the tables of the contact point and the alert channel, which a suite that writes them adds to its counts. */

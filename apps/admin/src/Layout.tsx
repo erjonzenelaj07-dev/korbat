@@ -65,6 +65,9 @@ export function Layout({
           <NavLink to="/contact" current={path === "/contact"} onNavigate={onNavigate}>
             Contact point
           </NavLink>
+          <NavLink to="/orders" current={path === "/orders" || path.startsWith("/orders/")} onNavigate={onNavigate}>
+            Orders
+          </NavLink>
           <NavLink to="/queue" current={path === "/queue"} onNavigate={onNavigate}>
             Queue
           </NavLink>

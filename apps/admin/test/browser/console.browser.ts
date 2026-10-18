@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { DISPOSITION_LABELS, MEASURES, ORDER_RULES, SEAL_DRAFTS } from "@korbat/contracts";
+import { ANNEX3_GROUND_LABELS, DISPOSITION_LABELS, MEASURES, ORDER_CHANNEL_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, SEAL_DRAFTS, type ContactMessage } from "@korbat/contracts";
 import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
@@ -1532,8 +1532,12 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     const lines = page.locator(".authorities p");
     // Its text as written: at this width the link is laid out as a block of its own, which innerText would break apart.
     expect(await lines.nth(0).textContent()).toBe(`${words.before}${words.link}${words.after}`);
-    expect(await lines.nth(1).textContent()).toBe(ORDER_WORDS.home.channel(bothTimes(since)));
-    expect(await page.locator(".authorities a").getAttribute("href")).toBe("/contact");
+    // Task 2: the nearest deadline, the message's, with its minutes left, a link to Orders.
+    const due = new Date(Date.parse(oldest) + ORDER_RULES.hourMinutes * 60_000).toISOString();
+    expect((await lines.nth(1).textContent())!.startsWith(`The nearest deadline is ${bothTimes(due)}: `)).toBe(true);
+    expect(await lines.nth(2).textContent()).toBe(ORDER_WORDS.home.channel(bothTimes(since)));
+    expect(await page.locator(".authorities a").nth(0).getAttribute("href")).toBe("/contact");
+    expect(await page.locator(".authorities a").nth(1).getAttribute("href")).toBe("/orders");
     // The block stands above the lanes.
     const authorities = await page.getByRole("heading", { name: "Authorities" }).boundingBox();
     const cases = await page.getByRole("heading", { name: "Cases" }).boundingBox();
@@ -1595,6 +1599,229 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await cleanOnPhone();
     // The walk goes on at the desktop's width, with nothing at the contact point.
     fixtures.state.authorities = { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } };
+    await page.setViewportSize({ width: 1280, height: 900 });
+  });
+
+  // ---------------------------------------------------------------- 3f Task 2: orders, at a phone's width
+
+  /** The order the walk opens from a message, as the fixtures hold it. */
+  const firstOrder = () => fixtures.state.orders[0]!;
+  const MESSAGE_OPEN = "6d1a2b3c-4d5e-4f60-8172-839405a6b7c8";
+  const POST_LINK = "https://korbat.example/p/aa11";
+  const ACCOUNT_LINK = "https://korbat.example/@someone";
+  const NEWLINE = String.fromCharCode(10);
+  const nav = () => page.getByRole("navigation", { name: "Console" });
+
+  test("3f: at 360 by 740 px, Open an order from this message: the message picked and nothing else, no key, the order's page with its clock first; home then shows [home.clock], a link to Orders", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const before = await signatures();
+    await page.goto(`${origin}/contact`);
+    const block = page.locator("li.block").filter({ hasText: ORDER_WORDS.contact.notHandled });
+    await shown(block);
+    expect(await block.count()).toBe(1);
+    await block.getByRole("button", { name: ORDER_WORDS.openFromMessage }).click();
+    const form = page.locator("form.order-form");
+    await shown(form.locator('input[name="order-message"]:checked'));
+    // The message the button belongs to is picked, and nothing else is.
+    expect(await form.locator("input:checked").count()).toBe(1);
+    await form.getByLabel(ORDER_KIND_LABELS.tco_removal, { exact: true }).check();
+    await form.getByLabel(ORDER_WORDS.form.state).selectOption("DE");
+    await form.getByLabel("Bundeskriminalamt (BKA)", { exact: true }).check();
+    await form.getByLabel(ORDER_WORDS.form.reference).fill("BKA-2026-1");
+    await form.getByLabel(ORDER_WORDS.form.links).fill([POST_LINK, ACCOUNT_LINK].join(NEWLINE));
+    await form.getByLabel(ORDER_WORDS.form.sectionCChoices.tco[1], { exact: true }).check();
+    await form.getByRole("button", { name: ORDER_WORDS.form.button }).click();
+    await shown(page.getByText(ORDER_WORDS.form.done));
+    expect(await signatures()).toBe(before);
+    const opened = firstOrder();
+    expect(page.url()).toBe(`${origin}/orders/${opened.id}`);
+    expect(fixtures.state.orderWrites).toEqual([
+      {
+        what: "opened",
+        id: opened.id,
+        key: false,
+        body: { messageId: MESSAGE_OPEN, channel: "mailbox", kind: "tco_removal", memberState: "DE", authority: "Bundeskriminalamt (BKA)", reference: "BKA-2026-1", links: [POST_LINK, ACCOUNT_LINK], sectionC: false, emergency: false, withholdFromAuthor: true },
+      },
+    ]);
+    // The clock comes first, under the kind, and the first screenful holds it.
+    const due = opened.clock!.deadlineAt!;
+    const clock = page.locator('[aria-labelledby="order-title"] > p').first();
+    expect((await clock.textContent())!.startsWith(`Due ${bothTimes(due)}: `)).toBe(true);
+    const box = await clock.boundingBox();
+    expect(box!.y + box!.height).toBeLessThan(740);
+    await texts();
+    await cleanOnPhone();
+    // Home: [home.clock], the order's deadline with its minutes left, a link to Orders.
+    await nav().getByRole("link", { name: "Home", exact: true }).click();
+    const line = page.locator(".authorities a").filter({ hasText: "The nearest deadline is" });
+    await shown(line);
+    expect(await line.getAttribute("href")).toBe("/orders");
+    expect((await line.textContent())!.startsWith(`The nearest deadline is ${bothTimes(due)}: `)).toBe(true);
+    await shown(page.locator("ul.signins"));
+    await shown(page.locator("ul.keys"));
+    await shown(page.getByText("This session", { exact: true }));
+    await texts();
+    await cleanOnPhone();
+  });
+
+  test("3f: an order whose message is not listed: the form warns that no deadline can show and asks how it arrived; its page says the deadline is unknown and the notice is held", async () => {
+    const before = await signatures();
+    await nav().getByRole("link", { name: "Orders", exact: true }).click();
+    await shown(page.getByRole("heading", { name: ORDER_WORDS.orders.title }));
+    // The order just opened is listed, with a link to its page.
+    await shown(page.locator(`a[href="/orders/${firstOrder().id}"]`));
+    await page.getByRole("button", { name: ORDER_WORDS.orders.open }).click();
+    const form = page.locator("form.order-form");
+    await shown(form);
+    expect(await form.locator("input:checked").count()).toBe(0);
+    await form.getByLabel(ORDER_WORDS.form.notListed, { exact: true }).check();
+    await shown(page.getByText(ORDER_WORDS.form.noMessage));
+    await form.getByLabel(ORDER_CHANNEL_LABELS.portal, { exact: true }).check();
+    await form.getByLabel(ORDER_KIND_LABELS.tco_removal, { exact: true }).check();
+    await form.getByLabel(ORDER_WORDS.form.state).selectOption("DE");
+    await form.getByRole("radio", { name: ORDER_WORDS.form.otherAuthority }).check();
+    await form.getByRole("textbox", { name: ORDER_WORDS.form.otherAuthority }).fill(HOSTILE.script);
+    await form.getByLabel(ORDER_WORDS.form.reference).fill("PORTAL-7");
+    await form.getByLabel(ORDER_WORDS.form.links).fill("https://korbat.example/p/bb22");
+    await form.getByLabel(ORDER_WORDS.form.sectionCChoices.tco[0], { exact: true }).check();
+    await form.getByRole("button", { name: ORDER_WORDS.form.button }).click();
+    await shown(page.getByText(ORDER_WORDS.form.done));
+    expect(await signatures()).toBe(before);
+    const opened = fixtures.state.orders[1]!;
+    expect(page.url()).toBe(`${origin}/orders/${opened.id}`);
+    expect(fixtures.state.orderWrites.at(-1)).toEqual({
+      what: "opened",
+      id: opened.id,
+      key: false,
+      body: { messageId: null, channel: "portal", kind: "tco_removal", memberState: "DE", authority: HOSTILE.script, reference: "PORTAL-7", links: ["https://korbat.example/p/bb22"], sectionC: true, emergency: false, withholdFromAuthor: true },
+    });
+    await shown(page.getByText(ORDER_WORDS.orders.deadlineUnknown));
+    await shown(page.getByText(ORDER_WORDS.order.holdOpen));
+    await texts();
+    await cleanOnPhone();
+  });
+
+  test("3f: the form refuses an order whose Section C was never answered, and sends nothing", async () => {
+    const posts = () => fixtures.state.requests.filter((r) => r.method === "POST" && r.path === "/api/staff/orders").length;
+    const sent = posts();
+    await nav().getByRole("link", { name: "Orders", exact: true }).click();
+    await page.getByRole("button", { name: ORDER_WORDS.orders.open }).click();
+    const form = page.locator("form.order-form");
+    await shown(form);
+    await form.getByLabel(ORDER_WORDS.form.notListed, { exact: true }).check();
+    await form.getByLabel(ORDER_CHANNEL_LABELS.post, { exact: true }).check();
+    await form.getByLabel(ORDER_KIND_LABELS.tco_removal, { exact: true }).check();
+    await form.getByLabel(ORDER_WORDS.form.state).selectOption("DE");
+    await form.getByLabel("Bundeskriminalamt (BKA)", { exact: true }).check();
+    await form.getByLabel(ORDER_WORDS.form.reference).fill("BKA-2026-9");
+    await form.getByLabel(ORDER_WORDS.form.links).fill("https://korbat.example/p/cc33");
+    await form.getByRole("button", { name: ORDER_WORDS.form.button }).click();
+    await shown(form.getByRole("alert").getByText(ORDER_WORDS.form.untouched));
+    expect(posts()).toBe(sent);
+    expect(page.url()).toBe(`${origin}/orders`);
+    await cleanOnPhone();
+  });
+
+  test("3f: a DSA Article 9 order: its withholding is free only while the order lets the author be told, ticked and locked otherwise; I cannot tell opens it held, with what to do", async () => {
+    const form = page.locator("form.order-form");
+    await form.getByLabel(ORDER_KIND_LABELS.dsa_art9, { exact: true }).check();
+    const box = form.getByRole("checkbox", { name: ORDER_WORDS.form.withhold });
+    await form.getByLabel(ORDER_WORDS.form.sectionCChoices.dsa[1], { exact: true }).check();
+    expect(await box.isDisabled()).toBe(false);
+    expect(await box.isChecked()).toBe(false);
+    await shown(form.getByText(ORDER_WORDS.form.withholdHint));
+    await form.getByLabel(ORDER_WORDS.form.sectionCChoices.dsa[0], { exact: true }).check();
+    expect(await box.isDisabled()).toBe(true);
+    expect(await box.isChecked()).toBe(true);
+    await shown(form.getByText(ORDER_WORDS.form.withholdLocked));
+    await form.getByLabel(ORDER_WORDS.form.sectionCChoices.dsa[2], { exact: true }).check();
+    expect(await box.isDisabled()).toBe(true);
+    expect(await box.isChecked()).toBe(true);
+    // The removal order's emergency is no box of this kind.
+    expect(await form.getByText(ORDER_WORDS.form.emergency).count()).toBe(0);
+    await form.getByRole("button", { name: ORDER_WORDS.form.button }).click();
+    await shown(page.getByText(ORDER_WORDS.form.unsure, { exact: false }));
+    const opened = fixtures.state.orders[2]!;
+    expect(page.url()).toBe(`${origin}/orders/${opened.id}`);
+    expect(fixtures.state.orderWrites.at(-1)).toMatchObject({ what: "opened", id: opened.id, key: false, body: { kind: "dsa_art9", sectionC: true, withholdFromAuthor: true, emergency: false } });
+    // No hour runs for this kind: it is given effect only after the check.
+    await shown(page.getByText(ORDER_WORDS.order.verifyFirst));
+    await shown(page.getByText(ORDER_WORDS.clock.dsaNone));
+    await cleanOnPhone();
+  });
+
+  test("3f: before any effect, the item that names an account is closed without effect and a mistyped reference corrected, neither asking the key", async () => {
+    const before = await signatures();
+    const order = firstOrder();
+    const writes = fixtures.state.orderWrites.length;
+    await nav().getByRole("link", { name: "Orders", exact: true }).click();
+    await page.locator(`a[href="/orders/${order.id}"]`).click();
+    await shown(page.getByText(ORDER_WORDS.order.account));
+    const account = page.locator("li.block").filter({ hasText: ORDER_WORDS.order.item(2) });
+    await account.getByLabel(ORDER_ITEM_CLOSE_REASON_LABELS.no_post, { exact: true }).check();
+    await account.getByRole("button", { name: ORDER_WORDS.order.closeItem }).click();
+    await arrived(() => fixtures.state.orderWrites.length === writes + 1, "the item's closing");
+    expect(fixtures.state.orderWrites.at(-1)).toEqual({ what: "corrected", id: order.id, key: false, body: { closeItems: [{ itemId: order.items[1]!.id, reason: "no_post" }] } });
+    await shown(page.getByText(ORDER_WORDS.order.corrected));
+    await shown(account.getByText(ORDER_WORDS.order.closedItem(bothTimes(order.items[1]!.closedAt!), ORDER_ITEM_CLOSE_REASON_LABELS.no_post)));
+    // The reference was mistyped: corrected under the rule entry, the one member sent alone.
+    const correct = page.locator("section.block").filter({ has: page.getByRole("heading", { name: ORDER_WORDS.order.correctTitle }) });
+    await correct.getByLabel(ORDER_WORDS.form.reference).fill("BKA-2026-01");
+    await correct.getByRole("button", { name: ORDER_WORDS.order.correctButton, exact: true }).click();
+    await arrived(() => fixtures.state.orderWrites.length === writes + 2, "the correction");
+    expect(fixtures.state.orderWrites.at(-1)).toEqual({ what: "corrected", id: order.id, key: false, body: { reference: "BKA-2026-01" } });
+    await shown(page.getByText("BKA-2026-01", { exact: true }));
+    expect(await signatures()).toBe(before);
+    await texts();
+    await cleanOnPhone();
+  });
+
+  test("3f: Annex III sent, its ground chosen and confirmed by the key: the clock stops and the forms' values give the ground", async () => {
+    const before = await signatures();
+    const options = fixtures.state.stepUpOptionsServed;
+    const order = firstOrder();
+    const annex = page.locator("fieldset").filter({ has: page.getByText(ORDER_WORDS.order.annex3, { exact: true }) });
+    const confirm = annex.getByRole("button", { name: `${ORDER_WORDS.order.annex3}: ${ORDER_WORDS.order.confirmKey}` });
+    expect(await confirm.isDisabled()).toBe(true);
+    await annex.getByLabel(ANNEX3_GROUND_LABELS.manifest_error, { exact: true }).check();
+    await confirm.click();
+    await arrived(() => fixtures.state.orderWrites.at(-1)?.what === "event", "the Annex III");
+    expect(fixtures.state.orderWrites.at(-1)).toEqual({ what: "event", id: order.id, key: true, body: { kind: "annex3_sent", ground: "manifest_error", messageId: null } });
+    expect(await signatures()).toBe(before + 1);
+    expect(fixtures.state.stepUpOptionsServed).toBe(options + 1);
+    await shown(page.getByText(`Clock stopped at ${bothTimes(order.clock!.stoppedAt!)}`, { exact: false }));
+    await shown(page.getByText(`Reason: ${ANNEX3_GROUND_LABELS.manifest_error}`, { exact: false }));
+    await texts();
+    await cleanOnPhone();
+  });
+
+  test("3f: a clarification received, its message picked and confirmed by the key: a fresh hour from its delivery; then the desktop's width again", async () => {
+    const order = firstOrder();
+    const stoppedAt = order.clock!.stoppedAt!;
+    const arrivedAt = new Date().toISOString();
+    const clarification: ContactMessage = { id: "b26f7081-92a3-44b5-86c7-d8e95af10213", folder: "inbox", receivedAt: arrivedAt, seenAt: arrivedAt, stale: false, disposition: null, handledAt: null, handledBy: null, orders: [] };
+    fixtures.state.contactMessages.push(clarification);
+    // The order's page reads the messages when it opens.
+    await nav().getByRole("link", { name: "Orders", exact: true }).click();
+    await page.locator(`a[href="/orders/${order.id}"]`).click();
+    const clarify = page.locator("fieldset").filter({ has: page.getByText(ORDER_WORDS.order.clarified, { exact: true }) });
+    await shown(clarify.locator("label.choice"));
+    const before = await signatures();
+    const confirm = clarify.getByRole("button", { name: `${ORDER_WORDS.order.clarified}: ${ORDER_WORDS.order.confirmKey}` });
+    expect(await confirm.isDisabled()).toBe(true);
+    // The newest message first.
+    const newest = clarify.locator("label.choice").first();
+    expect(await newest.textContent()).toBe(`${ORDER_WORDS.contact.received(bothTimes(arrivedAt))}, ${ORDER_WORDS.contact.folders.inbox}`);
+    await newest.locator("input").check();
+    await confirm.click();
+    await arrived(() => (fixtures.state.orderWrites.at(-1)?.body as { kind?: string } | undefined)?.kind === "clarification_received", "the clarification");
+    expect(fixtures.state.orderWrites.at(-1)).toEqual({ what: "event", id: order.id, key: true, body: { kind: "clarification_received", ground: null, messageId: clarification.id } });
+    expect(await signatures()).toBe(before + 1);
+    const due = new Date(Math.max(Date.parse(arrivedAt), Date.parse(stoppedAt)) + ORDER_RULES.hourMinutes * 60_000).toISOString();
+    expect(order.clock!.deadlineAt).toBe(due);
+    await shown(page.getByText(`Due ${bothTimes(due)}: `, { exact: false }));
+    await texts();
+    await cleanOnPhone();
     await page.setViewportSize({ width: 1280, height: 900 });
   });
 
@@ -1688,9 +1915,10 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     expect(watcher.take()).toEqual([]);
     expect(fixtures.state.requests.length).toBeGreaterThan(20);
     // An image is asked for by the browser itself, which sends no mark, and the queue reads itself again every 60 seconds
-    // while it is open, unmarked so that it never keeps a session alive (should a step of the walk ever last that long).
-    // Every other request was the person's own.
-    const pagesOwn = (r: { method: string; path: string }) => IMAGE_PATH.test(r.path) || (r.method === "GET" && (r.path === "/api/staff/queue" || r.path.startsWith("/api/staff/queue?")));
+    // while it is open, unmarked so that it never keeps a session alive (should a step of the walk ever last that long);
+    // so do Orders and an order's page every 20 seconds (3f). Every other request was the person's own.
+    const pagesOwn = (r: { method: string; path: string }) =>
+      IMAGE_PATH.test(r.path) || (r.method === "GET" && (r.path === "/api/staff/queue" || r.path.startsWith("/api/staff/queue?") || r.path === "/api/staff/orders" || r.path.startsWith("/api/staff/orders/")));
     expect(fixtures.state.requests.filter((r) => !r.activity && !pagesOwn(r))).toEqual([]);
     expect(fixtures.state.problems).toEqual([]);
     expect(HOSTILE_TEXTS.filter((text) => !seen.has(text))).toEqual([]);

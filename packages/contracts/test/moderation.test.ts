@@ -373,6 +373,11 @@ describe("moderation error codes", () => {
       "standing_conflict",
       "ground_not_established",
       "message_handled",
+      "order_needs_message",
+      "order_exists",
+      "order_closed",
+      "order_event_refused",
+      "already_released",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

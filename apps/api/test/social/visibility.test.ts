@@ -27,9 +27,14 @@ describe("post visibility", () => {
     }
     expect(tombstone("x", "hidden")).toEqual({ id: "x", unavailable: true });
   });
+  test("a post disabled for an authority's order is hidden from everyone, its author included (3f)", () => {
+    for (const viewer of [null, other, author]) expect(postAccess(viewer, post("disabled"), false), String(viewer)).toBe("hidden");
+    // Answered as a post that does not exist: the tombstone says nothing of why.
+    expect(tombstone("x", "hidden")).toEqual({ id: "x", unavailable: true });
+  });
   test("the reader decides every state the database stores", () => {
-    // The four states above are all of post_state: a seal is a state of images, and no reader of posts learns a new state.
-    expect([...postState.enumValues].sort()).toEqual(["deleted_by_author", "removed", "visible", "withheld"]);
+    // The five states above are all of post_state: a seal is a state of images, and 3f's disabled hides a post from all.
+    expect([...postState.enumValues].sort()).toEqual(["deleted_by_author", "disabled", "removed", "visible", "withheld"]);
   });
   test("a state the reader does not know is hidden from everyone, its author included", () => {
     // What a value added to the database's enum would be for code that was not told about it: never shown.

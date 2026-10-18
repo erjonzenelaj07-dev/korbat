@@ -5,7 +5,7 @@
  */
 
 /** The pages the console links to by name. Such a link is only ever one of these constants, never an address built from data. */
-export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact";
+export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact" | "/orders";
 
 /** A uuid in the one spelling PostgreSQL writes: the only form an id takes in an address the console builds. */
 const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -25,6 +25,18 @@ export function parseCaseId(text: string): CaseId | null {
 /** A case's address in the console: the one address the console builds from a value, and only from a checked id. */
 export const caseHref = (id: CaseId): string => `/cases/${id}`;
 
+declare const orderIdBrand: unique symbol;
+/** 3f: an order's id that parseOrderId has checked: the only thing an order's address is ever built from. */
+export type OrderId = string & { readonly [orderIdBrand]: true };
+
+/** The order's id when the text is a lower-case uuid; null for anything else, which names no order. */
+export function parseOrderId(text: string): OrderId | null {
+  return isLowerUuid(text) ? (text as OrderId) : null;
+}
+
+/** An order's address in the console, built from a checked id alone, as a case's is. */
+export const orderHref = (id: OrderId): string => `/orders/${id}`;
+
 export type Route =
   | { name: "home" }
   | { name: "audit" }
@@ -32,8 +44,10 @@ export type Route =
   | { name: "queue" }
   | { name: "appeals" }
   | { name: "standing" }
-  // 3f: the authorities' contact point.
+  // 3f: the authorities' contact point, the orders and one order.
   | { name: "contact" }
+  | { name: "orders" }
+  | { name: "order"; id: OrderId }
   | { name: "case"; id: CaseId }
   | { name: "enroll"; token: string }
   | { name: "unknown" };
@@ -51,6 +65,12 @@ export function parseRoute(pathname: string): Route {
   if (path === "/appeals") return { name: "appeals" };
   if (path === "/standing") return { name: "standing" };
   if (path === "/contact") return { name: "contact" };
+  if (path === "/orders") return { name: "orders" };
+  const order = /^[/]orders[/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(path);
+  if (order) {
+    const id = parseOrderId(order[1]!);
+    if (id) return { name: "order", id };
+  }
   const found = /^\/cases\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(path);
   if (found) {
     const id = parseCaseId(found[1]!);

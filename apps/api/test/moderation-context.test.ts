@@ -3,7 +3,7 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import { ModerationError, isModerationErrorCode, moderationErrorMessage } from "../src/moderation/context";
 
 describe("the moderation module's refusals", () => {
-  test("each of the thirty-two codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6)", () => {
+  test("each of the thirty-seven codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6)", () => {
     const statuses = {
       notice_link_invalid: 422,
       notice_link_offsite: 422,
@@ -37,8 +37,13 @@ describe("the moderation module's refusals", () => {
       strike_mismatch: 409,
       standing_conflict: 409,
       ground_not_established: 422,
-      // 3f: a message at the contact point that already has its disposition.
+      // 3f: a message at the contact point that already has its disposition; Task 2's order records (section 10.6).
       message_handled: 409,
+      order_needs_message: 422,
+      order_exists: 409,
+      order_closed: 409,
+      order_event_refused: 422,
+      already_released: 409,
     } as const;
     // The table above is the whole of the contracts' list, so a code added there fails here until its status is pinned.
     expect(Object.keys(statuses).sort()).toEqual([...ModerationErrorCode.options].sort());
@@ -55,6 +60,8 @@ describe("the moderation module's refusals", () => {
     // The module's own answers beside them.
     expect([new ModerationError("not_found").status, new ModerationError("invalid_request").status]).toEqual([404, 400]);
     // A session that has not finished onboarding is refused as requireSession refuses it, in the same words.
+    // 3f: order_exists carries the order that stands, the one refusal with a member.
+    expect(new ModerationError("order_exists", undefined, undefined, undefined, { orderId: "x" }).details).toEqual({ orderId: "x" });
     expect(new ModerationError("onboarding_required")).toMatchObject({ status: 403, message: "Choose a handle to finish setting up your account." });
     expect([new ModerationError("rate_limited").status, new ModerationError("service_unavailable").status]).toEqual([429, 503]);
   });

@@ -83,7 +83,7 @@ export function refuseUnopened(params: { actions: readonly { kind: ActionKind }[
 const DECISION_WAITS = 15;
 
 /** A transaction that met a deadlock or a lock timeout is run once more only while more than this much of the challenge is left. */
-const RETRY_MARGIN_MS = 60_000;
+export const RETRY_MARGIN_MS = 60_000;
 
 /** One staff account's decisions of the last this long are counted, and at this many every staff account is told. */
 export const BURST_WINDOW_MS = 15 * 60_000;

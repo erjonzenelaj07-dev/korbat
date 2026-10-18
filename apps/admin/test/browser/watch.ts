@@ -112,7 +112,7 @@ export async function watch(context: BrowserContext, page: Page, origin: string)
 
 /**
  * What the page holds that the console never writes: an element that runs or loads something, an inline handler or
- * style, a link that is not one of the console's own pages or a case's address, a form with an action, or a script other
+ * style, a link that is not one of the console's own pages or a case's or an order's address, a form with an action, or a script other
  * than the bundle. The one image the console draws is a case's, from the staff API on its own origin, by the address its
  * one image site builds; any other image is a problem. Plain text, evaluated in the page, for the reason INIT_SCRIPT is.
  */
@@ -123,6 +123,7 @@ const INSPECT_SCRIPT = `
   if (!root) return ["the page has no #root"];
   const id = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
   const casePath = new RegExp("^/cases/" + id + "$");
+  const orderPath = new RegExp("^/orders/" + id + "$");
   const imagePath = new RegExp("^/api/staff/cases/" + id + "/media/" + id + "/(small|large)$");
   const caseImage = (element) => element.tagName === "IMG" && imagePath.test(String(element.getAttribute("src")))
     && (element.getAttribute("class") === "evidence" || element.getAttribute("class") === "evidence blurred");
@@ -137,7 +138,7 @@ const INSPECT_SCRIPT = `
   }
   for (const link of root.querySelectorAll("a")) {
     const href = link.getAttribute("href");
-    if (href !== "/" && href !== "/audit" && href !== "/signin" && href !== "/queue" && href !== "/appeals" && href !== "/standing" && href !== "/contact" && !casePath.test(String(href))) out.push("a link to " + String(href));
+    if (href !== "/" && href !== "/audit" && href !== "/signin" && href !== "/queue" && href !== "/appeals" && href !== "/standing" && href !== "/contact" && href !== "/orders" && !casePath.test(String(href)) && !orderPath.test(String(href))) out.push("a link to " + String(href));
   }
   for (const form of root.querySelectorAll("form")) {
     if (form.hasAttribute("action")) out.push("a form with an action: " + String(form.getAttribute("action")));

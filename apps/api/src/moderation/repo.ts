@@ -551,7 +551,8 @@ export interface SnapshotRow {
   targetType: TargetType;
   targetId: string;
   authorHandle: string;
-  postState: "visible" | "withheld" | "removed" | "deleted_by_author" | null;
+  // 3f: a post disabled for an order is a state the database stores; no snapshot holds it before an order is given effect.
+  postState: "visible" | "withheld" | "removed" | "deleted_by_author" | "disabled" | null;
   postCreatedAt: string | null;
   replyToId: string | null;
   quoteOfId: string | null;
@@ -678,7 +679,8 @@ export async function recentDecisionsBy(q: Runner, staffId: string, windowMs: nu
 export interface ConfirmedAuditRow {
   actorId: string;
   keyId: string;
-  action: "case_decided" | "appeals_reviewed" | "identity_revealed";
+  /** 3f adds the two actions of an order's record that a key confirms (append_confirmed_audit's list, 0027_orders). */
+  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected";
   targetType: string;
   targetId: string;
   metadata: Record<string, unknown>;

@@ -1,15 +1,19 @@
-import { CONTACT_CLOSE_DISPOSITIONS, DISPOSITION_LABELS, type ContactCloseRequest, type ContactMessage, type ContactPage } from "@korbat/contracts";
-import { useEffect, useRef, useState } from "react";
+import { CONTACT_CLOSE_DISPOSITIONS, DISPOSITION_LABELS, type ContactCloseRequest, type ContactMessage, type ContactPage, type StaffMe } from "@korbat/contracts";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { StaffApi } from "../api";
 import { describeError, ORDER_WORDS } from "../messages";
+import { OrderLink } from "../nav";
+import { parseOrderId, type OrderId } from "../router";
 import { bothTimes, Loaded, UserText, type Loadable } from "../ui";
+import { OpenOrder, type Opened } from "./Orders";
 
 /**
  * The Contact point screen (3f design, section 8.3): the messages the watcher recorded at the authorities' contact point,
  * newest first, 50 a page with "Load older". korbat records that a message arrived and when, never who sent it or what it
  * says: a person reads each in the mail host's own app. A message nobody handled is closed here as what it turned out to
  * be, one of six words, without a key, since closing restricts nothing and tells nobody; the stale ones an outage left are
- * closed together, one request each. Opening an order from a message is the form of a later task. Every list is a list of
+ * closed together, one request each. "Open an order from this message" opens the form of the Orders screen with the
+ * message picked (Task 2), and a message opened as an order links to it. Every list is a list of
  * blocks, label above value, usable at a phone's width.
  */
 
@@ -33,10 +37,23 @@ function CloseChoices({ group, chosen, disabled, onChoose }: { group: string; ch
   );
 }
 
-/** Who handled a message and when, or that nobody has. */
-function Handled({ message }: { message: ContactMessage }) {
+/** Who handled a message and when, or that nobody has; a message opened as an order links to it. */
+function Handled({ message, onOpenOrder }: { message: ContactMessage; onOpenOrder?: (id: OrderId) => void }) {
   if (message.disposition === null) return <p>{W.notHandled}</p>;
-  if (message.disposition === "order") return <p>{W.handledOrder}</p>;
+  if (message.disposition === "order") {
+    const id = message.orders.length > 0 ? parseOrderId(message.orders[0]!) : null;
+    return (
+      <p>
+        {id !== null && onOpenOrder ? (
+          <OrderLink id={id} onOpen={onOpenOrder}>
+            {W.handledOrder}
+          </OrderLink>
+        ) : (
+          W.handledOrder
+        )}
+      </p>
+    );
+  }
   const label = DISPOSITION_LABELS[message.disposition];
   const at = message.handledAt === null ? "" : bothTimes(message.handledAt);
   if (message.handledBy === null) return <p>{W.handledBySystem(label, at)}</p>;
@@ -62,9 +79,14 @@ export interface ContactViewProps {
   onClose(id: string): void;
   onCloseStale(): void;
   onLoadOlder(): void;
+  /** 3f, Task 2: the message whose form "Open an order" is open, the form itself, and how to open it and an order. */
+  formFor?: string | null;
+  form?: ReactNode;
+  onOpenForm?: (id: string) => void;
+  onOpenOrder?: (id: OrderId) => void;
 }
 
-export function ContactView({ page, choices, busy, notice, error, loadingOlder, onChoose, onClose, onCloseStale, onLoadOlder }: ContactViewProps) {
+export function ContactView({ page, choices, busy, notice, error, loadingOlder, onChoose, onClose, onCloseStale, onLoadOlder, formFor = null, form = null, onOpenForm, onOpenOrder }: ContactViewProps) {
   return (
     <section aria-labelledby="contact-title">
       <h2 id="contact-title">{W.title}</h2>
@@ -105,7 +127,16 @@ export function ContactView({ page, choices, busy, notice, error, loadingOlder, 
                       <p>{W.received(bothTimes(message.receivedAt))}</p>
                       <p>{W.folders[message.folder]}</p>
                       {message.stale ? <p className="notice">{W.stale}</p> : null}
-                      <Handled message={message} />
+                      <Handled message={message} onOpenOrder={onOpenOrder} />
+                      {message.disposition === null && onOpenForm ? (
+                        formFor === message.id ? (
+                          form
+                        ) : (
+                          <button type="button" disabled={busy !== null} onClick={() => onOpenForm(message.id)}>
+                            {ORDER_WORDS.openFromMessage}
+                          </button>
+                        )
+                      ) : null}
                       {message.disposition === null ? (
                         <fieldset>
                           <legend>{W.closeAs}</legend>
@@ -133,7 +164,8 @@ export function ContactView({ page, choices, busy, notice, error, loadingOlder, 
   );
 }
 
-export function Contact({ api }: { api: StaffApi }) {
+export function Contact({ api, me, onOpened, onOpenOrder }: { api: StaffApi; me: StaffMe; onOpened(opened: Opened): void; onOpenOrder(id: OrderId): void }) {
+  const [formFor, setFormFor] = useState<string | null>(null);
   const [page, setPage] = useState<Loadable<ContactPage>>({ state: "loading" });
   const [choices, setChoices] = useState<Record<string, CloseWord>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -230,6 +262,10 @@ export function Contact({ api }: { api: StaffApi }) {
       onClose={(id) => void close(id)}
       onCloseStale={() => void closeStale()}
       onLoadOlder={() => void loadOlder()}
+      formFor={formFor}
+      form={formFor === null ? null : <OpenOrder key={formFor} api={api} me={me} message={formFor} onOpened={onOpened} onOpenOrder={onOpenOrder} />}
+      onOpenForm={setFormFor}
+      onOpenOrder={onOpenOrder}
     />
   );
 }

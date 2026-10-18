@@ -419,6 +419,26 @@ export function createMediaRepo(db: Db) {
      * of an image itself. The staff command line's text-verify reads every such row through it, a page at a time, to
      * hold the stored states to what the ledger of measures says they must be.
      */
+    /**
+     * 3f (design, section 7.4): the post an image's address belongs to, or null when no attached image row has the id. An
+     * order that names a picture's address names its post; this is a read, and it holds no row.
+     */
+    async imagePost(q: Pick<Db, "select"> | Pick<DbTx, "select">, mediaId: string): Promise<string | null> {
+      const [row] = await q.select({ postId: postMedia.postId }).from(postMedia).where(and(eq(postMedia.id, mediaId), isNotNull(postMedia.postId))).limit(1);
+      return row?.postId ?? null;
+    },
+
+    /** 3f (design, section 7.5): how many image rows each of these posts holds, for an order's screen; a post with none is left out. */
+    async imageCounts(q: Pick<Db, "select"> | Pick<DbTx, "select">, postIds: readonly string[]): Promise<Map<string, number>> {
+      if (postIds.length === 0) return new Map();
+      const found = await q
+        .select({ postId: postMedia.postId, count: sql<number>`count(*)::int` })
+        .from(postMedia)
+        .where(inArray(postMedia.postId, [...postIds]))
+        .groupBy(postMedia.postId);
+      return new Map(found.map((row) => [row.postId!, row.count]));
+    },
+
     async moderationStates(afterId: string | null, limit: number): Promise<{ id: string; postId: string; moderationState: MediaRow["moderationState"]; erasedAt: Date | null }[]> {
       const found = await db
         .select({ id: postMedia.id, postId: postMedia.postId, moderationState: postMedia.moderationState, erasedAt: postMedia.erasedAt })

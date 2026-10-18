@@ -3,22 +3,24 @@ import { bigint, boolean, check, date, index, integer, jsonb, pgEnum, pgPolicy, 
 import { postMedia, postState } from "./content";
 import { apiRole, fullAccess, ts, xid8 } from "./helpers";
 import { profiles } from "./identity";
+import { contactMessages } from "./safety";
 
 // Moderation cases (3c design, section 6.1). The API inserts rows; migrator-owned triggers and functions (migrations 0015
 // to 0018) check them, force the columns marked "forced" whatever an insert supplied, and derive every restriction from
 // them. Every table has one allow-all policy for the API role: the grants of migration 0015 do the restricting.
 
 export const moderationTarget = pgEnum("moderation_target", ["post", "account"]);
-/** Who an intake comes from: a user's report or notice, or a moderator's own finding. */
-export const intakeKind = pgEnum("intake_kind", ["user", "finding"]);
-export const intakeChannel = pgEnum("intake_channel", ["signed_in", "signed_out", "staff"]);
+/** Who an intake comes from: a user's report or notice, or a moderator's own finding; 3f: an authority's order. */
+export const intakeKind = pgEnum("intake_kind", ["user", "finding", "order"]);
+export const intakeChannel = pgEnum("intake_channel", ["signed_in", "signed_out", "staff", "authority"]);
 /** The state of one mail korbat owes. `failed` is final: the relay refused the address for good, or five days passed. */
 export const deliveryState = pgEnum("delivery_state", ["pending", "sent", "folded", "suppressed", "no_address", "none", "failed"]);
 export const itemOutcome = pgEnum("item_outcome", ["restricted_rule", "restricted_legal", "no_violation", "not_evident", "not_available", "partly_reversed", "reversed"]);
-export const decisionKind = pgEnum("decision_kind", ["interim", "final", "review", "correction"]);
+/** 3f: `order`, the decision that gives effect to one item of an authority's order. */
+export const decisionKind = pgEnum("decision_kind", ["interim", "final", "review", "correction", "order"]);
 export const decisionOutcome = pgEnum("decision_outcome", ["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]);
 export const decisionGround = pgEnum("decision_ground", ["incompatible", "illegal"]);
-export const decisionSource = pgEnum("decision_source", ["notice", "report", "own_initiative"]);
+export const decisionSource = pgEnum("decision_source", ["notice", "report", "own_initiative", "order"]);
 /**
  * 3c's seven measures and five reversals, then 3e's six measures and four reversals (3e design, section 6.1), in the order
  * the migrations added them. The view measures_in_force names the measures. A value of 3e is named as an enum literal
@@ -47,6 +49,10 @@ export const actionKind = pgEnum("action_kind", [
   "lift_suspension",
   "unretire_handle",
   "lift_reporting",
+  // 3f (design, section 6.2): the measure of an order decision and its reversal. As 3e's, each is an enum literal only
+  // inside a PL/pgSQL body of the migration that adds it (enum-literals.test.ts).
+  "disable_by_order",
+  "reinstate_by_order",
 ]);
 
 /**
@@ -332,8 +338,12 @@ export const decisions = pgTable(
     xact: xid8("xact").notNull(),
     /** Forced: 32 random hex characters, the Transparency Database's platform id, never the internal id. */
     puid: text("puid").notNull().unique(),
-    /** Forced equal to decided_at: the author's case screen shows the statement at commit. */
-    informedAt: ts("informed_at").notNull(),
+    /**
+     * Forced equal to decided_at: the author's case screen shows the statement at commit. 3f: null while the author is not
+     * told (an order's held notice, and every decision held with it), which decisions_informed allows only with no mail
+     * pending; every author-side read takes the fragment toldToAuthor, both halves.
+     */
+    informedAt: ts("informed_at"),
     /** Forced: the decision is taken on a case that holds, or answers, a suspect item. */
     suspect: boolean("suspect").notNull(),
     /** Forced: true for a final decision on a post case taken while the post was frozen, so that nobody could open its images. */
@@ -347,6 +357,8 @@ export const decisions = pgTable(
     authorMailAt: ts("author_mail_at"),
     /** The R4 redaction. */
     redactedAt: ts("redacted_at"),
+    /** 3f: the item of an authority's order that an `order` decision gives effect to; null for every other decision. */
+    orderItemId: uuid("order_item_id").references((): AnyPgColumn => legalOrderItems.id, { onDelete: "set null" }),
   },
   (t) => [
     check("decisions_rule_id", sql`${t.ruleId} in (${listOf(RULE_IDS)})`),
@@ -357,8 +369,12 @@ export const decisions = pgTable(
     check("decisions_review_target", sql`(${t.kind} in ('review', 'correction')) = (${t.reviewsDecisionId} is not null) and (${t.kind} = 'review') = (${t.appealId} is not null)`),
     check("decisions_interim", sql`${t.kind} <> 'interim' or ${t.throughSeq} = 0`),
     check("decisions_ground_rule", sql`${t.ground} is distinct from 'incompatible' or ${t.ruleId} is not null`),
-    check("decisions_ground_law", sql`${t.ground} is distinct from 'illegal' or ${t.legalReferenceDigest} is not null`),
-    check("decisions_restricted", sql`${t.outcome} <> 'restricted' or (${t.ground} is not null and ${t.factsDigest} is not null and ${t.reasonDigest} is not null)`),
+    // 3f: an order decision restricts on the law with no text of korbat's (its kind compared as text: the migration that
+    // adds the value cannot name it as a literal of the enum).
+    check("decisions_ground_law", sql`${t.ground} is distinct from 'illegal' or ${t.legalReferenceDigest} is not null or ${t.kind}::text = 'order'`),
+    check("decisions_restricted", sql`${t.outcome} <> 'restricted' or (${t.ground} is not null and ${t.factsDigest} is not null and ${t.reasonDigest} is not null) or ${t.kind}::text = 'order'`),
+    // 3f: an untold decision has no mail pending, whatever its kind.
+    check("decisions_informed", sql`${t.informedAt} is not null or ${t.authorMail}::text = 'none'`),
     check(
       "decisions_digests",
       sql`(${t.factsDigest} is null or ${t.factsDigest} ~ '^[0-9a-f]{64}$') and (${t.reasonDigest} is null or ${t.reasonDigest} ~ '^[0-9a-f]{64}$') and (${t.legalReferenceDigest} is null or ${t.legalReferenceDigest} ~ '^[0-9a-f]{64}$')`,
@@ -420,6 +436,12 @@ export const decisionActions = pgTable(
     endsAt: ts("ends_at"),
     /** On a lift_suspension only: the correction withdraws an announced measure that had not started, to make room for another. */
     replaced: boolean("replaced"),
+    // 3f (design, section 6.2). Until the ledger's functions of Task 3 no function accepts an order's kinds, so neither is
+    // stored before then.
+    /** Forced on a disable_by_order from its order's withhold_from_author: whether the post is kept from its author too. */
+    withholdAuthor: boolean("withhold_author"),
+    /** Supplied and signed on a reinstate_by_order: why the order's measure ends. */
+    orderGround: text("order_ground"),
   },
   (t) => [
     check("decision_actions_no_effect", sql`${t.noEffect} in ('already', 'deleted')`),
@@ -427,6 +449,7 @@ export const decisionActions = pgTable(
     check("decision_actions_days", sql`${t.days} between 1 and 30`),
     check("decision_actions_basis", sql`${t.basis} in (${listOf(STANDING_BASES)})`),
     check("decision_actions_announced", sql`${t.announced} is null or ${t.basis} is not null`),
+    check("decision_actions_order_ground", sql`${t.orderGround} in ('withdrawn', 'annulled', 'scrutiny', 'not_authentic', 'wrong_item')`),
     // Nulls not distinct: a decision holds a measure without an image (a post measure, a seal, a field reset) once too.
     unique("decision_actions_once").on(t.decisionId, t.kind, t.mediaId).nullsNotDistinct(),
     /** A measure is lifted at most once. */
@@ -727,4 +750,230 @@ export const reportTallies = pgTable(
     reports: integer("reports").notNull(),
   },
   (t) => [primaryKey({ columns: [t.accountId, t.day] }), pgPolicy("report_tallies_api_select", { for: "select", to: apiRole, using: sql`true` })],
+).enableRLS();
+
+// ---------------------------------------------------------------- authorities' orders (3f design, section 6.2)
+
+// Written from the contracts' ORDER_KINDS, ORDER_CHANNELS, HOLD_END_REASONS, TELL_PERSON_RULES, ORDER_ITEM_CLOSE_REASONS,
+// ORDER_EVENT_KINDS, ORDER_EVENT_VIA and ORDER_EVENT_GROUNDS; a database test holds each CHECK to its constant.
+const ORDER_KINDS = ["tco_removal", "dsa_art9", "dsa_art10"];
+const ORDER_CHANNELS = ["mailbox", "portal", "post", "other"];
+const HOLD_END_REASONS = ["not_authentic", "annulled", "released_by_authority", "not_ordered"];
+const ORDER_ITEM_CLOSE_REASONS = ["no_post", "not_named", "withdrawn"];
+const ORDER_EVENT_KINDS = [
+  "opened",
+  "annex3_sent",
+  "grounds_ceased",
+  "clarification_received",
+  "annex2_sent",
+  "receipt_confirmed",
+  "closed_without_effect",
+  "reopened",
+  "hold_extended",
+  "corrected",
+  "effect_given",
+  "reinstated",
+  "notice_released",
+  "preservation_ended",
+  "verified",
+  "issued_at_set",
+  "texts_recorded",
+  "document_recorded",
+  "received_set",
+  "sent_at_set",
+  "due_set",
+  "hold_ended",
+  "hold_until_set",
+  "preservation_extended",
+  "scrutiny_requested",
+  "scrutiny_decided",
+  "tell_person_set",
+  "person_told",
+  "imported",
+];
+/** The grounds of each kind of event that takes one; every other kind takes none. */
+const ORDER_EVENT_GROUNDS: Record<string, readonly string[]> = {
+  annex3_sent: ["force_majeure", "manifest_error", "insufficient_information"],
+  closed_without_effect: ["withdrawn", "annulled", "scrutiny", "not_authentic", "wrong_item", "not_addressed"],
+  corrected: ["entry", "caution", "admin"],
+  reinstated: ["withdrawn", "annulled", "scrutiny", "not_authentic", "wrong_item"],
+  hold_ended: HOLD_END_REASONS,
+  scrutiny_decided: ["upheld", "annulled"],
+};
+const eventGroundCheck = sql.raw(
+  [
+    ...Object.entries(ORDER_EVENT_GROUNDS).map(([kind, grounds]) => `(kind = '${kind}' and ground in (${grounds.map((g) => `'${g}'`).join(", ")}))`),
+    `(kind not in (${Object.keys(ORDER_EVENT_GROUNDS)
+      .map((kind) => `'${kind}'`)
+      .join(", ")}) and ground is null)`,
+  ].join(" or "),
+);
+
+/**
+ * One order of an authority, as a person entered it from its document (3f design, section 6.2). The console's columns
+ * come from the API's insert, which the trigger legal_orders_insert completes: it forces when and how the order was
+ * opened, its time of receipt from the named message, the channel mailbox with a message, and the withholding and the
+ * preservation by kind; it nulls every column of the command line, which only the migrator writes. The API role may read
+ * and insert, never update: a correction, a clock event and a reopening go through definer functions bound to their
+ * audit rows. The order's document is not stored, only its digest and length.
+ */
+export const legalOrders = pgTable(
+  "legal_orders",
+  {
+    /** Supplied, so the audit row can name it. */
+    id: uuid("id").primaryKey(),
+    kind: text("kind").notNull(),
+    /** The issuing state's ISO code. */
+    memberState: text("member_state").notNull(),
+    authority: text("authority").notNull(),
+    reference: text("reference").notNull(),
+    /** How the order arrived; forced mailbox when a message is named. */
+    channel: text("channel").notNull(),
+    messageId: uuid("message_id").references(() => contactMessages.id, { onDelete: "restrict" }),
+    /** Forced: the named message's time of receipt; null without a message until the command line records it. */
+    receivedAt: ts("received_at"),
+    /** The command line's: the sending time the channel states, the order's own time stamp, a DSA order's deadline. */
+    sentAt: ts("sent_at"),
+    issuedAt: ts("issued_at"),
+    dueAt: ts("due_at"),
+    /** "The author must not be told". No default: an insert that leaves it out is refused. */
+    sectionC: boolean("section_c").notNull(),
+    emergency: boolean("emergency").notNull(),
+    /** The API's: the issuing state is not HOME_STATE. */
+    crossBorder: boolean("cross_border").notNull(),
+    /** Forced true for a removal order and for any order with Section C. */
+    withholdFromAuthor: boolean("withhold_from_author").notNull(),
+    /** Forced: true for a removal order, false otherwise. */
+    preserve: boolean("preserve").notNull(),
+    /** The command line's: the end the authority states, what it rests on, the one extension and the hold's end. */
+    authorityHoldUntil: ts("authority_hold_until"),
+    holdBasis: text("hold_basis"),
+    holdExtended: boolean("hold_extended").notNull().default(false),
+    holdEndedAt: ts("hold_ended_at"),
+    holdEndReason: text("hold_end_reason"),
+    /** The command line's, for an order to provide information: when the person it concerns is told. */
+    tellPerson: text("tell_person"),
+    tellPersonAt: ts("tell_person_at"),
+    openedBy: uuid("opened_by").references(() => profiles.id, { onDelete: "restrict" }),
+    /** Forced console for every role but the migrator, and clock_timestamp(). */
+    openedVia: text("opened_via").notNull(),
+    openedAt: ts("opened_at").notNull(),
+    /** The command line's: the check, the authority's texts (held as staff_texts holds a text) and the document's digest. */
+    verifiedAt: ts("verified_at"),
+    verifiedHow: text("verified_how"),
+    reasons: text("reasons"),
+    reasonsSalt: text("reasons_salt"),
+    reasonsDigest: text("reasons_digest"),
+    redress: text("redress"),
+    redressSalt: text("redress_salt"),
+    redressDigest: text("redress_digest"),
+    scope: text("scope"),
+    scopeSalt: text("scope_salt"),
+    scopeDigest: text("scope_digest"),
+    documentSha256: text("document_sha256"),
+    documentBytes: bigint("document_bytes", { mode: "number" }),
+    /** Set and cleared by order_event_record (closed_without_effect, reopened) and cleared by order-reopen. */
+    closedAt: ts("closed_at"),
+    importedAt: ts("imported_at"),
+  },
+  (t) => [
+    unique("legal_orders_reference_key").on(t.memberState, t.authority, t.reference),
+    check("legal_orders_kind", sql`${t.kind} in (${listOf(ORDER_KINDS)})`),
+    check("legal_orders_member_state", sql`${t.memberState} ~ '^[A-Z]{2}$'`),
+    check("legal_orders_names", sql`char_length(${t.authority}) between 1 and 200 and char_length(${t.reference}) between 1 and 200`),
+    check("legal_orders_channel", sql`${t.channel} in (${listOf(ORDER_CHANNELS)})`),
+    check("legal_orders_opened_via", sql`${t.openedVia} in ('console', 'cli')`),
+    check("legal_orders_received", sql`${t.receivedAt} <= ${t.openedAt} and ${t.sentAt} <= ${t.openedAt}`),
+    check("legal_orders_issued", sql`${t.issuedAt} <= coalesce(${t.receivedAt}, ${t.openedAt})`),
+    // A notice can be held only on a post its author cannot see; what a removal order disabled is preserved.
+    check("legal_orders_tco", sql`((${t.kind} <> 'tco_removal' and not ${t.sectionC}) or ${t.withholdFromAuthor}) and (${t.kind} <> 'tco_removal' or ${t.preserve})`),
+    check(
+      "legal_orders_tell",
+      sql`(${t.tellPerson} is null or (${t.tellPerson} in ('at_effect', 'at_instant', 'never') and ${t.kind} = 'dsa_art10')) and (${t.tellPersonAt} is not null) = (${t.tellPerson} is not distinct from 'at_instant')`,
+    ),
+    check("legal_orders_hold_end", sql`(${t.holdEndedAt} is null) = (${t.holdEndReason} is null) and ${t.holdEndReason} in (${listOf(HOLD_END_REASONS)})`),
+    check(
+      "legal_orders_texts_len",
+      sql`char_length(${t.verifiedHow}) <= 500 and char_length(${t.holdBasis}) <= 500 and char_length(${t.scope}) <= 500 and char_length(${t.reasons}) <= 4000 and char_length(${t.redress}) <= 4000`,
+    ),
+    check("legal_orders_document", sql`${t.documentSha256} ~ '^[0-9a-f]{64}$' and ${t.documentBytes} >= 0`),
+    /** The day's count of records a staff account opened. */
+    index("legal_orders_opened_by_idx").on(t.openedBy, t.openedAt),
+    fullAccess("legal_orders_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * One link an order names (6.2), with the post it resolved to when it named one: no foreign key, since a record outlives
+ * its post. The API inserts the link as named; the trigger forces added_at; the ledger's triggers and the migrator write
+ * what the item became (its decision, measure, disabling, preservation and reinstatement), and order_correct and the
+ * migrator its closing without effect. The API role updates intake_item_id alone, inside the effect transaction.
+ */
+export const legalOrderItems = pgTable(
+  "legal_order_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id").notNull().references(() => legalOrders.id, { onDelete: "restrict" }),
+    /** 1 to ORDER_ITEMS_MAX, unique in its order. */
+    position: smallint("position").notNull(),
+    /** As the order names it, at most 500 characters. */
+    link: text("link").notNull(),
+    postId: uuid("post_id"),
+    /** Forced: clock_timestamp(), so an item added after the verification reads as unverified. */
+    addedAt: ts("added_at").notNull(),
+    intakeItemId: uuid("intake_item_id").references(() => intakeItems.id, { onDelete: "restrict" }),
+    /** The newest decision and measure that serve the item; no foreign keys, as the ledger's own rows are never deleted. */
+    decisionId: uuid("decision_id"),
+    actionId: uuid("action_id"),
+    disabledAt: ts("disabled_at"),
+    preserveUntil: ts("preserve_until"),
+    preserveEndedAt: ts("preserve_ended_at"),
+    reinstatedAt: ts("reinstated_at"),
+    closedAt: ts("closed_at"),
+    closedReason: text("closed_reason"),
+  },
+  (t) => [
+    unique("legal_order_items_position_key").on(t.orderId, t.position),
+    uniqueIndex("legal_order_items_post_key").on(t.orderId, t.postId).where(sql`post_id is not null`),
+    check("legal_order_items_position", sql`${t.position} between 1 and 50`),
+    check("legal_order_items_link", sql`char_length(${t.link}) between 1 and 500`),
+    check(
+      "legal_order_items_closed",
+      sql`(${t.closedAt} is null) = (${t.closedReason} is null) and ${t.closedReason} in (${listOf(ORDER_ITEM_CLOSE_REASONS)}) and (${t.closedAt} is null or ${t.disabledAt} is null)`,
+    ),
+    /** The freeze's fourth arm (Task 3): is this post preserved by an order. */
+    index("legal_order_items_preserved_idx").on(t.postId).where(sql`preserve_until is not null`),
+    fullAccess("legal_order_items_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * An order's events (6.2), insert-only: the API inserts `opened` alone, the two definer functions order_event_record and
+ * order_correct the console's, the ledger's functions (Task 3) theirs and the migrator the command line's. A console's
+ * event stands only with the audit row a key confirmed, which the deferred trigger legal_order_events_confirmed checks.
+ */
+export const legalOrderEvents = pgTable(
+  "legal_order_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id").notNull().references(() => legalOrders.id, { onDelete: "restrict" }),
+    itemId: uuid("item_id").references(() => legalOrderItems.id, { onDelete: "restrict" }),
+    kind: text("kind").notNull(),
+    /** Forced clock_timestamp() for every role but the migrator. */
+    at: ts("at").notNull(),
+    /** The time the event counts from: a picked message's time of receipt, or a restart's later time; never after `at`. */
+    effectiveAt: ts("effective_at"),
+    ground: text("ground"),
+    byStaff: uuid("by_staff").references(() => profiles.id, { onDelete: "restrict" }),
+    via: text("via").notNull(),
+  },
+  (t) => [
+    check("legal_order_events_kind", sql`${t.kind} in (${listOf(ORDER_EVENT_KINDS)})`),
+    check("legal_order_events_ground", eventGroundCheck),
+    check("legal_order_events_via", sql`${t.via} in ('console', 'cli', 'system')`),
+    check("legal_order_events_effective", sql`${t.effectiveAt} <= ${t.at}`),
+    index("legal_order_events_order_idx").on(t.orderId, t.at),
+    uniqueIndex("legal_order_events_opened_key").on(t.orderId).where(sql`kind = 'opened'`),
+    fullAccess("legal_order_events_api_all", apiRole),
+  ],
 ).enableRLS();

@@ -1,5 +1,5 @@
 import type { MouseEvent, ReactNode } from "react";
-import { caseHref, type CaseId, type ConsolePath } from "./router";
+import { caseHref, orderHref, type CaseId, type ConsolePath, type OrderId } from "./router";
 
 /**
  * A link to one of the console's own pages. Its address is one of the constants ConsolePath lists, never built from
@@ -31,6 +31,23 @@ export function CaseLink({ id, onOpen, children }: { id: CaseId; onOpen(id: Case
   };
   return (
     <a href={caseHref(id)} onClick={follow}>
+      {children}
+    </a>
+  );
+}
+
+/**
+ * 3f: a link to an order's page in the console, built as a case's is: from an OrderId, which only parseOrderId makes, and
+ * from nothing else.
+ */
+export function OrderLink({ id, onOpen, children }: { id: OrderId; onOpen(id: OrderId): void; children: ReactNode }) {
+  const follow = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    onOpen(id);
+  };
+  return (
+    <a href={orderHref(id)} onClick={follow}>
       {children}
     </a>
   );

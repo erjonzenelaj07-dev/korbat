@@ -80,6 +80,11 @@ services:
       # the console's origin and relying party ID it is issued for. Empty, the console is off and enroll refuses.
       CONSOLE_ORIGIN: ${API_CONSOLE_ORIGIN:-}
       CONSOLE_RP_ID: ${API_CONSOLE_RP_ID:-}
+      # 3f: staff.js order-open runs here too, and reads the home state (whether an order is cross-border) and the app's
+      # origin (how a link is read, as the console's route reads it). Neither is required: enroll and the migrations run
+      # without them, and order-open refuses with one sentence while either is empty.
+      HOME_STATE: ${API_HOME_STATE:-}
+      APP_ORIGIN: ${API_APP_ORIGIN:-}
     networks: [data]
     depends_on:
       postgres: { condition: service_healthy }
@@ -143,6 +148,11 @@ services:
       # Authorities' orders (3f): whether the alert tick judges the alert channel's health. Empty means on in production;
       # off until the contact point's mailbox exists (README, Upgrading).
       NOTIFY: ${API_NOTIFY:-}
+      # The operator's Member State, a state whose facts the contracts hold (DE is filled in), and the published contact
+      # point for authorities. Both empty until the owner's list is done; the home state is required once the contact
+      # point is set.
+      HOME_STATE: ${API_HOME_STATE:-}
+      CONTACT_POINT: ${API_CONTACT_POINT:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

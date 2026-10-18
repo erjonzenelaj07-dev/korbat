@@ -47,6 +47,11 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   ground_not_established: 422,
   // 3f (design, section 10.6).
   message_handled: 409,
+  order_needs_message: 422,
+  order_exists: 409,
+  order_closed: 409,
+  order_event_refused: 422,
+  already_released: 409,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -94,8 +99,13 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   strike_mismatch: "The strike rule changed for this post since the case was read. Read it again and decide again.",
   standing_conflict: "A suspension or termination of this account already stands and has not ended.",
   ground_not_established: "No termination can rest on a report of images that korbat has not assessed.",
-  // 3f: for staff; the console words it again.
+  // 3f: for staff; the console words them again.
   message_handled: "That message was already handled.",
+  order_needs_message: "Pick the message this came in.",
+  order_exists: "An order of this authority with this reference is already recorded.",
+  order_closed: "This order is closed.",
+  order_event_refused: "That cannot be recorded now: the order is not in that state.",
+  already_released: "The author's notice of this order was already released, or its hold was ended.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.
@@ -114,6 +124,8 @@ export class ModerationError extends Error {
     message: string = MESSAGES[code],
     /** Set for rate_limited so the response can carry Retry-After. */
     readonly retryAfterSeconds?: number,
+    /** 3f: the one refusal that carries a member, order_exists, names the order that stands (section 10.6). */
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ModerationError";

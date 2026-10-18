@@ -15,7 +15,11 @@
  * them are kept for good, so what they are about stays too. And an account is kept when a moderation row that stays
  * names it as staff: the finder of an intake that keeps an item, the author of a staff text and the staff of an access
  * row in a case that stays. A case stays when the account it is about does, so this rule is applied until it adds
- * nobody.
+ * nobody. 3f: an account that opened an authority's order or closed a message at the contact point is kept as one that
+ * decided is, and one that wrote an event of an order that stays is kept with that order.
+ *
+ * An order whose items name only posts of accounts that go is deleted before them, with its alert rows, its events, its
+ * items and the message it came in with (unless an order that stays came in with it too), and counted in the report.
  *
  * Every other case about a deleted account, or about one of its posts, is deleted with it: posts and profiles are
  * never deleted in production, so such a case could never be decided and would stay in the development queue after
@@ -111,6 +115,9 @@ create temp table kept on commit drop as
     where exists (select 1 from auth.staff_keys k where k.user_id = c.id)
        or exists (select 1 from public.decisions d where d.decided_by = c.id)
        or exists (select 1 from auth.staff_personal_accounts l where l.staff_user_id = c.id or l.personal_user_id = c.id)
+       -- 3f: whoever opened an order or closed a message at the contact point.
+       or exists (select 1 from public.legal_orders o where o.opened_by = c.id)
+       or exists (select 1 from public.contact_messages m where m.handled_by = c.id)
        or exists (
          select 1 from public.cases cs
           where ((cs.target_type = 'account' and cs.target_id = c.id)
@@ -133,6 +140,15 @@ begin
         from public.cases cs
         where (cs.target_type = 'account' and cs.target_id in (select id from going))
            or (cs.target_type = 'post' and cs.target_id in (select po.id from public.posts po where po.author_id in (select id from going)))
+    ), going_orders as (
+      -- 3f: an order goes when its items name only posts of accounts that go.
+      select o.id
+        from public.legal_orders o
+        where exists (select 1 from public.legal_order_items i where i.order_id = o.id)
+          and not exists (
+            select 1 from public.legal_order_items i
+             where i.order_id = o.id
+               and (i.post_id is null or i.post_id not in (select po.id from public.posts po where po.author_id in (select id from going))))
     )
     insert into kept (id, kind)
       select c.id, c.kind
@@ -144,7 +160,8 @@ begin
                     and (not exists (select 1 from public.intake_items i where i.intake_id = n.id and i.case_id in (select id from going_cases))
                       or exists (select 1 from public.intake_items i where i.intake_id = n.id and (i.case_id is null or i.case_id not in (select id from going_cases)))))
             or exists (select 1 from public.staff_texts t where t.author_id = c.id and t.case_id not in (select id from going_cases))
-            or exists (select 1 from public.case_access_log a where a.staff_id = c.id and a.case_id not in (select id from going_cases)));
+            or exists (select 1 from public.case_access_log a where a.staff_id = c.id and a.case_id not in (select id from going_cases))
+            or exists (select 1 from public.legal_order_events e where e.by_staff = c.id and e.order_id not in (select id from going_orders)));
     get diagnostics added = row_count;
     exit when added = 0;
   end loop;
@@ -157,6 +174,21 @@ create temp table doomed_cases on commit drop as
     from public.cases cs
     where (cs.target_type = 'account' and cs.target_id in (select id from doomed))
        or (cs.target_type = 'post' and cs.target_id in (select po.id from public.posts po where po.author_id in (select id from doomed)));
+-- 3f: the orders that go with them, whose items name only their posts, and the messages those orders came in with that
+-- no order that stays came in with too.
+create temp table doomed_orders on commit drop as
+  select o.id
+    from public.legal_orders o
+    where exists (select 1 from public.legal_order_items i where i.order_id = o.id)
+      and not exists (
+        select 1 from public.legal_order_items i
+         where i.order_id = o.id
+           and (i.post_id is null or i.post_id not in (select po.id from public.posts po where po.author_id in (select id from doomed))));
+create temp table doomed_messages on commit drop as
+  select distinct o.message_id as id
+    from public.legal_orders o
+    where o.id in (select id from doomed_orders) and o.message_id is not null
+      and not exists (select 1 from public.legal_orders k where k.message_id = o.message_id and k.id not in (select id from doomed_orders));
 create temp table touched_profiles on commit drop as
   select f.followee_id as id from public.follows f
     where f.follower_id in (select id from doomed) and f.followee_id not in (select id from doomed)
@@ -179,6 +211,8 @@ select 'kept|' || count(*) from kept where kind = 'account';
 select 'profiles|' || count(*) from doomed where kind = 'profile';
 select 'profiles_kept|' || count(*) from kept where kind = 'profile';
 select 'cases|' || count(*) from doomed_cases;
+select 'orders|' || count(*) from doomed_orders;
+select 'messages|' || count(*) from doomed_messages;
 select 'posts|' || count(*) from public.posts where author_id in (select id from doomed);
 select 'images|' || count(*) from public.post_media where owner_id in (select id from doomed);
 select 'touched_profiles|' || count(*) from touched_profiles;
@@ -198,6 +232,12 @@ delete from public.suspension_replies
   where action_id in (select a.id from public.decision_actions a join public.decisions d on d.id = a.decision_id where d.case_id in (select id from doomed_cases))
      or account_id in (select id from doomed);
 delete from public.report_tallies where account_id in (select id from doomed);
+-- 3f: the orders before the intake items their items may name: alert rows, events, items, the rows, then their messages.
+delete from public.alert_outbox where order_id in (select id from doomed_orders) or message_id in (select id from doomed_messages);
+delete from public.legal_order_events where order_id in (select id from doomed_orders);
+delete from public.legal_order_items where order_id in (select id from doomed_orders);
+delete from public.legal_orders where id in (select id from doomed_orders);
+delete from public.contact_messages where id in (select id from doomed_messages);
 -- The items first: deleting an unanswered suspect item is what ends its freeze.
 delete from public.intake_items where case_id in (select id from doomed_cases);
 -- A hold is released before it is deleted: the release's trigger takes the image's hold_until back, a delete would not.
@@ -258,7 +298,8 @@ function show(title, key, labels) {
 
 console.log(`database ${report.get("database")}`);
 show("accounts with a test email", "accounts", listed.account);
-const KEPT_WHY = "they hold a staff key, decided a case, are linked to a staff account, are the subject of a decided case, or are named as staff by a moderation record that stays";
+const KEPT_WHY =
+  "they hold a staff key, decided a case, opened an authority's order or closed a message at the contact point, are linked to a staff account, are the subject of a decided case, or are named as staff by a moderation record or an order that stays";
 if (count("kept") > 0) console.log(`accounts with a test email kept because ${KEPT_WHY}: ${count("kept")}`);
 show("profiles without an account", "profiles", listed.profile);
 if (count("profiles_kept") > 0) console.log(`profiles without an account kept because ${KEPT_WHY}: ${count("profiles_kept")}`);
@@ -267,9 +308,10 @@ if (count("accounts") + count("profiles") === 0) {
   process.exit(0);
 }
 console.log(`their posts: ${count("posts")}, image rows: ${count("images")}, undecided moderation cases about them: ${count("cases")}`);
+console.log(`authorities' orders that name only their posts: ${count("orders")}, with ${count("messages")} messages they came in with`);
 console.log(`kept profiles and posts whose counters include them: ${count("touched_profiles")} and ${count("touched_posts")}`);
 if (report.get("deleted") === "yes") {
-  console.log(`Deleted ${count("accounts")} accounts and ${count("profiles")} profiles with everything they made, and ${count("cases")} undecided moderation cases about them; recomputed the counters of ${count("touched_profiles")} profiles and ${count("touched_posts")} posts.`);
+  console.log(`Deleted ${count("accounts")} accounts and ${count("profiles")} profiles with everything they made, ${count("cases")} undecided moderation cases about them, and ${count("orders")} orders that named only their posts with ${count("messages")} of their messages; recomputed the counters of ${count("touched_profiles")} profiles and ${count("touched_posts")} posts.`);
   console.log("Their image files leave the store when the API's sweeper next finds them without a row, within about an hour.");
 } else {
   console.log("Nothing was deleted. Run again with --yes to delete these.");

@@ -58,7 +58,11 @@ export type TemplateName =
   | "contact_mail_escalated"
   | "order_due"
   | "mailbox_unreachable"
-  | "alert_channel_down";
+  | "alert_channel_down"
+  // Task 2: an order opened, an order's record corrected, and the daily count of what orders given effect still miss.
+  | "order_opened"
+  | "order_corrected"
+  | "order_unverified";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

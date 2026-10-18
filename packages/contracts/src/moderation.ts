@@ -491,8 +491,15 @@ export const ModerationErrorCode = z.enum([
   "strike_mismatch",
   "standing_conflict",
   "ground_not_established",
-  // 3f (design, section 10.6): a message at the contact point that already has its disposition.
+  // 3f (design, section 10.6): a message at the contact point that already has its disposition; and Task 2's order
+  // records: a named message that is not there, an order of the same state, authority and reference (which carries the
+  // order that stands), a closed order, an event the order's state does not take, an extension after the release.
   "message_handled",
+  "order_needs_message",
+  "order_exists",
+  "order_closed",
+  "order_event_refused",
+  "already_released",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -949,7 +956,7 @@ export interface SnapshotDigestInput {
   /** When the snapshot was taken, as Date.prototype.toISOString writes it. */
   takenAt: string;
   authorHandle: string;
-  postState: "visible" | "withheld" | "removed" | "deleted_by_author" | null;
+  postState: "visible" | "withheld" | "removed" | "deleted_by_author" | "disabled" | null;
   /** As Date.prototype.toISOString writes it. */
   postCreatedAt: string | null;
   replyToId: string | null;
@@ -1208,7 +1215,8 @@ export const CaseStanding = z.object({
 });
 export type CaseStanding = z.infer<typeof CaseStanding>;
 const TargetKind = z.enum(["post", "account"]);
-const StoredPostState = z.enum(["visible", "withheld", "removed", "deleted_by_author"]);
+// 3f: `disabled`, a post an authority's order disabled; no row holds it before an order is given effect (Task 3).
+const StoredPostState = z.enum(["visible", "withheld", "removed", "deleted_by_author", "disabled"]);
 
 /** How many cases one page of the queue holds. */
 export const QUEUE_PAGE_SIZE = 50;

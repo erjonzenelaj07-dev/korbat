@@ -99,6 +99,9 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   dropDisposable: { is: "deleter" },
   overdueDeletions: { is: "neither", why: "answers how many rows the disposal should have taken by now" },
   moderationStates: { is: "neither", why: "answers each attached row's id, post, stored state and erasure time to text-verify, and nothing of an image itself" },
+  // 3f, Task 2: opening an order takes an image's address as its post, and an order's screen counts a post's images.
+  imagePost: { is: "neither", why: "answers which post an image id is attached to, for an order's item, and nothing of the image" },
+  imageCounts: { is: "neither", why: "answers how many image rows each post holds, for an order's screen, and nothing of an image" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 

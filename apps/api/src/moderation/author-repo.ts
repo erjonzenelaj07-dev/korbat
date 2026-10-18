@@ -13,6 +13,16 @@ import { iso, rows, type Runner } from "./repo";
 /** A UTC day of a timestamptz expression. The expression is written here, never input. */
 const day = (expression: string) => sql.raw(`to_char(${expression} at time zone 'UTC', 'YYYY-MM-DD')`);
 
+/**
+ * The one fragment by which every read on the author's side takes the decisions its author was told of (3f design,
+ * section 5): the chip, the Cases screen, a decision's screen and the export's cases. Both halves are needed. 3c sets
+ * informed_at on every decision, also on those whose author is told nothing (a report answered with "no breach"), which
+ * `author_mail <> 'none'` keeps out; since 3f a decision held with an order's notice has informed_at null (and no mail),
+ * which the second half keeps out, so no later change of the mail's column can show a held decision. `alias` is the
+ * query's own alias of decisions, written here, never input.
+ */
+export const toldToAuthor = (alias: string) => sql.raw(`(${alias}.author_mail <> 'none' and ${alias}.informed_at is not null)`);
+
 const MEASURES = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
 
 /**
@@ -91,8 +101,8 @@ export interface AuthorDecisionRow {
 }
 
 /**
- * The decisions about this account that its author was told of (`author_mail` is not `none`), newest first, after the
- * cursor when one is given. A decision the author was not told of is in no page.
+ * The decisions about this account that its author was told of (toldToAuthor), newest first, after the cursor when one
+ * is given. A decision the author was not told of is in no page.
  */
 export async function authorDecisions(q: Runner, accountId: string, after: { at: string; id: string } | null, limit: number): Promise<AuthorDecisionRow[]> {
   const found = await rows<Record<string, unknown>>(
@@ -117,7 +127,7 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                             and public.standing_basis_broken_at(m.id) = d.decided_at
                             and not exists (select 1 from decision_actions x where x.reverses_action_id = m.id and x.created_at < d.decided_at)), '{}') as ended_standing
           from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
-         where d.author_mail <> 'none'
+         where ${toldToAuthor("d")}
            ${after === null ? sql`` : sql`and (d.decided_at, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
          order by d.decided_at desc, d.id desc limit ${limit}::int`,
   );
@@ -209,7 +219,7 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
           join evidence_snapshots s on s.id = d.snapshot_id
           left join posts p on c.target_type = 'post' and p.id = c.target_id
           left join appeals ap on ap.decision_id = d.id
-         where d.id = ${decisionId}::uuid and d.author_mail <> 'none'
+         where d.id = ${decisionId}::uuid and ${toldToAuthor("d")}
            and case when c.target_type = 'post' then p.author_id = ${accountId}::uuid else c.target_id = ${accountId}::uuid end`,
   );
   if (!row) return null;
@@ -268,11 +278,11 @@ export async function chipFacts(q: Runner, accountId: string, postIds: readonly 
             (select d.id as decision_id, d.rule_id, d.ground is not distinct from 'illegal' as legal, d.kind = 'interim' as interim, 0 as source,
                     (m.kind = 'remove') as removes, d.decided_at
                from measures_in_force m join decisions d on d.id = m.decision_id
-              where m.post_id = p.id and m.kind in ('withhold', 'remove'))
+              where m.post_id = p.id and m.kind in ('withhold', 'remove') and ${toldToAuthor("d")})
             union all
             (select d.id, d.rule_id, d.ground is not distinct from 'illegal', false, 1, true, d.redacted_at
                from cases c join decisions d on d.case_id = c.id
-              where c.target_type = 'post' and c.target_id = p.id and p.erased_at is not null and d.redacted_at is not null
+              where c.target_type = 'post' and c.target_id = p.id and p.erased_at is not null and d.redacted_at is not null and ${toldToAuthor("d")}
                 and exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind = 'remove'))
             order by source, removes desc, decided_at desc, decision_id desc
             limit 1

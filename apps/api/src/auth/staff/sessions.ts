@@ -128,6 +128,8 @@ export async function staffMe(deps: AuthDeps, session: ActiveStaffSession): Prom
     idleSecondsLeft: secondsUntil(deps, session.idleExpiresAt),
     absoluteExpiresAt: session.absoluteExpiresAt.toISOString(),
     absoluteSecondsLeft: secondsUntil(deps, session.absoluteExpiresAt),
+    homeState: deps.config.homeState,
+    contactPoint: deps.config.contactPoint,
   };
 }
 

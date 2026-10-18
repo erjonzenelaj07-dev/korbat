@@ -363,10 +363,20 @@ export const CONSOLE_MODERATION_CODES = [
   "ground_not_established",
   "reply_not_open",
   "reporting_restricted",
-  // 3f (design, section 8.9): a message at the contact point that someone else closed meanwhile.
+  // 3f (design, section 8.9): a message at the contact point that someone else closed meanwhile; and the refusals of
+  // Task 2's order routes.
   "message_handled",
+  "order_needs_message",
+  "order_exists",
+  "order_closed",
+  "order_event_refused",
+  "already_released",
 ] as const satisfies readonly ModerationErrorCode[];
 export type ConsoleModerationCode = (typeof CONSOLE_MODERATION_CODES)[number];
+
+/** 3f [open.duplicate]: an order of this state, authority and reference is recorded already (order_exists). */
+const OPEN_DUPLICATE =
+  "An order of this authority with this reference is already recorded. If that record is wrong, correct it on its screen; if it is closed, an admin reopens it there. Do not open the order a second time under a changed reference.";
 
 /** The console's words for each of them. A recusal reads the same whether the conflict concerns the author or a reporter. */
 export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
@@ -395,6 +405,12 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
   reply_not_open: "This measure takes no reply: it has ended or was lifted.",
   reporting_restricted: "That account's reports under the rules are restricted.",
   message_handled: "That message was already handled. Read Contact point again.",
+  order_needs_message: 'Pick the message this came in and try again. For a new order whose message is not in the list, choose "The message is not listed".',
+  order_exists: OPEN_DUPLICATE,
+  order_closed: "This order is closed. Nothing more is recorded on it from here; an admin can reopen it.",
+  order_event_refused:
+    "That cannot be recorded now: the order is not in the state this page showed (for example, a second extension, or the grounds ceasing while no Annex III stands). Read the order again.",
+  already_released: "The author's notice of this order was already released, or its hold was ended: an extension can no longer be recorded. Tell the operator at once.",
 };
 
 /** A small number as a word, as the design's sentences write it; a larger one in digits. */
@@ -459,6 +475,183 @@ export const ORDER_WORDS = {
       not_an_order: "Anything else: a question, an advertisement, a user's mail sent to the wrong address.",
     } as Record<Exclude<ContactDisposition, "order">, string>,
   },
+  // Task 2 (design, sections 8.4 and 8.5): the list, the form and an order's screen.
+  orders: {
+    title: "Orders",
+    open: "Open an order",
+    closedTitle: "Closed in the last 30 days",
+    empty: "No order is recorded.",
+    frame: "As written in the order",
+    state: (memberState: string) => `Issuing state: ${memberState}`,
+    openLink: "Open this order",
+    deadlineUnknown: "Deadline unknown: act now. Whoever has the server records the time of receipt with staff.js order-received.",
+    scrutinyUntil: (until: string) => `An order from another Member State: korbat may ask for its scrutiny until ${until} (Article 4(4) of Regulation (EU) 2021/784). Tell the operator today.`,
+  },
+  /** The clock lines (8.4's table). */
+  clock: {
+    running: (deadline: string, minutes: number, target: string) =>
+      `Due ${deadline}: ${minutes} minutes left. Target ${target}: an image may stay in an edge cache for up to 5 minutes after the disabling.`,
+    overdue: (deadline: string, itemsOpen: number, items: number) => `Overdue since ${deadline}: ${itemsOpen} of ${items} items are neither disabled nor closed. Act now.`,
+    stopped: (stoppedAt: string, ground: string) =>
+      `Clock stopped at ${stoppedAt}: Annex III sent (${ground}). No deadline runs. A fresh ${ORDER_RULES.hourMinutes} minutes start when the grounds cease or the clarification arrives, never the rest of the old hour.`,
+    partial: (done: number, items: number, firstEffectAt: string, itemsOpen: number, deadline: string) =>
+      `${done} of ${items} items disabled, the first at ${firstEffectAt}. ${itemsOpen} are still open: the deadline ${deadline} still runs for them.`,
+    effect: (lastEffectAt: string, elapsed: number, inside: boolean | null, whileStopped: boolean) =>
+      `Given effect: the last post was disabled at ${lastEffectAt}, ${elapsed} minutes after the clock started: ${whileStopped ? "while the clock was stopped: inside the hour." : inside ? "inside the hour." : "outside the hour."}`,
+    dsaDue: (dueAt: string) => `Due ${dueAt}, as the order states.`,
+    dsaNone: "No deadline recorded: act without undue delay.",
+    closedGround: (closedAt: string, ground: string) => `Closed on ${closedAt} without effect: ${ground}.`,
+    closed: (closedAt: string) => `Closed on ${closedAt}.`,
+  },
+  /** The form "Open an order" (8.4's table). */
+  form: {
+    title: "Open an order",
+    message: "Message",
+    openMessage:
+      `Pick the message the order came in. Its delivery time at the mail host becomes the time of receipt: the console takes no typed time. If the order is in the mailbox and not in this list (the watcher was down, or the mail host filed it in another folder), or it reached korbat another way, choose "The message is not listed". Never pick another message in its place: its time would become the order's.`,
+    notListed: "The message is not listed",
+    noMessage:
+      "The order is opened without a time of receipt, so korbat cannot show its deadline. Act now, as if the hour were almost over. Whoever has the server records the time afterwards (staff.js order-received).",
+    channel: "How it arrived",
+    channelHint: "Choose how the order reached korbat. It is recorded with the order. A wrong choice can be corrected on the order's screen.",
+    kind: "Kind",
+    kindHint: "A message that orders nothing is closed on Contact point, not opened here.",
+    state: "Issuing state",
+    authority: "Authority",
+    otherAuthority: "Another authority",
+    authorityHint: "Choose the authority as your copy of the Commission's register lists it. If it is not listed, type its name as the order writes it and check it before you act.",
+    reference: "Reference",
+    referenceHint: "The order's reference, exactly as written.",
+    links: "Links",
+    linksHint: `The korbat addresses the order names, one a line, at most ${ORDER_RULES.itemsPerAction} now; more are added on the order's screen. korbat resolves each to a post and fetches nothing. The address of an image is taken as the address of the post it belongs to, and kept as the order names it. A link that names an account, another site or no post is recorded as named, and the order's screen says what to do about it.`,
+    sectionC: "Must the author not be told?",
+    sectionCChoices: {
+      tco: ["Section C is ticked: the author must not be told", "Section C is not ticked", "I cannot tell"],
+      dsa: ["The order says the author must not be told", "It does not say so", "I cannot tell"],
+    },
+    sectionCHint: `Choose what the order shows. If you cannot tell, the notice is held as if Section C were ticked, and whoever has the server settles it. A held notice is released by the database alone, ${ORDER_RULES.holdDays} days after the day of the order, counted so that it is never early, and ${ORDER_RULES.holdExtensionDays} days later when the authority extends the period once.`,
+    sectionCDsa:
+      "Choose what the order says. If you cannot tell, the notice is held. For this kind of order no law fixes the period: the notice is held until the time the authority states, which whoever has the server records (staff.js order-hold-until), and while none is recorded it is released at no time.",
+    sectionCFix: "A wrong choice can be corrected on the order's screen: towards silence by anyone at once, away from it only by an admin.",
+    emergency: "The order says it is an emergency, so no notice came 12 hours before it.",
+    withhold: "Withheld from the author",
+    withholdHint: "Tick it only if the order's text says the content must be kept from its author too. Without it the post is removed as under a korbat rule: its author still sees it and is told at once.",
+    withholdLocked:
+      "An author who must not be told cannot be shown their post marked as removed. So the post is kept from its author too, and it stays so for as long as the order's measure stands.",
+    button: "Open the order",
+    untouched: "Choose whether the author must not be told: no choice is made for you.",
+    done:
+      'Order opened. Nothing is restricted yet and nobody was told. Every staff account is alerted that an order was opened. Read what you entered against the order once more: a mistake is corrected here, under "Correct what the order shows", before you disable anything.',
+    unsure: "You could not tell whether the author may be told. The notice is held. Tell the operator now: the order must be read again.",
+    limit: `You have opened ${ORDER_RULES.recordsPerDay} orders in 24 hours, the most one staff account may. Another staff member opens the next; tell the operator.`,
+    duplicate: OPEN_DUPLICATE,
+    duplicateLink: "Open the order that is recorded",
+  },
+  /** An order's screen (8.5): its blocks, in order. */
+  order: {
+    /** [order.register], around the authority's name, which the screen draws as an outsider's words. */
+    register: (state: string) => ({
+      before: "Before you act, check the order against your offline copy of the Commission's register: is ",
+      after: ` listed for ${state}, and does the address in the order's Section F belong to that entry? A signature is neither needed nor proof.`,
+    }),
+    doubt: "If you are in doubt and the hour is running, give effect: the measure is reversible and keeps everything. Whoever has the server records the check by the next working day.",
+    registerDsa:
+      "No register lists who may issue such an order. Ask korbat's Digital Services Coordinator whether it holds a copy of it (Article 9(4) of the Digital Services Act), or call the authority on a number you looked up yourself, never one the message gives.",
+    verifyFirst:
+      "No hour runs for this kind of order, so nothing is done in doubt: it is given effect only after the check is recorded. Whoever has the server records it (staff.js order-verify), and counsel reads the order first.",
+    stateUnknown: "not filled in: see the README, Before going public",
+    entry: (name: string, entry: string) => `${name}: ${entry}`,
+    itemsTitle: "Items",
+    item: (n: number) => `Item ${n}`,
+    /** "@{handle}, post of {createdAt}, {images} images", around the handle. */
+    resolved: (createdAt: string, images: number) => ({ before: "@", after: `, post of ${createdAt}, ${images} images` }),
+    image: "The order names an image. korbat takes it as the post the image belongs to: disabling the post stops every image of it.",
+    account:
+      "This link names an account, not a post. korbat cannot disable an account for an order from this screen. Add the address of each post the order means. For the display name or the bio, and when the order means the whole account, call the operator now. Do not send Annex III for it: the order is not unclear. Then close this item without effect, as a link that names nothing korbat can disable for an order: until a person has, it counts as open and the order's reminders go on.",
+    missing:
+      `This link names nothing that korbat serves. Compare it with the order, letter by letter: a mistyped link is closed here as korbat's mistake, and the right one added under "Add links". Only if the order itself gives this address, and korbat cannot find the content from it, does the order lack information (Annex III). Either way this item counts as open until a person closes it without effect.`,
+    deleted: (deletedOn: string) => `Its author deleted this post on ${deletedOn}. Giving effect records the order and changes nothing anyone sees.`,
+    notDisabled: "Not disabled",
+    disabledAt: (at: string) => `Disabled at ${at}`,
+    closedItem: (at: string, reason: string) => `Closed without effect at ${at}: ${reason}`,
+    unchecked: (addedAt: string) => `Added at ${addedAt}, after the order was checked: not compared with the order by whoever has the server yet.`,
+    closeItem: "Close this item without effect",
+    closeItemHint:
+      "Use this for a link that names nothing korbat can disable for an order, once you have done what its line above says, or for a link that korbat entered by mistake and the order does not name, or for an item the authority withdrew before korbat acted on it. Until every item is disabled or closed, the order is not given effect in full: its deadline and its reminders go on.",
+    withdrawnHint:
+      'The authority withdrew this item before korbat acted on it, and other items of the order stand. Check the withdrawal as you check an order before you close the item. If the authority withdrew the whole order, an admin closes the order instead ("Close without effect").',
+    addLinks: "Add links",
+    added:
+      "A link added after the order was checked makes the order unverified again: every staff account is alerted daily until whoever has the server has compared the new link with the order and recorded the check again.",
+    eventsTitle: "Recording what was sent and received",
+    confirmKey: "Confirm with your staff key",
+    annex3: "Annex III sent",
+    annex3What: "Record this after you sent Annex III. The clock stops. korbat records the time and does not judge the form.",
+    ceased: "The grounds have ceased",
+    ceasedWhat: `Record this the moment korbat can carry out the order again. A fresh ${ORDER_RULES.hourMinutes} minutes start now.`,
+    clarified: "Clarification received",
+    clarifiedWhat: `Pick the message the clarification came in. A fresh ${ORDER_RULES.hourMinutes} minutes start at its delivery time, or at the time Annex III was recorded when that is later, so the deadline may already be near.`,
+    annex2: "Annex II sent",
+    annex2What: "Record this after you sent Annex II to the address in the order's Section F and the copy below.",
+    informed: "Authority informed",
+    informedWhat:
+      "Record this after you told the authority, from the mailbox, that korbat received the order and what effect it gave and when (Articles 9(1) and 10(1) of the Digital Services Act).",
+    close: "Close without effect",
+    closeWhat:
+      "Closing ends the order's alerts and its clock. An order with a disabled item is not closed: reinstate the item on its case first. A record that was only entered wrongly is not closed either: correct it below.",
+    reopen: "Reopen the order",
+    reopenWhat:
+      "Use this when the order was closed by mistake, or when a court has restored an order that was closed as withdrawn or annulled. The order is then as it was before it was closed and can be given effect. Its times are unchanged, so a deadline that passed meanwhile shows as overdue.",
+    formsTitle: "The forms' values",
+    annex3Text: (reference: string, authority: string, state: string, receivedAt: string, ground: string) => [
+      `Reference of the removal order: ${reference}`,
+      `Issuing authority: ${authority}, ${state}`,
+      `Time and date of receipt of removal order: ${receivedAt}`,
+      `Reason: ${ground}`,
+      "Describe in the form what is impossible, wrong or missing: korbat does not write that part.",
+    ],
+    contactLine: (contactPoint: string) => `Contact point: ${contactPoint}`,
+    sendTo: (annexCopy: string) => `Send to: the address in the order's Section F. Copy to: ${annexCopy}`,
+    owesTitle: "What the command line still owes",
+    owesVerify: "The check is not recorded (staff.js order-verify).",
+    owesVerifyAgain: (n: number) => `${n} links were added after the order was checked: they are not compared with the order yet (staff.js order-verify, again).`,
+    owesIssued: "The order's own date and time are not recorded (staff.js order-issued). Until they are, the non-disclosure period is counted from the receipt, which is never earlier.",
+    owesHoldUntil:
+      "The time until which the authority wants the author not told is not recorded (staff.js order-hold-until). Until it is, the notice is released at no time, and every staff account is reminded daily.",
+    owesTexts:
+      "The authority's reasons and remedies are not recorded (staff.js order-texts). The author's notice says that they follow; when they are recorded, the author is sent an email and the notice shows since when it holds them.",
+    owesTextsDsa:
+      "Record the authority's reasons, its remedies and the order's territorial scope before you give effect (staff.js order-texts, three times): the author is owed them with the notice (Article 9(5) of the Digital Services Act). Only an order marked urgent goes first.",
+    owesTellRule: "Whether and when the person may be told of this order is not recorded (staff.js order-tell-rule). Nothing is produced before it is.",
+    owesDocument: "The document's digest is not recorded (staff.js order-document).",
+    noticeTitle: "The author's notice",
+    toldAt: (at: string) => `Told at ${at}.`,
+    holdUntil: (until: string, from: "receipt" | "order", extended: boolean) =>
+      `Held until ${until}: the end the database computes from the Regulation's six weeks, counted from ${from === "receipt" ? "the receipt" : "the order's own date"}${extended ? ", extended once" : ""}.`,
+    holdAuthority: (until: string) => `Held until ${until}: the time the issuing authority stated. No law caps it; whoever has the server records a later time when the authority gives one.`,
+    holdOpen: "Held with no end: the authority has named no time, or none is recorded. Nothing is released until whoever has the server records one (staff.js order-hold-until).",
+    released: (at: string) => `Released at ${at}.`,
+    ended: (at: string, reason: string) => `Hold ended at ${at}: ${reason}.`,
+    eventsList: "Events",
+    byConsole: (handle: string) => `@${handle}, console`,
+    byCli: "command line",
+    bySystem: "korbat",
+    correctTitle: "Correct what the order shows",
+    correctWhat: "Change only what was entered wrongly, so that the record says what the order says. Every change is recorded under your name.",
+    correctSilence:
+      "This holds every notice of the order and keeps its posts from their authors. A notice that has already gone out is withdrawn until the hold ends: it leaves the author's screens, an email not yet sent is not sent, and korbat tells the author again at the release. What an author has already read cannot be taken back: if a notice had gone out, tell the operator at once.",
+    correctUnsilence:
+      `Only when the order has no non-disclosure decision and korbat's record said so by mistake. The hold ends with the reason "not ordered", each author is told with the next dispatch round, and the notice says that the delay was korbat's mistake.`,
+    correctButton: "Correct",
+    corrected: "Corrected. Every staff account is alerted that the record changed.",
+    changed: "The database refused this: the order, its items or their posts are no longer what this page showed. Read the order again.",
+  },
+  /** Home's two lines of a deadline (8.2). */
+  homeClock: (dueAt: string, minutes: number) => `The nearest deadline is ${dueAt}: ${minutes} minutes left.`,
+  homeOverdue: (dueAt: string) =>
+    `A deadline passed at ${dueAt} and not everything is done: a message is unread, or an order has an item that is neither disabled nor closed. Open Orders and act now, then tell the operator.`,
+  /** Contact point's button (8.3). */
+  openFromMessage: "Open an order from this message",
 } as const;
 
 /**

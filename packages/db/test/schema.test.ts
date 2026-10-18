@@ -46,11 +46,12 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 46 tables in total", () => {
+  test("there are 49 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
-    // notify_state and notify_folders.
-    expect(tables.length).toBe(46);
+    // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
+    // legal_order_events.
+    expect(tables.length).toBe(49);
   });
   test("the tables 3c retired are gone, with their enums and the reputation column", () => {
     for (const name of ["reports", "strikes", "transparency_log"]) expect(byName.has(name), name).toBe(false);
@@ -696,6 +697,7 @@ describe("moderation cases 3c", () => {
       "decisions_digests",
       "decisions_ground_law",
       "decisions_ground_rule",
+      "decisions_informed",
       "decisions_interim",
       "decisions_keyword",
       "decisions_law_no_rule",
@@ -715,6 +717,8 @@ describe("moderation cases 3c", () => {
       appeal_id: { table: "appeals", columns: ["id"], onDelete: "no action" },
       snapshot_id: { table: "evidence_snapshots", columns: ["id"], onDelete: "restrict" },
       decided_by: { table: "profiles", columns: ["id"], onDelete: "restrict" },
+      // 3f: an order's record outlives nothing of the ledger; its erasure leaves the decision without its item.
+      order_item_id: { table: "legal_order_items", columns: ["id"], onDelete: "set null" },
     });
   });
 
@@ -730,7 +734,8 @@ describe("moderation cases 3c", () => {
       ["decided_at", "timestamp with time zone", true, undefined],
       ["xact", "xid8", true, undefined],
       ["puid", "text", true, undefined],
-      ["informed_at", "timestamp with time zone", true, undefined],
+      // 3f: null while its author is not told (an order's held notice), which decisions_informed allows only with no mail.
+      ["informed_at", "timestamp with time zone", false, undefined],
       ["suspect", "boolean", true, undefined],
       ["unseen", "boolean", true, false],
       ["needs_admin", "boolean", true, undefined],
@@ -767,9 +772,12 @@ describe("moderation cases 3c", () => {
       ["starts_at", "timestamp with time zone", false],
       ["ends_at", "timestamp with time zone", false],
       ["replaced", "boolean", false],
+      // 3f (design, section 6.2): one the trigger forces from the order, one the key signs on a reinstatement.
+      ["withhold_author", "boolean", false],
+      ["order_ground", "text", false],
     ]);
     // None of the forced columns has a default: the triggers of 0016 and 0021 alone fill them.
-    for (const name of ["subject_account_id", "post_id", "reverses_action_id", "no_effect", "created_at", "days", "announced", "basis", "rests_on", "starts_at", "ends_at", "replaced"]) {
+    for (const name of ["subject_account_id", "post_id", "reverses_action_id", "no_effect", "created_at", "days", "announced", "basis", "rests_on", "starts_at", "ends_at", "replaced", "withhold_author", "order_ground"]) {
       expect(column("decision_actions", name)?.hasDefault, name).toBe(false);
     }
     const once = byName.get("decision_actions")!.uniqueConstraints.map((u) => [u.getName(), u.columns.map((c) => c.name), u.nullsNotDistinct]);
@@ -778,7 +786,8 @@ describe("moderation cases 3c", () => {
     expect(reversed?.unique).toBe(true);
     expect(indexColumns(reversed)).toEqual(["reverses_action_id"]);
     expect(predicate(reversed)).toBe("reverses_action_id is not null");
-    expect(checks("decision_actions")).toEqual(["decision_actions_announced", "decision_actions_basis", "decision_actions_days", "decision_actions_no_effect"]);
+    expect(checks("decision_actions")).toEqual(["decision_actions_announced", "decision_actions_basis", "decision_actions_days", "decision_actions_no_effect", "decision_actions_order_ground"]);
+    expect(checkSql("decision_actions", "decision_actions_order_ground")).toBe(`"decision_actions"."order_ground" in ('withdrawn', 'annulled', 'scrutiny', 'not_authentic', 'wrong_item')`);
     // Each check names columns only: no value of action_kind, which a check may not name in the migration that adds it.
     expect(checkSql("decision_actions", "decision_actions_days")).toBe(`"decision_actions"."days" between 1 and 30`);
     expect(checkSql("decision_actions", "decision_actions_basis")).toBe(
@@ -813,6 +822,9 @@ describe("moderation cases 3c", () => {
       "lift_suspension",
       "unretire_handle",
       "lift_reporting",
+      // 3f: the measure of an order decision and its reversal.
+      "disable_by_order",
+      "reinstate_by_order",
     ]);
   });
 
@@ -943,16 +955,16 @@ describe("moderation cases 3c", () => {
     });
   });
 
-  test("posts gain a moderation level and an erasure time; post_state keeps its four values", () => {
+  test("posts gain a moderation level and an erasure time; post_state keeps its four values until 3f adds disabled to both", () => {
     const level = column("posts", "moderation_level");
     expect(level?.getSQLType()).toBe("moderation_level");
     expect(level?.notNull).toBe(true);
     expect(level?.default).toBe("visible");
-    expect(schema.moderationLevel.enumValues).toEqual(["visible", "withheld", "removed"]);
+    expect(schema.moderationLevel.enumValues).toEqual(["visible", "withheld", "removed", "disabled"]);
     expect(column("posts", "erased_at")?.getSQLType()).toBe("timestamp with time zone");
     expect(column("posts", "erased_at")?.notNull).toBe(false);
-    // A seal is a state of images: no reader of posts learns a new state.
-    expect(schema.postState.enumValues).toEqual(["visible", "withheld", "removed", "deleted_by_author"]);
+    // A seal is a state of images: no reader of posts learns a state of 3c's. 3f's disabled is answered as a missing post.
+    expect(schema.postState.enumValues).toEqual(["visible", "withheld", "removed", "deleted_by_author", "disabled"]);
   });
 
   test("post_media gains its own moderation state, the time a hold retains it until and an erasure time", () => {
@@ -1171,5 +1183,192 @@ describe("the contact point and the alert channel 3f", () => {
     ]);
     expect(column("notify_folders", "folder")?.primary).toBe(true);
     expect(checks("notify_folders")).toEqual(["notify_folders_folder"]);
+  });
+});
+
+describe("order records 3f", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** Name, SQL type and not-null of every column, in order. */
+  const shape = (table: string) => byName.get(table)!.columns.map((c) => [c.name, c.getSQLType(), c.notNull]);
+  const checks = (table: string) => byName.get(table)!.checks.map((c) => c.name).sort();
+  const checkSql = (table: string, name: string) => new PgDialect().sqlToQuery(byName.get(table)!.checks.find((c) => c.name === name)!.value).sql;
+  const policies = (table: string) => byName.get(table)!.policies.map((p) => [p.name, p.for, p.to]);
+  const uniques = (table: string) => byName.get(table)!.uniqueConstraints.map((u) => [u.getName(), u.columns.map((c) => c.name)]);
+  const indexes = (table: string) =>
+    byName
+      .get(table)!
+      .indexes.map((i) => [i.config.name, i.config.columns.map((c) => (c as { name?: string }).name), i.config.unique ?? false, i.config.where ? new PgDialect().sqlToQuery(i.config.where).sql : null])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const foreignKeys = (table: string) =>
+    byName
+      .get(table)!
+      .foreignKeys.map((k) => [k.reference().columns.map((c) => c.name).join(","), getTableConfig(k.reference().foreignTable).name, k.onDelete])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const TABLES = ["legal_orders", "legal_order_items", "legal_order_events"];
+
+  test("the three tables are public, with row level security and one allow-all policy for the API role", () => {
+    for (const name of TABLES) {
+      const cfg = byName.get(name);
+      expect(cfg, name).toBeDefined();
+      expect(cfg!.schema, name).toBeUndefined();
+      expect(cfg!.enableRLS, name).toBe(true);
+      expect(policies(name), name).toEqual([[`${name}_api_all`, "all", apiRole]]);
+    }
+  });
+
+  test("the eight enum values, each last in its type, in the types' order", () => {
+    expect(schema.actionKind.enumValues.slice(-2)).toEqual(["disable_by_order", "reinstate_by_order"]);
+    expect(schema.decisionKind.enumValues).toEqual(["interim", "final", "review", "correction", "order"]);
+    expect(schema.decisionSource.enumValues).toEqual(["notice", "report", "own_initiative", "order"]);
+    expect(schema.intakeKind.enumValues).toEqual(["user", "finding", "order"]);
+    expect(schema.intakeChannel.enumValues).toEqual(["signed_in", "signed_out", "staff", "authority"]);
+    expect(schema.moderationLevel.enumValues.at(-1)).toBe("disabled");
+    expect(schema.postState.enumValues.at(-1)).toBe("disabled");
+    // An image follows its post's state in every reader: media_moderation_state gains nothing.
+    expect(schema.mediaModerationState.enumValues).toEqual(["visible", "withheld", "removed", "sealed"]);
+  });
+
+  test("an order's row: the console's columns, the forced ones, the command line's; Section C without a default", () => {
+    expect(shape("legal_orders")).toEqual([
+      ["id", "uuid", true],
+      ["kind", "text", true],
+      ["member_state", "text", true],
+      ["authority", "text", true],
+      ["reference", "text", true],
+      ["channel", "text", true],
+      ["message_id", "uuid", false],
+      ["received_at", "timestamp with time zone", false],
+      ["sent_at", "timestamp with time zone", false],
+      ["issued_at", "timestamp with time zone", false],
+      ["due_at", "timestamp with time zone", false],
+      ["section_c", "boolean", true],
+      ["emergency", "boolean", true],
+      ["cross_border", "boolean", true],
+      ["withhold_from_author", "boolean", true],
+      ["preserve", "boolean", true],
+      ["authority_hold_until", "timestamp with time zone", false],
+      ["hold_basis", "text", false],
+      ["hold_extended", "boolean", true],
+      ["hold_ended_at", "timestamp with time zone", false],
+      ["hold_end_reason", "text", false],
+      ["tell_person", "text", false],
+      ["tell_person_at", "timestamp with time zone", false],
+      ["opened_by", "uuid", false],
+      ["opened_via", "text", true],
+      ["opened_at", "timestamp with time zone", true],
+      ["verified_at", "timestamp with time zone", false],
+      ["verified_how", "text", false],
+      ["reasons", "text", false],
+      ["reasons_salt", "text", false],
+      ["reasons_digest", "text", false],
+      ["redress", "text", false],
+      ["redress_salt", "text", false],
+      ["redress_digest", "text", false],
+      ["scope", "text", false],
+      ["scope_salt", "text", false],
+      ["scope_digest", "text", false],
+      ["document_sha256", "text", false],
+      ["document_bytes", "bigint", false],
+      ["closed_at", "timestamp with time zone", false],
+      ["imported_at", "timestamp with time zone", false],
+    ]);
+    // Supplied, so the audit row can name it; no default can decide Section C for a person.
+    expect(column("legal_orders", "id")?.hasDefault).toBe(false);
+    expect(column("legal_orders", "section_c")?.hasDefault).toBe(false);
+    expect(column("legal_orders", "hold_extended")?.default).toBe(false);
+    expect(uniques("legal_orders")).toEqual([["legal_orders_reference_key", ["member_state", "authority", "reference"]]]);
+    expect(checks("legal_orders")).toEqual([
+      "legal_orders_channel",
+      "legal_orders_document",
+      "legal_orders_hold_end",
+      "legal_orders_issued",
+      "legal_orders_kind",
+      "legal_orders_member_state",
+      "legal_orders_names",
+      "legal_orders_opened_via",
+      "legal_orders_received",
+      "legal_orders_tco",
+      "legal_orders_tell",
+      "legal_orders_texts_len",
+    ]);
+    expect(checkSql("legal_orders", "legal_orders_kind")).toBe(`"legal_orders"."kind" in ('tco_removal', 'dsa_art9', 'dsa_art10')`);
+    expect(checkSql("legal_orders", "legal_orders_channel")).toBe(`"legal_orders"."channel" in ('mailbox', 'portal', 'post', 'other')`);
+    expect(checkSql("legal_orders", "legal_orders_received")).toBe(`"legal_orders"."received_at" <= "legal_orders"."opened_at" and "legal_orders"."sent_at" <= "legal_orders"."opened_at"`);
+    expect(checkSql("legal_orders", "legal_orders_issued")).toBe(`"legal_orders"."issued_at" <= coalesce("legal_orders"."received_at", "legal_orders"."opened_at")`);
+    expect(checkSql("legal_orders", "legal_orders_tco")).toContain(`"legal_orders"."withhold_from_author"`);
+    expect(checkSql("legal_orders", "legal_orders_hold_end")).toContain(`'not_authentic', 'annulled', 'released_by_authority', 'not_ordered'`);
+    expect(foreignKeys("legal_orders")).toEqual([
+      ["message_id", "contact_messages", "restrict"],
+      ["opened_by", "profiles", "restrict"],
+    ]);
+    expect(indexes("legal_orders")).toEqual([["legal_orders_opened_by_idx", ["opened_by", "opened_at"], false, null]]);
+  });
+
+  test("an item: its link as named, its post without a key, its position, its closing, and the freeze's index", () => {
+    expect(shape("legal_order_items")).toEqual([
+      ["id", "uuid", true],
+      ["order_id", "uuid", true],
+      ["position", "smallint", true],
+      ["link", "text", true],
+      ["post_id", "uuid", false],
+      ["added_at", "timestamp with time zone", true],
+      ["intake_item_id", "uuid", false],
+      ["decision_id", "uuid", false],
+      ["action_id", "uuid", false],
+      ["disabled_at", "timestamp with time zone", false],
+      ["preserve_until", "timestamp with time zone", false],
+      ["preserve_ended_at", "timestamp with time zone", false],
+      ["reinstated_at", "timestamp with time zone", false],
+      ["closed_at", "timestamp with time zone", false],
+      ["closed_reason", "text", false],
+    ]);
+    expect(uniques("legal_order_items")).toEqual([["legal_order_items_position_key", ["order_id", "position"]]]);
+    expect(checks("legal_order_items")).toEqual(["legal_order_items_closed", "legal_order_items_link", "legal_order_items_position"]);
+    expect(checkSql("legal_order_items", "legal_order_items_closed")).toContain(`'no_post', 'not_named', 'withdrawn'`);
+    expect(checkSql("legal_order_items", "legal_order_items_closed")).toContain(`"legal_order_items"."disabled_at" is null`);
+    expect(indexes("legal_order_items")).toEqual([
+      ["legal_order_items_post_key", ["order_id", "post_id"], true, "post_id is not null"],
+      ["legal_order_items_preserved_idx", ["post_id"], false, "preserve_until is not null"],
+    ]);
+    // A record outlives its post: post_id has no key.
+    expect(foreignKeys("legal_order_items")).toEqual([
+      ["intake_item_id", "intake_items", "restrict"],
+      ["order_id", "legal_orders", "restrict"],
+    ]);
+  });
+
+  test("an event: its kind, its ground by its kind, its times, who and how; an order is opened once", () => {
+    expect(shape("legal_order_events")).toEqual([
+      ["id", "uuid", true],
+      ["order_id", "uuid", true],
+      ["item_id", "uuid", false],
+      ["kind", "text", true],
+      ["at", "timestamp with time zone", true],
+      ["effective_at", "timestamp with time zone", false],
+      ["ground", "text", false],
+      ["by_staff", "uuid", false],
+      ["via", "text", true],
+    ]);
+    expect(checks("legal_order_events")).toEqual(["legal_order_events_effective", "legal_order_events_ground", "legal_order_events_kind", "legal_order_events_via"]);
+    const ground = checkSql("legal_order_events", "legal_order_events_ground");
+    expect(ground).toContain(`(kind = 'annex3_sent' and ground in ('force_majeure', 'manifest_error', 'insufficient_information'))`);
+    expect(ground).toContain(`(kind = 'corrected' and ground in ('entry', 'caution', 'admin'))`);
+    expect(ground).toContain(`and ground is null)`);
+    expect(indexes("legal_order_events")).toEqual([
+      ["legal_order_events_opened_key", ["order_id"], true, "kind = 'opened'"],
+      ["legal_order_events_order_idx", ["order_id", "at"], false, null],
+    ]);
+    expect(foreignKeys("legal_order_events")).toEqual([
+      ["by_staff", "profiles", "restrict"],
+      ["item_id", "legal_order_items", "restrict"],
+      ["order_id", "legal_orders", "restrict"],
+    ]);
+  });
+
+  test("decisions: the two checks re-added for an order decision, compared as text, and decisions_informed", () => {
+    const sqlOf = (name: string) => new PgDialect().sqlToQuery(byName.get("decisions")!.checks.find((c) => c.name === name)!.value).sql;
+    expect(sqlOf("decisions_restricted")).toMatch(/ or "decisions"."kind"::text = 'order'$/);
+    expect(sqlOf("decisions_ground_law")).toMatch(/ or "decisions"."kind"::text = 'order'$/);
+    expect(sqlOf("decisions_informed")).toBe(`"decisions"."informed_at" is not null or "decisions"."author_mail"::text = 'none'`);
   });
 });

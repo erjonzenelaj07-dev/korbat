@@ -497,6 +497,28 @@ h4 {
  * and every control is at least 44 px high and wide. A link inside a sentence is laid out as a block of its own, so it
  * can be measured and touched; a tick box or a radio button is measured with its label.
  */
+/* 3f, Task 2: the orders' screens. A labelled field stacks its label, its control and its hint; the forms' values keep
+   their lines and wrap; every input fills the column. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.75rem 0;
+}
+
+.order-form input[type="text"],
+.order-form textarea,
+.order-form select,
+.block .field textarea {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.form-values {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 599px) {
   .masthead {
     padding: 0.5rem 1rem;
@@ -592,5 +614,14 @@ h4 {
     align-items: center;
     min-height: 44px;
     margin-right: 0;
+  }
+
+  .order-form input[type="text"],
+  .order-form textarea,
+  .order-form select,
+  .block .field textarea,
+  .block select,
+  .block input[type="text"] {
+    width: 100%;
   }
 }

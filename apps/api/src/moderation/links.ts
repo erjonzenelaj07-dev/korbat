@@ -38,6 +38,36 @@ export function parseLink(appOrigin: string, link: string): LinkTarget {
   throw new ModerationError("notice_link_invalid");
 }
 
+/** What an order's link names (3f design, section 7.4). */
+export type OrderLinkTarget = { kind: "post"; postId: string } | { kind: "image"; mediaId: string } | { kind: "account"; handle: string } | { kind: "other" };
+
+// The address of an image korbat serves: /api/media/<id>/small.webp or large.webp, on the app's origin.
+const IMAGE_PATH = /^[/]api[/]media[/]([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})[/](small|large)[.]webp$/;
+
+/**
+ * What a link an authority's order names is (3f design, section 7.4), for its item: the app's address of a post or of a
+ * profile as parseLink reads them, the address of an image korbat serves, or anything else (another site, another path,
+ * no address at all). It never refuses: an order's link is recorded as named whatever it is, and an item whose link names
+ * no post stays open until a person closes it. Nothing is fetched.
+ */
+export function orderLinkTarget(appOrigin: string, link: string): OrderLinkTarget {
+  try {
+    const target = parseLink(appOrigin, link);
+    return target.type === "post" ? { kind: "post", postId: target.id } : { kind: "account", handle: target.handle };
+  } catch (err) {
+    if (!(err instanceof ModerationError)) throw err;
+  }
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    return { kind: "other" };
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.host !== new URL(appOrigin).host || url.username !== "" || url.password !== "") return { kind: "other" };
+  const image = IMAGE_PATH.exec(url.pathname);
+  return image ? { kind: "image", mediaId: image[1]!.toLowerCase() } : { kind: "other" };
+}
+
 /** The app's origin without a path, whatever final slash the setting was written with. */
 const originOf = (appOrigin: string) => new URL(appOrigin).origin;
 

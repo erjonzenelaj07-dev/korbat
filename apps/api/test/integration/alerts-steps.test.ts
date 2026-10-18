@@ -314,6 +314,100 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     expect(home.alerts).toEqual({ channel: "off", since: null });
   });
 
+  // ---------------------------------------------------------------- 3f, Task 2: an order's steps (section 6.1, the rows marked 0025)
+
+  /** A removal order of the migrator's in the transaction, received `minutes` ago, with an item open or disabled. */
+  async function orderIn(tx: DbTx, minutes: number, options: { disabled?: boolean; open?: boolean; kind?: string; verified?: boolean; reasons?: boolean } = {}): Promise<string> {
+    const [row] = await tx.execute<{ id: string }>(sql`
+      insert into public.legal_orders (id, kind, member_state, authority, reference, channel, section_c, emergency, cross_border, withhold_from_author, received_at, opened_at, opened_via,
+                                       verified_at, reasons)
+      values (gen_random_uuid(), ${options.kind ?? "tco_removal"}, 'DE', 'BKA', ${`S-${randomUUID()}`}, 'portal', false, false, false, true,
+              now() - make_interval(mins => ${minutes}), now() - make_interval(mins => ${minutes}), 'cli',
+              ${options.verified ? sql`now()` : sql`null`}, ${options.reasons ? "the authority's reasons" : null})
+      returning id`);
+    if (options.open ?? true) await tx.execute(sql`insert into public.legal_order_items (order_id, position, link) values (${row!.id}::uuid, 1, 'https://elsewhere.example/open')`);
+    if (options.disabled) {
+      await tx.execute(sql`insert into public.legal_order_items (order_id, position, link, added_at, disabled_at) values (${row!.id}::uuid, 2, 'https://elsewhere.example/done', now() - make_interval(hours => 2), now() - make_interval(mins => 1))`);
+    }
+    return row!.id;
+  }
+  const orderRows = async (tx: DbTx, orderId: string) =>
+    (await tx.execute<{ kind: string; step: number; scope: string; priority: number; facts: Record<string, unknown> }>(
+      sql`select kind, step, scope, priority, facts from public.alert_outbox where order_id = ${orderId}::uuid order by id`,
+    )).map((r) => ({ ...r }));
+  const restart = (tx: DbTx, orderId: string, annexMinutes: number, clarifiedMinutes: number) =>
+    tx.execute(sql`insert into public.legal_order_events (order_id, kind, ground, at, via) values
+                     (${orderId}::uuid, 'annex3_sent', 'manifest_error', now() - make_interval(mins => ${annexMinutes}), 'cli'),
+                     (${orderId}::uuid, 'clarification_received', null, now() - make_interval(mins => ${clarifiedMinutes}), 'cli')`);
+
+  test("order_due for an order: at remind_minutes and at the deadline while an item is open, the clock runs and the order is not closed; never for one given effect in full, stopped or closed", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const remind = await orderIn(tx, ORDER_RULES.remindMinutes + 1);
+      const late = await orderIn(tx, ORDER_RULES.hourMinutes + 1);
+      const partial = await orderIn(tx, ORDER_RULES.remindMinutes + 1, { disabled: true });
+      const full = await orderIn(tx, ORDER_RULES.hourMinutes + 1, { disabled: true, open: false });
+      const stopped = await orderIn(tx, ORDER_RULES.hourMinutes + 1);
+      await tx.execute(sql`insert into public.legal_order_events (order_id, kind, ground, at, via) values (${stopped}::uuid, 'annex3_sent', 'force_majeure', now() - make_interval(mins => 30), 'cli')`);
+      const closed = await orderIn(tx, ORDER_RULES.hourMinutes + 1);
+      await tx.execute(sql`update public.legal_orders set closed_at = now() where id = ${closed}::uuid`);
+      await steps(tx);
+      await steps(tx);
+      const due = (rows: Awaited<ReturnType<typeof orderRows>>) => rows.filter((r) => r.kind === "order_due").map((r) => [r.step, r.facts.itemsOpen, r.scope, r.priority]);
+      expect(due(await orderRows(tx, remind))).toEqual([[0, 1, "all", 5]]);
+      expect(due(await orderRows(tx, late))).toEqual([[0, 1, "all", 5]]);
+      expect((await orderRows(tx, late))[0]!.facts.minutesLeft).toBe(0);
+      expect(due(await orderRows(tx, partial))).toEqual([[0, 1, "all", 5]]);
+      for (const none of [full, stopped, closed]) expect(due(await orderRows(tx, none))).toEqual([]);
+      // The deadline passes for the order reminded at remind_minutes: the second reminder, once.
+      // The order and its first reminder an hour further back, as the hour would have passed.
+      await tx.execute(sql`update public.legal_orders set received_at = received_at - make_interval(mins => ${ORDER_RULES.hourMinutes}), opened_at = opened_at - make_interval(mins => ${ORDER_RULES.hourMinutes}) where id = ${remind}::uuid`);
+      await tx.execute(sql`update public.alert_outbox set created_at = created_at - make_interval(mins => ${ORDER_RULES.hourMinutes}) where order_id = ${remind}::uuid`);
+      await steps(tx);
+      await steps(tx);
+      expect(due(await orderRows(tx, remind))).toEqual([
+        [0, 1, "all", 5],
+        [1, 1, "all", 5],
+      ]);
+    });
+  });
+
+  test("a restart of an order's clock rings the phone on call again, as a message's first push, once a restart; a second restart alerts again", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const order = await orderIn(tx, 50);
+      await restart(tx, order, 40, 10);
+      await steps(tx);
+      await steps(tx);
+      const first = (await orderRows(tx, order)).filter((r) => r.kind === "contact_mail");
+      expect(first.map((r) => [r.step, r.scope, r.priority, Object.keys(r.facts)])).toEqual([[0, "on_call", 5, ["dueAt"]]]);
+      // The first restart's row was written when it came, nine minutes before the second.
+      await tx.execute(sql`update public.alert_outbox set created_at = now() - make_interval(mins => 9) where order_id = ${order}::uuid`);
+      await restart(tx, order, 5, 1);
+      await steps(tx);
+      expect((await orderRows(tx, order)).filter((r) => r.kind === "contact_mail").map((r) => r.step)).toEqual([0, 1]);
+      // A stopped clock does not ring.
+      const stopped = await orderIn(tx, 50);
+      await restart(tx, stopped, 40, 10);
+      await tx.execute(sql`insert into public.legal_order_events (order_id, kind, ground, at, via) values (${stopped}::uuid, 'annex3_sent', 'force_majeure', now(), 'cli')`);
+      await steps(tx);
+      expect((await orderRows(tx, stopped)).filter((r) => r.kind === "contact_mail")).toEqual([]);
+    });
+  });
+
+  test("order_unverified, daily: one count for orders given effect and not verified (or with an item added after the check), one for missing reasons, one for holds without an end", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const since = new Date();
+      await tx.execute(sql`delete from public.alert_outbox where kind = 'order_unverified'`);
+      await orderIn(tx, 120, { disabled: true });
+      await orderIn(tx, 120, { disabled: true, verified: true, reasons: true });
+      await orderIn(tx, 120, { disabled: false });
+      await steps(tx);
+      await steps(tx);
+      const rows = await outboxSince(tx, "order_unverified", since);
+      // The verified order's disabled item was added two hours before its check: it counts as verified.
+      expect(rows.map((r) => [r.step, r.scope, r.priority, r.facts.count, r.facts.textsMissing, r.facts.holdsOpen, typeof r.facts.oldestAt])).toEqual([[0, "all", 5, 1, 1, 0, "string"]]);
+    });
+  });
+
   test("leaves no row behind", async () => {
     await removeMessages(w.migrateDb, made.splice(0));
     // The tick's own daily test, which no message names, and the rows of this file's kinds of 3f.

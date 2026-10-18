@@ -183,6 +183,9 @@ describe("the staff account and its session", () => {
     idleSecondsLeft: 900,
     absoluteExpiresAt: later,
     absoluteSecondsLeft: 43_200,
+    // 3f: the operator's Member State and the published contact point, each null while unset.
+    homeState: "DE",
+    contactPoint: null,
   };
 
   test("/me carries the handle, the role, the session's handle and both expiries with the seconds left", () => {
@@ -227,8 +230,8 @@ describe("the staff account and its session", () => {
 });
 
 describe("step-up actions", () => {
-  test("there are four: revoking a staff session, whose target is a staff session and whose params are empty, and the three of moderation cases", () => {
-    expect(Object.keys(STAFF_STEP_UP_ACTIONS)).toEqual(["staff_session_revoked", "case_decided", "appeals_reviewed", "identity_revealed"]);
+  test("there are six: revoking a staff session, whose target is a staff session and whose params are empty, the three of moderation cases and 3f's two of an order's record", () => {
+    expect(Object.keys(STAFF_STEP_UP_ACTIONS)).toEqual(["staff_session_revoked", "case_decided", "appeals_reviewed", "identity_revealed", "order_event_recorded", "order_corrected"]);
     expect(StaffStepUpActionName.options).toEqual(Object.keys(STAFF_STEP_UP_ACTIONS));
     const spec = STAFF_STEP_UP_ACTIONS.staff_session_revoked;
     expect(spec.targetType).toBe("staff_session");
@@ -598,8 +601,11 @@ describe("the step-up actions of moderation cases", () => {
   const free = (schema: unknown) => strings(schema).filter((s) => !((s.format === "uuid" && s.patterns.includes(LOWER_UUID)) || (s.format === undefined && s.patterns.includes(HEX_DIGEST))));
 
   test("no params schema of any action lets a free string through: every string is a lower-case uuid or a hex digest", () => {
+    // 3f (design, section 10.3): the one named exception, an authority's name and its file number in a correction's facts.
+    // They are no words about a person, are bound one line of 1 to 200 characters, and are compared with the order's row.
+    const named: Record<string, string[]> = { order_corrected: ["$.facts.authority", "$.facts.reference"] };
     for (const [action, spec] of Object.entries(STAFF_STEP_UP_ACTIONS)) {
-      expect(free(spec.params), action).toEqual([]);
+      expect(free(spec.params).map((s) => s.path), action).toEqual(named[action] ?? []);
       expect(free(spec.targetId), action).toEqual([]);
     }
     // What the walk finds in the decision's params: ids and digests, nothing else.

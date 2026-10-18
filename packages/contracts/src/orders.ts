@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { FORBIDDEN_FORMAT } from "./text";
 
-// Authorities' orders and the alert channel (3f design, sections 6.1, 10.1, 10.2 and 18, W.1 and W.4). This module
-// imports nothing from the other modules of the contracts: moderation.ts reads its constants for the staff overview, and
-// the watcher (apps/api/src/notify), which imports the contracts and nothing of the API, renders its pushes from it.
+// Authorities' orders and the alert channel (3f design, sections 6.1, 6.2, 10.1, 10.2 and 18, W.1 and W.4). This module
+// imports nothing from the other modules of the contracts but text.ts, which imports nothing: moderation.ts reads its
+// constants for the staff overview, staff.ts its step-up params, and the watcher (apps/api/src/notify), which imports the
+// contracts and nothing of the API, renders its pushes from it.
 
 // ---------------------------------------------------------------- the numbers
 
@@ -444,3 +446,596 @@ export function renderAlert(kind: AlertKind, facts: AlertFacts, now: Date): { ti
     todo: text.todo === null ? null : fill(text.todo),
   };
 }
+
+// ---------------------------------------------------------------- order records (3f design, sections 6.2 and 10.1)
+
+/** The three kinds of order korbat records (section 2, row 5): a TCO removal order, a DSA Article 9 and an Article 10 order. */
+export const ORDER_KINDS = ["tco_removal", "dsa_art9", "dsa_art10"] as const;
+export type OrderKind = (typeof ORDER_KINDS)[number];
+
+/** How an order arrived: the form's "How it arrived", the request's channel, the correction's and order-open's. */
+export const ORDER_CHANNELS = ["mailbox", "portal", "post", "other"] as const;
+export type OrderChannel = (typeof ORDER_CHANNELS)[number];
+
+/** What an order's link names (7.4): a post, an image korbat serves, an account, or anything else. */
+export const ORDER_LINK_KINDS = ["post", "image", "account", "other"] as const;
+export type OrderLinkKind = (typeof ORDER_LINK_KINDS)[number];
+
+/** The events order_event_record writes and the events route takes. */
+export const ORDER_CONSOLE_EVENTS = ["annex3_sent", "grounds_ceased", "clarification_received", "annex2_sent", "receipt_confirmed", "closed_without_effect", "reopened", "hold_extended"] as const;
+export type OrderConsoleEvent = (typeof ORDER_CONSOLE_EVENTS)[number];
+
+/** The events the command line writes, as the migrator; reopened and hold_extended are written in the console too. */
+export const ORDER_CLI_EVENTS = [
+  "verified",
+  "issued_at_set",
+  "texts_recorded",
+  "document_recorded",
+  "received_set",
+  "sent_at_set",
+  "due_set",
+  "hold_extended",
+  "hold_ended",
+  "hold_until_set",
+  "preservation_extended",
+  "scrutiny_requested",
+  "scrutiny_decided",
+  "reopened",
+  "tell_person_set",
+  "person_told",
+  "imported",
+] as const;
+export type OrderCliEvent = (typeof ORDER_CLI_EVENTS)[number];
+
+/** The kinds the database alone writes: the API's insert of `opened`, and those of the definer functions and the ledger. */
+export const ORDER_SYSTEM_EVENTS = ["opened", "corrected", "effect_given", "reinstated", "notice_released", "preservation_ended"] as const;
+
+/** Every kind of legal_order_events.kind (6.2's table), the CHECK written from it, each once. */
+export const ORDER_EVENT_KINDS = [
+  "opened",
+  "annex3_sent",
+  "grounds_ceased",
+  "clarification_received",
+  "annex2_sent",
+  "receipt_confirmed",
+  "closed_without_effect",
+  "reopened",
+  "hold_extended",
+  "corrected",
+  "effect_given",
+  "reinstated",
+  "notice_released",
+  "preservation_ended",
+  "verified",
+  "issued_at_set",
+  "texts_recorded",
+  "document_recorded",
+  "received_set",
+  "sent_at_set",
+  "due_set",
+  "hold_ended",
+  "hold_until_set",
+  "preservation_extended",
+  "scrutiny_requested",
+  "scrutiny_decided",
+  "tell_person_set",
+  "person_told",
+  "imported",
+] as const;
+export type OrderEventKind = (typeof ORDER_EVENT_KINDS)[number];
+
+/** Who wrote an event: the console (through a definer function), the command line, or the database itself. */
+export const ORDER_EVENT_VIA = ["console", "cli", "system"] as const;
+export type OrderEventVia = (typeof ORDER_EVENT_VIA)[number];
+
+/** An Annex III's ground: force majeure (TCO Art. 3(7)), a manifest error or missing information (Art. 3(8)). */
+export const ANNEX3_GROUNDS = ["force_majeure", "manifest_error", "insufficient_information"] as const;
+export type Annex3Ground = (typeof ANNEX3_GROUNDS)[number];
+/** The ground of a reinstatement after an order. */
+export const ORDER_GROUNDS = ["withdrawn", "annulled", "scrutiny", "not_authentic", "wrong_item"] as const;
+export type OrderGround = (typeof ORDER_GROUNDS)[number];
+/** The ground of closing an order without effect: a reinstatement's, or that the order is not addressed to korbat. */
+export const ORDER_CLOSE_GROUNDS = ["withdrawn", "annulled", "scrutiny", "not_authentic", "wrong_item", "not_addressed"] as const;
+export type OrderCloseGround = (typeof ORDER_CLOSE_GROUNDS)[number];
+/** Which rule allowed a correction (7.4), stored as the ground of its event `corrected`. */
+export const ORDER_CORRECTION_RULES = ["entry", "caution", "admin"] as const;
+export type OrderCorrectionRule = (typeof ORDER_CORRECTION_RULES)[number];
+/** Why an open item was closed without effect: it names nothing to disable, korbat entered it by mistake, or the authority withdrew it. */
+export const ORDER_ITEM_CLOSE_REASONS = ["no_post", "not_named", "withdrawn"] as const;
+export type OrderItemCloseReason = (typeof ORDER_ITEM_CLOSE_REASONS)[number];
+/** Why a hold was ended from the command line, or by a correction that unset Section C (not_ordered). */
+export const HOLD_END_REASONS = ["not_authentic", "annulled", "released_by_authority", "not_ordered"] as const;
+export type HoldEndReason = (typeof HOLD_END_REASONS)[number];
+/** Which rule a hold's end follows: the computed end of a removal order, or the end a DSA order's authority states. */
+export const HOLD_BASES = ["regulation", "authority"] as const;
+export type HoldBasis = (typeof HOLD_BASES)[number];
+/** When the person an order to provide information concerns may be told (DSA Art. 10(5)). */
+export const TELL_PERSON_RULES = ["at_effect", "at_instant", "never"] as const;
+export type TellPersonRule = (typeof TELL_PERSON_RULES)[number];
+/** A scrutiny's outcome (TCO Art. 4). */
+export const SCRUTINY_OUTCOMES = ["upheld", "annulled"] as const;
+export type ScrutinyOutcome = (typeof SCRUTINY_OUTCOMES)[number];
+
+/** The grounds each kind of event takes; a kind not named here takes none. legal_order_events_ground is written from it. */
+export const ORDER_EVENT_GROUNDS = {
+  annex3_sent: ANNEX3_GROUNDS,
+  closed_without_effect: ORDER_CLOSE_GROUNDS,
+  corrected: ORDER_CORRECTION_RULES,
+  reinstated: ORDER_GROUNDS,
+  hold_ended: HOLD_END_REASONS,
+  scrutiny_decided: SCRUTINY_OUTCOMES,
+} as const satisfies Partial<Record<OrderEventKind, readonly string[]>>;
+
+/** The grounds of a kind of event, or null for a kind that takes none. */
+export function orderEventGrounds(kind: OrderEventKind): readonly string[] | null {
+  return (ORDER_EVENT_GROUNDS as Partial<Record<OrderEventKind, readonly string[]>>)[kind] ?? null;
+}
+
+/** An order's state on the list (10.2): a removal order is given_effect only once none of its items is open. */
+export const ORDER_STATES = ["running", "stopped", "overdue", "unknown_deadline", "given_effect", "closed", "no_clock"] as const;
+export type OrderState = (typeof ORDER_STATES)[number];
+
+/**
+ * The two kinds of the ledger that the migration orders adds to action_kind: the measure of an order decision and its
+ * reversal. They join the contracts' ACTION_KINDS, with MEASURES' labels (W.1), in the task that gives effect to an order
+ * (Task 3); until then no function accepts them, and the database's list is ACTION_KINDS followed by these two.
+ */
+export const ORDER_ACTION_KINDS = ["disable_by_order", "reinstate_by_order"] as const;
+
+/** The most items an order holds (its positions), and how much of a public post's body an order's screen previews. */
+export const ORDER_ITEMS_MAX = 50;
+export const ORDER_ITEM_PREVIEW = 80;
+/** TCO Art. 4(4): the hours from receipt in which korbat may ask for the scrutiny of an order from another state. */
+export const ORDER_SCRUTINY_HOURS = 48;
+/** The bounds of an order's strings (10.1): a name or reference, a link, a short text of the command line, the authority's reasons and redress. */
+export const ORDER_TEXT_LIMITS = { name: 200, link: 500, short: 500, long: 4000 } as const;
+
+// ---------------------------------------------------------------- the labels (W.1)
+
+export const ORDER_KIND_LABELS: Record<OrderKind, string> = {
+  tco_removal: "Removal order (terrorist content)",
+  dsa_art9: "Order to act against content (DSA Article 9)",
+  dsa_art10: "Order to provide information (DSA Article 10)",
+};
+export const ANNEX3_GROUND_LABELS: Record<Annex3Ground, string> = {
+  force_majeure: "Force majeure or impossibility not korbat's fault (Article 3(7))",
+  manifest_error: "The order has manifest errors (Article 3(8))",
+  insufficient_information: "The order lacks information (Article 3(8))",
+};
+export const ORDER_GROUND_LABELS: Record<OrderCloseGround, string> = {
+  withdrawn: "The authority withdrew the order",
+  annulled: "A court annulled the order",
+  scrutiny: "The home authority's scrutiny found that the order infringes (Article 4)",
+  not_authentic: "The order was not authentic",
+  wrong_item: "korbat's mistake: the order does not name this post",
+  not_addressed: "It is not addressed to korbat",
+};
+export const HOLD_END_REASON_LABELS: Record<HoldEndReason, string> = {
+  not_authentic: "The order was not authentic",
+  annulled: "A court annulled the order",
+  released_by_authority: "The authority released it",
+  not_ordered: "korbat's mistake: the order had no non-disclosure decision",
+};
+export const SCRUTINY_OUTCOME_LABELS: Record<ScrutinyOutcome, string> = {
+  upheld: "upheld: the order stands",
+  annulled: "annulled: the order infringes",
+};
+export const ORDER_ITEM_CLOSE_REASON_LABELS: Record<OrderItemCloseReason, string> = {
+  no_post: "The link names nothing korbat can disable for an order",
+  not_named: "korbat's mistake: the order does not name this link",
+  withdrawn: "The authority withdrew this item",
+};
+export const ORDER_CHANNEL_LABELS: Record<OrderChannel, string> = {
+  mailbox: "By mail to the contact point: it is in the mailbox and not in this list",
+  portal: "Through a portal",
+  post: "By post or in person",
+  other: "Another way",
+};
+/** The rule of a correction in words, for the phrase of its event. */
+export const ORDER_CORRECTION_RULE_WORDS: Record<OrderCorrectionRule, string> = {
+  entry: "before any effect",
+  caution: "the author must not be told, set after effect",
+  admin: "by an admin, after effect",
+};
+
+/** One phrase an event kind (W.1); a value in braces is the event's own. */
+export const ORDER_EVENT_WORDS: Record<OrderEventKind, string> = {
+  opened: "Order opened",
+  annex3_sent: "Annex III sent: {ground}",
+  grounds_ceased: "The grounds ceased: a fresh hour from {effectiveAt}",
+  clarification_received: "Clarification received: a fresh hour from {effectiveAt}",
+  annex2_sent: "Annex II sent",
+  receipt_confirmed: "Authority informed",
+  closed_without_effect: "Closed without effect: {ground}",
+  effect_given: "Item {n} disabled",
+  reinstated: "Item {n} reinstated: {ground}",
+  notice_released: "The author's notice released",
+  verified: "The check recorded",
+  issued_at_set: "The order's own date recorded",
+  received_set: "Time of receipt recorded",
+  sent_at_set: "Time of sending recorded",
+  due_set: "Deadline recorded",
+  texts_recorded: "The authority's reasons, remedies or scope recorded",
+  document_recorded: "The document's digest recorded",
+  hold_until_set: "The authority's end of non-disclosure recorded",
+  hold_extended: "Non-disclosure extended once",
+  hold_ended: "Non-disclosure ended: {reason}",
+  corrected: "The record corrected: {rule}",
+  reopened: "Order reopened",
+  tell_person_set: "Whether the person may be told recorded",
+  person_told: "The person was told",
+  preservation_extended: "Item {n} preserved longer, until {until}",
+  preservation_ended: "Item {n}: preservation ended",
+  scrutiny_requested: "Scrutiny requested",
+  scrutiny_decided: "Scrutiny decided: {outcome}",
+  imported: "Written again after a restore",
+};
+
+// ---------------------------------------------------------------- the member states (10.1)
+
+/** The EU's 27 Member States by ISO code, the issuing states an order may name. */
+export const EU_MEMBER_STATES = {
+  AT: "Austria",
+  BE: "Belgium",
+  BG: "Bulgaria",
+  HR: "Croatia",
+  CY: "Cyprus",
+  CZ: "Czechia",
+  DK: "Denmark",
+  EE: "Estonia",
+  FI: "Finland",
+  FR: "France",
+  DE: "Germany",
+  GR: "Greece",
+  HU: "Hungary",
+  IE: "Ireland",
+  IT: "Italy",
+  LV: "Latvia",
+  LT: "Lithuania",
+  LU: "Luxembourg",
+  MT: "Malta",
+  NL: "Netherlands",
+  PL: "Poland",
+  PT: "Portugal",
+  RO: "Romania",
+  SK: "Slovakia",
+  SI: "Slovenia",
+  ES: "Spain",
+  SE: "Sweden",
+} as const;
+export type MemberState = keyof typeof EU_MEMBER_STATES;
+const MEMBER_STATE_CODES = Object.keys(EU_MEMBER_STATES) as [MemberState, ...MemberState[]];
+/** An issuing state's code: two upper-case letters of one of the 27. */
+export const MemberStateCode = z.enum(MEMBER_STATE_CODES);
+
+/** An authority as a state's facts list it, with the words of the Commission's register to check an order against. */
+export interface StateAuthority {
+  id: string;
+  name: string;
+  /** Null while nobody verified the register's words: the console then prints state.unknown. */
+  registerEntry: string | null;
+}
+
+/** What korbat knows of a Member State (10.1); a member without a verified value is null. */
+export interface StateFacts {
+  name: string;
+  authorities: readonly StateAuthority[];
+  /** The address that gets a copy of Annex II and III. */
+  annexCopy: string | null;
+  /** Where a notification to the authorities goes, and how. */
+  notificationIntake: { name: string; how: string } | null;
+  /** The languages the contact point declares: the operator's choice. */
+  languages: readonly string[] | null;
+  /** The state's own yearly filing, as a line of the runbook. */
+  yearlyFiling: string | null;
+  /** The state's default for when the person an order to provide information concerns is told. */
+  tellPersonDefault: TellPersonRule | null;
+}
+
+/**
+ * The states' facts, by ISO code; HOME_STATE picks one. Germany's entry is the worked example, from the research the
+ * design cites (korbat-scratch/research-3e: gap-E-orders-law.md, gap-E-authorities.md): the BKA issues removal orders and
+ * names TCO@bka.bund.de for questions about one, which is also its entry in the Commission's register; a German host
+ * informs the BKA of Annex II and III as well; notifications go to the BKA's portal after registration; the yearly filing
+ * is two numbers to the Bundesnetzagentur; a request under TDDDG s. 22 carries silence by statute. The contact point's
+ * languages are the operator's to declare, so null. Any other state's entry is the owner's to fill.
+ */
+export const STATE_FACTS: Partial<Record<MemberState, StateFacts>> = {
+  DE: {
+    name: "Germany",
+    authorities: [{ id: "bka", name: "Bundeskriminalamt (BKA)", registerEntry: "Bundeskriminalamt (BKA), contact point TCO@bka.bund.de" }],
+    annexCopy: "TCO@bka.bund.de",
+    notificationIntake: {
+      name: "BKA reporting portal (u-entrance.bka.de)",
+      how: "After registration by mail to U-Entrance@bka.bund.de, which itself takes no report; urgent matters by telephone, +49 611 55-35062; in an emergency 110.",
+    },
+    languages: null,
+    yearlyFiling:
+      "By 1 March, to the Bundesnetzagentur: the authorities' requests for access to preserved content and the complaint procedures of the year before (TCO Art. 7(3)(c) and (d)), only when either is not zero.",
+    tellPersonDefault: "never",
+  },
+};
+
+// ---------------------------------------------------------------- the requests (10.2, 10.3)
+
+/** A uuid in the lower case PostgreSQL writes: the one spelling a hashed param may take. */
+const LowerUuid = z.uuid().regex(/^[0-9a-f-]+$/, { message: "a uuid in lower case" });
+
+/** Whether a text holds a control character: C0, DEL or C1. */
+const hasControl = (text: string) =>
+  [...text].some((char) => {
+    const code = char.codePointAt(0)!;
+    return code < 32 || (code >= 127 && code < 160);
+  });
+/** Whether a string is whole text, with no half of a surrogate pair. */
+const isWellFormed = (text: string) => (text as string & { isWellFormed(): boolean }).isWellFormed();
+
+/**
+ * One line typed from an order's document: an authority's name, a reference, a link. Stored as written or refused: well
+ * formed, no control character, none of the invisible direction and spacing characters, some text, at most `max`
+ * characters as PostgreSQL counts them. It is an outsider's text, and the console draws it as such.
+ */
+const orderLine = (max: number) =>
+  z
+    .string()
+    // A character outside the basic plane is two UTF-16 units, so this bound never refuses what the count below accepts.
+    .max(2 * max)
+    .refine(isWellFormed, { message: "half of a surrogate pair is not text" })
+    .refine((text) => !hasControl(text), { message: "control characters are not allowed" })
+    .refine((text) => !FORBIDDEN_FORMAT.test(text), { message: "invisible direction and spacing characters are not allowed" })
+    .refine((text) => text.trim().length > 0, { message: "some text is needed" })
+    .refine((text) => Array.from(text).length <= max, { message: `at most ${max} characters` });
+export const OrderAuthority = orderLine(ORDER_TEXT_LIMITS.name);
+export const OrderReference = orderLine(ORDER_TEXT_LIMITS.name);
+export const OrderLinkText = orderLine(ORDER_TEXT_LIMITS.link);
+
+const distinct = (values: readonly string[]) => new Set(values).size === values.length;
+const orderLinks = (min: number) => z.array(OrderLinkText).min(min).max(ORDER_RULES.itemsPerAction).refine(distinct, { message: "a link is named once" });
+
+/**
+ * POST /api/staff/orders (7.4). sectionC is required and has no default: the form's third choice, "I cannot tell", is
+ * sent as true. A named message comes with the channel mailbox, which the database forces too. The withholding is true
+ * for a removal order and whenever Section C is set, so no request can hold a notice on a post its author sees; an order
+ * to provide information names no post, so it does not withhold unless Section C forces it. It takes no link; the other
+ * two kinds take one to itemsPerAction.
+ */
+export const OrderOpenRequest = z
+  .strictObject({
+    messageId: z.uuid().nullable(),
+    channel: z.enum(ORDER_CHANNELS),
+    kind: z.enum(ORDER_KINDS),
+    memberState: MemberStateCode,
+    authority: OrderAuthority,
+    reference: OrderReference,
+    links: orderLinks(0),
+    sectionC: z.boolean(),
+    emergency: z.boolean(),
+    withholdFromAuthor: z.boolean(),
+  })
+  .superRefine((request, ctx) => {
+    if (request.messageId !== null && request.channel !== "mailbox") ctx.addIssue({ code: "custom", path: ["channel"], message: "an order opened from a message arrived in the mailbox" });
+    if ((request.kind === "tco_removal" || request.sectionC) && !request.withholdFromAuthor) {
+      ctx.addIssue({ code: "custom", path: ["withholdFromAuthor"], message: "a removal order, and an order whose author must not be told, keeps the post from its author" });
+    }
+    if (request.kind === "dsa_art10" && !request.sectionC && request.withholdFromAuthor) {
+      ctx.addIssue({ code: "custom", path: ["withholdFromAuthor"], message: "an order to provide information names no post to withhold" });
+    }
+    if (request.kind === "dsa_art10" ? request.links.length > 0 : request.links.length === 0) {
+      ctx.addIssue({ code: "custom", path: ["links"], message: "an order to provide information takes no link; the other kinds take at least one" });
+    }
+  });
+export type OrderOpenRequest = z.infer<typeof OrderOpenRequest>;
+
+/** POST /api/staff/orders/:order/items: one to itemsPerAction more links, up to ORDER_ITEMS_MAX in all. */
+export const OrderItemsRequest = z.strictObject({ links: orderLinks(1) });
+export type OrderItemsRequest = z.infer<typeof OrderItemsRequest>;
+
+/**
+ * What a correction changes (7.4): only the members to change, at least one. crossBorder is the API's, set with
+ * memberState. closeItems closes open items, each with one reason, no item twice. Section C set never comes with the
+ * withholding unset.
+ */
+export const OrderCorrectFacts = z
+  .strictObject({
+    kind: z.enum(ORDER_KINDS).optional(),
+    memberState: MemberStateCode.optional(),
+    authority: OrderAuthority.optional(),
+    reference: OrderReference.optional(),
+    channel: z.enum(ORDER_CHANNELS).optional(),
+    sectionC: z.boolean().optional(),
+    emergency: z.boolean().optional(),
+    withholdFromAuthor: z.boolean().optional(),
+    closeItems: z
+      .array(z.strictObject({ itemId: LowerUuid, reason: z.enum(ORDER_ITEM_CLOSE_REASONS) }))
+      .min(1)
+      .max(ORDER_RULES.itemsPerAction)
+      .refine((items) => distinct(items.map((item) => item.itemId)), { message: "an item is closed once" })
+      .optional(),
+  })
+  .refine((facts) => Object.keys(facts).length > 0, { message: "a correction changes something" })
+  .refine((facts) => !(facts.sectionC === true && facts.withholdFromAuthor === false), { message: "an order whose author must not be told keeps the post from its author", path: ["withholdFromAuthor"] });
+export type OrderCorrectFacts = z.infer<typeof OrderCorrectFacts>;
+
+/** The step-up params of order_corrected, asked only under the rule admin: the request's facts (10.3). */
+export const OrderCorrectedParams = z.strictObject({ facts: OrderCorrectFacts });
+export type OrderCorrectedParams = z.infer<typeof OrderCorrectedParams>;
+
+/** Every ground a console event takes: an Annex III's and a closing's, each once. A param is never a free string. */
+const CONSOLE_EVENT_GROUNDS = [...ANNEX3_GROUNDS, ...ORDER_CLOSE_GROUNDS] as const;
+
+/**
+ * The step-up params of order_event_recorded (10.3): the kind, its ground (one of its kind's list, or null for a kind
+ * without one) and the message it names, which a clarification and an extension need, a cease may have and nothing else
+ * takes.
+ */
+export const OrderEventRecordedParams = z
+  .strictObject({ kind: z.enum(ORDER_CONSOLE_EVENTS), ground: z.enum(CONSOLE_EVENT_GROUNDS).nullable(), messageId: LowerUuid.nullable() })
+  .superRefine((params, ctx) => {
+    const grounds = orderEventGrounds(params.kind);
+    if (grounds === null ? params.ground !== null : params.ground === null || !grounds.includes(params.ground)) {
+      ctx.addIssue({ code: "custom", path: ["ground"], message: grounds === null ? "this event has no ground" : "a ground of this event's list" });
+    }
+    const needs = params.kind === "clarification_received" || params.kind === "hold_extended";
+    const may = needs || params.kind === "grounds_ceased";
+    if ((needs && params.messageId === null) || (!may && params.messageId !== null)) {
+      ctx.addIssue({ code: "custom", path: ["messageId"], message: needs ? "this event names the message it came in" : "this event names no message" });
+    }
+  });
+export type OrderEventRecordedParams = z.infer<typeof OrderEventRecordedParams>;
+
+// ---------------------------------------------------------------- the answers (10.2)
+
+const At = z.iso.datetime();
+
+/** A removal order's clock: one row of legal_order_clock, with the newest Annex III's time and ground while it is stopped. */
+export const OrderClock = z.strictObject({
+  clockStart: At.nullable(),
+  stopped: z.boolean(),
+  stoppedAt: At.nullable(),
+  stopGround: z.enum(ANNEX3_GROUNDS).nullable(),
+  deadlineAt: At.nullable(),
+  targetAt: At.nullable(),
+  itemsOpen: z.number().int().nonnegative(),
+  firstEffectAt: At.nullable(),
+  lastEffectAt: At.nullable(),
+  withinHour: z.boolean().nullable(),
+});
+export type OrderClock = z.infer<typeof OrderClock>;
+
+/** One order on the list: its facts as typed, its clock (null for a DSA order), its state and its counts. */
+export const OrderSummary = z.strictObject({
+  id: z.uuid(),
+  kind: z.enum(ORDER_KINDS),
+  memberState: MemberStateCode,
+  authority: z.string(),
+  reference: z.string(),
+  openedAt: At,
+  state: z.enum(ORDER_STATES),
+  clock: OrderClock.nullable(),
+  /** A DSA order's deadline as its text states it, or null. */
+  dueAt: At.nullable(),
+  closedAt: At.nullable(),
+  closeGround: z.enum(ORDER_CLOSE_GROUNDS).nullable(),
+  items: z.number().int().nonnegative(),
+  itemsInForce: z.number().int().nonnegative(),
+  verified: z.boolean(),
+  noticesHeld: z.number().int().nonnegative(),
+});
+export type OrderSummary = z.infer<typeof OrderSummary>;
+
+/** GET /api/staff/orders: the orders that are not closed, the nearest deadline first, and those closed in the last 30 days. */
+export const OrdersPage = z.strictObject({ open: z.array(OrderSummary), closed: z.array(OrderSummary) });
+export type OrdersPage = z.infer<typeof OrdersPage>;
+
+/** The stored states of a post, as an order's item reads them live. */
+export const ORDER_ITEM_POST_STATES = ["visible", "withheld", "removed", "deleted_by_author", "disabled"] as const;
+
+/** One item of an order: its link as named, what it resolved to (read live), and what became of it. */
+export const OrderItemView = z.strictObject({
+  id: z.uuid(),
+  position: z.number().int().min(1).max(ORDER_ITEMS_MAX),
+  link: z.string(),
+  linkKind: z.enum(ORDER_LINK_KINDS),
+  addedAt: At,
+  /** The order is not verified, or the item was added after its verification. */
+  unverified: z.boolean(),
+  postId: z.uuid().nullable(),
+  /** Null when the link named no post; the preview only while the post is public, and never an image. */
+  post: z
+    .strictObject({
+      authorHandle: z.string().nullable(),
+      state: z.enum(ORDER_ITEM_POST_STATES),
+      images: z.number().int().nonnegative(),
+      preview: z.string().nullable(),
+      createdAt: At,
+      deletedOn: z.iso.date().nullable(),
+    })
+    .nullable(),
+  decisionId: z.uuid().nullable(),
+  caseId: z.uuid().nullable(),
+  inForce: z.boolean(),
+  disabledAt: At.nullable(),
+  noEffect: z.enum(["deleted", "already"]).nullable(),
+  preserveUntil: At.nullable(),
+  preserveEndedAt: At.nullable(),
+  reinstatedAt: At.nullable(),
+  reinstatedGround: z.enum(ORDER_GROUNDS).nullable(),
+  closedAt: At.nullable(),
+  closedReason: z.enum(ORDER_ITEM_CLOSE_REASONS).nullable(),
+  /** True when an open restore gap names the item (Task 6 builds the gaps); false until then. */
+  gap: z.boolean(),
+});
+export type OrderItemView = z.infer<typeof OrderItemView>;
+
+/** One event of an order: who wrote it as a staff handle, or null for the command line and the database. */
+export const OrderEventView = z.strictObject({
+  id: z.uuid(),
+  kind: z.enum(ORDER_EVENT_KINDS),
+  ground: z.string().nullable(),
+  at: At,
+  effectiveAt: At.nullable(),
+  itemId: z.uuid().nullable(),
+  by: z.string().nullable(),
+  via: z.enum(ORDER_EVENT_VIA),
+});
+export type OrderEventView = z.infer<typeof OrderEventView>;
+
+/** What the command line still owes an order (7.5), and until when korbat may ask for a scrutiny. */
+export const OrderOwed = z.strictObject({
+  received: z.boolean(),
+  verification: z.boolean(),
+  issuedAt: z.boolean(),
+  texts: z.boolean(),
+  document: z.boolean(),
+  holdUntil: z.boolean(),
+  tellPerson: z.boolean(),
+  scrutinyUntil: At.nullable(),
+});
+export type OrderOwed = z.infer<typeof OrderOwed>;
+
+/** An order's hold, for an order with Section C: its end (null while a DSA order's has none recorded) and what became of it. */
+export const OrderHold = z.strictObject({
+  until: At.nullable(),
+  basis: z.enum(HOLD_BASES),
+  open: z.boolean(),
+  extended: z.boolean(),
+  endedAt: At.nullable(),
+  endReason: z.enum(HOLD_END_REASONS).nullable(),
+  releasedAt: At.nullable(),
+  noticesHeld: z.number().int().nonnegative(),
+});
+export type OrderHold = z.infer<typeof OrderHold>;
+
+/**
+ * GET /api/staff/orders/:order: the summary with its items as a list, the row's facts, the events oldest first, what the
+ * command line owes, the hold, and the console's aids (the database decides). No text of reasons, redress, scope,
+ * verified_how or hold_basis: those are the command line's, and the author's notice is where the first three are read.
+ */
+export const OrderView = OrderSummary.extend({
+  channel: z.enum(ORDER_CHANNELS),
+  messageId: z.uuid().nullable(),
+  receivedAt: At.nullable(),
+  sentAt: At.nullable(),
+  issuedAt: At.nullable(),
+  sectionC: z.boolean(),
+  emergency: z.boolean(),
+  crossBorder: z.boolean(),
+  withholdFromAuthor: z.boolean(),
+  preserve: z.boolean(),
+  openedBy: z.string().nullable(),
+  openedVia: z.enum(["console", "cli"]),
+  importedAt: At.nullable(),
+  tellPerson: z.strictObject({ rule: z.enum(TELL_PERSON_RULES), at: At.nullable() }).nullable(),
+  items: z.array(OrderItemView).max(ORDER_ITEMS_MAX),
+  events: z.array(OrderEventView),
+  owed: OrderOwed,
+  hold: OrderHold.nullable(),
+  mayClose: z.boolean(),
+  mayEvents: z.array(z.enum(ORDER_CONSOLE_EVENTS)),
+  mayCorrect: z.enum(ORDER_CORRECTION_RULES).nullable(),
+});
+export type OrderView = z.infer<typeof OrderView>;
+
+/** The one refusal of 3f that carries a member: order_exists names the order that stands, so the console links to it. */
+export const OrderExistsDetails = z.strictObject({ orderId: z.uuid() });
+export type OrderExistsDetails = z.infer<typeof OrderExistsDetails>;

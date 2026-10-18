@@ -125,7 +125,7 @@ function StandingLines({ overview, now, onNavigate }: { overview: StaffOverview;
  * order: mail at the contact point that nobody has handled, with a link to Contact point inside its sentence, and the
  * alert channel's state when it is not ok. Without a way to move between pages (a test's rendering), the link is text.
  */
-export function AuthoritiesLines({ overview, onNavigate }: { overview: StaffOverview; onNavigate?: (path: ConsolePath) => void }) {
+export function AuthoritiesLines({ overview, now = Date.now(), onNavigate }: { overview: StaffOverview; now?: number; onNavigate?: (path: ConsolePath) => void }) {
   const W = ORDER_WORDS.home;
   const { contact, alerts } = overview;
   const since = alerts.since === null ? "" : bothTimes(alerts.since);
@@ -145,6 +145,31 @@ export function AuthoritiesLines({ overview, onNavigate }: { overview: StaffOver
         {words.after}
       </p>,
     );
+  }
+  // Task 2: the nearest deadline of a message or of an order with an open item, ahead with its minutes left (a link to
+  // Orders), or passed.
+  if (contact.dueAt !== null) {
+    const due = Date.parse(contact.dueAt);
+    if (due > now) {
+      const text = ORDER_WORDS.homeClock(bothTimes(contact.dueAt), Math.ceil((due - now) / 60_000));
+      lines.push(
+        <p key="clock" className="notice">
+          {onNavigate ? (
+            <NavLink to="/orders" onNavigate={onNavigate}>
+              {text}
+            </NavLink>
+          ) : (
+            text
+          )}
+        </p>,
+      );
+    } else {
+      lines.push(
+        <p key="overdue" className="error">
+          {ORDER_WORDS.homeOverdue(bothTimes(contact.dueAt))}
+        </p>,
+      );
+    }
   }
   if (alerts.channel === "down") lines.push(<p key="channel" className="error">{W.channel(since)}</p>);
   if (alerts.channel === "mailbox") lines.push(<p key="mailbox" className="error">{W.mailbox(since)}</p>);
@@ -166,7 +191,7 @@ export function OverviewView({ overview, now, onOpenCase, onNavigate }: { overvi
   const mails = (m: StaffOverview["mailsWaiting"]) => `${counted(m.receipts, "receipt", "receipts")}, ${counted(m.authorMails, "statement to an author", "statements to authors")}, ${counted(m.outcomes, "outcome", "outcomes")}`;
   return (
     <>
-      <AuthoritiesLines overview={overview} onNavigate={onNavigate} />
+      <AuthoritiesLines overview={overview} now={now} onNavigate={onNavigate} />
       <h3>Cases</h3>
       <ul className="lanes">
         {overview.lanes.map((lane) => (

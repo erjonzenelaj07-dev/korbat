@@ -5,6 +5,8 @@ import {
   ContactPage,
   ErrorEnvelope,
   FindingResponse,
+  OrderView,
+  OrdersPage,
   QueuePage,
   RevealResponse,
   StaffEnrollOptionsResponse,
@@ -25,6 +27,10 @@ import {
   type ContactCloseRequest,
   type FindingRequest,
   type IdentityRevealRequest,
+  type OrderCorrectRequest,
+  type OrderEventRecordRequest,
+  type OrderItemsRequest,
+  type OrderOpenRequest,
   type StaffEnrollOptionsRequest,
   type StaffEnrollVerifyRequest,
   type StaffSessionRevokeRequest,
@@ -34,7 +40,7 @@ import {
 } from "@korbat/contracts";
 import type { z } from "zod";
 import { messageFor } from "./messages";
-import { isLowerUuid, type CaseId } from "./router";
+import { isLowerUuid, type CaseId, type OrderId } from "./router";
 
 /**
  * The console's calls to its API (3a design, sections 7 and 9). Every call goes to /api/staff/* on the console's own
@@ -55,6 +61,8 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string = messageFor(code),
+    /** 3f: what a refusal carries beside its code: order_exists names the order that stands ({ orderId }). */
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -123,6 +131,12 @@ function sameCase(asked: string, view: CaseView): CaseView {
   return view;
 }
 
+/** 3f: an order answered under another order's address is no answer, as for a case. */
+function sameOrder(asked: string, view: OrderView): OrderView {
+  if (view.id !== asked) throw new ApiError(0, "invalid_answer");
+  return view;
+}
+
 export type StaffApi = ReturnType<typeof createStaffApi>;
 
 export function createStaffApi(deps: StaffApiDeps) {
@@ -160,7 +174,7 @@ export function createStaffApi(deps: StaffApiDeps) {
       // The API cleared both staff cookies with this answer; the store shows sign-in in place. The cookie is gone from
       // the page by now, so what the request carried, read before it was sent, is the only record that it was there.
       if (code === "staff_session_required") hooks.onSessionRequired(Boolean(csrf));
-      throw new ApiError(response.status, code);
+      throw new ApiError(response.status, code, undefined, envelope.success ? envelope.data.error.details : undefined);
     }
 
     let value: T;
@@ -253,6 +267,24 @@ export function createStaffApi(deps: StaffApiDeps) {
     closeContact: async (messageId: string, body: ContactCloseRequest, call: Call = {}) => {
       if (!isLowerUuid(messageId)) throw new ApiError(0, "invalid_request");
       return request<void>("POST", `/api/staff/contact/${messageId}/close`, null, call, body);
+    },
+    /** 3f: the orders not closed and those closed in the last 30 days. */
+    orders: (call: Call = {}) => request("GET", "/api/staff/orders", OrdersPage, call),
+    /** 3f: one order. An answer about another order than the one asked is no answer. */
+    order: async (id: OrderId, call: Call = {}) => sameOrder(id, await request("GET", `/api/staff/orders/${id}`, OrderView, call)),
+    /** 3f: opens an order, with or without a message, without a key. */
+    openOrder: (body: OrderOpenRequest, call: Call = {}) => request("POST", "/api/staff/orders", OrderView, call, body),
+    /** 3f: more links for an order, without a key. */
+    addOrderItems: async (id: OrderId, body: OrderItemsRequest, call: Call = {}) => sameOrder(id, await request("POST", `/api/staff/orders/${id}/items`, OrderView, call, body)),
+    /** 3f: a clock event, a closing, a reopening or an extension; the order's id must be the lower-case uuid the step-up confirmed. */
+    recordOrderEvent: async (id: string, body: OrderEventRecordRequest, call: Call = {}) => {
+      if (!isLowerUuid(id)) throw new ApiError(0, "invalid_request");
+      return sameOrder(id, await request("POST", `/api/staff/orders/${id}/events`, OrderView, call, body));
+    },
+    /** 3f: a correction of what the order shows, with the step-up only under the rule admin. */
+    correctOrder: async (id: string, body: OrderCorrectRequest, call: Call = {}) => {
+      if (!isLowerUuid(id)) throw new ApiError(0, "invalid_request");
+      return sameOrder(id, await request("POST", `/api/staff/orders/${id}/correct`, OrderView, call, body));
     },
     /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {

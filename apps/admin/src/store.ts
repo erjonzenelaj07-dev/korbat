@@ -3,7 +3,7 @@ import { ApiError, type StaffApi } from "./api";
 import type { CaseDraft } from "./compose";
 import { createIdleTimer, type Clock, type IdleWarning } from "./idle";
 import { messageFor } from "./messages";
-import { caseHref, parseRoute, type CaseId, type ConsolePath, type Route } from "./router";
+import { caseHref, orderHref, parseRoute, type CaseId, type ConsolePath, type OrderId, type Route } from "./router";
 
 /**
  * The console's state across its screens (3a design, section 9): the address, the session the page holds, and the idle
@@ -168,6 +168,8 @@ export function createConsoleStore(deps: ConsoleStoreDeps) {
 
     /** A link to a case: its address is built from a checked id, and from nothing else. */
     openCase: (id: CaseId) => go(caseHref(id), "push"),
+    /** 3f: an order's page, by its checked id. */
+    openOrder: (id: OrderId) => go(orderHref(id), "push"),
 
     /** The browser went back or forward. Back to the sign-in page with a live session is home. */
     popped(path: string) {

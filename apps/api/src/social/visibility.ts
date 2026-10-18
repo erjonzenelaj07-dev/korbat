@@ -1,7 +1,7 @@
 import type { Tombstone } from "@korbat/contracts";
 import type { ViewerId } from "./context";
 
-export type StoredPostState = "visible" | "withheld" | "removed" | "deleted_by_author";
+export type StoredPostState = "visible" | "withheld" | "removed" | "deleted_by_author" | "disabled";
 
 /**
  * shown: the viewer gets the post. hidden: the viewer may not see it (a block, or moderation state
@@ -27,6 +27,10 @@ export function postAccess(viewer: ViewerId, post: { authorId: string; state: St
     case "withheld":
     case "removed":
       return viewer !== null && viewer === post.authorId ? "shown" : "hidden";
+    // 3f (design, section 2, row 16): a post disabled for an authority's order is there for nobody, its author included,
+    // and every reader answers as for a post that does not exist.
+    case "disabled":
+      return "hidden";
     default:
       post.state satisfies never;
       return "hidden";

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { ModerationError } from "../src/moderation/context";
-import { accountLink, parseLink, postLink } from "../src/moderation/links";
+import { accountLink, orderLinkTarget, parseLink, postLink } from "../src/moderation/links";
 
 /**
  * korbat links (3c design, section 7.1, step 3): the only thing a report may name besides an id or a handle. A link must
@@ -105,5 +105,32 @@ describe("the links korbat builds", () => {
     // An origin written with a final slash gives the same links.
     expect(postLink("https://korbat.example/", POST)).toBe(`https://korbat.example/post/${POST}`);
     expect(accountLink("https://korbat.example/", "ada")).toBe("https://korbat.example/u/ada");
+  });
+});
+
+describe("an order's link (3f design, section 7.4): what it names, never fetched, never refused", () => {
+  const app = "https://korbat.example";
+  const post = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const media = "5f4e3d2c-1b0a-4f9e-8d7c-6b5a4f3e2d1c";
+
+  test("a post's page names the post, in lower case", () => {
+    expect(orderLinkTarget(app, `${app}/post/${post}`)).toEqual({ kind: "post", postId: post });
+    expect(orderLinkTarget(app, `http://korbat.example/post/${post.toUpperCase()}/`)).toEqual({ kind: "post", postId: post });
+  });
+
+  test("an image korbat serves names the image, whose post the media module answers", () => {
+    expect(orderLinkTarget(app, `${app}/api/media/${media}/large.webp`)).toEqual({ kind: "image", mediaId: media });
+    expect(orderLinkTarget(app, `${app}/api/media/${media}/small.webp?x=1`)).toEqual({ kind: "image", mediaId: media });
+    expect(orderLinkTarget(app, `${app}/api/media/${media}/huge.webp`)).toEqual({ kind: "other" });
+  });
+
+  test("a profile's page names an account", () => {
+    expect(orderLinkTarget(app, `${app}/u/Some_One`)).toEqual({ kind: "account", handle: "some_one" });
+  });
+
+  test("another site, another path, a user name in the address and no address at all are other, and nothing throws", () => {
+    for (const link of [`https://elsewhere.example/post/${post}`, `${app}/settings`, `https://user:pw@korbat.example/post/${post}`, "not a link", "javascript:alert(1)", `ftp://korbat.example/post/${post}`]) {
+      expect(orderLinkTarget(app, link), link).toEqual({ kind: "other" });
+    }
   });
 });

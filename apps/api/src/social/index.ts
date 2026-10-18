@@ -11,6 +11,7 @@ import type { MediaForPosts } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { ModerationForSocial } from "../moderation";
 import { WITHOUT_MEDIA, type SocialDeps, type SocialEvents } from "./context";
+import type { StoredPostState } from "./visibility";
 import { startExplore } from "./explore";
 import { exportProfile, type ProfileExport } from "./flows/export";
 import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile, type LockedAccount } from "./repo";
@@ -61,7 +62,7 @@ export interface SocialForModeration {
   /** Who wrote the post, or null when no row has the id. */
   postAuthor(postId: string): Promise<string | null>;
   /** The post's author, state and the post it quotes, or null when no row has the id; no lock. */
-  postRef(postId: string): Promise<{ authorId: string; state: "visible" | "withheld" | "removed" | "deleted_by_author"; quoteOfId: string | null } | null>;
+  postRef(postId: string): Promise<{ authorId: string; state: StoredPostState; quoteOfId: string | null } | null>;
 }
 
 /**

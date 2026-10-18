@@ -105,8 +105,13 @@ describe("the Contact point screen (8.3)", () => {
       expect(out, word).toContain(ORDER_WORDS.contact.hints[word]);
     }
     expect(out).toContain("Closing ends this message's alerts and cannot be changed. Close it only after you have read it in the mail host's app.");
-    // No button opens an order: that form is a later task's.
+    // Without the screen's handlers (a view of the list alone) no button opens an order.
     expect(out).not.toContain("Open an order from this message");
+    // With them (Task 2), a message nobody handled offers [Open an order from this message]; its form replaces the button.
+    expect(text(view([message()], { onOpenForm: noop, onOpenOrder: noop }))).toContain("Open an order from this message");
+    const opened = text(view([message()], { onOpenForm: noop, onOpenOrder: noop, formFor: message().id, form: <p>the form</p> }));
+    expect(opened).toContain("the form");
+    expect(opened).not.toContain("Open an order from this message");
     // Close is greyed until a choice is made.
     expect(view([message()])).toMatch(/<button type="button" disabled=""[^>]*>Close<[/]button>/);
     expect(view([message()], { choices: { [message().id]: "not_an_order" } })).toMatch(/<button type="button"( aria-busy="false")?>Close<[/]button>/);
@@ -118,6 +123,12 @@ describe("the Contact point screen (8.3)", () => {
     expect(view([message({ disposition: "referral", handledAt: AT, handledBy: HOSTILE.script })])).toContain(HOSTILE_ESCAPED.script);
     expect(by).not.toContain("Close as");
     expect(text(view([message({ disposition: "order", handledAt: AT })]))).toContain("Handled as an order");
+    // A message opened as an order links to it (OrderLink), and offers no form of its own.
+    const order = "7c4f5e4b-1a7d-4f4b-8e5d-9c3b8a7f6e5d";
+    const linked = view([message({ disposition: "order", handledAt: AT, orders: [order] })], { onOpenForm: noop, onOpenOrder: noop });
+    expect(linked).toContain(`href="/orders/${order}"`);
+    expect(text(linked)).not.toContain("Open an order from this message");
+    expect(view([message({ disposition: "order", handledAt: AT, orders: ["not-an-id"] })], { onOpenForm: noop, onOpenOrder: noop })).not.toContain("href=");
   });
 
   test("more than one stale message nobody handled: close them together, with [contact.staleAll]; one stale message alone gets no such group", () => {

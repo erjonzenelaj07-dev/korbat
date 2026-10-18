@@ -11,6 +11,11 @@ import {
   FindingRequest,
   IdentityRevealRequest,
   MEASURES,
+  ORDER_RULES,
+  OrderCorrectRequest,
+  OrderEventRecordRequest,
+  OrderItemsRequest,
+  OrderOpenRequest,
   RULE_DEFAULT_CATEGORY,
   STANDING_RULES,
   STAFF_AUDIT_PAGE_SIZE,
@@ -33,6 +38,9 @@ import {
   type CaseDecision,
   type CaseView,
   type ContactMessage,
+  type OrderItemView,
+  type OrderSummary,
+  type OrderView,
   type QueuePage,
   type StaffOverview,
   type QueueReply,
@@ -543,6 +551,52 @@ export function staleMessages(now: number): ContactMessage[] {
   return ["8f3c4d5e-6f70-4182-9394-a5b627c8d9e0", "904d5e6f-7081-4293-a4a5-b6c738d9e0f1", "a15e6f70-8192-43a4-b5b6-c7d849e0f102"].map((id, i) => contactMessage(id, now - (30 + i) * HOUR, "inbox", true));
 }
 
+/** 3f, Task 2: what a link of an order names, as the API's resolver tells them apart: a post, an account, or nothing korbat serves. */
+function linkKindOf(link: string): OrderItemView["linkKind"] {
+  if (/^https:[/][/]korbat[.]example[/]p[/][0-9a-z-]+$/.test(link)) return "post";
+  if (/^https:[/][/]korbat[.]example[/]@[0-9a-z_]+$/.test(link)) return "account";
+  return "other";
+}
+
+/** 3f: an item as the API answers it once its link is recorded: a post's author and preview are outsiders' words, nothing is done yet. */
+function orderItem(link: string, position: number, addedAt: string): OrderItemView {
+  const linkKind = linkKindOf(link);
+  return {
+    id: randomUUID(),
+    position,
+    link,
+    linkKind,
+    addedAt,
+    unverified: true,
+    postId: linkKind === "post" ? randomUUID() : null,
+    post: linkKind === "post" ? { authorHandle: HOSTILE.img, state: "visible", images: 1, preview: HOSTILE.quote, createdAt: addedAt, deletedOn: null } : null,
+    decisionId: null,
+    caseId: null,
+    inForce: false,
+    disabledAt: null,
+    noEffect: null,
+    preserveUntil: null,
+    preserveEndedAt: null,
+    reinstatedAt: null,
+    reinstatedGround: null,
+    closedAt: null,
+    closedReason: null,
+    gap: false,
+  };
+}
+
+/** 3f: a removal order's clock from its start: the hour, and the target five minutes before it; no deadline without a start. */
+function runningClock(start: string | null, itemsOpen: number): NonNullable<OrderView["clock"]> {
+  const deadline = start === null ? null : iso(Date.parse(start) + ORDER_RULES.hourMinutes * 60_000);
+  return { clockStart: start, stopped: false, stoppedAt: null, stopGround: null, deadlineAt: deadline, targetAt: deadline === null ? null : iso(Date.parse(deadline) - 5 * 60_000), itemsOpen, firstEffectAt: null, lastEffectAt: null, withinHour: null };
+}
+
+/** 3f: an order's line on the list, from its page. */
+function orderSummary(view: OrderView): OrderSummary {
+  const { id, kind, memberState, authority, reference, openedAt, state, clock, dueAt, closedAt, closeGround, itemsInForce, verified, noticesHeld } = view;
+  return { id, kind, memberState, authority, reference, openedAt, state, clock, dueAt, closedAt, closeGround, items: view.items.length, itemsInForce, verified, noticesHeld };
+}
+
 export function createFixtureApi() {
   const now = Date.now();
   // The account's WebAuthn user handle, which the enrolment's options carry and a discoverable staff key returns.
@@ -645,6 +699,9 @@ export function createFixtureApi() {
     contactClosed: [] as { id: string; disposition: string }[],
     /** 3f: the home screen's contact point and alert channel, as the overview answers them. */
     authorities: { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } } as Pick<StaffOverview, "contact" | "alerts">,
+    /** 3f, Task 2: the orders the walk opened, as their pages stand, and every write the page sent for them, with whether a key confirmed it. */
+    orders: [] as OrderView[],
+    orderWrites: [] as { what: "opened" | "items" | "event" | "corrected"; id: string; body: unknown; key: boolean }[],
     requests: [] as RequestRecord[],
     problems: [] as string[],
   };
@@ -702,6 +759,9 @@ export function createFixtureApi() {
       idleSecondsLeft: Math.max(0, Math.floor((idleEnd - at) / 1000)),
       absoluteExpiresAt: iso(absoluteEnd),
       absoluteSecondsLeft: Math.max(0, Math.floor((absoluteEnd - at) / 1000)),
+      // 3f: the home state whose facts the console reads, and the contact point Annex II names.
+      homeState: "DE",
+      contactPoint: "authorities@korbat.example",
     };
   }
 
@@ -714,6 +774,24 @@ export function createFixtureApi() {
     if (at !== null) rows = rows.filter((row) => row.seq <= Number(at));
     const entries = rows.slice(0, STAFF_AUDIT_PAGE_SIZE);
     return { entries, nextCursor: rows.length > entries.length ? entries[entries.length - 1]!.seq : null };
+  }
+
+  /** 3f: an order's step-up: by the session's own key, over a challenge issued for exactly this action on exactly this order. */
+  async function confirmedOrder(stepUp: OrderEventRecordRequest["stepUp"], action: StaffStepUpActionInput, session: SessionRecord): Promise<void> {
+    const issued = clientData(stepUp.response.clientDataJSON, "webauthn.get", "step_up", "staff_step_up_invalid");
+    const hash = await stepUpActionHash(action);
+    if (issued.target !== action.target.id || issued.hash !== hash || stepUp.id !== session.credentialId) {
+      problem(`${action.action}: an assertion for ${String(issued.target)} from ${stepUp.id}, over ${issued.hash === hash ? "these" : "other"} params`);
+      throw refuse("staff_step_up_invalid");
+    }
+    const refusal = flagRefusal(flagsOf(Buffer.from(stepUp.response.authenticatorData, "base64url")));
+    if (refusal) throw refuse(refusal === "staff_key_refused" ? "staff_step_up_invalid" : refusal);
+  }
+
+  /** The nearest deadline of the contact point's mail or of an order with an item still open, as the overview answers it. */
+  function nearestDue(): string | null {
+    const dues = [state.authorities.contact.dueAt, ...state.orders.filter((order) => order.closedAt === null && order.clock !== null && order.clock.itemsOpen > 0).map((order) => order.clock!.deadlineAt)];
+    return dues.filter((due): due is string => due !== null).sort()[0] ?? null;
   }
 
   /** A step-up challenge in the contracts' layout; its seal is random, since only this server reads it back. */
@@ -903,6 +981,9 @@ export function createFixtureApi() {
       "GET /api/staff/standing",
       // 3f: the contact point.
       "GET /api/staff/contact",
+      // 3f, Task 2: the orders.
+      "GET /api/staff/orders",
+      "POST /api/staff/orders",
     ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
     const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts|decisions))?$/.exec(url.pathname);
@@ -911,7 +992,9 @@ export function createFixtureApi() {
     const review = req.method === "POST" ? /^\/api\/staff\/decisions\/([0-9a-f-]{36})\/review$/.exec(url.pathname) : null;
     // 3f: a message closed, by its id in the path. An id that is no lower-case uuid is the route's 400, as the API's.
     const closing = req.method === "POST" ? /^[/]api[/]staff[/]contact[/]([^/]+)[/]close$/.exec(url.pathname) : null;
-    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing) throw new Refusal(404, "not_found");
+    // 3f, Task 2: an order, its links, its events and its corrections, by its id in the path.
+    const ofOrder = /^[/]api[/]staff[/]orders[/]([^/]+)(?:[/](items|events|correct))?$/.exec(url.pathname);
+    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
     // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
@@ -941,6 +1024,7 @@ export function createFixtureApi() {
           erasureOverdue: { caseEvidence: 0, intakeRecords: 0, statements: 0, redactions: 0, images: 60, drafts: 0, accessLog: 0, contacts: 2 },
           // 3f: what the walk's step set, nothing at the contact point and a working channel otherwise.
           ...state.authorities,
+          contact: { ...state.authorities.contact, dueAt: nearestDue() },
         }),
       };
     }
@@ -969,6 +1053,124 @@ export function createFixtureApi() {
       found.handledAt = new Date().toISOString();
       state.contactClosed.push({ id, disposition: request.disposition });
       return { status: 204 };
+    }
+    // 3f, Task 2: the orders, opened from a message or without one, with their links, their events and their corrections.
+    if (key === "GET /api/staff/orders") {
+      const open = state.orders.filter((order) => order.closedAt === null).map(orderSummary);
+      return { status: 200, body: { open, closed: state.orders.filter((order) => order.closedAt !== null).map(orderSummary) } };
+    }
+    if (key === "POST /api/staff/orders") {
+      const request = parse(OrderOpenRequest, body, "the opening of an order");
+      const at = new Date().toISOString();
+      const message = request.messageId === null ? null : (state.contactMessages.find((m) => m.id === request.messageId) ?? null);
+      if (request.messageId !== null && message === null) throw new Refusal(422, "order_needs_message");
+      if (message !== null && message.disposition !== null) throw new Refusal(409, "message_handled");
+      const tco = request.kind === "tco_removal";
+      const receivedAt = message === null ? null : message.receivedAt;
+      const items = request.links.map((link, i) => orderItem(link, i + 1, at));
+      const view: OrderView = {
+        id: randomUUID(),
+        kind: request.kind,
+        memberState: request.memberState,
+        authority: request.authority,
+        reference: request.reference,
+        openedAt: at,
+        state: !tco ? "no_clock" : receivedAt === null ? "unknown_deadline" : "running",
+        clock: tco ? runningClock(receivedAt, items.length) : null,
+        dueAt: null,
+        closedAt: null,
+        closeGround: null,
+        items,
+        itemsInForce: 0,
+        verified: false,
+        noticesHeld: 0,
+        channel: request.channel,
+        messageId: request.messageId,
+        receivedAt,
+        sentAt: null,
+        issuedAt: null,
+        sectionC: request.sectionC,
+        emergency: request.emergency,
+        crossBorder: request.memberState !== "DE",
+        withholdFromAuthor: request.withholdFromAuthor,
+        preserve: tco,
+        openedBy: PERSON_HANDLE,
+        openedVia: "console",
+        importedAt: null,
+        tellPerson: null,
+        events: [{ id: randomUUID(), kind: "opened", ground: null, at, effectiveAt: null, itemId: null, by: PERSON_HANDLE, via: "console" }],
+        owed: { received: receivedAt === null, verification: true, issuedAt: tco, texts: true, document: true, holdUntil: false, tellPerson: request.kind === "dsa_art10", scrutinyUntil: null },
+        hold: request.sectionC ? { until: null, basis: tco ? "regulation" : "authority", open: true, extended: false, endedAt: null, endReason: null, releasedAt: null, noticesHeld: 0 } : null,
+        mayClose: true,
+        mayEvents: tco ? ["annex3_sent", "closed_without_effect"] : ["receipt_confirmed", "closed_without_effect"],
+        mayCorrect: "entry",
+      };
+      state.orders.push(view);
+      if (message !== null) Object.assign(message, { disposition: "order", handledAt: at, handledBy: PERSON_HANDLE, orders: [view.id] });
+      state.orderWrites.push({ what: "opened", id: view.id, body: request, key: false });
+      return { status: 201, body: view };
+    }
+    if (ofOrder) {
+      const id = ofOrder[1]!;
+      const part = ofOrder[2];
+      if (!/^[0-9a-f-]{36}$/.test(id)) {
+        problem(`${req.method} ${url.pathname}: an id that is not a lower-case uuid`);
+        throw new Refusal(400, "invalid_request");
+      }
+      const view = state.orders.find((order) => order.id === id);
+      if (!view) throw new Refusal(404, "not_found");
+      if (req.method === "GET" && part === undefined) return { status: 200, body: view };
+      if (req.method !== "POST" || part === undefined) throw new Refusal(404, "not_found");
+      const at = new Date().toISOString();
+      if (part === "items") {
+        const request = parse(OrderItemsRequest, body, "the links added to an order");
+        view.items.push(...request.links.map((link, i) => orderItem(link, view.items.length + i + 1, at)));
+        if (view.clock !== null) view.clock.itemsOpen += request.links.length;
+        state.orderWrites.push({ what: "items", id, body: request, key: false });
+        return { status: 201, body: view };
+      }
+      if (part === "events") {
+        const { stepUp, ...params } = parse(OrderEventRecordRequest, body, "an order's event");
+        await confirmedOrder(stepUp, { action: "order_event_recorded", target: { type: "order", id }, params }, session);
+        if (!view.mayEvents.includes(params.kind)) throw new Refusal(422, "order_event_refused");
+        const clock = view.clock;
+        if (params.kind === "annex3_sent" && clock !== null && params.ground !== null) {
+          Object.assign(clock, { stopped: true, stoppedAt: at, stopGround: params.ground, deadlineAt: null, targetAt: null });
+          view.state = "stopped";
+          view.mayEvents = ["grounds_ceased", "clarification_received", "closed_without_effect"];
+        }
+        if ((params.kind === "clarification_received" || params.kind === "grounds_ceased") && clock !== null) {
+          // A fresh hour from the clarification's delivery, or from the Annex III when that is later; from now when the grounds cease.
+          const message = params.messageId === null ? null : state.contactMessages.find((m) => m.id === params.messageId);
+          const from = message ? iso(Math.max(Date.parse(message.receivedAt), Date.parse(clock.stoppedAt ?? at))) : at;
+          Object.assign(clock, runningClock(from, clock.itemsOpen), { stoppedAt: null, stopGround: null });
+          view.state = "running";
+          view.mayEvents = ["annex3_sent", "closed_without_effect"];
+        }
+        view.events.push({ id: randomUUID(), kind: params.kind, ground: params.ground, at, effectiveAt: null, itemId: null, by: PERSON_HANDLE, via: "console" });
+        state.orderWrites.push({ what: "event", id, body: params, key: true });
+        return { status: 201, body: view };
+      }
+      if (part === "correct") {
+        const request = parse(OrderCorrectRequest, body, "the correction of an order");
+        if (view.mayCorrect === null) throw new Refusal(409, "order_closed");
+        if (view.mayCorrect === "admin") {
+          if (request.stepUp === undefined) throw refuse("staff_step_up_required");
+          await confirmedOrder(request.stepUp, { action: "order_corrected", target: { type: "order", id }, params: { facts: request.facts } }, session);
+        } else if (request.stepUp !== undefined) problem(`${url.pathname}: a key asked for a correction under the rule ${view.mayCorrect}`);
+        const { closeItems, ...facts } = request.facts;
+        for (const close of closeItems ?? []) {
+          const item = view.items.find((found) => found.id === close.itemId);
+          if (!item || item.closedAt !== null || item.disabledAt !== null) throw new Refusal(422, "order_event_refused");
+          Object.assign(item, { closedAt: at, closedReason: close.reason });
+          if (view.clock !== null) view.clock.itemsOpen -= 1;
+        }
+        Object.assign(view, facts);
+        view.events.push({ id: randomUUID(), kind: "corrected", ground: view.mayCorrect, at, effectiveAt: null, itemId: null, by: PERSON_HANDLE, via: "console" });
+        state.orderWrites.push({ what: "corrected", id, body: request.facts, key: request.stepUp !== undefined });
+        return { status: 201, body: view };
+      }
+      throw new Refusal(404, "not_found");
     }
     if (key === "GET /api/staff/standing") return { status: 200, body: standingLists() };
     if (key === "GET /api/staff/queue") {
@@ -1222,11 +1424,13 @@ export function createFixtureApi() {
             ? state.cases.has(action.target.id)
             : action.action === "appeals_reviewed"
               ? [...state.cases.values()].some((view) => view.decisions.some((decided) => decided.id === action.target.id))
-              : state.sessions.has(action.target.id);
+              : action.action === "order_event_recorded" || action.action === "order_corrected"
+                ? state.orders.some((order) => order.id === action.target.id)
+                : state.sessions.has(action.target.id);
       if (!known) throw new Refusal(404, "not_found");
       // The page builds a reveal's or a decision's params from the digests it computed itself: one a save's answer carried never gets here.
       const decided = action.action === "case_decided" ? CaseDecidedParams.parse(action.params) : null;
-      const underDigests = decided ? [decided.factsDigest, decided.reasonDigest, decided.legalReferenceDigest] : action.action === "identity_revealed" || action.action === "appeals_reviewed" ? [action.params.reasonDigest] : [];
+      const underDigests = decided ? [decided.factsDigest, decided.reasonDigest, decided.legalReferenceDigest] : action.action === "identity_revealed" || action.action === "appeals_reviewed" ? [(action.params as { reasonDigest: string }).reasonDigest] : [];
       if (underDigests.some((digest) => typeof digest === "string" && state.forgedDigests.includes(digest))) problem(`${key}: an action under a digest the page did not compute`);
       state.stepUpOptionsServed += 1;
       // The mismatched case: an API that asks the key to confirm the revocation of this very session instead of the one

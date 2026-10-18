@@ -8,7 +8,29 @@
  * only through the interfaces they export, never names an image row (the media module locks and holds a case's images for
  * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
-import type { AppealsPage, CaseView, ContactCloseRequest, ContactPage, ContactQuery, FindingRequest, FindingResponse, MediaSize, PostModeration, QueuePage, StaffOverview, StaffSnapshotTaken, StaffTextSaveRequest, StaffTextSaved, StaffTextsResponse, StandingLists } from "@korbat/contracts";
+import type {
+  AppealsPage,
+  CaseView,
+  ContactCloseRequest,
+  ContactPage,
+  ContactQuery,
+  FindingRequest,
+  FindingResponse,
+  MediaSize,
+  OrderCorrectFacts,
+  OrderItemsRequest,
+  OrderOpenRequest,
+  OrderView,
+  OrdersPage,
+  PostModeration,
+  QueuePage,
+  StaffOverview,
+  StaffSnapshotTaken,
+  StaffTextSaveRequest,
+  StaffTextSaved,
+  StaffTextsResponse,
+  StandingLists,
+} from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
@@ -27,7 +49,7 @@ import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
 import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
-import { closeContact, contactPage } from "./orders";
+import { addItems, closeContact, contactPage, correctOrderRecord, openOrder, orderView, ordersPage, recordEvent, type OrderOutcome } from "./orders";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { standingFor, standingLists, takeDownDue, type TakeDown } from "./standing";
@@ -42,6 +64,16 @@ export type { ModerationDeps, ModerationErrorKind } from "./context";
 export type { DecideOutcome } from "./decide";
 export type { ModerationExport } from "./export";
 export type { RevealOutcome } from "./reveal";
+// 3f (design, sections 5 and 8.11): plain functions for the command line, each taking the caller's connection or
+// transaction and no dependency of the module, since a command does not hold the API's whole configuration: how a link
+// is read, the items an order's links resolve to, and the rows of opening an order, which the console's route, order-open
+// and the import all write.
+export { orderLinkTarget, parseLink } from "./links";
+export type { OrderLinkTarget } from "./links";
+export { orderItemsFor } from "./orders";
+export type { OrderOutcome } from "./orders";
+export { insertOrder } from "./orders-repo";
+export type { InsertedOrder, NewOrder, NewOrderItem, WrittenItem } from "./orders-repo";
 
 /** What the staff module needs from this one: the console's operations on cases, which its routes run behind the staff gate. */
 export interface ModerationForStaff {
@@ -94,6 +126,21 @@ export interface ModerationForStaff {
    * has a disposition already, not_found for an unknown id. No key: closing restricts nothing and tells nobody.
    */
   closeContact(session: ActiveStaffSession, messageId: string, request: ContactCloseRequest, ctx: { requestId: string }): Promise<void>;
+  /** 3f: the orders that are not closed, the nearest deadline first, and those closed in the last 30 days. */
+  orders(): Promise<OrdersPage>;
+  /** 3f: one order with its clock, items, events, what the command line owes and the hold, as this person may act on it; null when unknown. */
+  order(session: ActiveStaffSession, orderId: string): Promise<OrderView | null>;
+  /** 3f: opens an order record, with or without a message, in one transaction with its audit row; every staff account is alerted. No key. */
+  openOrder(session: ActiveStaffSession, request: OrderOpenRequest, ctx: { requestId: string }): Promise<OrderView>;
+  /** 3f: adds links to an order that is not closed, with its audit row. No key. */
+  addOrderItems(session: ActiveStaffSession, orderId: string, request: OrderItemsRequest, ctx: { requestId: string }): Promise<OrderView>;
+  /** 3f: records a console event a step-up confirmed, through order_event_record, with its confirmed audit row. */
+  recordOrderEvent(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<OrderOutcome>;
+  /**
+   * 3f: corrects what a person entered, through order_correct, with its audit row: a plain one under the rules entry and
+   * caution, a confirmed one under admin, which "step_up_required" answers when no key confirmed it.
+   */
+  correctOrder(session: ActiveStaffSession, orderId: string, facts: OrderCorrectFacts, confirmed: StaffStepUpConfirmed | null, ctx: { requestId: string }): Promise<OrderOutcome | "step_up_required">;
 }
 
 /**
@@ -179,6 +226,12 @@ export function createModeration(options: CreateModerationOptions) {
     reveal: (session, confirmed, ctx) => reveal(deps, session, confirmed, ctx),
     contact: (query) => contactPage(deps, query),
     closeContact: (session, messageId, request, ctx) => closeContact(deps, session, messageId, request, ctx),
+    orders: () => ordersPage(deps),
+    order: (session, orderId) => orderView(deps, orderId, session),
+    openOrder: (session, request, ctx) => openOrder(deps, session, request, ctx),
+    addOrderItems: (session, orderId, request, ctx) => addItems(deps, session, orderId, request, ctx),
+    recordOrderEvent: (session, confirmed, ctx) => recordEvent(deps, session, confirmed, ctx),
+    correctOrder: (session, orderId, facts, confirmed, ctx) => correctOrderRecord(deps, session, orderId, facts, confirmed, ctx),
   };
   const forSocial: ModerationForSocial = {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),

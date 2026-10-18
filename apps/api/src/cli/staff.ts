@@ -46,6 +46,7 @@ import { consoleHostOf, consoleOriginSetting, consoleRpIdSetting, databaseUrl, l
 import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 import { mailerFor, type CommandLineMailSettings } from "./mail";
+import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCommand, type OrderCommandName } from "./orders";
 import { accessRequest, accountFacts, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
 
 export const STAFF_USAGE = [
@@ -68,6 +69,8 @@ export const STAFF_USAGE = [
   "  revoke <email> <key id>                revoke that staff key and every staff session it opened, and mail its owner",
   "  revoke <email> all                     revoke every staff key and staff session of the account, delete its unused",
   "                                         enrolment links, and mail its owner",
+  // 3f (design, section 8.11): the order commands, each as the migrator in the migrate service.
+  ...ORDER_USAGE,
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -87,7 +90,9 @@ export type StaffCommand =
   | { command: "link"; email: string; handle: string }
   | { command: "unlink"; email: string; handle: string }
   | { command: "limits"; limits: StaffLimits }
-  | { command: "account-facts"; handle: string; caseId: string };
+  | { command: "account-facts"; handle: string; caseId: string }
+  // 3f: an order command, whose words cli/orders.ts reads.
+  | { command: "order"; order: OrderCommand };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
 const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
@@ -170,6 +175,7 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
     case undefined:
       throw new Error(STAFF_USAGE);
     default:
+      if ((ORDER_COMMANDS as readonly string[]).includes(command)) return { command: "order", order: parseOrderArgs(command as OrderCommandName, rest) };
       throw new Error(`unknown command: ${command}\n${STAFF_USAGE}`);
   }
 }
@@ -918,7 +924,13 @@ export interface Output {
 }
 
 /** Runs one command and answers its exit code: 0 when it holds, 1 when it found a problem or failed, 2 for the usage. */
-export async function runStaffCommand(args: readonly string[], env: Record<string, string | undefined> = process.env, out: Output = console): Promise<number> {
+export async function runStaffCommand(
+  args: readonly string[],
+  env: Record<string, string | undefined> = process.env,
+  out: Output = console,
+  // 3f: what order-texts and order-document read; the process's standard input, unless a test hands its own.
+  input: () => Promise<Buffer> = readStandardInput,
+): Promise<number> {
   let command: StaffCommand;
   try {
     command = parseStaffArgs(args);
@@ -930,6 +942,7 @@ export async function runStaffCommand(args: readonly string[], env: Record<strin
   if (command.command === "revoke") return runRevoke(command.email, command.key, env, out);
   if (command.command === "link" || command.command === "unlink" || command.command === "limits" || command.command === "account-facts") return runAsMigrator(command, env, out);
   if (command.command === "access-request") return runAccessRequest(command.who, env, out);
+  if (command.command === "order") return runOrderCommand(command.order, env, out, input);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -1067,6 +1080,46 @@ async function runAccessRequest(who: { handle: string } | { email: string }, env
     return 1;
   } finally {
     await Promise.allSettled([closeDb(apiDb), closeDb(authDb)]);
+  }
+}
+
+// ---------------------------------------------------------------- the order commands (3f)
+
+/** Everything on standard input, as order-texts and order-document read it (run with docker compose run -T). */
+async function readStandardInput(): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+  return Buffer.concat(chunks);
+}
+
+/**
+ * An order command (3f design, section 8.11), on the migrator's own connection in the migrate service: its URL first, so
+ * a missing one connects to nothing, and of the API's settings only the two the migrate service is given, HOME_STATE and
+ * APP_ORIGIN, each blank when unset (order-open refuses without either).
+ */
+async function runOrderCommand(command: OrderCommand, env: Record<string, string | undefined>, out: Output, input: () => Promise<Buffer>): Promise<number> {
+  let url: string;
+  try {
+    url = migratorUrl(command.command, env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const blankAsNull = (value: string | undefined) => (value?.trim() ? value.trim() : null);
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    const done = await orderCommand(migrateDb, command, { homeState: blankAsNull(env.HOME_STATE), appOrigin: blankAsNull(env.APP_ORIGIN) }, input);
+    if (!done.ok) {
+      out.error(done.problem);
+      return 1;
+    }
+    for (const line of done.lines) out.log(line);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
   }
 }
 

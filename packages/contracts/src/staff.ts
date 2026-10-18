@@ -15,6 +15,7 @@ import {
   type ActionKind,
   type DecisionActionParams,
 } from "./moderation";
+import { MemberStateCode, OrderCorrectFacts, OrderCorrectedParams, OrderEventRecordedParams } from "./orders";
 import { AuthenticationResponseJSON, PasskeyOptionsResponse, RegistrationResponseJSON } from "./passkeys";
 
 // The staff console (3a design, section 10). The console talks only to /api/staff/* on its own origin, and parses every
@@ -111,6 +112,12 @@ export const StaffMe = z
     idleSecondsLeft: z.number().int().nonnegative(),
     absoluteExpiresAt: z.iso.datetime(),
     absoluteSecondsLeft: z.number().int().nonnegative(),
+    /**
+     * 3f (design, section 10.2): the operator's Member State, a key of STATE_FACTS, and the published contact point, each
+     * null while unset. The console's page takes no build argument, so it reads both from here.
+     */
+    homeState: MemberStateCode.nullable(),
+    contactPoint: z.string().nullable(),
   })
   // The idle expiry never moves past the absolute one (the database checks it too).
   .refine((me) => me.idleSecondsLeft <= me.absoluteSecondsLeft, { message: "the idle end cannot lie beyond the absolute end", path: ["idleSecondsLeft"] });
@@ -333,6 +340,10 @@ export const STAFF_STEP_UP_ACTIONS = {
   appeals_reviewed: { targetType: "decision", targetId: LowerCaseUuid, params: AppealsReviewedParams },
   /** POST /api/staff/items/:item/reveal: who sent an item, by the item's id. */
   identity_revealed: { targetType: "intake_item", targetId: LowerCaseUuid, params: IdentityRevealedParams },
+  /** 3f: POST /api/staff/orders/:order/events: a clock event, a closing, a reopening or an extension, by the order's id. */
+  order_event_recorded: { targetType: "order", targetId: LowerCaseUuid, params: OrderEventRecordedParams },
+  /** 3f: POST /api/staff/orders/:order/correct under the rule admin: the facts to change, by the order's id. */
+  order_corrected: { targetType: "order", targetId: LowerCaseUuid, params: OrderCorrectedParams },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -354,6 +365,8 @@ export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [
   stepUpRequest("case_decided"),
   stepUpRequest("appeals_reviewed"),
   stepUpRequest("identity_revealed"),
+  stepUpRequest("order_event_recorded"),
+  stepUpRequest("order_corrected"),
 ]);
 export type StaffStepUpOptionsRequest = z.infer<typeof StaffStepUpOptionsRequest>;
 
@@ -364,6 +377,17 @@ export type StaffStepUpOptionsResponse = z.infer<typeof StaffStepUpOptionsRespon
 /** DELETE /api/staff/sessions/:handle: the action's params (none) with the step-up assertion added as `stepUp`. */
 export const StaffSessionRevokeRequest = STAFF_STEP_UP_ACTIONS.staff_session_revoked.params.extend({ stepUp: AuthenticationResponseJSON });
 export type StaffSessionRevokeRequest = z.infer<typeof StaffSessionRevokeRequest>;
+
+/** 3f: POST /api/staff/orders/:order/events: the action's params with the step-up assertion added as `stepUp`. */
+export const OrderEventRecordRequest = OrderEventRecordedParams.safeExtend({ stepUp: AuthenticationResponseJSON });
+export type OrderEventRecordRequest = z.infer<typeof OrderEventRecordRequest>;
+
+/**
+ * 3f: POST /api/staff/orders/:order/correct (section 10.2): the facts to change and, only where the rule is admin, the
+ * step-up of order_corrected, whose params are `{ facts }`. Under entry and caution no key is asked.
+ */
+export const OrderCorrectRequest = z.strictObject({ facts: OrderCorrectFacts, stepUp: AuthenticationResponseJSON.optional() });
+export type OrderCorrectRequest = z.infer<typeof OrderCorrectRequest>;
 
 /** POST /api/staff/items/:item/reveal: the action's params with the step-up assertion added as `stepUp`. */
 export const IdentityRevealRequest = IdentityRevealedParams.extend({ stepUp: AuthenticationResponseJSON });

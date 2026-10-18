@@ -27,7 +27,7 @@ export const HOSTILE_ESCAPED = {
 } as const;
 
 /** The only addresses the console links to by name; none is built from data. A case's address is built from a checked id (CASE_PATH). */
-export const CONSOLE_PATHS = ["/", "/audit", "/signin", "/queue", "/appeals", "/standing", "/contact"];
+export const CONSOLE_PATHS = ["/", "/audit", "/signin", "/queue", "/appeals", "/standing", "/contact", "/orders"];
 
 /** A case's address in the console: the one address built from a value, and only from a lower-case uuid. */
 export const CASE_PATH = /^\/cases\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -58,6 +58,8 @@ export function makeMe(options: { idle?: number; absolute?: number; at?: number;
     idleSecondsLeft: idle,
     absoluteExpiresAt: new Date(at + absolute * 1000).toISOString(),
     absoluteSecondsLeft: absolute,
+    homeState: "DE",
+    contactPoint: null,
   };
 }
 

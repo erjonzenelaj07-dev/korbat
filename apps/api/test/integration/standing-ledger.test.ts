@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ACTION_KINDS, STANDING_RULES, type ActionKind, type RuleId } from "@korbat/contracts";
+import { ACTION_KINDS, ORDER_ACTION_KINDS, STANDING_RULES, type ActionKind, type RuleId } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
@@ -150,7 +150,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the standing ledger", ()
     const read = Object.fromEntries(Object.entries(row!).map(([name, value]) => [camel(name), Array.isArray(value) ? value : Number(value)]));
     expect(read).toEqual({ ...STANDING_RULES, ladderDays: [...STANDING_RULES.ladderDays] });
     const values = await apiDb.execute<{ value: string }>(sql`select unnest(enum_range(null::action_kind))::text as value`);
-    expect(values.map((v) => v.value)).toEqual([...ACTION_KINDS]);
+    // 3f: the migration orders adds an order's measure and its reversal after them; Task 3 joins them to ACTION_KINDS.
+    expect(values.map((v) => v.value)).toEqual([...ACTION_KINDS, ...ORDER_ACTION_KINDS]);
   });
 
   // ---------------------------------------------------------------- invariant 4: a strike exactly when one is due

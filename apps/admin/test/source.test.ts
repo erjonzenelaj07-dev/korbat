@@ -61,14 +61,17 @@ describe("no HTML or script sink in apps/admin", () => {
     expect(css).toEqual(["app.css"]);
   });
 
-  test("no link is built from data: the only two hrefs written from a value are NavLink's, whose type lists the console's own paths, and CaseLink's, built from a checked case id", () => {
-    expect(findInSource(/href=\{/).map((found) => found.split(":")[0])).toEqual(["src/nav.tsx", "src/nav.tsx"]);
+  test("no link is built from data: the only three hrefs written from a value are NavLink's, whose type lists the console's own paths, CaseLink's, built from a checked case id, and 3f's OrderLink's, built from a checked order id", () => {
+    expect(findInSource(/href=\{/).map((found) => found.split(":")[0])).toEqual(["src/nav.tsx", "src/nav.tsx", "src/nav.tsx"]);
     const nav = readFileSync(path.join(SRC, "nav.tsx"), "utf8");
-    expect([...nav.matchAll(/href=\{[^}]*\}/g)].map((found) => found[0])).toEqual(["href={to}", "href={caseHref(id)}"]);
+    expect([...nav.matchAll(/href=\{[^}]*\}/g)].map((found) => found[0])).toEqual(["href={to}", "href={caseHref(id)}", "href={orderHref(id)}"]);
+    expect(nav).toMatch(/id: OrderId/);
     expect(nav).toMatch(/to: ConsolePath/);
     expect(nav).toMatch(/id: CaseId/);
     const router = readFileSync(path.join(SRC, "router.ts"), "utf8");
-    expect(router).toContain('export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact";');
+    expect(router).toContain('export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact" | "/orders";');
+    // An OrderId is made in one place too.
+    expect(findInSource(/[^A-Za-z0-9_]as OrderId[^A-Za-z0-9_]/).map((found) => found.split(":")[0])).toEqual(["src/router.ts"]);
     // A CaseId is made in one place, by the function that checks it: nothing else may call a text a case's id.
     expect(findInSource(/\bas CaseId\b/).map((found) => found.split(":")[0])).toEqual(["src/router.ts"]);
     expect(router).toMatch(/return isLowerUuid\(text\) \? \(text as CaseId\) : null;/);
@@ -120,7 +123,8 @@ describe("the key is asked only after the console checked what it is asked to si
     expect(stepUp.match(/credentials\.get\(/g)).toHaveLength(1);
     expect(stepUp).toMatch(/export async function confirmWithKey</);
     // The revocation of a session, the reveal, the decision and the review are callers of it; none asks the key itself.
-    expect(stepUp.match(/confirmWithKey\(deps, action,/g)).toHaveLength(4);
+    // 3f: and an order's event and an admin's correction of an order.
+    expect(stepUp.match(/confirmWithKey\(deps, action,/g)).toHaveLength(6);
   });
 
   test("navigator.credentials is called only by the three ceremonies, each of which checks its challenge first", () => {

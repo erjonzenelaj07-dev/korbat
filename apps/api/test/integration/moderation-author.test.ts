@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -27,6 +28,7 @@ import { getRule, statementParagraphs } from "@korbat/rules";
 import { createApp } from "../../src/app";
 import { randomToken } from "../../src/auth/crypto";
 import { createMediaRepo } from "../../src/media/repo";
+import { toldToAuthor } from "../../src/moderation/author-repo";
 import { updateLine } from "../../src/moderation/dispatch";
 import { noticeStatus, submitNotice } from "../../src/moderation/intake";
 import { pendingOutcomeLines, releaseOutcomes } from "../../src/moderation/repo";
@@ -427,6 +429,33 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     expect(listed.get(held)?.moderation).toEqual({ decisionId: withhold, ruleId: "R4", legal: false, interim: true, strikeUntil: null });
     expect(listed.get(twice)?.moderation).toMatchObject({ decisionId: newer });
     expect("moderation" in listed.get(fine)!).toBe(false);
+  });
+
+  test("3f: every read on the author's side takes the decisions its author was told of by one fragment, both halves; a decision held untold leaves the list, its view and the chip until it is told", async () => {
+    // Both halves: a 3c decision whose author is told nothing (the silent one above) has informed_at set, and an order's
+    // held notice (Task 3) has informed_at null.
+    expect(new PgDialect().sqlToQuery(toldToAuthor("d")).sql).toBe("(d.author_mail <> 'none' and d.informed_at is not null)");
+    const author = await signUp();
+    const post = await newPostRow(w.apiDb, author.id);
+    const notice = await sent(notices.rule([postTarget(post)]));
+    const removal = await decided(moderator, notice.caseId, { kind: "final", ruleId: "R1", actions: [act("remove")] });
+    expect((await casesOf(author.b)).decisions.map((d) => d.id)).toContain(removal);
+    expect((await postOf(author.b, post)).moderation).toMatchObject({ decisionId: removal });
+    const [kept] = await w.migrateDb.execute<{ informed_at: string; author_mail: string; author_mail_at: string | null }>(
+      sql`select informed_at::text, author_mail::text, author_mail_at::text from decisions where id = ${removal}::uuid`,
+    );
+    // Held untold, as order_correct makes a decision about a post whose order gains "must not be told".
+    await w.migrateDb.execute(sql`update decisions set informed_at = null, author_mail = 'none' where id = ${removal}::uuid`);
+    try {
+      expect((await casesOf(author.b)).decisions.map((d) => d.id)).not.toContain(removal);
+      expect((await author.b.fetch(`/api/moderation/decisions/${removal}`)).status).toBe(404);
+      expect("moderation" in (await postOf(author.b, post))).toBe(false);
+    } finally {
+      await w.migrateDb.execute(
+        sql`update decisions set informed_at = ${kept!.informed_at}::timestamptz, author_mail = ${kept!.author_mail}::delivery_state, author_mail_at = ${kept!.author_mail_at}::timestamptz where id = ${removal}::uuid`,
+      );
+    }
+    expect((await casesOf(author.b)).decisions.map((d) => d.id)).toContain(removal);
   });
 
   // ---------------------------------------------------------------- the reporter's list

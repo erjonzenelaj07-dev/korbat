@@ -1,4 +1,4 @@
-import type { AuthErrorCode, MeProfile, Profile, StaffErrorCode } from "@korbat/contracts";
+import type { AuthErrorCode, MemberState, MeProfile, Profile, StaffErrorCode } from "@korbat/contracts";
 import type { Logger } from "pino";
 import type { Config } from "../config";
 import type { Mailer } from "../mail/mailer";
@@ -42,6 +42,12 @@ export interface AuthConfig {
    * off and no staff route is mounted.
    */
   console: { origin: string; rpId: string } | null;
+  /**
+   * 3f (design, section 10.2): the operator's Member State and the published contact point, HOME_STATE and CONTACT_POINT,
+   * each null while unset. /api/staff/me carries both, since the console's page takes no build argument.
+   */
+  homeState: MemberState | null;
+  contactPoint: string | null;
 }
 
 export function authConfigFrom(config: Config): AuthConfig {
@@ -66,6 +72,9 @@ export function authConfigFrom(config: Config): AuthConfig {
     },
     // The configuration fills CONSOLE_RP_ID with the console's hostname whenever CONSOLE_ORIGIN is set.
     console: config.CONSOLE_ORIGIN === undefined ? null : { origin: config.CONSOLE_ORIGIN, rpId: config.CONSOLE_RP_ID! },
+    // The configuration takes only a state whose facts the contracts hold, which is a member state's code.
+    homeState: (config.HOME_STATE as MemberState | undefined) ?? null,
+    contactPoint: config.CONTACT_POINT ?? null,
   };
 }
 

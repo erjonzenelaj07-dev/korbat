@@ -27,7 +27,7 @@ export const ALERT_TICK_INTERVAL_MS = ALERT_RULES.tickSeconds * 1000;
  * The kinds whose mail is their push's sentence that the tick mails from a row, each a template of the mailer: those a
  * row can hold so far. Every later kind of 3f joins this list in the task that first writes its rows.
  */
-export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = ["contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down"];
+export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = ["contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down", "order_opened", "order_corrected", "order_unverified"];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */
 const words = (values: readonly string[]) => sql`${`{${values.join(",")}}`}::text[]`;

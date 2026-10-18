@@ -23,7 +23,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 46 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5 and the five staff mails of 3f's Task 1", () => {
+  test("holds 49 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1 and the three of its Task 2", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -34,11 +34,12 @@ describe("the closed union of templates", () => {
       "suspension_announced", "reply_answered", "termination_final",
       "reporting_warned", "reporting_restricted",
       "contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down",
+      "order_opened", "order_corrected", "order_unverified",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(46);
+    expect(new Set(names).size).toBe(49);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(46);
+    expect(Object.keys(all)).toHaveLength(49);
   });
 });
 
@@ -495,6 +496,11 @@ describe("3f: the staff mails whose words are their push's (W.4)", () => {
       ["order_due", "order_due", { dueAt: "2026-10-16T09:05:00.000Z", minutesLeft: "15" }],
       ["mailbox_unreachable", "mailbox_unreachable", { since: "2026-10-15T23:00:00.000Z" }],
       ["alert_channel_down", "alert_channel_down", { since: "2026-10-16T08:57:00.000Z" }],
+      // Task 2: an order opened (with a deadline, and without a time of receipt), a record corrected, the daily unverified.
+      ["order_opened", "order_opened", { items: "2", dueAt: "2026-10-16T09:05:00.000Z", unknown: "0" }],
+      ["order_opened", "order_opened", { items: "1", unknown: "1" }],
+      ["order_corrected", "order_corrected", { count: "2", at: "2026-10-16T08:50:00.000Z" }],
+      ["order_unverified", "order_unverified", { count: "1", textsMissing: "1", holdsOpen: "0", oldestAt: "2026-10-15T22:00:00.000Z" }],
     ];
     for (const [template, kind, facts] of cases) {
       const r = mail(template, facts);
@@ -515,7 +521,7 @@ describe("3f: the staff mails whose words are their push's (W.4)", () => {
     expect(() => mail("mailbox_unreachable", { since: "yesterday" })).toThrow(/since/);
     expect(() => mail("alert_channel_down", { since: "2026-10-16T08:57:00.000Z", handle: "mod_anna" })).toThrow(/handle/);
     expect(() => renderTemplate("alert_channel_down", { since: "2026-10-16T08:57:00.000Z" })).toThrow(/now/);
-    for (const template of ["contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down"] as const) {
+    for (const template of ["contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down", "order_opened", "order_corrected", "order_unverified"] as const) {
       const facts = Object.fromEntries(ALERT_KINDS[template].facts.map((name) => [name, isTimeFact(name) ? "2026-10-16T08:00:00.000Z" : "3"]));
       expect(mail(template, facts).text, template).not.toMatch(/@/);
     }

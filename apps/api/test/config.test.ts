@@ -80,6 +80,18 @@ describe("loadConfig", () => {
       }
     });
 
+    test("3f: HOME_STATE is a state korbat has facts for, CONTACT_POINT an address; both unset by default, and the home state required once the contact point is set", () => {
+      expect(loadConfig(good).HOME_STATE).toBeUndefined();
+      expect(loadConfig(good).CONTACT_POINT).toBeUndefined();
+      expect(loadConfig({ ...good, HOME_STATE: " " }).HOME_STATE).toBeUndefined();
+      expect(loadConfig({ ...good, HOME_STATE: "DE" }).HOME_STATE).toBe("DE");
+      // A member state whose facts are not filled in, a code that is no member state, and a lower-case one are refused.
+      for (const refused of ["AT", "US", "de"]) expect(() => loadConfig({ ...good, HOME_STATE: refused }), refused).toThrow(/HOME_STATE/);
+      expect(loadConfig({ ...good, HOME_STATE: "DE", CONTACT_POINT: "orders@korbat.example" }).CONTACT_POINT).toBe("orders@korbat.example");
+      expect(() => loadConfig({ ...good, CONTACT_POINT: "orders@korbat.example" })).toThrow(/HOME_STATE/);
+      expect(() => loadConfig({ ...good, HOME_STATE: "DE", CONTACT_POINT: "not an address" })).toThrow(/CONTACT_POINT/);
+    });
+
     test("3f: NOTIFY is off by default outside production and on in production; a blank value is the default, and nothing but on and off is taken", () => {
       expect(loadConfig(good).NOTIFY).toBe("off");
       expect(loadConfig({ ...good, NOTIFY: " " }).NOTIFY).toBe("off");

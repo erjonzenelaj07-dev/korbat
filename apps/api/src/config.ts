@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { z } from "zod";
+import { STATE_FACTS } from "@korbat/contracts";
 import { parseFormats } from "@korbat/media-protocol";
 
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -213,8 +214,23 @@ const schema = z.object({
    * on in production.
    */
   NOTIFY: blankAsUnset.pipe(z.enum(["on", "off"]).optional()),
+  /**
+   * 3f (design, sections 2 row 41 and 10.7): the operator's Member State, a key of the contracts' STATE_FACTS (a state whose
+   * facts are filled in), from which an order is judged cross-border and the console reads the register's entries and
+   * Annex II's copy address. Unset until the owner names it; required once CONTACT_POINT is set.
+   */
+  HOME_STATE: blankAsUnset.pipe(
+    z
+      .string()
+      .refine((code) => Object.hasOwn(STATE_FACTS, code), { message: "must be a state whose facts the contracts' STATE_FACTS holds (Germany's, DE, is filled in)" })
+      .optional(),
+  ),
+  /** 3f: the published contact point for authorities, an address; empty until the owner's list is done. */
+  CONTACT_POINT: blankAsUnset.pipe(z.email().optional()),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+  // 3f: a contact point is published for one Member State, whose facts the console then reads.
+  if (c.CONTACT_POINT !== undefined && c.HOME_STATE === undefined) refuse("HOME_STATE", "HOME_STATE is required once CONTACT_POINT is set");
   // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS
   // origin of the app's API and, outside production, an accepted origin for personal passkeys (3a design, section 8).
   if (c.CONSOLE_ORIGIN !== undefined) {

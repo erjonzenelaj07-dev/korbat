@@ -42,6 +42,24 @@ export function imageModerationStates(apiDb: Db, afterId: string | null, limit: 
   return createMediaRepo(apiDb).moderationStates(afterId, limit);
 }
 
+/**
+ * 3f (design, sections 5 and 7.4): the post an image's address belongs to, or null when no image row on a post has the
+ * id. Read through the caller's own connection or transaction, with no files and no configuration: opening an order, in
+ * the console's route and in `staff.js order-open`, takes an image's link as its post, and no file outside this module may
+ * name the image table.
+ */
+export function imagePost(q: Db | DbTx, mediaId: string): Promise<string | null> {
+  return createMediaRepo(q as Db).imagePost(q, mediaId);
+}
+
+/**
+ * 3f (design, section 7.5): how many image rows each of these posts holds, for an order's screen, which counts a post's
+ * images and never shows one. Read through the caller's own connection or transaction.
+ */
+export function imageCounts(q: Db | DbTx, postIds: readonly string[]): Promise<Map<string, number>> {
+  return createMediaRepo(q as Db).imageCounts(q, postIds);
+}
+
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
   /**

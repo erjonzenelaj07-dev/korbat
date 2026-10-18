@@ -108,7 +108,7 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
     // A moderation flow's refusal, from the app's routes or from the console's case routes.
     if (err instanceof ModerationError) {
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
-      return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+      return c.json(errorBody(err.code, err.message, c.get("requestId"), err.details), err.status);
     }
     c.get("log").error({ err }, "unhandled error");
     return c.json(errorBody("internal", "Internal error", c.get("requestId")), 500);

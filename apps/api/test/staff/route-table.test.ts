@@ -13,6 +13,8 @@ import {
   CaseView,
   ContactPage,
   FindingResponse,
+  OrderView,
+  OrdersPage,
   QueuePage,
   RevealResponse,
   StaffEnrollVerifyResponse,
@@ -302,6 +304,13 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         // 3f: the authorities' contact point.
         "GET /api/staff/contact",
         "POST /api/staff/contact/:message/close",
+        // 3f, Task 2: order records.
+        "GET /api/staff/orders",
+        "GET /api/staff/orders/:order",
+        "POST /api/staff/orders",
+        "POST /api/staff/orders/:order/items",
+        "POST /api/staff/orders/:order/events",
+        "POST /api/staff/orders/:order/correct",
       ].sort(),
     );
   });
@@ -316,6 +325,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/cases/:case/decisions": "case_decided",
       "POST /api/staff/decisions/:decision/review": "appeals_reviewed",
       "POST /api/staff/items/:item/reveal": "identity_revealed",
+      // 3f, Task 2: an order's clock event, closing, reopening or extension.
+      "POST /api/staff/orders/:order/events": "order_event_recorded",
     });
     // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
     // none of which changes anything a user sees (3c design, section 2, Free text under the step-up).
@@ -333,6 +344,13 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/findings",
         // 3f: closing a message at the contact point restricts nothing and tells nobody (design, section 7.3).
         "POST /api/staff/contact/:message/close",
+        // 3f, Task 2: opening an order and adding its links restrict nothing, copy nothing and tell nobody (section 7.4). A
+        // correction asks for the key only under the rule admin, which the database decides after effect: the route takes
+        // the step-up of order_corrected when the body carries one, and answers staff_step_up_required under that rule
+        // without one (http-staff-orders proves both), so its chain holds no step-up of its own.
+        "POST /api/staff/orders",
+        "POST /api/staff/orders/:order/items",
+        "POST /api/staff/orders/:order/correct",
       ].sort(),
     );
     // Every route stands behind the staff session but enrolment and sign-in, whose credential is the link or the key.
@@ -475,6 +493,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "GET /api/staff/cases/:case",
       "GET /api/staff/cases/:case/media/:media/:size",
       "GET /api/staff/cases/:case/texts",
+      // 3f: an order (Task 2).
+      "GET /api/staff/orders/:order",
       "POST /api/staff/cases/:case/decisions",
       "POST /api/staff/cases/:case/snapshots",
       "POST /api/staff/cases/:case/texts",
@@ -482,6 +502,9 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/contact/:message/close",
       "POST /api/staff/decisions/:decision/review",
       "POST /api/staff/items/:item/reveal",
+      "POST /api/staff/orders/:order/correct",
+      "POST /api/staff/orders/:order/events",
+      "POST /api/staff/orders/:order/items",
     ]);
     const answers = {
       StaffMe,
@@ -503,6 +526,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       AppealsPage,
       StandingLists,
       ContactPage,
+      OrdersPage,
+      OrderView,
     };
     const members = Object.entries(answers).flatMap(([name, schema]) => memberNames(schema).map((member) => `${name}.${member}`));
     // The walk read every member of every answer: none is of a kind it has not been taught, behind which a name could hide.

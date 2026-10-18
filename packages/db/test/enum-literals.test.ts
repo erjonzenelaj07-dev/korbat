@@ -18,9 +18,10 @@ import { actionKind } from "../src/schema/moderation";
 
 const MIGRATIONS = path.resolve(import.meta.dirname, "../migrations");
 
-/** 3c's twelve kinds come first in the enum; 3e's ten follow them. */
+/** 3c's twelve kinds come first in the enum; 3e's ten follow them, and 3f's two follow those (read below). */
 const OLD_KINDS = 12;
-const NEW_KINDS: readonly string[] = actionKind.enumValues.slice(OLD_KINDS);
+const KINDS_3E = 10;
+const NEW_KINDS: readonly string[] = actionKind.enumValues.slice(OLD_KINDS, OLD_KINDS + KINDS_3E);
 
 /** 3e's first migration: 3c ended at 0019_redaction_scope, so 3e's migrations are 0020 and after. */
 const FIRST_3E_MIGRATION = 20;
@@ -143,5 +144,58 @@ describe("the enum-literal rule of 3e's migrations", () => {
     expect(enumLiteralViolations(`CREATE VIEW v AS SELECT 1 FROM decision_actions a WHERE a.kind = 'remove';`)).toEqual([]);
     expect(enumLiteralViolations(`-- a.kind = 'strike' in a comment${NEWLINE}SELECT 1;`)).toEqual([]);
     expect(enumLiteralViolations(`ALTER TYPE "public"."action_kind" ADD VALUE 'strike';`)).toEqual([]);
+  });
+});
+
+/**
+ * 3f (design, section 6, "The rule for the new enum values"; invariant 1): the migration orders adds eight values to seven
+ * enums: action_kind's disable_by_order and reinstate_by_order, `order` to decision_kind, decision_source and intake_kind,
+ * `authority` to intake_channel and `disabled` to moderation_level and post_state. drizzle runs 3f's migrations in one
+ * transaction with any others pending, so the rule binds the file that adds them and every later one. The file before it
+ * (0026_messages_alerts) names `order` only as a value of a text column, before any enum holds it, so it is not read.
+ */
+const VALUES_3F: readonly string[] = ["disable_by_order", "reinstate_by_order", "order", "authority", "disabled"];
+
+/** The journal's entries from the migration that adds 3f's values, oldest first. */
+function migrationsFromOrders(): { idx: number; tag: string }[] {
+  const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
+  const first = journal.entries.find((entry) => entry.tag.endsWith("_orders"));
+  return first === undefined ? [] : journal.entries.filter((entry) => entry.idx >= first.idx);
+}
+
+describe("the enum-literal rule of 3f's migrations", () => {
+  test("the migration orders is there, and it adds the eight values", () => {
+    const files = migrationsFromOrders();
+    expect(files[0]?.tag).toBe("0027_orders");
+    const text = readFileSync(path.join(MIGRATIONS, `${files[0]!.tag}.sql`), "utf8");
+    const added = [...flat(text).matchAll(/ALTER TYPE "public"."([a-z_]+)" ADD VALUE '([a-z_]+)'/g)].map((m) => `${m[1]}.${m[2]}`).sort();
+    expect(added).toEqual(
+      [
+        "action_kind.disable_by_order",
+        "action_kind.reinstate_by_order",
+        "decision_kind.order",
+        "decision_source.order",
+        "intake_channel.authority",
+        "intake_kind.order",
+        "moderation_level.disabled",
+        "post_state.disabled",
+      ].sort(),
+    );
+  });
+
+  test("no file from the migration orders on names a new value as a literal outside a PL/pgSQL body", () => {
+    for (const entry of migrationsFromOrders()) {
+      const text = readFileSync(path.join(MIGRATIONS, `${entry.tag}.sql`), "utf8");
+      expect(enumLiteralViolations(text, VALUES_3F), entry.tag).toEqual([]);
+    }
+  });
+
+  test("a deliberate violation of 3f's values is caught, and the allowed forms are not", () => {
+    expect(enumLiteralViolations(`ALTER TABLE decisions ADD CONSTRAINT c CHECK (kind <> 'order');`, VALUES_3F)).toHaveLength(1);
+    expect(enumLiteralViolations(`CREATE VIEW v AS SELECT 1 FROM posts p WHERE p.moderation_level = 'disabled';`, VALUES_3F)).toHaveLength(1);
+    expect(enumLiteralViolations(`CREATE FUNCTION f() RETURNS boolean LANGUAGE sql AS $$ SELECT EXISTS (SELECT 1 FROM intakes i WHERE i.channel = 'authority') $$;`, VALUES_3F)).toHaveLength(1);
+    expect(enumLiteralViolations(`ALTER TABLE decisions ADD CONSTRAINT c CHECK (outcome <> 'restricted' OR kind::text = 'order');`, VALUES_3F)).toEqual([]);
+    expect(enumLiteralViolations(`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN PERFORM 1 FROM decision_actions a WHERE a.kind = 'disable_by_order'; END $$;`, VALUES_3F)).toEqual([]);
+    expect(enumLiteralViolations(`ALTER TYPE "public"."post_state" ADD VALUE 'disabled';`, VALUES_3F)).toEqual([]);
   });
 });
