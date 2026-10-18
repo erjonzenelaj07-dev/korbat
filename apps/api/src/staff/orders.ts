@@ -11,6 +11,7 @@ import type { ModerationForStaff, OrderOutcome } from "../moderation";
 const LowerUuid = z.uuid().regex(/^[0-9a-f-]+$/, { message: "a uuid in lower case" });
 const MessageParam = z.object({ message: LowerUuid });
 const OrderParam = z.object({ order: LowerUuid });
+const GapParam = z.object({ gap: LowerUuid });
 
 /**
  * The console's routes of authorities' orders (3f design, sections 5, 7.3 to 7.5 and 10.2), a route group the staff
@@ -19,7 +20,8 @@ const OrderParam = z.object({ order: LowerUuid });
  * message, and links added, without a key, by name, since a record restricts nothing, copies nothing and tells nobody,
  * and its audit row records who wrote it; a clock event, a closing, a reopening or an extension under the step-up
  * order_event_recorded; a correction without a key under the rules entry and caution, and under the step-up
- * order_corrected under the rule admin. The handlers only call the moderation module's staff interface.
+ * order_corrected under the rule admin. The handlers only call the moderation module's staff interface. 3f Task 6: after
+ * a restore, what the import found lost (GET /restore), and a gap closed as not needed under the step-up gap_closed.
  */
 export function orderRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
   const routes = new Hono<AppEnv>();
@@ -111,6 +113,27 @@ export function orderRoutes(auth: AuthForStaff, moderation: ModerationForStaff) 
     if (outcome === "step_up_required") throw new AuthError("staff_step_up_required", 403);
     return answer(c, outcome);
   });
+
+  // Task 6 (sections 7.17 and 8.8): what an import after a restore found lost, in the order to take it again. Any staff
+  // member reads it; a gap is a list entry, and the screen shows a gap's members and nothing of its lost row.
+  routes.get("/restore", auth.requireStaff, async (c) => c.json(await moderation.restore()));
+
+  // "Not needed" on a gap: the path's gap is the action's target, and the body the params of gap_closed with the assertion
+  // as `stepUp`. The closing commits with its confirmed audit row or not at all; only an admin's stands.
+  routes.post(
+    "/restore/gaps/:gap/close",
+    auth.requireStaff,
+    validate("param", GapParam),
+    auth.requireStaffStepUp("gap_closed", (c) => c.req.param("gap")),
+    async (c) => {
+      const confirmed = c.get("staffStepUp") as StaffStepUpConfirmed | undefined;
+      if (!confirmed) throw new Error("a gap's closing ran without requireStaffStepUp");
+      const outcome = await moderation.closeGap(staffSession(c), confirmed, { requestId: c.get("requestId") });
+      if (outcome === "ended") throw new AuthError("staff_session_required", 401);
+      if (outcome === "late") throw new AuthError("challenge_expired", 400);
+      return c.json(outcome, 201);
+    },
+  );
 
   return routes;
 }

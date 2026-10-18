@@ -45,6 +45,7 @@ const signIn = (handle: string, seq: number): AuditEntry => ({
   targetType: "staff_session",
   targetId: SESSION_HANDLE,
   actionHash: null,
+  keyId: null,
 });
 
 const SESSIONS: StaffSession[] = [
@@ -83,6 +84,8 @@ const QUIET: StaffOverview = {
   alerts: { channel: "ok", since: null },
   ordersUnverified: { total: 0, items: [] },
   reportsOwed: { total: 0, items: [] },
+  copy: { newestAt: "2026-10-01T08:00:00.000Z", overdue: false },
+  restore: { open: 0, measures: 0, importedAt: null },
   repliesWaiting: { count: 0, oldestAt: null },
   strikeAccounts: 0,
 };
@@ -265,6 +268,7 @@ describe("home", () => {
             at("2026-09-24T09:30:00.000Z", 37),
           ],
           nextCursor: 37,
+          copy: { lastPlace: null },
         },
       },
       "GET /api/staff/sessions": { status: 200, body: { sessions: [] } },
@@ -298,9 +302,9 @@ describe("home", () => {
 
 describe("the audit log", () => {
   const entries: AuditEntry[] = [
-    { seq: 120, hash: "c".repeat(64), createdAt: "2026-10-01T09:00:05.000Z", actorHandle: HOSTILE.script, action: "staff_session_revoked", targetType: "staff_session", targetId: OTHER_SESSION, actionHash: "d".repeat(64) },
-    { seq: 119, hash: "e".repeat(64), createdAt: "2026-10-01T08:00:00.000Z", actorHandle: HOSTILE.bidi, action: HOSTILE.img, targetType: null, targetId: null, actionHash: null },
-    { seq: 118, hash: "f".repeat(64), createdAt: "2026-10-01T07:00:00.000Z", actorHandle: null, action: "staff_key_added", targetType: "staff_key", targetId: HOSTILE.url, actionHash: null },
+    { seq: 120, hash: "c".repeat(64), createdAt: "2026-10-01T09:00:05.000Z", actorHandle: HOSTILE.script, action: "staff_session_revoked", targetType: "staff_session", targetId: OTHER_SESSION, actionHash: "d".repeat(64), keyId: null },
+    { seq: 119, hash: "e".repeat(64), createdAt: "2026-10-01T08:00:00.000Z", actorHandle: HOSTILE.bidi, action: HOSTILE.img, targetType: null, targetId: null, actionHash: null, keyId: null },
+    { seq: 118, hash: "f".repeat(64), createdAt: "2026-10-01T07:00:00.000Z", actorHandle: null, action: "staff_key_added", targetType: "staff_key", targetId: HOSTILE.url, actionHash: null, keyId: null },
   ];
   const props = {
     page: { state: "ready" as const, value: entries },
@@ -343,7 +347,7 @@ describe("the audit log", () => {
 
 describe("a place that names no row", () => {
   const props = { hasOlder: false, loadingOlder: false, place: "", placeError: null, error: null, onLoadOlder: noop, onPlace: noop, onGoToPlace: noop, onNewest: noop };
-  const row = (seq: number): AuditEntry => ({ seq, hash: "c".repeat(64), createdAt: "2026-10-01T09:00:05.000Z", actorHandle: null, action: "staff_sign_in", targetType: null, targetId: null, actionHash: null });
+  const row = (seq: number): AuditEntry => ({ seq, hash: "c".repeat(64), createdAt: "2026-10-01T09:00:05.000Z", actorHandle: null, action: "staff_sign_in", targetType: null, targetId: null, actionHash: null, keyId: null });
 
   test("a place beyond the newest row: the page says there is no row there, and never that it starts there", () => {
     // The reader answers a place beyond the head with the newest page: after a restore, or the newest rows deleted.

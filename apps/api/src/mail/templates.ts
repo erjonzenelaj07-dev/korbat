@@ -444,6 +444,8 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "order_effected":
     case "order_reinstated":
     case "hold_ending":
+    case "copy_overdue":
+    case "copy_taken":
       return alertMail(template, data);
     case "moderation_reads": {
       // A staff account opened as many different cases today as one account may (3c design, section 7.3): every staff

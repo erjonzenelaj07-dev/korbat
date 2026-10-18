@@ -3,7 +3,7 @@ import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
 import type { ModerationDeps } from "./context";
 import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, standingWithdrawn, type MailState } from "./repo";
-import { endedMeasures, endedStanding, orderNoticeOf, repliedTo, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
+import { endedMeasures, endedStanding, orderNoticeOf, reappliedOn, repliedTo, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
 
 /**
  * The data a statement of reasons and its mail are rendered from (3c design, sections 7.5 and 10). A decision is the
@@ -41,6 +41,9 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
   const brokenBasis = decision.kind === "review" || decision.kind === "correction" ? await endedStanding(q, decisionId) : [];
   // 3e Task 4: the reply this correction or review answered by keeping or reversing its measure; absent when none.
   const replied = decision.kind === "review" || decision.kind === "correction" ? await repliedTo(q, decisionId) : null;
+  // 3f Task 6: a decision that took again one lost with a restore names the lost decision's day, read from the gap it
+  // closed, which is kept as long as the decision; absent from every other statement.
+  const lostOn = await reappliedOn(q, decisionId);
   // The facts and the reason are told with a decision that restricts (it holds a measure), with a correction and with a
   // review. Those of a decision without a measure are the case's record, for staff: such a decision tells its author at
   // most that what korbat did while deciding has ended, so the statement's data holds neither, and no mail, screen or
@@ -103,6 +106,7 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
     ...(brokenBasis.length > 0 ? { endedStanding: brokenBasis } : {}),
     ...(replied !== null ? { repliedTo: replied } : {}),
     order: notice?.facts ?? null,
+    ...(lostOn !== null ? { reapplied: { lostOn } } : {}),
     reviewed:
       decision.reviewed === null
         ? null

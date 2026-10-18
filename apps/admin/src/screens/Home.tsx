@@ -1,7 +1,7 @@
 import { ORDER_RULES, OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, NavLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type ConsolePath, type OrderId } from "../router";
 import { readSignInsAtOpening } from "../signins";
@@ -220,6 +220,30 @@ export function AuthoritiesLines({
   if (alerts.channel === "down") lines.push(<p key="channel" className="error">{W.channel(since)}</p>);
   if (alerts.channel === "mailbox") lines.push(<p key="mailbox" className="error">{W.mailbox(since)}</p>);
   if (alerts.channel === "off") lines.push(<p key="off" className="notice">{W.off}</p>);
+  // Task 6 (8.2): [home.copy] while the newest copy of the audit log's tail is older than copyOverdueHours, by its days;
+  // and [home.restore] while gaps a restore left are open, a link to After a restore.
+  if (overview.copy.overdue) {
+    const days = overview.copy.newestAt === null ? null : Math.floor((now - Date.parse(overview.copy.newestAt)) / 86_400_000);
+    lines.push(
+      <p key="copy" className="notice">
+        {days === null ? RECOVERY_WORDS.homeCopyNone : RECOVERY_WORDS.homeCopy(days)}
+      </p>,
+    );
+  }
+  if (overview.restore.open > 0) {
+    const words = RECOVERY_WORDS.homeRestore(overview.restore.open, overview.restore.measures);
+    lines.push(
+      <p key="restore" className="error">
+        {onNavigate ? (
+          <NavLink to="/restore" onNavigate={onNavigate}>
+            {words}
+          </NavLink>
+        ) : (
+          words
+        )}
+      </p>,
+    );
+  }
   if (lines.length === 0) return null;
   return (
     <div role="status" className="authorities">

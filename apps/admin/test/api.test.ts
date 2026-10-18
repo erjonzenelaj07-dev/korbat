@@ -61,7 +61,7 @@ describe("the fetch wrapper", () => {
   });
 
   test("the audit reader's query: the filter, a cursor or a place", async () => {
-    const page = { entries: [], nextCursor: null };
+    const page = { entries: [], nextCursor: null, copy: { lastPlace: null } };
     const { api, requests } = client({
       "GET /api/staff/audit": { status: 200, body: page },
       "GET /api/staff/audit?cursor=51": { status: 200, body: page },

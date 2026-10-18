@@ -35,6 +35,7 @@ import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
+import { copyOverview, restoreOverview } from "./gaps";
 import { caseOrderFacts, noticeHeldOn, orderErasedOn, postPreserved, reportOwedOn, reportsOwed, unverifiedOrders } from "./orders-repo";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
 import { caseReplies, repliesWaiting, standingColumns, standingOnDecisions, strikeAccounts, unansweredReplies, type ReplyColumns } from "./standing-repo";
@@ -236,6 +237,10 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     ordersUnverified: await unverifiedOrders(q, OVERVIEW_LIST_MAX),
     // Task 5: the reports to the authorities owed, from reports_owed() and nothing more: a case, a kind, a time.
     reportsOwed: await reportsOwed(q, OVERVIEW_LIST_MAX),
+    // Task 6: the copy's age, by alert_steps()'s own rule for copy_overdue; and after a restore the open gaps, the measures
+    // among them and the newest import's time.
+    copy: await copyOverview(q),
+    restore: await restoreOverview(q),
   };
 }
 

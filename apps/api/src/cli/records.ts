@@ -16,6 +16,11 @@
  * sentence ending in "nothing changed", exit 1. No command prints, takes or opens an image, and none sends anything: the
  * operator sends, the command records.
  *
+ * 3f Task 6 (sections 6.6, 7.17 step 3 and 8.11): after a restore, a record that the import could only note is entered
+ * again with the command that wrote it and `--gap <gap>`: every command here that writes a record takes it, and closes
+ * that gap, an open gap of the class record, as imported, in its own transaction, before its own rows; a refusal of the
+ * command leaves the gap open.
+ *
  * This file has no entry point of its own, so both bundles can include it (build.mjs says why that matters).
  */
 import { sql } from "drizzle-orm";
@@ -74,6 +79,8 @@ export const RECORD_USAGE = [
   "  handover-record <production> --channel <text> --receipt <text> < digests   (or --taken for a seizure; run with -T)",
   "  handover-destroyed <production> --how <text>   every copy outside the store is destroyed",
   "  A <record> and a <production> are their ids, as records prints them; a <seal action> is the seal's ledger row's id.",
+  "  After a restore, each command that writes a record also takes --gap <gap>: the gap, of the class record, that the record",
+  "  enters again, as the console's After a restore screen lists it.",
 ];
 
 /** A parsed record command: its name, what it names (none for records, notification-open and address-check), its flags. */
@@ -192,7 +199,10 @@ export async function recordCommand(migrateDb: Db, cmd: RecordCommand, input: ()
   try {
     const lines = await migrateDb.transaction(async (tx) => {
       await tx.execute(sql`set local lock_timeout = '10s'`);
-      return run(tx, cmd, stdin, notes);
+      // Task 6: the gap first, under its row lock, so that a command whose own refusal rolls it back leaves it open.
+      const gap = has(cmd, "--gap") ? await closeRecordGap(tx, cmd) : null;
+      const done = await run(tx, cmd, stdin, notes);
+      return gap === null ? done : [...done, `${cmd.command}: gap ${gap} is closed: the record is entered again.`];
     });
     return { ok: true, lines, notes };
   } catch (err) {
@@ -227,6 +237,28 @@ async function run(tx: DbTx, cmd: RecordCommand, stdin: Buffer | null, notes: st
     case "handover-destroyed":
       return handoverDestroyed(tx, cmd);
   }
+}
+
+// ---------------------------------------------------------------- a record entered again after a restore (Task 6)
+
+/** The commands that enter no record, and so take no --gap. */
+const NO_GAP = new Set<RecordCommandName>(["records", "address-check"]);
+
+/**
+ * --gap <gap> (8.11): closes an open gap of the class record as imported, as the migrator, and writes nothing else of
+ * the row: "<command>: gap <id> is not an open gap of the class record; nothing changed" for any other gap. Answers the
+ * gap's id, for the command's last line.
+ */
+async function closeRecordGap(tx: DbTx, cmd: RecordCommand): Promise<string> {
+  const c = cmd.command;
+  if (NO_GAP.has(c)) refuse(c, "takes no --gap: it enters no record");
+  const word = flag(cmd, "--gap")!;
+  const gap = word.toLowerCase();
+  if (!UUID.test(gap)) refuse(c, `gap ${word} is not an open gap of the class record`);
+  const [found] = await rows<{ id: string }>(tx, sql`select g.id from public.restore_gaps g where g.id = ${gap}::uuid and g.class = 'record' and g.closed_at is null for update`);
+  if (found === undefined) refuse(c, `gap ${gap} is not an open gap of the class record`);
+  await tx.execute(sql`update public.restore_gaps set closed_at = now(), disposition = 'imported' where id = ${gap}::uuid`);
+  return gap;
 }
 
 // ---------------------------------------------------------------- records

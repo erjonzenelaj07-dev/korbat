@@ -40,6 +40,7 @@ export function Layout({
   me,
   path,
   warning,
+  restored = false,
   onNavigate,
   onSignOut,
   onStay,
@@ -48,6 +49,8 @@ export function Layout({
   me: StaffMe;
   path: string;
   warning: IdleWarning | null;
+  /** 3f Task 6: an import after a restore ran, so "After a restore" is shown (8.1). */
+  restored?: boolean;
   onNavigate(path: ConsolePath): void;
   onSignOut(): void;
   onStay(): void;
@@ -68,6 +71,12 @@ export function Layout({
           <NavLink to="/orders" current={path === "/orders" || path.startsWith("/orders/")} onNavigate={onNavigate}>
             Orders
           </NavLink>
+          {/* 3f Task 6: once an import after a restore ran, beside the orders, whose disablings it takes again first. */}
+          {restored ? (
+            <NavLink to="/restore" current={path === "/restore"} onNavigate={onNavigate}>
+              After a restore
+            </NavLink>
+          ) : null}
           <NavLink to="/queue" current={path === "/queue"} onNavigate={onNavigate}>
             Queue
           </NavLink>

@@ -29,7 +29,7 @@ import {
 } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { describeError, ORDER_WORDS } from "../messages";
+import { describeError, ORDER_WORDS, RECOVERY_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId, type OrderId } from "../router";
 import { correctOrderWithKey, effectOrderWithKey, recordOrderEventWithKey } from "../step-up";
@@ -593,7 +593,13 @@ export function EffectBlock({
   const told = tco ? !order.sectionC : !order.withholdFromAuthor;
   const until = order.hold?.until ?? null;
   const lines: string[] = [withholds ? W.effectWhat : W.effectRemoved];
-  if (tco) lines.push(W.effectPreserve);
+  if (tco) {
+    // Task 6 (8.5, 8.8): an item whose disabling a restore lost and whose preservation never ended keeps its end; the
+    // others count six months from now.
+    const again = candidates.filter((item) => item.gap && item.preserveUntil !== null && item.preserveEndedAt === null);
+    if (again.length < candidates.length) lines.push(W.effectPreserve);
+    for (const end of [...new Set(again.map((item) => item.preserveUntil!))]) lines.push(RECOVERY_WORDS.effectPreserveAgain(bothTimes(end)));
+  }
   if (told) lines.push(W.effectTold);
   else if (tco) lines.push(until === null ? W.effectHeldNoReceipt : W.effectHeld(bothTimes(until)));
   else lines.push(until === null || order.hold?.open ? W.effectHeldOpen : W.effectHeldDsa(bothTimes(until)));

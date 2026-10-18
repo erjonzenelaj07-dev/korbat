@@ -6,7 +6,7 @@ import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { authorDecisionView, decodeListCursor, encodeListCursor } from "./author";
 import { reviewerOf } from "./cases";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { recordConfirmed, refuseUnopened, subjectLockMode, type AnsweredFacts, type DecideOptions, type DecideOutcome } from "./decide";
+import { recordConfirmed, refuseUnopened, subjectLockMode, type AnsweredFacts, type DecideContext, type DecideOptions, type DecideOutcome } from "./decide";
 import { countOrRefuse, saltedStatement } from "./intake";
 import { holdsAnnouncedStanding, insertAction, insertAppeal, insertReview, pendingAppeals, raisedMessage, reviewedDecision, violatedUniqueConstraint } from "./repo";
 
@@ -129,7 +129,7 @@ export async function appealsList(deps: Pick<ModerationDeps, "apiDb">, session: 
  * After the commit the transaction's own last step does what it does for every decision: the statement's mail, the
  * count of the person's decisions, and the mail to every staff account when the review lifted a seal.
  */
-export async function review(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }, options: DecideOptions = {}): Promise<DecideOutcome> {
+export async function review(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: DecideContext, options: DecideOptions = {}): Promise<DecideOutcome> {
   // A confirmation of anything else never reviews an appeal: that would be a wiring fault, not a refusal.
   if (confirmed.action !== "appeals_reviewed" || confirmed.target.type !== "decision" || confirmed.keyId !== session.keyId) {
     throw new Error("a review needs a step-up that confirmed it");

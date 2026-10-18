@@ -51,8 +51,24 @@ describe("trust and safety schema", () => {
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
     // legal_order_events; then the four of the records to authorities: authority_notifications,
-    // authority_notification_events, productions and auth.report_holds.
-    expect(tables.length).toBe(53);
+    // authority_notification_events, productions and auth.report_holds; then the two of recovery: restore_gaps and
+    // copy_marks.
+    expect(tables.length).toBe(55);
+  });
+  test("3f's recovery tables: a gap's class and disposition, its closing and the copy marks (section 6.6)", () => {
+    const gaps = byName.get("restore_gaps")!;
+    expect(gaps.schema ?? "public").toBe("public");
+    expect(gaps.columns.map((c) => c.name).sort()).toEqual(
+      ["id", "import_id", "place", "hash", "action", "target_type", "target_id", "metadata", "acted_at", "imported_at", "class", "closed_at", "closed_by", "disposition"].sort(),
+    );
+    expect(gaps.checks.map((c) => c.name).sort()).toEqual(["restore_gaps_class", "restore_gaps_closed", "restore_gaps_disposition", "restore_gaps_hash", "restore_gaps_place"]);
+    expect(gaps.uniqueConstraints.map((u) => u.name)).toEqual(["restore_gaps_place_key"]);
+    expect(gaps.indexes.map((i) => i.config.name)).toEqual(["restore_gaps_open_idx"]);
+    expect(gaps.enableRLS).toBe(true);
+    const marks = byName.get("copy_marks")!;
+    expect(marks.columns.map((c) => c.name).sort()).toEqual(["at", "id", "place", "staff_id"]);
+    expect(marks.checks.map((c) => c.name)).toEqual(["copy_marks_place"]);
+    expect(marks.enableRLS).toBe(true);
   });
   test("the tables 3c retired are gone, with their enums and the reputation column", () => {
     for (const name of ["reports", "strikes", "transparency_log"]) expect(byName.has(name), name).toBe(false);

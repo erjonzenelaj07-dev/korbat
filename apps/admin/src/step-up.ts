@@ -4,6 +4,7 @@ import {
   stepUpActionHash,
   stepUpBinding,
   type AppealsReviewedParams,
+  type AuditExportedParams,
   type AuthenticationResponseJSON,
   type CaseDecidedParams,
   type IdentityRevealedParams,
@@ -142,18 +143,35 @@ export function revealWithKey(deps: { api: StaffApi; credentials: CredentialsLik
  * "Confirm with your staff key" in the decision composer: the decision on the case, with exactly the params the page
  * built. Answers the case as it stands after the decision, which the page then shows.
  */
-export function decideWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, params: CaseDecidedParams) {
+export function decideWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, params: CaseDecidedParams, gap: string | null = null) {
   const action = decisionAction(caseId, params);
-  return confirmWithKey(deps, action, (stepUp) => deps.api.decide(action.target.id, { ...params, stepUp }, { activity: true }));
+  // 3f Task 6: a decision that takes a lost one again names its restore gap; the key signs the decision as always.
+  return confirmWithKey(deps, action, (stepUp) => deps.api.decide(action.target.id, { ...params, stepUp }, { activity: true }, gap));
 }
 
 /**
  * "Confirm with your staff key" in the review composer: the review of the decision's appeal, with exactly the params the
  * page built. Answers the decision's case as it stands after the review, which must be the case the page shows.
  */
-export function reviewWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, decisionId: string, params: AppealsReviewedParams) {
+export function reviewWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, decisionId: string, params: AppealsReviewedParams, gap: string | null = null) {
   const action = reviewAction(decisionId, params);
-  return confirmWithKey(deps, action, (stepUp) => deps.api.review(caseId, action.target.id, { ...params, stepUp }, { activity: true }));
+  return confirmWithKey(deps, action, (stepUp) => deps.api.review(caseId, action.target.id, { ...params, stepUp }, { activity: true }, gap));
+}
+
+/**
+ * 3f Task 6 (7.16): the audit log's download, confirmed by the key: the places after `after` up to `through`, the target
+ * being `through` as decimal digits. Answers the text of the JSON lines, which the page checks before it saves or marks.
+ */
+export function exportAuditWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, params: AuditExportedParams) {
+  const action: StaffStepUpOptionsRequest = { action: "audit_exported", target: { type: "audit", id: String(params.through) }, params };
+  return confirmWithKey(deps, action, (stepUp) => deps.api.exportAudit({ ...params, stepUp }, { activity: true }));
+}
+
+/** 3f Task 6 (8.8): an admin's "Not needed" on a gap, confirmed by the key. Answers After a restore as it now stands. */
+export function closeGapWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, gapId: string) {
+  const params = { disposition: "not_needed" as const };
+  const action: StaffStepUpOptionsRequest = { action: "gap_closed", target: { type: "restore_gap", id: gapId }, params };
+  return confirmWithKey(deps, action, (stepUp) => deps.api.closeGap(gapId, { ...params, stepUp }, { activity: true }));
 }
 
 /**

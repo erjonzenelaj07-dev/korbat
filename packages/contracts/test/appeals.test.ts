@@ -133,6 +133,9 @@ describe("the appeals as the console reads them", () => {
       alerts: { channel: "off", since: null },
       ordersUnverified: { total: 0, items: [] },
       reportsOwed: { total: 0, items: [] },
+      // 3f Task 6: the copy's age and the gaps after a restore.
+      copy: { newestAt: null, overdue: false },
+      restore: { open: 0, measures: 0, importedAt: null },
     };
     expect(StaffOverview.parse(overview)).toEqual(overview);
     for (const member of ["appealsWaiting", "appealsYouMayReview", "appealsWithoutReviewer"]) {

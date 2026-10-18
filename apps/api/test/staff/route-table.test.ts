@@ -15,6 +15,7 @@ import {
   FindingResponse,
   OrderView,
   OrdersPage,
+  RestoreView,
   QueuePage,
   RevealResponse,
   StaffEnrollVerifyResponse,
@@ -313,6 +314,11 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/orders/:order/correct",
         // Task 3: giving effect.
         "POST /api/staff/orders/:order/effect",
+        // Task 6: recovery: the keeper's download and its mark, what a restore lost and a gap closed as not needed.
+        "POST /api/staff/audit/export",
+        "POST /api/staff/audit/export/mark",
+        "GET /api/staff/restore",
+        "POST /api/staff/restore/gaps/:gap/close",
       ].sort(),
     );
   });
@@ -331,6 +337,9 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/orders/:order/events": "order_event_recorded",
       // Task 3: "Disable for an order".
       "POST /api/staff/orders/:order/effect": "order_effected",
+      // Task 6: the audit log's download, and a gap closed as not needed.
+      "POST /api/staff/audit/export": "audit_exported",
+      "POST /api/staff/restore/gaps/:gap/close": "gap_closed",
     });
     // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
     // none of which changes anything a user sees (3c design, section 2, Free text under the step-up).
@@ -355,6 +364,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/orders",
         "POST /api/staff/orders/:order/items",
         "POST /api/staff/orders/:order/correct",
+        // Task 6: the mark shows nothing, and can only say "I hold it" of a file a key released (section 7.16).
+        "POST /api/staff/audit/export/mark",
       ].sort(),
     );
     // Every route stands behind the staff session but enrolment and sign-in, whose credential is the link or the key.
@@ -510,6 +521,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/orders/:order/effect",
       "POST /api/staff/orders/:order/events",
       "POST /api/staff/orders/:order/items",
+      // 3f Task 6: a restore gap.
+      "POST /api/staff/restore/gaps/:gap/close",
     ]);
     const answers = {
       StaffMe,
@@ -533,6 +546,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       ContactPage,
       OrdersPage,
       OrderView,
+      // 3f Task 6.
+      RestoreView,
     };
     const members = Object.entries(answers).flatMap(([name, schema]) => memberNames(schema).map((member) => `${name}.${member}`));
     // The walk read every member of every answer: none is of a kind it has not been taught, behind which a name could hide.

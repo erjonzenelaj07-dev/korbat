@@ -40,7 +40,7 @@ import {
 } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
 import { revealWithKey } from "../step-up";
@@ -182,6 +182,8 @@ export interface CaseScreenViewProps {
   onRevealClose(): void;
   /** 3f: an order's intake item links to its order. */
   onOpenOrder?: (id: OrderId) => void;
+  /** 3f Task 6: [restore.again], when the decision taken here takes again one lost with a restore. */
+  again?: string | null;
   /**
    * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
    * beside the decisions. Without it the page shows the case and decides nothing.
@@ -841,6 +843,7 @@ export function CaseScreenView(props: CaseScreenViewProps) {
         </button>
       </div>
 
+      {props.again ? <p className="notice">{props.again}</p> : null}
       {props.compose === undefined ? null : <ComposerView view={view} {...props.compose} />}
     </section>
   );
@@ -854,6 +857,8 @@ export function CaseScreen({
   drafts,
   onOpenCase,
   onOpenOrder,
+  gap = null,
+  onGapTaken,
 }: {
   id: CaseId;
   api: StaffApi;
@@ -862,6 +867,10 @@ export function CaseScreen({
   drafts: DraftSlots;
   onOpenCase(id: CaseId): void;
   onOpenOrder?: (id: OrderId) => void;
+  /** 3f Task 6: the restore gap this case was opened for from After a restore: the decision confirmed here closes it. */
+  gap?: { id: string; actedAt: string } | null;
+  /** Told once a decision that named the gap has been recorded. */
+  onGapTaken?: () => void;
 }) {
   const [view, setView] = useState<Loadable<CaseView>>({ state: "loading" });
   const [shownImage, setShownImage] = useState<ShownImage | null>(null);
@@ -1030,7 +1039,7 @@ export function CaseScreen({
       setNotice(null);
       setError(null);
       const sent = offeredDraft(shown, role, held);
-      const outcome = await confirmDecision({ api, credentials }, id, shown, sent, (kind, saved) => {
+      const outcome = await confirmDecision({ api, credentials, gap: gap?.id ?? null }, id, shown, sent, (kind, saved) => {
         // The confirmation saved a text whose save had failed when its field lost focus.
         textSaved(kind);
         if (draftNow.current !== null) keep({ ...draftNow.current, texts: { ...draftNow.current.texts, [kind]: saved } });
@@ -1054,6 +1063,8 @@ export function CaseScreen({
       }
       // Decided: the draft is done with, and the composer starts anew on the case as it now stands.
       drafts.clear(id);
+      // Task 6: the gap the decision named is closed with it; the next decision here is a new one.
+      if (gap !== null) onGapTaken?.();
       beforeCorrection.current = null;
       draftNow.current = newDraft(id, now, role);
       setDraft(draftNow.current);
@@ -1171,6 +1182,7 @@ export function CaseScreen({
           reveal={reveal}
           onOpenCase={onOpenCase}
           {...(onOpenOrder === undefined ? {} : { onOpenOrder })}
+          again={gap === null ? null : RECOVERY_WORDS.again(bothTimes(gap.actedAt))}
           // One image at a time: showing another puts the first back behind its placeholder.
           onShowImage={(image) => setShownImage({ id: image, clear: false, failed: false })}
           onShowClearly={() => setShownImage((current) => (current === null ? null : { ...current, clear: true }))}

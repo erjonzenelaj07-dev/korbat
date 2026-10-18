@@ -8,6 +8,7 @@ import {
   OrderView,
   OrdersPage,
   QueuePage,
+  RestoreView,
   RevealResponse,
   StaffEnrollOptionsResponse,
   StaffEnrollVerifyResponse,
@@ -23,6 +24,9 @@ import {
   StaffTextsResponse,
   StandingLists,
   type AppealReviewRequest,
+  type AuditExportedParams,
+  type AuditMarkRequest,
+  type AuthenticationResponseJSON,
   type CaseDecisionRequest,
   type ContactCloseRequest,
   type FindingRequest,
@@ -100,11 +104,17 @@ export interface Call {
   activity?: boolean;
 }
 
-/** The audit reader's query: newest, before a cursor, or the page whose newest row is at a place; and its one filter. */
+/**
+ * The audit reader's query: newest, before a cursor, or the page whose newest row is at a place; and its one filter. 3f
+ * Task 6: or the rows a step-up of one key confirmed (`key`, a lower-case uuid), in a period (`from`, `to`, instants).
+ */
 export interface AuditQuery {
   action?: "staff_sign_in";
   cursor?: number;
   at?: number;
+  key?: string;
+  from?: string;
+  to?: string;
 }
 
 /** A cookie's value by its exact name, from a document.cookie string. */
@@ -147,7 +157,10 @@ export function createStaffApi(deps: StaffApiDeps) {
    * One request. `schema` parses a 2xx answer; null means the route answers 204 with no body. A non-2xx answer becomes an
    * ApiError with the envelope's code (or not_found and internal when there is none), worded by the console.
    */
-  async function request<T>(method: "GET" | "POST" | "DELETE", path: string, schema: z.ZodType<T> | null, call: Call, body?: unknown): Promise<T> {
+  async function request<T>(method: "GET" | "POST" | "DELETE", path: string, schema: z.ZodType<T> | null, call: Call, body?: unknown): Promise<T>;
+  // 3f Task 6: the audit log's download answers JSON lines, which the screen reads as text and checks itself.
+  async function request(method: "POST", path: string, schema: "text", call: Call, body?: unknown): Promise<string>;
+  async function request<T>(method: "GET" | "POST" | "DELETE", path: string, schema: z.ZodType<T> | null | "text", call: Call, body?: unknown): Promise<T | string> {
     const headers: Record<string, string> = { accept: "application/json" };
     const csrf = readCookie(deps.cookie(), STAFF_CSRF_COOKIE);
     if (csrf) headers[STAFF_CSRF_HEADER] = csrf;
@@ -178,9 +191,16 @@ export function createStaffApi(deps: StaffApiDeps) {
       throw new ApiError(response.status, code, undefined, envelope.success ? envelope.data.error.details : undefined);
     }
 
-    let value: T;
+    let value: T | string;
     if (schema === null) {
       value = undefined as T;
+    } else if (schema === "text") {
+      // A body that breaks off on the way ends here as a shorter text, or as a network failure.
+      try {
+        value = await response.text();
+      } catch {
+        throw new ApiError(0, "network");
+      }
     } else {
       const parsed = schema.safeParse(await response.json().catch(() => undefined));
       if (!parsed.success) throw new ApiError(response.status, "invalid_answer");
@@ -198,6 +218,10 @@ export function createStaffApi(deps: StaffApiDeps) {
     if (q.action !== undefined) params.set("action", q.action);
     if (q.cursor !== undefined) params.set("cursor", String(q.cursor));
     if (q.at !== undefined) params.set("at", String(q.at));
+    // 3f Task 6: a key's id is a checked lower-case uuid and a time an instant the screen checked; both are encoded.
+    if (q.key !== undefined) params.set("key", q.key);
+    if (q.from !== undefined) params.set("from", q.from);
+    if (q.to !== undefined) params.set("to", q.to);
     const text = params.toString();
     return text === "" ? "" : `?${text}`;
   };
@@ -236,9 +260,10 @@ export function createStaffApi(deps: StaffApiDeps) {
      * A decision on a case, with the key's confirmation: the case must already be the lower-case uuid the step-up
      * confirmed, since it is the action's target. The answer is the case as it now stands, and it is that case's.
      */
-    decide: async (caseId: string, body: CaseDecisionRequest, call: Call = {}) => {
-      if (!isLowerUuid(caseId)) throw new ApiError(0, "invalid_request");
-      return sameCase(caseId, await request("POST", `/api/staff/cases/${caseId}/decisions`, CaseView, call, body));
+    decide: async (caseId: string, body: CaseDecisionRequest, call: Call = {}, gap: string | null = null) => {
+      if (!isLowerUuid(caseId) || (gap !== null && !isLowerUuid(gap))) throw new ApiError(0, "invalid_request");
+      // 3f Task 6: a decision that takes a lost one again names the restore gap it closes, as the query member `gap`.
+      return sameCase(caseId, await request("POST", `/api/staff/cases/${caseId}/decisions${gap === null ? "" : `?gap=${gap}`}`, CaseView, call, body));
     },
     /** 3e: the Standing screen's four lists. */
     standing: (call: Call = {}) => request("GET", "/api/staff/standing", StandingLists, call),
@@ -249,9 +274,9 @@ export function createStaffApi(deps: StaffApiDeps) {
      * uuid the step-up confirmed, since it is the action's target. The answer is the decision's case as it now stands,
      * and it must be the case of the page that asked.
      */
-    review: async (caseId: string, decisionId: string, body: AppealReviewRequest, call: Call = {}) => {
-      if (!isLowerUuid(caseId) || !isLowerUuid(decisionId)) throw new ApiError(0, "invalid_request");
-      return sameCase(caseId, await request("POST", `/api/staff/decisions/${decisionId}/review`, CaseView, call, body));
+    review: async (caseId: string, decisionId: string, body: AppealReviewRequest, call: Call = {}, gap: string | null = null) => {
+      if (!isLowerUuid(caseId) || !isLowerUuid(decisionId) || (gap !== null && !isLowerUuid(gap))) throw new ApiError(0, "invalid_request");
+      return sameCase(caseId, await request("POST", `/api/staff/decisions/${decisionId}/review${gap === null ? "" : `?gap=${gap}`}`, CaseView, call, body));
     },
     /**
      * 3f: a page of the messages at the contact point, newest first, all or only those nobody has handled. The cursor is
@@ -291,6 +316,20 @@ export function createStaffApi(deps: StaffApiDeps) {
     correctOrder: async (id: string, body: OrderCorrectRequest, call: Call = {}) => {
       if (!isLowerUuid(id)) throw new ApiError(0, "invalid_request");
       return sameOrder(id, await request("POST", `/api/staff/orders/${id}/correct`, OrderView, call, body));
+    },
+    /**
+     * 3f Task 6 (7.16): the audit log's tail after `after` up to `through`, confirmed with the key, as the text of its JSON
+     * lines; the screen checks the lines before anything is saved or marked. A refusal is an ApiError as for any call.
+     */
+    exportAudit: async (body: AuditExportedParams & { stepUp: AuthenticationResponseJSON }, call: Call = {}) => request("POST", "/api/staff/audit/export", "text", call, body),
+    /** 3f Task 6: the keeper's confirmation that the whole file is held: its last line's place and hash; 204, or copy_mismatch. */
+    markCopy: (body: AuditMarkRequest, call: Call = {}) => request<void>("POST", "/api/staff/audit/export/mark", null, call, body),
+    /** 3f Task 6: what an import after a restore found lost. */
+    restore: (call: Call = {}) => request("GET", "/api/staff/restore", RestoreView, call),
+    /** 3f Task 6: an admin's "Not needed" on a gap; its id must be the lower-case uuid the step-up confirmed. */
+    closeGap: async (gapId: string, body: { disposition: "not_needed"; stepUp: AuthenticationResponseJSON }, call: Call = {}) => {
+      if (!isLowerUuid(gapId)) throw new ApiError(0, "invalid_request");
+      return request("POST", `/api/staff/restore/gaps/${gapId}/close`, RestoreView, call, body);
     },
     /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {

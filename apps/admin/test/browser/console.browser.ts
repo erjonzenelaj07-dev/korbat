@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ANNEX3_GROUND_LABELS, DISPOSITION_LABELS, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, SEAL_DRAFTS, type ContactMessage } from "@korbat/contracts";
+import { ANNEX3_GROUND_LABELS, AUDIT_EXPORT_MAX, DISPOSITION_LABELS, GAP_CLASSES, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, SEAL_DRAFTS, type ContactMessage, type RestoreGap } from "@korbat/contracts";
 import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
@@ -66,10 +66,12 @@ import {
   CURRENT_BROWSER,
   DEAD_LINK,
   EXISTING_KEY_NAMES,
+  FIXTURE_KEY_ID,
   FORGED_DRAFT,
   FORGED_REASON,
   HOSTILE_TEXTS,
   IMAGE_PATH,
+  NO_RESTORE,
   OTHER_BROWSERS,
   orderFixture,
   OTHER_STAFF,
@@ -2035,6 +2037,131 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     }
   });
 
+  // ---------------------------------------------------------------- 3f Task 6: the daily copy and After a restore
+
+  test("3f Task 6: at 360 by 740 px, Download since my last copy asks the key, records the copy only once the whole file has arrived, and a download cut short records nothing", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const head = Math.max(...fixtures.state.audit.map((row) => row.seq));
+    try {
+      await page.goto(`${origin}/audit`);
+      await shown(page.getByText(RECOVERY_WORDS.downloadFirst(AUDIT_EXPORT_MAX), { exact: true }));
+      await shown(page.getByText(RECOVERY_WORDS.key, { exact: true }));
+      const before = await signatures();
+      const button = page.getByRole("button", { name: RECOVERY_WORDS.downloadButton });
+      await button.click();
+      await shown(page.getByText(RECOVERY_WORDS.done(1, head, head), { exact: true }));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.exports.at(-1)).toEqual({ after: 0, through: head });
+      expect(fixtures.state.marks).toEqual([{ through: head, hash: fixtures.state.audit.find((row) => row.seq === head)!.hash }]);
+      await shown(page.getByText(RECOVERY_WORDS.download(head, AUDIT_EXPORT_MAX), { exact: true }));
+      // Nothing newer: no key is asked.
+      await button.click();
+      await shown(page.getByText(RECOVERY_WORDS.none(head), { exact: true }));
+      expect(await signatures()).toBe(before + 1);
+      // Ten more rows, and a body that breaks off after three of them: the key confirmed it, nothing is marked.
+      const newer = Array.from({ length: 10 }, (_, i) => ({ ...fixtures.state.audit[0]!, seq: head + 10 - i, hash: (head + 10 - i).toString(16).padStart(64, "a"), actionHash: null, keyId: null, action: "staff_sign_in" }));
+      fixtures.state.audit.unshift(...newer);
+      fixtures.state.exportCut = 3;
+      await button.click();
+      await shown(page.getByText(RECOVERY_WORDS.broken, { exact: true }));
+      expect(await signatures()).toBe(before + 2);
+      expect(fixtures.state.exports.at(-1)).toEqual({ after: head, through: head + 10 });
+      expect(fixtures.state.marks).toHaveLength(1);
+      expect(fixtures.state.copyPlace).toBe(head);
+      // Pressed again, the download starts at the same place and is recorded.
+      await button.click();
+      await shown(page.getByText(RECOVERY_WORDS.done(head + 1, head + 10, 10), { exact: true }));
+      expect(fixtures.state.marks.at(-1)!.through).toBe(head + 10);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3f Task 6: What one key confirmed, with a key's id taken from a row by This key: only the rows that key confirmed, and every row again after", async () => {
+    await page.goto(`${origin}/audit`);
+    const thisKey = page.getByRole("button", { name: RECOVERY_WORDS.thisKey }).first();
+    await shown(thisKey);
+    await thisKey.click();
+    await shown(page.getByText(RECOVERY_WORDS.keyShown(FIXTURE_KEY_ID), { exact: true }));
+    expect(await page.getByLabel(RECOVERY_WORDS.keyField).inputValue()).toBe(FIXTURE_KEY_ID);
+    const actions = await page.locator("table.audit tbody tr td:nth-child(4)").allTextContents();
+    expect(actions.length).toBeGreaterThan(0);
+    expect(new Set(actions)).toEqual(new Set(["staff_session_revoked"]));
+    // A period that ends before it begins is not asked of the API.
+    await page.getByLabel(RECOVERY_WORDS.keyFrom).fill("2026-10-10T02:00:00Z");
+    await page.getByLabel(RECOVERY_WORDS.keyTo).fill("2026-10-10T01:00:00Z");
+    await page.getByRole("button", { name: RECOVERY_WORDS.keyShow }).click();
+    await shown(page.getByText(RECOVERY_WORDS.keyRule, { exact: true }));
+    await page.getByRole("button", { name: RECOVERY_WORDS.keyAll }).click();
+    await shown(page.getByRole("button", { name: "Load older" }));
+    expect(await page.getByText(RECOVERY_WORDS.keyShown(FIXTURE_KEY_ID), { exact: true }).count()).toBe(0);
+    await texts();
+    await clean();
+  });
+
+  test("3f Task 6: at 360 by 740 px, After a restore with one gap of each class: its entry once an import ran, Home's two lines, Open the case carrying the gap to the composer's line, and an admin's Not needed confirmed by the key", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const at = new Date(Date.now() - 26 * 3_600_000).toISOString();
+    const gapId = (n: number) => `${n.toString(16).padStart(8, "0")}-7a1b-4c2d-8e3f-4a5b6c7d8e9f`;
+    const order = orderFixture({ reference: "BKA-2026-R", posts: 1, sectionC: true, holdUntil: new Date(Date.now() + 20 * 86_400_000).toISOString() });
+    fixtures.state.orders.push(order);
+    const gaps: RestoreGap[] = GAP_CLASSES.map((cls, i) => ({
+      id: gapId(i + 1),
+      class: cls,
+      actedAt: at,
+      action: cls === "order_effect" ? "order_effected" : cls === "record" ? "production_recorded" : "case_decided",
+      caseId: cls === "order_effect" || cls === "record" ? null : CASE_POST,
+      orderId: cls === "order_effect" ? order.id : null,
+      itemId: cls === "order_effect" ? order.items[0]!.id : null,
+      kinds: cls === "order_effect" ? ["disable_by_order"] : cls === "seal_final" || cls === "seal_interim" ? ["seal_media"] : cls === "standing" ? ["suspend"] : cls === "restriction" ? ["remove"] : cls === "reversal" ? ["restore"] : [],
+      closedAt: null,
+      disposition: null,
+      closedByDecisionId: null,
+    }));
+    fixtures.state.restore = { importedAt: at, mayOpen: false, retentionMay: false, gaps, holds: [{ orderId: order.id, holdUntil: order.hold?.until ?? null }] };
+    fixtures.state.restoreOverview = { open: gaps.length, measures: 5, importedAt: at };
+    fixtures.state.copy = { newestAt: new Date(Date.now() - 3 * 86_400_000 - 60_000).toISOString(), overdue: true };
+    fixtures.state.role = "admin";
+    try {
+      await page.goto(`${origin}/`);
+      await shown(page.getByText(RECOVERY_WORDS.homeCopy(3), { exact: true }));
+      const home = page.getByRole("link", { name: RECOVERY_WORDS.homeRestore(gaps.length, 5) });
+      await shown(home);
+      await shown(page.getByRole("link", { name: "After a restore", exact: true }));
+      await texts();
+      await cleanOnPhone();
+      await home.click();
+      await shown(page.getByRole("heading", { name: RECOVERY_WORDS.title }));
+      for (const cls of GAP_CLASSES) await shown(page.getByRole("heading", { name: RECOVERY_WORDS.classes[cls].heading, exact: true }));
+      await shown(page.getByText(RECOVERY_WORDS.site, { exact: true }));
+      await shown(page.getByText(RECOVERY_WORDS.holds, { exact: true }));
+      await texts();
+      await cleanOnPhone();
+      // Not needed on the decision without a measure, with the key.
+      const before = await signatures();
+      const noMeasure = page.locator("li").filter({ hasText: RECOVERY_WORDS.classes.no_measure.line(bothTimes(at)) });
+      await noMeasure.getByRole("button", { name: RECOVERY_WORDS.notNeeded }).click();
+      await shown(page.getByText(RECOVERY_WORDS.notNeededDone, { exact: true }));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.gapsClosed).toEqual([gapId(7)]);
+      await shown(page.getByText(RECOVERY_WORDS.closed("not_needed", bothTimes(fixtures.state.restore.gaps[6]!.closedAt!)), { exact: true }));
+      // Open the case of the lost removal: the composer's line says the decision takes a lost one again.
+      const removal = page.locator("li").filter({ hasText: RECOVERY_WORDS.classes.restriction.line(`"${MEASURES.remove.label}"`, bothTimes(at)) });
+      await removal.getByRole("link", { name: RECOVERY_WORDS.openCase }).click();
+      await shown(page.getByText(RECOVERY_WORDS.again(bothTimes(at)), { exact: true }));
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.role = "moderator";
+      fixtures.state.restore = NO_RESTORE;
+      fixtures.state.restoreOverview = { open: 0, measures: 0, importedAt: null };
+      fixtures.state.copy = { newestAt: new Date().toISOString(), overdue: false };
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
   test("an address the console does not have says so, inside the console", async () => {
     await page.goto(`${origin}/no/such/page`);
     await shown(page.getByRole("heading", { name: "No such page" }));
@@ -2126,9 +2253,10 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     expect(fixtures.state.requests.length).toBeGreaterThan(20);
     // An image is asked for by the browser itself, which sends no mark, and the queue reads itself again every 60 seconds
     // while it is open, unmarked so that it never keeps a session alive (should a step of the walk ever last that long);
-    // so do Orders and an order's page every 20 seconds (3f). Every other request was the person's own.
+    // so do Orders and an order's page every 20 seconds (3f); and the console reads After a restore once a session, for its
+    // navigation (3f Task 6), unmarked. Every other request was the person's own.
     const pagesOwn = (r: { method: string; path: string }) =>
-      IMAGE_PATH.test(r.path) || (r.method === "GET" && (r.path === "/api/staff/queue" || r.path.startsWith("/api/staff/queue?") || r.path === "/api/staff/orders" || r.path.startsWith("/api/staff/orders/")));
+      IMAGE_PATH.test(r.path) || (r.method === "GET" && (r.path === "/api/staff/queue" || r.path.startsWith("/api/staff/queue?") || r.path === "/api/staff/orders" || r.path.startsWith("/api/staff/orders/") || r.path === "/api/staff/restore"));
     expect(fixtures.state.requests.filter((r) => !r.activity && !pagesOwn(r))).toEqual([]);
     expect(fixtures.state.problems).toEqual([]);
     expect(HOSTILE_TEXTS.filter((text) => !seen.has(text))).toEqual([]);

@@ -1291,6 +1291,39 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
       expect(all).not.toMatch(/korbat found|It breaks|@|You can appeal|OCLCTIC|TCO-2026-17/);
     }
   });
+
+  test("Task 6: a disabling taken again after a restore says so after `everywhere`, with the lost day, and that the six months count from the first time", () => {
+    const again = notice(facts(), { reapplied: { lostOn: "2026-10-02" } });
+    const paragraphs = statementParagraphs(again, { texts: TEXTS });
+    const everywhere = paragraphs.indexOf(N.everywhere.tco_removal);
+    expect(paragraphs[everywhere + 1]).toBe(N.reapplied("2026-10-02"));
+    expect(N.reapplied("2026-10-02")).toBe(
+      "The post was first disabled on 2026-10-02. korbat lost its record of that when it had to restore its database from a backup, and disabled the post again with this decision; the six months above count from the first time.",
+    );
+    // A notice of a disabling that was not lost says nothing of a restore.
+    expect(statementParagraphs(notice(facts()), { texts: TEXTS }).join(NL)).not.toMatch(/restore/);
+  });
+});
+
+describe("3f Task 6: a decision taken again after a restore (design, sections 7.17 step 7 and 10.4, W.2)", () => {
+  test("the sentence, word for word, names the lost decision's day and that the time to appeal counts from this one", () => {
+    expect(STATEMENT_WORDS.reapplied("2026-10-02")).toBe(
+      "korbat first took this decision on 2026-10-02. It lost its record of that when it had to restore its database from a backup, and has taken the decision again here. Your time to appeal counts from this one.",
+    );
+  });
+
+  test("it follows what was done, before where and how long; a decision that took nothing again has no such sentence", () => {
+    const again = statementParagraphs(statement({ reapplied: { lostOn: "2026-10-02" } }));
+    expect(again.slice(0, 3)).toEqual([`korbat removed your post of ${POST_TIME}: other people can no longer see it.`, STATEMENT_WORDS.reapplied("2026-10-02"), "This applies everywhere korbat is available and has no end date."]);
+    expect(again.slice(2)).toEqual(statementParagraphs(statement()).slice(1));
+    expect(text(statement())).not.toMatch(/restore/);
+    expect(text(statement({ reapplied: null }))).not.toMatch(/restore/);
+    // A correction taken again: after its lead and what it lifted.
+    const corrected = statementParagraphs(
+      statement({ kind: "correction", outcome: "reversed", measures: [], reversals: [reversal("restore")], reviewed: { kind: "final", ground: "incompatible", ruleId: "R1", rulesVersion: 2, legalReference: null, decidedAt: DECIDED }, reapplied: { lostOn: "2026-10-02" } }),
+    );
+    expect(corrected[2]).toBe(STATEMENT_WORDS.reapplied("2026-10-02"));
+  });
 });
 
 describe("the package", () => {

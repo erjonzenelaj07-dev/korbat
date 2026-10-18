@@ -10,6 +10,11 @@ import type { ModerationForStaff } from "../moderation";
 /** A case's id in a path, in the lower case the database writes: a read finds the case by value whatever the spelling. */
 const CaseId = z.uuid().transform((id) => id.toLowerCase());
 const CaseParam = z.object({ case: CaseId });
+/**
+ * 3f Task 6 (sections 7.17 step 6 and 10.2): the restore gap a decision or a review takes again, as the query member
+ * `gap`: a lower-case uuid, or absent. The transaction closes it with the decision; gap_mismatch when it does not fit.
+ */
+const GapQuery = z.object({ gap: z.uuid().regex(/^[0-9a-f-]+$/, { message: "a uuid in lower case" }).optional() });
 const ImageParam = z.object({ case: CaseId, media: MediaId, size: z.enum(MEDIA_SIZES) });
 
 /**
@@ -88,9 +93,10 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
   routes.post(
     "/cases/:case/decisions",
     auth.requireStaff,
+    validate("query", GapQuery),
     auth.requireStaffStepUp("case_decided", (c) => c.req.param("case")),
     async (c) => {
-      const outcome = await moderation.decide(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId") });
+      const outcome = await moderation.decide(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId"), gap: c.req.valid("query").gap ?? null });
       if (outcome === "ended") throw new AuthError("staff_session_required", 401);
       if (outcome === "late") throw new AuthError("challenge_expired", 400);
       return c.json(await moderation.decidedCase(staffSession(c), confirmedStepUp(c).target.id), 201);
@@ -107,9 +113,10 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
   routes.post(
     "/decisions/:decision/review",
     auth.requireStaff,
+    validate("query", GapQuery),
     auth.requireStaffStepUp("appeals_reviewed", (c) => c.req.param("decision")),
     async (c) => {
-      const outcome = await moderation.review(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId") });
+      const outcome = await moderation.review(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId"), gap: c.req.valid("query").gap ?? null });
       if (outcome === "ended") throw new AuthError("staff_session_required", 401);
       if (outcome === "late") throw new AuthError("challenge_expired", 400);
       return c.json(await moderation.reviewedCase(staffSession(c), confirmedStepUp(c).target.id), 201);

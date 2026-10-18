@@ -316,6 +316,28 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, l
       });
     });
 
+    test("3f Task 6: it reports a gap closed as not needed without its confirmed audit row; an item whose disabling a restore lost is no difference while its gap names it", async () => {
+      await inWorld(async (tx) => {
+        const [gap] = await tx.execute<{ id: string }>(sql`
+          insert into restore_gaps (import_id, place, hash, action, acted_at, imported_at, class, closed_at, disposition)
+          values (gen_random_uuid(), 4, repeat('c', 64), 'case_decided', now(), now(), 'no_measure', now(), 'not_needed') returning id`);
+        const [order] = await tx.execute<{ id: string }>(sql`
+          insert into legal_orders (id, kind, member_state, authority, reference, channel, section_c, emergency, cross_border, withhold_from_author, opened_via)
+          values (gen_random_uuid(), 'tco_removal', 'DE', 'Bundeskriminalamt', ${`T-${randomUUID()}`}, 'portal', false, false, false, true, 'cli') returning id`);
+        const [item] = await tx.execute<{ id: string }>(sql`
+          insert into legal_order_items (order_id, position, link, disabled_at, preserve_until) values (${order!.id}::uuid, 1, 'sha256:x', now(), now() + interval '6 months') returning id`);
+        const found = async () => about((await textVerify(tx, Number.MAX_SAFE_INTEGER)).problems, [gap!.id, order!.id]).sort();
+        expect(await found()).toEqual([
+          `gap: it is closed as not needed, and no confirmed audit row gap_closed names it`,
+          `order: item ${item!.id}: it is recorded as disabled, and no measure of an order decision names it`,
+        ]);
+        await tx.execute(sql`
+          insert into restore_gaps (import_id, place, hash, action, target_type, target_id, acted_at, imported_at, class)
+          values (gen_random_uuid(), 5, repeat('d', 64), 'order_effected', 'order_item', ${item!.id}, now(), now(), 'order_effect')`);
+        expect(await found()).toEqual([`gap: it is closed as not needed, and no confirmed audit row gap_closed names it`]);
+      });
+    });
+
     test("it reports a post whose level the migrator set by hand, an image whose state was set, and a seal in force one of whose listed posts has lost an image row", async () => {
       await inWorld(async (tx) => {
         const removed = await imagePost(tx, 1);

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 import { MediaId } from "./media";
-import { ALERT_CHANNEL_STATES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
+import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -516,6 +516,10 @@ export const ModerationErrorCode = z.enum([
   "order_not_verified",
   "order_cap",
   "not_appealable",
+  // Task 6 (recovery): a gap that is not open, or a decision that does not take again what it lost; a copy mark for a
+  // place that does not hold the named hash, or that the caller's own newest confirmed download did not release.
+  "gap_mismatch",
+  "copy_mismatch",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -1869,6 +1873,11 @@ export const DecisionStatement = z.object({
    * decision; null (or absent) for every other decision.
    */
   order: OrderNoticeFacts.nullable().optional(),
+  /**
+   * 3f Task 6 (sections 7.17 step 7 and 10.4): for a decision that closed a restore gap, the UTC day of the lost decision
+   * it took again, read from the gap, which is kept for as long as the decision; absent for every other decision.
+   */
+  reapplied: z.object({ lostOn: z.iso.date() }).nullable().optional(),
 });
 export type DecisionStatement = z.infer<typeof DecisionStatement>;
 
@@ -2174,8 +2183,50 @@ export const StaffOverview = z.object({
   ordersUnverified: OrdersUnverified,
   /** 3f Task 5: the notification records owed, from reports_owed() and nothing more ([home.owed]). */
   reportsOwed: ReportsOwed,
+  /**
+   * 3f Task 6 (sections 7.16, 8.2 and 10.2): the newest copy mark's time (null before the first) and whether the copy is
+   * overdue, by ORDER_RULES.copyOverdueHours ([home.copy]); and after a restore the open gaps, those of the classes 1 to 5
+   * (measures to take again), and when the newest import ran (null when none ever did), which shows the console's entry
+   * "After a restore" ([home.restore]).
+   */
+  copy: z.object({ newestAt: z.iso.datetime().nullable(), overdue: z.boolean() }),
+  restore: z.object({ open: Count, measures: Count, importedAt: z.iso.datetime().nullable() }),
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
+
+/**
+ * 3f Task 6 (sections 7.17, 8.8 and 10.2): GET /api/staff/restore, what an import after a restore found lost, in the order
+ * in which it is taken again. `importedAt` is the newest import's time, null when none ever ran (the console then hides
+ * the screen's entry). `mayOpen` is true when no gap of the classes 1 to 3 is open, and `retentionMay` when none of the
+ * classes 1 to 5 is. A gap: its class, when the lost row was written and its action, the case or the order (and the item)
+ * it names when the restored database holds them, the lost decision's action kinds, and its closing. `holds` are the
+ * orders whose notice the restored database holds back, with each one's end as imported, for [restore.holds]. No
+ * metadata beyond these.
+ */
+export const RestoreGap = z.object({
+  id: z.uuid(),
+  class: z.enum(GAP_CLASSES),
+  actedAt: z.iso.datetime(),
+  action: z.string().min(1),
+  caseId: z.uuid().nullable(),
+  orderId: z.uuid().nullable(),
+  itemId: z.uuid().nullable(),
+  kinds: z.array(z.enum(ACTION_KINDS)),
+  closedAt: z.iso.datetime().nullable(),
+  disposition: z.enum(GAP_DISPOSITIONS).nullable(),
+  closedByDecisionId: z.uuid().nullable(),
+});
+export type RestoreGap = z.infer<typeof RestoreGap>;
+/** How many gaps one read of After a restore lists at most: every open gap, then the newest import's closed ones. */
+export const RESTORE_GAPS_MAX = 1000;
+export const RestoreView = z.object({
+  importedAt: z.iso.datetime().nullable(),
+  mayOpen: z.boolean(),
+  retentionMay: z.boolean(),
+  gaps: z.array(RestoreGap).max(RESTORE_GAPS_MAX),
+  holds: z.array(z.object({ orderId: z.uuid(), holdUntil: z.iso.datetime().nullable() })).max(OVERVIEW_LIST_MAX),
+});
+export type RestoreView = z.infer<typeof RestoreView>;
 
 /** One of the Standing screen's lists: how many rows there are, and at most OVERVIEW_LIST_MAX of them. */
 const StandingList = <T extends z.ZodType>(row: T) => z.object({ total: Count, items: z.array(row).max(OVERVIEW_LIST_MAX) });

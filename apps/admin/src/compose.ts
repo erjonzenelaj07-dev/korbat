@@ -1538,7 +1538,8 @@ export type ConfirmOutcome = { view: CaseView } | { fresh: CaseView; notice: str
  * Nothing is thrown: a refusal comes back as the console's words for its code.
  */
 export async function confirmDecision(
-  deps: { api: StaffApi; credentials: CredentialsLike; random?: RandomBytes },
+  // 3f Task 6: `gap`, the restore gap a decision takes again after a restore, which the decide or review route closes.
+  deps: { api: StaffApi; credentials: CredentialsLike; random?: RandomBytes; gap?: string | null },
   caseId: CaseId,
   view: CaseView,
   draft: CaseDraft,
@@ -1579,7 +1580,7 @@ export async function confirmDecision(
       return { error: COMPOSER.incomplete, code: "incomplete" };
     }
     try {
-      return { view: await reviewWithKey(deps, caseId, draft.reviewsDecisionId ?? "", reviewed) };
+      return { view: await reviewWithKey(deps, caseId, draft.reviewsDecisionId ?? "", reviewed, deps.gap ?? null) };
     } catch (err) {
       return refusal(err);
     }
@@ -1597,7 +1598,7 @@ export async function confirmDecision(
     return { error: COMPOSER.incomplete, code: "incomplete" };
   }
   try {
-    return { view: await decideWithKey(deps, caseId, params) };
+    return { view: await decideWithKey(deps, caseId, params, deps.gap ?? null) };
   } catch (err) {
     return refusal(err);
   }

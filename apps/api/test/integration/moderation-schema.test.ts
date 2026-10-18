@@ -450,6 +450,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.delete_access_log",
         // Task 4 (0029_orders_retention): the retention job's three steps of 3f.
         "public.delete_contact_messages",
+        // Task 6 (0031_recovery): the retention step of the restore gaps, which answers a count.
+        "public.delete_restore_gaps",
         // Task 5 (0030_authority_records): the retention step of the records to authorities, which answers a count.
         "public.erase_authority_records",
         "public.erase_case_evidence",
@@ -460,6 +462,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.forget_report_counts",
         "public.forget_reporter",
         "public.frozen_for",
+        // Task 6: a gap's closing, with the decision that took the measure again or, by an admin, with none.
+        "public.gap_close",
         "public.intake_due_at",
         // 3f's Task 2 (0027_orders): the hold and the preservation, and the two writers a key's audit row binds.
         "public.order_correct",
@@ -726,6 +730,33 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const [trigger] = await apiDb.execute<{ definition: string }>(sql`select pg_get_triggerdef(t.oid) as definition from pg_trigger t where t.tgname = 'decision_actions_report'`);
       expect(trigger!.definition).toMatch(/AFTER INSERT ON public[.]decision_actions FOR EACH ROW EXECUTE FUNCTION (public[.])?report_open[(][)]/);
       expect("decision_actions_apply" < "decision_actions_report").toBe(true);
+    });
+
+    test("3f Task 6's writers (0031_recovery; design, sections 6.6 and 6.7): only gap_close and delete_restore_gaps write a gap, a not-needed closing is held to its audit row at commit, a mark's time is forced, and an imported order's old events pass", async () => {
+      const all = await functions();
+      const writing = (pattern: RegExp) => all.filter((f) => pattern.test(f.definition)).map((f) => f.name);
+      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]restore_gaps/i)).toEqual(["public.delete_restore_gaps", "public.gap_close"]);
+      expect(writing(/DELETE FROM public[.]copy_marks/i)).toEqual(["public.delete_restore_gaps"]);
+      // gap_close is called by the routes alone, never by another function: a decision closes a gap in the API's transaction.
+      expect(writing(/gap_close[(]/).filter((name) => name !== "public.gap_close")).toEqual([]);
+      for (const name of ["public.gap_close", "public.restore_gaps_confirmed", "public.delete_restore_gaps"]) {
+        const f = all.find((found) => found.name === name)!;
+        expect([f.owner, f.definer, f.config, f.pub], name).toEqual(["korbat_migrate", true, ["search_path=public, pg_temp"], false]);
+        expect(f.definition, name).not.toMatch(/interval '/i);
+      }
+      const insert = all.find((found) => found.name === "public.copy_marks_insert")!;
+      expect([insert.definer, insert.api, insert.pub]).toEqual([false, false, false]);
+      expect(insert.definition).toMatch(/NEW[.]at := clock_timestamp[(][)]/);
+      expect([all.find((f) => f.name === "public.restore_gaps_confirmed")!.api, all.find((f) => f.name === "public.gap_close")!.api]).toEqual([false, true]);
+      const triggers = await apiDb.execute<{ definition: string }>(
+        sql`select pg_get_triggerdef(t.oid) as definition from pg_trigger t where t.tgname in ('restore_gaps_confirmed', 'copy_marks_insert') order by t.tgname`,
+      );
+      expect(triggers.map((t) => t.definition.replace(/ EXECUTE FUNCTION .*$/, ""))).toEqual([
+        "CREATE TRIGGER copy_marks_insert BEFORE INSERT ON public.copy_marks FOR EACH ROW",
+        "CREATE CONSTRAINT TRIGGER restore_gaps_confirmed AFTER UPDATE ON public.restore_gaps DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((new.disposition = 'not_needed'::text) AND (old.disposition IS DISTINCT FROM 'not_needed'::text)))",
+      ]);
+      // legal_order_events_confirmed, replaced from 0028's text, returns for an imported order's event dated before its import.
+      expect(all.find((f) => f.name === "public.legal_order_events_confirmed")!.definition).toMatch(/o[.]imported_at IS NOT NULL AND NEW[.]at < o[.]imported_at/);
     });
 
     test("measures_in_force runs with its reader's rights and names exactly the contracts' measures", async () => {

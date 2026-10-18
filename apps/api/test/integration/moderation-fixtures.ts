@@ -1145,3 +1145,62 @@ export async function liftRowForTest(migrateDb: Db, profileId: string): Promise<
 export async function releaseForTest(migrateDb: Runner, itemIds: readonly string[]): Promise<void> {
   await migrateDb.execute(sql`update intake_items set outcome_sent_at = now(), shown_outcome = outcome where id = any(${uuids(itemIds)}) and outcome_sent_at is null`);
 }
+
+// ---------------------------------------------------------------- a restore (3f Task 6, section 12)
+
+/** 3f Task 6: the tables of recovery, which a suite that writes them adds to its row counts. */
+export const RECOVERY_TABLES = ["restore_gaps", "copy_marks"] as const;
+
+/** The tables of the two schemas a backup holds, as the migrator sees them, each quoted, and the one global-setup keeps. */
+async function backupTables(migrateDb: Db): Promise<{ schema: string; table: string }[]> {
+  return migrateDb.execute<{ schema: string; table: string }>(
+    sql`select schemaname as schema, tablename as table from pg_tables where schemaname in ('public', 'auth') order by schemaname, tablename`,
+  );
+}
+
+/**
+ * snapshotForTest (section 12): a backup of the test database as a test can take one, as the migrator: every table of
+ * `public` and `auth`, rows and all, copied into a schema of its own, whose name it answers. A suite cannot copy a
+ * database (CREATE DATABASE ... TEMPLATE needs the superuser and no other session), so this is "a backup".
+ */
+export async function snapshotForTest(migrateDb: Db): Promise<string> {
+  const schema = `restore_${randomBytes(5).toString("hex")}`;
+  await migrateDb.execute(sql.raw(`create schema ${schema}`));
+  for (const { schema: from, table } of await backupTables(migrateDb)) {
+    await migrateDb.execute(sql.raw(`create table ${schema}.${from}__${table} as select * from ${from}.${table}`));
+  }
+  return schema;
+}
+
+/**
+ * restoreForTest (section 12): puts the database back as snapshotForTest found it, as the migrator, in one transaction:
+ * every table of `public` and `auth` truncated, as global-setup does, then their rows copied back with the user triggers
+ * off for the copy (ALTER TABLE ... DISABLE TRIGGER USER, which a table's owner may do: no trigger forces a time, a level
+ * or an audit row on a copy) and the identity and serial columns kept, each sequence moved past the copied ids. Every
+ * table is filled in one statement, a data-modifying WITH of one INSERT a table: the foreign keys are checked at the end
+ * of that statement, so the keys that run in a circle (a decision, its order's item and that item's intake item) hold.
+ * The snapshot's schema is dropped. Every other suite runs alone (fileParallelism false), so the whole database may be
+ * swapped.
+ */
+export async function restoreForTest(migrateDb: Db, snapshot: string): Promise<void> {
+  if (!/^restore_[0-9a-f]{10}$/.test(snapshot)) throw new Error(`not a snapshot of snapshotForTest: ${snapshot}`);
+  const tables = (await backupTables(migrateDb)).map((t) => ({ name: `${t.schema}.${t.table}`, copy: `${snapshot}.${t.schema}__${t.table}` }));
+  await migrateDb.transaction(async (tx) => {
+    await tx.execute(sql.raw(`truncate table ${tables.map((t) => t.name).join(", ")} restart identity cascade`));
+    for (const t of tables) await tx.execute(sql.raw(`alter table ${t.name} disable trigger user`));
+    const inserts = tables.map((t, index) => `copy_${index} as (insert into ${t.name} overriding system value select * from ${t.copy} returning 1)`);
+    await tx.execute(sql.raw(`with ${inserts.join(", ")} select 1`));
+    for (const t of tables) {
+      await tx.execute(sql.raw(`alter table ${t.name} enable trigger user`));
+      // Each identity or serial column's sequence moves past the ids the copy kept.
+      const columns = await tx.execute<{ column: string; seq: string }>(
+        sql`select a.attname as column, pg_get_serial_sequence(${t.name}, a.attname) as seq from pg_attribute a
+             where a.attrelid = ${t.name}::regclass and a.attnum > 0 and not a.attisdropped and pg_get_serial_sequence(${t.name}, a.attname) is not null`,
+      );
+      for (const { column, seq } of columns) {
+        await tx.execute(sql.raw(`select setval('${seq}', coalesce((select max(${column}) from ${t.name}), 0) + 1, false)`));
+      }
+    }
+  });
+  await migrateDb.execute(sql.raw(`drop schema ${snapshot} cascade`));
+}

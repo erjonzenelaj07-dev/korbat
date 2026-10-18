@@ -7,7 +7,7 @@ import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isBoundReached, isDeadlock } from "../lib/lock-bounds";
 import { staffAlert } from "./alerts";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { appendConfirmedAudit, caseTarget, handleOf, holdsAnnouncedStanding, insertAction, insertDecision, insertMarks, raisedDetail, raisedMessage, recentDecisionsBy } from "./repo";
+import { appendConfirmedAudit, caseTarget, closeGap, handleOf, holdsAnnouncedStanding, insertAction, insertDecision, insertMarks, raisedDetail, raisedMessage, recentDecisionsBy } from "./repo";
 import { decisionStatement, sendStatement } from "./statement";
 
 /**
@@ -19,6 +19,16 @@ import { decisionStatement, sendStatement } from "./statement";
 
 /** A decision that committed, or why none did: the confirming account or key ended, or the challenge's time ran out. */
 export type DecideOutcome = { decisionId: string } | "ended" | "late";
+
+/**
+ * What a confirmed decision's route hands on besides the confirmation: the request's id for the audit row, and (3f Task
+ * 6, section 7.17 step 6) the restore gap the decision takes again, from the decide and review routes' query member
+ * `gap`, which the transaction closes with this decision and names in the audit row.
+ */
+export interface DecideContext {
+  requestId: string;
+  gap?: string | null;
+}
 
 /**
  * The kinds of the ledger the decide and review routes accept (3e design, section 7.1 item 2). The params' schema knows
@@ -197,7 +207,7 @@ export async function recordConfirmed(
   deps: ModerationDeps,
   session: ActiveStaffSession,
   confirmed: StaffStepUpConfirmed,
-  ctx: { requestId: string },
+  ctx: DecideContext,
   subject: string | null,
   write: (tx: DbTx, decisionId: string) => Promise<void>,
   mode: AccountLockMode = "no key update",
@@ -212,6 +222,11 @@ export async function recordConfirmed(
         if (subject !== null) await deps.social.lockAccounts(tx, [subject], mode);
         const decisionId = randomUUID();
         await write(tx, decisionId);
+        // 3f Task 6: a decision that takes a lost one again closes its gap here, after its ledger rows and before its audit
+        // row, so that the decision's own check at commit covers the closing; gap_close refuses a gap that is not open and
+        // a decision that does not fit it (gap_mismatch).
+        const gap = ctx.gap ?? null;
+        if (gap !== null) await closeGap(tx, gap, decisionId, session.userId);
         await appendConfirmedAudit(tx, {
           actorId: session.userId,
           keyId: confirmed.keyId,
@@ -220,7 +235,7 @@ export async function recordConfirmed(
           targetId: confirmed.target.id,
           // 3f (section 10.5): from Task 3 on the row names its case's target, so a lost decision's row says what it was
           // about after a restore; decision_holds compares it with the case at commit.
-          metadata: { params: confirmed.params, decisionId, ...(target !== null ? { target } : {}) },
+          metadata: { params: confirmed.params, decisionId, ...(target !== null ? { target } : {}), ...(gap !== null ? { gapId: gap } : {}) },
           staffSession: session.handle,
           actionHash: confirmed.actionHash,
           stepUp: confirmed.assertion,
@@ -259,7 +274,7 @@ export async function recordConfirmed(
  * database refuses such a seal itself, as its row joins the ledger (case_changed, with nothing stored); the console reads
  * the case again, and the person confirms again in a transaction that begins after the report.
  */
-export async function decide(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }, options: DecideOptions = {}): Promise<DecideOutcome> {
+export async function decide(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: DecideContext, options: DecideOptions = {}): Promise<DecideOutcome> {
   // A confirmation of anything else never decides a case: that would be a wiring fault, not a refusal.
   if (confirmed.action !== "case_decided" || confirmed.target.type !== "case" || confirmed.keyId !== session.keyId) {
     throw new Error("a decision needs a step-up that confirmed it");

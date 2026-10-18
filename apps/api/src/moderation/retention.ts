@@ -7,7 +7,7 @@ import { DISPOSAL_BATCH } from "../media";
 import { appendAuditRow } from "../staff";
 import type { ModerationDeps } from "./context";
 import { deleteContactMessages, dueOrderRecords, duePreservations, endPreservation, eraseAuthorityRecords, eraseOrderRecords } from "./orders-repo";
-import { deleteAccessLog, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseReplyStatements, eraseStatementTexts, forgetReportCounts, redactR4, sweepStaffTexts } from "./repo";
+import { deleteAccessLog, deleteRestoreGaps, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseReplyStatements, eraseStatementTexts, forgetReportCounts, redactR4, sweepStaffTexts } from "./repo";
 
 /**
  * The retention job (3c design, sections 6.4, 6.6 and 7.9): every ten minutes it deletes the drafts nobody confirmed,
@@ -17,7 +17,9 @@ import { deleteAccessLog, dueCases, dueIntakes, dueRedactions, dueStatements, er
  * and deletes the image rows that a case or a freeze kept and nothing retains any more. 3f adds three steps before the
  * disposal (design, sections 6.4, 7.11 and 7.18): the end of each order's preservation that is due, which erases the
  * post's content while the order's measure stands; the records of orders three years after their last event; and the
- * contact point's messages 30 days after they were handled, with the outbox rows that old.
+ * contact point's messages 30 days after they were handled, with the outbox rows that old; Task 5 the records to
+ * authorities, and Task 6 the restore gaps closed as not needed or imported 12 months ago, with the copy marks that old
+ * but the newest (sections 6.6 and 7.18).
  *
  * The job only names what it believes is due. Each erase function of migration 0018 checks its own rule again, against
  * values the API role cannot set, and the two gates of the freeze decide for every snapshot and every image row: so a
@@ -54,6 +56,7 @@ export type RetentionStep =
   | "order_records"
   | "contact_messages"
   | "authority_records"
+  | "restore_gaps"
   | "images";
 
 /** What one round did, for its log line and for the tests: counts only. */
@@ -74,6 +77,8 @@ export interface RetentionReport {
   contactMessages: number;
   /** 3f Task 5: the rows of the records to authorities deleted (notification records, productions and released holds). */
   authorityRecords: number;
+  /** 3f Task 6: the restore gaps closed as not needed or imported, and the copy marks but the newest, deleted 12 months on. */
+  restoreGaps: number;
   /** The access rows deleted, with the reveal reasons erased before them. */
   accessLog: number;
   /** The size of each batch of image rows the disposal deleted, in order; the last one is smaller than a full batch. */
@@ -167,7 +172,7 @@ async function dispose(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, re
 
 /** One round. A plain function, so the tests call it directly. */
 export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">): Promise<RetentionReport> {
-  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, accessLog: 0, batches: [], failed: 0 };
+  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, batches: [], failed: 0 };
   /** A step in a try of its own: what it raises is logged with the step, and the round goes on. */
   const step = async (name: RetentionStep, run: () => Promise<void>) => {
     try {
@@ -251,11 +256,16 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
   await step("authority_records", async () => {
     report.authorityRecords = await inStep(deps, "authority_records", {}, (tx) => eraseAuthorityRecords(tx));
   });
+  // 3f Task 6: one call, which checks its own period (gap_keep_months) against the database's clock and never deletes a
+  // gap that a decision closed, whose statement reads the lost day from it: its audit row names no id.
+  await step("restore_gaps", async () => {
+    report.restoreGaps = await inStep(deps, "restore_gaps", {}, (tx) => deleteRestoreGaps(tx));
+  });
   await step("images", () => dispose(deps, report));
 
   // One line for a round that did something or failed somewhere: counts only.
   const images = report.batches.reduce((sum, size) => sum + size, 0);
-  const orders = report.preservations + report.orderRecords + report.contactMessages + report.authorityRecords;
+  const orders = report.preservations + report.orderRecords + report.contactMessages + report.authorityRecords + report.restoreGaps;
   if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.replies + report.reportCounts + orders + report.accessLog + images + report.failed > 0) {
     deps.log.info({ job: RETENTION_JOB, ...report, images }, "moderation-retention: round");
   }

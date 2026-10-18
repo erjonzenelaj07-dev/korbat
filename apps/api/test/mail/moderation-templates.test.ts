@@ -23,7 +23,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 55 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2 and the six of its Task 3", () => {
+  test("holds 57 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3 and the two of its Task 6", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -36,11 +36,12 @@ describe("the closed union of templates", () => {
       "contact_mail", "contact_mail_escalated", "order_due", "mailbox_unreachable", "alert_channel_down",
       "order_opened", "order_corrected", "order_unverified",
       "order_effected", "order_reinstated", "hold_ending", "order_notice", "order_reinstated_notice", "order_notice_added",
+      "copy_overdue", "copy_taken",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(55);
+    expect(new Set(names).size).toBe(57);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(55);
+    expect(Object.keys(all)).toHaveLength(57);
   });
 });
 

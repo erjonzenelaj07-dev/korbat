@@ -146,7 +146,7 @@ export async function accessRequest(
 
 /** One thing text-verify found wrong, and what it is about: an audit row by its place, or a decision, a post, an image or a seal by its id. */
 export interface TextProblem {
-  about: "audit" | "decision" | "post" | "image" | "seal" | "order";
+  about: "audit" | "decision" | "post" | "image" | "seal" | "order" | "gap";
   id: string;
   message: string;
 }
@@ -455,6 +455,9 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
     sql`select i.id, i.order_id, 'it is recorded as disabled, and no measure of an order decision names it' as message
           from legal_order_items i where i.disabled_at is not null
            and not exists (select 1 from decisions d join decision_actions a on a.decision_id = d.id where d.order_item_id = i.id and a.kind::text = 'disable_by_order')
+           -- 3f Task 6: an item whose disabling a restore lost holds its first disabling's time from the import, and no
+           -- measure until a person takes it again (or an admin finds it not needed); its gap is the record of that.
+           and not exists (select 1 from restore_gaps g where g.class = 'order_effect' and g.target_type = 'order_item' and g.target_id = i.id::text)
         union all
         select i.id, i.order_id, 'a measure in force names it, and the item names another measure' as message
           from legal_order_items i join decisions d on d.order_item_id = i.id join decision_actions a on a.decision_id = d.id and a.kind::text = 'disable_by_order'
@@ -469,6 +472,15 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
            and not exists (select 1 from audit_log l where l.action in ('order_event_recorded', 'order_corrected') and l.target_id = e.order_id::text and l.metadata ->> 'eventId' = e.id::text)`,
   )) {
     problem("order", row.order_id, `its ${row.kind} event ${row.id} has no audit row`);
+  }
+  // ---- 5. 3f Task 6 (sections 6.6 and 8.11): every gap closed as not needed has its confirmed audit row gap_closed.
+  for (const row of await rowsOf<{ id: string }>(
+    q,
+    sql`select g.id from restore_gaps g
+         where g.disposition = 'not_needed'
+           and not exists (select 1 from audit_log l where l.action = 'gap_closed' and l.target_type = 'restore_gap' and l.target_id = g.id::text and l.step_up is not null)`,
+  )) {
+    problem("gap", row.id, "it is closed as not needed, and no confirmed audit row gap_closed names it");
   }
 
   return { ok: problemCount === 0, auditRows, decisions, posts, images, seals: sealsInForce.size, problems, problemCount };

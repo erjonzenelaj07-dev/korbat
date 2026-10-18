@@ -24,6 +24,7 @@ import type {
   OrdersPage,
   PostModeration,
   QueuePage,
+  RestoreView,
   StaffOverview,
   StaffSnapshotTaken,
   StaffTextSaveRequest,
@@ -41,12 +42,13 @@ import type { JobLock } from "../lib/jobs";
 import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
-import { createAlertTick } from "./alerts";
+import { createAlertTick, staffAlert } from "./alerts";
 import { appealsList, review, reviewedCase } from "./appeals";
 import { authorFacts } from "./author";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
-import { decide, type DecideOutcome } from "./decide";
+import { decide, type DecideContext, type DecideOutcome } from "./decide";
+import { closeGapNotNeeded, restoreView } from "./gaps";
 import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
 import { addItems, closeContact, contactPage, correctOrderRecord, giveEffect, openOrder, orderView, ordersPage, recordEvent, type OrderOutcome } from "./orders";
@@ -61,14 +63,14 @@ export { ACCESS_WORDS, accessDraftForAccount, accessDraftForContacts, uuidBefore
 export type { AccountAccessDraft, ContactsAccessDraft } from "./access";
 export { ModerationError } from "./context";
 export type { ModerationDeps, ModerationErrorKind } from "./context";
-export type { DecideOutcome } from "./decide";
+export type { DecideContext, DecideOutcome } from "./decide";
 export type { ModerationExport } from "./export";
 export type { RevealOutcome } from "./reveal";
 // 3f (design, sections 5 and 8.11): plain functions for the command line, each taking the caller's connection or
 // transaction and no dependency of the module, since a command does not hold the API's whole configuration: how a link
 // is read, the items an order's links resolve to, and the rows of opening an order, which the console's route, order-open
 // and the import all write.
-export { orderLinkTarget, parseLink } from "./links";
+export { orderLinkTarget, parseLink, postLink } from "./links";
 export type { OrderLinkTarget } from "./links";
 export { orderItemsFor } from "./orders";
 export type { OrderOutcome } from "./orders";
@@ -79,16 +81,17 @@ export type { InsertedOrder, NewOrder, NewOrderItem, WrittenItem } from "./order
 export interface ModerationForStaff {
   /**
    * Records the decision a step-up confirmed, in one transaction with its audit row. "ended" when the confirming account
-   * or key no longer opens anything, "late" when the challenge's time ran out; neither writes anything.
+   * or key no longer opens anything, "late" when the challenge's time ran out; neither writes anything. 3f Task 6: with
+   * `ctx.gap`, the decision takes a lost one again and closes that restore gap in its transaction (gap_mismatch otherwise).
    */
-  decide(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome>;
+  decide(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: DecideContext): Promise<DecideOutcome>;
   /** The case as the answer to a decision that has just committed on it: logged like every read, and never refused for the day's limit. */
   decidedCase(session: ActiveStaffSession, caseId: string): Promise<CaseView>;
   /**
    * Records the review a step-up confirmed: the answer to the one appeal of the decision the confirmation names, in one
    * transaction with its audit row. "ended" and "late" as for a decision.
    */
-  review(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<DecideOutcome>;
+  review(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: DecideContext): Promise<DecideOutcome>;
   /** The case of a reviewed decision as the answer to a review that has just committed on it, read as decidedCase reads. */
   reviewedCase(session: ActiveStaffSession, decisionId: string): Promise<CaseView>;
   /** A page of the pending appeals, newest first, each marked whether this person may review it; never a statement. */
@@ -143,6 +146,19 @@ export interface ModerationForStaff {
   correctOrder(session: ActiveStaffSession, orderId: string, facts: OrderCorrectFacts, confirmed: StaffStepUpConfirmed | null, ctx: { requestId: string }): Promise<OrderOutcome | "step_up_required">;
   /** 3f Task 3: "Disable for an order" on the items a step-up confirmed, one decision a post, with the confirmed audit row order_effected. */
   giveOrderEffect(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<OrderOutcome>;
+  /** 3f Task 6: what an import after a restore found lost, in the order to take it again, with the held notices (GET /api/staff/restore). */
+  restore(): Promise<RestoreView>;
+  /**
+   * 3f Task 6: an admin's "Not needed" on a gap a step-up confirmed, through gap_close with no decision and the confirmed
+   * audit row gap_closed, which restore_gaps_confirmed holds it to at commit. "ended" and "late" as for a decision.
+   */
+  closeGap(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<RestoreView | "ended" | "late">;
+  /**
+   * 3f Task 6 (7.16 step 3): after a download of the audit log's tail by an account that did not take the last copy,
+   * every staff account is alerted, by push and mail, with the time and the number of rows. Never throws: an alert fails
+   * open, and a failure is logged.
+   */
+  copyTaken(facts: { at: string; rows: number }): Promise<void>;
 }
 
 /**
@@ -235,6 +251,18 @@ export function createModeration(options: CreateModerationOptions) {
     recordOrderEvent: (session, confirmed, ctx) => recordEvent(deps, session, confirmed, ctx),
     correctOrder: (session, orderId, facts, confirmed, ctx) => correctOrderRecord(deps, session, orderId, facts, confirmed, ctx),
     giveOrderEffect: (session, confirmed, ctx) => giveEffect(deps, session, confirmed, ctx),
+    restore: () => restoreView(deps),
+    closeGap: (session, confirmed, ctx) => closeGapNotNeeded(deps, session, confirmed, ctx),
+    copyTaken: async (facts) => {
+      // Started and not waited for, as what follows a decision is: the download's answer never waits for a mail relay.
+      deps.background.start(async () => {
+        try {
+          await staffAlert(deps, null, 0, { template: "copy_taken", facts });
+        } catch (err) {
+          deps.log.error({ err }, "moderation: the staff accounts were not alerted to a download of the audit log's tail");
+        }
+      });
+    },
   };
   const forSocial: ModerationForSocial = {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),

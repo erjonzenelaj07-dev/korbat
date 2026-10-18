@@ -68,6 +68,9 @@ export type TemplateName =
   | "order_effected"
   | "order_reinstated"
   | "hold_ending"
+  // Task 6: the copy of the audit log's tail overdue, and taken by an account that did not take the last copy.
+  | "copy_overdue"
+  | "copy_taken"
   | "order_notice"
   | "order_reinstated_notice"
   | "order_notice_added";

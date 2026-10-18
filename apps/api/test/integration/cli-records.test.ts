@@ -278,6 +278,43 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the commands of the reco
     expect((await cli(["address-check", "--handle", "nobody_here_1"], "a@b.example")).code).toBe(1);
   });
 
+  test("3f Task 6: after a restore a record is entered again with --gap, which closes that open gap of the class record as imported in the command's own transaction; any other gap is refused with nothing written", async () => {
+    const gapOf = async (cls: string, closed = false) =>
+      (
+        await migrateDb.execute<{ id: string }>(sql`
+          insert into public.restore_gaps (import_id, place, hash, action, target_type, target_id, acted_at, imported_at, class, closed_at, disposition)
+          values (gen_random_uuid(), 5, repeat('b', 64), 'notification_recorded', 'notification', gen_random_uuid()::text, now(), now(), ${cls}, ${closed ? sql`now()` : sql`null`}, ${closed ? "imported" : null})
+          returning id`)
+      )[0]!.id;
+    const record = await gapOf("record");
+    const restriction = await gapOf("restriction");
+    const closed = await gapOf("record", true);
+    const p = await imagePost(world.moderation.deps.apiDb, 0, account.id);
+    posts.push(p.postId);
+    const { caseId } = await report(world.moderation.deps.apiDb, aPost(p.postId), "illegal");
+    const owed = async () => (await recordsOf(migrateDb, account.id)).filter((r) => r.case_id === caseId).length;
+    for (const gap of [restriction, closed, randomUUID()]) {
+      expect((await cli(["notification-open", "--case", caseId, "--duty", "voluntary", "--gap", gap])).text).toBe(`err notification-open: gap ${gap} is not an open gap of the class record; nothing changed`);
+    }
+    expect((await cli(["notification-open", "--case", caseId, "--duty", "voluntary", "--gap", "nonsense"])).text).toBe("err notification-open: gap nonsense is not an open gap of the class record; nothing changed");
+    expect((await cli(["records", "--gap", record])).text).toBe("err records: takes no --gap: it enters no record; nothing changed");
+    expect(await owed()).toBe(0);
+    const entered = await cli(["notification-open", "--case", caseId, "--duty", "voluntary", "--gap", record]);
+    expect(entered.code).toBe(0);
+    expect(entered.lines.at(-1)).toBe(`out notification-open: gap ${record} is closed: the record is entered again.`);
+    expect(await owed()).toBe(1);
+    const gaps = await migrateDb.execute<{ id: string; disposition: string | null }>(sql`select id, disposition from public.restore_gaps where id = any(${`{${record},${restriction}}`}::uuid[]) order by disposition nulls last`);
+    expect(gaps.map((g) => [g.id, g.disposition])).toEqual([
+      [record, "imported"],
+      [restriction, null],
+    ]);
+    // A refusal of the command itself leaves the gap open: the transaction that would have closed it is rolled back.
+    const another = await gapOf("record");
+    expect((await cli(["notification-open", "--case", randomUUID(), "--duty", "voluntary", "--gap", another])).code).toBe(1);
+    expect((await migrateDb.execute<{ open: boolean }>(sql`select closed_at is null as open from public.restore_gaps where id = ${another}::uuid`))[0]!.open).toBe(true);
+    await migrateDb.execute(sql`delete from public.restore_gaps where id = any(${`{${record},${restriction},${closed},${another}}`}::uuid[])`);
+  });
+
   test("leaves no row behind", async () => {
     await removeOrders(migrateDb, orders.splice(0));
     await removeRecords(migrateDb, [account.id, admin.id]);

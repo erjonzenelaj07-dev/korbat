@@ -686,8 +686,11 @@ export async function recentDecisionsBy(q: Runner, staffId: string, windowMs: nu
 export interface ConfirmedAuditRow {
   actorId: string;
   keyId: string;
-  /** 3f adds the two actions of an order's record that a key confirms (append_confirmed_audit's list, 0027_orders). */
-  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected" | "order_effected";
+  /**
+   * 3f adds the two actions of an order's record that a key confirms and its effect, and (Task 6) a gap closed as not
+   * needed and the audit log's download (append_confirmed_audit's list, 0027_orders).
+   */
+  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected" | "order_effected" | "gap_closed" | "audit_exported";
   targetType: string;
   targetId: string;
   metadata: Record<string, unknown>;
@@ -705,6 +708,26 @@ export interface ConfirmedAuditRow {
  * the challenge had expired by then, which rolls the whole transaction back. The row holds the chain's head until the
  * commit, so nothing that can wait may run after it. Answers the row's place in the chain.
  */
+/**
+ * 3f Task 6 (sections 6.6 and 7.17 step 6): closes a restore gap inside the caller's transaction, after its ledger rows and
+ * before its audit row: with the decision the transaction inserted, as reapplied, or with none, by an admin, as not
+ * needed. gap_mismatch when the gap is not open or the decision does not take again what it lost; not_found for an
+ * unknown gap. The decide, review and effect routes and "Not needed" call it.
+ */
+export async function closeGap(tx: DbTx, gapId: string, decisionId: string | null, staffId: string): Promise<void> {
+  await tx.execute(sql`select public.gap_close(${gapId}::uuid, ${decisionId}::uuid, ${staffId}::uuid)`);
+}
+
+/**
+ * 3f Task 6 (sections 6.6 and 7.18): the retention step restore_gaps, one call of delete_restore_gaps with the cut-off
+ * computed in the database's own SQL from order_rules(), which the function checks again: the gaps closed as not needed
+ * or imported 12 months ago and the copy marks that old but the newest; never a gap a decision closed.
+ */
+export async function deleteRestoreGaps(tx: DbTx): Promise<number> {
+  const [row] = await rows<{ n: number }>(tx, sql`select public.delete_restore_gaps(now() - make_interval(months => (select r.gap_keep_months from public.order_rules() r))) as n`);
+  return row?.n ?? 0;
+}
+
 export async function appendConfirmedAudit(tx: DbTx, row: ConfirmedAuditRow): Promise<number> {
   // The jsonb arguments go as text and are cast, so the driver sends them exactly as serialised here.
   const [written] = await rows<{ place: string }>(

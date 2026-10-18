@@ -762,6 +762,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sessions over HTTP
         targetType: "staff_session",
         targetId: signInRow!.targetId,
         actionHash: null,
+        // 3f Task 6: no step-up confirmed a sign-in, so it names no key, though its row records the key it signed in with.
+        keyId: null,
       });
 
       const signIns = AuditPage.parse(await (await s.b.fetch("/api/staff/audit?action=staff_sign_in")).json());

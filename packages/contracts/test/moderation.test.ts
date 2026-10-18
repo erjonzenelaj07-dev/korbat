@@ -390,6 +390,8 @@ describe("moderation error codes", () => {
       "order_not_verified",
       "order_cap",
       "not_appealable",
+      "gap_mismatch",
+      "copy_mismatch",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

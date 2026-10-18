@@ -1,9 +1,14 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
+  AUDIT_EXPORT_MAX,
   AuditEntry,
+  AuditExportLine,
+  AuditExportedParams,
+  AuditMarkRequest,
   AuditPage,
   AuditPageQuery,
+  GapClosedParams,
   AuthenticationResponseJSON,
   CEREMONY_CHALLENGE,
   CHALLENGE_PURPOSES,
@@ -230,8 +235,18 @@ describe("the staff account and its session", () => {
 });
 
 describe("step-up actions", () => {
-  test("there are seven: revoking a staff session, whose target is a staff session and whose params are empty, the three of moderation cases, 3f's two of an order's record and its effect", () => {
-    expect(Object.keys(STAFF_STEP_UP_ACTIONS)).toEqual(["staff_session_revoked", "case_decided", "appeals_reviewed", "identity_revealed", "order_event_recorded", "order_corrected", "order_effected"]);
+  test("there are nine: revoking a staff session, whose target is a staff session and whose params are empty, the three of moderation cases, 3f's two of an order's record and its effect, and recovery's gap and download", () => {
+    expect(Object.keys(STAFF_STEP_UP_ACTIONS)).toEqual([
+      "staff_session_revoked",
+      "case_decided",
+      "appeals_reviewed",
+      "identity_revealed",
+      "order_event_recorded",
+      "order_corrected",
+      "order_effected",
+      "gap_closed",
+      "audit_exported",
+    ]);
     expect(StaffStepUpActionName.options).toEqual(Object.keys(STAFF_STEP_UP_ACTIONS));
     const spec = STAFF_STEP_UP_ACTIONS.staff_session_revoked;
     expect(spec.targetType).toBe("staff_session");
@@ -604,9 +619,12 @@ describe("the step-up actions of moderation cases", () => {
     // 3f (design, section 10.3): the one named exception, an authority's name and its file number in a correction's facts.
     // They are no words about a person, are bound one line of 1 to 200 characters, and are compared with the order's row.
     const named: Record<string, string[]> = { order_corrected: ["$.facts.authority", "$.facts.reference"], order_effected: ["$.authority", "$.reference"] };
+    // 3f Task 6: the audit download's target is a place, as decimal digits: no text at all.
+    const PLACE = "/^[1-9][0-9]{0,14}$/";
+    const place = (action: string) => (s: { format: string | undefined; patterns: string[] }) => action === "audit_exported" && s.format === undefined && s.patterns.length === 1 && s.patterns[0] === PLACE;
     for (const [action, spec] of Object.entries(STAFF_STEP_UP_ACTIONS)) {
       expect(free(spec.params).map((s) => s.path), action).toEqual(named[action] ?? []);
-      expect(free(spec.targetId), action).toEqual([]);
+      expect(free(spec.targetId).filter((s) => !place(action)(s)), action).toEqual([]);
     }
     // What the walk finds in the decision's params: ids and digests, nothing else.
     expect(strings(decided).map((s) => s.path)).toEqual(["$.reviewsDecisionId", "$.snapshotId", "$.snapshotDigest", "$.actions[].mediaId", "$.factsDigest", "$.reasonDigest", "$.legalReferenceDigest", "$.unfounded[]"]);
@@ -786,12 +804,13 @@ describe("the audit log", () => {
     targetType: "staff_session",
     targetId: uuid,
     actionHash: "cd".repeat(32),
+    keyId: uuid,
   };
 
-  test("an entry carries its place and hash, time, actor handle, action, target and the action's hash", () => {
+  test("an entry carries its place and hash, time, actor handle, action, target, the action's hash and (3f Task 6) the key that confirmed it", () => {
     expect(AuditEntry.parse(entry)).toEqual(entry);
     // The system actor has no handle; most rows have no step-up, some no target.
-    const bare = { ...entry, actorHandle: null, targetType: null, targetId: null, actionHash: null };
+    const bare = { ...entry, actorHandle: null, targetType: null, targetId: null, actionHash: null, keyId: null };
     expect(AuditEntry.parse(bare)).toEqual(bare);
     everyFieldRequired(AuditEntry, entry);
   });
@@ -807,12 +826,72 @@ describe("the audit log", () => {
 
   test("a page holds at most 50 entries and the cursor of the next one, null at the end", () => {
     expect(STAFF_AUDIT_PAGE_SIZE).toBe(50);
-    expect(AuditPage.parse({ entries: [entry], nextCursor: 42 })).toEqual({ entries: [entry], nextCursor: 42 });
-    expect(AuditPage.parse({ entries: [], nextCursor: null })).toEqual({ entries: [], nextCursor: null });
-    expect(AuditPage.safeParse({ entries: Array(51).fill(entry), nextCursor: null }).success).toBe(false);
-    expect(AuditPage.safeParse({ entries: Array(50).fill(entry), nextCursor: 1 }).success).toBe(true);
-    expect(AuditPage.safeParse({ entries: [entry] }).success).toBe(false);
-    expect(AuditPage.safeParse({ entries: [entry], nextCursor: 0 }).success).toBe(false);
+    const copy = { lastPlace: 40 };
+    expect(AuditPage.parse({ entries: [entry], nextCursor: 42, copy })).toEqual({ entries: [entry], nextCursor: 42, copy });
+    expect(AuditPage.parse({ entries: [], nextCursor: null, copy: { lastPlace: null } })).toEqual({ entries: [], nextCursor: null, copy: { lastPlace: null } });
+    expect(AuditPage.safeParse({ entries: Array(51).fill(entry), nextCursor: null, copy }).success).toBe(false);
+    expect(AuditPage.safeParse({ entries: Array(50).fill(entry), nextCursor: 1, copy }).success).toBe(true);
+    expect(AuditPage.safeParse({ entries: [entry], copy }).success).toBe(false);
+    expect(AuditPage.safeParse({ entries: [entry], nextCursor: 0, copy }).success).toBe(false);
+    // 3f Task 6: the caller's own newest copied place is always there, null before the first copy.
+    expect(AuditPage.safeParse({ entries: [entry], nextCursor: null }).success).toBe(false);
+    expect(AuditPage.safeParse({ entries: [entry], nextCursor: null, copy: { lastPlace: 0 } }).success).toBe(false);
+  });
+
+  test("3f Task 6: a page of one key's confirmed rows is asked with the key's id and a period, either end open", () => {
+    expect(AuditPageQuery.parse({ key: uuid })).toEqual({ key: uuid });
+    expect(AuditPageQuery.parse({ key: uuid, from: at, to: at })).toEqual({ key: uuid, from: at, to: at });
+    expect(AuditPageQuery.safeParse({ key: uuid.toUpperCase() }).success).toBe(false);
+    expect(AuditPageQuery.safeParse({ key: "abc" }).success).toBe(false);
+    // A period alone filters nothing a key confirmed, and one that ends before it begins names no rows.
+    expect(AuditPageQuery.safeParse({ from: at }).success).toBe(false);
+    expect(AuditPageQuery.safeParse({ key: uuid, from: "2026-10-10T02:00:00.000Z", to: "2026-10-10T01:00:00.000Z" }).success).toBe(false);
+    expect(AuditPageQuery.safeParse({ key: uuid, from: "yesterday" }).success).toBe(false);
+  });
+
+  test("3f Task 6: the download's params release the places after `after` up to `through`, at most AUDIT_EXPORT_MAX of them", () => {
+    expect(AUDIT_EXPORT_MAX).toBe(50_000);
+    expect(AuditExportedParams.parse({ after: 0, through: 7 })).toEqual({ after: 0, through: 7 });
+    expect(AuditExportedParams.safeParse({ after: 0, through: AUDIT_EXPORT_MAX }).success).toBe(true);
+    const refused = [{ after: 7, through: 7 }, { after: 8, through: 7 }, { after: 0, through: AUDIT_EXPORT_MAX + 1 }, { after: -1, through: 2 }, { after: 0, through: 0 }, { after: 1.5, through: 2 }, { after: 0, through: 2, more: 1 }];
+    for (const params of refused) expect(AuditExportedParams.safeParse(params).success, JSON.stringify(params)).toBe(false);
+    const spec = STAFF_STEP_UP_ACTIONS.audit_exported;
+    expect(spec.targetType).toBe("audit");
+    for (const id of ["7", "999999999999999"]) expect(spec.targetId.safeParse(id).success, id).toBe(true);
+    for (const id of ["0", "07", "-1", "1e3", "1000000000000000", uuid]) expect(spec.targetId.safeParse(id).success, id).toBe(false);
+    expect(STAFF_STEP_UP_ACTIONS.gap_closed.targetType).toBe("restore_gap");
+    expect(GapClosedParams.parse({ disposition: "not_needed" })).toEqual({ disposition: "not_needed" });
+    for (const disposition of ["reapplied", "imported", ""]) expect(GapClosedParams.safeParse({ disposition }).success, disposition).toBe(false);
+  });
+
+  test("3f Task 6: the mark names the last line's place and its hash; a line carries the chain's members as stored", () => {
+    expect(AuditMarkRequest.parse({ through: 7, hash: hex })).toEqual({ through: 7, hash: hex });
+    for (const body of [{ through: 0, hash: hex }, { through: 7, hash: hex.toUpperCase() }, { through: 7 }, { through: 7, hash: hex, after: 1 }]) {
+      expect(AuditMarkRequest.safeParse(body).success, JSON.stringify(body)).toBe(false);
+    }
+    const line = {
+      v: 1,
+      place: 7,
+      id: 9,
+      at,
+      actor: uuid,
+      action: "case_decided",
+      targetType: "case",
+      targetId: uuid,
+      requestId: null,
+      staffSession: uuid,
+      keyId: uuid,
+      actionHash: hex,
+      stepUp: JSON.stringify({ signature: "x" }),
+      metadata: JSON.stringify({ params: {} }),
+      prevHash: hex,
+      hash: hex,
+    };
+    expect(AuditExportLine.parse(line)).toEqual(line);
+    everyFieldRequired(AuditExportLine, line);
+    // The jsonb columns are the text PostgreSQL printed, never parsed: an object is refused.
+    expect(AuditExportLine.safeParse({ ...line, metadata: { params: {} } }).success).toBe(false);
+    expect(AuditExportLine.safeParse({ ...line, extra: 1 }).success).toBe(false);
   });
 
   test("a page is asked for by cursor, by place (at) or from the newest, with sign-ins as the one filter", () => {

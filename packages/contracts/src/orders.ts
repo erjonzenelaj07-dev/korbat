@@ -1220,3 +1220,24 @@ export const ReportsOwed = z.object({
   items: z.array(z.object({ caseId: z.uuid(), kind: z.enum(REPORT_OWED_KINDS), since: At })).max(100),
 });
 export type ReportsOwed = z.infer<typeof ReportsOwed>;
+
+// ---------------------------------------------------------------- recovery (sections 6.6, 7.16, 7.17 and 10.1; Task 6)
+
+/**
+ * What an import after a restore found lost, by class, in the order in which a person takes it again (7.17, row 38): an
+ * order's disablings, seals for good, seals taken while deciding, suspensions and terminations, other restrictions,
+ * reversals, decisions without a measure (for reference), and the records the import could only note. The one list of
+ * the CHECK on restore_gaps.class, of the import, of the console's After a restore screen and of the home screen's count.
+ */
+export const GAP_CLASSES = ["order_effect", "seal_final", "seal_interim", "standing", "restriction", "reversal", "no_measure", "record"] as const;
+export type GapClass = (typeof GAP_CLASSES)[number];
+/** How a gap was closed: by a decision that took the measure again, by an admin as not needed, or as a record written again. */
+export const GAP_DISPOSITIONS = ["reapplied", "not_needed", "imported"] as const;
+export type GapDisposition = (typeof GAP_DISPOSITIONS)[number];
+/** The classes 1 to 5: lost measures. While one of them is open, retention and the image sweep stay off (7.17 step 8). */
+export const GAP_MEASURE_CLASSES = GAP_CLASSES.slice(0, 5) as readonly GapClass[];
+/** The classes 1 to 3: while one of them is open, the app's site stays closed (RestoreView.mayOpen). */
+export const GAP_SITE_CLASSES = GAP_CLASSES.slice(0, 3) as readonly GapClass[];
+
+/** The most rows one download of the audit log's tail holds (7.16): a longer log is taken in several downloads. */
+export const AUDIT_EXPORT_MAX = 50_000;

@@ -155,7 +155,10 @@ export type StaffAlertKind =
   // Task 3: an order given effect, an order's measure lifted, and a held notice about to be released.
   | "order_effected"
   | "order_reinstated"
-  | "hold_ending";
+  | "hold_ending"
+  // Task 6: the copy of the audit log's tail is overdue, and someone who did not take the last copy took one.
+  | "copy_overdue"
+  | "copy_taken";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -178,6 +181,8 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "order_effected":
     case "order_reinstated":
     case "hold_ending":
+    case "copy_overdue":
+    case "copy_taken":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest) };

@@ -378,3 +378,71 @@ export const productions = pgTable(
     pgPolicy("productions_api_none", { for: "select", to: apiRole, using: sql`false` }),
   ],
 ).enableRLS();
+
+// ---------------------------------------------------------------- recovery (3f design, section 6.6)
+// The lists are the contracts' GAP_CLASSES and GAP_DISPOSITIONS, in the order the console and the import list them; a
+// database test holds each migrated CHECK to its constant, as for the records above.
+const GAP_CLASSES = ["order_effect", "seal_final", "seal_interim", "standing", "restriction", "reversal", "no_measure", "record"];
+const GAP_DISPOSITIONS = ["reapplied", "not_needed", "imported"];
+const listOf = (values: readonly string[]) => sql.raw(values.map((value) => `'${value}'`).join(", "));
+
+/**
+ * One row for each lost decision and each lost record that an import after a restore found in the keeper's files (3f
+ * design, sections 6.6 and 7.17): the lost audit row's place, hash, action, target, metadata and time, the class that
+ * orders its taking again, and its closing. The API role reads it; the import writes it as the migrator, gap_close as its
+ * owner, and a record command given --gap closes a gap of the class record. A gap names its closing decision by id
+ * without a foreign key: the decision's statement reads the lost day from the gap for as long as the ledger keeps the
+ * decision, and the fixtures that remove decisions must not be held by it.
+ */
+export const restoreGaps = pgTable(
+  "restore_gaps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** One value for every gap one import wrote. */
+    importId: uuid("import_id").notNull(),
+    place: bigint("place", { mode: "number" }).notNull(),
+    hash: text("hash").notNull(),
+    action: text("action").notNull(),
+    targetType: text("target_type"),
+    /** An order_effected row gives one gap an item, with the item as its target. */
+    targetId: text("target_id"),
+    metadata: jsonb("metadata"),
+    actedAt: ts("acted_at").notNull(),
+    /** When the import that found it ran: the console's "After a restore" names the newest import's time. */
+    importedAt: ts("imported_at").notNull(),
+    class: text("class").notNull(),
+    closedAt: ts("closed_at"),
+    /** The decision that took the measure again; null for the dispositions not_needed and imported. */
+    closedBy: uuid("closed_by"),
+    disposition: text("disposition"),
+  },
+  (t) => [
+    check("restore_gaps_class", sql`${t.class} in (${listOf(GAP_CLASSES)})`),
+    check("restore_gaps_disposition", sql`${t.disposition} in (${listOf(GAP_DISPOSITIONS)})`),
+    // Open, or closed with a disposition; a decision names the closing exactly when it took the measure again.
+    check("restore_gaps_closed", sql`(${t.closedAt} is null) = (${t.disposition} is null) and (${t.closedBy} is not null) = (${t.disposition} is not distinct from 'reapplied')`),
+    check("restore_gaps_hash", sql`${t.hash} ~ '^[0-9a-f]{64}$'`),
+    check("restore_gaps_place", sql`${t.place} > 0`),
+    unique("restore_gaps_place_key").on(t.importId, t.place, t.targetId),
+    /** The open gaps by class: the console's list, the home line and whether the app's site may open. */
+    index("restore_gaps_open_idx").on(t.class).where(sql`closed_at is null`),
+    fullAccess("restore_gaps_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * The keeper's confirmations of the audit log's daily copy (3f design, sections 6.6 and 7.16): who holds the copy up to
+ * which place, and when the database recorded it (forced clock_timestamp()). The mark route inserts one for a staff
+ * member once the console holds the whole file; `staff.js audit-export` one under the system actor.
+ */
+export const copyMarks = pgTable(
+  "copy_marks",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    staffId: uuid("staff_id").notNull(),
+    /** The newest place the download held. */
+    place: bigint("place", { mode: "number" }).notNull(),
+    at: ts("at").notNull(),
+  },
+  (t) => [check("copy_marks_place", sql`${t.place} > 0`), fullAccess("copy_marks_api_all", apiRole)],
+).enableRLS();

@@ -15,7 +15,7 @@ import {
   type ActionKind,
   type DecisionActionParams,
 } from "./moderation";
-import { MemberStateCode, ORDER_ACTION_KINDS, ORDER_GROUNDS, OrderCorrectFacts, OrderCorrectedParams, OrderEffectedParams, OrderEventRecordedParams } from "./orders";
+import { AUDIT_EXPORT_MAX, MemberStateCode, ORDER_ACTION_KINDS, ORDER_GROUNDS, OrderCorrectFacts, OrderCorrectedParams, OrderEffectedParams, OrderEventRecordedParams } from "./orders";
 import { AuthenticationResponseJSON, PasskeyOptionsResponse, RegistrationResponseJSON } from "./passkeys";
 
 // The staff console (3a design, section 10). The console talks only to /api/staff/* on its own origin, and parses every
@@ -339,6 +339,22 @@ export const IdentityRevealedParams = z.strictObject({ reasonCategory: z.enum(RE
 export type IdentityRevealedParams = z.infer<typeof IdentityRevealedParams>;
 
 /**
+ * 3f Task 6 (sections 7.16 and 10.3): POST /api/staff/audit/export, the keeper's download of the audit log's tail: the
+ * rows after the place `after` (the caller's newest copied place, 0 before the first copy) up to the place `through` (the
+ * head the page showed), at most AUDIT_EXPORT_MAX of them. The target is `audit`, with `through` as decimal digits.
+ */
+export const AuditExportedParams = z
+  .strictObject({ after: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), through: ChainSeq })
+  .refine((p) => p.after < p.through && p.through - p.after <= AUDIT_EXPORT_MAX, { message: `after is below through, and at most ${AUDIT_EXPORT_MAX} places before it`, path: ["through"] });
+export type AuditExportedParams = z.infer<typeof AuditExportedParams>;
+/** The audit download's target id: the place `through` as decimal digits, without a sign or a leading zero. */
+export const AuditThroughId = z.string().regex(/^[1-9][0-9]{0,14}$/, "the place the download ends at, as decimal digits");
+
+/** 3f Task 6 (sections 7.17 step 6 and 10.3): POST /api/staff/restore/gaps/:gap/close, an admin's "Not needed" on a gap. */
+export const GapClosedParams = z.strictObject({ disposition: z.literal("not_needed") });
+export type GapClosedParams = z.infer<typeof GapClosedParams>;
+
+/**
  * Every action a staff key confirms, one at a time (3a design, section 7): the type of its target, the schema of the
  * target's id and the schema of its params. The step-up options, requireStaffStepUp, audit-verify and the console read it.
  * The params are hashed exactly as sent, so their schemas are strict: a member they do not know is refused, never dropped.
@@ -358,6 +374,10 @@ export const STAFF_STEP_UP_ACTIONS = {
   order_corrected: { targetType: "order", targetId: LowerCaseUuid, params: OrderCorrectedParams },
   /** 3f Task 3: POST /api/staff/orders/:order/effect: "Disable for an order" on up to ten of its items, by the order's id. */
   order_effected: { targetType: "order", targetId: LowerCaseUuid, params: OrderEffectedParams },
+  /** 3f Task 6: POST /api/staff/restore/gaps/:gap/close: a gap closed as not needed, by the gap's id. */
+  gap_closed: { targetType: "restore_gap", targetId: LowerCaseUuid, params: GapClosedParams },
+  /** 3f Task 6: POST /api/staff/audit/export: the audit log's tail after one place up to another, by the place it ends at. */
+  audit_exported: { targetType: "audit", targetId: AuditThroughId, params: AuditExportedParams },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -382,6 +402,8 @@ export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [
   stepUpRequest("order_event_recorded"),
   stepUpRequest("order_corrected"),
   stepUpRequest("order_effected"),
+  stepUpRequest("gap_closed"),
+  stepUpRequest("audit_exported"),
 ]);
 export type StaffStepUpOptionsRequest = z.infer<typeof StaffStepUpOptionsRequest>;
 
@@ -542,11 +564,17 @@ export const AuditEntry = z.object({
   targetType: z.string().nullable(),
   targetId: z.string().nullable(),
   actionHash: Sha256Hex.nullable(),
+  /** 3f Task 6 (8.7): the staff key a step-up confirmed the row with, by its id alone; null without a step-up. */
+  keyId: z.uuid().nullable(),
 });
 export type AuditEntry = z.infer<typeof AuditEntry>;
 
-/** Newest first by place. `nextCursor` asks for the rows before this page's last one; null when there are none. */
-export const AuditPage = z.object({ entries: z.array(AuditEntry).max(STAFF_AUDIT_PAGE_SIZE), nextCursor: ChainSeq.nullable() });
+/**
+ * Newest first by place. `nextCursor` asks for the rows before this page's last one; null when there are none. 3f Task 6
+ * (8.7, 10.2): `copy` is the caller's own newest copied place (`lastPlace`), null before their first copy, from which the
+ * console's "Download since my last copy" starts.
+ */
+export const AuditPage = z.object({ entries: z.array(AuditEntry).max(STAFF_AUDIT_PAGE_SIZE), nextCursor: ChainSeq.nullable(), copy: z.object({ lastPlace: ChainSeq.nullable() }) });
 export type AuditPage = z.infer<typeof AuditPage>;
 
 /**
@@ -554,6 +582,54 @@ export type AuditPage = z.infer<typeof AuditPage>;
  * keeper's "Go to place"); `action=staff_sign_in` is the reader's one filter, which the home screen's list of sign-ins reads.
  */
 export const AuditPageQuery = z
-  .object({ cursor: ChainSeqParam.optional(), at: ChainSeqParam.optional(), action: z.enum(["staff_sign_in"]).optional() })
-  .refine((query) => query.cursor === undefined || query.at === undefined, { message: "ask for a cursor or a place, not both", path: ["at"] });
+  .object({
+    cursor: ChainSeqParam.optional(),
+    at: ChainSeqParam.optional(),
+    action: z.enum(["staff_sign_in"]).optional(),
+    // 3f Task 6 (8.7, "What one key confirmed"): only the rows a step-up of this key confirmed, in the period from `from`
+    // to `to` (two instants, either open), for when a key may have been in someone else's hands.
+    key: LowerCaseUuid.optional(),
+    from: z.iso.datetime().optional(),
+    to: z.iso.datetime().optional(),
+  })
+  .refine((query) => query.cursor === undefined || query.at === undefined, { message: "ask for a cursor or a place, not both", path: ["at"] })
+  .refine((query) => query.from === undefined || query.to === undefined || Date.parse(query.from) <= Date.parse(query.to), { message: "the period ends after it begins", path: ["to"] })
+  .refine((query) => query.key !== undefined || (query.from === undefined && query.to === undefined), { message: "a period is asked with a key", path: ["key"] });
 export type AuditPageQuery = z.infer<typeof AuditPageQuery>;
+
+/**
+ * 3f Task 6 (sections 7.16 and 10.5): one line of the audit download, one JSON object a line. Its members are the chain's
+ * canonical text and the two hashes: `metadata` and `stepUp` are the stored jsonb as PostgreSQL prints it, as strings, so
+ * that staff.js restore-import (or anyone) recomputes each hash off the server with the canonical text, and nothing of the
+ * database's. `stepUp` is null without one.
+ */
+export const AuditExportLine = z.strictObject({
+  v: z.number().int().positive(),
+  place: ChainSeq,
+  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  at: z.iso.datetime(),
+  actor: z.uuid(),
+  action: z.string().min(1),
+  targetType: z.string().nullable(),
+  targetId: z.string().nullable(),
+  requestId: z.string().nullable(),
+  staffSession: z.uuid().nullable(),
+  keyId: z.uuid().nullable(),
+  actionHash: Sha256Hex.nullable(),
+  stepUp: z.string().nullable(),
+  metadata: z.string(),
+  prevHash: Sha256Hex,
+  hash: Sha256Hex,
+});
+export type AuditExportLine = z.infer<typeof AuditExportLine>;
+
+/** POST /api/staff/audit/export: the download's params with the step-up assertion as `stepUp`. */
+export const AuditExportRequest = AuditExportedParams.extend({ stepUp: AuthenticationResponseJSON.optional() });
+
+/**
+ * 3f Task 6 (sections 7.16 and 10.2): POST /api/staff/audit/export/mark, the keeper's confirmation that the console holds
+ * the whole file: its last line's place and hash. No key: it shows nothing, and it can only say "I hold it" of a file a
+ * key released.
+ */
+export const AuditMarkRequest = z.strictObject({ through: ChainSeq, hash: Sha256Hex });
+export type AuditMarkRequest = z.infer<typeof AuditMarkRequest>;

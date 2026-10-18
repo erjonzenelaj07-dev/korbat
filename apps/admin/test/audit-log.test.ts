@@ -17,6 +17,7 @@ const entry = (seq: number) => ({
   targetType: "staff_session",
   targetId: "2b7c1d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e",
   actionHash: null,
+  keyId: null,
 });
 
 describe("a place the keeper kept", () => {
@@ -34,9 +35,9 @@ describe("a place the keeper kept", () => {
 describe("the audit log's pages", () => {
   test("newest, older from the cursor, and Go to place, each marked as its person's action", async () => {
     const fake = fakeFetch({
-      "GET /api/staff/audit": { status: 200, body: { entries: [entry(120), entry(119)], nextCursor: 119 } },
-      "GET /api/staff/audit?cursor=119": { status: 200, body: { entries: [entry(118)], nextCursor: null } },
-      "GET /api/staff/audit?at=7": { status: 200, body: { entries: [entry(7), entry(6)], nextCursor: 6 } },
+      "GET /api/staff/audit": { status: 200, body: { entries: [entry(120), entry(119)], nextCursor: 119, copy: { lastPlace: null } } },
+      "GET /api/staff/audit?cursor=119": { status: 200, body: { entries: [entry(118)], nextCursor: null, copy: { lastPlace: null } } },
+      "GET /api/staff/audit?at=7": { status: 200, body: { entries: [entry(7), entry(6)], nextCursor: 6, copy: { lastPlace: null } } },
     });
     const reader = createAuditReader(createStaffApi({ fetch: fake.fetch, cookie: () => "" }));
     const newest = await reader.newest();
@@ -50,8 +51,8 @@ describe("the audit log's pages", () => {
 
   test("an answer with more rows than a page, or a hash that is not one, is refused", async () => {
     const fake = fakeFetch({
-      "GET /api/staff/audit": { status: 200, body: { entries: Array.from({ length: 51 }, (_, i) => entry(200 - i)), nextCursor: 149 } },
-      "GET /api/staff/audit?at=1": { status: 200, body: { entries: [{ ...entry(1), hash: "<b>x</b>" }], nextCursor: null } },
+      "GET /api/staff/audit": { status: 200, body: { entries: Array.from({ length: 51 }, (_, i) => entry(200 - i)), nextCursor: 149, copy: { lastPlace: null } } },
+      "GET /api/staff/audit?at=1": { status: 200, body: { entries: [{ ...entry(1), hash: "<b>x</b>" }], nextCursor: null, copy: { lastPlace: null } } },
     });
     const reader = createAuditReader(createStaffApi({ fetch: fake.fetch, cookie: () => "" }));
     await expect(reader.newest()).rejects.toMatchObject({ code: "invalid_answer" });
@@ -85,6 +86,7 @@ function deferredReader() {
 const rows = (from: number, to: number, nextCursor: number | null): AuditPage => ({
   entries: Array.from({ length: from - to + 1 }, (_, i) => entry(from - i)),
   nextCursor,
+  copy: { lastPlace: null },
 });
 const seqs = (view: AuditPageView) => (view.page.state === "ready" ? view.page.value.map((e) => e.seq) : view.page.state);
 const span = (from: number, to: number) => Array.from({ length: from - to + 1 }, (_, i) => from - i);

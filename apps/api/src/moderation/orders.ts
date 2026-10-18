@@ -66,7 +66,8 @@ import {
   type OrderRow,
   type WrittenItem,
 } from "./orders-repo";
-import { appendConfirmedAudit, insertAction, insertIntake, insertItem, isSerializationFailure, openCase, raisedDetail, raisedMessage, snapshotTime, violatedUniqueConstraint } from "./repo";
+import { itemsWithOpenGaps, openEffectGaps } from "./gaps";
+import { appendConfirmedAudit, closeGap, insertAction, insertIntake, insertItem, isSerializationFailure, openCase, raisedDetail, raisedMessage, snapshotTime, violatedUniqueConstraint } from "./repo";
 
 /**
  * Authorities' orders (3f design, sections 5, 7.3 and 8.3). In this task: the messages at the contact point. The watcher
@@ -579,7 +580,7 @@ function owedOf(row: OrderRow, now: number): OrderView["owed"] {
 export async function orderView(deps: Pick<ModerationDeps, "apiDb" | "config">, orderId: string, viewer: Pick<ActiveStaffSession, "role">): Promise<OrderView | null> {
   const row = await orderRow(deps.apiDb, orderId);
   if (row === null) return null;
-  const [items, events] = await Promise.all([orderItems(deps.apiDb, orderId), orderEvents(deps.apiDb, orderId)]);
+  const [items, events, gapped] = await Promise.all([orderItems(deps.apiDb, orderId), orderEvents(deps.apiDb, orderId), itemsWithOpenGaps(deps.apiDb, orderId)]);
   const images = await imageCounts(deps.apiDb, items.flatMap((item) => (item.postId === null ? [] : [item.postId])));
   const now = Date.parse(row.now);
   const admin = viewer.role === "admin";
@@ -632,7 +633,8 @@ export async function orderView(deps: Pick<ModerationDeps, "apiDb" | "config">, 
       reinstatedGround: item.reinstatedGround,
       closedAt: item.closedAt,
       closedReason: item.closedReason,
-      gap: false,
+      // Task 6: an open restore gap names the item, whose disabling the restore lost: "Disable for an order" takes it again.
+      gap: gapped.has(item.id),
     })),
     events: events.map((event) => ({ ...event })),
     owed: owedOf(row, now),
@@ -795,6 +797,9 @@ export async function giveEffect(deps: ModerationDeps, session: ActiveStaffSessi
     if (author === null) throw new ModerationError("order_changed");
     authors.set(item.postId, author);
   }
+  // Task 6 (7.6 step 5): after a restore, the open gaps of the class order_effect that name one of these items; the
+  // request carries nothing for them, and the transaction closes each with its item's decision.
+  const gaps = await openEffectGaps(deps.apiDb, params.items.map((item) => item.itemId));
   let decisionIds: Record<string, string> = {};
   for (let attempt = 1; ; attempt++) {
     try {
@@ -802,13 +807,22 @@ export async function giveEffect(deps: ModerationDeps, session: ActiveStaffSessi
         if (!(await boundLockWaits(tx, confirmed.expiresAt, ORDER_EFFECT_WAITS(params.items.length)))) return "late";
         await deps.social.lockAccounts(tx, [...new Set(authors.values())].sort(), "no key update");
         decisionIds = await effectRows(deps, tx, session.userId, params);
+        // Each gap after the ledger rows and before the audit row (7.6 step 6), in the items' order, so the decisions'
+        // own check at commit covers the closings. The audit row names them, item by item, as a decision's names its gap.
+        const gapIds: Record<string, string> = {};
+        for (const item of params.items) {
+          const gap = gaps.get(item.itemId);
+          if (gap === undefined) continue;
+          await closeGap(tx, gap, decisionIds[item.itemId]!, session.userId);
+          gapIds[item.itemId] = gap;
+        }
         await appendConfirmedAudit(tx, {
           actorId: session.userId,
           keyId: confirmed.keyId,
           action: "order_effected",
           targetType: "order",
           targetId: orderId,
-          metadata: { params: confirmed.params, decisionIds },
+          metadata: { params: confirmed.params, decisionIds, ...(Object.keys(gapIds).length > 0 ? { gapIds } : {}) },
           staffSession: session.handle,
           actionHash: confirmed.actionHash,
           stepUp: confirmed.assertion,

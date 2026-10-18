@@ -466,8 +466,14 @@ describe("the queue and the overview", () => {
       ordersUnverified: { total: 1, items: [{ orderId: POST, effectAt: TIME }] },
       // 3f Task 5: a report owed for a case, from reports_owed(): a case, a kind and a time.
       reportsOwed: { total: 1, items: [{ caseId: CASE, kind: "sealed_images" as const, since: TIME }] },
+      // 3f Task 6: the newest copy mark and whether the copy is overdue; the open gaps after a restore, the measures among
+      // them, and when the newest import ran.
+      copy: { newestAt: TIME, overdue: true },
+      restore: { open: 3, measures: 2, importedAt: TIME },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
+    expect(StaffOverview.safeParse({ ...overview, copy: { newestAt: null } }).success).toBe(false);
+    expect(StaffOverview.safeParse({ ...overview, restore: { open: -1, measures: 0, importedAt: null } }).success).toBe(false);
     expect(StaffOverview.safeParse({ ...overview, reportsOwed: { total: 1, items: [{ caseId: CASE, kind: "an authority", since: TIME }] } }).success).toBe(false);
     // Each of the three lists holds at most as many rows as the reveals' list does.
     expect(StaffOverview.safeParse({ ...overview, interimSeals: { total: 101, items: Array.from({ length: 101 }, () => overview.interimSeals.items[0]) } }).success).toBe(false);

@@ -23,6 +23,7 @@ function signIn(ageMs: number, handle = "mod_anna"): AuditEntry {
     targetType: "staff_session",
     targetId: "2b7c1d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e",
     actionHash: null,
+    keyId: null,
   };
 }
 
@@ -34,10 +35,10 @@ describe("the staff sign-ins of the last 7 days", () => {
 
   test("reads pages until it meets a sign-in older than 7 days, and keeps none older", async () => {
     const pages: AuditPage[] = [
-      { entries: [signIn(1000), signIn(DAY)], nextCursor: 51 },
-      { entries: [signIn(3 * DAY), signIn(7 * DAY - 1)], nextCursor: 40 },
-      { entries: [signIn(7 * DAY + 1, "old_one"), signIn(8 * DAY, "older")], nextCursor: 30 },
-      { entries: [signIn(9 * DAY, "never_read")], nextCursor: null },
+      { entries: [signIn(1000), signIn(DAY)], nextCursor: 51, copy: { lastPlace: null } },
+      { entries: [signIn(3 * DAY), signIn(7 * DAY - 1)], nextCursor: 40, copy: { lastPlace: null } },
+      { entries: [signIn(7 * DAY + 1, "old_one"), signIn(8 * DAY, "older")], nextCursor: 30, copy: { lastPlace: null } },
+      { entries: [signIn(9 * DAY, "never_read")], nextCursor: null, copy: { lastPlace: null } },
     ];
     const asked: (number | undefined)[] = [];
     const list = await readRecentSignIns(async (cursor) => {
@@ -52,7 +53,7 @@ describe("the staff sign-ins of the last 7 days", () => {
     const asked: (number | undefined)[] = [];
     const list = await readRecentSignIns(async (cursor) => {
       asked.push(cursor);
-      return { entries: [signIn(DAY)], nextCursor: null };
+      return { entries: [signIn(DAY)], nextCursor: null, copy: { lastPlace: null } };
     }, NOW - 7 * DAY);
     expect(asked).toEqual([undefined]);
     expect(list).toHaveLength(1);
@@ -62,21 +63,21 @@ describe("the staff sign-ins of the last 7 days", () => {
     const asked: (number | undefined)[] = [];
     await readRecentSignIns(async (cursor) => {
       asked.push(cursor);
-      return { entries: [signIn(DAY)], nextCursor: 51 };
+      return { entries: [signIn(DAY)], nextCursor: 51, copy: { lastPlace: null } };
     }, NOW - 7 * DAY);
     expect(asked).toEqual([undefined, 51]);
   });
 
   test("only sign-ins are listed, whatever else the answer holds", async () => {
     const other = { ...signIn(DAY), action: "staff_signed_out" };
-    const list = await readRecentSignIns(async () => ({ entries: [other, signIn(DAY)], nextCursor: null }), NOW - 7 * DAY);
+    const list = await readRecentSignIns(async () => ({ entries: [other, signIn(DAY)], nextCursor: null, copy: { lastPlace: null } }), NOW - 7 * DAY);
     expect(list.map((e) => e.action)).toEqual(["staff_sign_in"]);
   });
 
   test("through the API: the filter on every page, each request marked as the person's opening of the screen", async () => {
     const fake = fakeFetch({
-      "GET /api/staff/audit?action=staff_sign_in": { status: 200, body: { entries: [signIn(DAY)], nextCursor: 12 } },
-      "GET /api/staff/audit?action=staff_sign_in&cursor=12": { status: 200, body: { entries: [signIn(8 * DAY)], nextCursor: 3 } },
+      "GET /api/staff/audit?action=staff_sign_in": { status: 200, body: { entries: [signIn(DAY)], nextCursor: 12, copy: { lastPlace: null } } },
+      "GET /api/staff/audit?action=staff_sign_in&cursor=12": { status: 200, body: { entries: [signIn(8 * DAY)], nextCursor: 3, copy: { lastPlace: null } } },
     });
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
     const list = await readRecentSignIns((cursor) => api.audit({ action: "staff_sign_in", cursor }, { activity: true }), NOW - 7 * DAY);
@@ -87,7 +88,7 @@ describe("the staff sign-ins of the last 7 days", () => {
   test("at the screen's opening: the server's time from a marked /me read then, and the pages back to 7 days before it", async () => {
     const fake = fakeFetch({
       "GET /api/staff/me": { status: 200, body: makeMe({ at: NOW, absolute: 3600 }) },
-      "GET /api/staff/audit?action=staff_sign_in": { status: 200, body: { entries: [signIn(DAY), signIn(7 * DAY - 1000), signIn(7 * DAY + 1000)], nextCursor: 40 } },
+      "GET /api/staff/audit?action=staff_sign_in": { status: 200, body: { entries: [signIn(DAY), signIn(7 * DAY - 1000), signIn(7 * DAY + 1000)], nextCursor: 40, copy: { lastPlace: null } } },
     });
     const api = createStaffApi({ fetch: fake.fetch, cookie: () => "" });
     const list = await readSignInsAtOpening(api);

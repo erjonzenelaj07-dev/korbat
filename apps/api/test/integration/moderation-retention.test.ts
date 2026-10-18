@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { ORDER_RULES } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import type { AuthForModeration } from "../../src/auth";
 import { createAuthRepo } from "../../src/auth/repo";
@@ -155,7 +156,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     );
     // A second round changes nothing and writes no audit row.
     const again = recordingMedia();
-    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, batches: [0], failed: 0 });
     expect(again.requested).toEqual([]);
     expect(await head()).toBe(start + 3);
   });
@@ -242,7 +243,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     now += ERASURE_OVERDUE_TTL_MS + 1;
     expect(await late()).toEqual({ ...baseline, contacts: 0 });
     const after = await head();
-    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, batches: [0], failed: 0 });
     expect(await head()).toBe(after);
   });
 
@@ -614,6 +615,31 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
       expect(steps).toContainEqual({ step: "authority_records", caseId: null, intakeId: null, decisionId: null, count: report.authorityRecords });
       const names = steps.map((row) => row.step);
       if (names.includes("images")) expect(names.indexOf("authority_records")).toBeLessThan(names.indexOf("images"));
+    });
+  });
+
+  test("3f Task 6: the step restore_gaps runs before the disposal, deletes a gap closed as not needed or imported 12 months on and keeps one a decision closed, with its audit row and a count", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const start = (await tx.execute<{ seq: number }>(sql`select seq::int as seq from public.audit_head where id = 1`))[0]!.seq;
+      const gap = async (disposition: "imported" | "reapplied") =>
+        (
+          await tx.execute<{ id: string }>(sql`
+            insert into public.restore_gaps (import_id, place, hash, action, acted_at, imported_at, class, closed_at, closed_by, disposition)
+            values (gen_random_uuid(), 3, repeat('a', 64), 'case_decided', now(), now(), 'no_measure', now() - make_interval(months => ${ORDER_RULES.gapKeepMonths}::int, days => 2),
+                    ${disposition === "reapplied" ? sql`gen_random_uuid()` : sql`null`}, ${disposition})
+            returning id`)
+        )[0]!.id;
+      const imported = await gap("imported");
+      const reapplied = await gap("reapplied");
+      const report = await retentionRound({ apiDb: tx as unknown as Db, media: casesMedia(tx), log });
+      expect(report.restoreGaps).toBeGreaterThanOrEqual(1);
+      expect(report.failed).toBe(0);
+      const left = (await tx.execute<{ id: string }>(sql`select id from public.restore_gaps where id = any(${`{${imported},${reapplied}}`}::uuid[])`)).map((row) => row.id);
+      expect(left).toEqual([reapplied]);
+      const steps = (await tx.execute<{ metadata: Record<string, unknown> }>(sql`select metadata from public.audit_log where action = ${RETENTION_ACTION} and chain_seq > ${start} order by chain_seq`)).map((row) => row.metadata);
+      expect(steps).toContainEqual({ step: "restore_gaps", caseId: null, intakeId: null, decisionId: null, count: report.restoreGaps });
+      const names = steps.map((row) => row.step);
+      if (names.includes("images")) expect(names.indexOf("restore_gaps")).toBeLessThan(names.indexOf("images"));
     });
   });
 

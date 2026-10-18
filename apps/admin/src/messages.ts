@@ -375,8 +375,15 @@ export const CONSOLE_MODERATION_CODES = [
   "order_changed",
   "order_not_verified",
   "order_cap",
+  // 3f Task 6 (design, sections 8.7 to 8.9): a gap that is closed or that a decision does not fit, and a copy mark the
+  // database did not take.
+  "gap_mismatch",
+  "copy_mismatch",
 ] as const satisfies readonly ModerationErrorCode[];
 export type ConsoleModerationCode = (typeof CONSOLE_MODERATION_CODES)[number];
+
+/** 3f Task 6 [copy.broken] (8.7): a download that broke off, whose mark the database refused or the console never sent. */
+const COPY_BROKEN = "The download broke off, or its lines do not continue each other. Nothing was recorded as copied: press again.";
 
 /** 3f [open.duplicate]: an order of this state, authority and reference is recorded already (order_exists). */
 const OPEN_DUPLICATE =
@@ -421,6 +428,9 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
     "This order is not verified yet: whoever has the server checks it against the order in the mailbox (staff.js order-verify). If the order itself sets a time that cannot wait, an admin gives it effect as urgent.",
   // [effect.cap] (8.5 block 4).
   order_cap: `You have given effect to ${ORDER_RULES.decisionsPerDay} order items in 24 hours, the most one staff account may. Another staff member goes on; tell the operator at once.`,
+  gap_mismatch: "That gap is closed already, or this decision does not take again what it lost. Read After a restore again.",
+  // [copy.broken] (8.7).
+  copy_mismatch: COPY_BROKEN,
 };
 
 /** A small number as a word, as the design's sentences write it; a larger one in digits. */
@@ -727,6 +737,90 @@ export const ORDER_WORDS = {
     `A deadline passed at ${dueAt} and not everything is done: a message is unread, or an order has an item that is neither disabled nor closed. Open Orders and act now, then tell the operator.`,
   /** Contact point's button (8.3). */
   openFromMessage: "Open an order from this message",
+} as const;
+
+/**
+ * 3f Task 6 (design, sections 8.2, 8.5, 8.7 and 8.8): the console's sentences of recovery, each under the design's key
+ * (`restore.what` is [restore.what]). Every number is printed from the answer or from the contracts, never typed, and
+ * every time is the database's instant, printed by the screen with bothTimes.
+ */
+export const RECOVERY_WORDS = {
+  // The audit log's download (8.7).
+  downloadTitle: "Download since my last copy",
+  download: (lastPlace: number, max: number) =>
+    `Downloads the rows after place ${lastPlace}, the newest you downloaded, as one file of JSON lines, at most ${max} rows at a time. Keep the file off the server with the head you note. After a restore it is what names the lost orders and decisions.`,
+  downloadFirst: (max: number) => `You have downloaded nothing yet: this downloads the first ${max} rows. Press again until nothing is newer.`,
+  key: "The file holds more than this page: confirm with your staff key.",
+  downloadButton: "Download since my last copy",
+  done: (from: number, to: number, rows: number) => `Downloaded places ${from} to ${to}: ${rows} rows. The copy is recorded.`,
+  none: (lastPlace: number) => `Nothing is newer than place ${lastPlace}.`,
+  broken: COPY_BROKEN,
+  // "What one key confirmed" (8.7).
+  keyTitle: "What one key confirmed",
+  keyWhat:
+    "Use this when a key may have been in someone else's hands. Each decision listed is undone by an admin's correction on its case; there is no batch. An order's disabling is reinstated only on one of its grounds: a stolen key is not one, so check the order itself.",
+  keyField: "Staff key's id",
+  keyFrom: "From (UTC, for example 2026-10-10T01:00:00Z)",
+  keyTo: "To (UTC)",
+  keyShow: "Show what it confirmed",
+  keyAll: "All rows",
+  keyRule: "Enter a key's id as staff.js keys prints it, and each time as 2026-10-10T01:00:00Z, or leave a time empty.",
+  thisKey: "This key",
+  keyShown: (keyId: string) => `Rows a step-up of the key ${keyId} confirmed, newest first.`,
+  // Home (8.2).
+  homeCopy: (days: number) => `The copy is ${days} ${days === 1 ? "day" : "days"} old. The keeper downloads the audit log's tail on the daily visit: Audit log, "Download since my last copy".`,
+  /** [home.copy] before any copy was taken: the design's sentence has no age to print then. */
+  homeCopyNone: `No copy of the audit log's tail has been taken yet. The keeper downloads it on the daily visit: Audit log, "Download since my last copy".`,
+  homeRestore: (open: number, measures: number) =>
+    `After a restore: ${open} ${open === 1 ? "gap is" : "gaps are"} open, ${measures} of them measures to take again. The app's site stays closed until every order disabling and seal among them is back.`,
+  // After a restore (8.8).
+  title: "After a restore",
+  what: "The database was restored from a backup, and the keeper's copy names what the backup lacks. Nothing below is in force until a person takes it again under a key: korbat imports no measure. Work from the top.",
+  site: "The app's site is closed until no order disabling and no seal is open here.",
+  siteOpen: "No order disabling and no seal is open. The operator may open the app's site (APP_SITE=open).",
+  retention: "No measure is open. The operator may switch retention and the image sweep back on.",
+  lost: "What no import brings back: the texts of the lost decisions, everything after the keeper's last download, and anything the keeper's files do not hold (the import printed every place it found missing in them). For those, the contact-point mailbox and the operator's notes are the record.",
+  holds:
+    "Before you disable anything again for an order: whoever has the server compares each held notice below with the contact-point mailbox since the keeper's last download. An extension or a later time that was recorded after that download is lost, and a disabling taken again under the old end would tell the author early.",
+  holdUntil: (until: string | null) => (until === null ? "Held with no end recorded" : `Held until ${until}`),
+  importedAt: (at: string) => `The newest import ran at ${at}.`,
+  nothingOpen: "Every gap is closed.",
+  classes: {
+    order_effect: { heading: "Orders: disable again", line: (n: number, actedAt: string) => `Lost: the disabling of ${n} ${n === 1 ? "post" : "posts"} for an order, first done at ${actedAt}.` },
+    seal_final: { heading: "Seals for good", line: (actedAt: string) => `Lost: a seal for good, decided at ${actedAt}.` },
+    seal_interim: { heading: "Seals taken while deciding", line: (actedAt: string) => `Lost: a seal taken while deciding, decided at ${actedAt}.` },
+    standing: { heading: "Suspensions and terminations", line: (measure: string, actedAt: string) => `Lost: ${measure}, decided at ${actedAt}.` },
+    restriction: { heading: "Other restrictions", line: (measure: string, actedAt: string) => `Lost: ${measure}, decided at ${actedAt}.` },
+    reversal: { heading: "Reversals", line: (actedAt: string) => `Lost: a reversal, decided at ${actedAt}.` },
+    no_measure: { heading: "Decisions without a measure", line: (actedAt: string) => `Lost: a decision without a measure, of ${actedAt}. Listed for reference.` },
+    record: {
+      heading: "Records to enter again",
+      line: (actedAt: string, what: string) =>
+        `Lost: a record of ${actedAt} that the copy names and cannot write again (${what}). Whoever has the server enters it again from the authority's letters and their own notes, with the command that wrote it, naming this gap (--gap).`,
+    },
+  },
+  /** {what} of a gap of the class record: the words of its lost row's action. */
+  recordWhat: (action: string) =>
+    action === "notification_recorded"
+      ? "a step of a notification to an authority"
+      : action === "production_recorded"
+        ? "a production to an authority"
+        : action === "preserved_accessed"
+          ? "an access to preserved content for an authority"
+          : "a record",
+  orderLine: "Open the order, then Disable for an order: the preservation's end, the hold and the clock keep their imported values. Read the held notices above first.",
+  openOrder: "Open the order",
+  openCase: "Open the case",
+  noTarget: "The restored database no longer holds what this names.",
+  notNeeded: "Not needed",
+  notNeededWhat: "Use this when the measure had ended, or was reversed, before the restore, or when the target no longer exists. It is recorded with your key and cannot be undone here.",
+  notNeededDone: "Closed as not needed.",
+  closed: (disposition: "reapplied" | "not_needed" | "imported", at: string) =>
+    `${disposition === "reapplied" ? "Taken again" : disposition === "not_needed" ? "Not needed" : "Entered again"} at ${at}.`,
+  /** [restore.again] (8.8): the composer's line when a decision takes a lost one again. */
+  again: (actedAt: string) => `This takes again a decision of ${actedAt} that was lost with a restore. Its statement says so. Write the facts and the reason again: the lost texts are gone.`,
+  /** [effect.preserve] for a disabling taken again after a restore (8.5): the end it had stays. */
+  effectPreserveAgain: (preserveUntil: string) => `Each post, its images and a copy of its text are preserved until ${preserveUntil}, as before the restore.`,
 } as const;
 
 /**

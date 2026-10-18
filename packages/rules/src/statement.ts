@@ -36,6 +36,12 @@ function fieldOf(kind: MeasureKind | ReversalKind): Field | null {
  * sentence that names a post names it as "your post of {time}".
  */
 export const STATEMENT_WORDS = {
+  /**
+   * 3f Task 6 (W.2, the sentence a decision taken again adds): for every decision but an order's that closed a restore
+   * gap, after what was done. `lostOn` is the lost decision's UTC day, which the statement reads from the gap.
+   */
+  reapplied: (lostOn: string) =>
+    `korbat first took this decision on ${lostOn}. It lost its record of that when it had to restore its database from a backup, and has taken the decision again here. Your time to appeal counts from this one.`,
   /** What was done, for each measure but the seal. `post` is the post's time as printed; `deciding` says that it was taken while korbat decides. */
   done: {
     withhold: (post: string) => `korbat hid your post of ${post} from other people while it decides.`,
@@ -666,6 +672,8 @@ export function statementParagraphs(input: StatementInput, extras: OrderNoticeEx
   // 3e: the standing measures whose basis a reversal of this decision broke.
   for (const entry of input.endedStanding ?? []) paragraphs.push(basisEndedParagraph(entry));
   if (paragraphs.length === 0) paragraphs.push(W.noAction);
+  // 3f Task 6: a decision that took again one lost with a restore says so, with the lost day, after what it did.
+  if (input.reapplied) paragraphs.push(W.reapplied(input.reapplied.lostOn));
 
   const standing = standingOf(input);
   const reporting = reportingOf(input);
@@ -912,6 +920,8 @@ function orderNoticeParagraphs(input: StatementInput, extras: OrderNoticeExtras)
     }
   }
   paragraphs.push(N.everywhere[order.kind]);
+  // Task 6: a disabling taken again after a restore names the first disabling's day; its six months count from then.
+  if (input.reapplied) paragraphs.push(N.reapplied(input.reapplied.lostOn));
   paragraphs.push(N.noAppeal[order.kind]);
   paragraphs.push(N.wrongItem);
   return paragraphs;

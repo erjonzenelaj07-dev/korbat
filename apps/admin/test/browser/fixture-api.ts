@@ -2,6 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   AppealReviewRequest,
+  AuditExportRequest,
+  AuditMarkRequest,
+  AuthenticationResponseJSON,
   CaseDecidedParams,
   CaseDecisionRequest,
   CEREMONY_CHALLENGE,
@@ -9,6 +12,7 @@ import {
   CONTACT_PAGE_SIZE,
   ContactCloseRequest,
   FindingRequest,
+  GapClosedParams,
   IdentityRevealRequest,
   MEASURES,
   ORDER_RULES,
@@ -35,6 +39,7 @@ import {
   type AppealsPage,
   type AppealsReviewedParams,
   type AuditEntry,
+  type AuditExportLine,
   type AuditPage,
   type CaseDecision,
   type CaseView,
@@ -43,6 +48,7 @@ import {
   type OrderSummary,
   type OrderView,
   type QueuePage,
+  type RestoreView,
   type StaffOverview,
   type QueueReply,
   type StandingLists,
@@ -191,6 +197,14 @@ const ABSOLUTE_MS = 12 * HOUR;
 /** How far apart the audit log's rows are: 97 minutes, so none sits within an hour of the home screen's 7-day edge. */
 const ROW_SPACING_MS = 97 * 60_000;
 const AUDIT_ROWS = 160;
+/** 3f Task 6: the staff key whose step-ups the audit log's revocations carry, which "This key" takes from a row. */
+export const FIXTURE_KEY_ID = "4d5e6f70-8192-4a3b-9c4d-5e6f708192a3";
+/** 3f Task 6: the body of "Not needed": its params and the key's assertion. */
+const GapCloseBody = GapClosedParams.extend({ stepUp: AuthenticationResponseJSON });
+/** 3f Task 6: no import ever ran, unless a step sets one. */
+export const NO_RESTORE: RestoreView = { importedAt: null, mayOpen: true, retentionMay: true, gaps: [], holds: [] };
+/** 3f Task 6: the actor every line of the download names: the fixtures keep a handle per row, not an account. */
+const LINE_ACTOR = "00000000-0000-4000-8000-0000000000aa";
 
 /** The authenticator data's flags (WebAuthn L3, section 6.1). */
 const FLAG_UV = 0x04;
@@ -242,6 +256,8 @@ function auditLog(now: number): AuditEntry[] {
       targetType: kind === "revoked" ? "staff_session" : kind === "hostile" ? HOSTILE.quote : null,
       targetId: kind === "revoked" ? randomUUID() : kind === "hostile" ? HOSTILE.url : null,
       actionHash: kind === "revoked" ? hex64() : null,
+      // 3f Task 6: the key a step-up confirmed a row with; a revocation is one, by the walk's own key.
+      keyId: kind === "revoked" ? FIXTURE_KEY_ID : null,
     });
   }
   return rows;
@@ -764,6 +780,19 @@ export function createFixtureApi() {
     authorities: { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } } as Pick<StaffOverview, "contact" | "alerts">,
     /** 3f, Task 5: the reports to the authorities owed, as reports_owed() answers them through the overview. */
     reportsOwed: { total: 0, items: [] } as StaffOverview["reportsOwed"],
+    /**
+     * 3f, Task 6: the session's own newest copied place, every download the page confirmed and every mark it sent; a
+     * number of lines after which the next download's body is cut; the copy's age and the gaps of a restore as the overview
+     * answers them; what a restore lost, and the gaps closed as not needed.
+     */
+    copyPlace: null as number | null,
+    exports: [] as { after: number; through: number }[],
+    marks: [] as { through: number; hash: string }[],
+    exportCut: null as number | null,
+    copy: { newestAt: iso(now - 2 * HOUR), overdue: false } as StaffOverview["copy"],
+    restoreOverview: { open: 0, measures: 0, importedAt: null } as StaffOverview["restore"],
+    restore: NO_RESTORE,
+    gapsClosed: [] as string[],
     /** 3f, Task 2: the orders the walk opened, as their pages stand, and every write the page sent for them, with whether a key confirmed it. */
     orders: [] as OrderView[],
     orderWrites: [] as { what: "opened" | "items" | "event" | "corrected" | "effected"; id: string; body: unknown; key: boolean }[],
@@ -834,11 +863,48 @@ export function createFixtureApi() {
     const action = query.get("action");
     const cursor = query.get("cursor");
     const at = query.get("at");
+    // 3f Task 6: what one key confirmed, in a period.
+    const key = query.get("key");
+    const from = query.get("from");
+    const to = query.get("to");
     let rows = action === null ? state.audit : state.audit.filter((row) => row.action === action);
+    if (key !== null) rows = rows.filter((row) => row.keyId === key && row.actionHash !== null && (from === null || row.createdAt >= from) && (to === null || row.createdAt <= to));
     if (cursor !== null) rows = rows.filter((row) => row.seq < Number(cursor));
     if (at !== null) rows = rows.filter((row) => row.seq <= Number(at));
     const entries = rows.slice(0, STAFF_AUDIT_PAGE_SIZE);
-    return { entries, nextCursor: rows.length > entries.length ? entries[entries.length - 1]!.seq : null };
+    return { entries, nextCursor: rows.length > entries.length ? entries[entries.length - 1]!.seq : null, copy: { lastPlace: state.copyPlace } };
+  }
+
+  /**
+   * 3f Task 6 (8.7, 10.5): the download's lines for the places after `after` up to `through`, oldest first, each naming the
+   * row before it, as the API writes them; `cut` ends the body after that many lines, as a download that broke off.
+   */
+  function exportBody(after: number, through: number, cut: number | null): Buffer {
+    const rows = state.audit.filter((row) => row.seq > after && row.seq <= through).sort((a, b) => a.seq - b.seq);
+    const lines = rows.map((row) => {
+      const before = state.audit.find((other) => other.seq === row.seq - 1);
+      const line: AuditExportLine = {
+        v: 1,
+        place: row.seq,
+        id: row.seq,
+        at: row.createdAt,
+        actor: LINE_ACTOR,
+        action: row.action,
+        targetType: row.targetType,
+        targetId: row.targetId,
+        requestId: null,
+        staffSession: null,
+        keyId: row.keyId,
+        actionHash: row.actionHash,
+        stepUp: null,
+        metadata: JSON.stringify({ email: "never-shown@korbat.example" }),
+        prevHash: before?.hash ?? "0".repeat(64),
+        hash: row.hash,
+      };
+      return JSON.stringify(line);
+    });
+    const kept = cut === null ? lines : lines.slice(0, cut);
+    return Buffer.from(kept.map((line) => `${line}${String.fromCharCode(10)}`).join(""), "utf8");
   }
 
   /** 3f: an order's step-up: by the session's own key, over a challenge issued for exactly this action on exactly this order. */
@@ -1062,6 +1128,10 @@ export function createFixtureApi() {
       // 3f, Task 2: the orders.
       "GET /api/staff/orders",
       "POST /api/staff/orders",
+      // 3f, Task 6: the audit log's download and its mark, and what a restore lost.
+      "POST /api/staff/audit/export",
+      "POST /api/staff/audit/export/mark",
+      "GET /api/staff/restore",
     ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
     const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts|decisions))?$/.exec(url.pathname);
@@ -1072,7 +1142,9 @@ export function createFixtureApi() {
     const closing = req.method === "POST" ? /^[/]api[/]staff[/]contact[/]([^/]+)[/]close$/.exec(url.pathname) : null;
     // 3f, Task 2: an order, its links, its events and its corrections, by its id in the path.
     const ofOrder = /^[/]api[/]staff[/]orders[/]([^/]+)(?:[/](items|events|correct|effect))?$/.exec(url.pathname);
-    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder) throw new Refusal(404, "not_found");
+    // 3f, Task 6: a gap closed as not needed, by its id in the path.
+    const gapClose = req.method === "POST" ? /^[/]api[/]staff[/]restore[/]gaps[/]([0-9a-f-]{36})[/]close$/.exec(url.pathname) : null;
+    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder && !gapClose) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
     // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
@@ -1104,6 +1176,8 @@ export function createFixtureApi() {
           ...state.authorities,
           contact: { ...state.authorities.contact, dueAt: nearestDue() },
           reportsOwed: state.reportsOwed,
+          copy: state.copy,
+          restore: state.restoreOverview,
         }),
       };
     }
@@ -1537,6 +1611,39 @@ export function createFixtureApi() {
     }
     if (key === "GET /api/staff/keys") return { status: 200, body: { keys: state.keys.map((k): StaffKey => ({ id: k.id, name: k.name, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })) } };
     if (key === "GET /api/staff/audit") return { status: 200, body: auditPage(url.searchParams) };
+    // 3f, Task 6 (7.16): the download, confirmed by the session's key for exactly these places; its mark, only for the
+    // place the session's newest download released and the hash that place holds.
+    if (key === "POST /api/staff/audit/export") {
+      const input = parse(AuditExportRequest, body, key);
+      if (input.stepUp === undefined) throw new Refusal(403, "staff_step_up_required");
+      const params = { after: input.after, through: input.through };
+      await confirmedOrder(input.stepUp, { action: "audit_exported", target: { type: "audit", id: String(params.through) }, params } as StaffStepUpActionInput, session);
+      state.exports.push(params);
+      const cut = state.exportCut;
+      state.exportCut = null;
+      return { status: 200, raw: { type: "application/x-ndjson", bytes: exportBody(params.after, params.through, cut) } };
+    }
+    if (key === "POST /api/staff/audit/export/mark") {
+      const input = parse(AuditMarkRequest, body, key);
+      const released = state.exports.at(-1);
+      const row = state.audit.find((found) => found.seq === input.through);
+      if (released === undefined || released.through !== input.through || row?.hash !== input.hash) throw new Refusal(409, "copy_mismatch");
+      state.copyPlace = input.through;
+      state.marks.push(input);
+      return { status: 204 };
+    }
+    if (key === "GET /api/staff/restore") return { status: 200, body: state.restore };
+    if (gapClose) {
+      if (state.role !== "admin") throw new Refusal(403, "admin_required");
+      const input = parse(GapCloseBody, body, "POST /api/staff/restore/gaps/:gap/close");
+      const id = gapClose[1]!;
+      await confirmedOrder(input.stepUp, { action: "gap_closed", target: { type: "restore_gap", id }, params: { disposition: "not_needed" } } as StaffStepUpActionInput, session);
+      const gap = state.restore.gaps.find((found) => found.id === id && found.closedAt === null);
+      if (gap === undefined) throw new Refusal(409, "gap_mismatch");
+      state.restore = { ...state.restore, gaps: state.restore.gaps.map((found) => (found.id === id ? { ...found, closedAt: iso(Date.now()), disposition: "not_needed" } : found)) };
+      state.gapsClosed.push(id);
+      return { status: 201, body: state.restore };
+    }
     if (key === "POST /api/staff/signout") {
       state.sessions.delete(session.handle);
       return { status: 204, headers: { "set-cookie": CLEAR_COOKIES } };
@@ -1552,7 +1659,11 @@ export function createFixtureApi() {
               ? [...state.cases.values()].some((view) => view.decisions.some((decided) => decided.id === action.target.id))
               : action.action === "order_event_recorded" || action.action === "order_corrected" || action.action === "order_effected"
                 ? state.orders.some((order) => order.id === action.target.id)
-                : state.sessions.has(action.target.id);
+                : action.action === "audit_exported"
+                  ? Number(action.target.id) <= Math.max(...state.audit.map((row) => row.seq))
+                  : action.action === "gap_closed"
+                    ? state.restore.gaps.some((gap) => gap.id === action.target.id)
+                    : state.sessions.has(action.target.id);
       if (!known) throw new Refusal(404, "not_found");
       // The page builds a reveal's or a decision's params from the digests it computed itself: one a save's answer carried never gets here.
       const decided = action.action === "case_decided" ? CaseDecidedParams.parse(action.params) : null;

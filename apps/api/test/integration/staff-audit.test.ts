@@ -116,7 +116,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the staff module's audit
           targetType: stored!.targetType,
           targetId: stored!.targetId,
           actionHash: "cd".repeat(32),
+          // 3f Task 6 (8.7): the key the step-up confirmed the row with, by its id alone.
+          keyId: stored!.keyId,
         });
+        expect(first.entries[1]!.keyId).not.toBeNull();
+        // A row without a step-up names no key; the page carries no copy for a reader who is not named.
+        expect(first.entries.filter((e) => e.actionHash === null).every((e) => e.keyId === null)).toBe(true);
+        expect(first.copy).toEqual({ lastPlace: null });
         expect(JSON.stringify(first)).not.toContain("never-shown");
         for (const [index, entry] of first.entries.entries()) {
           const source = written[written.length - 1 - index]!;
@@ -148,7 +154,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the staff module's audit
         await appendAuditRow(tx, row());
         await appendAuditRow(tx, row());
         expect(await auditPage(tx, { cursor: 2 })).toMatchObject({ entries: [{ seq: 1 }], nextCursor: null });
-        expect(await auditPage(tx, { cursor: 1 })).toEqual({ entries: [], nextCursor: null });
+        expect(await auditPage(tx, { cursor: 1 })).toEqual({ entries: [], nextCursor: null, copy: { lastPlace: null } });
       });
     });
   });

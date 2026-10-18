@@ -461,6 +461,38 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     });
   });
 
+  test("3f Task 6: copy_overdue, daily, from alert_steps() alone, while the newest copy mark is older than copyOverdueHours, or there is none and the audit log's first row is that old; a fresh mark ends it", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const since = new Date();
+      await tx.execute(sql`delete from public.alert_outbox where kind = 'copy_overdue'`);
+      await tx.execute(sql`delete from public.copy_marks`);
+      const hours = ORDER_RULES.copyOverdueHours;
+      // Every row of the record younger than the period, and no mark: nothing is overdue yet.
+      await tx.execute(sql`update public.audit_log set created_at = now() - make_interval(hours => ${hours - 1}::int) where chain_seq = (select min(chain_seq) from public.audit_log)`);
+      await steps(tx);
+      expect(await outboxSince(tx, "copy_overdue", since)).toEqual([]);
+      // The first row is older than the period, and nobody ever took a copy.
+      await tx.execute(sql`update public.audit_log set created_at = now() - make_interval(hours => ${hours + 5}::int) where chain_seq = (select min(chain_seq) from public.audit_log)`);
+      await steps(tx);
+      await steps(tx);
+      const rows = await outboxSince(tx, "copy_overdue", since);
+      expect(rows.map((r) => [r.step, r.scope, r.priority, r.facts.hours, Object.keys(r.facts)])).toEqual([[0, "all", 3, hours + 5, ["hours"]]]);
+      // A fresh mark: the next day writes nothing; a mark older than the period writes the next step.
+      await tx.execute(sql`update public.alert_outbox set created_at = created_at - interval '1 day 1 minute' where kind = 'copy_overdue'`);
+      await tx.execute(sql`insert into public.copy_marks (staff_id, place) values (gen_random_uuid(), 1)`);
+      await steps(tx);
+      expect((await outboxSince(tx, "copy_overdue", new Date(since.getTime() - 2 * 24 * 60 * MIN))).map((r) => r.step)).toEqual([0]);
+      await tx.execute(sql`update public.copy_marks set at = now() - make_interval(hours => ${hours + 1}::int)`);
+      await steps(tx);
+      const next = await outboxSince(tx, "copy_overdue", new Date(since.getTime() - 2 * 24 * 60 * MIN));
+      expect(next.map((r) => [r.step, r.facts.hours])).toEqual([
+        [0, hours + 5],
+        [1, hours + 1],
+      ]);
+      expect(ALERT_KINDS.copy_overdue.legs).toEqual(["push", "mail"]);
+    });
+  });
+
   test("leaves no row behind", async () => {
     await removeMessages(w.migrateDb, made.splice(0));
     // The tick's own daily test, which no message names, and the rows of this file's kinds of 3f.

@@ -3,7 +3,7 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import { ModerationError, isModerationErrorCode, moderationErrorMessage } from "../src/moderation/context";
 
 describe("the moderation module's refusals", () => {
-  test("each of the forty-one codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6)", () => {
+  test("each of the forty-three codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6)", () => {
     const statuses = {
       notice_link_invalid: 422,
       notice_link_offsite: 422,
@@ -49,6 +49,9 @@ describe("the moderation module's refusals", () => {
       order_not_verified: 422,
       order_cap: 429,
       not_appealable: 422,
+      // Task 6: recovery.
+      gap_mismatch: 409,
+      copy_mismatch: 409,
     } as const;
     // The table above is the whole of the contracts' list, so a code added there fails here until its status is pinned.
     expect(Object.keys(statuses).sort()).toEqual([...ModerationErrorCode.options].sort());

@@ -40,6 +40,9 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   "order_effected",
   "order_reinstated",
   "hold_ending",
+  // Task 6: copy_overdue, which alert_steps() writes daily, and copy_taken, which staffAlert writes after a download.
+  "copy_overdue",
+  "copy_taken",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */

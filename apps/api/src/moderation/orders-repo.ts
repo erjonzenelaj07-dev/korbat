@@ -142,6 +142,13 @@ export interface NewOrder {
   openedBy: string | null;
   items: readonly NewOrderItem[];
   cli?: { receivedAt: Date | null; sentAt: Date | null };
+  /**
+   * 3f Task 6 (section 7.17 step 2): the import after a restore writes an order again as its lost row describes it, as
+   * the migrator: its own id, when and how it was opened, the receipt and the sending time, each item's id, position and
+   * time, and imported_at now. `items` holds the same entries as the order's `items`, in the same order. With it, `cli`
+   * is not read.
+   */
+  imported?: { openedAt: Date; openedVia: "console" | "cli"; receivedAt: Date | null; sentAt: Date | null; items: readonly { id: string; position: number; addedAt: Date }[] };
 }
 
 /** An item as written: its id, position, the time the database stamped, and what it names. */
@@ -186,6 +193,7 @@ async function insertItems(tx: DbTx, orderId: string, items: readonly NewOrderIt
  * insert passes the triggers' forcing, so it supplies its own `opened_via`, its event's `via` and the message's time.
  */
 export async function insertOrder(tx: DbTx, order: NewOrder): Promise<InsertedOrder> {
+  if (order.imported !== undefined) return insertImportedOrder(tx, order, order.imported);
   const cli = order.cli;
   const [row] =
     cli === undefined
@@ -213,6 +221,43 @@ export async function insertOrder(tx: DbTx, order: NewOrder): Promise<InsertedOr
         : sql`update public.contact_messages set disposition = 'order', handled_at = now() where id = ${order.messageId}::uuid and disposition is null`,
     );
   }
+  return {
+    id: order.id,
+    openedAt: new Date(row!.opened_at),
+    receivedAt: row!.received_at === null ? null : new Date(row!.received_at),
+    sentAt: row!.sent_at === null ? null : new Date(row!.sent_at),
+    channel: row!.channel,
+    withholdFromAuthor: row!.withhold_from_author,
+    items,
+  };
+}
+
+/**
+ * The rows of an order written again by the import after a restore (Task 6, section 7.17 step 2), as the migrator, whose
+ * inserts the triggers do not force: the order with its original times and imported_at now, its items with their own ids,
+ * positions and times, and the event `opened` at its original time, by whoever opened it, from where. The message keeps
+ * its disposition, or gets `order` when the restored database holds it without one. No alert: the order was heard once.
+ */
+async function insertImportedOrder(tx: DbTx, order: NewOrder, imported: NonNullable<NewOrder["imported"]>): Promise<InsertedOrder> {
+  const [row] = await tx.execute<{ opened_at: string; received_at: string | null; sent_at: string | null; channel: OrderChannel; withhold_from_author: boolean }>(sql`
+    insert into public.legal_orders (id, kind, member_state, authority, reference, channel, message_id, section_c, emergency, cross_border, withhold_from_author,
+                                     opened_by, opened_via, opened_at, received_at, sent_at, imported_at)
+    values (${order.id}::uuid, ${order.kind}, ${order.memberState}, ${order.authority}, ${order.reference}, ${order.channel}, ${order.messageId}::uuid,
+            ${order.sectionC}::boolean, ${order.emergency}::boolean, ${order.crossBorder}::boolean, ${order.withholdFromAuthor}::boolean, ${order.openedBy}::uuid,
+            ${imported.openedVia}, ${imported.openedAt.toISOString()}::timestamptz, ${imported.receivedAt?.toISOString() ?? null}::timestamptz,
+            ${imported.sentAt?.toISOString() ?? null}::timestamptz, now())
+    returning ${isoOf("opened_at")} as opened_at, ${isoOf("received_at")} as received_at, ${isoOf("sent_at")} as sent_at, channel, withhold_from_author`);
+  const items: WrittenItem[] = [];
+  for (const [index, item] of order.items.entries()) {
+    const at = imported.items[index]!;
+    await tx.execute(sql`
+      insert into public.legal_order_items (id, order_id, position, link, post_id, added_at)
+      values (${at.id}::uuid, ${order.id}::uuid, ${at.position}::smallint, ${item.link}, ${item.postId}::uuid, ${at.addedAt.toISOString()}::timestamptz)`);
+    items.push({ id: at.id, position: at.position, addedAt: at.addedAt, link: item.link, postId: item.postId });
+  }
+  await tx.execute(sql`insert into public.legal_order_events (order_id, kind, at, by_staff, via)
+                       values (${order.id}::uuid, 'opened', ${imported.openedAt.toISOString()}::timestamptz, ${order.openedBy}::uuid, ${imported.openedVia})`);
+  if (order.messageId !== null) await tx.execute(sql`update public.contact_messages set disposition = 'order', handled_at = now() where id = ${order.messageId}::uuid and disposition is null`);
   return {
     id: order.id,
     openedAt: new Date(row!.opened_at),

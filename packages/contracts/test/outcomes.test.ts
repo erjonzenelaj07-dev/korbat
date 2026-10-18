@@ -266,6 +266,9 @@ describe("the home screen's three lists of the path for child sexual abuse mater
     alerts: { channel: "off", since: null },
     ordersUnverified: { total: 0, items: [] },
     reportsOwed: { total: 0, items: [] },
+    // 3f Task 6: the copy's age and the gaps after a restore.
+    copy: { newestAt: null, overdue: false },
+    restore: { open: 0, measures: 0, importedAt: null },
   };
 
   test("StaffOverview carries the decisions that lifted the protection of reported images, the choices not to seal and the seals taken while deciding that are in force", () => {

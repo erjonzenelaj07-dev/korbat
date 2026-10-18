@@ -57,6 +57,9 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   order_not_verified: 422,
   order_cap: 429,
   not_appealable: 422,
+  // 3f Task 6 (section 10.6).
+  gap_mismatch: 409,
+  copy_mismatch: 409,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -115,6 +118,8 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   order_not_verified: "This order is given effect only after it is verified, or by an admin as urgent.",
   order_cap: "This staff account has given effect to as many order items as one account may in 24 hours.",
   not_appealable: "korbat's appeal does not apply to this: it is not korbat's decision.",
+  gap_mismatch: "That gap is closed already, or this decision does not take again what it lost.",
+  copy_mismatch: "That place does not hold that hash, or your newest confirmed download did not release it.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.

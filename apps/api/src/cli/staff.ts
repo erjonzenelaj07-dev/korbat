@@ -13,6 +13,8 @@
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js link|unlink <staff email> <personal handle>
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js limits <five numbers>
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js notification-facts <record>   (3f: cli/records.ts)
+ *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-export [--after <place>]   (3f: cli/restore.ts)
+ *   cat <files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js restore-import [<place>:<hash> ...]
  *
  * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
  * staff member's personal accounts for the recusal check and limits sets the limits on staff, each as the migrator, in
@@ -50,6 +52,7 @@ import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 import { mailerFor, type CommandLineMailSettings } from "./mail";
 import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCommand, type OrderCommandName } from "./orders";
 import { RECORD_COMMANDS, RECORD_USAGE, authorityHoldsFor, parseRecordArgs, recordCommand, type RecordCommand, type RecordCommandName } from "./records";
+import { RESTORE_COMMANDS, RESTORE_USAGE, auditExport, parseRestoreArgs, restoreImport, type RestoreCommand, type RestoreCommandName } from "./restore";
 import { accessRequest, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
 
 export const STAFF_USAGE = [
@@ -75,6 +78,8 @@ export const STAFF_USAGE = [
   ...ORDER_USAGE,
   // 3f Task 5 (design, section 8.11): the records to authorities, each as the migrator in the migrate service.
   ...RECORD_USAGE,
+  // 3f Task 6 (design, section 8.11): the keeper's download from the server, and the import after a restore.
+  ...RESTORE_USAGE,
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -96,7 +101,9 @@ export type StaffCommand =
   | { command: "limits"; limits: StaffLimits }
   // 3f: an order command, whose words cli/orders.ts reads, and (Task 5) a record command, whose words cli/records.ts reads.
   | { command: "order"; order: OrderCommand }
-  | { command: "record"; record: RecordCommand };
+  | { command: "record"; record: RecordCommand }
+  // Task 6: audit-export and restore-import, whose words cli/restore.ts reads.
+  | { command: "restore"; restore: RestoreCommand };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
 const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
@@ -175,6 +182,7 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
     default:
       if ((ORDER_COMMANDS as readonly string[]).includes(command)) return { command: "order", order: parseOrderArgs(command as OrderCommandName, rest) };
       if ((RECORD_COMMANDS as readonly string[]).includes(command)) return { command: "record", record: parseRecordArgs(command as RecordCommandName, rest) };
+      if ((RESTORE_COMMANDS as readonly string[]).includes(command)) return { command: "restore", restore: parseRestoreArgs(command as RestoreCommandName, rest) };
       throw new Error(`unknown command: ${command}\n${STAFF_USAGE}`);
   }
 }
@@ -959,6 +967,7 @@ export async function runStaffCommand(
   if (command.command === "access-request") return runAccessRequest(command.who, env, out);
   if (command.command === "order") return runOrderCommand(command.order, env, out, input);
   if (command.command === "record") return runRecordCommand(command.record, env, out, input);
+  if (command.command === "restore") return runRestoreCommand(command.restore, env, out, input);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -1198,6 +1207,62 @@ async function runRecordCommand(command: RecordCommand, env: Record<string, stri
     return 0;
   } catch (err) {
     out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
+  }
+}
+
+// ---------------------------------------------------------------- recovery (3f Task 6)
+
+/**
+ * audit-export (3f design, sections 7.16 and 8.11) on the API's role, as audit-head runs: the lines on standard output, its
+ * note on standard error, so the output is the keeper's file as it is. restore-import (7.17) as the migrator in the
+ * migrate service, with the keeper's files on standard input and the app's origin, by which an imported item names its
+ * post (blank when unset; the import refuses only when it needs it).
+ */
+async function runRestoreCommand(command: RestoreCommand, env: Record<string, string | undefined>, out: Output, input: () => Promise<Buffer>): Promise<number> {
+  if (command.command === "audit-export") {
+    let url: string;
+    try {
+      url = readEnv(AUDIT_HEAD_ENV, env, "audit-export").DATABASE_URL_API;
+    } catch (err) {
+      out.error((err as Error).message);
+      return 1;
+    }
+    const apiDb = createDb(url, { max: 1 });
+    try {
+      const done = await auditExport(apiDb, command.after, async (line) => out.log(line));
+      out.error(done.from === null ? "audit-export: nothing is newer than the last copy." : `audit-export: places ${done.from} to ${done.to}, ${done.rows} rows.`);
+      return 0;
+    } catch (err) {
+      out.error(isLockTimeout(err) ? `audit-export: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+      return 1;
+    } finally {
+      await closeDb(apiDb);
+    }
+  }
+  let url: string;
+  try {
+    url = migratorUrl("restore-import", env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  // Standard input is read before any connection opens: nothing holds a lock while a pipe drains.
+  const files = await input();
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    const appOrigin = env.APP_ORIGIN?.trim() ? env.APP_ORIGIN.trim() : null;
+    const done = await restoreImport(migrateDb, command.kept, files, appOrigin);
+    if (!done.ok) {
+      out.error(done.problem);
+      return 1;
+    }
+    for (const line of done.lines) out.log(line);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `restore-import: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
     return 1;
   } finally {
     await closeDb(migrateDb);

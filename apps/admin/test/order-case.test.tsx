@@ -216,6 +216,8 @@ describe("Home's [home.unverified] (8.2)", () => {
       alerts: { channel: "ok", since: null },
       ordersUnverified,
       reportsOwed: { total: 0, items: [] },
+      copy: { newestAt: null, overdue: false },
+      restore: { open: 0, measures: 0, importedAt: null },
     }) as unknown as StaffOverview;
 
   test("the count, and each order a link built from its checked id; nothing when none", () => {
@@ -235,6 +237,8 @@ describe("Task 5: Home's [home.owed] (8.2) and the case page's line (8.6)", () =
       alerts: { channel: "ok", since: null },
       ordersUnverified: { total: 0, items: [] },
       reportsOwed,
+      copy: { newestAt: null, overdue: false },
+      restore: { open: 0, measures: 0, importedAt: null },
     }) as unknown as StaffOverview;
   const hoursBefore = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000).toISOString();
 

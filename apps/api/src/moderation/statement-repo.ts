@@ -472,3 +472,13 @@ export async function orderNoticeOf(
     erasedOn: row.erased_on as string | null,
   };
 }
+
+/** The UTC day of the lost decision a decision took again, read from the gap it closed, which is kept as long as the decision (3f Task 6, sections 6.8 and 10.4). */
+export async function reappliedOn(q: Runner, decisionId: string): Promise<string | null> {
+  const [row] = await rows<{ lost_on: string }>(
+    q,
+    sql`select to_char(g.acted_at at time zone 'UTC', 'YYYY-MM-DD') as lost_on from public.restore_gaps g
+         where g.closed_by = ${decisionId}::uuid and g.disposition = 'reapplied' order by g.acted_at limit 1`,
+  );
+  return row?.lost_on ?? null;
+}

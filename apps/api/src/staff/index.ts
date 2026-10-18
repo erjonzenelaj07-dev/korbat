@@ -9,15 +9,15 @@
  * the console's case routes are mounted here, behind the same gate, and call that module's staff interface (3c design,
  * section 5).
  */
-import type { AuditPageQuery } from "@korbat/contracts";
+import type { AuditMarkRequest, AuditPageQuery } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
-import type { AuthForStaff } from "../auth";
+import type { ActiveStaffSession, AuthForStaff, StaffStepUpConfirmed } from "../auth";
 import type { ModerationForStaff } from "../moderation";
-import { auditPage } from "./audit";
-import { staffRoutes } from "./routes";
+import { auditPage, exportAudit, exportLines, markCopy } from "./audit";
+import { staffRoutes, type StaffAudit } from "./routes";
 
 export { CHAIN_ZERO_HASH, canonicalText, chainHash, type ChainRow } from "./chain";
-export { appendAuditRow, type AuditPlace, type StaffAuditRow } from "./audit";
+export { appendAuditRow, exportLines, lastCopiedPlace, type AuditPlace, type StaffAuditRow } from "./audit";
 
 export interface CreateStaffOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
@@ -29,11 +29,18 @@ export interface CreateStaffOptions {
 }
 
 export function createStaff(options: CreateStaffOptions) {
+  // The record's reader and, since 3f Task 6, the keeper's download and its mark, on the API's pool.
+  const audit: StaffAudit = {
+    page: (query, staffId) => auditPage(options.apiDb, query, staffId),
+    export: (session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }) => exportAudit(options.apiDb, session, confirmed, ctx),
+    lines: (after: number, through: number) => exportLines(options.apiDb, after, through),
+    mark: (session: ActiveStaffSession, request: AuditMarkRequest, ctx: { requestId: string }) => markCopy(options.apiDb, session, request, ctx),
+  };
   return {
     /** The routes under /api/staff, behind the staff gate for the console at `consoleOrigin`. */
-    routes: (consoleOrigin: string) => staffRoutes(consoleOrigin, options.auth, options.moderation, (query) => auditPage(options.apiDb, query)),
-    /** One page of the audit log, newest first, as GET /api/staff/audit answers it. */
-    readAudit: (query: AuditPageQuery) => auditPage(options.apiDb, query),
+    routes: (consoleOrigin: string) => staffRoutes(consoleOrigin, options.auth, options.moderation, audit),
+    /** One page of the audit log, newest first, as GET /api/staff/audit answers it (with the reader's own copy, given its account). */
+    readAudit: (query: AuditPageQuery, staffId: string | null = null) => auditPage(options.apiDb, query, staffId),
   };
 }
 

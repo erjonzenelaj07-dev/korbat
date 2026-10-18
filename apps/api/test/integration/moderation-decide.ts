@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { beforeAll, expect, test } from "vitest";
-import type { AppealsReviewedParams, CaseDecidedParams, RuleId } from "@korbat/contracts";
+import type { AppealsReviewedParams, CaseDecidedParams, RuleId, StaffStepUpOptionsRequest } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db } from "@korbat/db";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../../src/auth";
 import { createAuthRepo } from "../../src/auth/repo";
@@ -47,14 +47,19 @@ export interface DeciderWorld {
   staff(role?: "moderator" | "admin"): Promise<RealStaff>;
   /** A verified confirmation of exactly these params, by the member's own key in the member's session. */
   confirm(member: RealStaff, caseId: string, params: CaseDecidedParams): Promise<StaffStepUpConfirmed>;
-  /** A whole confirmed decision on the case: the params as the console builds them, the confirmation, and decide. */
-  decideAs(member: RealStaff, caseId: string, input?: DecisionInput, options?: DecideOptions): Promise<DecideOutcome>;
+  /**
+   * A whole confirmed decision on the case: the params as the console builds them, the confirmation, and decide. 3f Task
+   * 6: with `gap`, the decision takes a lost one again and closes that restore gap, as the decide route's query member does.
+   */
+  decideAs(member: RealStaff, caseId: string, input?: DecisionInput, options?: DecideOptions & { gap?: string }): Promise<DecideOutcome>;
   /** A verified confirmation of exactly this review of the decision, by the member's own key in the member's session. */
   confirmReview(member: RealStaff, decisionId: string, params: AppealsReviewedParams): Promise<StaffStepUpConfirmed>;
   /** A whole confirmed review of the decision's pending appeal: the params as the console builds them, the confirmation, and review. */
-  reviewAs(member: RealStaff, decisionId: string, input?: ReviewInput): Promise<DecideOutcome>;
+  reviewAs(member: RealStaff, decisionId: string, input?: ReviewInput, options?: { gap?: string }): Promise<DecideOutcome>;
   /** 3f: a verified confirmation of an order's action (the effect, an event, a correction), by the member's own key in the member's session. */
   confirmOrder(member: RealStaff, action: "order_effected" | "order_event_recorded" | "order_corrected", orderId: string, params: Record<string, unknown>): Promise<StaffStepUpConfirmed>;
+  /** 3f Task 6: a verified confirmation of any action (a gap closed as not needed, the audit download), by the member's own key. */
+  confirmAction(member: RealStaff, request: StaffStepUpOptionsRequest): Promise<StaffStepUpConfirmed>;
   /** Removes the staff profiles this world made (their decisions, findings and texts must be gone by then) and closes its pools. */
   close(options?: { keepStaff?: boolean }): Promise<void>;
 }
@@ -110,10 +115,10 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     return verifyStepUp(h.deps, member.session, request, stepUp, { ...h.ctx, requestId: `req-${randomUUID()}` });
   }
 
-  async function decideAs(member: RealStaff, caseId: string, input: DecisionInput = {}, options: DecideOptions = {}): Promise<DecideOutcome> {
+  async function decideAs(member: RealStaff, caseId: string, input: DecisionInput = {}, options: DecideOptions & { gap?: string } = {}): Promise<DecideOutcome> {
     const params = await decisionParams(apiDb, member, caseId, input);
     const confirmed = await confirm(member, caseId, params);
-    const ctx = { requestId: `req-${randomUUID()}` };
+    const ctx = { requestId: `req-${randomUUID()}`, gap: options.gap ?? null };
     // With allKinds the module's own decide is called below the route, as decideWith does: the routes' list of kinds is lifted.
     const outcome = options.allKinds ? await decide(moderation.deps, member.session, confirmed, ctx, options) : await moderation.forStaff.decide(member.session, confirmed, ctx);
     // What a decision starts after its commit (the statement's mail, the staff alerts) has ended before the test goes on.
@@ -128,9 +133,9 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     return verifyStepUp(h.deps, member.session, request, stepUp, { ...h.ctx, requestId: `req-${randomUUID()}` });
   }
 
-  async function reviewAs(member: RealStaff, decisionId: string, input: ReviewInput = {}): Promise<DecideOutcome> {
+  async function reviewAs(member: RealStaff, decisionId: string, input: ReviewInput = {}, options: { gap?: string } = {}): Promise<DecideOutcome> {
     const params = await reviewParams(apiDb, member, decisionId, input);
-    const outcome = await moderation.forStaff.review(member.session, await confirmReview(member, decisionId, params), { requestId: `req-${randomUUID()}` });
+    const outcome = await moderation.forStaff.review(member.session, await confirmReview(member, decisionId, params), { requestId: `req-${randomUUID()}`, gap: options.gap ?? null });
     // As after a decision: what the review started after its commit has ended before the test goes on.
     await moderation.settle();
     return outcome;
@@ -143,6 +148,12 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     return verifyStepUp(h.deps, member.session, request, stepUp, { ...h.ctx, requestId: `req-${randomUUID()}` });
   }
 
+  async function confirmAction(member: RealStaff, request: StaffStepUpOptionsRequest): Promise<StaffStepUpConfirmed> {
+    sync();
+    const stepUp = await stepUpAssertion(h, member.soft, member.credentialId, member.session, request as Parameters<typeof stepUpAssertion>[4], { counter: ++member.counter });
+    return verifyStepUp(h.deps, member.session, request, stepUp, { ...h.ctx, requestId: `req-${randomUUID()}` });
+  }
+
   async function close(options: { keepStaff?: boolean } = {}): Promise<void> {
     try {
       if (!options.keepStaff && members.length > 0) await migrateDb.execute(sql`delete from profiles where id = any(${uuids(members.map((member) => member.id))})`);
@@ -151,7 +162,7 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     }
   }
 
-  return { authDb, migrateDb, moderation, staff, confirm, decideAs, confirmReview, reviewAs, confirmOrder, close };
+  return { authDb, migrateDb, moderation, staff, confirm, decideAs, confirmReview, reviewAs, confirmOrder, confirmAction, close };
 }
 
 // ---------------------------------------------------------------- decideForTest
