@@ -120,6 +120,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff sign-in", () => {
         idleSecondsLeft: 15 * 60,
         absoluteExpiresAt: new Date(now.getTime() + STAFF_ABSOLUTE_MS).toISOString(),
         absoluteSecondsLeft: 12 * 60 * 60,
+        // 3f Task 2: the server's home state and contact point, unset in this harness's configuration.
+        homeState: null,
+        contactPoint: null,
       });
       // The token is the cookie's value; only its sha256 is stored. The label is deviceLabel's, never the user agent.
       expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);

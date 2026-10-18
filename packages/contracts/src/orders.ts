@@ -577,8 +577,8 @@ export type OrderState = (typeof ORDER_STATES)[number];
 
 /**
  * The two kinds of the ledger that the migration orders adds to action_kind: the measure of an order decision and its
- * reversal. They join the contracts' ACTION_KINDS, with MEASURES' labels (W.1), in the task that gives effect to an order
- * (Task 3); until then no function accepts them, and the database's list is ACTION_KINDS followed by these two.
+ * reversal. Since Task 3 they are the last two of the contracts' ACTION_KINDS too, with MEASURES' labels (W.1); this names
+ * them apart for the code that handles an order's ledger alone.
  */
 export const ORDER_ACTION_KINDS = ["disable_by_order", "reinstate_by_order"] as const;
 
@@ -1039,3 +1039,103 @@ export type OrderView = z.infer<typeof OrderView>;
 /** The one refusal of 3f that carries a member: order_exists names the order that stands, so the console links to it. */
 export const OrderExistsDetails = z.strictObject({ orderId: z.uuid() });
 export type OrderExistsDetails = z.infer<typeof OrderExistsDetails>;
+
+// ---------------------------------------------------------------- giving effect (Task 3: 7.6, 7.9, 10.1, 10.3, 10.4)
+
+/**
+ * What an order decision is by its order's kind (10.1), which decisions_record forces and OrderEffectedParams therefore
+ * does not carry. The category of a DSA Article 9 order is a filler for a column that may not be null: korbat did not
+ * assess the content, and nothing reads the column for such a decision. A dsa_art10 order is never given effect.
+ */
+export const ORDER_DECISION = {
+  tco_removal: { category: "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY", keyword: "KEYWORD_TERRORIST_CONTENT", preserves: true, effectBeforeVerified: true, holdBasis: "regulation" },
+  dsa_art9: { category: "STATEMENT_CATEGORY_NOT_SPECIFIED_NOTICE", keyword: null, preserves: false, effectBeforeVerified: false, holdBasis: "authority" },
+} as const;
+
+/** One item of an effect: an order's item and the post it names, both in lower case. */
+const EffectItem = z.strictObject({ itemId: LowerUuid, postId: LowerUuid });
+
+/**
+ * The step-up params of order_effected (10.3): the order's facts as the console showed them, `urgent` and the items, 1 to
+ * itemsPerAction, sorted by postId with no repeat of either id, so one action has one hash and its order is the lock
+ * order. `authority` and `reference` are the one named exception to the rule that a param is never a free string: an
+ * authority's name and its file number, bound as an order's lines are, which decision_holds compares with the order's
+ * row at commit. `withholdFromAuthor` is true for a removal order and whenever Section C is set, and `urgent` is refused
+ * for a removal order (the database refuses it on a verified order too).
+ */
+export const OrderEffectedParams = z
+  .strictObject({
+    kind: z.enum(["tco_removal", "dsa_art9"]),
+    memberState: MemberStateCode,
+    authority: OrderAuthority,
+    reference: OrderReference,
+    sectionC: z.boolean(),
+    emergency: z.boolean(),
+    withholdFromAuthor: z.boolean(),
+    urgent: z.boolean(),
+    items: z.array(EffectItem).min(1).max(ORDER_RULES.itemsPerAction),
+  })
+  .superRefine((params, ctx) => {
+    if ((params.kind === "tco_removal" || params.sectionC) && !params.withholdFromAuthor) {
+      ctx.addIssue({ code: "custom", path: ["withholdFromAuthor"], message: "a removal order, and an order whose author must not be told, keeps the post from its author" });
+    }
+    if (params.kind === "tco_removal" && params.urgent) ctx.addIssue({ code: "custom", path: ["urgent"], message: "a removal order is given effect without a check first: urgent means nothing for it" });
+    const posts = params.items.map((item) => item.postId);
+    if (posts.some((post, i) => i > 0 && posts[i - 1]! >= post)) ctx.addIssue({ code: "custom", path: ["items"], message: "the items are sorted by post, without repeats" });
+    if (!distinct(params.items.map((item) => item.itemId))) ctx.addIssue({ code: "custom", path: ["items"], message: "an item is named once" });
+  });
+export type OrderEffectedParams = z.infer<typeof OrderEffectedParams>;
+
+/**
+ * The fixed reasons of a reinstatement (W.2's reinstated.<ground>), which the composer saves as the correction's reason
+ * and which nobody edits: a free text beside an order could say what a non-disclosure decision forbids.
+ */
+export const ORDER_DRAFTS = {
+  reinstate: {
+    withdrawn: "The authority that issued the order withdrew it.",
+    annulled: "A court annulled the order.",
+    scrutiny:
+      "The competent authority of korbat's own Member State scrutinised the order and decided that it infringes the Regulation or fundamental rights, so the order no longer has effect (Article 4 of Regulation (EU) 2021/784).",
+    not_authentic: "The order was not authentic: it did not come from the authority it named. korbat disabled your post on a forged order, and regrets it.",
+    wrong_item: "korbat made a mistake: the order did not name this post. korbat disabled it wrongly, and regrets it.",
+  },
+} as const satisfies { reinstate: Record<OrderGround, string> };
+
+const Day = z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "must be a UTC day");
+
+/**
+ * What an order's notice is rendered from (10.4, W.2), built by the API at every read from the decision's row, its item's
+ * and the order's as they stand, so the notice grows without a new decision. `verified` says whether order-verify has
+ * run (until then the lead says only that the order names that authority); `orderedOn` is the day of the order's own
+ * time stamp (`orderedFrom` issued) or of its receipt (received), or null; `held` whether the notice was held, and
+ * `informedAt` the one instant the author was told (the release, for a held one); `holdEndReason` a hold ended by hand.
+ */
+export const OrderNoticeFacts = z.object({
+  kind: z.enum(["tco_removal", "dsa_art9"]),
+  memberState: MemberStateCode,
+  authority: z.string(),
+  reference: z.string(),
+  verified: z.boolean(),
+  orderedOn: Day.nullable(),
+  orderedFrom: z.enum(["issued", "received"]).nullable(),
+  crossBorder: z.boolean(),
+  homeState: MemberStateCode.nullable(),
+  withholdAuthor: z.boolean(),
+  disabledAt: At,
+  held: z.boolean(),
+  informedAt: At.nullable(),
+  holdEndReason: z.enum(HOLD_END_REASONS).nullable(),
+  preserveUntil: At.nullable(),
+  preserveExtended: z.boolean(),
+  preserveEndedOn: Day.nullable(),
+  orderGround: z.enum(ORDER_GROUNDS).nullable(),
+});
+export type OrderNoticeFacts = z.infer<typeof OrderNoticeFacts>;
+
+/** The authority's words as the command line recorded them, read fresh, and since when the author holds the newest (10.4). */
+export const OrderTexts = z.object({ reasons: z.string().nullable(), redress: z.string().nullable(), scope: z.string().nullable(), textsAt: At.nullable() });
+export type OrderTexts = z.infer<typeof OrderTexts>;
+
+/** Home's [home.unverified] (10.2): the orders with a disabled item that are not verified, or whose disabled item was added after the check. */
+export const OrdersUnverified = z.object({ total: z.number().int().nonnegative(), items: z.array(z.object({ orderId: z.uuid(), effectAt: At })).max(100) });
+export type OrdersUnverified = z.infer<typeof OrdersUnverified>;

@@ -19,6 +19,7 @@ import {
 import type { Rule } from "@korbat/rules";
 import { api, ApiError, errorMessage } from "./api";
 import { CHIP_WORDS, DAILY_LIMIT_WORDS, DECISION_WORDS, REPORT_WORDS } from "./moderation-words";
+import { ORDER_TEXTS } from "./orders";
 import { STANDING_TEXTS } from "./standing";
 
 /**
@@ -317,6 +318,8 @@ export function appealWaitWords(view: Pick<DecisionView, "measures" | "appeal">)
 
 /** The chip of the author's own withheld or removed post: "Under review: R4", "Removed: illegal content". */
 export function chipText(decision: PostModeration): string {
+  // 3f (design, section 9.1): [chip.order], a post a DSA order removed without withholding it from its author.
+  if (decision.order === true) return ORDER_TEXTS.chip.order;
   const state = decision.interim ? CHIP_WORDS.underReview : CHIP_WORDS.removed;
   const ground = decision.legal ? CHIP_WORDS.illegal : decision.ruleId;
   const chip = ground ? `${state}: ${ground}` : state;

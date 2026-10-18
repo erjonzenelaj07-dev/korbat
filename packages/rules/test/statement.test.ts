@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { MEASURES, MEASURE_KINDS, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
-import { REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
+import { MEASURES, MEASURE_KINDS, ORDER_DRAFTS, ORDER_GROUNDS, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
+import { ORDER_NOTICE, REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
 
 /**
  * The statement of reasons (3c design, section 10): one pure function renders it for the author's screen, the console's
@@ -54,6 +54,8 @@ function statement(more: Partial<StatementInput> = {}): StatementInput {
 
 const W = STATEMENT_WORDS;
 const text = (input: StatementInput) => statementParagraphs(input).join("\n");
+/** A line break, to join paragraphs for a search across them (3f's tests). */
+const NL = String.fromCharCode(10);
 const appeal = (decidedAt: string) => REDRESS_TEXTS[1].appeal.replace("{deadline}", `${appealDeadline(new Date(decidedAt)).toISOString().slice(0, 10)} ${appealDeadline(new Date(decidedAt)).toISOString().slice(11, 16)} UTC`);
 
 describe("statementParagraphs", () => {
@@ -1130,6 +1132,146 @@ describe("3e's review: a decision about a measure that rests on korbat's terms n
     for (const [name, input] of Object.entries(forms("threat"))) expect(text(input), name).toContain("That decision rested on korbat rule R5");
     const { basis: _basis, ...without } = reviewedOn("strikes");
     expect(text(about("strikes", { kind: "review", outcome: "kept", reviewed: without }))).toContain("That decision rested on korbat rule R4");
+  });
+});
+
+describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7, W.2 and W.3; invariant 22)", () => {
+  const DISABLED = "2026-10-04T09:30:15.250Z";
+  const facts = (more: Partial<NonNullable<StatementInput["order"]>> = {}): NonNullable<StatementInput["order"]> => ({
+    kind: "tco_removal",
+    memberState: "FR",
+    authority: "OCLCTIC",
+    reference: "TCO-2026-17",
+    verified: false,
+    orderedOn: "2026-10-04",
+    orderedFrom: "received",
+    crossBorder: true,
+    homeState: "DE",
+    withholdAuthor: true,
+    disabledAt: DISABLED,
+    held: false,
+    informedAt: DISABLED,
+    holdEndReason: null,
+    preserveUntil: "2027-04-05T09:30:15.250Z",
+    preserveExtended: false,
+    preserveEndedOn: null,
+    orderGround: null,
+    ...more,
+  });
+  const notice = (order: NonNullable<StatementInput["order"]>, more: Partial<StatementInput> = {}): StatementInput =>
+    statement({
+      kind: "order",
+      outcome: "restricted",
+      ground: "illegal",
+      ruleId: null,
+      legalReference: null,
+      facts: null,
+      reason: null,
+      source: "order",
+      redressVersion: 3,
+      measures: [measure("disable_by_order")],
+      order,
+      ...more,
+    });
+  const reinstatement = (ground: NonNullable<StatementInput["order"]>["orderGround"]) =>
+    statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, legalReference: null, facts: null, reason: "x", source: "order", redressVersion: 3, measures: [], reversals: [reversal("reinstate_by_order")], reviewed: { kind: "order", ground: "illegal", ruleId: null, rulesVersion: 3, legalReference: null, decidedAt: DISABLED }, order: facts({ orderGround: ground }) });
+  const TEXTS = { reasons: "Les raisons.", redress: "Les recours.", scope: null, textsAt: "2026-10-06T08:00:00.000Z" };
+  const N = ORDER_NOTICE;
+
+  // Every combination the table names: each kind, verified and not, with and without texts, held and not, held by korbat's
+  // mistake, preserved, erased, and the reinstatement on each ground.
+  const cases: { name: string; input: StatementInput; texts: typeof TEXTS | null; erasedOn?: string }[] = [];
+  for (const kind of ["tco_removal", "dsa_art9"] as const) {
+    for (const verified of [false, true]) {
+      for (const held of [false, true]) {
+        for (const texts of [null, TEXTS]) {
+          const order = facts({ kind, verified, held, informedAt: held ? "2026-11-16T00:10:00.000Z" : DISABLED, withholdAuthor: kind === "tco_removal" || held, preserveUntil: kind === "tco_removal" ? facts().preserveUntil : null, crossBorder: kind === "tco_removal" });
+          cases.push({ name: `${kind} verified=${verified} held=${held} texts=${texts !== null}`, input: notice(order), texts });
+        }
+      }
+    }
+  }
+  cases.push({ name: "held by korbat's mistake", input: notice(facts({ held: true, informedAt: "2026-10-05T00:00:00.000Z", holdEndReason: "not_ordered" })), texts: null });
+  cases.push({ name: "erased", input: notice(facts()), texts: TEXTS, erasedOn: "2027-04-05" });
+  for (const ground of ORDER_GROUNDS) cases.push({ name: `reinstated: ${ground}`, input: reinstatement(ground), texts: null });
+
+  test("no notice says that korbat found anything, cites a rule, prints an address or a handle, or offers korbat's appeal", () => {
+    const v2 = Object.values(REDRESS_TEXTS[2]) as string[];
+    for (const c of cases) {
+      const all = statementParagraphs(c.input, { texts: c.texts, erasedOn: c.erasedOn ?? null }).join(NL);
+      expect(all, c.name).not.toMatch(/korbat found|It breaks|illegal content in your post|shows them to nobody(?! but)/);
+      expect(all, c.name).not.toMatch(/@/);
+      expect(all, c.name).not.toMatch(/(^|[^A-Za-z0-9_])R[1-6]([^A-Za-z0-9_]|$)/m);
+      expect(all, c.name).not.toMatch(/You can appeal|choose "Appeal"|appeal to korbat/);
+      for (const sentence of v2) expect(all, c.name).not.toContain(sentence);
+      // The authority's own words are the screen's, in their block; no paragraph holds them.
+      expect(all, c.name).not.toContain(TEXTS.reasons);
+    }
+  });
+
+  test("an unverified notice says which authority the order names, never that korbat confirmed it", () => {
+    const unverified = statementParagraphs(notice(facts())).join(NL);
+    expect(unverified).toContain("It names OCLCTIC, France, as the authority that issued it, under the reference TCO-2026-17, and reached korbat on 2026-10-04.");
+    expect(unverified).not.toContain(N.lead.confirmed);
+    const verified = statementParagraphs(notice(facts({ verified: true, orderedFrom: "issued", orderedOn: "2026-10-03" }))).join(NL);
+    expect(verified).toContain(`, and is dated 2026-10-03. ${N.lead.confirmed}`);
+  });
+
+  test("only a removal order's notice says that the law obliges korbat; a DSA order's says the law it was issued under requires it", () => {
+    const tco = statementParagraphs(notice(facts())).join(NL);
+    const dsa = statementParagraphs(notice(facts({ kind: "dsa_art9", preserveUntil: null, crossBorder: false }))).join(NL);
+    expect(tco).toContain("the law obliges korbat to carry out such an order");
+    expect(dsa).not.toMatch(/obliges|leaves korbat no choice/);
+    expect(dsa).toContain(N.everywhere.dsa_art9);
+    expect(dsa).not.toContain("Article 6 of the Regulation");
+  });
+
+  test("the paragraphs in the table's order, for a held removal order from another state whose texts came later", () => {
+    const informed = "2026-11-16T00:10:00.000Z";
+    const paragraphs = statementParagraphs(notice(facts({ held: true, informedAt: informed })), { texts: { ...TEXTS, textsAt: "2026-11-20T08:00:00.000Z" } });
+    expect(paragraphs).toEqual([
+      N.done.disabled(POST_TIME, `/post/${POST.id}`, "2026-10-04 09:30 UTC"),
+      N.lead.tco_removal("OCLCTIC", "France", "TCO-2026-17", ", and reached korbat on 2026-10-04"),
+      N.notAssessed.tco_removal,
+      N.heldUntilNow.tco_removal("2026-10-04 09:30 UTC", "2026-11-16 00:10 UTC"),
+      N.textsSince("2026-11-20 08:00 UTC"),
+      N.copy,
+      `${N.scrutiny("Germany")} ${N.reasonsAt("2026-11-20 08:00 UTC")}`,
+      N.preserved("2027-04-05 09:30 UTC"),
+      N.everywhere.tco_removal,
+      N.noAppeal.tco_removal,
+      N.wrongItem,
+    ]);
+  });
+
+  test("a hold ended as korbat's mistake says so in place of the hold's paragraph; texts recorded before the telling print no since line", () => {
+    const paragraphs = statementParagraphs(notice(facts({ held: true, informedAt: "2026-10-06T10:00:00.000Z", holdEndReason: "not_ordered" })), { texts: TEXTS });
+    expect(paragraphs).toContain(N.heldUntilNow.notOrdered("2026-10-04 09:30 UTC", "2026-10-06 10:00 UTC"));
+    expect(paragraphs).not.toContain(N.heldUntilNow.tco_removal("2026-10-04 09:30 UTC", "2026-10-06 10:00 UTC"));
+    expect(paragraphs.join(NL)).not.toContain("korbat added the authority's words");
+    expect(paragraphs).toContain(`${N.scrutiny("Germany")} ${N.reasonsAt("2026-10-06 10:00 UTC")}`);
+  });
+
+  test("without texts the notice says that they follow; a measure that changed nothing says so; the erasure replaces the preservation", () => {
+    const paragraphs = statementParagraphs(notice(facts(), { measures: [measure("disable_by_order", { noEffect: "already" })] }));
+    expect(paragraphs).toContain(N.textsFollow);
+    expect(paragraphs).toContain(W.already("post"));
+    expect(paragraphs.join(NL)).toContain(N.noReasonsYet);
+    const erased = statementParagraphs(notice(facts()), { erasedOn: "2027-04-05" });
+    expect(erased).toContain(N.erased("2027-04-05"));
+    expect(erased.join(NL)).not.toContain("korbat keeps the post");
+  });
+
+  test("a reinstatement renders its lead, its ground's fixed sentence, what is shown now and the lift, on each ground", () => {
+    for (const ground of ORDER_GROUNDS) {
+      expect(statementParagraphs(reinstatement(ground)), ground).toEqual([
+        N.reinstated.lead("2026-10-04 09:30 UTC", POST_TIME, `/post/${POST.id}`),
+        ORDER_DRAFTS.reinstate[ground],
+        N.reinstated.now,
+        N.lifted,
+      ]);
+    }
+    expect(statementParagraphs(reinstatement("withdrawn"), { erasedOn: "2027-04-05" })).toContain(N.reinstated.erased("2027-04-05"));
   });
 });
 

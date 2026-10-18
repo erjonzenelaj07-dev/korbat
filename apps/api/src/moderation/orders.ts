@@ -5,7 +5,9 @@ import {
   ORDER_ITEMS_MAX,
   ORDER_ITEM_PREVIEW,
   ORDER_RULES,
+  ORDER_DECISION,
   ORDER_SCRUTINY_HOURS,
+  OrderEffectedParams,
   OrderEventRecordedParams,
   type AlertFacts,
   type ContactCloseRequest,
@@ -30,19 +32,24 @@ import { imageCounts, imagePost } from "../media";
 import { appendAuditRow } from "../staff";
 import { staffAlert } from "./alerts";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
-import { RETRY_MARGIN_MS } from "./decide";
+import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
+import { RETRY_MARGIN_MS, afterDecision } from "./decide";
+import { newRef, storeSnapshot } from "./intake";
 import { orderLinkTarget } from "./links";
 import {
   addOrderItems,
+  caseVersion,
   closeMessage,
   contactCounts,
   contactMessages,
   correctOrder,
   disabledAuthors,
+  effectItems,
   eventEffectiveAt,
   eventGround,
   existingPosts,
   insertOrder,
+  insertOrderDecision,
   messageExists,
   nearestOrderDeadline,
   orderByReference,
@@ -53,12 +60,13 @@ import {
   ordersOfMessages,
   ordersOpenedToday,
   recordOrderEvent,
+  setItemIntake,
   type InsertedOrder,
   type NewOrderItem,
   type OrderRow,
   type WrittenItem,
 } from "./orders-repo";
-import { appendConfirmedAudit, raisedMessage, violatedUniqueConstraint } from "./repo";
+import { appendConfirmedAudit, insertAction, insertIntake, insertItem, isSerializationFailure, openCase, raisedDetail, raisedMessage, snapshotTime, violatedUniqueConstraint } from "./repo";
 
 /**
  * Authorities' orders (3f design, sections 5, 7.3 and 8.3). In this task: the messages at the contact point. The watcher
@@ -643,4 +651,202 @@ export async function orderView(deps: Pick<ModerationDeps, "apiDb" | "config">, 
     mayEvents: eventsAllowed(row, admin),
     mayCorrect: row.closedAt !== null ? null : !row.givenEffect ? "entry" : admin ? "admin" : "caution",
   };
+}
+
+// ---------------------------------------------------------------- giving effect (Task 3, section 7.6)
+
+/**
+ * The lock waits of "Disable for an order" on `n` items (section 7.6, step 1): once the order, the deciding account's
+ * row, the cap's advisory lock, the key and the audit head; and for each item the author's profile, the case, the item's
+ * row, the account's row, the post and up to four images.
+ */
+export const ORDER_EFFECT_WAITS = (n: number) => 5 + 9 * n;
+
+/** The order's facts as the key signs them (10.3), from its row: what the effect compares, member by member. */
+const signedFacts = (row: OrderRow) => ({
+  kind: row.kind,
+  memberState: row.memberState,
+  authority: row.authority,
+  reference: row.reference,
+  sectionC: row.sectionC,
+  emergency: row.emergency,
+  withholdFromAuthor: row.withholdFromAuthor,
+});
+
+/**
+ * The rows of "Disable for an order" inside the effect's transaction, after the authors' profiles are held and before
+ * the audit row (section 7.6, steps 3 to 5): one intake of the kind order (channel authority, no sender, no text, no
+ * receipt); for each item in post order the post's open case and the intake's item, whose attach trigger takes the case,
+ * then the item's intake_item_id; for each item in post order a snapshot of its own, the order decision and its one
+ * disable_by_order, whose triggers force everything else. Answers each item's decision. The module's tests call it with
+ * an audit row of their own, to meet decision_holds' refusals.
+ */
+export async function effectRows(deps: Pick<ModerationDeps, "social" | "media">, tx: DbTx, deciderId: string, params: OrderEffectedParams): Promise<Record<string, string>> {
+  const ordered = ORDER_DECISION[params.kind];
+  const intakeId = await insertIntake(tx, {
+    kind: "order",
+    ref: newRef(),
+    lookupHash: null,
+    channel: "authority",
+    reporterId: null,
+    findingBy: null,
+    contactId: null,
+    ruleId: null,
+    allegesIllegal: true,
+    csam: false,
+    category: ordered.category,
+    categoryKeyword: null,
+    citedLaw: null,
+    explanation: null,
+    bonaFide: false,
+  });
+  // The cases in their targets' order, each taken by its intake item's attach trigger before any post is locked.
+  const cases = new Map<string, string>();
+  for (const [index, item] of params.items.entries()) {
+    const caseId = await openCase(tx, "post", item.postId);
+    if (caseId === null) throw new ModerationError("case_closed");
+    const inserted = await insertItem(tx, { intakeId, caseId, targetType: "post", targetId: item.postId, position: index + 1, lane: 0, mediaId: null, namedHandle: null });
+    await setItemIntake(tx, item.itemId, inserted.id);
+    cases.set(item.itemId, caseId);
+  }
+  const takenAt = await snapshotTime(tx);
+  const decisionIds: Record<string, string> = {};
+  for (const item of params.items) {
+    const caseId = cases.get(item.itemId)!;
+    // Each item gets a snapshot of its own, also when the case's newest is equal: the preservation keeps this row.
+    const post = await deps.social.capturePost(tx, item.postId);
+    if (!post) throw new ModerationError("order_changed");
+    const held = await deps.media.hold(tx, [{ caseId, postId: item.postId }]);
+    const snapshot = await storeSnapshot(tx, takenAt, {
+      caseId,
+      targetType: "post",
+      targetId: item.postId,
+      authorHandle: post.authorHandle,
+      postState: post.state,
+      postCreatedAt: post.createdAt.toISOString(),
+      replyToId: post.replyToId,
+      quoteOfId: post.quoteOfId,
+      body: post.body,
+      media: held.get(item.postId) ?? [],
+      displayName: null,
+      bio: null,
+      handle: null,
+    });
+    const decisionId = randomUUID();
+    await insertOrderDecision(tx, {
+      id: decisionId,
+      caseId,
+      itemId: item.itemId,
+      stateVersion: await caseVersion(tx, caseId),
+      rulesVersion: RULES_VERSION,
+      redressVersion: REDRESS_VERSION,
+      category: ordered.category,
+      keyword: ordered.keyword,
+      snapshotId: snapshot.id,
+      snapshotDigest: snapshot.digest,
+      decidedBy: deciderId,
+    });
+    await insertAction(tx, decisionId, { kind: "disable_by_order", mediaId: null });
+    decisionIds[item.itemId] = decisionId;
+  }
+  return decisionIds;
+}
+
+/**
+ * POST /api/staff/orders/:order/effect, once its step-up verified (section 7.6): "Disable for an order" on up to ten items
+ * with one key touch.
+ *
+ * Before the transaction (reads; the database decides again): the order exists (not_found), is open (order_closed) and
+ * is no order to provide information (invalid_decision); an unverified DSA Article 9 order is given effect only by an
+ * admin who signed `urgent` (order_not_verified); the signed facts equal the order's row and every item is the order's
+ * and names its post (order_changed: the console reads the order again); each post's author is read.
+ *
+ * The transaction, in section 5's lock order: the bound on its lock waits; the authors' profiles "no key update" in one
+ * statement; one intake of the kind order (channel authority, no sender, no text, no receipt); for each item in post
+ * order the post's open case and the intake's item, whose attach trigger takes the case, then the item's intake_item_id;
+ * for each item in post order a snapshot of its own, the order decision and its one disable_by_order, whose triggers
+ * force everything else; last the audit row order_effected with the params and decisionIds. decision_holds holds each
+ * decision to that row at commit. A deadlock or a bound reached runs it once more while more than a minute of the
+ * challenge is left; a case that closed under it (case_closed) once more too.
+ *
+ * After the commit, each in a try of its own: what follows a decision (the statement's mail for a told notice, the
+ * count of the account's decisions), and the alert order_effected to every staff account.
+ */
+export async function giveEffect(deps: ModerationDeps, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<OrderOutcome> {
+  // A confirmation of anything else never gives effect: a wiring fault, not a refusal.
+  if (confirmed.action !== "order_effected" || confirmed.target.type !== "order" || confirmed.keyId !== session.keyId) throw new Error("an effect needs the step-up that confirmed it");
+  const params = OrderEffectedParams.parse(confirmed.params);
+  const orderId = confirmed.target.id;
+  const row = await orderRow(deps.apiDb, orderId);
+  if (row === null) throw new ModerationError("not_found");
+  if (row.closedAt !== null) throw new ModerationError("order_closed");
+  if (row.kind === "dsa_art10") throw new ModerationError("invalid_decision");
+  if (row.kind === "dsa_art9" && row.verifiedAt === null && !(session.role === "admin" && params.urgent)) throw new ModerationError("order_not_verified");
+  const signed = { kind: params.kind, memberState: params.memberState, authority: params.authority, reference: params.reference, sectionC: params.sectionC, emergency: params.emergency, withholdFromAuthor: params.withholdFromAuthor };
+  if (JSON.stringify(signed) !== JSON.stringify(signedFacts(row))) throw new ModerationError("order_changed");
+  const items = await effectItems(deps.apiDb, orderId, params.items.map((item) => item.itemId));
+  const byId = new Map(items.map((item) => [item.id, item]));
+  if (params.items.some((item) => byId.get(item.itemId)?.postId !== item.postId)) throw new ModerationError("order_changed");
+  // A post's author never changes; a post purged since the read has none, and the person reads the order again.
+  const authors = new Map<string, string>();
+  for (const item of params.items) {
+    const author = await deps.social.postAuthor(item.postId);
+    if (author === null) throw new ModerationError("order_changed");
+    authors.set(item.postId, author);
+  }
+  let decisionIds: Record<string, string> = {};
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const outcome = await deps.apiDb.transaction(async (tx): Promise<"done" | "late"> => {
+        if (!(await boundLockWaits(tx, confirmed.expiresAt, ORDER_EFFECT_WAITS(params.items.length)))) return "late";
+        await deps.social.lockAccounts(tx, [...new Set(authors.values())].sort(), "no key update");
+        decisionIds = await effectRows(deps, tx, session.userId, params);
+        await appendConfirmedAudit(tx, {
+          actorId: session.userId,
+          keyId: confirmed.keyId,
+          action: "order_effected",
+          targetType: "order",
+          targetId: orderId,
+          metadata: { params: confirmed.params, decisionIds },
+          staffSession: session.handle,
+          actionHash: confirmed.actionHash,
+          stepUp: confirmed.assertion,
+          requestId: ctx.requestId,
+          expiresAt: confirmed.expiresAt,
+        });
+        return "done";
+      });
+      if (outcome === "late") return "late";
+      break;
+    } catch (err) {
+      const raised = raisedMessage(err);
+      if (raised === "staff_confirmation_ended") return "ended";
+      if (raised === "staff_confirmation_late") return "late";
+      const retryable = isDeadlock(err) || isBoundReached(err) || isSerializationFailure(err) || (err instanceof ModerationError && err.code === "case_closed");
+      if (!retryable) {
+        if (err instanceof ModerationError) throw err;
+        const refusal = orderRefusal(err);
+        if (refusal !== null) {
+          const detail = raisedDetail(err);
+          if (detail !== null) deps.log.info({ refusal: refusal.code, detail }, "moderation: an order's effect was refused");
+          throw refusal;
+        }
+        throw err;
+      }
+      if (attempt > 1 || confirmed.expiresAt.getTime() - deps.now().getTime() <= RETRY_MARGIN_MS) {
+        if (err instanceof ModerationError && err.code === "case_closed") throw err;
+        return "late";
+      }
+    }
+  }
+  const view = (await orderView(deps, orderId, session))!;
+  const decided = Object.values(decisionIds);
+  for (const decisionId of decided) deps.background.start(() => afterDecision(deps, session.userId, decisionId));
+  const at = deps.now().toISOString();
+  const itemsOpen = view.items.filter((item) => item.disabledAt === null && item.closedAt === null).length;
+  const urgent = params.urgent && row.kind === "dsa_art9" && row.verifiedAt === null ? 1 : 0;
+  deps.background.start(async () => {
+    await staffAlert(deps, null, 0, { template: "order_effected", facts: { items: decided.length, at, itemsOpen, urgent } });
+  });
+  return view;
 }

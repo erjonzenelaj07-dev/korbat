@@ -62,11 +62,12 @@ export type TargetType = "post" | "account";
 
 /** One report, notice or finding as the intake's transaction stores it; the trigger sets when it was received and its receipt's state. */
 export interface IntakeRow {
-  kind: "user" | "finding";
+  /** 3f: an authority's order, whose intake the effect of an order inserts (channel authority, no sender). */
+  kind: "user" | "finding" | "order";
   ref: string;
   /** The sha256 hex of the notice's token, for a signed-out notice and for every notice on the CSAM path. */
   lookupHash: string | null;
-  channel: "signed_in" | "signed_out" | "staff";
+  channel: "signed_in" | "signed_out" | "staff" | "authority";
   reporterId: string | null;
   findingBy: string | null;
   contactId: string | null;
@@ -611,11 +612,17 @@ export async function insertDecision(tx: DbTx, row: { id: string; caseId: string
  * `announced` of a suspension, a termination or a restriction of reporting, and the decision's `replaced` on its
  * lift_suspension; the trigger clears each on a kind that does not take it, and forces every other column of 3e.
  */
-export async function insertAction(tx: DbTx, decisionId: string, action: { kind: ActionKind; mediaId: string | null; days?: number | null; announced?: boolean }, replaced = false): Promise<void> {
+export async function insertAction(
+  tx: DbTx,
+  decisionId: string,
+  action: { kind: ActionKind; mediaId: string | null; days?: number | null; announced?: boolean; orderGround?: string },
+  replaced = false,
+): Promise<void> {
+  // 3f: a reinstatement after an order goes with its signed ground; the trigger clears it on every other kind.
   await tx.execute(
-    sql`insert into decision_actions (decision_id, kind, media_id, days, announced, replaced)
+    sql`insert into decision_actions (decision_id, kind, media_id, days, announced, replaced, order_ground)
         values (${decisionId}::uuid, ${action.kind}::action_kind, ${action.mediaId}::uuid, ${action.days ?? null}::smallint, ${action.announced ?? null}::boolean,
-                ${action.kind === "lift_suspension" ? replaced : null}::boolean)`,
+                ${action.kind === "lift_suspension" ? replaced : null}::boolean, ${action.orderGround ?? null})`,
   );
 }
 
@@ -680,7 +687,7 @@ export interface ConfirmedAuditRow {
   actorId: string;
   keyId: string;
   /** 3f adds the two actions of an order's record that a key confirms (append_confirmed_audit's list, 0027_orders). */
-  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected";
+  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected" | "order_effected";
   targetType: string;
   targetId: string;
   metadata: Record<string, unknown>;
@@ -920,7 +927,10 @@ export async function caseSnapshots(q: Runner, caseId: string, newestOnly = fals
     digest: string;
   }>(
     q,
-    sql`select s.id, ${iso("s.taken_at")} as taken_at, public.snapshot_withheld(s.id) as withheld, s.erased_at is not null as erased, s.target_type, s.target_id, s.author_handle, s.post_state,
+    // 3f (section 6.3): the staff case page shows no text of a preserved post (post_preserved), which the author's side
+    // never reads; snapshot_withheld keeps its one meaning, that a copy's content was erased.
+    sql`select s.id, ${iso("s.taken_at")} as taken_at, (public.snapshot_withheld(s.id) or (s.target_type = 'post' and public.post_preserved(s.target_id))) as withheld,
+               s.erased_at is not null as erased, s.target_type, s.target_id, s.author_handle, s.post_state,
                ${iso("s.post_created_at")} as post_created_at, s.reply_to_id, s.quote_of_id, s.body, s.media::text as media, s.display_name, s.bio, s.handle, s.salt, s.digest
           from evidence_snapshots s where s.case_id = ${caseId}::uuid order by s.taken_at desc, s.id desc ${newestOnly ? sql`limit 1` : sql``}`,
   );
@@ -977,8 +987,8 @@ export interface CaseItemRow {
   outcome: string | null;
   answeredBy: string | null;
   statement: string | null;
-  intakeKind: "user" | "finding";
-  channel: "signed_in" | "signed_out" | "staff";
+  intakeKind: "user" | "finding" | "order";
+  channel: "signed_in" | "signed_out" | "staff" | "authority";
   contactId: string | null;
   ruleId: string | null;
   allegesIllegal: boolean;
@@ -999,6 +1009,8 @@ export interface CaseItemRow {
   markable: boolean;
   unfounded: boolean;
   markWithdrawn: boolean;
+  /** 3f: the order of an order's intake item; null on every other item. */
+  orderId: string | null;
 }
 
 /**
@@ -1022,7 +1034,7 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
     outcome: string | null;
     answered_by: string | null;
     statement: string | null;
-    intake_kind: "user" | "finding";
+    intake_kind: CaseItemRow["intakeKind"];
     channel: CaseItemRow["channel"];
     contact_id: string | null;
     rule_id: string | null;
@@ -1039,6 +1051,7 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
     markable: boolean;
     unfounded: boolean;
     mark_withdrawn: boolean;
+    order_id: string | null;
   }>(
     q,
     sql`select i.id, i.seq, i.position, ${iso("i.created_at")} as created_at, i.lane, i.target_type, i.target_id, i.named_handle, i.media_id, i.suspect, i.reporter_account_id,
@@ -1051,7 +1064,8 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
                  (select a.case_id from posts p join intake_items a on a.intake_id = i.intake_id and a.target_type = 'post' and a.target_id = p.quote_of_id and a.case_id is not null
                    where p.id = i.target_id order by a.created_at desc, a.id limit 1) end as quoted_case_id,
                (i.reexamines_item_id is null and n.kind = 'user' and n.reporter_id is not null and not n.alleges_illegal and not n.csam) as markable,
-               (m.item_id is not null and m.withdrawn_by is null) as unfounded, (m.withdrawn_by is not null) as mark_withdrawn
+               (m.item_id is not null and m.withdrawn_by is null) as unfounded, (m.withdrawn_by is not null) as mark_withdrawn,
+               (select o.order_id from legal_order_items o where o.intake_item_id = i.id) as order_id
           from intake_items i join intakes n on n.id = i.intake_id
           left join unfounded_marks m on m.item_id = i.id
          where i.case_id = ${caseId}::uuid order by i.seq`,
@@ -1088,6 +1102,7 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
     markable: row.markable,
     unfounded: row.unfounded,
     markWithdrawn: row.mark_withdrawn,
+    orderId: row.order_id,
   }));
 }
 
@@ -1486,15 +1501,15 @@ export async function ownDraftByDigest(q: Runner, row: { caseId: string; authorI
 /** An item with what decides whether its source can be revealed: its case, its intake's path and what links it to a person. */
 export interface RevealItemRow {
   caseId: string | null;
-  intakeKind: "user" | "finding";
-  channel: "signed_in" | "signed_out" | "staff";
+  intakeKind: "user" | "finding" | "order";
+  channel: "signed_in" | "signed_out" | "staff" | "authority";
   csam: boolean;
   reporterAccountId: string | null;
   contactId: string | null;
 }
 
 export async function revealItem(q: Runner, itemId: string): Promise<RevealItemRow | null> {
-  const [row] = await rows<{ case_id: string | null; intake_kind: "user" | "finding"; channel: RevealItemRow["channel"]; csam: boolean; reporter_account_id: string | null; contact_id: string | null }>(
+  const [row] = await rows<{ case_id: string | null; intake_kind: RevealItemRow["intakeKind"]; channel: RevealItemRow["channel"]; csam: boolean; reporter_account_id: string | null; contact_id: string | null }>(
     q,
     sql`select i.case_id, n.kind as intake_kind, n.channel, n.csam, i.reporter_account_id, n.contact_id from intake_items i join intakes n on n.id = i.intake_id where i.id = ${itemId}::uuid`,
   );
@@ -1958,7 +1973,13 @@ const HOLDS_ANNOUNCED = sql`exists (select 1 from decision_actions a where a.dec
 export async function giveUpReceiptsAndAuthorMails(q: Runner, now: Date, days: number): Promise<{ receipts: string[]; authorMails: string[] }> {
   const due = sql`${at(now)} - make_interval(days => ${days}::int)`;
   const receipts = await rows<{ id: string }>(q, sql`update intakes set receipt = 'failed' where receipt in ('pending', 'folded') and received_at < ${due} returning id`);
-  const authorMails = await rows<{ id: string }>(q, sql`update decisions d set author_mail = 'failed' where d.author_mail = 'pending' and d.decided_at < ${due} and not ${HOLDS_ANNOUNCED} returning d.id`);
+  // 3f: a mail is owed from the time it became owed, which for a notice released after a hold is its informed_at, and for
+  // the mail that an order's notice grew the newest record of the authority's words: never from the decision's own time,
+  // which may be weeks before.
+  const owedSince = sql.raw(`greatest(d.decided_at, coalesce(d.informed_at, d.decided_at),
+      coalesce((select max(e.at) from public.legal_order_items i join public.legal_order_events e on e.order_id = i.order_id and e.kind = 'texts_recorded'
+                 where i.id = d.order_item_id), d.decided_at))`);
+  const authorMails = await rows<{ id: string }>(q, sql`update decisions d set author_mail = 'failed' where d.author_mail = 'pending' and ${owedSince} < ${due} and not ${HOLDS_ANNOUNCED} returning d.id`);
   return { receipts: receipts.map((row) => row.id), authorMails: authorMails.map((row) => row.id) };
 }
 

@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
-import type { OrderChannel, OrderKind, OrderView } from "@korbat/contracts";
+import { ORDER_RULES, type OrderChannel, type OrderEffectedParams, type OrderKind, type OrderView } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import type { ActiveStaffSession, StaffStepUpConfirmed } from "../../src/auth";
 import { loadConfig, type Config } from "../../src/config";
 import pino from "pino";
-import { createBackground } from "../../src/moderation/context";
-import { openOrder } from "../../src/moderation/orders";
-import { hex64, moderationDeps, uuids, type TestStaff } from "./moderation-fixtures";
+import { ModerationError, createBackground, isModerationErrorCode } from "../../src/moderation/context";
+import { giveEffect, openOrder, orderView, type OrderOutcome } from "../../src/moderation/orders";
+import type { DeciderWorld, RealStaff } from "./moderation-decide";
+import { hex64, moderationDeps, raised, uuids, type TestStaff } from "./moderation-fixtures";
 
 /**
  * Fixtures of order records (3f design, section 12): `orderForTest` opens an order through the route's own code, from a
@@ -148,15 +149,89 @@ export async function removeOrders(migrateDb: Db | DbTx, orderIds: readonly stri
 }
 
 /**
- * Removes the rows of the alerts an order's flows raised since a time, which name no subject (order_opened and
- * order_corrected, written by staffAlert after the commit), as the migrator: the files run one after another, so the rows
+ * Removes the rows of the alerts an order's flows raised since a time, which name no subject (order_opened,
+ * order_corrected and, since Task 3, order_effected and order_reinstated, written by staffAlert after the commit, and the
+ * daily hold_ending and order_unverified that alert_steps wrote), as the migrator: the files run one after another, so the rows
  * of a kind written since the file began are its own.
  */
 export async function removeOrderAlerts(migrateDb: Db | DbTx, since: Date): Promise<void> {
-  await migrateDb.execute(sql`delete from public.alert_outbox where kind in ('order_opened', 'order_corrected') and order_id is null and created_at >= ${since.toISOString()}::timestamptz`);
+  // Task 3 adds the effect's, the reinstatement's and the daily warning before a release.
+  await migrateDb.execute(sql`delete from public.alert_outbox
+                               where kind in ('order_opened', 'order_corrected', 'order_effected', 'order_reinstated', 'hold_ending', 'order_unverified')
+                                 and order_id is null and created_at >= ${since.toISOString()}::timestamptz`);
 }
 
 /** Marks an item disabled at a time, as the migrator: before the ledger's functions of Task 3 nothing else gives an order effect. */
 export async function disableItemForTest(migrate: Db | DbTx, itemId: string, at: Date = new Date()): Promise<void> {
   await migrate.execute(sql`update public.legal_order_items set disabled_at = ${at.toISOString()}::timestamptz where id = ${itemId}::uuid`);
+}
+
+// ---------------------------------------------------------------- giving effect (Task 3)
+
+/**
+ * The params of order_effected as the console builds them (section 8.5, block 4): the order's facts as the view shows
+ * them, `urgent`, and the chosen items with their posts, sorted by post. Without a choice, every item that names a post
+ * and is neither disabled nor closed, up to itemsPerAction.
+ */
+export function effectParams(view: OrderView, options: { itemIds?: readonly string[]; urgent?: boolean } = {}): OrderEffectedParams {
+  const chosen = view.items.filter((item) =>
+    options.itemIds !== undefined ? options.itemIds.includes(item.id) : item.postId !== null && !item.inForce && item.closedAt === null,
+  );
+  const items = chosen
+    .map((item) => ({ itemId: item.id, postId: item.postId! }))
+    .sort((a, b) => (a.postId < b.postId ? -1 : a.postId > b.postId ? 1 : 0))
+    .slice(0, ORDER_RULES.itemsPerAction);
+  return {
+    kind: view.kind as OrderEffectedParams["kind"],
+    memberState: view.memberState,
+    authority: view.authority,
+    reference: view.reference,
+    sectionC: view.sectionC,
+    emergency: view.emergency,
+    withholdFromAuthor: view.withholdFromAuthor,
+    urgent: options.urgent ?? false,
+    items,
+  };
+}
+
+/** A made-up confirmation of order_effected, as orderConfirmation's: only ever used in a transaction a test rolls back. */
+export function effectConfirmation(staff: TestStaff, orderId: string, params: OrderEffectedParams | Record<string, unknown>): StaffStepUpConfirmed {
+  return { ...orderConfirmation(staff, "order_event_recorded", orderId, params as Record<string, unknown>), action: "order_effected" } as StaffStepUpConfirmed;
+}
+
+/**
+ * "Disable for an order" inside a transaction the test rolls back, through the module's own giveEffect with a made-up
+ * confirmation of exactly these params; the deferred checks a real effect meets at its commit (decision_holds for each
+ * decision, the ledger's recheck) run right after, inside the same savepoint, so a refused effect leaves nothing behind.
+ * Answers the order's view; a refusal is thrown as the module throws it, with the detail the database gave.
+ */
+export async function effectWith(tx: DbTx, staff: TestStaff, orderId: string, params: OrderEffectedParams | Record<string, unknown>, config: Config = orderConfig()): Promise<OrderView> {
+  const confirmed = effectConfirmation(staff, orderId, params);
+  try {
+    return await tx.transaction(async (sp) => {
+      const outcome = await giveEffect(moderationDeps(sp, { config }), sessionOf(staff), confirmed, { requestId: `req-${randomUUID()}` });
+      if (typeof outcome === "string") throw new Error(`the effect was not recorded: ${outcome}`);
+      await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck immediate`);
+      await sp.execute(sql`set constraints public.decisions_check, public.decision_actions_recheck deferred`);
+      return (await orderView(moderationDeps(sp, { config }), orderId, sessionOf(staff)))!;
+    });
+  } catch (err) {
+    const refused = raised(err);
+    if (!(err instanceof ModerationError) && refused?.code === "P0001" && isModerationErrorCode(refused.message)) {
+      throw Object.assign(new ModerationError(refused.message), { detail: refused.detail });
+    }
+    throw err;
+  }
+}
+
+/**
+ * The fixture of section 12: "Disable for an order" through the module's own route code with a real step-up of the
+ * member's key, so the effect commits with an audit row that audit-verify accepts. Answers the outcome and waits for what
+ * the effect started after its commit (the statements' mails, the alert).
+ */
+export async function effectForTest(world: DeciderWorld, member: RealStaff, orderId: string, params: OrderEffectedParams): Promise<OrderOutcome> {
+  const confirmed = await world.confirmOrder(member, "order_effected", orderId, params);
+  const outcome = await world.moderation.forStaff.giveOrderEffect(member.session, confirmed, { requestId: `req-${randomUUID()}` });
+  await world.moderation.settle();
+  return outcome;
 }

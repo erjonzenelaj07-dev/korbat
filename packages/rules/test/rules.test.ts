@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { STANDING_RULES } from "@korbat/contracts";
-import { REDRESS_TEXTS, REDRESS_VERSION, RULEBOOKS, RULES, RULES_VERSION, getRedress, getRule, isRuleId } from "../src/index";
+import { REDRESS_TEXTS, REDRESS_VERSION, RULEBOOKS, RULES, RULES_VERSION, getRedress, getRule, isRuleId, ORDER_NOTICE } from "../src/index";
 
 const VERSIONS = [1, 2, 3] as const;
 
@@ -120,15 +120,20 @@ describe("rulebook", () => {
 describe("redress", () => {
   const LAST = "You can also go to court, or complain to the Digital Services Coordinator of the EU country where you live (Article 53 of the Digital Services Act).";
 
-  test("the current redress version is 2: version 1's three texts word for word, and six more; version 1 is kept as it was", () => {
-    expect(REDRESS_VERSION).toBe(2);
-    expect(Object.keys(REDRESS_TEXTS).map(Number)).toEqual([1, 2]);
+  test("the current redress version is 3: version 2's nine texts word for word and the order's notice; versions 1 and 2 are kept as they were", () => {
+    expect(REDRESS_VERSION).toBe(3);
+    expect(Object.keys(REDRESS_TEXTS).map(Number)).toEqual([1, 2, 3]);
     expect(Object.keys(REDRESS_TEXTS[1])).toEqual(["appeal", "interim", "notAppealable"]);
     expect(Object.keys(REDRESS_TEXTS[2])).toEqual(["appeal", "interim", "notAppealable", "strikeNext", "reply", "replyAtOnce", "replyAnswered", "warnNext", "appealNow"]);
     for (const key of ["appeal", "interim", "notAppealable"] as const) expect(REDRESS_TEXTS[2][key], key).toBe(REDRESS_TEXTS[1][key]);
-    expect(getRedress(REDRESS_VERSION)).toBe(REDRESS_TEXTS[2]);
+    // 3f (design, section 10.7; W.3): version 3 adds the group `order` and changes no sentence of version 2.
+    expect(Object.keys(REDRESS_TEXTS[3])).toEqual([...Object.keys(REDRESS_TEXTS[2]), "order"]);
+    for (const key of Object.keys(REDRESS_TEXTS[2]) as (keyof (typeof REDRESS_TEXTS)[2])[]) expect(REDRESS_TEXTS[3][key], key).toBe(REDRESS_TEXTS[2][key]);
+    expect(REDRESS_TEXTS[3].order).toBe(ORDER_NOTICE);
+    expect(getRedress(REDRESS_VERSION)).toBe(REDRESS_TEXTS[3]);
+    expect(getRedress(2)).toBe(REDRESS_TEXTS[2]);
     expect(getRedress(1)).toBe(REDRESS_TEXTS[1]);
-    expect(getRedress(3)).toBeUndefined();
+    expect(getRedress(4)).toBeUndefined();
   });
 
   test("version 2's six new texts, word for word (3e design, section 18, W.3)", () => {

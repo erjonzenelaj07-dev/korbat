@@ -399,6 +399,21 @@ function stepUpChallengeOf(challenge: unknown): { binding: Buffer; expiresAt: nu
 }
 
 /**
+ * 3f (design, section 7.4): a correction of an order's record under the rule entry or caution takes no key, and its row
+ * carries no step-up; the rule is the one the database chose, written into the row's metadata, which the chain covers.
+ * A correction under the rule admin is a step-up action like any other.
+ */
+function keylessCorrection(row: StepUpRow): boolean {
+  if (row.action !== "order_corrected") return false;
+  try {
+    const rule = objectOf(JSON.parse(row.metadataText))?.rule;
+    return rule === "entry" || rule === "caution";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * One row's step-up (3a design, section 7, Command line), checked in audit-verify's own code with no server secret: a row
  * of a step-up action must carry one, whatever its actor; and a step-up must hold an assertion that the key the row names,
  * a key of the row's actor, made over a step-up challenge bound to the row's session and to the hash of the row's action,
@@ -409,7 +424,7 @@ function stepUpChallengeOf(challenge: unknown): { binding: Buffer; expiresAt: nu
 async function checkStepUp(row: StepUpRow, keys: ReadonlyMap<string, RecordedKey>): Promise<{ problem: string | null; challenge: string | null }> {
   const fail = (problem: string, challenge: string | null = null) => ({ problem, challenge });
   if (row.stepUpText === null) {
-    return Object.hasOwn(STAFF_STEP_UP_ACTIONS, row.action) ? fail(`its action, ${row.action}, needs a step-up, and it carries none`) : { problem: null, challenge: null };
+    return Object.hasOwn(STAFF_STEP_UP_ACTIONS, row.action) && !keylessCorrection(row) ? fail(`its action, ${row.action}, needs a step-up, and it carries none`) : { problem: null, challenge: null };
   }
   let parsed: unknown;
   try {

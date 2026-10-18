@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ANNEX3_GROUND_LABELS, DISPOSITION_LABELS, MEASURES, ORDER_CHANNEL_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, SEAL_DRAFTS, type ContactMessage } from "@korbat/contracts";
+import { ANNEX3_GROUND_LABELS, DISPOSITION_LABELS, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, SEAL_DRAFTS, type ContactMessage } from "@korbat/contracts";
 import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
@@ -13,7 +13,7 @@ import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
 import { SIGN_IN_WINDOW_MS } from "../../src/signins";
-import { bothTimes, clockTime } from "../../src/ui";
+import { bothTimes, clockTime, dateTime } from "../../src/ui";
 import { consoleSiteHeadersFromCaddyfile } from "../caddyfile";
 import {
   APPEAL_ONE,
@@ -35,7 +35,9 @@ import {
   CASE_STRUCK,
   CASE_WITHDRAW,
   CASE_MARK,
+  CASE_ORDER,
   DECISION_APPEALED,
+  DECISION_ORDER,
   DECISION_ONE,
   DECISION_REPLIED,
   DECISION_STRUCK,
@@ -46,6 +48,9 @@ import {
   LONGEST_EXPLANATION,
   LONGEST_NOTE,
   LOOKALIKE,
+  ORDER_HELD_UNTIL,
+  ORDER_OF_CASE,
+  orderCase,
   POST_ID,
   REPLY_TEXT,
   atOnceCase,
@@ -66,6 +71,7 @@ import {
   HOSTILE_TEXTS,
   IMAGE_PATH,
   OTHER_BROWSERS,
+  orderFixture,
   OTHER_STAFF,
   PERSON_HANDLE,
   REVEALED_HANDLE,
@@ -1823,6 +1829,178 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     await texts();
     await cleanOnPhone();
     await page.setViewportSize({ width: 1280, height: 900 });
+  });
+
+  // ---------------------------------------------------------------- 3f Task 3: giving effect, the extension, the case of an order
+
+  /** Block 4 of an order's page, by its heading. */
+  const effectBlock = () => page.locator("section.block").filter({ has: page.getByRole("heading", { name: ORDER_WORDS.order.effectTitle }) });
+
+  test("3f: at 360 by 740 px, Disable for an order on three of four items with one key: options that bind the fourth are refused before the key is asked; then the key confirms the order's facts and the three items, the check from outside lists each address as text, [clock.partial] and [effect.rest] say what is left, and a moderator may no longer correct the record", async () => {
+    // At a phone's width, as every screen of orders is checked (design, section 8.10).
+    await page.setViewportSize({ width: 360, height: 740 });
+    const order = orderFixture({ reference: "BKA-2026-7", posts: 4 });
+    fixtures.state.orders.push(order);
+    await page.goto(`${origin}/orders/${order.id}`);
+    const block = effectBlock();
+    for (const line of [ORDER_WORDS.order.effectWhat, ORDER_WORDS.order.effectPreserve, ORDER_WORDS.order.effectTold, ORDER_WORDS.order.effectAnyone]) await shown(block.getByText(line, { exact: true }));
+    // Every item that can be disabled is ticked; the person unticks the fourth.
+    await page.locator("li.block").filter({ hasText: ORDER_WORDS.order.item(4) }).getByLabel(ORDER_WORDS.order.effectTick).uncheck();
+    const button = block.getByRole("button", { name: ORDER_WORDS.order.effectButton(3) });
+    const before = await signatures();
+    const options = fixtures.state.stepUpOptionsServed;
+    const writes = fixtures.state.orderWrites.length;
+    // The API asks the key to confirm the effect on four items: the key is never asked.
+    fixtures.state.mismatchNextStepUp = true;
+    await button.click();
+    await shown(page.getByRole("alert").filter({ hasText: messageFor("step_up_mismatch") }));
+    expect(fixtures.state.stepUpOptionsServed).toBe(options + 1);
+    expect(await signatures()).toBe(before);
+    expect(fixtures.state.orderWrites).toHaveLength(writes);
+    await cleanOnPhone();
+    // Confirmed again, with options that bind the three items: one key for all of them.
+    await button.click();
+    await arrived(() => fixtures.state.orderWrites.length === writes + 1, "the effect");
+    const chosen = order.items
+      .slice(0, 3)
+      .map((item) => ({ itemId: item.id, postId: item.postId! }))
+      .sort((a, b) => (a.postId < b.postId ? -1 : a.postId > b.postId ? 1 : 0));
+    expect(fixtures.state.orderWrites.at(-1)).toEqual({
+      what: "effected",
+      id: order.id,
+      key: true,
+      body: { kind: "tco_removal", memberState: "DE", authority: order.authority, reference: "BKA-2026-7", sectionC: false, emergency: false, withholdFromAuthor: true, urgent: false, items: chosen },
+    });
+    expect(await signatures()).toBe(before + 1);
+    const at = order.items[0]!.disabledAt!;
+    await shown(page.getByText(ORDER_WORDS.order.checkOutside(bothTimes(at), 3)));
+    for (const item of order.items.slice(0, 3)) await shown(page.locator("section.block ul.blocks li").filter({ hasText: item.link }).first());
+    expect(await page.locator('a[href^="https://korbat.example/"]').count()).toBe(0);
+    const deadline = bothTimes(order.clock!.deadlineAt!);
+    await shown(page.getByText(ORDER_WORDS.clock.partial(3, 4, bothTimes(at), 1, deadline)));
+    await shown(page.getByText(ORDER_WORDS.order.effectRest(1, deadline)));
+    await shown(page.getByText(ORDER_WORDS.order.preservedUntil(bothTimes(order.items[0]!.preserveUntil!)), { exact: true }).first());
+    await shown(effectBlock().getByRole("button", { name: ORDER_WORDS.order.effectButton(1) }));
+    // Once an item is disabled, a correction is an admin's with the key: a moderator is offered Section C's tick alone.
+    const correct = page.locator("section.block").filter({ has: page.getByRole("heading", { name: ORDER_WORDS.order.correctTitle }) });
+    await shown(correct.getByText(ORDER_WORDS.order.correctSilence));
+    expect(await correct.getByLabel(ORDER_WORDS.form.reference).count()).toBe(0);
+    await texts();
+    await cleanOnPhone();
+  });
+
+  test("3f: a DSA Article 9 order that is not verified: no button for a moderator, [order.verifyFirst] in its place; an admin ticks Urgent first, and the key confirms the effect with urgent", async () => {
+    const order = orderFixture({ reference: "STA-2026-3", posts: 1, kind: "dsa_art9" });
+    fixtures.state.orders.push(order);
+    await page.goto(`${origin}/orders/${order.id}`);
+    await shown(effectBlock().getByText(ORDER_WORDS.order.verifyFirst, { exact: true }));
+    await shown(effectBlock().getByText(ORDER_WORDS.order.effectRemoved, { exact: true }));
+    expect(await effectBlock().getByRole("button").count()).toBe(0);
+    fixtures.state.role = "admin";
+    try {
+      await page.goto(`${origin}/orders/${order.id}`);
+      const button = effectBlock().getByRole("button", { name: ORDER_WORDS.order.effectButton(1) });
+      await shown(button);
+      expect(await button.isDisabled()).toBe(true);
+      await effectBlock().getByLabel(ORDER_WORDS.order.effectUrgent).check();
+      const before = await signatures();
+      const writes = fixtures.state.orderWrites.length;
+      await button.click();
+      await arrived(() => fixtures.state.orderWrites.length === writes + 1, "the urgent effect");
+      expect(fixtures.state.orderWrites.at(-1)).toMatchObject({
+        what: "effected",
+        id: order.id,
+        key: true,
+        body: { kind: "dsa_art9", urgent: true, withholdFromAuthor: false, items: [{ itemId: order.items[0]!.id, postId: order.items[0]!.postId }] },
+      });
+      expect(await signatures()).toBe(before + 1);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.role = "moderator";
+    }
+  });
+
+  test("3f: Extension received, an admin's on a removal order whose notice is held: [hold.warn] first; the message picked, the key confirming hold_extended, and the notice held its extension longer, once", async () => {
+    const until = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    const order = orderFixture({ reference: "BKA-2026-8", posts: 1, sectionC: true, holdUntil: until });
+    fixtures.state.orders.push(order);
+    const arrivedAt = new Date().toISOString();
+    const extension: ContactMessage = { id: "c37f8192-a3b4-45c6-97d8-e9fa6b021324", folder: "inbox", receivedAt: arrivedAt, seenAt: arrivedAt, stale: false, disposition: null, handledAt: null, handledBy: null, orders: [] };
+    fixtures.state.contactMessages.push(extension);
+    // A moderator is not offered it; the hold's warning stands, five days before its end.
+    await page.goto(`${origin}/orders/${order.id}`);
+    await shown(page.getByText(ORDER_WORDS.order.holdWarn(bothTimes(until)), { exact: true }));
+    await shown(effectBlock().getByText(ORDER_WORDS.order.effectHeld(bothTimes(until)), { exact: true }));
+    expect(await page.getByText(ORDER_WORDS.order.extended, { exact: true }).count()).toBe(0);
+    fixtures.state.role = "admin";
+    try {
+      await page.goto(`${origin}/orders/${order.id}`);
+      const extend = page.locator("fieldset").filter({ has: page.getByText(ORDER_WORDS.order.extended, { exact: true }) });
+      await shown(extend.getByText(ORDER_WORDS.order.extendedWhat(bothTimes(until)), { exact: true }));
+      const confirm = extend.getByRole("button", { name: `${ORDER_WORDS.order.extended}: ${ORDER_WORDS.order.confirmKey}` });
+      expect(await confirm.isDisabled()).toBe(true);
+      // The newest message first.
+      const newest = extend.locator("label.choice").first();
+      expect(await newest.textContent()).toBe(`${ORDER_WORDS.contact.received(bothTimes(arrivedAt))}, ${ORDER_WORDS.contact.folders.inbox}`);
+      await newest.locator("input").check();
+      const before = await signatures();
+      await confirm.click();
+      await arrived(() => (fixtures.state.orderWrites.at(-1)?.body as { kind?: string } | undefined)?.kind === "hold_extended", "the extension");
+      expect(fixtures.state.orderWrites.at(-1)).toEqual({ what: "event", id: order.id, key: true, body: { kind: "hold_extended", ground: null, messageId: extension.id } });
+      expect(await signatures()).toBe(before + 1);
+      const later = new Date(Date.parse(until) + ORDER_RULES.holdExtensionDays * 86_400_000).toISOString();
+      await shown(page.getByText(ORDER_WORDS.order.holdUntil(bothTimes(later), "receipt", true), { exact: true }));
+      expect(await page.getByText(ORDER_WORDS.order.extended, { exact: true }).count()).toBe(0);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.role = "moderator";
+    }
+  });
+
+  test("3f: the case of an order: its item from the authority with a link to the order, Order with Disabled for an order, [case.preserved] and [case.heldToo]; Reinstate greyed for a moderator, and an admin's confirmed by the key on the newest copy's stored digest with the ground's fixed reason", async () => {
+    fixtures.state.cases.set(CASE_ORDER, orderCase());
+    await page.goto(`${origin}/cases/${CASE_ORDER}`);
+    await shown(page.getByText(ORDER_WORDS.caseOrder.preserved, { exact: true }));
+    await shown(page.getByText(ORDER_WORDS.caseOrder.own, { exact: true }));
+    await shown(page.getByText(ORDER_WORDS.caseOrder.heldToo(dateTime(ORDER_HELD_UNTIL)), { exact: true }));
+    await shown(page.locator(`a[href="/orders/${ORDER_OF_CASE}"]`));
+    await shown(page.getByText(`${MEASURES.disable_by_order.label}: in force; ${ORDER_WORDS.caseOrder.withheld}`, { exact: false }));
+    const reinstate = page.getByRole("button", { name: ORDER_WORDS.caseOrder.reinstate, exact: true });
+    expect(await reinstate.isDisabled()).toBe(true);
+    await shown(page.getByText(messageFor("admin_required"), { exact: true }));
+    expect(await page.getByRole("button", { name: COMPOSER.correctLabel }).count()).toBe(0);
+    fixtures.state.role = "admin";
+    try {
+      await page.goto(`${origin}/cases/${CASE_ORDER}`);
+      await reinstate.click();
+      const composer = page.getByRole("region", { name: ORDER_WORDS.caseOrder.reinstate });
+      await composer.getByLabel(ORDER_GROUND_LABELS.withdrawn, { exact: true }).check();
+      await shown(composer.getByText(ORDER_DRAFTS.reinstate.withdrawn, { exact: true }).first());
+      await shown(composer.getByText(ORDER_WORDS.caseOrder.heldToo(dateTime(ORDER_HELD_UNTIL)), { exact: true }));
+      expect(await composer.locator("textarea").count()).toBe(0);
+      const before = await signatures();
+      const decided = fixtures.state.decisions.length;
+      await composer.getByRole("button", { name: ORDER_WORDS.caseOrder.reinstateButton }).click();
+      await shown(page.getByText(COMPOSER.recorded, { exact: false }));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.decisions).toHaveLength(decided + 1);
+      const reason = fixtures.state.texts.at(-1)!;
+      expect(reason).toMatchObject({ caseId: CASE_ORDER, kind: "review_reason", text: ORDER_DRAFTS.reinstate.withdrawn });
+      expect(fixtures.state.decisions.at(-1)).toMatchObject({
+        caseId: CASE_ORDER,
+        params: { kind: "correction", reviewsDecisionId: DECISION_ORDER, outcome: "reversed", snapshotDigest: "ef".repeat(32), actions: [{ kind: "reinstate_by_order", mediaId: null, orderGround: "withdrawn" }], reasonDigest: reason.digest },
+      });
+      await shown(page.getByText(`${MEASURES.reinstate_by_order.label}: ${ORDER_GROUND_LABELS.withdrawn}`, { exact: false }));
+      expect(await page.getByRole("button", { name: ORDER_WORDS.caseOrder.reinstate, exact: true }).count()).toBe(0);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.role = "moderator";
+      // Then the desktop's width again.
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
   });
 
   test("an address the console does not have says so, inside the console", async () => {

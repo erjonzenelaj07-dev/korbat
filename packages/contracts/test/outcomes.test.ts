@@ -264,6 +264,7 @@ describe("the home screen's three lists of the path for child sexual abuse mater
     // 3f: the contact point and the alert channel.
     contact: { open: 0, oldestAt: null, dueAt: null },
     alerts: { channel: "off", since: null },
+    ordersUnverified: { total: 0, items: [] },
   };
 
   test("StaffOverview carries the decisions that lifted the protection of reported images, the choices not to seal and the seals taken while deciding that are in force", () => {

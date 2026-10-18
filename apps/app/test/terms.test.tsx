@@ -169,7 +169,14 @@ function measuresSentence(t: TermsModule, lead: string): string {
   if (from === -1) throw new Error(`the measures' paragraph has no sentence that begins "${lead}"`);
   return paragraph.slice(from, paragraph.indexOf(".", from) + 1);
 }
-const LEADS = { interim: "While korbat decides a case:", final: "When the case is decided:", either: "While it decides or when the case is decided:", lifted: "A later decision can lift each of them again:" };
+const LEADS = {
+  interim: "While korbat decides a case:",
+  final: "When the case is decided:",
+  either: "While it decides or when the case is decided:",
+  // 3f Task 3: the measure an authority's order alone takes.
+  byOrder: "On an authority's order alone, never on korbat's own judgement:",
+  lifted: "A later decision can lift each of them again:",
+};
 /** The labels a sentence of the measures' paragraph quotes, in order. */
 const labelsIn = (sentence: string): string[] => [...sentence.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
 
@@ -466,7 +473,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     const all = Object.values(text).join(" ");
     // 3e names strikes, suspensions and retired handles (W.7); an order's preservation is 3f's, and korbat bans nobody.
     for (const absent of [/preserv/i, /\bban(s|ned)?\b/i]) expect(absent.test(all), String(absent)).toBe(false);
-    // The quoted labels are the ledger's 22 kinds and nothing else.
+    // The quoted labels are the ledger's 24 kinds (3f adds the order's measure and its reversal) and nothing else.
     const labels = Object.values(LEADS).flatMap((lead) => labelsIn(measuresSentence(terms, lead)));
     expect([...labels].sort()).toEqual(contracts.ACTION_KINDS.map((kind) => contracts.MEASURES[kind].label).sort());
     // Every run of digits outside the rulebook's own texts, a rule's number and the Regulation's articles is a constant's.

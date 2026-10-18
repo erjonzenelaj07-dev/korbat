@@ -146,7 +146,7 @@ const LOCK_TIMEOUT_MS = 10_000;
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 /** A fresh public reference: N- and ten base32 characters from 50 random bits. */
-function newRef(): string {
+export function newRef(): string {
   const bytes = randomBytes(7);
   // 48 bits and two more: 50 in all, which a JavaScript number holds exactly.
   const bits = bytes.readUIntBE(0, 6) * 4 + (bytes[6]! & 3);

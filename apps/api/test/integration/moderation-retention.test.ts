@@ -386,7 +386,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
       expect(asked.includes("job:moderation-retention")).toBe(setting === "on");
       expect(await state()).toEqual(setting === "off" ? { body: "a post", redacted: false, snapshots: 1 } : { body: "", redacted: true, snapshots: 0 });
       // The author's decision screen: the copy while korbat holds it, and after the job's redaction the words of an R4 erasure.
-      expect((await authorDecisionView({ apiDb }, p.authorId, removal)).content.kind).toBe(setting === "off" ? "post" : "r4_redacted");
+      expect((await authorDecisionView({ apiDb }, p.authorId, removal)).content!.kind).toBe(setting === "off" ? "post" : "r4_redacted");
       // What the switch held back is made up by a round once it is on again.
       if (setting === "off") {
         await round(casesMedia(apiDb));

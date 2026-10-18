@@ -80,6 +80,21 @@ export function orderRoutes(auth: AuthForStaff, moderation: ModerationForStaff) 
     },
   );
 
+  // "Disable for an order" (section 7.6): the path's order is the action's target, and the body the params of
+  // order_effected (the order's facts as shown, `urgent` and the items) with the assertion as `stepUp`. Every decision
+  // commits with the one audit row or none does.
+  routes.post(
+    "/orders/:order/effect",
+    auth.requireStaff,
+    validate("param", OrderParam),
+    auth.requireStaffStepUp("order_effected", (c) => c.req.param("order")),
+    async (c) => {
+      const confirmed = c.get("staffStepUp") as StaffStepUpConfirmed | undefined;
+      if (!confirmed) throw new Error("an order's effect ran without requireStaffStepUp");
+      return answer(c, await moderation.giveOrderEffect(staffSession(c), confirmed, { requestId: c.get("requestId") }));
+    },
+  );
+
   // A correction: with `stepUp` in the body the step-up of order_corrected checks it first (its params are the body's
   // facts); without it the body is the facts alone, and the database decides the rule. Under the rule admin the key is
   // required: staff_step_up_required, and nothing is kept.

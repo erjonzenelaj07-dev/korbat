@@ -585,10 +585,12 @@ export function createSocialRepo(db: Db) {
         }[];
         if (!own) return false;
         await lockPostsInOrder(tx, [id, own.reply_to_id, own.quote_of_id]);
+        // 3f (design, section 7.10): a post disabled for an order answers its author as a post that does not exist, so its
+        // own deletion changes nothing and answers not_found (posts_guard refuses the update for the API role in any case).
         const [old] = await tx
           .update(posts)
           .set({ state: "deleted_by_author", deletedAt: now, body: "" })
-          .where(and(eq(posts.id, id), eq(posts.authorId, authorId), ne(posts.state, "deleted_by_author")))
+          .where(and(eq(posts.id, id), eq(posts.authorId, authorId), ne(posts.state, "deleted_by_author"), ne(posts.state, "disabled")))
           .returning({ replyToId: posts.replyToId, quoteOfId: posts.quoteOfId });
         if (!old) return false;
         if (old.replyToId) {
@@ -1126,12 +1128,13 @@ export function createSocialRepo(db: Db) {
     /**
      * A page of every post the account wrote, whatever its state, in (created_at, id) order after `after`, for the
      * data export; a deleted one keeps its row with an empty body and its deletion time. The images of the posts
-     * belong to the media module; the flow adds them.
+     * belong to the media module; the flow adds them, and lists none of a post that is not here. 3f (design, W.7): a
+     * post disabled for an order is left out, with its images, and no line says so; after a reinstatement it is back.
      */
     async exportPosts(id: string, after: ExportKey | null, limit: number): Promise<ExportPage<ExportedPostRow>> {
       const raw = await rows<{ id: string; body: string; created_at: string; reply_to_id: string | null; quote_of_id: string | null; state: StoredPostState; deleted_at: string | null; key_at: string; key_id: string }>(sql`
         select id, body, ${iso("created_at")} as created_at, reply_to_id, quote_of_id, state, ${iso("deleted_at")} as deleted_at, ${isoMicro("created_at")} as key_at, id as key_id
-        from posts where author_id = ${id}::uuid and ${exportAfter(after, sql`created_at`, sql`id`)} order by created_at, id limit ${limit}`);
+        from posts where author_id = ${id}::uuid and state::text <> 'disabled' and ${exportAfter(after, sql`created_at`, sql`id`)} order by created_at, id limit ${limit}`);
       return exportPage(raw, limit, (row) => ({
         id: row.id,
         body: row.body,
@@ -1379,6 +1382,17 @@ export function createSocialRepo(db: Db) {
           update posts set quote_count = greatest(0, quote_count - c.n)
           from (select quote_of_id, count(*)::int as n from posts where author_id = ${id}::uuid and state <> 'deleted_by_author' and quote_of_id is not null group by quote_of_id) c
           where posts.id = c.quote_of_id`);
+        // 3f (design, section 5, the lock order, item 4): the profile row is anonymised (which sets deleted_at) before the
+        // tombstones, so posts_guard lets the tombstone of a post disabled for an order through, as it does only for a
+        // deleted account. The row is this transaction's from its first statement, so no lock moves. The handle stays on
+        // the row and is reserved in handle_history like one left behind, so nobody can take it whatever becomes of the
+        // row; it may be there already, from an earlier stint. Only a live row is written, so a repeat leaves the deletion
+        // time alone.
+        if (row) await tx.insert(handleHistory).values({ handleLower: row.handle.toLowerCase(), profileId: id, changedAt: now }).onConflictDoNothing();
+        await tx
+          .update(profiles)
+          .set({ displayName: "Deleted account", bio: "", avatarPath: null, verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0, deletedAt: now })
+          .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)));
         // The tombstones. The rows are this transaction's already, and no post of the account can appear meanwhile: writing
         // one takes a shared lock on the profile row, which this transaction holds for update.
         await tx
@@ -1402,13 +1416,6 @@ export function createSocialRepo(db: Db) {
           update profiles set following_count = greatest(0, following_count - c.n) from (select follower_id, count(*)::int as n from gone group by follower_id) c where profiles.id = c.follower_id`);
         await tx.delete(blocks).where(or(eq(blocks.fromId, id), eq(blocks.toId, id)));
         await tx.delete(mutes).where(or(eq(mutes.fromId, id), eq(mutes.toId, id)));
-        // The handle stays on the row and is reserved in handle_history like one left behind, so nobody can take it whatever becomes of the row; it may be there already, from an earlier stint.
-        if (row) await tx.insert(handleHistory).values({ handleLower: row.handle.toLowerCase(), profileId: id, changedAt: now }).onConflictDoNothing();
-        // The row stays with its handle; everything else about the person goes. Only a live row is written, so a repeat leaves the deletion time alone.
-        await tx
-          .update(profiles)
-          .set({ displayName: "Deleted account", bio: "", avatarPath: null, verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0, deletedAt: now })
-          .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)));
         // The media rows go last (3c design, section 7.10): they are the last rows this transaction locks, after every
         // post and profile row it takes, and the requests for their files, which cannot be rolled back, are written as
         // close to the commit as they can be.

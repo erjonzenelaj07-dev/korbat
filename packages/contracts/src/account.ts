@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Platform, Role } from "./auth";
 import { ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REPLY_TEXT_MAX, REVERSAL_KINDS, RULE_IDS, STANDING_BASES, STANDING_DAYS, TDB_CATEGORIES } from "./moderation";
+import { OrderNoticeFacts, OrderTexts } from "./orders";
 
 const at = z.iso.datetime();
 /** A UTC day, as the list of decisions shows one. */
@@ -56,7 +57,7 @@ const ExportedDecision = z.object({
   id: z.uuid(),
   decidedOn: day,
   postId: z.uuid().nullable(),
-  kind: z.enum(["interim", "final", "review", "correction"]),
+  kind: z.enum(["interim", "final", "order", "review", "correction"]),
   outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
   ground: z.enum(["incompatible", "illegal"]).nullable(),
   ruleId: z.enum(RULE_IDS).nullable(),
@@ -72,6 +73,15 @@ const ExportedDecision = z.object({
       z.object({ state: z.literal("answered"), result: z.enum(["kept", "partly_reversed", "reversed"]) }),
     ])
     .nullable(),
+  /**
+   * 3f (design, W.7): an order's decision once its author was told, never before: its notice's facts (the order's kind,
+   * state, authority, reference and day, whether korbat confirmed it, whether and until when the notice was held, the
+   * preservation's end) and, read at the export's time, the authority's words and the day of an erasure; a reinstatement's
+   * entry with its ground. Absent on every other decision.
+   */
+  order: OrderNoticeFacts.optional(),
+  orderTexts: OrderTexts.optional(),
+  erasedOn: day.nullable().optional(),
 });
 
 /**

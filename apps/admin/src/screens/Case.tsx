@@ -1,5 +1,6 @@
 import {
   MEASURES,
+  ORDER_GROUND_LABELS,
   REVEAL_REASON_CATEGORIES,
   SUSPECT_EARLIER_MONTHS,
   type CaseDecision,
@@ -24,6 +25,7 @@ import {
   offeredDraft,
   openCorrection,
   openReview,
+  reinstateDraft,
   replyOf,
   replyState,
   reviewDraft,
@@ -38,16 +40,16 @@ import {
 } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
-import { CaseLink } from "../nav";
-import { parseCaseId, type CaseId } from "../router";
+import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
+import { CaseLink, OrderLink } from "../nav";
+import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
 import { revealWithKey } from "../step-up";
 import type { DraftSlots } from "../store";
 import { normalised, saveStaffText, type RandomBytes } from "../texts";
 import { dateTime, Loaded, UserText, type Loadable } from "../ui";
 import { categoryLabel, COLLAPSED_RULES, counted, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
 import type { CredentialsLike } from "../webauthn";
-import { AnswerControl, ComposerView, CorrectControl, ReviewControl, WithdrawControl, WithdrawMarksControl, type ComposerViewProps } from "./Composer";
+import { AnswerControl, ComposerView, CorrectControl, ReinstateControl, ReviewControl, WithdrawControl, WithdrawMarksControl, type ComposerViewProps } from "./Composer";
 
 /**
  * The case page (3c design, sections 7.3 and 8): the header, the banners, the evidence with its images, the items with
@@ -178,6 +180,8 @@ export interface CaseScreenViewProps {
   onRevealChange(change: Partial<Pick<RevealState, "category" | "reason">>): void;
   onRevealConfirm(): void;
   onRevealClose(): void;
+  /** 3f: an order's intake item links to its order. */
+  onOpenOrder?: (id: OrderId) => void;
   /**
    * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
    * beside the decisions. Without it the page shows the case and decides nothing.
@@ -189,6 +193,8 @@ export interface CaseScreenViewProps {
     onWithdraw(decision: CaseDecision): void;
     /** 3e Task 5: "Withdraw this decision's marks" beside a "No breach" decision whose marks stand. */
     onWithdrawMarks(decision: CaseDecision): void;
+    /** 3f Task 3: "Reinstate" beside an order's measure that is in force. */
+    onReinstate?: (decision: CaseDecision) => void;
   };
 }
 
@@ -414,7 +420,10 @@ function Target({ view }: { view: CaseView }) {
 }
 
 function Item({ item, props }: { item: CaseItem; props: CaseScreenViewProps }) {
-  const ground = item.csam ? "child sexual abuse material (notice)" : item.allegesIllegal ? "notice under Art. 16: illegal" : "breaks a rule";
+  // 3f (design, section 8.6): an order's item is listed with its order, never with a reporter's summary, a reveal or a mark.
+  const order = item.source.kind === "authority";
+  const orderId = item.orderId ? parseOrderId(item.orderId) : null;
+  const ground = order ? "an authority's order" : item.csam ? "child sexual abuse material (notice)" : item.allegesIllegal ? "notice under Art. 16: illegal" : "breaks a rule";
   const by = writtenBy(item.source);
   const collapsed = item.ruleId !== null && Object.hasOwn(COLLAPSED_RULES, item.ruleId) ? `Show text (${item.ruleId}: ${COLLAPSED_RULES[item.ruleId]})` : undefined;
   return (
@@ -428,6 +437,14 @@ function Item({ item, props }: { item: CaseItem; props: CaseScreenViewProps }) {
         {"Source: "}
         <UserText>{item.source.label}</UserText>
         {sourceWords(item.source) === "" ? "" : ` (${sourceWords(item.source)})`}
+        {orderId !== null && props.onOpenOrder !== undefined ? (
+          <>
+            {" "}
+            <OrderLink id={orderId} onOpen={props.onOpenOrder}>
+              Open the order
+            </OrderLink>
+          </>
+        ) : null}
       </p>
       <p>
         Names, as text: <UserText>{item.link}</UserText>
@@ -637,6 +654,8 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
               {action.kind === "warn_reporting" && action.countsUntil !== null ? `; counts until ${dateTime(action.countsUntil)}` : ""}
               {action.kind === "restrict_reporting" && action.days !== null ? `; ${action.days} ${action.days === 1 ? "day" : "days"}` : ""}
               {action.kind === "reset_display_name" || action.kind === "reset_bio" ? "; written once; the field as it reads now is shown above" : ""}
+              {action.kind === "disable_by_order" && action.withholdAuthor !== undefined ? `; ${action.withholdAuthor ? ORDER_WORDS.caseOrder.withheld : ORDER_WORDS.caseOrder.shown}` : ""}
+              {action.kind === "reinstate_by_order" && action.orderGround !== undefined ? `: ${ORDER_GROUND_LABELS[action.orderGround]}` : ""}
               {action.sealed === null ? null : <SealList sealed={action.sealed} />}
             </li>
           ))}
@@ -645,6 +664,7 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
       {compose === undefined ? null : <CorrectControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onCorrect={compose.onCorrect} />}
       {compose === undefined ? null : <WithdrawControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdraw={compose.onWithdraw} />}
       {compose === undefined ? null : <WithdrawMarksControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdrawMarks={compose.onWithdrawMarks} />}
+      {compose === undefined || compose.onReinstate === undefined ? null : <ReinstateControl decision={decision} role={compose.role} disabled={compose.busy} onReinstate={compose.onReinstate} />}
       <ReplyBlock decision={decision} compose={compose} />
     </li>
   );
@@ -654,7 +674,7 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
 function historyWords(entry: CaseHistoryEntry): string {
   switch (entry.event) {
     case "item":
-      return `Item ${entry.seq ?? ""} arrived${entry.reexamination ? " (a re-examination)" : ""}: ${entry.intakeKind === "finding" ? "a moderator's finding" : entry.csam ? "a notice of child sexual abuse material" : entry.allegesIllegal ? "a notice under Art. 16" : "a report"}${entry.ruleId === null ? "" : `, ${entry.ruleId}`}`;
+      return `Item ${entry.seq ?? ""} arrived${entry.reexamination ? " (a re-examination)" : ""}: ${entry.intakeKind === "order" ? "an authority's order" : entry.intakeKind === "finding" ? "a moderator's finding" : entry.csam ? "a notice of child sexual abuse material" : entry.allegesIllegal ? "a notice under Art. 16" : "a report"}${entry.ruleId === null ? "" : `, ${entry.ruleId}`}`;
     case "snapshot":
       return "A snapshot was taken";
     case "decision":
@@ -720,6 +740,10 @@ export function CaseScreenView(props: CaseScreenViewProps) {
       <AuthorStandingBands view={view} />
 
       <h3>Evidence</h3>
+      {/* 3f (design, section 8.6): a post preserved under an order shows no text and no image; korbat's rules are its own. */}
+      {view.preserved ? <p className="notice">{ORDER_WORDS.caseOrder.preserved}</p> : null}
+      {view.decisions.some((decision) => decision.kind === "order") ? <p className="hint">{ORDER_WORDS.caseOrder.own}</p> : null}
+      {view.noticeHeld === null ? null : <p className="notice">{ORDER_WORDS.caseOrder.heldToo(view.noticeHeld.until === null ? null : dateTime(view.noticeHeld.until))}</p>}
       <Target view={view} />
       {targetDiffers(view) ? (
         <button type="button" onClick={props.onSnapshot} disabled={busy !== null} aria-busy={busy === "snapshot"}>
@@ -820,7 +844,23 @@ export function CaseScreenView(props: CaseScreenViewProps) {
   );
 }
 
-export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: { id: CaseId; api: StaffApi; credentials: CredentialsLike; role: StaffRole; drafts: DraftSlots; onOpenCase(id: CaseId): void }) {
+export function CaseScreen({
+  id,
+  api,
+  credentials,
+  role,
+  drafts,
+  onOpenCase,
+  onOpenOrder,
+}: {
+  id: CaseId;
+  api: StaffApi;
+  credentials: CredentialsLike;
+  role: StaffRole;
+  drafts: DraftSlots;
+  onOpenCase(id: CaseId): void;
+  onOpenOrder?: (id: OrderId) => void;
+}) {
   const [view, setView] = useState<Loadable<CaseView>>({ state: "loading" });
   const [shownImage, setShownImage] = useState<ShownImage | null>(null);
   const [busy, setBusy] = useState<"snapshot" | "note" | null>(null);
@@ -1103,6 +1143,8 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
           onWithdraw: (decision) => openAnother(value, withdrawDraft(id, value, decision, role)),
           // 3e Task 5: the withdrawal of a decision's marks opens as a correction does.
           onWithdrawMarks: (decision) => openAnother(value, withdrawMarksDraft(id, value, decision, role)),
+          // 3f Task 3: the reinstatement after an order opens as a correction does.
+          onReinstate: (decision) => openAnother(value, reinstateDraft(id, value, decision, role)),
           onCancelCorrection: () => {
             setComposeError(null);
             setTextErrors({});
@@ -1126,6 +1168,7 @@ export function CaseScreen({ id, api, credentials, role, drafts, onOpenCase }: {
           note={note}
           reveal={reveal}
           onOpenCase={onOpenCase}
+          {...(onOpenOrder === undefined ? {} : { onOpenOrder })}
           // One image at a time: showing another puts the first back behind its placeholder.
           onShowImage={(image) => setShownImage({ id: image, clear: false, failed: false })}
           onShowClearly={() => setShownImage((current) => (current === null ? null : { ...current, clear: true }))}

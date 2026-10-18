@@ -344,6 +344,14 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
         ...statementLines(data),
         STATEMENT_CLOSING,
       ]);
+    case "order_notice":
+      // 3f (design, W.5): an authority's order's notice is on the Cases screen. No post, authority or order is named, and
+      // no link or address: a mail passes a relay and a mailbox that korbat does not control.
+      return userMail("korbat has a notice for you", [ORDER_MAIL_WORDS.notice, ORDER_MAIL_WORDS.only]);
+    case "order_reinstated_notice":
+    case "order_notice_added":
+      // The notice grew: a reinstatement's paragraphs, or the authority's words recorded after the author was told.
+      return userMail("korbat has added to a notice for you", [ORDER_MAIL_WORDS.added, ORDER_MAIL_WORDS.only]);
     case "reporting_restricted": {
       // 3e (design, W.6, Task 5): a restriction of the account's reports under the rules, from its decision to its end.
       // Notices of illegal content stay open, and the lead says so before the statement's paragraphs.
@@ -427,6 +435,9 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "order_opened":
     case "order_corrected":
     case "order_unverified":
+    case "order_effected":
+    case "order_reinstated":
+    case "hold_ending":
       return alertMail(template, data);
     case "moderation_reads": {
       // A staff account opened as many different cases today as one account may (3c design, section 7.3): every staff
@@ -507,6 +518,13 @@ export function renderMail(message: MailMessage): RenderedMail {
  * nothing by mail, so a message that asks for a password or a code, or for an answer, is known for a fake (3c design,
  * section 7.15).
  */
+/** The three order mails' sentences (3f design, W.5): nothing of the notice, only that it is there or has grown. */
+const ORDER_MAIL_WORDS = {
+  notice: "korbat has a notice about one of your posts. Sign in to korbat and read it under Settings, Cases.",
+  added: "korbat has added to a notice about one of your posts. Sign in to korbat and read it under Settings, Cases.",
+  only: "This email says no more than that, and korbat's emails never contain a link to act on a notice.",
+} as const;
+
 function userMail(subject: string, paragraphs: string[]): RenderedMail {
   return build(subject, [...paragraphs, "korbat staff never ask for your password or a code, and korbat does not read replies to this email."]);
 }

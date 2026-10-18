@@ -1,5 +1,20 @@
-import { FINDING_CATEGORIES, MEASURES, RULE_DEFAULT_CATEGORY, STANDING_RULES, type AppealsReviewedParams, type CaseDecision, type CaseView, type DecisionActionParams, type MeasureKind, type RuleId, type TdbCategory } from "@korbat/contracts";
-import { RULES, statementParagraphs, type StatementInput } from "@korbat/rules";
+import {
+  FINDING_CATEGORIES,
+  MEASURES,
+  ORDER_DRAFTS,
+  ORDER_GROUNDS,
+  ORDER_GROUND_LABELS,
+  RULE_DEFAULT_CATEGORY,
+  STANDING_RULES,
+  type AppealsReviewedParams,
+  type CaseDecision,
+  type CaseView,
+  type DecisionActionParams,
+  type MeasureKind,
+  type RuleId,
+  type TdbCategory,
+} from "@korbat/contracts";
+import { ORDER_NOTICE, RULES, statementParagraphs, type StatementInput } from "@korbat/rules";
 import {
   COMPOSER,
   complete,
@@ -44,6 +59,9 @@ import {
   outcomesListed,
   previewOf,
   previewable,
+  reinstatable,
+  reinstateGroundOf,
+  withReinstateGround,
   retireMoved,
   retireOpen,
   reviewChoices,
@@ -62,7 +80,7 @@ import {
   type DraftTextKind,
   type StaffRole,
 } from "../compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, REVIEW_OUTCOMES, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, messageFor, ORDER_WORDS, REVIEW_OUTCOMES, STANDING_WORDS } from "../messages";
 import { dateTime, UserText } from "../ui";
 import { categoryLabel } from "../words";
 
@@ -168,9 +186,12 @@ function TextField({ id, label, kind, rows, props, under }: { id: string; label:
   );
 }
 
-function Confirm({ props, onCancel }: { props: ComposerViewProps; onCancel?: () => void }) {
+function Confirm({ props, onCancel, label }: { props: ComposerViewProps; onCancel?: () => void; label?: string }) {
+  const held = props.view.noticeHeld;
   return (
     <>
+      {/* 3f (design, section 8.6): [case.heldToo] in the confirmation, while an order's notice about the post is held. */}
+      {held === null ? null : <p className="notice">{ORDER_WORDS.caseOrder.heldToo(held.until === null ? null : dateTime(held.until))}</p>}
       {props.error ? (
         <p role="alert" className="error">
           {props.error}
@@ -178,7 +199,7 @@ function Confirm({ props, onCancel }: { props: ComposerViewProps; onCancel?: () 
       ) : null}
       <div className="actions">
         <button type="button" className="primary" onClick={props.onConfirm} disabled={props.busy || !complete(props.view, props.draft)} aria-busy={props.busy}>
-          Confirm with your staff key
+          {label ?? "Confirm with your staff key"}
         </button>
         {onCancel ? (
           <button type="button" onClick={onCancel} disabled={props.busy}>
@@ -593,6 +614,82 @@ function WithdrawView(props: ComposerViewProps) {
   );
 }
 
+/**
+ * 3f Task 3 (design, section 8.6): "Reinstate", a correction of an order decision that lifts its measure on a ground the
+ * admin chooses after checking the message it came in. The reason is the ground's fixed draft, shown and never edited;
+ * the preview is the notice's reinstatement paragraphs (W.2).
+ */
+function ReinstateView(props: ComposerViewProps) {
+  const { view, draft } = props;
+  const W = ORDER_WORDS.caseOrder;
+  const decision = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+  const measure = decision ? reinstatable(decision) : null;
+  const ground = reinstateGroundOf(draft);
+  if (!decision || measure === null) {
+    return (
+      <section className="panel composer" aria-labelledby="composer-title">
+        <h3 id="composer-title">{W.reinstate}</h3>
+        <p>Nothing can be reinstated: the order's measure on this post is no longer in force.</p>
+        <div className="actions">
+          <button type="button" onClick={props.onCancelCorrection}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="panel composer" aria-labelledby="composer-title">
+      <h3 id="composer-title">{W.reinstate}</h3>
+      <p>{`${MEASURES.disable_by_order.label}, by the decision of ${dateTime(decision.decidedAt)}.`}</p>
+      <p className="notice">{W.reinstateWhat}</p>
+      <fieldset>
+        <legend>What happened</legend>
+        {ORDER_GROUNDS.map((each) => (
+          <label key={each}>
+            <input type="radio" name="reinstate-ground" checked={ground === each} disabled={props.busy} onChange={() => props.onChange(withReinstateGround(draft, each))} /> <span>{ORDER_GROUND_LABELS[each]}</span>
+          </label>
+        ))}
+      </fieldset>
+      <p className="hint">{W.reinstateTold}</p>
+      {ground === "not_authentic" && view.noticeHeld !== null ? <p className="notice">{W.reinstateFake}</p> : null}
+      {ground === null ? null : (
+        <>
+          <div className="frame">
+            <h4>Reason: the fixed words of this ground, never edited</h4>
+            <p className="frame-text">
+              <UserText>{ORDER_DRAFTS.reinstate[ground]}</UserText>
+            </p>
+          </div>
+          <div className="frame preview">
+            <h4>Preview: the notice's reinstatement as its author will receive it</h4>
+            {[ORDER_NOTICE.reinstated.ground[ground], ORDER_NOTICE.reinstated.now, ORDER_NOTICE.lifted].map((paragraph) => (
+              <p key={paragraph} className="frame-text">
+                <UserText>{paragraph}</UserText>
+              </p>
+            ))}
+          </div>
+        </>
+      )}
+      <Confirm props={props} onCancel={props.onCancelCorrection} label={W.reinstateButton} />
+    </section>
+  );
+}
+
+/** "Reinstate" beside an order's measure that is in force: live for an admin, greyed with admin_required's words for anyone else. */
+export function ReinstateControl({ decision, role, disabled, onReinstate }: { decision: CaseDecision; role: StaffRole; disabled: boolean; onReinstate(decision: CaseDecision): void }) {
+  if (reinstatable(decision) === null) return null;
+  const admin = role === "admin";
+  return (
+    <>
+      <button type="button" onClick={() => onReinstate(decision)} disabled={disabled || !admin}>
+        {ORDER_WORDS.caseOrder.reinstate}
+      </button>
+      {admin ? null : <p className="hint">{messageFor("admin_required")}</p>}
+    </>
+  );
+}
+
 /** The sentence that greys a reporting control, by its key, with the case answer's numbers. */
 function reportingClosedWords(view: CaseView, why: ReportingClosed): string {
   const reporting = view.standing?.reporting;
@@ -806,6 +903,7 @@ export function ComposerView(shown: ComposerViewProps) {
   // 3e Task 4: a correction that answers a reply, and one that withdraws an announced measure, have views of their own.
   // Task 5: so has a correction that withdraws a "No breach" decision's marks.
   if (shown.draft.kind === "correction") {
+    if (shown.draft.reinstate === true) return <ReinstateView {...shown} />;
     if (shown.draft.withdrawMarks === true) return <MarksView {...shown} />;
     return shown.draft.answer !== undefined ? <AnswerView {...shown} /> : shown.draft.replaced === true ? <WithdrawView {...shown} /> : <CorrectionView {...shown} />;
   }

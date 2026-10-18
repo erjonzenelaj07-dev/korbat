@@ -62,7 +62,15 @@ export type TemplateName =
   // Task 2: an order opened, an order's record corrected, and the daily count of what orders given effect still miss.
   | "order_opened"
   | "order_corrected"
-  | "order_unverified";
+  | "order_unverified"
+  // Task 3: an order given effect, an order's measure lifted, a held notice about to be released; and the three mails to
+  // a person about an order's notice (W.5), each saying only that a notice is on the Cases screen or that it has grown.
+  | "order_effected"
+  | "order_reinstated"
+  | "hold_ending"
+  | "order_notice"
+  | "order_reinstated_notice"
+  | "order_notice_added";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

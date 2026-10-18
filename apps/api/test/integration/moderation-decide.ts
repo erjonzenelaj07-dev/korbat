@@ -53,6 +53,8 @@ export interface DeciderWorld {
   confirmReview(member: RealStaff, decisionId: string, params: AppealsReviewedParams): Promise<StaffStepUpConfirmed>;
   /** A whole confirmed review of the decision's pending appeal: the params as the console builds them, the confirmation, and review. */
   reviewAs(member: RealStaff, decisionId: string, input?: ReviewInput): Promise<DecideOutcome>;
+  /** 3f: a verified confirmation of an order's action (the effect, an event, a correction), by the member's own key in the member's session. */
+  confirmOrder(member: RealStaff, action: "order_effected" | "order_event_recorded" | "order_corrected", orderId: string, params: Record<string, unknown>): Promise<StaffStepUpConfirmed>;
   /** Removes the staff profiles this world made (their decisions, findings and texts must be gone by then) and closes its pools. */
   close(options?: { keepStaff?: boolean }): Promise<void>;
 }
@@ -134,6 +136,13 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     return outcome;
   }
 
+  async function confirmOrder(member: RealStaff, action: "order_effected" | "order_event_recorded" | "order_corrected", orderId: string, params: Record<string, unknown>): Promise<StaffStepUpConfirmed> {
+    sync();
+    const request = { action, target: { type: "order" as const, id: orderId }, params } as Parameters<typeof stepUpAssertion>[4];
+    const stepUp = await stepUpAssertion(h, member.soft, member.credentialId, member.session, request, { counter: ++member.counter });
+    return verifyStepUp(h.deps, member.session, request, stepUp, { ...h.ctx, requestId: `req-${randomUUID()}` });
+  }
+
   async function close(options: { keepStaff?: boolean } = {}): Promise<void> {
     try {
       if (!options.keepStaff && members.length > 0) await migrateDb.execute(sql`delete from profiles where id = any(${uuids(members.map((member) => member.id))})`);
@@ -142,7 +151,7 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
     }
   }
 
-  return { authDb, migrateDb, moderation, staff, confirm, decideAs, confirmReview, reviewAs, close };
+  return { authDb, migrateDb, moderation, staff, confirm, decideAs, confirmReview, reviewAs, confirmOrder, close };
 }
 
 // ---------------------------------------------------------------- decideForTest

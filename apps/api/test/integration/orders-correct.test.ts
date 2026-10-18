@@ -6,10 +6,11 @@ import type { OrderCorrectFacts, OrderView } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { ModerationError, createBackground } from "../../src/moderation/context";
 import { correctOrderRecord } from "../../src/moderation/orders";
-import { CHANNEL_TABLES, moderationDeps, newTestStaff, raised, removeFixtures, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
+import { CHANNEL_TABLES, aPost, decideIn, ground, imagePost, intake, moderationDeps, newTestStaff, raised, removeFixtures, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
+import { newProfile } from "./social-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 import { closeNotifyFixtures, contactMessageForTest, outboxSince, removeMessages } from "./notify-fixtures";
-import { ORDER_TABLES, removeOrderAlerts, disableItemForTest, orderConfig, orderConfirmation, orderForTest, removeOrders, sessionOf } from "./orders-fixtures";
+import { ORDER_TABLES, removeOrderAlerts, disableItemForTest, effectParams, effectWith, orderConfig, orderConfirmation, orderForTest, removeOrders, sessionOf } from "./orders-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -191,6 +192,38 @@ describe.skipIf(!process.env.INTEGRATION)("integration: correcting an order's re
       const audit = await lastAudit(tx, order.id);
       expect(audit.step_up).not.toBeNull();
       expect(audit.metadata).toMatchObject({ rule: "admin", params: { facts: { emergency: true, kind: "tco_removal" } } });
+    });
+  });
+
+  test("after a real effect (Task 3): setting Section C untells every told decision of the order and keeps the post from its author; one that told nobody stays so; unsetting it ends the hold as not_ordered; a changed withholding derives the level again", async () => {
+    await rolledBack(w.apiDb, async (tx) => {
+      const p = await imagePost(tx, 0);
+      const reporter = await newProfile(tx as unknown as Db);
+      const order = await orderForTest(tx, moderator, { kind: "dsa_art9", posts: [p.postId], withholdFromAuthor: false });
+      const done = await effectWith(tx, admin, order.id, { ...effectParams(order), urgent: true });
+      const decisionId = done.items[0]!.decisionId!;
+      // A report about the post answered "no breach" after the effect: korbat tells its author nothing of it.
+      const reported = await intake(tx, ground.rule(reporter.id), aPost(p.postId));
+      const noBreach = await decideIn(tx, moderator, reported.items[0]!.caseId!, { kind: "final", outcome: "no_violation" });
+      const row = async (id: string) =>
+        (await tx.execute<{ informed: boolean; mail: string }>(sql`select informed_at is not null as informed, author_mail::text as mail from public.decisions where id = ${id}::uuid`))[0]!;
+      const level = async () => (await tx.execute<{ level: string }>(sql`select moderation_level::text as level from public.posts where id = ${p.postId}::uuid`))[0]!.level;
+      expect([await row(decisionId), await level()]).toEqual([{ informed: true, mail: "pending" }, "removed"]);
+      const caution = view(await correct(tx, moderator, order.id, { sectionC: true }));
+      expect(caution.events.at(-1)).toMatchObject({ kind: "corrected", ground: "caution" });
+      expect(await row(decisionId)).toEqual({ informed: false, mail: "none" });
+      expect(await row(noBreach)).toEqual({ informed: true, mail: "none" });
+      expect(await level()).toBe("disabled");
+      // Unsetting it is an admin's, under the key: the hold ends as korbat's mistake, and the withholding follows when unset too.
+      const unset = view(await correct(tx, admin, order.id, { sectionC: false, withholdFromAuthor: false }, true));
+      expect(unset.events.map((e) => [e.kind, e.ground]).slice(-2)).toEqual([
+        ["hold_ended", "not_ordered"],
+        ["corrected", "admin"],
+      ]);
+      expect(await level()).toBe("removed");
+      expect((await tx.execute<{ told: number }>(sql`select public.order_notices_release() as told`))[0]!.told).toBe(1);
+      expect(await row(decisionId)).toEqual({ informed: true, mail: "pending" });
+      expect(await row(noBreach)).toEqual({ informed: true, mail: "none" });
     });
   });
 

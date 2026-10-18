@@ -3,6 +3,7 @@ import {
   CaseDecidedParams,
   MEASURES,
   MEASURE_KINDS,
+  ORDER_DRAFTS,
   RETIRED_HANDLE_PREFIX,
   RULE_DEFAULT_CATEGORY,
   SEAL_DRAFTS,
@@ -26,6 +27,7 @@ import {
   type DecisionActionParams,
   type MeasureTarget,
   type MeasureKind,
+  type OrderGround,
   type ReversalKind,
   type RuleId,
   type StaffMe,
@@ -91,6 +93,8 @@ export interface CaseDraft {
   unfounded?: string[];
   /** 3e Task 5: a correction kept that withdraws every mark of the "No breach" decision it corrects. */
   withdrawMarks?: boolean;
+  /** 3f Task 3: a correction that reinstates a post after an order, its ground signed on its one action. */
+  reinstate?: boolean;
 }
 
 /** The composer's own sentences, each written once. The seal's drafts are the contracts', and the statement's words the rulebook package's. */
@@ -358,6 +362,8 @@ export const strikeCarriesStanding = (decision: CaseDecision | undefined): boole
 
 /** The reversal that lifts a measure. */
 function reversalOf(action: { kind: ActionKind; mediaId: string | null }): DecisionActionParams {
+  // 3f: an order's measure is lifted only by its own reversal, which a reinstatement holds alone.
+  if (action.kind === "disable_by_order") return { kind: "reinstate_by_order", mediaId: null };
   const target = MEASURES[action.kind].target;
   if (target === "post") return { kind: "restore", mediaId: null };
   if (target === "image") return { kind: "restore_media", mediaId: action.mediaId };
@@ -660,6 +666,38 @@ export function withdrawable(view: CaseView, decision: CaseDecision, role: Staff
 export function withdrawDraft(caseId: CaseId, view: CaseView, decision: CaseDecision, role: StaffRole): CaseDraft {
   return { ...newDraft(caseId, view, role), kind: "correction", reviewsDecisionId: decision.id, category: decision.category, replaced: true, actions: [{ kind: "lift_suspension", mediaId: null }] };
 }
+
+/**
+ * 3f Task 3 (design, section 8.6): the order's measure a reinstatement lifts, beside an order decision whose measure is
+ * in force; null otherwise. Any staff member sees it; only an admin's control is live.
+ */
+export function reinstatable(decision: CaseDecision): CaseDecisionAction | null {
+  if (decision.kind !== "order") return null;
+  return decision.actions.find((action) => action.kind === "disable_by_order" && action.inForce) ?? null;
+}
+
+/** The draft of a reinstatement: a correction of the order decision, with no ground chosen yet. */
+export function reinstateDraft(caseId: CaseId, view: CaseView, decision: CaseDecision, role: StaffRole): CaseDraft {
+  return { ...newDraft(caseId, view, role), kind: "correction", reviewsDecisionId: decision.id, category: decision.category, reinstate: true, actions: [] };
+}
+
+/**
+ * The ground of a reinstatement chosen: its one action signs it, and its reason is the ground's fixed draft (W.2), which
+ * nobody edits: a free text beside an order could say what a non-disclosure decision forbids.
+ */
+export function withReinstateGround(draft: CaseDraft, ground: OrderGround): CaseDraft {
+  const reason = ORDER_DRAFTS.reinstate[ground];
+  const saved = draft.texts.review_reason;
+  return {
+    ...draft,
+    actions: [{ kind: "reinstate_by_order", mediaId: null, orderGround: ground }],
+    written: { ...draft.written, review_reason: reason },
+    texts: saved !== undefined && saved.text === reason ? draft.texts : {},
+  };
+}
+
+/** The ground a reinstatement's draft signs, or null before one is chosen. */
+export const reinstateGroundOf = (draft: CaseDraft): OrderGround | null => draft.actions.find((action) => action.kind === "reinstate_by_order")?.orderGround ?? null;
 
 /**
  * What an answer to a reply would fix, for the preview's statement (repliedTo, 10.2), as the page can tell now: after a
@@ -1283,6 +1321,11 @@ export function previewOf(view: CaseView, draft: CaseDraft, now: Date): Statemen
 // ---------------------------------------------------------------- the params and the confirmation
 
 /** The digest of a snapshot, computed here from the members the page displayed: never the digest the answer carried. */
+/** The digest a decision signs: of what the page showed, or, for a copy withheld while its post is preserved for an order, the stored one. */
+export function signedSnapshotDigest(snapshot: CaseSnapshot): Promise<string> {
+  return snapshot.withheld ? Promise.resolve(snapshot.digest) : shownSnapshotDigest(snapshot);
+}
+
 export function shownSnapshotDigest(snapshot: Extract<CaseSnapshot, { withheld: false }>): Promise<string> {
   return snapshotDigest({
     salt: snapshot.salt,
@@ -1506,7 +1549,9 @@ export async function confirmDecision(
   if (!complete(view, draft)) return { error: COMPOSER.incomplete, code: "incomplete" };
 
   const newest = view.snapshots[0];
-  if (!newest || newest.withheld) {
+  // 3f (design, section 8.6): on a post preserved for an order every copy is withheld from staff, a fresh one too; the
+  // decision then signs the newest copy's stored digest, which the database compares as it always does.
+  if (!newest || (newest.withheld && !view.preserved)) {
     try {
       await deps.api.takeSnapshot(caseId, { activity: true });
       return { fresh: await deps.api.caseView(caseId, { activity: true }), notice: COMPOSER.freshSnapshot };
@@ -1529,7 +1574,7 @@ export async function confirmDecision(
     // A review is confirmed as the action of its own: on the decision it reviews, with its appeal among the params.
     let reviewed: AppealsReviewedParams;
     try {
-      reviewed = reviewParamsOf(view, draft, { snapshot: await shownSnapshotDigest(newest), reason: digests.review_reason ?? null });
+      reviewed = reviewParamsOf(view, draft, { snapshot: await signedSnapshotDigest(newest), reason: digests.review_reason ?? null });
     } catch {
       return { error: COMPOSER.incomplete, code: "incomplete" };
     }
@@ -1543,7 +1588,7 @@ export async function confirmDecision(
   let params: CaseDecidedParams;
   try {
     params = decisionParamsOf(view, draft, {
-      snapshot: await shownSnapshotDigest(newest),
+      snapshot: await signedSnapshotDigest(newest),
       facts: digests.facts ?? null,
       reason: draft.kind === "correction" ? (digests.review_reason ?? null) : (digests.reason ?? null),
       legalReference: digests.legal_reference ?? null,

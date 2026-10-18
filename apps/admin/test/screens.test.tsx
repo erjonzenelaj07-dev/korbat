@@ -81,6 +81,7 @@ const QUIET: StaffOverview = {
   // 3f: nothing at the contact point, and the alert channel working.
   contact: { open: 0, oldestAt: null, dueAt: null },
   alerts: { channel: "ok", since: null },
+  ordersUnverified: { total: 0, items: [] },
   repliesWaiting: { count: 0, oldestAt: null },
   strikeAccounts: 0,
 };

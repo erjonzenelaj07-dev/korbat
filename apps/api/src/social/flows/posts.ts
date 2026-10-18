@@ -79,7 +79,9 @@ export async function getPost(deps: SocialDeps, viewer: ViewerId, id: string): P
 /** Author only. Deleting twice is a no-op. Someone who may not see the post learns nothing. */
 export async function deletePost(deps: SocialDeps, viewer: string, id: string): Promise<void> {
   const row = (await deps.repo.findPosts([id])).get(id);
-  if (!row) throw new SocialError("not_found", 404);
+  // 3f (design, section 7.10): a post disabled for an authority's order answers its author as a post that does not
+  // exist, so its deletion is not_found, as for anyone (the repository's update and posts_guard refuse it too).
+  if (!row || row.state === "disabled") throw new SocialError("not_found", 404);
   if (row.authorId === viewer) {
     // The image rows go with the post, in its transaction. Their files are deleted after the commit: files cannot be rolled back.
     // The media module answers only the rows that are gone: an image a case holds as evidence, and every image of a frozen

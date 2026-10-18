@@ -10,8 +10,8 @@
  *
  * order-open writes the rows the console's route writes, through the moderation module's insertOrder, and before its
  * audit row the alert order_opened, which the watcher pushes and the alert tick mails: an order opened at the shell is
- * heard like any other. Telling an author that the authority's texts were recorded is Task 3's (nobody is told before an
- * effect); the hold's commands are Task 3's too.
+ * heard like any other. Task 3: order-texts tells the authors of the order's told notices that a notice grew (the mail
+ * order_notice_added, sent by the dispatch round), and the hold's commands move or end an order's hold.
  *
  * This file has no entry point of its own, so both bundles can include it (build.mjs says why that matters).
  */
@@ -20,6 +20,7 @@ import { sql } from "drizzle-orm";
 import {
   ALERT_KINDS,
   FORBIDDEN_FORMAT,
+  HOLD_END_REASONS,
   MemberStateCode,
   ORDER_CHANNELS,
   ORDER_ITEMS_MAX,
@@ -56,6 +57,10 @@ export const ORDER_COMMANDS = [
   "order-reopen",
   "order-tell-rule",
   "order-told",
+  // Task 3: the hold's commands (section 7.10).
+  "order-hold-until",
+  "order-hold-extend",
+  "order-hold-end",
 ] as const;
 export type OrderCommandName = (typeof ORDER_COMMANDS)[number];
 
@@ -74,6 +79,9 @@ export const ORDER_USAGE = [
   "  order-reopen <order> --how <text>      open again an order that was closed by mistake or restored by a court",
   "  order-tell-rule <order> --when <at_effect|never|instant> --basis <text>   when the person an order to provide information names may be told",
   "  order-told <order> --at <instant> --how <text>   that the operator told that person",
+  "  order-hold-until <order> <instant|none> --basis <text> --how <text> [--release]   the end of non-disclosure the authority stated",
+  "  order-hold-extend <order> --received <instant> --how <text>   a removal order's one extension of non-disclosure, or the check of the console's",
+  "  order-hold-end <order> --reason <not_authentic|annulled|released_by_authority|not_ordered> --how <text>   end a hold at once",
   "  An <order> is its id, or <CC>:<reference> while one order of that state has the reference. Every instant has its offset.",
 ];
 
@@ -356,8 +364,27 @@ async function run(tx: DbTx, cmd: OrderCommand, settings: OrderSettings, stdin: 
             ? sql`update public.legal_orders set redress = ${text}, redress_salt = ${salt}, redress_digest = ${digest} where id = ${order.id}::uuid`
             : sql`update public.legal_orders set scope = ${text}, scope_salt = ${salt}, scope_digest = ${digest} where id = ${order.id}::uuid`,
       );
-      await recorded(tx, order.id, "texts_recorded", { text: column, digest });
-      return [`${c}: ${column} recorded (${Array.from(text).length} characters). No author has been told of this order: the notice shows the text from its first telling.`];
+      // Task 3 (section 7.7, step 3): every told order decision of the order is owed its mail again, so that the dispatch
+      // round mails order_notice_added: a time limit of the author's runs from receiving the authority's words. The event's
+      // time is the recorded instant, which the notice prints; no column holds it a second time.
+      const told = await rows<{ id: string }>(
+        tx,
+        sql`update public.decisions d set author_mail = 'pending'
+              from public.legal_order_items i
+             where i.order_id = ${order.id}::uuid and d.order_item_id = i.id and d.kind::text = 'order' and d.informed_at is not null and d.author_mail <> 'none'
+            returning d.id`,
+      );
+      const [held] = await rows<{ held: number; until: string | null }>(
+        tx,
+        sql`select count(*)::int as held, ${isoOf("min(public.order_hold_until(i.order_id))")} as until
+              from public.legal_order_items i join public.decisions d on d.order_item_id = i.id
+             where i.order_id = ${order.id}::uuid and d.kind::text = 'order' and d.informed_at is null`,
+      );
+      await recorded(tx, order.id, "texts_recorded", { text: column, digest, authors: told.length });
+      const head = `${c}: ${column} recorded (${Array.from(text).length} characters).`;
+      if (told.length > 0) return [`${head} ${told.length} authors are sent an email that the notice has grown; the notice shows the text and this time from now.`];
+      if (held!.held > 0) return [`${head} The notice is held: it will show the text once it is released, ${held!.until ?? "at a time not recorded yet"}.`];
+      return [`${head} No author has been told of this order: the notice shows the text from its first telling.`];
     }
     case "order-document": {
       const order = await lockOrder(tx, c, cmd.order!);
@@ -411,6 +438,82 @@ async function run(tx: DbTx, cmd: OrderCommand, settings: OrderSettings, stdin: 
       );
       await recorded(tx, order.id, "tell_person_set", { rule, at: at?.toISOString() ?? null, basisSha256: sha256(basis) });
       return [`${c}: the person is told ${rule === "at_effect" ? "at effect" : rule === "never" ? "never" : `at ${at!.toISOString()}`}, on the basis recorded.`];
+    }
+    case "order-hold-until": {
+      const order = await lockOrder(tx, c, cmd.order!);
+      if (order.kind === "dsa_art10") refuse(c, "an order to provide information has no notice of korbat's: its rule for telling the person is order-tell-rule's");
+      if (!order.sectionC) refuse(c, "no notice of this order is held");
+      if (order.released || order.holdEndedAt !== null) refuse(c, "the author's notice was already released, or its hold was ended");
+      const word = cmd.positional[0];
+      const at = word === "none" ? null : instant(c, word);
+      const basis = freeText(c, "--basis", flag(cmd, "--basis")!);
+      const how = freeText(c, "--how", flag(cmd, "--how")!);
+      if (order.kind === "tco_removal" && at === null) refuse(c, "a removal order's hold has the Regulation's end: give the authority's instant, or leave its end as computed");
+      // The end this record would leave (the lesser of the computed end and the authority's for a removal order; the
+      // authority's own for a DSA order), and whether it is no longer ahead: that would release the notice within minutes.
+      const [would] = await rows<{ until: string | null; past: boolean; computed: string | null; computed_wins: boolean }>(
+        tx,
+        sql`select ${isoOf("w.until")} as until, coalesce(w.until <= clock_timestamp(), false) as past, ${isoOf("w.computed")} as computed,
+                   coalesce(w.computed < x.at, false) as computed_wins
+              from public.legal_orders o
+              cross join (select ${at?.toISOString() ?? null}::timestamptz as at) x
+              cross join lateral (select case when o.kind = 'tco_removal' then public.order_hold_end(coalesce(o.issued_at, o.received_at, o.opened_at), o.hold_extended) end as computed) c
+              cross join lateral (select case when o.kind = 'tco_removal' then least(c.computed, x.at) else x.at end as until, c.computed) w
+             where o.id = ${order.id}::uuid`,
+      );
+      if (would!.until !== null && would!.past && !cmd.flags.has("--release")) {
+        throw new Refusal(`${c}: with this end the hold would have ended on ${would!.until}, and the author would be told at the next dispatch round. Nothing changed; give --release if that is what the order says.`);
+      }
+      await tx.execute(sql`update public.legal_orders set authority_hold_until = ${at?.toISOString() ?? null}::timestamptz, hold_basis = ${basis} where id = ${order.id}::uuid`);
+      await recorded(tx, order.id, "hold_until_set", { until: at?.toISOString() ?? null, basisSha256: sha256(basis), howSha256: sha256(how), release: cmd.flags.has("--release") });
+      if (at === null) return [`${c}: the notice is held with no end. Every staff account is reminded daily until an end is recorded.`];
+      if (order.kind === "tco_removal" && would!.computed_wins) return [`${c}: the computed end ${would!.computed} is earlier and stands.`];
+      return [`${c}: the notice is held until ${would!.until}.`];
+    }
+    case "order-hold-extend": {
+      const order = await lockOrder(tx, c, cmd.order!);
+      if (order.kind !== "tco_removal") refuse(c, "only a removal order's hold is extended once; a DSA order's later time is order-hold-until's");
+      if (!order.sectionC) refuse(c, "no notice of this order is held");
+      if (order.released || order.holdEndedAt !== null) refuse(c, "the author's notice was already released, or its hold was ended");
+      const received = instant(c, flag(cmd, "--received")!);
+      if (received.getTime() > Date.now()) refuse(c, "--received is in the future");
+      const how = freeText(c, "--how", flag(cmd, "--how")!);
+      const [prior] = await rows<{ extended: boolean; console_at: string | null; cli: boolean }>(
+        tx,
+        sql`select o.hold_extended as extended,
+                   ${isoOf("(select max(e.at) from public.legal_order_events e where e.order_id = o.id and e.kind = 'hold_extended' and e.via = 'console')")} as console_at,
+                   exists (select 1 from public.legal_order_events e where e.order_id = o.id and e.kind = 'hold_extended' and e.via = 'cli') as cli
+              from public.legal_orders o where o.id = ${order.id}::uuid`,
+      );
+      if (prior!.cli) refuse(c, "the non-disclosure period was already extended once");
+      await tx.execute(sql`update public.legal_orders set hold_extended = true where id = ${order.id}::uuid`);
+      await recorded(tx, order.id, "hold_extended", { received: received.toISOString(), howSha256: sha256(how), confirms: prior!.console_at }, { effectiveAt: received });
+      const until = await holdWords(tx, order.id);
+      if (prior!.console_at !== null) return [`${c}: the console's extension of ${prior!.console_at} is confirmed; the notice is ${until}.`];
+      return [`${c}: the notice is ${until}. It cannot be extended again.`];
+    }
+    case "order-hold-end": {
+      const order = await lockOrder(tx, c, cmd.order!);
+      const reason = flag(cmd, "--reason")!;
+      if (!(HOLD_END_REASONS as readonly string[]).includes(reason)) refuse(c, "--reason is not_authentic, annulled, released_by_authority or not_ordered");
+      const how = freeText(c, "--how", flag(cmd, "--how")!);
+      if (!order.sectionC || order.released || order.holdEndedAt !== null) refuse(c, "no notice of this order is held");
+      // An extension the console recorded that turns out not to be the authority's is undone only once the first period
+      // has ended: ending the hold before that day would tell early.
+      const [first] = await rows<{ ahead: boolean; extended: boolean }>(
+        tx,
+        sql`select o.hold_extended as extended,
+                   coalesce(o.kind = 'tco_removal' and o.hold_extended
+                            and least(public.order_hold_end(coalesce(o.issued_at, o.received_at, o.opened_at), false), o.authority_hold_until) > clock_timestamp(), false) as ahead
+              from public.legal_orders o where o.id = ${order.id}::uuid`,
+      );
+      if (reason === "not_ordered" && first!.extended && first!.ahead) refuse(c, "the first period of this extended hold has not ended: ending it now as not ordered would tell early");
+      const [ended] = await rows<{ at: string }>(
+        tx,
+        sql`update public.legal_orders set hold_ended_at = now(), hold_end_reason = ${reason} where id = ${order.id}::uuid returning ${isoOf("hold_ended_at")} as at`,
+      );
+      await recorded(tx, order.id, "hold_ended", { reason, howSha256: sha256(how) }, { ground: reason });
+      return [`${c}: the hold ended at ${ended!.at}. The next dispatch round tells the author, within about 10 minutes.`];
     }
     case "order-told": {
       const order = await lockOrder(tx, c, cmd.order!);

@@ -371,6 +371,10 @@ export const CONSOLE_MODERATION_CODES = [
   "order_closed",
   "order_event_refused",
   "already_released",
+  // 3f Task 3 (design, sections 8.5 and 8.9): the refusals of giving effect to an order.
+  "order_changed",
+  "order_not_verified",
+  "order_cap",
 ] as const satisfies readonly ModerationErrorCode[];
 export type ConsoleModerationCode = (typeof CONSOLE_MODERATION_CODES)[number];
 
@@ -411,6 +415,12 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
   order_event_refused:
     "That cannot be recorded now: the order is not in the state this page showed (for example, a second extension, or the grounds ceasing while no Annex III stands). Read the order again.",
   already_released: "The author's notice of this order was already released, or its hold was ended: an extension can no longer be recorded. Tell the operator at once.",
+  // [effect.gone] is one of its cases: a post of the order purged between the read and the key.
+  order_changed: "The database refused this: the order, its items or their posts are no longer what this page showed. Read the order again.",
+  order_not_verified:
+    "This order is not verified yet: whoever has the server checks it against the order in the mailbox (staff.js order-verify). If the order itself sets a time that cannot wait, an admin gives it effect as urgent.",
+  // [effect.cap] (8.5 block 4).
+  order_cap: `You have given effect to ${ORDER_RULES.decisionsPerDay} order items in 24 hours, the most one staff account may. Another staff member goes on; tell the operator at once.`,
 };
 
 /** A small number as a word, as the design's sentences write it; a larger one in digits. */
@@ -645,6 +655,57 @@ export const ORDER_WORDS = {
     correctButton: "Correct",
     corrected: "Corrected. Every staff account is alerted that the record changed.",
     changed: "The database refused this: the order, its items or their posts are no longer what this page showed. Read the order again.",
+    // Task 3 (design, section 8.5): block 4, "Extension received", the hold's warning and an item's preservation.
+    extended: "Extension received",
+    extendedWhat: (holdUntil: string) =>
+      `Record this the moment the authority's decision to extend the non-disclosure period arrives: without it the database releases the author's notice by itself on ${holdUntil}. The notice is then held ${ORDER_RULES.holdExtensionDays} days longer, once. Whoever has the server checks the decision afterwards and either confirms it or ends the hold (staff.js order-hold-end).`,
+    holdWarn: (holdUntil: string) =>
+      `The author's notice is released on ${holdUntil}. If the authority has extended or prolonged the silence, record it before then: every staff account is alerted daily until that day.`,
+    preservedUntil: (at: string) => `Preserved until ${at}`,
+    reinstatedAt: (at: string, ground: string) => `Reinstated at ${at}: ${ground}`,
+    effectTitle: "Disable for an order",
+    effectWhat: "This disables the ticked posts for everyone, their authors included: each then answers like a post that does not exist, and its images are not served. korbat does not assess them. Nothing is deleted.",
+    effectPreserve: `Each post, its images and a copy of its text are preserved for ${inWords(ORDER_RULES.preserveMonths)} months from now, and erased then unless an authority or a court asks for longer.`,
+    effectRemoved: "This removes the ticked posts for everyone but their authors, who still see them, as after a removal under a korbat rule. korbat does not assess them.",
+    effectTold: "Each author is told at once: a notice in the app, and an email that says only that there is one.",
+    effectHeld: (holdUntil: string) =>
+      `Section C is ticked: the authors are told nothing, and see what everyone sees, until ${holdUntil}. The database releases the notice then by itself; every staff account is alerted ${ORDER_RULES.holdWarningDays} days before.`,
+    effectHeldNoReceipt: `Section C is ticked: the authors are told nothing, and see what everyone sees, until six weeks after the receipt, whose time is not recorded yet (staff.js order-received). The database releases the notice then by itself; every staff account is alerted ${ORDER_RULES.holdWarningDays} days before.`,
+    effectHeldDsa: (holdUntil: string) => `The order says the author must not be told: the authors are told nothing, and see what everyone sees, until the time the authority stated (${holdUntil}).`,
+    effectHeldOpen:
+      "The order says the author must not be told: the authors are told nothing, and see what everyone sees, and no end is recorded: nothing is released until whoever has the server records the authority's time (staff.js order-hold-until). Every staff account is reminded daily that it is missing.",
+    effectUrgent: "Urgent: give effect before the check",
+    effectUrgentWhat: "Tick this only when the order itself sets a time that cannot wait for the check. It is signed with your key and every staff account is told that an unverified order was given effect as urgent.",
+    effectAnyone: "Any staff member on duty does this, also for a post of someone they know or of a staff member: an order leaves no choice. Every staff account is alerted.",
+    effectMax: `At most ${ORDER_RULES.itemsPerAction} items at a time: confirm these, then the rest.`,
+    effectButton: (n: number) => `Disable ${n} ${n === 1 ? "post" : "posts"}: confirm with your staff key`,
+    effectTick: "Disable this post",
+    checkOutside: (at: string, n: number) =>
+      `Disabled at ${at}: ${n} ${n === 1 ? "post" : "posts"}. Now check from outside: open each address below in a private window. It must say that the post does not exist (HTTP 404). An image may still load from an edge cache for up to 5 minutes. Then send Annex II from the mailbox and record it here.`,
+    effectRest: (itemsOpen: number, deadline: string | null) =>
+      `${itemsOpen} items of this order are still open. The order is not given effect in full yet: its deadline ${deadline === null ? "" : `${deadline} `}runs for them, and the reminders go on. Tick them and confirm again, or have an admin close an item that names nothing korbat can disable, that the order does not name or that the authority withdrew.`,
+    alreadyNow: "already disabled or removed by another decision: recorded, changed nothing now",
+    deletedNow: "deleted by its author: recorded, changed nothing",
+  },
+  /** Task 3: Home's [home.unverified] (8.2), before the orders' links. */
+  homeUnverified: (n: number) =>
+    `Orders given effect and not verified, or with a post added after the check: ${n}. Whoever has the server compares each with the order in the mailbox and records the check with staff.js order-verify; every staff account is alerted daily until then.`,
+  /** Task 3: a case that holds an order's measure (8.6). */
+  caseOrder: {
+    source: "An authority's order",
+    preserved: "This post is preserved under an order. Its text and images are shown to no staff member here; they are opened only from the command line, for a recorded purpose (staff.js order-access).",
+    own: "The order is not korbat's judgement. Reports about this post under korbat's rules are decided on their own: a removal under a rule is a second decision with its own statement and appeal, and it stays if the order's measure is lifted.",
+    heldToo: (until: string | null) =>
+      `The author of this post must not be told of an authority's order yet. So this decision is recorded now and told to the author only when that notice is released: ${until === null ? "at a time that is not recorded yet" : `on ${until}, as things stand`}. Whoever reported the post is answered now, as always. Do not tell the author anything yourself.`,
+    inForce: "in force",
+    withheld: "withheld from its author",
+    shown: "shown to its author",
+    reinstate: "Reinstate",
+    reinstateWhat:
+      "Reinstating ends the order's measure on this post and its preservation. korbat never lifts an order's measure on its own view of the content: choose what happened, after you checked the message it came in as you check an order. If another decision still restricts the post, it stays restricted. Should the order be restored later and the post be disabled again, its six months count anew from that disabling.",
+    reinstateTold: "If the author was told of the disabling, they are told at once why it ended. If the notice is still held, nothing is told until the hold ends, and then both are told together.",
+    reinstateFake: "Tell whoever has the server to end the hold first (staff.js order-hold-end), so that the author learns at once what happened and for how long.",
+    reinstateButton: "Reinstate: confirm with your staff key",
   },
   /** Home's two lines of a deadline (8.2). */
   homeClock: (dueAt: string, minutes: number) => `The nearest deadline is ${dueAt}: ${minutes} minutes left.`,
@@ -694,6 +755,8 @@ export const OUTCOME_WORDS: Record<ItemOutcome, string> = {
 export const DECISION_KINDS: Record<CaseDecision["kind"], string> = {
   interim: "While deciding",
   final: "Final decision",
+  // 3f (design, section 8.6).
+  order: "Order",
   review: "Review of an appeal",
   correction: "Correction",
 };

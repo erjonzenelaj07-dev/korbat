@@ -28,6 +28,7 @@ import {
   type FindingRequest,
   type IdentityRevealRequest,
   type OrderCorrectRequest,
+  type OrderEffectRequest,
   type OrderEventRecordRequest,
   type OrderItemsRequest,
   type OrderOpenRequest,
@@ -280,6 +281,11 @@ export function createStaffApi(deps: StaffApiDeps) {
     recordOrderEvent: async (id: string, body: OrderEventRecordRequest, call: Call = {}) => {
       if (!isLowerUuid(id)) throw new ApiError(0, "invalid_request");
       return sameOrder(id, await request("POST", `/api/staff/orders/${id}/events`, OrderView, call, body));
+    },
+    /** 3f Task 3: "Disable for an order"; the order's id must be the lower-case uuid the step-up confirmed. */
+    effectOrder: async (id: string, body: OrderEffectRequest, call: Call = {}) => {
+      if (!isLowerUuid(id)) throw new ApiError(0, "invalid_request");
+      return sameOrder(id, await request("POST", `/api/staff/orders/${id}/effect`, OrderView, call, body));
     },
     /** 3f: a correction of what the order shows, with the step-up only under the rule admin. */
     correctOrder: async (id: string, body: OrderCorrectRequest, call: Call = {}) => {

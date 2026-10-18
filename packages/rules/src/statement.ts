@@ -1,4 +1,4 @@
-import { MEASURES, RETENTION, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
+import { EU_MEMBER_STATES, MEASURES, ORDER_DRAFTS, RETENTION, appealDeadline, type DecisionStatement, type MeasureKind, type OrderTexts, type ReversalKind } from "@korbat/contracts";
 // The rulebooks and the redress texts live in the index, which re-exports this module: the two import each other, and
 // each uses the other's functions only when called, never while it loads.
 import { getRedress, getRule, type RedressTexts } from "./index";
@@ -282,7 +282,11 @@ export function retireEnd(measures: readonly StatementInput["measures"][number][
 }
 
 /** The sentence that names the source: a notice or a report was followed, a moderator's finding was found. */
-const sourceSentence = (source: StatementInput["source"]): string => (source === "own_initiative" ? `What this decision is about was ${W.source.own_initiative}.` : `korbat decided this ${W.source[source]}.`);
+const sourceSentence = (source: StatementInput["source"]): string => {
+  // 3f: an order decision is a notice and never reaches this sentence (statementParagraphs returns its notice first).
+  if (source === "order") throw new Error("an order's decision is a notice, not a statement of reasons");
+  return source === "own_initiative" ? `What this decision is about was ${W.source.own_initiative}.` : `korbat decided this ${W.source[source]}.`;
+};
 
 /** What a reset's end or lifting says of the field: korbat does not put the old value back, and where it can still be read. */
 function fieldSentence(field: Field, reset: { oldValueKept: boolean; resetRuleId: string | null }): string {
@@ -631,9 +635,12 @@ function ladderGround(input: StatementInput, basis: "strikes" | "ladder_end"): s
  * then what ended); where it applies and for how long; how it came to korbat; that nothing was automated; the rule or the
  * law; the facts and the reason; and what the author can do about it.
  */
-export function statementParagraphs(input: StatementInput): string[] {
+export function statementParagraphs(input: StatementInput, extras: OrderNoticeExtras = {}): string[] {
   const redress = getRedress(input.redressVersion);
   if (!redress) throw new Error(`a statement names the redress texts of version ${input.redressVersion}, which this package does not hold`);
+  // 3f: an order decision and the correction of one are a notice, not a statement of reasons: none of the paragraphs
+  // below (no rule, no facts, no reason of korbat's, no appeal) applies to it.
+  if (input.order !== null && input.order !== undefined) return orderNoticeParagraphs(input, extras);
   const paragraphs: string[] = [];
   const about = input.kind === "review" || input.kind === "correction";
   const restricts = input.measures.length > 0;
@@ -733,5 +740,151 @@ export function statementParagraphs(input: StatementInput): string[] {
     const until = input.repliedTo.appealUntil;
     paragraphs.push(Date.parse(until) > Date.parse(input.decidedAt) ? redress.replyAnswered.replace("{deadline}", () => utcMinute(until)) : redress.notAppealable);
   } else paragraphs.push(redress.notAppealable);
+  return paragraphs;
+}
+
+// ---------------------------------------------------------------- an authority's order (3f design, sections 7.10, 9.3, 10.7; W.2, W.3)
+
+/** A post's korbat address as a notice prints it, as text and never as a link: the package holds no origin, so the path. */
+const postAddress = (postId: string): string => `/post/${postId}`;
+
+/**
+ * The notice of an authority's order (W.2, W.3): one entry a key, each a sentence with the facts it prints, in the words
+ * of the design. It is no statement of reasons (DSA Art. 17(5)): no paragraph says that korbat found anything, names a
+ * rule or prints an address; each says "the address under Contact in korbat's Terms", since the package holds none. The
+ * authority's own words are not here: the screen prints them in their block under the three labels.
+ */
+export const ORDER_NOTICE = {
+  done: {
+    disabled: (createdAt: string, address: string, disabledAt: string) =>
+      `korbat disabled access to your post of ${createdAt} (${address}) on ${disabledAt}, because it received an order to do so, which this notice describes. Nobody can see the post or its images, you included.`,
+    removed: (createdAt: string, address: string, disabledAt: string) =>
+      `korbat removed your post of ${createdAt} (${address}) on ${disabledAt}, because it received an order to do so, which this notice describes. Other people can no longer see it; you still can.`,
+  },
+  lead: {
+    tco_removal: (authority: string, state: string, reference: string, dated: string) =>
+      `The order is a removal order under Article 3 of Regulation (EU) 2021/784 on addressing the dissemination of terrorist content online. It names ${authority}, ${state}, as the authority that issued it, under the reference ${reference}${dated}.`,
+    dsa_art9: (authority: string, state: string, reference: string, dated: string) =>
+      `The order is an order to act against illegal content, as Article 9 of the Digital Services Act (Regulation (EU) 2022/2065) describes it. It names ${authority}, ${state}, as the authority that issued it, under the reference ${reference}${dated}.`,
+    confirmed: "korbat has since confirmed that the order comes from that authority.",
+  },
+  /** `{dated}`: the order's own date once recorded, else the day it reached korbat; nothing when neither is known. */
+  dated: { issued: (day: string) => `, and is dated ${day}`, received: (day: string) => `, and reached korbat on ${day}` },
+  notAssessed: {
+    tco_removal:
+      "This is not a decision of korbat's. korbat did not assess your post, under its rules or under the law, and takes no view of it: the law obliges korbat to carry out such an order. No automated means were used: a person at korbat carried it out.",
+    dsa_art9:
+      "This is not a decision of korbat's. korbat did not assess your post, under its rules or under the law, and takes no view of it: korbat carries out such an order because the law under which it was issued requires it. No automated means were used: a person at korbat carried it out.",
+  },
+  heldUntilNow: {
+    tco_removal: (disabledAt: string, informedAt: string) =>
+      `The order came with a decision that you must not be told for a time (Article 11(3) of the Regulation). korbat was not allowed to tell you until now. The post has been disabled since ${disabledAt}; korbat tells you on ${informedAt}.`,
+    dsa_art9: (disabledAt: string, informedAt: string) =>
+      `The order said that you must not be told until a time its authority set. korbat was not allowed to tell you until now. The post has been disabled since ${disabledAt}; korbat tells you on ${informedAt}. Because you were not to be told, korbat kept the post from you as well, and it stays so for as long as the order's measure stands.`,
+    notOrdered: (disabledAt: string, informedAt: string) =>
+      `korbat did not tell you of this until now, and that was korbat's own mistake: its record said that the order forbade telling you, and the order did not. The post has been disabled since ${disabledAt}; korbat tells you on ${informedAt}, and regrets the delay.`,
+  },
+  textsSince: (textsAt: string) => `korbat added the authority's words below to this notice on ${textsAt} and sent you an email that day.`,
+  reasonsLabel: "The authority's reasons, in its own words:",
+  redressLabel: "How the order can be challenged, in the authority's words:",
+  scopeLabel: "The territory the order covers, in the authority's words:",
+  /** The label of the block that holds the authority's words, which a screen reader announces. */
+  wordsBlock: "The authority's words",
+  textsFollow:
+    "korbat has not yet recorded the authority's reasons and the ways to challenge the order. It adds them to this notice as soon as it has, and sends you an email when it does. You can ask korbat for a copy of the order now: write, from the email address of your korbat account, to the address under Contact in korbat's Terms, and give the reference above.",
+  copy: "You can also ask korbat for a copy of the order: write, from the email address of your korbat account, to the address under Contact in korbat's Terms, and give the reference above.",
+  scrutiny: (homeState: string) =>
+    `The order comes from another Member State than korbat's. You have the right to ask the competent authority of ${homeState} to scrutinise it, with a reasoned request, within 48 hours of receiving the authority's reasons or a copy of the order (Article 4(4) of the Regulation). korbat cannot make that request for you.`,
+  reasonsAt: (at: string) => `This notice has held the authority's reasons since ${at}.`,
+  noReasonsYet: "This notice does not hold the authority's reasons yet.",
+  preserved: (preserveUntil: string) =>
+    `korbat keeps the post, its images and a copy of its text until ${preserveUntil}, six months from the disabling, as Article 6 of the Regulation requires, so that it can be reinstated or examined; longer only if an authority or a court asks. Meanwhile korbat shows them to nobody but the authorities and courts the Regulation names, uses them for nothing else, and leaves them out of your data export. Then korbat erases them, and a later reinstatement cannot bring the post back. If you challenge the order, ask the court or the authority to tell korbat to keep the post until it is decided.`,
+  preservedLonger: (preserveUntil: string) => `An authority or a court has asked korbat to keep them longer: until ${preserveUntil}.`,
+  erased: (erasedOn: string) => `The six months ended on ${erasedOn}. korbat erased the post's text, its images and its copies of them. The post cannot be reinstated.`,
+  everywhere: {
+    tco_removal: "This applies everywhere korbat is available.",
+    dsa_art9: "korbat cannot restrict content for one country alone, so it gave effect to the order everywhere korbat is available, which may be more than the order asks for.",
+  },
+  reapplied: (lostOn: string) =>
+    `The post was first disabled on ${lostOn}. korbat lost its record of that when it had to restore its database from a backup, and disabled the post again with this decision; the six months above count from the first time.`,
+  noAppeal: {
+    tco_removal:
+      "korbat's appeal does not apply: this is not korbat's decision, and korbat cannot lift it on its own review. You have the right to challenge the order before the courts of the Member State whose authority issued it (Article 9 of Regulation (EU) 2021/784). How, where and within what time is for that authority to say; korbat passes on what it said in this notice. If the order is withdrawn or annulled, korbat reinstates your post at once and tells you.",
+    dsa_art9:
+      "korbat's appeal does not apply: this is not korbat's decision, and korbat cannot lift it on its own review. The order's own text says how it can be challenged. How, where and within what time is for that authority to say; korbat passes on what it said in this notice. If the order is withdrawn or annulled, korbat reinstates your post at once and tells you.",
+  },
+  wrongItem:
+    "One thing is korbat's own: whether it disabled the post the order names, and only that. If the order does not name this post, write, from the email address of your korbat account, to the address under Contact in korbat's Terms, with the post's address and the reference above. korbat then compares the post with the order and, if it made that mistake, corrects it and tells you; if not, it answers why.",
+  reinstated: {
+    lead: (disabledAt: string, createdAt: string, address: string) => `korbat lifted the measure it took on ${disabledAt} for an authority's order on your post of ${createdAt} (${address}).`,
+    ground: ORDER_DRAFTS.reinstate,
+    now: "Your post is shown again as before, unless another decision listed under Settings, Cases still restricts it.",
+    erased: (erasedOn: string) => `korbat had already erased the post's content when its six months ended on ${erasedOn}, so nothing can be shown again.`,
+  },
+  lifted: "Nothing of the order's measure remains on this post. korbat's appeal does not apply to this. Where another decision about the post still stands, its own screen says whether you can appeal it.",
+} as const;
+
+/** What a notice reads besides its statement's data, both read fresh by the API: the authority's words and the day of an erasure. */
+export interface OrderNoticeExtras {
+  texts?: OrderTexts | null;
+  erasedOn?: string | null;
+}
+
+/** A Member State's name as a notice prints it, or its code when the contracts do not know it. */
+const stateName = (code: string): string => (EU_MEMBER_STATES as Record<string, string>)[code] ?? code;
+
+/**
+ * The notice of an order decision, or of the correction that reinstates after one (W.2, W.3), as paragraphs in the
+ * table's order. Only the facts korbat knows: until the order is verified the lead says which authority the order names,
+ * and only a removal order's notice says that the law obliges korbat. The authority's words themselves are printed by
+ * the screen in their block, after these paragraphs.
+ */
+function orderNoticeParagraphs(input: StatementInput, extras: OrderNoticeExtras): string[] {
+  const order = input.order!;
+  const post = input.post;
+  if (post === null) throw new Error("an order's notice is about a post: the decision's data holds none");
+  const N = ORDER_NOTICE;
+  const created = utcMinute(post.createdAt);
+  const address = postAddress(post.id);
+  const disabledAt = utcMinute(order.disabledAt);
+  const erasedOn = extras.erasedOn ?? null;
+  if (input.kind === "correction") {
+    const ground = order.orderGround;
+    if (ground === null) throw new Error("a reinstatement after an order names its ground: the decision's data holds none");
+    return [N.reinstated.lead(disabledAt, created, address), N.reinstated.ground[ground], erasedOn === null ? N.reinstated.now : N.reinstated.erased(erasedOn), N.lifted];
+  }
+  const paragraphs: string[] = [];
+  const measure = input.measures.find((m) => m.kind === "disable_by_order");
+  paragraphs.push(order.withholdAuthor ? N.done.disabled(created, address, disabledAt) : N.done.removed(created, address, disabledAt));
+  if (measure?.noEffect === "already") paragraphs.push(W.already("post"));
+  if (measure?.noEffect === "deleted") paragraphs.push(W.deletedPost);
+  const dated = order.orderedOn === null || order.orderedFrom === null ? "" : N.dated[order.orderedFrom](order.orderedOn);
+  const lead = N.lead[order.kind](order.authority, stateName(order.memberState), order.reference, dated);
+  paragraphs.push(order.verified ? `${lead} ${N.lead.confirmed}` : lead);
+  paragraphs.push(N.notAssessed[order.kind]);
+  if (order.held && order.informedAt !== null) {
+    const informed = utcMinute(order.informedAt);
+    paragraphs.push(order.holdEndReason === "not_ordered" ? N.heldUntilNow.notOrdered(disabledAt, informed) : N.heldUntilNow[order.kind](disabledAt, informed));
+  }
+  const texts = extras.texts ?? null;
+  // The time from which the author holds the newest of the authority's words: the record's, or the telling's when later.
+  const addedLater = texts !== null && texts.textsAt !== null && order.informedAt !== null && Date.parse(texts.textsAt) > Date.parse(order.informedAt);
+  if (addedLater) paragraphs.push(N.textsSince(utcMinute(texts!.textsAt!)));
+  paragraphs.push(texts !== null && texts.reasons !== null && texts.redress !== null ? N.copy : N.textsFollow);
+  if (order.kind === "tco_removal" && order.crossBorder) {
+    const home = order.homeState === null ? "korbat's Member State" : stateName(order.homeState);
+    const reasonsAt = texts !== null && texts.reasons !== null ? (addedLater ? texts.textsAt : order.informedAt) : null;
+    paragraphs.push(`${N.scrutiny(home)} ${reasonsAt === null ? N.noReasonsYet : N.reasonsAt(utcMinute(reasonsAt))}`);
+  }
+  if (order.kind === "tco_removal") {
+    if (erasedOn !== null) paragraphs.push(N.erased(erasedOn));
+    else if (order.preserveUntil !== null && order.preserveEndedOn === null) {
+      paragraphs.push(N.preserved(utcMinute(order.preserveUntil)));
+      if (order.preserveExtended) paragraphs.push(N.preservedLonger(utcMinute(order.preserveUntil)));
+    }
+  }
+  paragraphs.push(N.everywhere[order.kind]);
+  paragraphs.push(N.noAppeal[order.kind]);
+  paragraphs.push(N.wrongItem);
   return paragraphs;
 }

@@ -311,6 +311,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/orders/:order/items",
         "POST /api/staff/orders/:order/events",
         "POST /api/staff/orders/:order/correct",
+        // Task 3: giving effect.
+        "POST /api/staff/orders/:order/effect",
       ].sort(),
     );
   });
@@ -327,6 +329,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/items/:item/reveal": "identity_revealed",
       // 3f, Task 2: an order's clock event, closing, reopening or extension.
       "POST /api/staff/orders/:order/events": "order_event_recorded",
+      // Task 3: "Disable for an order".
+      "POST /api/staff/orders/:order/effect": "order_effected",
     });
     // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
     // none of which changes anything a user sees (3c design, section 2, Free text under the step-up).
@@ -503,6 +507,7 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/decisions/:decision/review",
       "POST /api/staff/items/:item/reveal",
       "POST /api/staff/orders/:order/correct",
+      "POST /api/staff/orders/:order/effect",
       "POST /api/staff/orders/:order/events",
       "POST /api/staff/orders/:order/items",
     ]);

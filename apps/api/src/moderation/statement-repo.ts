@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { ActionKind } from "@korbat/contracts";
+import type { ActionKind, OrderNoticeFacts, OrderTexts } from "@korbat/contracts";
 import { iso, rows, type Runner, type TargetType } from "./repo";
 
 /** An instant as JavaScript writes it, or null for an infinite one (a termination's end). The expression is written here, never input. */
@@ -17,7 +17,7 @@ const finite = (expression: string) => sql`case when isfinite(${sql.raw(expressi
 export interface StatementDecisionRow {
   id: string;
   caseId: string;
-  kind: "interim" | "final" | "review" | "correction";
+  kind: "interim" | "final" | "order" | "review" | "correction";
   outcome: string;
   ground: string | null;
   ruleId: string | null;
@@ -27,6 +27,8 @@ export interface StatementDecisionRow {
   decidedAt: string;
   suspect: boolean;
   authorMail: string;
+  /** 3f: when the statement's first mail was recorded; an order's notice mailed again after the authority's words is a mail of its own. */
+  authorMailAt: string | null;
   decidedBy: string;
   facts: string | null;
   reason: string | null;
@@ -38,13 +40,13 @@ export interface StatementDecisionRow {
   /** The account the decision is about: the post's author, or the account itself. */
   subjectId: string | null;
   /** The decision a review or a correction is about; (3e's review) with the basis of its suspension or termination, null for none. */
-  reviewed: { kind: "interim" | "final"; ground: string | null; ruleId: string | null; rulesVersion: number; legalReference: string | null; decidedAt: string; basis: string | null } | null;
+  reviewed: { kind: "interim" | "final" | "order"; ground: string | null; ruleId: string | null; rulesVersion: number; legalReference: string | null; decidedAt: string; basis: string | null } | null;
 }
 
 export async function statementDecision(q: Runner, decisionId: string): Promise<StatementDecisionRow | null> {
   const [row] = await rows<Record<string, unknown>>(
     q,
-    sql`select d.id, d.case_id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.source, ${iso("d.decided_at")} as decided_at, d.suspect, d.author_mail, d.decided_by,
+    sql`select d.id, d.case_id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.source, ${iso("d.decided_at")} as decided_at, d.suspect, d.author_mail, ${iso("d.author_mail_at")} as author_mail_at, d.decided_by,
                (select t.text from staff_texts t where t.digest = d.facts_digest) as facts,
                (select t.text from staff_texts t where t.digest = d.reason_digest) as reason,
                (select t.text from staff_texts t where t.digest = d.legal_reference_digest) as legal_reference,
@@ -71,6 +73,7 @@ export async function statementDecision(q: Runner, decisionId: string): Promise<
     decidedAt: row.decided_at as string,
     suspect: row.suspect as boolean,
     authorMail: row.author_mail as string,
+    authorMailAt: row.author_mail_at as string | null,
     decidedBy: row.decided_by as string,
     facts: row.facts as string | null,
     reason: row.reason as string | null,
@@ -83,7 +86,7 @@ export async function statementDecision(q: Runner, decisionId: string): Promise<
       row.reviewed_kind === null
         ? null
         : {
-            kind: row.reviewed_kind as "interim" | "final",
+            kind: row.reviewed_kind as "interim" | "final" | "order",
             ground: row.reviewed_ground as string | null,
             ruleId: row.reviewed_rule as string | null,
             rulesVersion: row.reviewed_rules_version as number,
@@ -397,5 +400,66 @@ export async function repliedTo(q: Runner, decisionId: string): Promise<RepliedT
     startsAt: row.starts_at,
     endsAt: row.ends_at,
     appealUntil: row.appeal_until,
+  };
+}
+
+/**
+ * 3f (design, sections 7.10 and 10.4): what the notice of an order decision, or of the correction that reinstates after
+ * one, is rendered from, read at every read from the order decision's row, its item's and its order's as they stand, so
+ * the notice grows without a new decision; and the authority's words with the time from which the author holds them
+ * (the newest texts_recorded event, or the decision's informed_at when that is later). Null for any other decision.
+ * The home state is the API's setting, which the caller passes.
+ */
+export async function orderNoticeOf(q: Runner, decisionId: string, homeState: string | null): Promise<{ facts: OrderNoticeFacts; texts: OrderTexts; authorMailAt: string | null } | null> {
+  const [row] = await rows<Record<string, unknown>>(
+    q,
+    sql`select o.kind, o.member_state, o.authority, o.reference, o.verified_at is not null as verified,
+               to_char(coalesce(o.issued_at, o.received_at) at time zone 'UTC', 'YYYY-MM-DD') as ordered_on,
+               case when o.issued_at is not null then 'issued' when o.received_at is not null then 'received' end as ordered_from,
+               o.cross_border, a.withhold_author, ${iso("od.decided_at")} as disabled_at,
+               coalesce(od.informed_at > od.decided_at, false) as held, ${iso("od.informed_at")} as informed_at, o.hold_end_reason,
+               ${iso("i.preserve_until")} as preserve_until,
+               exists (select 1 from legal_order_events e where e.item_id = i.id and e.kind = 'preservation_extended') as preserve_extended,
+               to_char(i.preserve_ended_at at time zone 'UTC', 'YYYY-MM-DD') as preserve_ended_on,
+               (select x.order_ground from decision_actions x where x.decision_id = d.id and x.kind::text = 'reinstate_by_order') as order_ground,
+               o.reasons, o.redress, o.scope,
+               ${iso("(select max(e.at) from legal_order_events e where e.order_id = o.id and e.kind = 'texts_recorded')")} as texts_recorded_at,
+               ${iso("d.author_mail_at")} as author_mail_at
+          from decisions d
+          join decisions od on od.id = case when d.kind::text = 'order' then d.id else d.reviews_decision_id end and od.kind::text = 'order'
+          join legal_order_items i on i.id = od.order_item_id
+          join legal_orders o on o.id = i.order_id
+          join decision_actions a on a.decision_id = od.id and a.kind::text = 'disable_by_order'
+         where d.id = ${decisionId}::uuid and d.kind::text in ('order', 'correction')`,
+  );
+  if (!row) return null;
+  const informedAt = row.informed_at as string | null;
+  const recordedAt = row.texts_recorded_at as string | null;
+  const anyText = row.reasons !== null || row.redress !== null || row.scope !== null;
+  // The author holds a text from the later of its record and the telling: a notice released after the record holds it from the release.
+  const textsAt = !anyText || recordedAt === null ? null : informedAt !== null && Date.parse(informedAt) > Date.parse(recordedAt) ? informedAt : recordedAt;
+  return {
+    facts: {
+      kind: row.kind as OrderNoticeFacts["kind"],
+      memberState: row.member_state as OrderNoticeFacts["memberState"],
+      authority: row.authority as string,
+      reference: row.reference as string,
+      verified: row.verified as boolean,
+      orderedOn: row.ordered_on as string | null,
+      orderedFrom: row.ordered_from as OrderNoticeFacts["orderedFrom"],
+      crossBorder: row.cross_border as boolean,
+      homeState: homeState as OrderNoticeFacts["homeState"],
+      withholdAuthor: row.withhold_author as boolean,
+      disabledAt: row.disabled_at as string,
+      held: row.held as boolean,
+      informedAt,
+      holdEndReason: row.hold_end_reason as OrderNoticeFacts["holdEndReason"],
+      preserveUntil: row.preserve_until as string | null,
+      preserveExtended: row.preserve_extended as boolean,
+      preserveEndedOn: row.preserve_ended_on as string | null,
+      orderGround: row.order_ground as OrderNoticeFacts["orderGround"],
+    },
+    texts: { reasons: row.reasons as string | null, redress: row.redress as string | null, scope: row.scope as string | null, textsAt },
+    authorMailAt: row.author_mail_at as string | null,
   };
 }

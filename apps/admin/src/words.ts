@@ -65,6 +65,7 @@ export function sourceWords(source: SourceSummary): string {
 /** Who a frame says wrote an item's words. */
 export function writtenBy(source: SourceSummary): string {
   if (source.kind === "reporter") return `Written by ${source.label}`;
+  if (source.kind === "authority") return "Written by an authority";
   if (source.kind === "unlinked") return "Written by a reporter no longer linked";
   return "Written by a notifier";
 }

@@ -2,8 +2,8 @@ import { OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type S
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
 import { APPEAL_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, STANDING_WORDS } from "../messages";
-import { CaseLink, NavLink } from "../nav";
-import { parseCaseId, type CaseId, type ConsolePath } from "../router";
+import { CaseLink, NavLink, OrderLink } from "../nav";
+import { parseCaseId, parseOrderId, type CaseId, type ConsolePath, type OrderId } from "../router";
 import { readSignInsAtOpening } from "../signins";
 import { revokeSessionWithKey } from "../step-up";
 import { bothTimes, clockTime, dateTime, Loaded, UserText, type Loadable } from "../ui";
@@ -125,7 +125,17 @@ function StandingLines({ overview, now, onNavigate }: { overview: StaffOverview;
  * order: mail at the contact point that nobody has handled, with a link to Contact point inside its sentence, and the
  * alert channel's state when it is not ok. Without a way to move between pages (a test's rendering), the link is text.
  */
-export function AuthoritiesLines({ overview, now = Date.now(), onNavigate }: { overview: StaffOverview; now?: number; onNavigate?: (path: ConsolePath) => void }) {
+export function AuthoritiesLines({
+  overview,
+  now = Date.now(),
+  onNavigate,
+  onOpenOrder,
+}: {
+  overview: StaffOverview;
+  now?: number;
+  onNavigate?: (path: ConsolePath) => void;
+  onOpenOrder?: (id: OrderId) => void;
+}) {
   const W = ORDER_WORDS.home;
   const { contact, alerts } = overview;
   const since = alerts.since === null ? "" : bothTimes(alerts.since);
@@ -171,6 +181,22 @@ export function AuthoritiesLines({ overview, now = Date.now(), onNavigate }: { o
       );
     }
   }
+  // Task 3: [home.unverified], each order a link built from its checked id.
+  const unverified = overview.ordersUnverified;
+  if (unverified.total > 0) {
+    lines.push(
+      <div key="unverified">
+        <p className="notice">{ORDER_WORDS.homeUnverified(unverified.total)}</p>
+        <ul className="plain">
+          {unverified.items.map((item) => {
+            const id = parseOrderId(item.orderId);
+            const words = `Given effect at ${bothTimes(item.effectAt)}`;
+            return <li key={item.orderId}>{id !== null && onOpenOrder !== undefined ? <OrderLink id={id} onOpen={onOpenOrder}>{words}</OrderLink> : words}</li>;
+          })}
+        </ul>
+      </div>,
+    );
+  }
   if (alerts.channel === "down") lines.push(<p key="channel" className="error">{W.channel(since)}</p>);
   if (alerts.channel === "mailbox") lines.push(<p key="mailbox" className="error">{W.mailbox(since)}</p>);
   if (alerts.channel === "off") lines.push(<p key="off" className="notice">{W.off}</p>);
@@ -183,7 +209,19 @@ export function AuthoritiesLines({ overview, now = Date.now(), onNavigate }: { o
   );
 }
 
-export function OverviewView({ overview, now, onOpenCase, onNavigate }: { overview: StaffOverview; now: number; onOpenCase(id: CaseId): void; onNavigate?: (path: ConsolePath) => void }) {
+export function OverviewView({
+  overview,
+  now,
+  onOpenCase,
+  onNavigate,
+  onOpenOrder,
+}: {
+  overview: StaffOverview;
+  now: number;
+  onOpenCase(id: CaseId): void;
+  onNavigate?: (path: ConsolePath) => void;
+  onOpenOrder?: (id: OrderId) => void;
+}) {
   const { reveals, mailsWaiting, mailsFailed } = overview;
   const lateErasures = erasureOverdue(overview.erasureOverdue);
   const waiting = mailsWaiting.receipts + mailsWaiting.authorMails + mailsWaiting.outcomes;
@@ -191,7 +229,7 @@ export function OverviewView({ overview, now, onOpenCase, onNavigate }: { overvi
   const mails = (m: StaffOverview["mailsWaiting"]) => `${counted(m.receipts, "receipt", "receipts")}, ${counted(m.authorMails, "statement to an author", "statements to authors")}, ${counted(m.outcomes, "outcome", "outcomes")}`;
   return (
     <>
-      <AuthoritiesLines overview={overview} now={now} onNavigate={onNavigate} />
+      <AuthoritiesLines overview={overview} now={now} {...(onNavigate === undefined ? {} : { onNavigate })} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} />
       <h3>Cases</h3>
       <ul className="lanes">
         {overview.lanes.map((lane) => (
@@ -300,6 +338,8 @@ export interface HomeViewProps {
   onOpenCase(id: CaseId): void;
   /** 3e: a move to one of the console's pages, which the home screen's lines of Task 4 link to. */
   onNavigate?: (path: ConsolePath) => void;
+  /** 3f Task 3: the orders of [home.unverified] link to their pages. */
+  onOpenOrder?: (id: OrderId) => void;
   signIns: Loadable<AuditEntry[]>;
   sessions: Loadable<StaffSession[]>;
   keys: Loadable<StaffKey[]>;
@@ -310,7 +350,7 @@ export interface HomeViewProps {
   onRevoke(handle: string): void;
 }
 
-export function HomeView({ me, overview, now, onOpenCase, onNavigate, signIns, sessions, keys, revoking, notice, error, onRevoke }: HomeViewProps) {
+export function HomeView({ me, overview, now, onOpenCase, onNavigate, onOpenOrder, signIns, sessions, keys, revoking, notice, error, onRevoke }: HomeViewProps) {
   return (
     <section aria-labelledby="home-title">
       <h2 id="home-title">Home</h2>
@@ -329,7 +369,10 @@ export function HomeView({ me, overview, now, onOpenCase, onNavigate, signIns, s
         </p>
       ) : null}
 
-      <Loaded value={overview} render={(value) => <OverviewView overview={value} now={now} onOpenCase={onOpenCase} onNavigate={onNavigate} />} />
+      <Loaded
+        value={overview}
+        render={(value) => <OverviewView overview={value} now={now} onOpenCase={onOpenCase} {...(onNavigate === undefined ? {} : { onNavigate })} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} />}
+      />
 
       <h3>Staff sign-ins in the last 7 days</h3>
       <p className="hint">Every staff account's, newest first. A sign-in nobody recognises means someone else holds a staff key: tell the operator.</p>
@@ -443,7 +486,21 @@ export function openHome(api: StaffApi, alive: { current: boolean }, set: HomeLi
   load(alive, set.keys, async () => (await api.keys({ activity: true })).keys);
 }
 
-export function Home({ me, api, credentials, onOpenCase, onNavigate }: { me: StaffMe; api: StaffApi; credentials: CredentialsLike; onOpenCase(id: CaseId): void; onNavigate?: (path: ConsolePath) => void }) {
+export function Home({
+  me,
+  api,
+  credentials,
+  onOpenCase,
+  onNavigate,
+  onOpenOrder,
+}: {
+  me: StaffMe;
+  api: StaffApi;
+  credentials: CredentialsLike;
+  onOpenCase(id: CaseId): void;
+  onNavigate?: (path: ConsolePath) => void;
+  onOpenOrder?: (id: OrderId) => void;
+}) {
   const [overview, setOverview] = useState<Loadable<StaffOverview>>({ state: "loading" });
   const [now, setNow] = useState(() => Date.now());
   const [signIns, setSignIns] = useState<Loadable<AuditEntry[]>>({ state: "loading" });
@@ -489,6 +546,6 @@ export function Home({ me, api, credentials, onOpenCase, onNavigate }: { me: Sta
   };
 
   return (
-    <HomeView me={me} overview={overview} now={now} onOpenCase={onOpenCase} onNavigate={onNavigate} signIns={signIns} sessions={sessions} keys={keys} revoking={revoking} notice={notice} error={error} onRevoke={(handle) => void revoke(handle)} />
+    <HomeView me={me} overview={overview} now={now} onOpenCase={onOpenCase} onNavigate={onNavigate} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} signIns={signIns} sessions={sessions} keys={keys} revoking={revoking} notice={notice} error={error} onRevoke={(handle) => void revoke(handle)} />
   );
 }

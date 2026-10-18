@@ -52,7 +52,10 @@ export type DecisionMessage =
   | { template: "suspension_lifted"; measure: "suspend" | "terminate"; why: "replaced"; decidedAt: string; replied: boolean; paragraphs: readonly string[] }
   // 3e Task 5: a warning about the account's reports; a restriction of them, with its days and its end.
   | { template: "reporting_warned"; paragraphs: readonly string[] }
-  | { template: "reporting_restricted"; days: number; endsAt: string; paragraphs: readonly string[] };
+  | { template: "reporting_restricted"; days: number; endsAt: string; paragraphs: readonly string[] }
+  // 3f Task 3 (design, W.5): an order's notice, a reinstatement after one, and the authority's words added to a notice
+  // already told. Each says only that a notice is there or has grown: its paragraphs are not mailed, and are empty.
+  | { template: "order_notice" | "order_reinstated_notice" | "order_notice_added"; paragraphs: readonly string[] };
 
 /** The templates of a decision's statement mail: a stop of the address never holds one back. */
 const DECISION_TEMPLATES: ReadonlySet<string> = new Set([
@@ -63,6 +66,9 @@ const DECISION_TEMPLATES: ReadonlySet<string> = new Set([
   "suspension_lifted",
   "reporting_warned",
   "reporting_restricted",
+  "order_notice",
+  "order_reinstated_notice",
+  "order_notice_added",
 ]);
 
 /** Whether an account's message is a decision's statement. */
@@ -91,6 +97,11 @@ function decisionData(message: DecisionMessage): Record<string, string> {
       return { statement };
     case "reporting_restricted":
       return { statement, days: String(message.days), endsAt: noticeTime(new Date(message.endsAt)) };
+    case "order_notice":
+    case "order_reinstated_notice":
+    case "order_notice_added":
+      // A fixed body: nothing of the notice goes by mail.
+      return {};
   }
 }
 
@@ -132,7 +143,19 @@ export type StaffMessage =
  * mails from a row of alert_outbox: the row's facts, counts and times only, and nothing else. Later tasks of 3f add their
  * kinds here as they first write them.
  */
-export type StaffAlertKind = "contact_mail" | "contact_mail_escalated" | "order_due" | "mailbox_unreachable" | "alert_channel_down" | "order_opened" | "order_corrected" | "order_unverified";
+export type StaffAlertKind =
+  | "contact_mail"
+  | "contact_mail_escalated"
+  | "order_due"
+  | "mailbox_unreachable"
+  | "alert_channel_down"
+  | "order_opened"
+  | "order_corrected"
+  | "order_unverified"
+  // Task 3: an order given effect, an order's measure lifted, and a held notice about to be released.
+  | "order_effected"
+  | "order_reinstated"
+  | "hold_ending";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -152,6 +175,9 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "order_opened":
     case "order_corrected":
     case "order_unverified":
+    case "order_effected":
+    case "order_reinstated":
+    case "hold_ending":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest) };

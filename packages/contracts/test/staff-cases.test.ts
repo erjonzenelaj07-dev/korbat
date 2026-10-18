@@ -287,6 +287,9 @@ describe("the case answer", () => {
     strikeDue: { due: true, why: "due" },
     authorStanding: { activeStrikes: "0", suspensionsInYear: "0", now: "none" },
     standing: null,
+    // 3f Task 3: the post is not preserved for an order, and no order's notice about it is held.
+    preserved: false,
+    noticeHeld: null,
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {
@@ -457,6 +460,7 @@ describe("the queue and the overview", () => {
       // 3f: the contact point and the alert channel.
       contact: { open: 2, oldestAt: TIME, dueAt: TIME },
       alerts: { channel: "down", since: TIME },
+      ordersUnverified: { total: 1, items: [{ orderId: POST, effectAt: TIME }] },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
     // Each of the three lists holds at most as many rows as the reveals' list does.

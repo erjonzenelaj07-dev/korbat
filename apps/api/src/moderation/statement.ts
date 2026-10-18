@@ -3,7 +3,7 @@ import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
 import type { ModerationDeps } from "./context";
 import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, standingWithdrawn, type MailState } from "./repo";
-import { endedMeasures, endedStanding, repliedTo, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
+import { endedMeasures, endedStanding, orderNoticeOf, repliedTo, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
 
 /**
  * The data a statement of reasons and its mail are rendered from (3c design, sections 7.5 and 10). A decision is the
@@ -26,10 +26,15 @@ function resetFacts(kind: MeasureKind | ReversalKind, held: { decisionId: string
   return { resetDecisionId: held.decisionId, oldValueKept: held.noEffect === null && held.snapshotKept, resetRuleId: held.ruleId as RuleId | null };
 }
 
-/** The statement's data of one decision, or null when no decision has the id. */
-export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: string): Promise<StatementFound | null> {
+/**
+ * The statement's data of one decision, or null when no decision has the id. 3f: an order decision, and the correction
+ * of one, carries `order`, the facts its notice is rendered from as they stand, with the operator's home state for the
+ * scrutiny's paragraph (null where the caller has no setting at hand: a mail renders no notice).
+ */
+export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: string, homeState: string | null = null): Promise<StatementFound | null> {
   const decision = await statementDecision(q, decisionId);
   if (!decision) return null;
+  const notice = decision.kind === "order" || (decision.kind === "correction" && decision.reviewed?.kind === "order") ? await orderNoticeOf(q, decisionId, homeState) : null;
   const actions = await statementActions(q, decisionId);
   const ended = decision.kind === "final" ? await endedMeasures(q, decisionId) : [];
   // 3e: the standing measures whose basis a reversal of this decision broke; absent from a statement that holds none.
@@ -97,6 +102,7 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
     endedMeasures: ended.map((measure) => ({ kind: measure.kind as MeasureKind, mediaId: measure.mediaId, ...resetFacts(measure.kind, measure) })),
     ...(brokenBasis.length > 0 ? { endedStanding: brokenBasis } : {}),
     ...(replied !== null ? { repliedTo: replied } : {}),
+    order: notice?.facts ?? null,
     reviewed:
       decision.reviewed === null
         ? null
@@ -142,7 +148,12 @@ export function mailSubjectOf(statement: DecisionStatement): Extract<DecisionMes
  * breaking its basis; a final warning about reporting; a final restriction of reporting. A lift of a reporting measure,
  * also one that ends a restriction with its warning, rides on moderation_decision.
  */
-export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonly string[]): DecisionMessage {
+export function mailTemplateOf(statement: DecisionStatement, paragraphs: readonly string[], mailedBefore = false): DecisionMessage {
+  // 3f (design, section 7.19): three rows in front. An order decision is mailed its notice, or, once its first mail went
+  // and the authority's words were added since, that the notice grew; a reinstatement after an order that it grew. None
+  // carries the notice's paragraphs: each mail says only that a notice is there.
+  if (statement.kind === "order") return { template: mailedBefore ? "order_notice_added" : "order_notice", paragraphs: [] };
+  if (statement.kind === "correction" && statement.reversals.some((reversal) => reversal.kind === "reinstate_by_order")) return { template: "order_reinstated_notice", paragraphs: [] };
   const standing = statement.measures.find((measure) => measure.kind === "suspend" || measure.kind === "terminate");
   if (statement.kind === "final" && standing !== undefined && standing.announced === true) {
     const measure = standing.kind === "terminate" ? "terminate" : "suspend";
@@ -214,7 +225,7 @@ export async function sendStatement(deps: Pick<ModerationDeps, "apiDb" | "auth" 
   if (!found || found.decision.authorMail !== "pending") return "none";
   const subject = found.decision.subjectId;
   // The statement is rendered before anything is sent: one that cannot be rendered is no mail, and stays pending.
-  const message = mailTemplateOf(found.statement, statementParagraphs(found.statement));
+  const message = mailTemplateOf(found.statement, statementParagraphs(found.statement), found.decision.authorMailAt !== null);
   const standing = found.statement.kind === "final" && found.statement.measures.some((measure) => measure.kind === "suspend" || measure.kind === "terminate");
   const announced = standing && found.statement.measures.some((measure) => (measure.kind === "suspend" || measure.kind === "terminate") && measure.announced === true);
   return deps.apiDb.transaction(async (tx) => {

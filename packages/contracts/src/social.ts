@@ -122,7 +122,9 @@ export type QuotedPost = z.infer<typeof QuotedPost>;
  * (3e design, section 10.2) is the end of counting of the strike the post's decision gave, while that strike stands and
  * still counts; null otherwise.
  */
-export const PostModeration = z.object({ decisionId: z.uuid(), ruleId: z.enum(RULE_IDS).nullable(), legal: z.boolean(), interim: z.boolean(), strikeUntil: z.iso.datetime().nullable() });
+// 3f: `order` is true when the chip's decision gives effect to an authority's order (a DSA Article 9 order that does not
+// withhold, the only order that leaves a post its author sees), so the chip reads [chip.order]; absent otherwise.
+export const PostModeration = z.object({ decisionId: z.uuid(), ruleId: z.enum(RULE_IDS).nullable(), legal: z.boolean(), interim: z.boolean(), strikeUntil: z.iso.datetime().nullable(), order: z.boolean().optional() });
 export type PostModeration = z.infer<typeof PostModeration>;
 
 export const PostView = z.object({

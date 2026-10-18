@@ -348,6 +348,20 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
       });
     });
 
+    test("3f: a correction of an order's record under the rule entry or caution carries no step-up and is accepted; one under admin needs it", { timeout: 30_000 }, async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const before = (await readHead(tx)).seq;
+        for (const rule of ["entry", "caution", "admin"]) {
+          await tx.execute(sql`insert into public.audit_log (actor_id, action, target_type, target_id, metadata)
+            values (${actorId}::uuid, 'order_corrected', 'order', ${randomUUID()}, ${JSON.stringify({ rule, changed: [] })}::jsonb)`);
+        }
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems.filter((problem) => problem.place !== null && problem.place > before)).toEqual([
+          { place: before + 3, message: "its action, order_corrected, needs a step-up, and it carries none" },
+        ]);
+      });
+    });
+
     test("a row with no place at all is counted and refused", { timeout: 30_000 }, async () => {
       await rolledBack(migrateDb, async (tx) => {
         const head = await readHead(tx);

@@ -461,9 +461,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.order_event_record",
         "public.order_hold_end",
         "public.order_hold_until",
+        // Task 3 (0028_orders_ledger): the release of held notices, which the dispatch round calls, and the preservation's predicate.
+        "public.order_notices_release",
         "public.order_preserve_until",
         "public.order_rules",
         "public.post_frozen",
+        "public.post_preserved",
         "public.redact_r4_body",
         "public.release_outcomes",
         "public.review_needs_admin",
@@ -648,13 +651,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
     test("3f's writers (0027_orders; design, section 6.7): who writes a decision's informed_at, an order's row, its events, an item's closing and a measure's withholding", async () => {
       const all = await functions();
       const writing = (pattern: RegExp) => all.filter((f) => pattern.test(f.definition)).map((f) => f.name);
-      // A decision's informed_at: decisions_record forces it at the insert; order_correct writes it, and only to null.
-      expect(writing(/[^a-z_]informed_at (:)?= /)).toEqual(["public.decisions_record", "public.order_correct"]);
+      // A decision's informed_at: decisions_record forces it at the insert; order_correct writes it, and only to null; and
+      // (Task 3, 0028_orders_ledger) order_notices_release tells a held decision, while the two later writers of a
+      // decision's mail (decisions_apply's ended seals, decision_actions_check's step 11) hold a telling on a held post.
+      expect(writing(/[^a-z_]informed_at (:)?= /)).toEqual(["public.decision_actions_check", "public.decisions_apply", "public.decisions_record", "public.order_correct", "public.order_notices_release"]);
+      expect(all.find((f) => f.name === "public.order_notices_release")!.definition).toContain("SET informed_at = clock_timestamp(), author_mail = 'pending'");
       expect(all.find((f) => f.name === "public.order_correct")!.definition).toMatch(/SET informed_at = NULL, author_mail = 'none'/);
       // An order's row: written by order_event_record and order_correct alone (and the command line, as the migrator).
       expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]legal_orders /i)).toEqual(["public.order_correct", "public.order_event_record"]);
-      expect(writing(/INSERT INTO public[.]legal_order_events/i)).toEqual(["public.order_correct", "public.order_event_record"]);
-      expect(writing(/closed_reason = /)).toEqual(["public.order_correct"]);
+      // Task 3: the ledger's events (effect_given, reinstated) and the release's notice_released.
+      expect(writing(/INSERT INTO public[.]legal_order_events/i)).toEqual(["public.decision_actions_apply", "public.order_correct", "public.order_event_record", "public.order_notices_release"]);
+      // An item's closing: order_correct closes it; an effect clears it (decision_actions_apply).
+      expect(writing(/closed_reason = /)).toEqual(["public.decision_actions_apply", "public.order_correct"]);
       expect(writing(/withhold_author = /)).toEqual(["public.order_correct"]);
       // The two definer functions pin public alone and name auth's table in full, as every function the migrator owns does.
       for (const name of ["public.order_correct", "public.order_event_record", "public.legal_order_events_confirmed"]) {
@@ -716,10 +724,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(await checkBound("intakes", "intakes_cited_law_len")).toBe(NOTICE_LIMITS.citedLawMax);
     });
 
-    test("the ledger's kinds are the contracts' action kinds, in their order, then the two of an order's measure", async () => {
+    test("the ledger's kinds are the contracts' action kinds, in their order, the two of an order's measure last", async () => {
       const rows = await apiDb.execute<{ label: string }>(sql`select e.enumlabel::text as label from pg_enum e where e.enumtypid = 'public.action_kind'::regtype order by e.enumsortorder`);
-      // 3f: the migration orders adds them; they join ACTION_KINDS with the task that gives effect to an order (Task 3).
-      expect(rows.map((row) => row.label)).toEqual([...ACTION_KINDS, ...ORDER_ACTION_KINDS]);
+      // 3f: the migration orders adds them; they joined ACTION_KINDS with the task that gives effect to an order (Task 3).
+      expect(rows.map((row) => row.label)).toEqual([...ACTION_KINDS]);
+      expect(ACTION_KINDS.slice(-2)).toEqual([...ORDER_ACTION_KINDS]);
     });
 
     test("post_state has its four values and 3f's disabled: a seal is a state of images, a disabling one of posts", async () => {

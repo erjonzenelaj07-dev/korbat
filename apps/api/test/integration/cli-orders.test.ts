@@ -204,7 +204,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the order commands", () 
     expect(recorded.text).toBe(`out order-texts: reasons recorded (${Array.from(reasons).length} characters). No author has been told of this order: the notice shows the text from its first telling.`);
     const row = await orderRow(order.id);
     expect([row.reasons, typeof row.reasons_salt, typeof row.reasons_digest]).toEqual([reasons, "string", "string"]);
-    expect((await lastAudit(order.id)).metadata).toEqual({ event: "texts_recorded", text: "reasons", digest: row.reasons_digest });
+    // Task 3: how many told authors the record made owed a mail again (none here: no item was given effect).
+    expect((await lastAudit(order.id)).metadata).toEqual({ event: "texts_recorded", text: "reasons", digest: row.reasons_digest, authors: 0 });
     expect((await cli(["order-texts", order.id, "--scope"], { input: "x".repeat(501) })).code).toBe(1);
     expect((await cli(["order-texts", order.id, "--reasons", "--redress"], { input: "x" })).text).toBe("err order-texts: give exactly one of --reasons, --redress and --scope; nothing changed");
     const document = Buffer.from("%PDF-1.7 an order's document");

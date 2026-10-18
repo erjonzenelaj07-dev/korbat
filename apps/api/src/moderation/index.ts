@@ -49,7 +49,7 @@ import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideOutcome } from "./decide";
 import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
-import { addItems, closeContact, contactPage, correctOrderRecord, openOrder, orderView, ordersPage, recordEvent, type OrderOutcome } from "./orders";
+import { addItems, closeContact, contactPage, correctOrderRecord, giveEffect, openOrder, orderView, ordersPage, recordEvent, type OrderOutcome } from "./orders";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { standingFor, standingLists, takeDownDue, type TakeDown } from "./standing";
@@ -141,6 +141,8 @@ export interface ModerationForStaff {
    * caution, a confirmed one under admin, which "step_up_required" answers when no key confirmed it.
    */
   correctOrder(session: ActiveStaffSession, orderId: string, facts: OrderCorrectFacts, confirmed: StaffStepUpConfirmed | null, ctx: { requestId: string }): Promise<OrderOutcome | "step_up_required">;
+  /** 3f Task 3: "Disable for an order" on the items a step-up confirmed, one decision a post, with the confirmed audit row order_effected. */
+  giveOrderEffect(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<OrderOutcome>;
 }
 
 /**
@@ -232,6 +234,7 @@ export function createModeration(options: CreateModerationOptions) {
     addOrderItems: (session, orderId, request, ctx) => addItems(deps, session, orderId, request, ctx),
     recordOrderEvent: (session, confirmed, ctx) => recordEvent(deps, session, confirmed, ctx),
     correctOrder: (session, orderId, facts, confirmed, ctx) => correctOrderRecord(deps, session, orderId, facts, confirmed, ctx),
+    giveOrderEffect: (session, confirmed, ctx) => giveEffect(deps, session, confirmed, ctx),
   };
   const forSocial: ModerationForSocial = {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),

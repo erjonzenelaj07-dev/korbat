@@ -3,13 +3,14 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
 import { STATEMENT_MAX, type DecisionAppeal, type DecisionContent, type DecisionStatement, type DecisionView } from "@korbat/contracts";
-import { statementParagraphs } from "@korbat/rules";
+import { ORDER_NOTICE, statementParagraphs } from "@korbat/rules";
 import { Button, ErrorText, Field, Section } from "@/components/ui";
 import { SEALED_IMAGE } from "@/components/social/HiddenImage";
 import { clampRatio } from "@/components/social/MediaGrid";
 import { API_BASE } from "@/lib/api";
-import { appealWaitWords, dailyLimitFailure, utcMinute } from "@/lib/moderation";
+import { appealWaitWords, CONTACT_EMAIL, dailyLimitFailure, utcMinute } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
+import { ORDER_TEXTS } from "@/lib/orders";
 import { nowSentence, replyStandsLine, reportingNowLine, restsOnLine, STANDING_TEXTS, standingMeasureOf, strikeLine } from "@/lib/standing";
 
 const Line = ({ children, strong = false }: { children: string; strong?: boolean }) => <Text className={`mt-3 text-base leading-6 ${strong ? "font-semibold text-zinc-100" : "text-zinc-200"}`}>{children}</Text>;
@@ -67,13 +68,70 @@ function Content({ content }: { content: DecisionContent }) {
   );
 }
 
-/** The statement's paragraphs, or null when this build's rulebook does not hold the version the decision was made under: it is then never rendered as another. */
-function paragraphsOf(view: DecisionStatement): string[] | null {
+/**
+ * The statement's paragraphs, or null when this build's rulebook does not hold the version the decision was made under: it
+ * is then never rendered as another. An order's notice (3f) reads its authority's words and its erasure fresh with it.
+ */
+function paragraphsOf(view: DecisionStatement & Partial<Pick<DecisionView, "orderTexts" | "erasedOn">>): string[] | null {
   try {
-    return statementParagraphs(view);
+    return statementParagraphs(view, { texts: view.orderTexts ?? null, erasedOn: view.erasedOn ?? null });
   } catch {
     return null;
   }
+}
+
+/** The authority's words a notice holds, each under its label (W.2), in the order the notice names them. */
+function authorityWords(view: DecisionView): { label: string; text: string }[] {
+  const texts = view.orderTexts ?? null;
+  if (texts === null) return [];
+  const labelled: [string | null, string][] = [
+    [texts.reasons, ORDER_NOTICE.reasonsLabel],
+    [texts.redress, ORDER_NOTICE.redressLabel],
+    [texts.scope, ORDER_NOTICE.scopeLabel],
+  ];
+  return labelled.flatMap(([text, label]) => (text === null ? [] : [{ label, text }]));
+}
+
+/**
+ * 3f (design, section 9.3): the notice of an authority's order, and of the reinstatement after one. Its title says what it
+ * is; its paragraphs are ORDER_NOTICE's, rendered by statementParagraphs from the statement's data read fresh; the
+ * authority's words stand whole in a block of their own; the post is never shown while the order's measure stands; and no
+ * appeal is offered: in its place, where the order can be challenged, how korbat's own mistake is put right, and that
+ * the notice grows.
+ */
+function OrderNotice({ view }: { view: DecisionView }) {
+  const paragraphs = paragraphsOf(view);
+  const words = authorityWords(view);
+  return (
+    <View role="article">
+      <Text accessibilityRole="header" aria-level={1} className="text-lg font-semibold text-zinc-50">
+        {ORDER_TEXTS.notice.title}
+      </Text>
+      {view.post ? <Text className="mt-1 text-base text-zinc-300">{DECISION_WORDS.post(utcMinute(view.post.createdAt))}</Text> : null}
+      <View className="mt-2">{paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}</View>
+      {words.length > 0 ? (
+        <View role="group" aria-label={ORDER_NOTICE.wordsBlock} className="mt-4 rounded-lg border border-zinc-700 px-3 pb-3">
+          <Text className="mt-3 text-sm font-semibold text-zinc-300">{ORDER_NOTICE.wordsBlock}</Text>
+          {words.map((entry) => (
+            <View key={entry.label}>
+              <Line strong>{entry.label}</Line>
+              <Line>{entry.text}</Line>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {view.content === null ? (
+        <Note>{ORDER_TEXTS.notice.noContent}</Note>
+      ) : (
+        <Section title={DECISION_WORDS.content}>
+          <Content content={view.content} />
+        </Section>
+      )}
+      <Note>{ORDER_TEXTS.notice.noAppeal}</Note>
+      {view.kind === "order" ? <Note>{ORDER_TEXTS.notice.wrongItem(CONTACT_EMAIL)}</Note> : null}
+      <Note>{ORDER_TEXTS.notice.fresh}</Note>
+    </View>
+  );
 }
 
 /**
@@ -263,6 +321,8 @@ function StandingAppealNotes({ view }: { view: DecisionView }) {
  * keeps the old value there. With `onAppeal` a decision that can still be appealed carries the appeal's form.
  */
 export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void> }) {
+  // 3f: an order's notice, and the reinstatement after one, render as a notice and offer no appeal.
+  if (view.order) return <OrderNotice view={view} />;
   const paragraphs = paragraphsOf(view);
   // The decisions whose screens still show a reset field's old value: of the resets this decision lifts, and of those that ended with it.
   const resets = [...new Set([...view.reversals, ...view.endedMeasures].flatMap((entry) => (entry.oldValueKept && entry.resetDecisionId ? [entry.resetDecisionId] : [])))];
@@ -291,7 +351,7 @@ export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppea
       <ReportingNow view={view} />
 
       <Section title={DECISION_WORDS.content}>
-        <Content content={view.content} />
+        {view.content === null ? <Note>{ORDER_TEXTS.notice.noContent}</Note> : <Content content={view.content} />}
       </Section>
 
       {view.appeal || view.appealUntil || view.reversedOn ? (

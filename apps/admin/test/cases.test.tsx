@@ -153,7 +153,7 @@ describe("the console's words", () => {
   });
 
   test("the message table has one entry for every moderation code the console can meet, and the app's own codes are not among them", () => {
-    const appOnly = ["human_check_failed", "staff_cannot_report", "notice_not_found", "already_reported", "appeal_not_open", "appeal_exists", "reexamination_not_open", "reexamination_exists"];
+    const appOnly = ["human_check_failed", "staff_cannot_report", "notice_not_found", "already_reported", "appeal_not_open", "appeal_exists", "reexamination_not_open", "reexamination_exists", "not_appealable"];
     expect([...CONSOLE_MODERATION_CODES, ...appOnly].sort()).toEqual([...ModerationErrorCode.options].sort());
     expect(Object.keys(MODERATION_MESSAGES).sort()).toEqual([...CONSOLE_MODERATION_CODES].sort());
     for (const code of CONSOLE_MODERATION_CODES) expect(messageFor(code).length, code).toBeGreaterThan(15);
@@ -760,7 +760,7 @@ describe("the case page", () => {
     // Each decision's kind and outcome in the console's own words, one table each.
     expect(out).toContain(`<strong>${DECISION_KINDS.interim}</strong>: ${DECISION_OUTCOMES.restricted}, 2026-10-01 09:00, by `);
     expect(out).toContain(`<strong>${DECISION_KINDS.correction}</strong>: ${DECISION_OUTCOMES.reversed}, 2026-10-01 10:15, by `);
-    expect(DECISION_KINDS).toEqual({ interim: "While deciding", final: "Final decision", review: "Review of an appeal", correction: "Correction" });
+    expect(DECISION_KINDS).toEqual({ interim: "While deciding", final: "Final decision", order: "Order", review: "Review of an appeal", correction: "Correction" });
     // An item's outcome, once answered.
     expect(page(postCase({ items: [item({ outcome: "restricted_rule", answeredBy: LIFTING })] }))).toContain(`<p>Answered: ${OUTCOME_WORDS.restricted_rule}.</p>`);
     expect(OUTCOME_WORDS.not_available).toBe("nothing live at the link");

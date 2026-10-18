@@ -35,6 +35,7 @@ import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
+import { caseOrderFacts, noticeHeldOn, postPreserved, unverifiedOrders } from "./orders-repo";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
 import { caseReplies, repliesWaiting, standingColumns, standingOnDecisions, strikeAccounts, unansweredReplies, type ReplyColumns } from "./standing-repo";
 
@@ -231,6 +232,8 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     // both read fresh.
     contact: await contactOverview(deps),
     alerts: await channelAlerts(deps),
+    // Task 3: the orders given effect and not verified, or holding a disabled post added after their check.
+    ordersUnverified: await unverifiedOrders(q, OVERVIEW_LIST_MAX),
   };
 }
 
@@ -334,6 +337,8 @@ const NO_CONTACT = { named: null, contactGiven: null, confirmed: null, suppresse
  */
 function sourceOf(item: CaseItemRow, letters: Map<string, number>, reporters: Map<string, ReporterFacts>, contacts: Map<string, NotifierFacts>, now: Date): SourceSummary {
   if (item.intakeKind === "finding") return { kind: "staff", label: SOURCE_LABELS.staff, ...NO_BANDS, ...NO_CONTACT };
+  // 3f (design, section 8.6): an order's item names its authority's order, never a reporter.
+  if (item.intakeKind === "order") return { kind: "authority", label: SOURCE_LABELS.authority, ...NO_BANDS, ...NO_CONTACT };
   if (item.csam) return { kind: "anonymous", label: SOURCE_LABELS.anonymous, ...NO_BANDS, ...NO_CONTACT };
   if (item.channel === "signed_out") {
     const facts = item.contactId === null ? undefined : contacts.get(item.contactId);
@@ -441,6 +446,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
       markable: item.markable,
       unfounded: item.unfounded,
       markWithdrawn: item.markWithdrawn,
+      orderId: item.orderId,
     }),
   );
 
@@ -451,6 +457,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   const standingOn = await standingOnDecisions(q, row.id);
   // 3e Task 4: the replies to the case's standing measures, with their texts: read here, in the logged read, and nowhere else.
   const replies = await caseReplies(q, row.id);
+  // 3f Task 3: an order's measure names its order and whether it keeps the post from its author; a reinstatement its ground.
+  const orderFacts = await caseOrderFacts(q, row.id);
   const decisions: CaseDecision[] = [];
   for (const decision of await caseDecisions(q, row.id)) {
     const own: CaseDecision["actions"] = [];
@@ -477,6 +485,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
         // 3e Task 2: a retirement names the handle it retired; no other row carries the member.
         ...(more?.handle ? { handle: more.handle } : {}),
         reply: replyOf(replies.get(action.id)),
+        ...(orderFacts.get(action.id) ?? {}),
       });
     }
     decisions.push({
@@ -534,6 +543,9 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     strikeDue: row.targetType === "post" ? await strikeDue(q, row.id) : null,
     authorStanding: row.targetType === "post" && authorId !== null ? await authorStanding(q, authorId) : null,
     standing: row.targetType === "account" ? await caseStanding(q, row.id, row.targetId) : null,
+    // 3f (sections 8.6 and 10.2): whether the post is preserved for an order, and whether an order's notice about it is held.
+    preserved: row.targetType === "post" ? await postPreserved(q, row.targetId) : false,
+    noticeHeld: row.targetType === "post" ? await noticeHeldOn(q, row.targetId) : null,
   };
 }
 

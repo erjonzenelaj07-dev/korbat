@@ -8,6 +8,7 @@ import {
   type CaseDecidedParams,
   type IdentityRevealedParams,
   type OrderCorrectFacts,
+  type OrderEffectedParams,
   type OrderEventRecordedParams,
 } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
@@ -166,6 +167,21 @@ export function orderEventAction(orderId: string, params: OrderEventRecordedPara
 /** 3f: the action that corrects an order under the rule admin: the order's id and, as params, the facts to change. */
 export function orderCorrectAction(orderId: string, facts: OrderCorrectFacts): StaffStepUpOptionsRequest {
   return StaffStepUpOptionsRequest.parse({ action: "order_corrected", target: { type: "order", id: orderId }, params: { facts } });
+}
+
+/**
+ * 3f Task 3: the action of "Disable for an order": the order's id as the target and, as params, the order's facts as the
+ * page showed them, `urgent`, and the ticked items with their posts, sorted by post. The schema refuses any other order,
+ * so one action has one hash and its order is the lock order.
+ */
+export function orderEffectAction(orderId: string, params: OrderEffectedParams): StaffStepUpOptionsRequest {
+  return StaffStepUpOptionsRequest.parse({ action: "order_effected", target: { type: "order", id: orderId }, params });
+}
+
+/** "Disable {n} posts: confirm with your staff key"; answers the order as it stands after the effect. */
+export function effectOrderWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, orderId: string, params: OrderEffectedParams) {
+  const action = orderEffectAction(orderId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.effectOrder(action.target.id, { ...params, stepUp }, { activity: true }));
 }
 
 /** "Confirm with your staff key" on an order's event; answers the order as it stands after it. */

@@ -22,7 +22,7 @@ export type DecideOutcome = { decisionId: string } | "ended" | "late";
 
 /**
  * The kinds of the ledger the decide and review routes accept (3e design, section 7.1 item 2). The params' schema knows
- * all 22 kinds from the first task of 3e on; this list holds 3c's twelve, a strike with its overruling, (Task 2) a
+ * all 22 kinds of 3e from its first task on, and (3f) the reinstatement after an order; this list holds 3c's twelve, a strike with its overruling, (Task 2) a
  * handle's retirement with its reversal, (Task 3) a suspension with its lift, (Task 4) a termination and (Task 5) the
  * warning about reporting, the restriction of it and their lift: every kind, since each task of 3e added the kinds whose
  * flow it built, so that no route recorded a measure whose flow was not built yet. A kind outside it is refused before
@@ -41,6 +41,9 @@ export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
   "warn_reporting",
   "restrict_reporting",
   "lift_reporting",
+  // 3f Task 3 (design, section 7.9): an admin's reinstatement after an order, in a correction of the order decision. Never
+  // disable_by_order, which only the effect of an order writes (and the params' schema refuses here).
+  "reinstate_by_order",
 ]);
 
 /**
@@ -127,6 +130,10 @@ export async function afterDecision(deps: Pick<ModerationDeps, "apiDb" | "auth" 
     const found = await decisionStatement(deps.apiDb, decisionId);
     if (found) {
       const { statement, decision } = found;
+      // 3f (design, section 7.9 step 6): every staff account hears of an order's measure lifted, by push and mail.
+      if (statement.reversals.some((reversal) => reversal.kind === "reinstate_by_order")) {
+        await staffAlert(deps, null, 0, { template: "order_reinstated", facts: { at: statement.decidedAt } });
+      }
       const unsealed = statement.reversals.some((reversal) => reversal.kind === "unseal_media");
       const dismissed = statement.kind === "final" && decision.suspect && !statement.measures.some((measure) => measure.kind === "seal_media");
       if (unsealed || dismissed) {
@@ -194,6 +201,7 @@ export async function recordConfirmed(
   subject: string | null,
   write: (tx: DbTx, decisionId: string) => Promise<void>,
   mode: AccountLockMode = "no key update",
+  target: { type: "post" | "account"; id: string } | null = null,
 ): Promise<DecideOutcome> {
   const action = confirmed.action;
   if (action !== "case_decided" && action !== "appeals_reviewed") throw new Error("only a decision or a review is recorded this way");
@@ -210,7 +218,9 @@ export async function recordConfirmed(
           action,
           targetType: confirmed.target.type,
           targetId: confirmed.target.id,
-          metadata: { params: confirmed.params, decisionId },
+          // 3f (section 10.5): from Task 3 on the row names its case's target, so a lost decision's row says what it was
+          // about after a restore; decision_holds compares it with the case at commit.
+          metadata: { params: confirmed.params, decisionId, ...(target !== null ? { target } : {}) },
           staffSession: session.handle,
           actionHash: confirmed.actionHash,
           stepUp: confirmed.assertion,
@@ -282,5 +292,6 @@ export async function decide(deps: ModerationDeps, session: ActiveStaffSession, 
       for (const action of insertionOrder(params.actions)) await insertAction(tx, decisionId, action, params.replaced);
     },
     subjectLockMode(params.actions, answered),
+    target,
   );
 }

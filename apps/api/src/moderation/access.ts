@@ -23,6 +23,12 @@ export const ACCESS_WORDS = {
   /** What stands on every case that holds an item of the urgent lane, open or closed. */
   authorities:
     "check the R2, Art. 18 and order records before sending: an authority may need the person not to be told yet, or national law may restrict access (GDPR Art. 23(1)(d))",
+  /**
+   * 3f (design, W.8): printed in the place of a case's part when an order's notice about its post is held; the operator
+   * reads the draft, the person never does. `until` is the hold's end, or null while none is recorded.
+   */
+  noticeHeld: (until: string | null) =>
+    `${until === null ? "An order's notice about this post is held, with no end recorded." : `An order's notice about this post is held until ${until}.`} Leave the order, the post and every decision marked below out of the answer, and note the reason in the operator's records, not in the answer.`,
   /** The source of an item, as a category: never a count, a name or a report's words. */
   sources: { report: "a report by another user", notice: "a notice under Article 16", finding: "found by a moderator" },
 } as const;
@@ -111,10 +117,29 @@ export interface AccountAccessDraft {
  * for the check of the authorities' records.
  */
 export async function accessDraftForAccount(q: Runner, appOrigin: string, account: { id: string; handle: string }): Promise<AccountAccessDraft> {
-  const cases = await rows<{ id: string; target_type: "post" | "account"; target_id: string; opened_at: string; closed_at: string | null; urgent: boolean }>(
+  const cases = await rows<{
+    id: string;
+    target_type: "post" | "account";
+    target_id: string;
+    opened_at: string;
+    closed_at: string | null;
+    urgent: boolean;
+    order_held: boolean;
+    hold_until: string | null;
+    held_decisions: string[];
+  }>(
     q,
+    // 3f: whether an order's notice about the case's post is held (an untold order decision about it), with the earliest
+    // end of such a hold ('infinity' as null), and the case's decisions held with it (informed_at null).
     sql`select c.id, c.target_type, c.target_id, ${iso("c.opened_at")} as opened_at, ${iso("c.closed_at")} as closed_at,
-               exists (select 1 from intake_items i where i.case_id = c.id and i.lane = 0) as urgent
+               exists (select 1 from intake_items i where i.case_id = c.id and i.lane = 0) as urgent,
+               (c.target_type = 'post' and exists (select 1 from decisions od join cases oc on oc.id = od.case_id
+                                                    where od.kind::text = 'order' and od.informed_at is null and oc.target_type = 'post' and oc.target_id = c.target_id)) as order_held,
+               (select ${iso("min(public.order_hold_until(oi.order_id)) filter (where public.order_hold_until(oi.order_id) < 'infinity'::timestamptz)")}
+                  from decisions od join cases oc on oc.id = od.case_id join legal_order_items oi on oi.id = od.order_item_id
+                 where od.kind::text = 'order' and od.informed_at is null and oc.target_type = 'post' and oc.target_id = c.target_id
+                having bool_and(public.order_hold_until(oi.order_id) < 'infinity'::timestamptz)) as hold_until,
+               coalesce((select array_agg(d.id order by d.decided_at, d.id) from decisions d where d.case_id = c.id and d.informed_at is null), '{}') as held_decisions
           from cases c
          where (c.target_type = 'account' and c.target_id = ${account.id}::uuid)
             or (c.target_type = 'post' and c.target_id in (select p.id from posts p where p.author_id = ${account.id}::uuid))
@@ -173,7 +198,12 @@ export async function accessDraftForAccount(q: Runner, appOrigin: string, accoun
 
   return {
     subject: { handle: account.handle },
-    cases: cases.map((c) => ({
+    cases: cases.map((c) =>
+      // 3f (section 7.10): a case about a post whose order's notice is held is marked for the operator in the place of its
+      // part, and nothing of the order, the post or a decision held with it is in what the draft offers to send.
+      c.order_held || c.held_decisions.length > 0
+        ? { id: c.id, noticeHeld: ACCESS_WORDS.noticeHeld(c.hold_until), heldDecisions: c.held_decisions }
+        : {
       id: c.id,
       target: c.target_type === "post" ? { type: "post", link: postLink(appOrigin, c.target_id) } : { type: "account", link: accountLink(appOrigin, account.handle) },
       openedAt: c.opened_at,
@@ -232,7 +262,8 @@ export async function accessDraftForAccount(q: Runner, appOrigin: string, accoun
       appeals: appeals
         .filter((a) => a.case_id === c.id)
         .map((a) => ({ decisionId: a.decision_id, filedAt: a.filed_at, statement: a.erased ? { erased: true } : a.statement, result: a.result, answeredAt: a.answered_at })),
-    })),
+          },
+    ),
     ownReports: await noticesWhere(q, appOrigin, sql`n.reporter_id = ${account.id}::uuid`),
     withheld: { identities: { count: items.filter((item) => item.identified).length, reason: ACCESS_WORDS.identities }, texts: withheldTexts },
   };

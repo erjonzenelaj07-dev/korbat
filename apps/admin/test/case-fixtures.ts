@@ -187,6 +187,9 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     strikeDue: { due: true, why: "due" },
     authorStanding: { activeStrikes: "1", suspensionsInYear: "0", now: "none" },
     standing: null,
+    // 3f Task 3: no order preserves the post or holds a notice about it.
+    preserved: false,
+    noticeHeld: null,
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },
@@ -449,6 +452,7 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     // 3f: no message at the contact point and a working alert channel, unless a test says otherwise.
     contact: { open: 0, oldestAt: null, dueAt: null },
     alerts: { channel: "ok", since: null },
+    ordersUnverified: { total: 0, items: [] },
     ...overrides,
   };
 }
@@ -789,5 +793,73 @@ export function warnedCase(): CaseView {
     appeals: [{ id: APPEAL_WARNED, decisionId: DECISION_WARNED, filedAt: "2026-09-25T10:00:00.000Z", statement: "These reports were made in good faith.", answeredAt: null, result: null, answeredBy: null, reviewer: "available", needsAdmin: false, mayReview: true }],
     history: [],
     standing: { ...NO_ACCOUNT_STANDING, openReports: false },
+  });
+}
+
+// ---------------------------------------------------------------- 3f Task 3: a case that holds an order's measure
+
+export const CASE_ORDER = "1c3e5a7c-9e0f-4b2d-8f4a-6c8e0a2c4e6a";
+export const ORDER_OF_CASE = "2d4f6b8d-0f1a-4c3e-9a5b-7d9f1b3d5f7b";
+export const DECISION_ORDER = "3e5a7c9e-1a2b-4d4f-8b6c-8e0a2c4e6a8c";
+export const ITEM_ORDER = "4f6b8d0f-2b3c-4e5a-9c7d-9f1b3d5f7b9d";
+/** The end of the hold the case's answer names, while an order's notice about the post is held. */
+export const ORDER_HELD_UNTIL = "2026-11-27T09:00:00.000Z";
+
+/**
+ * A post case under a removal order with Section C (3f design, section 8.6): the order's item from the authority,
+ * answered at once, with its order's id; the order decision with "Disabled for an order" in force and withheld from its
+ * author; the post preserved, so its copies are withheld; and the author's notice held until a recorded end.
+ */
+export function orderCase(overrides: Partial<CaseView> = {}): CaseView {
+  return postCase({
+    id: CASE_ORDER,
+    stateVersion: 2,
+    intakeSeq: 1,
+    answeredSeq: 1,
+    target: { type: "post", id: POST_ID, link: `http://localhost:8081/post/${POST_ID}`, authorHandle: HOSTILE.bidi, state: "visible", level: "disabled" },
+    imagesAllowed: false,
+    snapshots: [{ id: "5a7c9e1a-3c4d-4f6b-8d8e-0a2c4e6a8cae", takenAt: "2026-10-16T08:58:00.000Z", digest: "ef".repeat(32), withheld: true }],
+    items: [
+      item({
+        id: ITEM_ORDER,
+        seq: 1,
+        position: 1,
+        lane: 2,
+        ruleId: null,
+        allegesIllegal: true,
+        category: "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY",
+        explanation: null,
+        outcome: "restricted_legal",
+        answeredBy: DECISION_ORDER,
+        source: { kind: "authority", label: "An authority's order", accountAge: null, itemsFiled: null, actedOn: null, answeredUnseen: null, named: null, contactGiven: null, confirmed: null, suppressed: null, contactLost: false },
+        markable: false,
+        orderId: ORDER_OF_CASE,
+      }),
+    ],
+    decisions: [
+      decision({
+        id: DECISION_ORDER,
+        kind: "order",
+        source: "order",
+        ground: "illegal",
+        ruleId: null,
+        rulesVersion: 3,
+        redressVersion: 3,
+        category: "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY",
+        categoryKeyword: "KEYWORD_TERRORIST_CONTENT",
+        decidedAt: "2026-10-16T09:00:00.000Z",
+        throughSeq: 0,
+        facts: null,
+        reason: null,
+        actions: [{ ...decision().actions[0]!, id: "6b8d0f2b-4d5e-4a7c-9e9f-1b3d5f7b9dbf", kind: "disable_by_order", orderId: ORDER_OF_CASE, withholdAuthor: true }],
+      }),
+    ],
+    notes: [],
+    strikeDue: null,
+    authorStanding: null,
+    preserved: true,
+    noticeHeld: { until: ORDER_HELD_UNTIL },
+    history: [],
+    ...overrides,
   });
 }

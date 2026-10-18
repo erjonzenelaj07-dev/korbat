@@ -580,3 +580,113 @@ export async function nearestOrderDeadline(q: Querier): Promise<Date | null> {
          and exists (select 1 from public.legal_order_items i where i.order_id = o.id and i.disabled_at is null and i.closed_at is null)) d`);
   return row?.due_at ? new Date(row.due_at) : null;
 }
+
+// ---------------------------------------------------------------- giving effect (Task 3, section 7.6)
+
+/** An order's item as the effect reads it before its transaction: the post it names and what became of it. */
+export interface EffectItemRow {
+  id: string;
+  postId: string | null;
+  inForce: boolean;
+}
+
+/** The order's items of these ids (the effect compares each with what the key signed). */
+export async function effectItems(q: Querier, orderId: string, itemIds: readonly string[]): Promise<EffectItemRow[]> {
+  const found = await q.execute<{ id: string; post_id: string | null; in_force: boolean }>(sql`
+    select i.id, i.post_id, exists (select 1 from public.measures_in_force m where m.id = i.action_id) as in_force
+      from public.legal_order_items i where i.order_id = ${orderId}::uuid and i.id = any(${uuidList(itemIds)})`);
+  return found.map((row) => ({ id: row.id, postId: row.post_id, inForce: row.in_force }));
+}
+
+/** The intake item an effect inserted for an order's item: the API role may write that one column, which decisions_record does not trust. */
+export async function setItemIntake(tx: DbTx, itemId: string, intakeItemId: string): Promise<void> {
+  await tx.execute(sql`update public.legal_order_items set intake_item_id = ${intakeItemId}::uuid where id = ${itemId}::uuid`);
+}
+
+/** A case's version as it stands in this transaction, which an order decision names as the version it saw. */
+export async function caseVersion(tx: DbTx, caseId: string): Promise<number> {
+  const [row] = await tx.execute<{ state_version: number }>(sql`select state_version from public.cases where id = ${caseId}::uuid`);
+  return row!.state_version;
+}
+
+/**
+ * An order decision's row (7.6 step 5.2): its item, the case's version, the law as its ground, no rule and no text of
+ * korbat's, the texts' versions the API serves, and the snapshot this transaction took. The triggers force the source,
+ * the category and keyword, whether it needs an admin, and whether its author is told now or at the hold's end.
+ */
+export async function insertOrderDecision(
+  tx: DbTx,
+  row: { id: string; caseId: string; itemId: string; stateVersion: number; rulesVersion: number; redressVersion: number; category: string; keyword: string | null; snapshotId: string; snapshotDigest: string; decidedBy: string },
+): Promise<void> {
+  await tx.execute(
+    sql`insert into decisions (id, case_id, kind, order_item_id, seen_state_version, through_seq, outcome, ground, rule_id, rules_version, redress_version, category, category_keyword,
+                               snapshot_id, snapshot_digest, facts_digest, reason_digest, legal_reference_digest, decided_by)
+        values (${row.id}::uuid, ${row.caseId}::uuid, 'order'::decision_kind, ${row.itemId}::uuid, ${row.stateVersion}::int, 0, 'restricted'::decision_outcome,
+                'illegal'::decision_ground, null, ${row.rulesVersion}::smallint, ${row.redressVersion}::smallint, ${row.category}, ${row.keyword},
+                ${row.snapshotId}::uuid, ${row.snapshotDigest}, null, null, null, ${row.decidedBy}::uuid)`,
+  );
+}
+
+/**
+ * Home's [home.unverified] (10.2): the orders that are not closed and have a disabled item while the order is not
+ * verified, or a disabled item added after the check, each with its first disabling, oldest first.
+ */
+export async function unverifiedOrders(q: Querier, limit: number): Promise<{ total: number; items: { orderId: string; effectAt: string }[] }> {
+  const found = await q.execute<{ id: string; effect_at: string; total: number }>(sql`
+    select o.id, ${isoOf("min(i.disabled_at)")} as effect_at, (count(*) over ())::int as total
+      from public.legal_orders o join public.legal_order_items i on i.order_id = o.id and i.disabled_at is not null
+     where o.closed_at is null and (o.verified_at is null or i.added_at > o.verified_at)
+     group by o.id order by min(i.disabled_at), o.id limit ${limit}`);
+  return { total: found[0]?.total ?? 0, items: found.map((row) => ({ orderId: row.id, effectAt: row.effect_at })) };
+}
+
+/**
+ * Whether an order's notice about this post is held (8.6, CaseView.noticeHeld): an untold order decision about it whose
+ * measure is in force, with the earliest end of such a hold, null while it has none recorded ('infinity'); null when no
+ * notice is held. The same test as the database's order_notice_held.
+ */
+export async function noticeHeldOn(q: Querier, postId: string): Promise<{ until: string | null } | null> {
+  const [row] = await q.execute<{ held: boolean; until: string | null; open: boolean }>(sql`
+    select count(*) > 0 as held,
+           ${isoOf("min(public.order_hold_until(i.order_id)) filter (where public.order_hold_until(i.order_id) < 'infinity'::timestamptz)")} as until,
+           bool_or(public.order_hold_until(i.order_id) = 'infinity'::timestamptz) as open
+      from public.measures_in_force m
+      join public.decisions d on d.id = m.decision_id and d.kind::text = 'order' and d.informed_at is null
+      join public.legal_order_items i on i.id = d.order_item_id
+     where m.post_id = ${postId}::uuid and m.kind::text = 'disable_by_order'`);
+  if (!row?.held) return null;
+  return { until: row.open ? null : row.until };
+}
+
+/**
+ * The order members of a case's ledger rows (10.2, CaseDecisionAction): for a disable_by_order its order and whether it
+ * keeps the post from its author, for a reinstatement its ground; rows of other kinds are not in the answer.
+ */
+export async function caseOrderFacts(q: Querier, caseId: string): Promise<Map<string, { orderId?: string; withholdAuthor?: boolean; orderGround?: OrderGround }>> {
+  const found = await q.execute<{ id: string; order_id: string | null; withhold_author: boolean | null; order_ground: string | null }>(sql`
+    select a.id, i.order_id, a.withhold_author, a.order_ground
+      from public.decision_actions a join public.decisions d on d.id = a.decision_id
+      left join public.legal_order_items i on i.id = d.order_item_id
+     where d.case_id = ${caseId}::uuid and a.kind::text in ('disable_by_order', 'reinstate_by_order')`);
+  const facts = new Map<string, { orderId?: string; withholdAuthor?: boolean; orderGround?: OrderGround }>();
+  for (const row of found) {
+    facts.set(row.id, {
+      ...(row.order_id !== null ? { orderId: row.order_id } : {}),
+      ...(row.withhold_author !== null ? { withholdAuthor: row.withhold_author } : {}),
+      ...(row.order_ground !== null ? { orderGround: row.order_ground as OrderGround } : {}),
+    });
+  }
+  return facts;
+}
+
+/** Whether a post is preserved for an order now: the database's one predicate, post_preserved. */
+export async function postPreserved(q: Querier, postId: string): Promise<boolean> {
+  const [row] = await q.execute<{ preserved: boolean }>(sql`select public.post_preserved(${postId}::uuid) as preserved`);
+  return row?.preserved ?? false;
+}
+
+/** order_notices_release(), as its owner: how many decisions it told (section 6.3). */
+export async function releaseHeldNotices(tx: DbTx): Promise<number> {
+  const [row] = await tx.execute<{ told: number }>(sql`select public.order_notices_release() as told`);
+  return row?.told ?? 0;
+}

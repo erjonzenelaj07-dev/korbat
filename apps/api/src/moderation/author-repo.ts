@@ -74,7 +74,7 @@ const casesAbout = (accountId: string) => sql`(
 /** One decision as the author's list shows it. */
 export interface AuthorDecisionRow {
   id: string;
-  kind: "interim" | "final" | "review" | "correction";
+  kind: "interim" | "final" | "order" | "review" | "correction";
   outcome: string;
   decidedOn: string;
   /** The decision's time to the microsecond, as text: what the next page starts after. */
@@ -98,6 +98,8 @@ export interface AuthorDecisionRow {
   standingMeasure: { kind: "suspend" | "terminate"; days: number | null; announced: boolean } | null;
   /** 3e's review (people7): what the decision's lift lifted, and whether it was a withdrawal for another measure; null for none. */
   liftedStanding: { kind: "suspend" | "terminate"; replaced: boolean } | null;
+  /** 3f: an order decision, disabled or removed by its measure, or the correction that reinstates after one (lifted): its row names no rule; null otherwise. */
+  order: "disabled" | "removed" | "lifted" | null;
 }
 
 /**
@@ -125,7 +127,10 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                coalesce((select array_agg(m.kind::text order by m.created_at, m.id) from decision_actions m
                           where d.kind in ('review', 'correction') and m.kind in ('suspend', 'terminate', 'restrict_reporting') and d.reviews_decision_id = any(m.rests_on)
                             and public.standing_basis_broken_at(m.id) = d.decided_at
-                            and not exists (select 1 from decision_actions x where x.reverses_action_id = m.id and x.created_at < d.decided_at)), '{}') as ended_standing
+                            and not exists (select 1 from decision_actions x where x.reverses_action_id = m.id and x.created_at < d.decided_at)), '{}') as ended_standing,
+               case when d.kind::text = 'order'
+                    then case when coalesce((select a.withhold_author from decision_actions a where a.decision_id = d.id and a.kind::text = 'disable_by_order' limit 1), true) then 'disabled' else 'removed' end
+                    when exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind::text = 'reinstate_by_order') then 'lifted' end as about_order
           from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
          where ${toldToAuthor("d")}
            ${after === null ? sql`` : sql`and (d.decided_at, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
@@ -150,6 +155,7 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
     endedStanding: row.ended_standing as AuthorDecisionRow["endedStanding"],
     standingMeasure: row.standing_measure as AuthorDecisionRow["standingMeasure"],
     liftedStanding: row.lifted_standing as AuthorDecisionRow["liftedStanding"],
+    order: (row.about_order as AuthorDecisionRow["order"]) ?? null,
   }));
 }
 
@@ -193,6 +199,8 @@ export interface AuthorDecisionFacts {
   sealed: boolean;
   /** The strike the decision gave, read fresh: until when it counts, whether it still does, and when it was overruled. */
   strike: DecisionStrike | null;
+  /** 3f: an order decision whose measure is in force, whose post the notice's screen never shows (section 10.4). */
+  orderInForce: boolean;
 }
 
 /**
@@ -213,7 +221,8 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
                s.body, s.media::text as media, coalesce(s.handle, s.author_handle) as handle, s.display_name, s.bio,
                coalesce(p.state = 'deleted_by_author', false) as post_deleted, coalesce(p.erased_at is not null, false) as post_erased,
                (c.target_type = 'post' and exists (select 1 from seal_posts sp join measures_in_force m on m.id = sp.action_id where sp.post_id = c.target_id)) as sealed,
-               ${strikeColumns}
+               ${strikeColumns},
+               (d.kind::text = 'order' and exists (select 1 from measures_in_force m where m.decision_id = d.id)) as order_in_force
           from decisions d
           join cases c on c.id = d.case_id
           join evidence_snapshots s on s.id = d.snapshot_id
@@ -255,30 +264,34 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
       row.strike_until === null
         ? null
         : { countsUntil: row.strike_until as string, state: row.strike_state as DecisionStrike["state"], overruledAt: row.strike_overruled_at as string | null },
+    orderInForce: row.order_in_force as boolean,
   };
 }
 
 /**
  * The decision behind the state of each of these posts that the account wrote and that is withheld or removed (3c design,
- * section 5): the decision of the strongest post measure in force, a removal before a withhold and the newest first; or,
+ * section 5): the decision of the strongest post measure in force, a removal (3f: or a disabling for an order, which
+ * reaches this read only as the level removed, a DSA order that does not withhold) before a withhold and the newest
+ * first; or,
  * for a post that is removed only because its content was erased, with no post measure in force, the newest decision
  * whose R4 redaction it was. A post of someone else, and one that is visible, is not in the answer.
  */
 export async function chipFacts(q: Runner, accountId: string, postIds: readonly string[]): Promise<Map<string, PostModeration>> {
   const facts = new Map<string, PostModeration>();
   if (postIds.length === 0) return facts;
-  const found = await rows<{ post_id: string; decision_id: string; rule_id: string | null; legal: boolean; interim: boolean; strike_until: string | null }>(
+  const found = await rows<{ post_id: string; decision_id: string; rule_id: string | null; legal: boolean; interim: boolean; strike_until: string | null; is_order: boolean }>(
     q,
     sql`select p.id as post_id, f.decision_id, f.rule_id, f.legal, f.interim,
+               exists (select 1 from decisions o where o.id = f.decision_id and o.kind::text = 'order') as is_order,
                -- 3e: the strike of the chip's decision while it stands and still counts.
                (select ${iso("a.ends_at")} from decision_actions a where a.decision_id = f.decision_id and a.kind = 'strike' and a.ends_at > clock_timestamp()
                    and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)) as strike_until
           from posts p
           cross join lateral (
             (select d.id as decision_id, d.rule_id, d.ground is not distinct from 'illegal' as legal, d.kind = 'interim' as interim, 0 as source,
-                    (m.kind = 'remove') as removes, d.decided_at
+                    (m.kind::text in ('remove', 'disable_by_order')) as removes, d.decided_at
                from measures_in_force m join decisions d on d.id = m.decision_id
-              where m.post_id = p.id and m.kind in ('withhold', 'remove') and ${toldToAuthor("d")})
+              where m.post_id = p.id and m.kind::text in ('withhold', 'remove', 'disable_by_order') and ${toldToAuthor("d")})
             union all
             (select d.id, d.rule_id, d.ground is not distinct from 'illegal', false, 1, true, d.redacted_at
                from cases c join decisions d on d.case_id = c.id
@@ -289,6 +302,8 @@ export async function chipFacts(q: Runner, accountId: string, postIds: readonly 
           ) f
          where p.id = any(${`{${postIds.join(",")}}`}::uuid[]) and p.author_id = ${accountId}::uuid and p.moderation_level in ('withheld', 'removed')`,
   );
-  for (const row of found) facts.set(row.post_id, { decisionId: row.decision_id, ruleId: row.rule_id as RuleId | null, legal: row.legal, interim: row.interim, strikeUntil: row.strike_until });
+  for (const row of found) {
+    facts.set(row.post_id, { decisionId: row.decision_id, ruleId: row.rule_id as RuleId | null, legal: row.legal, interim: row.interim, strikeUntil: row.strike_until, ...(row.is_order ? { order: true } : {}) });
+  }
   return facts;
 }

@@ -98,18 +98,18 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
           {signOutError}
         </p>
       ) : null}
-      {route.name === "home" || route.name === "signin" ? <Home me={session.me} api={api} credentials={credentials} onOpenCase={store.openCase} onNavigate={navigate} /> : null}
+      {route.name === "home" || route.name === "signin" ? <Home me={session.me} api={api} credentials={credentials} onOpenCase={store.openCase} onNavigate={navigate} onOpenOrder={store.openOrder} /> : null}
       {route.name === "audit" ? <Audit api={api} /> : null}
       {route.name === "queue" ? <Queue api={api} onOpenCase={store.openCase} /> : null}
       {/* Keyed by the case: another case's page starts with nothing of this one's. */}
-      {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} role={session.me.role} drafts={store.drafts} onOpenCase={store.openCase} /> : null}
+      {route.name === "case" ? <CaseScreen key={route.id} id={route.id} api={api} credentials={credentials} role={session.me.role} drafts={store.drafts} onOpenCase={store.openCase} onOpenOrder={store.openOrder} /> : null}
       {route.name === "appeals" ? <Appeals api={api} onOpenCase={store.openCase} /> : null}
       {route.name === "standing" ? <Standing api={api} onOpenCase={store.openCase} /> : null}
       {route.name === "contact" ? <Contact api={api} me={session.me} onOpened={onOpened} onOpenOrder={store.openOrder} /> : null}
       {route.name === "orders" ? <Orders api={api} me={session.me} onOpenOrder={store.openOrder} onOpened={onOpened} /> : null}
       {/* Keyed by the order: another order's page starts with nothing of this one's. */}
       {route.name === "order" ? (
-        <Order key={route.id} id={route.id} api={api} me={session.me} credentials={credentials} opened={opened !== null && opened.id === route.id ? { unsure: opened.unsure } : null} />
+        <Order key={route.id} id={route.id} api={api} me={session.me} credentials={credentials} opened={opened !== null && opened.id === route.id ? { unsure: opened.unsure } : null} onOpenCase={store.openCase} />
       ) : null}
       {route.name === "unknown" ? (
         <section aria-labelledby="unknown-title">

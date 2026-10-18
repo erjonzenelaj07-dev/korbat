@@ -52,6 +52,11 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   order_closed: 409,
   order_event_refused: 422,
   already_released: 409,
+  // Task 3 (giving effect).
+  order_changed: 409,
+  order_not_verified: 422,
+  order_cap: 429,
+  not_appealable: 422,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -106,6 +111,10 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   order_closed: "This order is closed.",
   order_event_refused: "That cannot be recorded now: the order is not in that state.",
   already_released: "The author's notice of this order was already released, or its hold was ended.",
+  order_changed: "The order is not what was confirmed: read it again.",
+  order_not_verified: "This order is given effect only after it is verified, or by an admin as urgent.",
+  order_cap: "This staff account has given effect to as many order items as one account may in 24 hours.",
+  not_appealable: "korbat's appeal does not apply to this: it is not korbat's decision.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.

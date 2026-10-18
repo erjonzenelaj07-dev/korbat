@@ -15,6 +15,7 @@ import {
   type RuleId,
   type TdbCategory,
   type TimedKind,
+  type OrderGround,
 } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
@@ -437,7 +438,7 @@ export interface DecisionInput {
   category?: TdbCategory;
   categoryKeyword?: "KEYWORD_TERRORIST_CONTENT" | null;
   /** A suspension's, a termination's and a restriction of reporting's days and whether it is announced go with it. */
-  actions?: readonly { kind: ActionKind; mediaId?: string | null; days?: number | null; announced?: boolean }[];
+  actions?: readonly { kind: ActionKind; mediaId?: string | null; days?: number | null; announced?: boolean; orderGround?: OrderGround }[];
   /** For a final decision the case's newest item unless said. */
   throughSeq?: number;
   /** The case's version now unless said. */
@@ -471,11 +472,14 @@ export const act = (kind: ActionKind, mediaId: string | null = null) => ({ kind,
 export const timed = (kind: "suspend" | "terminate" | "restrict_reporting", days: number | null, announced: boolean) => ({ kind, mediaId: null, days, announced });
 
 /** An action entry in the shape the params sign: the three timed kinds carry their days and whether they are announced. */
-function signedAction(action: { kind: ActionKind; mediaId?: string | null; days?: number | null; announced?: boolean }): CaseDecidedParams["actions"][number] {
+function signedAction(action: { kind: ActionKind; mediaId?: string | null; days?: number | null; announced?: boolean; orderGround?: OrderGround }): CaseDecidedParams["actions"][number] {
   if ((TIMED_KINDS as readonly string[]).includes(action.kind)) {
     return { kind: action.kind as TimedKind, mediaId: null, days: action.days ?? null, announced: action.announced ?? false };
   }
-  return { kind: action.kind as Exclude<ActionKind, TimedKind>, mediaId: action.mediaId ?? null };
+  // 3f: a reinstatement after an order signs its ground (withdrawn unless said).
+  if (action.kind === "reinstate_by_order") return { kind: "reinstate_by_order", mediaId: null, orderGround: action.orderGround ?? "withdrawn" };
+  // disable_by_order is in no action entry of case_decided: a test that sends it builds what the schema would refuse.
+  return { kind: action.kind as Exclude<ActionKind, TimedKind | "reinstate_by_order" | "disable_by_order">, mediaId: action.mediaId ?? null };
 }
 
 /**
@@ -694,7 +698,8 @@ export async function reviewParams(db: Runner, staff: { id: string }, decisionId
   if (!reviewed) throw new Error("the review names a decision that does not exist");
   const current = await readCase(db, reviewed.case_id);
   const snapshot = input.snapshotId !== undefined && input.snapshotDigest !== undefined ? { id: input.snapshotId, digest: input.snapshotDigest } : await newestSnapshot(db, reviewed.case_id);
-  const actions = (input.actions ?? []).map(signedAction);
+  // A review holds no reinstatement after an order: an order decision has no appeal.
+  const actions = (input.actions ?? []).map(signedAction) as AppealsReviewedParams["actions"];
   const outcome = input.outcome ?? (actions.length > 0 ? "reversed" : "kept");
   // A strike falls only with its whole finding: a review that reverses the decision overrules the strike it gave.
   const overrule = input.overrule ?? (outcome === "reversed" && (await holdsStandingStrike(db, decisionId)));

@@ -13,12 +13,14 @@ import {
   ORDER_ITEM_CLOSE_REASON_LABELS,
   ORDER_KINDS,
   ORDER_KIND_LABELS,
+  ORDER_RULES,
   SCRUTINY_OUTCOME_LABELS,
   STATE_FACTS,
   type ContactMessage,
   type MemberState,
   type OrderConsoleEvent,
   type OrderCorrectFacts,
+  type OrderEffectedParams,
   type OrderEventRecordedParams,
   type OrderItemCloseReason,
   type OrderItemView,
@@ -28,8 +30,9 @@ import {
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
 import { describeError, ORDER_WORDS } from "../messages";
-import type { OrderId } from "../router";
-import { correctOrderWithKey, recordOrderEventWithKey } from "../step-up";
+import { CaseLink } from "../nav";
+import { parseCaseId, type CaseId, type OrderId } from "../router";
+import { correctOrderWithKey, effectOrderWithKey, recordOrderEventWithKey } from "../step-up";
 import { bothTimes, Loaded, UserText, type Loadable } from "../ui";
 import type { CredentialsLike } from "../webauthn";
 import { clockLine, OrderFacts } from "./Orders";
@@ -38,7 +41,8 @@ import { clockLine, OrderFacts } from "./Orders";
  * An order (3f design, section 8.5), in Task 2's blocks: 1 the clock, refreshed every 20 seconds; 2 the check; 3 the
  * items, with "Close this item without effect" and "Add links"; 5 what was sent and received, each confirmed by the key;
  * 6 the forms' values as text; 7 what the command line owes; 8 the author's notice; 9 the events; 10 "Correct what the
- * order shows". Block 4 ("Disable for an order") and "Extension received" are Task 3's. The authority, the reference and
+ * order shows". Task 3 adds block 4 ("Disable for an order", the items' ticks and the check from outside), "Extension
+ * received" in block 5, an item's preservation, reinstatement and case, and [hold.warn]. The authority, the reference and
  * each link are an outsider's words and drawn as such; no image and no text of a post that is not public is shown.
  */
 
@@ -104,8 +108,48 @@ function ItemFacts({ item }: { item: OrderItemView }) {
             ? W.disabledAt(bothTimes(item.disabledAt))
             : W.notDisabled}
       </p>
+      {item.inForce && item.noEffect !== null ? <p className="hint">{item.noEffect === "already" ? W.alreadyNow : W.deletedNow}</p> : null}
+      {item.inForce && item.preserveUntil !== null && item.preserveEndedAt === null ? <p>{W.preservedUntil(bothTimes(item.preserveUntil))}</p> : null}
+      {item.reinstatedAt !== null && !item.inForce ? (
+        <p>{W.reinstatedAt(bothTimes(item.reinstatedAt), item.reinstatedGround === null ? "" : (GROUND_WORDS[item.reinstatedGround] ?? item.reinstatedGround))}</p>
+      ) : null}
     </>
   );
+}
+
+/** Task 3: the items "Disable for an order" can take now, in their order: a post, not in force, not closed, on an open order. */
+export function effectable(order: OrderView): OrderItemView[] {
+  if (order.closedAt !== null || order.kind === "dsa_art10") return [];
+  return order.items.filter((item) => item.postId !== null && !item.inForce && item.closedAt === null);
+}
+
+/** Whether an item is ticked: as the person set it, or by default the first itemsPerAction of those that can be disabled. */
+export function isTicked(order: OrderView, ticks: Readonly<Record<string, boolean>>, itemId: string): boolean {
+  const index = effectable(order).findIndex((item) => item.id === itemId);
+  if (index < 0) return false;
+  return ticks[itemId] ?? index < ORDER_RULES.itemsPerAction;
+}
+
+/**
+ * The params of order_effected (10.3) from the order as shown and the ticked items: each item's id and post, sorted by
+ * post, the order's facts as the page read them, and `urgent` as ticked.
+ */
+export function effectParamsOf(order: OrderView, itemIds: readonly string[], urgent: boolean): OrderEffectedParams {
+  const items = order.items
+    .filter((item) => itemIds.includes(item.id) && item.postId !== null)
+    .map((item) => ({ itemId: item.id, postId: item.postId as string }))
+    .sort((a, b) => (a.postId < b.postId ? -1 : a.postId > b.postId ? 1 : 0));
+  return {
+    kind: order.kind === "dsa_art9" ? "dsa_art9" : "tco_removal",
+    memberState: order.memberState,
+    authority: order.authority,
+    reference: order.reference,
+    sectionC: order.sectionC,
+    emergency: order.emergency,
+    withholdFromAuthor: order.withholdFromAuthor,
+    urgent,
+    items,
+  };
 }
 
 /** One item's block, with its closing while it is open. */
@@ -114,17 +158,25 @@ function ItemBlock({
   order,
   reason,
   busy,
+  ticked,
   onReason,
   onClose,
+  onTick,
+  onOpenCase,
 }: {
   item: OrderItemView;
   order: OrderView;
   reason: OrderItemCloseReason | null;
   busy: boolean;
+  ticked: boolean;
   onReason(reason: OrderItemCloseReason): void;
   onClose(): void;
+  onTick(ticked: boolean): void;
+  onOpenCase?: (id: CaseId) => void;
 }) {
   const open = item.disabledAt === null && item.closedAt === null;
+  const caseId = item.disabledAt !== null && item.caseId !== null ? parseCaseId(item.caseId) : null;
+  const canTick = effectable(order).some((candidate) => candidate.id === item.id);
   return (
     <li className="block">
       <p>{W.item(item.position)}</p>
@@ -135,6 +187,19 @@ function ItemBlock({
         </p>
       </figure>
       <ItemFacts item={item} />
+      {caseId !== null && onOpenCase !== undefined ? (
+        <p>
+          <CaseLink id={caseId} onOpen={onOpenCase}>
+            Open the case
+          </CaseLink>
+        </p>
+      ) : null}
+      {canTick ? (
+        <label className="choice">
+          <input type="checkbox" checked={ticked} disabled={busy} onChange={(event) => onTick(event.target.checked)} />
+          {W.effectTick}
+        </label>
+      ) : null}
       {item.unverified && order.verified ? <p className="notice">{W.unchecked(bothTimes(item.addedAt))}</p> : null}
       {open && order.mayCorrect !== null ? (
         <fieldset>
@@ -161,14 +226,16 @@ function ItemBlock({
 }
 
 /** The words of each console event the screen offers (block 5), with what it records. */
-const EVENT_WORDS: Record<Exclude<OrderConsoleEvent, "hold_extended">, { button: string; what: string }> = {
-  annex3_sent: { button: W.annex3, what: W.annex3What },
-  grounds_ceased: { button: W.ceased, what: W.ceasedWhat },
-  clarification_received: { button: W.clarified, what: W.clarifiedWhat },
-  annex2_sent: { button: W.annex2, what: W.annex2What },
-  receipt_confirmed: { button: W.informed, what: W.informedWhat },
-  closed_without_effect: { button: W.close, what: W.closeWhat },
-  reopened: { button: W.reopen, what: W.reopenWhat },
+const EVENT_WORDS: Record<OrderConsoleEvent, { button: string; what: (order: OrderView) => string }> = {
+  annex3_sent: { button: W.annex3, what: () => W.annex3What },
+  grounds_ceased: { button: W.ceased, what: () => W.ceasedWhat },
+  clarification_received: { button: W.clarified, what: () => W.clarifiedWhat },
+  annex2_sent: { button: W.annex2, what: () => W.annex2What },
+  receipt_confirmed: { button: W.informed, what: () => W.informedWhat },
+  closed_without_effect: { button: W.close, what: () => W.closeWhat },
+  reopened: { button: W.reopen, what: () => W.reopenWhat },
+  // Task 3: an admin records a removal order's one extension; the database says when it would otherwise release.
+  hold_extended: { button: W.extended, what: (order) => W.extendedWhat(order.hold?.until ? bothTimes(order.hold.until) : "") },
 };
 
 /** Block 5: each event the database would take now, with its choice of ground or message, confirmed by the key. */
@@ -184,21 +251,22 @@ export function EventsBlock({
   onRecord(params: OrderEventRecordedParams): void;
 }) {
   const [ground, setGround] = useState<Record<string, string>>({});
-  const [message, setMessage] = useState<string | null>(null);
-  const offered = order.mayEvents.filter((kind): kind is Exclude<OrderConsoleEvent, "hold_extended"> => kind !== "hold_extended");
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const offered = order.mayEvents;
   if (offered.length === 0) return null;
   return (
     <section className="block">
       <h3>{W.eventsTitle}</h3>
       {offered.map((kind) => {
         const grounds: readonly string[] | null = kind === "annex3_sent" ? ANNEX3_GROUNDS : kind === "closed_without_effect" ? ORDER_CLOSE_GROUNDS : null;
-        const needsMessage = kind === "clarification_received";
+        const needsMessage = kind === "clarification_received" || kind === "hold_extended";
         const chosen = grounds === null ? null : (ground[kind] ?? null);
+        const message = picked[kind] ?? null;
         const ready = (grounds === null || chosen !== null) && (!needsMessage || message !== null);
         return (
           <fieldset key={kind}>
             <legend>{EVENT_WORDS[kind].button}</legend>
-            <p className="hint">{EVENT_WORDS[kind].what}</p>
+            <p className="hint">{EVENT_WORDS[kind].what(order)}</p>
             {grounds !== null ? (
               <ul className="choices">
                 {grounds.map((value) => (
@@ -216,7 +284,7 @@ export function EventsBlock({
                 {messages.map((m) => (
                   <li key={m.id}>
                     <label className="choice">
-                      <input type="radio" name="clarification-message" checked={message === m.id} disabled={busy} onChange={() => setMessage(m.id)} />
+                      <input type="radio" name={`message-${kind}`} checked={message === m.id} disabled={busy} onChange={() => setPicked((p) => ({ ...p, [kind]: m.id }))} />
                       {`${ORDER_WORDS.contact.received(bothTimes(m.receivedAt))}, ${ORDER_WORDS.contact.folders[m.folder]}`}
                     </label>
                   </li>
@@ -278,7 +346,7 @@ export function OwedBlock({ order }: { order: OrderView }) {
 }
 
 /** Block 8: the author's notice: told, or held until when and on which rule, and released or ended. */
-export function NoticeBlock({ order }: { order: OrderView }) {
+export function NoticeBlock({ order, now = Date.now() }: { order: OrderView; now?: number }) {
   const hold = order.hold;
   const lines: string[] = [];
   if (hold === null) {
@@ -287,6 +355,11 @@ export function NoticeBlock({ order }: { order: OrderView }) {
   else if (hold.until !== null) lines.push(hold.basis === "regulation" ? W.holdUntil(bothTimes(hold.until), order.issuedAt === null ? "receipt" : "order", hold.extended) : W.holdAuthority(bothTimes(hold.until)));
   if (hold?.releasedAt) lines.push(W.released(bothTimes(hold.releasedAt)));
   if (hold?.endedAt && hold.endReason) lines.push(W.ended(bothTimes(hold.endedAt), HOLD_END_REASON_LABELS[hold.endReason]));
+  // [hold.warn] (Task 3): in the last holdWarningDays before a running hold's end.
+  if (hold !== null && hold.until !== null && hold.releasedAt === null && hold.endedAt === null) {
+    const left = Date.parse(hold.until) - now;
+    if (left > 0 && left <= ORDER_RULES.holdWarningDays * 86_400_000) lines.push(W.holdWarn(bothTimes(hold.until)));
+  }
   if (lines.length === 0) return null;
   return (
     <section className="block">
@@ -465,9 +538,105 @@ export function CorrectBlock({ order, busy, onCorrect }: { order: OrderView; bus
   );
 }
 
+/** What the screen keeps of its last effect, for [orders.checkOutside]: the effect's time and each address it disabled. */
+export interface Effected {
+  at: string;
+  links: string[];
+}
+
+/**
+ * Block 4, "Disable for an order" (Task 3): the lines the order's kind and silence call for, the urgent tick for an admin
+ * on a DSA order that is not verified, and one button for all ticked items, confirmed by one key. After an effect, the
+ * check from outside with each address as text, and [effect.rest] while items are still open.
+ */
+export function EffectBlock({
+  order,
+  role,
+  ticks,
+  urgent,
+  busy,
+  effected,
+  onUrgent,
+  onEffect,
+}: {
+  order: OrderView;
+  role: StaffMe["role"];
+  ticks: Readonly<Record<string, boolean>>;
+  urgent: boolean;
+  busy: boolean;
+  effected: Effected | null;
+  onUrgent(urgent: boolean): void;
+  onEffect(params: OrderEffectedParams): void;
+}) {
+  const candidates = effectable(order);
+  const open = order.clock?.itemsOpen ?? order.items.filter((item) => item.closedAt === null && item.disabledAt === null).length;
+  const deadline = order.clock?.deadlineAt ?? order.dueAt;
+  const after =
+    effected === null ? null : (
+      <section className="block">
+        <p className="notice">{W.checkOutside(bothTimes(effected.at), effected.links.length)}</p>
+        <ul className="blocks">
+          {effected.links.map((link) => (
+            <li key={link}>
+              <UserText>{link}</UserText>
+            </li>
+          ))}
+        </ul>
+        {open > 0 ? <p className="notice">{W.effectRest(open, deadline === null ? null : bothTimes(deadline))}</p> : null}
+      </section>
+    );
+  if (candidates.length === 0) return after;
+  const tco = order.kind === "tco_removal";
+  const withholds = tco || order.withholdFromAuthor;
+  const told = tco ? !order.sectionC : !order.withholdFromAuthor;
+  const until = order.hold?.until ?? null;
+  const lines: string[] = [withholds ? W.effectWhat : W.effectRemoved];
+  if (tco) lines.push(W.effectPreserve);
+  if (told) lines.push(W.effectTold);
+  else if (tco) lines.push(until === null ? W.effectHeldNoReceipt : W.effectHeld(bothTimes(until)));
+  else lines.push(until === null || order.hold?.open ? W.effectHeldOpen : W.effectHeldDsa(bothTimes(until)));
+  const unverifiedDsa = order.kind === "dsa_art9" && !order.verified;
+  const chosen = candidates.filter((item) => isTicked(order, ticks, item.id)).map((item) => item.id);
+  const allowed = !unverifiedDsa || (role === "admin" && urgent);
+  return (
+    <>
+      {after}
+      <section className="block">
+        <h3>{W.effectTitle}</h3>
+        {lines.map((line) => (
+          <p key={line} className="hint">
+            {line}
+          </p>
+        ))}
+        {unverifiedDsa && role === "admin" ? (
+          <>
+            <label className="choice">
+              <input type="checkbox" checked={urgent} disabled={busy} onChange={(event) => onUrgent(event.target.checked)} />
+              {W.effectUrgent}
+            </label>
+            <p className="hint">{W.effectUrgentWhat}</p>
+          </>
+        ) : null}
+        {unverifiedDsa && role !== "admin" ? <p className="notice">{W.verifyFirst}</p> : null}
+        <p className="hint">{W.effectAnyone}</p>
+        {candidates.length > ORDER_RULES.itemsPerAction ? <p className="notice">{W.effectMax}</p> : null}
+        {unverifiedDsa && role !== "admin" ? null : (
+          <button
+            type="button"
+            disabled={busy || !allowed || chosen.length === 0 || chosen.length > ORDER_RULES.itemsPerAction}
+            onClick={() => onEffect(effectParamsOf(order, chosen, unverifiedDsa && urgent))}
+          >
+            {W.effectButton(chosen.length)}
+          </button>
+        )}
+      </section>
+    </>
+  );
+}
+
 export interface OrderPageProps {
   order: OrderView;
-  me: Pick<StaffMe, "homeState" | "contactPoint">;
+  me: Pick<StaffMe, "homeState" | "contactPoint" | "role">;
   now: number;
   messages: ContactMessage[];
   busy: boolean;
@@ -482,11 +651,22 @@ export interface OrderPageProps {
   onAddLinks(): void;
   onRecord(params: OrderEventRecordedParams): void;
   onCorrect(facts: OrderCorrectFacts): void;
+  /** Task 3: each item's tick as the person set it, the urgent tick, the last effect, and their handlers. */
+  ticks?: Readonly<Record<string, boolean>>;
+  urgent?: boolean;
+  effected?: Effected | null;
+  onTick?: (itemId: string, ticked: boolean) => void;
+  onUrgent?: (urgent: boolean) => void;
+  onEffect?: (params: OrderEffectedParams) => void;
+  onOpenCase?: (id: CaseId) => void;
 }
+
+const nothing = () => undefined;
 
 /** The order's page, blocks in order; at 360 px the first screenful holds the clock. */
 export function OrderPage(props: OrderPageProps) {
   const { order, me, now, messages, busy, notice, error, reasons, links } = props;
+  const ticks = props.ticks ?? {};
   return (
     <section aria-labelledby="order-title">
       <h2 id="order-title">{ORDER_KIND_LABELS[order.kind]}</h2>
@@ -513,8 +693,11 @@ export function OrderPage(props: OrderPageProps) {
               order={order}
               reason={reasons[item.id] ?? null}
               busy={busy}
+              ticked={isTicked(order, ticks, item.id)}
               onReason={(reason) => props.onReason(item.id, reason)}
               onClose={() => props.onCloseItem(item.id)}
+              onTick={(ticked) => (props.onTick ?? nothing)(item.id, ticked)}
+              {...(props.onOpenCase === undefined ? {} : { onOpenCase: props.onOpenCase })}
             />
           ))}
         </ul>
@@ -529,10 +712,20 @@ export function OrderPage(props: OrderPageProps) {
           </label>
         ) : null}
       </section>
+      <EffectBlock
+        order={order}
+        role={me.role}
+        ticks={ticks}
+        urgent={props.urgent ?? false}
+        busy={busy}
+        effected={props.effected ?? null}
+        onUrgent={props.onUrgent ?? nothing}
+        onEffect={props.onEffect ?? nothing}
+      />
       <EventsBlock order={order} messages={messages} busy={busy} onRecord={props.onRecord} />
       <FormsBlock order={order} me={me} />
       <OwedBlock order={order} />
-      <NoticeBlock order={order} />
+      <NoticeBlock order={order} now={now} />
       <EventsList order={order} />
       <CorrectBlock order={order} busy={busy} onCorrect={props.onCorrect} />
     </section>
@@ -543,7 +736,21 @@ export function OrderPage(props: OrderPageProps) {
  * The order's screen: read on opening and every 20 seconds without the mark; each action reads it again from its answer.
  * An event is confirmed by the key; a correction too under the rule admin, and without one under entry and caution.
  */
-export function Order({ id, api, me, credentials, opened }: { id: OrderId; api: StaffApi; me: StaffMe; credentials: CredentialsLike; opened: { unsure: boolean } | null }) {
+export function Order({
+  id,
+  api,
+  me,
+  credentials,
+  opened,
+  onOpenCase,
+}: {
+  id: OrderId;
+  api: StaffApi;
+  me: StaffMe;
+  credentials: CredentialsLike;
+  opened: { unsure: boolean } | null;
+  onOpenCase?: (id: CaseId) => void;
+}) {
   const [order, setOrder] = useState<Loadable<OrderView>>({ state: "loading" });
   const [now, setNow] = useState(() => Date.now());
   const [messages, setMessages] = useState<ContactMessage[]>([]);
@@ -552,6 +759,9 @@ export function Order({ id, api, me, credentials, opened }: { id: OrderId; api: 
   const [error, setError] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, OrderItemCloseReason>>({});
   const [links, setLinks] = useState("");
+  const [ticks, setTicks] = useState<Record<string, boolean>>({});
+  const [urgent, setUrgent] = useState(false);
+  const [effected, setEffected] = useState<Effected | null>(null);
   const alive = useRef(true);
 
   useEffect(() => {
@@ -600,6 +810,19 @@ export function Order({ id, api, me, credentials, opened }: { id: OrderId; api: 
   const deps = { api, credentials };
   const correct = (value: OrderView, facts: OrderCorrectFacts) =>
     act(() => (value.mayCorrect === "admin" ? correctOrderWithKey(deps, id, facts) : api.correctOrder(id, { facts }, { activity: true })), W.corrected);
+  /** Block 4: one key for the ticked items; the answer's newest effect_given is the time the check from outside names. */
+  const effect = (params: OrderEffectedParams) =>
+    act(async () => {
+      const value = await effectOrderWithKey(deps, id, params);
+      const at = [...value.events].reverse().find((event) => event.kind === "effect_given")?.at ?? new Date().toISOString();
+      const done = new Set(params.items.map((item) => item.itemId));
+      if (alive.current) {
+        setEffected({ at, links: value.items.filter((item) => done.has(item.id)).map((item) => item.link) });
+        setTicks({});
+        setUrgent(false);
+      }
+      return value;
+    }, null);
 
   return (
     <Loaded
@@ -627,6 +850,13 @@ export function Order({ id, api, me, credentials, opened }: { id: OrderId; api: 
           }}
           onRecord={(params) => void act(() => recordOrderEventWithKey(deps, id, params), null)}
           onCorrect={(facts) => void correct(value, facts)}
+          ticks={ticks}
+          urgent={urgent}
+          effected={effected}
+          onTick={(itemId, ticked) => setTicks((current) => ({ ...current, [itemId]: ticked }))}
+          onUrgent={setUrgent}
+          onEffect={(params) => void effect(params)}
+          {...(onOpenCase === undefined ? {} : { onOpenCase })}
         />
       )}
     />

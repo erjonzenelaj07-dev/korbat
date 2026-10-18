@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { RETENTION, appealDeadline, outcomeWords, type ItemOutcome, type OutcomeWordsInput } from "@korbat/contracts";
 import { getRule } from "@korbat/rules";
-import type { AccountMailResult, NoticeUpdateLine, NotifierUpdatePart, NotifierUpdateResult } from "../auth";
+import { SYSTEM_ACTOR_ID, type AccountMailResult, type NoticeUpdateLine, type NotifierUpdatePart, type NotifierUpdateResult } from "../auth";
 import { createJob, type JobLock } from "../lib/jobs";
 import { MailUnavailable } from "../mail/mailer";
 import { alertUrgentLane, staffAlert } from "./alerts";
@@ -32,6 +33,8 @@ import {
   type UrgentItemRow,
 } from "./repo";
 import { sendStatement } from "./statement";
+import { releaseHeldNotices } from "./orders-repo";
+import { appendAuditRow } from "../staff";
 
 /**
  * The dispatch job (3c design, sections 7.8 and 7.12): every ten minutes it repeats the staff alerts that are still due,
@@ -106,6 +109,8 @@ export interface DispatchReport {
   /** The addresses' contacts and the accounts whose update the relay took. */
   outcomeMails: number;
   givenUp: { receipts: number; authorMails: number; outcomes: number };
+  /** 3f: the decisions the release of held notices told in this round. */
+  noticesReleased: number;
 }
 
 /** What a mail's result is recorded as; nothing is recorded where the relay could not take the mail, so the next round sends it again. */
@@ -461,7 +466,18 @@ async function outcomeMails(deps: ModerationDeps, report: DispatchReport): Promi
  */
 export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promise<DispatchReport> {
   const now = deps.now();
-  const report: DispatchReport = { urgent: "none", waiting: "none", released: null, marked: false, daily: false, receipts: 0, statements: 0, outcomeMails: 0, givenUp: { receipts: 0, authorMails: 0, outcomes: 0 } };
+  const report: DispatchReport = {
+    urgent: "none",
+    waiting: "none",
+    released: null,
+    marked: false,
+    daily: false,
+    receipts: 0,
+    statements: 0,
+    outcomeMails: 0,
+    givenUp: { receipts: 0, authorMails: 0, outcomes: 0 },
+    noticesReleased: 0,
+  };
   const step = async (name: string, run: () => Promise<void>) => {
     try {
       await run();
@@ -493,6 +509,20 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
         logUnsent(deps, err, "receipts", { intakeId });
       }
     }
+  });
+
+  // 3f (section 7.10): the release of held notices, before the statements, so that a notice told now is mailed in this
+  // round. One transaction: the database's function, which tells what its hold no longer keeps and every decision held
+  // with it, then, when it told anything, the audit row order_notices_released by the system, as its last statement.
+  await step("order-notices", async () => {
+    report.noticesReleased = await deps.apiDb.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '10s'`);
+      const count = await releaseHeldNotices(tx);
+      if (count > 0) {
+        await appendAuditRow(tx, { actorId: SYSTEM_ACTOR_ID, action: "order_notices_released", targetType: null, targetId: null, requestId: null, metadata: { count } });
+      }
+      return count;
+    });
   });
 
   // 2. The statements that were not mailed after their decision's commit, as they are mailed there.
@@ -533,7 +563,7 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
 
   // One line for a round that did something, so the day's release and its mails can be found in the log: counts only.
   const gaveUp = report.givenUp.receipts + report.givenUp.authorMails + report.givenUp.outcomes;
-  if (report.daily || report.receipts + report.statements + report.outcomeMails + gaveUp > 0 || report.urgent === "sent" || report.waiting === "sent") {
+  if (report.daily || report.receipts + report.statements + report.outcomeMails + gaveUp + report.noticesReleased > 0 || report.urgent === "sent" || report.waiting === "sent") {
     deps.log.info({ job: DISPATCH_JOB, ...report }, "moderation-dispatch: round");
   }
   return report;

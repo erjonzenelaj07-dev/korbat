@@ -1,3 +1,4 @@
+import { ORDER_NOTICE } from "./statement";
 /**
  * The public rulebook. korbat restricts content when it breaks one of these rules, or when it is illegal under EU law or
  * the law of an EU country and korbat is told about it in a notice. Opinions are never a reason. Every decision cites one
@@ -175,10 +176,12 @@ export interface RedressTexts {
   warnNext?: string;
   /** An announced measure: the appeal does not wait for the start. */
   appealNow?: string;
+  /** Version 3 (3f design, W.2 and W.3): the notice of an authority's order, ORDER_NOTICE. */
+  order?: typeof ORDER_NOTICE;
 }
 
 /** The version of the redress texts a decision made now records. */
-export const REDRESS_VERSION = 2;
+export const REDRESS_VERSION = 3;
 
 const OUTSIDE_KORBAT = "complain to the Digital Services Coordinator of the EU country where you live (Article 53 of the Digital Services Act).";
 
@@ -188,20 +191,26 @@ const REDRESS_V1 = {
   notAppealable: `korbat's appeal does not apply to this decision. Where an earlier decision about this content still stands in part, its own screen in korbat says whether you can still appeal it. You can go to court, or ${OUTSIDE_KORBAT}`,
 } as const;
 
+/** Account sanctions (3e): six more texts beside version 1's three, which version 2 holds word for word. */
+const REDRESS_V2 = {
+  strikeNext:
+    "A strike restricts nothing by itself. When an account has 3 active strikes, a moderator may decide to suspend it for a limited time or, after three suspensions in 365 days, an admin may decide to terminate it. You would be told first and could reply before anything is restricted.",
+  reply: `Before it starts you can reply: choose "Reply" on this decision's screen under Settings, Cases, and say anything you want the moderator to weigh. A reply sent before the start holds the start until a moderator has read it and answered you; if the decision is kept, it then starts with the answer, and never before the time you were given. A reply sent later is read and answered too, and can end this measure, but does not pause it. You can reply once. Replying does not use up your appeal.`,
+  replyAtOnce: `You can reply at any time while it runs: choose "Reply" on this decision's screen under Settings, Cases. A moderator reads your reply and answers you, and can end this measure at once; the reply does not pause it. You can reply once. Replying does not use up your appeal.`,
+  replyAnswered: `This answer is not appealed by itself. The appeal is against the decision it keeps: once, free of charge, until {deadline}, with "Appeal" on that decision's screen under Settings, Cases. The six months for it count from this answer when you replied before the start, and otherwise from the day you were told of that decision. You can also go to court, or ${OUTSIDE_KORBAT}`,
+  warnNext: "If 3 of the reports you send after this warning are marked that way while it counts, a moderator may restrict your reports under korbat's rules for up to 30 days.",
+  appealNow: "You can appeal from now; you do not have to wait for the start. An appeal does not hold the start: only a reply sent before the start does.",
+} as const;
+
 /** Every version of the redress texts, by its number, kept as the rulebooks are. */
 export const REDRESS_TEXTS = {
   1: REDRESS_V1,
-  /** Account sanctions: version 1's three texts word for word, and six more. */
-  2: {
-    ...REDRESS_V1,
-    strikeNext:
-      "A strike restricts nothing by itself. When an account has 3 active strikes, a moderator may decide to suspend it for a limited time or, after three suspensions in 365 days, an admin may decide to terminate it. You would be told first and could reply before anything is restricted.",
-    reply: `Before it starts you can reply: choose "Reply" on this decision's screen under Settings, Cases, and say anything you want the moderator to weigh. A reply sent before the start holds the start until a moderator has read it and answered you; if the decision is kept, it then starts with the answer, and never before the time you were given. A reply sent later is read and answered too, and can end this measure, but does not pause it. You can reply once. Replying does not use up your appeal.`,
-    replyAtOnce: `You can reply at any time while it runs: choose "Reply" on this decision's screen under Settings, Cases. A moderator reads your reply and answers you, and can end this measure at once; the reply does not pause it. You can reply once. Replying does not use up your appeal.`,
-    replyAnswered: `This answer is not appealed by itself. The appeal is against the decision it keeps: once, free of charge, until {deadline}, with "Appeal" on that decision's screen under Settings, Cases. The six months for it count from this answer when you replied before the start, and otherwise from the day you were told of that decision. You can also go to court, or ${OUTSIDE_KORBAT}`,
-    warnNext: "If 3 of the reports you send after this warning are marked that way while it counts, a moderator may restrict your reports under korbat's rules for up to 30 days.",
-    appealNow: "You can appeal from now; you do not have to wait for the start. An appeal does not hold the start: only a reply sent before the start does.",
-  },
+  2: { ...REDRESS_V1, ...REDRESS_V2 },
+  /**
+   * 3f (design, section 10.7; W.3): version 2's nine texts word for word, and the group `order`, the notice of an
+   * authority's order (ORDER_NOTICE of the statement's module), so a notice reads under its own version.
+   */
+  3: { ...REDRESS_V1, ...REDRESS_V2, order: ORDER_NOTICE },
 } as const satisfies Record<number, RedressTexts>;
 
 /** The redress texts of one version. Undefined for a version that does not exist. */
@@ -211,4 +220,4 @@ export function getRedress(version: number): RedressTexts | undefined {
 
 // The statement of reasons, rendered over the rulebooks and the redress texts above. The package exports only this file,
 // so the app, the console and the API reach the statement through it.
-export { STATEMENT_WORDS, retireEnd, statementParagraphs, type RetireEnd, type StatementInput } from "./statement";
+export { ORDER_NOTICE, STATEMENT_WORDS, retireEnd, statementParagraphs, type OrderNoticeExtras, type RetireEnd, type StatementInput } from "./statement";

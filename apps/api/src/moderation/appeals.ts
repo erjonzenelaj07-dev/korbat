@@ -160,6 +160,7 @@ export async function review(deps: ModerationDeps, session: ActiveStaffSession, 
       for (const action of params.actions) await insertAction(tx, decisionId, action);
     },
     subjectLockMode(params.actions, answered),
+    reviewed.target,
   );
 }
 

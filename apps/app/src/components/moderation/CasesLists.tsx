@@ -4,6 +4,7 @@ import { MEASURES, type AccountStanding, type AuthorCaseRow, type ReportItem, ty
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
 import { CASES_WORDS } from "@/lib/moderation-words";
+import { ORDER_TEXTS } from "@/lib/orders";
 import { CASE_ROW_WORDS, bannerSentences, reportingLine, rowStrike, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
 
@@ -41,6 +42,8 @@ function standingWords(row: AuthorCaseRow, kind: AuthorCaseRow["actions"][number
  * suspension or termination, which holds no row of its own.
  */
 function done(row: AuthorCaseRow, now: Date): string {
+  // 3f (design, section 9.3): an order's notice and the reinstatement after one, in the row's own words.
+  if (row.order !== undefined) return ORDER_TEXTS.row[row.order];
   if ((row.kind === "review" || row.kind === "correction") && row.outcome === "kept") return CASES_WORDS.keptDecision;
   // 3e (design, section 9.4): a strike is named with where it stands, its overruling, a retirement and its reversal in
   // the row's own words.
@@ -87,7 +90,8 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
                 {kind ? ` (${kind})` : ""}
               </Text>
               <Text className="mt-1 text-sm leading-5 text-zinc-200">{done(row, now)}</Text>
-              {row.ruleId || row.legal ? <Text className="mt-1 text-sm text-zinc-300">{row.ruleId ? CASES_WORDS.rule(row.ruleId) : CASES_WORDS.law}</Text> : null}
+              {/* 3f: an order's row names no rule and no law of korbat's judgement. */}
+              {row.order === undefined && (row.ruleId || row.legal) ? <Text className="mt-1 text-sm text-zinc-300">{row.ruleId ? CASES_WORDS.rule(row.ruleId) : CASES_WORDS.law}</Text> : null}
               {row.appealUntil ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.appealOpen(utcMinute(row.appealUntil))}</Text> : null}
               {row.appeal ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.appealState[row.appeal]}</Text> : null}
               {row.reversedOn ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.reversed(row.reversedOn)}</Text> : null}

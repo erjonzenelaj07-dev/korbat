@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
+  CaseDecidedParams,
+  MEASURES,
+  ORDER_DECISION,
+  ORDER_DRAFTS,
+  OrderEffectedParams,
   ANNEX3_GROUNDS,
   ANNEX3_GROUND_LABELS,
   EU_MEMBER_STATES,
@@ -409,5 +414,85 @@ describe("the answers (10.2)", () => {
     expect(OrderView.safeParse(view).success).toBe(true);
     expect(OrderView.safeParse({ ...view, items: 1 }).success).toBe(false);
     expect(OrderView.safeParse({ ...view, reasons: "text" }).success).toBe(false);
+  });
+});
+
+describe("3f Task 3: giving effect (design, sections 10.1, 10.3 and W.2)", () => {
+  const POST_A = "0a000000-0000-4000-8000-000000000001";
+  const POST_B = "0b000000-0000-4000-8000-000000000002";
+  const ITEM_A = "1a000000-0000-4000-8000-000000000001";
+  const ITEM_B = "1b000000-0000-4000-8000-000000000002";
+  const params = {
+    kind: "tco_removal",
+    memberState: "DE",
+    authority: "Bundeskriminalamt",
+    reference: "2026/123",
+    sectionC: false,
+    emergency: false,
+    withholdFromAuthor: true,
+    urgent: false,
+    items: [
+      { itemId: ITEM_A, postId: POST_A },
+      { itemId: ITEM_B, postId: POST_B },
+    ],
+  };
+
+  test("OrderEffectedParams: strict, the items sorted by post without repeats, at most itemsPerAction; never a held notice's post shown to its author; urgent never on a removal order", () => {
+    expect(OrderEffectedParams.safeParse(params).success).toBe(true);
+    expect(OrderEffectedParams.safeParse({ ...params, extra: 1 }).success).toBe(false);
+    expect(OrderEffectedParams.safeParse({ ...params, items: [...params.items].reverse() }).success).toBe(false);
+    expect(OrderEffectedParams.safeParse({ ...params, items: [params.items[0], params.items[0]] }).success).toBe(false);
+    expect(OrderEffectedParams.safeParse({ ...params, items: [] }).success).toBe(false);
+    const eleven = Array.from({ length: ORDER_RULES.itemsPerAction + 1 }, (_, i) => ({ itemId: `1a000000-0000-4000-8000-0000000000${String(i).padStart(2, "0")}`, postId: `0a000000-0000-4000-8000-0000000000${String(i).padStart(2, "0")}` }));
+    expect(OrderEffectedParams.safeParse({ ...params, items: eleven }).success).toBe(false);
+    expect(OrderEffectedParams.safeParse({ ...params, withholdFromAuthor: false }).success).toBe(false);
+    for (const kind of ["tco_removal", "dsa_art9"]) expect(OrderEffectedParams.safeParse({ ...params, kind, sectionC: true, withholdFromAuthor: false }).success, kind).toBe(false);
+    expect(OrderEffectedParams.safeParse({ ...params, kind: "dsa_art9", withholdFromAuthor: false }).success).toBe(true);
+    expect(OrderEffectedParams.safeParse({ ...params, urgent: true }).success).toBe(false);
+    expect(OrderEffectedParams.safeParse({ ...params, kind: "dsa_art9", urgent: true }).success).toBe(true);
+    // An order to provide information is never given effect.
+    expect(OrderEffectedParams.safeParse({ ...params, kind: "dsa_art10" }).success).toBe(false);
+    // Upper-case ids are refused: the params are hashed as sent.
+    expect(OrderEffectedParams.safeParse({ ...params, items: [{ itemId: ITEM_A.toUpperCase(), postId: POST_A }] }).success).toBe(false);
+  });
+
+  test("a reinstatement after an order is a third action shape of case_decided, alone in a correction that reverses; disable_by_order is in no action entry", () => {
+    const correction = {
+      kind: "correction",
+      stateVersion: 3,
+      throughSeq: 0,
+      reviewsDecisionId: ITEM_A,
+      snapshotId: ITEM_B,
+      snapshotDigest: "a".repeat(64),
+      outcome: "reversed",
+      ground: null,
+      ruleId: null,
+      rulesVersion: 3,
+      redressVersion: 3,
+      category: "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY",
+      categoryKeyword: null,
+      actions: [{ kind: "reinstate_by_order", mediaId: null, orderGround: "withdrawn" }],
+      factsDigest: null,
+      reasonDigest: "b".repeat(64),
+      legalReferenceDigest: null,
+      unfounded: [],
+      replaced: false,
+    };
+    expect(CaseDecidedParams.safeParse(correction).success).toBe(true);
+    for (const ground of ORDER_GROUNDS) expect(CaseDecidedParams.safeParse({ ...correction, actions: [{ kind: "reinstate_by_order", mediaId: null, orderGround: ground }] }).success, ground).toBe(true);
+    expect(CaseDecidedParams.safeParse({ ...correction, actions: [{ kind: "reinstate_by_order", mediaId: null }] }).success).toBe(false);
+    expect(CaseDecidedParams.safeParse({ ...correction, actions: [{ kind: "reinstate_by_order", mediaId: null, orderGround: "not_addressed" }] }).success).toBe(false);
+    expect(CaseDecidedParams.safeParse({ ...correction, outcome: "partly_reversed" }).success).toBe(false);
+    expect(CaseDecidedParams.safeParse({ ...correction, actions: [{ kind: "disable_by_order", mediaId: null }] }).success).toBe(false);
+    expect(CaseDecidedParams.safeParse({ ...correction, actions: [{ kind: "reinstate_by_order", mediaId: null, orderGround: "withdrawn" }, { kind: "restore", mediaId: null }] }).success).toBe(false);
+  });
+
+  test("an order decision's category and keyword by its order's kind, and the fixed drafts of a reinstatement (W.2)", () => {
+    expect(ORDER_DECISION.tco_removal).toMatchObject({ category: "STATEMENT_CATEGORY_RISK_FOR_PUBLIC_SECURITY", keyword: "KEYWORD_TERRORIST_CONTENT", preserves: true });
+    expect(ORDER_DECISION.dsa_art9).toMatchObject({ category: "STATEMENT_CATEGORY_NOT_SPECIFIED_NOTICE", keyword: null, preserves: false });
+    expect(Object.keys(ORDER_DRAFTS.reinstate)).toEqual([...ORDER_GROUNDS]);
+    expect(ORDER_DRAFTS.reinstate.wrong_item).toBe("korbat made a mistake: the order did not name this post. korbat disabled it wrongly, and regrets it.");
+    expect(MEASURES.disable_by_order).toMatchObject({ interim: false, final: false, lifts: null, target: "post", label: "Disabled for an order" });
+    expect(MEASURES.reinstate_by_order).toMatchObject({ lifts: ["disable_by_order"], target: "post", label: "Reinstate after an order" });
   });
 });

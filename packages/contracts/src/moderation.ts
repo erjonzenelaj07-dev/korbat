@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 import { MediaId } from "./media";
-import { ALERT_CHANNEL_STATES } from "./orders";
+import { ALERT_CHANNEL_STATES, OrderNoticeFacts, OrderTexts, OrdersUnverified, type OrderGround } from "./orders";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -284,7 +284,8 @@ export const STANDING_DRAFTS = {
 /**
  * The ledger's kinds, in the order of the database's action_kind: 3c's seven measures and five reversals, then 3e's six
  * measures (a strike, a suspension, a termination, a retired handle, a warning about reporting and a restriction of it)
- * and four reversals (3e design, section 10.1).
+ * and four reversals (3e design, section 10.1); then 3f's measure of an authority's order and its reversal (3f design,
+ * section 10.1), which only an order decision and its correction hold.
  */
 export const ACTION_KINDS = [
   "withhold",
@@ -309,6 +310,8 @@ export const ACTION_KINDS = [
   "lift_suspension",
   "unretire_handle",
   "lift_reporting",
+  "disable_by_order",
+  "reinstate_by_order",
 ] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 
@@ -359,9 +362,13 @@ export const MEASURES = {
   lift_suspension: { interim: false, final: false, lifts: ["suspend", "terminate"], target: "account", label: "Lift the suspension" },
   unretire_handle: { interim: false, final: false, lifts: ["retire_handle"], target: "handle", label: "Give the handle back" },
   lift_reporting: { interim: false, final: false, lifts: ["warn_reporting", "restrict_reporting"], target: "reporting", label: "Lift the reporting measure" },
+  // 3f (design, section 18, W.1): neither is taken while deciding or when a case is decided; only an order decision holds
+  // the first, and only the correction of one the second.
+  disable_by_order: { interim: false, final: false, lifts: null, target: "post", label: "Disabled for an order" },
+  reinstate_by_order: { interim: false, final: false, lifts: ["disable_by_order"], target: "post", label: "Reinstate after an order" },
 } as const satisfies Record<ActionKind, MeasureSpec>;
 
-/** The thirteen measures and the nine reversals, each list in the ledger's order: what a statement's data keeps apart. */
+/** The fourteen measures and the ten reversals, each list in the ledger's order: what a statement's data keeps apart. */
 export const MEASURE_KINDS = [
   "withhold",
   "remove",
@@ -376,9 +383,10 @@ export const MEASURE_KINDS = [
   "retire_handle",
   "warn_reporting",
   "restrict_reporting",
+  "disable_by_order",
 ] as const satisfies readonly ActionKind[];
 export type MeasureKind = (typeof MEASURE_KINDS)[number];
-export const REVERSAL_KINDS = ["restore", "unseal_media", "restore_media", "restore_display_name", "restore_bio", "overrule", "lift_suspension", "unretire_handle", "lift_reporting"] as const satisfies readonly ActionKind[];
+export const REVERSAL_KINDS = ["restore", "unseal_media", "restore_media", "restore_display_name", "restore_bio", "overrule", "lift_suspension", "unretire_handle", "lift_reporting", "reinstate_by_order"] as const satisfies readonly ActionKind[];
 export type ReversalKind = (typeof REVERSAL_KINDS)[number];
 
 /** The three kinds whose action entry also signs `days` and `announced` (3e design, section 10.4). */
@@ -430,6 +438,8 @@ export interface DecisionActionParams {
   mediaId: string | null;
   days?: number | null;
   announced?: boolean;
+  /** 3f: a reinstatement after an order signs its ground (staff.ts, ReinstateAction). */
+  orderGround?: OrderGround;
 }
 
 /**
@@ -500,6 +510,12 @@ export const ModerationErrorCode = z.enum([
   "order_closed",
   "order_event_refused",
   "already_released",
+  // Task 3 (giving effect): an effect signed on facts the order no longer has; an unverified DSA Article 9 order without
+  // an admin's urgent; the day's order decisions of one account; korbat's appeal of an order's decision.
+  "order_changed",
+  "order_not_verified",
+  "order_cap",
+  "not_appealable",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -1092,6 +1108,14 @@ export type StaffTextDraft = z.infer<typeof StaffTextDraft>;
 export const StaffTextsResponse = z.object({ texts: z.array(StaffTextDraft) });
 export type StaffTextsResponse = z.infer<typeof StaffTextsResponse>;
 
+/**
+ * The kinds of a decision and where its case came from (3c design, section 10; 3f design, section 10.1): an order decision
+ * answers an authority's order alone, with the source `order`.
+ */
+export const DECISION_KIND_VALUES = ["interim", "final", "order", "review", "correction"] as const;
+export type DecisionKindValue = (typeof DECISION_KIND_VALUES)[number];
+export const DECISION_SOURCE_VALUES = ["notice", "report", "own_initiative", "order"] as const;
+
 /** POST /api/staff/cases/:case/snapshots: the new snapshot's id and digest, or the newest one's when nothing differed. Never its content: that is read with the case. */
 export const StaffSnapshotTaken = z.object({ id: z.uuid(), digest: Hex64 });
 export type StaffSnapshotTaken = z.infer<typeof StaffSnapshotTaken>;
@@ -1276,6 +1300,8 @@ export const SOURCE_LABELS = {
   anonymous: "Anonymous",
   staff: "Found by a moderator",
   unlinked: "A signed-in reporter no longer linked",
+  // 3f (design, section 8.6): an order's intake item, listed with its order and never with a reporter's summary.
+  authority: "An authority's order",
 } as const;
 
 /**
@@ -1299,7 +1325,7 @@ export function reporterLabel(index: number): string {
  */
 export const SourceSummary = z
   .object({
-    kind: z.enum(["reporter", "notifier", "anonymous", "staff", "unlinked"]),
+    kind: z.enum(["reporter", "notifier", "anonymous", "staff", "unlinked", "authority"]),
     label: z.string().max(40),
     accountAge: z.enum(["under_1_month", "1_to_12_months", "over_12_months"]).nullable(),
     itemsFiled: z.enum(["1", "2_to_9", "10_or_more"]).nullable(),
@@ -1390,6 +1416,8 @@ export const CaseItem = z.object({
   markable: z.boolean(),
   unfounded: z.boolean(),
   markWithdrawn: z.boolean(),
+  /** 3f (design, section 8.6): the order an order's intake item belongs to, which the page links; null on every other item. */
+  orderId: z.uuid().nullable().optional(),
 });
 export type CaseItem = z.infer<typeof CaseItem>;
 
@@ -1445,6 +1473,13 @@ export const CaseDecisionAction = z.object({
    * when; null when there is no reply and on every other kind. The case page is the one place the text is read.
    */
   reply: z.object({ filedAt: z.iso.datetime(), onTime: z.boolean(), text: z.string().nullable(), answeredAt: z.iso.datetime().nullable(), answeredBy: z.uuid().nullable() }).nullable(),
+  /**
+   * 3f (design, section 10.2): on an order's measure, its order, whether it keeps the post from its author too, and on a
+   * reinstatement its ground; absent on every other kind.
+   */
+  orderId: z.uuid().optional(),
+  withholdAuthor: z.boolean().optional(),
+  orderGround: z.enum(["withdrawn", "annulled", "scrutiny", "not_authentic", "wrong_item"]).optional(),
 });
 export type CaseDecisionAction = z.infer<typeof CaseDecisionAction>;
 
@@ -1455,7 +1490,7 @@ export type CaseDecisionAction = z.infer<typeof CaseDecisionAction>;
  */
 export const CaseDecision = z.object({
   id: z.uuid(),
-  kind: z.enum(["interim", "final", "review", "correction"]),
+  kind: z.enum(DECISION_KIND_VALUES),
   outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
   ground: z.enum(["incompatible", "illegal"]).nullable(),
   ruleId: z.enum(RULE_IDS).nullable(),
@@ -1463,7 +1498,7 @@ export const CaseDecision = z.object({
   redressVersion: z.number().int().positive(),
   category: z.enum(TDB_CATEGORIES),
   categoryKeyword: z.string().nullable(),
-  source: z.enum(["notice", "report", "own_initiative"]),
+  source: z.enum(DECISION_SOURCE_VALUES),
   decidedAt: z.iso.datetime(),
   staffHandle: z.string(),
   throughSeq: Count,
@@ -1566,12 +1601,12 @@ export const CaseHistoryEntry = z.object({
   event: z.enum(["item", "snapshot", "decision", "appeal_filed", "appeal_answered", "note", "seal_declined", "reveal", "evidence_erased", "redaction"]),
   refId: z.uuid().nullable(),
   seq: z.number().int().nullable(),
-  intakeKind: z.enum(["user", "finding"]).nullable(),
+  intakeKind: z.enum(["user", "finding", "order"]).nullable(),
   ruleId: z.enum(RULE_IDS).nullable(),
   allegesIllegal: z.boolean().nullable(),
   csam: z.boolean().nullable(),
   reexamination: z.boolean().nullable(),
-  decisionKind: z.enum(["interim", "final", "review", "correction"]).nullable(),
+  decisionKind: z.enum(DECISION_KIND_VALUES).nullable(),
   outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]).nullable(),
   staffHandle: z.string().nullable(),
   result: z.enum(["kept", "partly_reversed", "reversed"]).nullable(),
@@ -1581,10 +1616,10 @@ export type CaseHistoryEntry = z.infer<typeof CaseHistoryEntry>;
 /**
  * What a case is about, as it stands now: a post with its state and its level, or an account with the handle, display
  * name and bio it holds now. `link` is the post's korbat address, as text: the console links nowhere into the app. A
- * member is null when the row is gone.
+ * member is null when the row is gone. 3f: a post an order disabled has the level `disabled`.
  */
 export const CaseTarget = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("post"), id: z.uuid(), link: z.string(), authorHandle: z.string().nullable(), state: StoredPostState.nullable(), level: z.enum(["visible", "withheld", "removed"]).nullable() }),
+  z.object({ type: z.literal("post"), id: z.uuid(), link: z.string(), authorHandle: z.string().nullable(), state: StoredPostState.nullable(), level: z.enum(["visible", "withheld", "removed", "disabled"]).nullable() }),
   z.object({ type: z.literal("account"), id: z.uuid(), handle: z.string().nullable(), displayName: z.string().nullable(), bio: z.string().nullable(), deleted: z.boolean() }),
 ]);
 export type CaseTarget = z.infer<typeof CaseTarget>;
@@ -1635,6 +1670,14 @@ export const CaseView = z.object({
   strikeDue: StrikeDue.nullable(),
   authorStanding: AuthorStanding.nullable(),
   standing: CaseStanding.nullable(),
+  /**
+   * 3f (design, sections 8.6 and 10.2): `preserved` while the case's post is preserved for an order (post_preserved): the
+   * page shows no image and no snapshot text, which the API withholds in any case; `noticeHeld` while an order's notice
+   * about the case's post is held, with the hold's end (null while it has none recorded), so that the page and the
+   * composer say that a decision taken now is told to its author only at the release; null when none is held.
+   */
+  preserved: z.boolean(),
+  noticeHeld: z.object({ until: z.iso.datetime().nullable() }).nullable(),
 });
 export type CaseView = z.infer<typeof CaseView>;
 
@@ -1774,7 +1817,7 @@ export type StatementEndedMeasure = z.infer<typeof StatementEndedMeasure>;
  *     under the rulebook version that decision was made under (`reviewed.rulesVersion`), never under its own.
  */
 export const DecisionStatement = z.object({
-  kind: z.enum(["interim", "final", "review", "correction"]),
+  kind: z.enum(DECISION_KIND_VALUES),
   outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
   ground: z.enum(["incompatible", "illegal"]).nullable(),
   ruleId: z.enum(RULE_IDS).nullable(),
@@ -1783,7 +1826,7 @@ export const DecisionStatement = z.object({
   legalReference: z.string().nullable(),
   facts: z.string().nullable(),
   reason: z.string().nullable(),
-  source: z.enum(["notice", "report", "own_initiative"]),
+  source: z.enum(DECISION_SOURCE_VALUES),
   decidedAt: z.iso.datetime(),
   post: z.object({ id: z.uuid(), createdAt: z.iso.datetime() }).nullable(),
   measures: z.array(StatementMeasure),
@@ -1795,7 +1838,7 @@ export const DecisionStatement = z.object({
   repliedTo: StatementRepliedTo.optional(),
   reviewed: z
     .object({
-      kind: z.enum(["interim", "final"]),
+      kind: z.enum(["interim", "final", "order"]),
       ground: z.enum(["incompatible", "illegal"]).nullable(),
       ruleId: z.enum(RULE_IDS).nullable(),
       rulesVersion: z.number().int().positive(),
@@ -1809,6 +1852,12 @@ export const DecisionStatement = z.object({
       basis: z.enum(STANDING_BASES).nullable().optional(),
     })
     .nullable(),
+  /**
+   * 3f (design, section 10.4): for an order decision and the correction of one, what its notice is rendered from, built at
+   * every read from the decision's row, its item's and the order's as they stand, so the notice grows without a new
+   * decision; null (or absent) for every other decision.
+   */
+  order: OrderNoticeFacts.nullable().optional(),
 });
 export type DecisionStatement = z.infer<typeof DecisionStatement>;
 
@@ -1832,7 +1881,7 @@ export const AUTHOR_CASES_PAGE_SIZE = 20;
  */
 export const AuthorCaseRow = z.object({
   id: z.uuid(),
-  kind: z.enum(["interim", "final", "review", "correction"]),
+  kind: z.enum(DECISION_KIND_VALUES),
   outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
   decidedOn: UtcDay,
   post: z.object({ id: z.uuid(), createdAt: z.iso.datetime() }).nullable(),
@@ -1859,6 +1908,12 @@ export const AuthorCaseRow = z.object({
    */
   standingMeasure: z.object({ kind: z.enum(["suspend", "terminate"]), days: z.number().int().min(STANDING_DAYS.min).max(STANDING_DAYS.max).nullable(), announced: z.boolean() }).optional(),
   liftedStanding: z.object({ kind: z.enum(["suspend", "terminate"]), replaced: z.boolean() }).optional(),
+  /**
+   * 3f (design, sections 9.3 and 10.4): on the row of an order decision, whether its measure keeps the post from its author
+   * too (`disabled`) or only from everyone else (`removed`, a DSA order that does not withhold); on the correction that
+   * reinstates after one, `lifted`. Such a row names no rule. Absent on every other row.
+   */
+  order: z.enum(["disabled", "removed", "lifted"]).optional(),
 });
 export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 
@@ -1988,7 +2043,8 @@ export const DecisionView = DecisionStatement.extend({
   id: z.uuid(),
   appealUntil: z.iso.datetime().nullable(),
   reversedOn: UtcDay.nullable(),
-  content: DecisionContent,
+  /** 3f: null for an order decision while its measure is in force and after its preservation erased the post (10.4). */
+  content: DecisionContent.nullable(),
   appeal: DecisionAppeal.nullable(),
   /** The strike the decision gave, read fresh (3e design, section 10.2); null for a decision without one. */
   strike: DecisionStrike.nullable(),
@@ -1996,6 +2052,13 @@ export const DecisionView = DecisionStatement.extend({
   standing: DecisionStanding.nullable(),
   /** 3e Task 5: where the decision's restriction of reporting stands now; null (or absent) for a decision without one. */
   reportingStanding: ReportingStanding.nullable().optional(),
+  /**
+   * 3f (design, section 10.4), read fresh for an order decision and the correction of one: the authority's words as the
+   * command line recorded them, and `textsAt`, the time the newest of them was told to the author; and `erasedOn`, the
+   * day the preservation's end erased the content. Null (or absent) for every other decision.
+   */
+  orderTexts: OrderTexts.nullable().optional(),
+  erasedOn: UtcDay.nullable().optional(),
 });
 export type DecisionView = z.infer<typeof DecisionView>;
 
@@ -2096,6 +2159,8 @@ export const StaffOverview = z.object({
    */
   contact: z.object({ open: Count, oldestAt: z.iso.datetime().nullable(), dueAt: z.iso.datetime().nullable() }),
   alerts: z.object({ channel: z.enum(ALERT_CHANNEL_STATES), since: z.iso.datetime().nullable() }),
+  /** 3f Task 3: the orders given effect and not verified, or holding a disabled post added after their check ([home.unverified]). */
+  ordersUnverified: OrdersUnverified,
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
 

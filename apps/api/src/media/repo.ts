@@ -378,7 +378,8 @@ export function createMediaRepo(db: Db) {
      * whose author is the account, whatever its state. One statement that locks nothing.
      */
     async reach(target: { type: "post" | "account"; id: string }): Promise<CaseReach> {
-      const served = sql`m.moderation_state <> 'sealed' and p.state <> 'deleted_by_author' and m.erased_at is null and p.erased_at is null`;
+      // 3f (design, section 7.10): no reader serves an image of a post disabled for an order, whatever the image's own state.
+      const served = sql`m.moderation_state <> 'sealed' and p.state <> 'deleted_by_author' and p.state::text <> 'disabled' and m.erased_at is null and p.erased_at is null`;
       const reached = target.type === "post" ? sql`m.post_id = ${target.id}::uuid` : sql`p.author_id = ${target.id}::uuid`;
       const [row] = (await db.execute(sql`
         select count(distinct m.post_id)::int as posts,

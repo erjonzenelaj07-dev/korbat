@@ -13,6 +13,7 @@ import {
   MEASURES,
   ORDER_RULES,
   OrderCorrectRequest,
+  OrderEffectRequest,
   OrderEventRecordRequest,
   OrderItemsRequest,
   OrderOpenRequest,
@@ -399,7 +400,8 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
         if (lifted.period && lifted.period.startsAt === null) lifted.period = { ...lifted.period, state: "never" };
         if (view.standing) view.standing = { ...view.standing, live: false };
       }
-      return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null, ...NO_STANDING };
+      const ground = "orderGround" in action && action.orderGround !== undefined ? { orderGround: action.orderGround } : {};
+      return { id: randomUUID(), kind: action.kind, mediaId: action.mediaId, noEffect: null, inForce: false, reversesActionId: lifted?.id ?? null, liftedBy: null, sealed: null, ...NO_STANDING, ...ground };
     }
     // 3e Task 4: a suspension or a termination carries its days and whether it was announced; an announced one has no
     // start until its mail's outcome is known, and the account's measure is live from the decision on.
@@ -591,6 +593,66 @@ function runningClock(start: string | null, itemsOpen: number): NonNullable<Orde
   return { clockStart: start, stopped: false, stoppedAt: null, stopGround: null, deadlineAt: deadline, targetAt: deadline === null ? null : iso(Date.parse(deadline) - 5 * 60_000), itemsOpen, firstEffectAt: null, lastEffectAt: null, withinHour: null };
 }
 
+/** The six months and a day of a removal order's preservation, from a disabling (ORDER_RULES), as the database counts them. */
+function preservedUntil(at: string): string {
+  const until = new Date(at);
+  until.setUTCMonth(until.getUTCMonth() + ORDER_RULES.preserveMonths);
+  until.setUTCDate(until.getUTCDate() + ORDER_RULES.preserveMarginDays);
+  return until.toISOString();
+}
+
+/**
+ * 3f, Task 3: an order a step of the walk puts in place, as the API answers it once its links are recorded: of its kind,
+ * with `posts` links that each name a post, told or held (Section C, with the hold's end), checked or not, and received
+ * a few minutes ago, so that its hour runs.
+ */
+export function orderFixture(options: { reference: string; posts: number; kind?: "tco_removal" | "dsa_art9"; sectionC?: boolean; verified?: boolean; holdUntil?: string | null }): OrderView {
+  const now = Date.now();
+  const at = iso(now - 5 * 60_000);
+  const kind = options.kind ?? "tco_removal";
+  const tco = kind === "tco_removal";
+  const sectionC = options.sectionC ?? false;
+  const items = Array.from({ length: options.posts }, (_, i) => orderItem(`https://korbat.example/p/${options.reference.toLowerCase()}-${i + 1}`, i + 1, at));
+  const holdUntil = options.holdUntil ?? null;
+  return {
+    id: randomUUID(),
+    kind,
+    memberState: "DE",
+    authority: HOSTILE.long,
+    reference: options.reference,
+    openedAt: at,
+    state: tco ? "running" : "no_clock",
+    clock: tco ? runningClock(at, items.length) : null,
+    dueAt: null,
+    closedAt: null,
+    closeGround: null,
+    items,
+    itemsInForce: 0,
+    verified: options.verified ?? false,
+    noticesHeld: 0,
+    channel: "mailbox",
+    messageId: null,
+    receivedAt: at,
+    sentAt: null,
+    issuedAt: null,
+    sectionC,
+    emergency: false,
+    crossBorder: false,
+    withholdFromAuthor: tco || sectionC,
+    preserve: tco,
+    openedBy: PERSON_HANDLE,
+    openedVia: "console",
+    importedAt: null,
+    tellPerson: null,
+    events: [{ id: randomUUID(), kind: "opened", ground: null, at, effectiveAt: null, itemId: null, by: PERSON_HANDLE, via: "console" }],
+    owed: { received: false, verification: !(options.verified ?? false), issuedAt: tco && sectionC, texts: true, document: true, holdUntil: !tco && sectionC && holdUntil === null, tellPerson: false, scrutinyUntil: null },
+    hold: sectionC ? { until: holdUntil, basis: tco ? "regulation" : "authority", open: holdUntil === null, extended: false, endedAt: null, endReason: null, releasedAt: null, noticesHeld: 0 } : null,
+    mayClose: true,
+    mayEvents: tco ? ["annex3_sent", "closed_without_effect"] : ["receipt_confirmed", "closed_without_effect"],
+    mayCorrect: "entry",
+  };
+}
+
 /** 3f: an order's line on the list, from its page. */
 function orderSummary(view: OrderView): OrderSummary {
   const { id, kind, memberState, authority, reference, openedAt, state, clock, dueAt, closedAt, closeGround, itemsInForce, verified, noticesHeld } = view;
@@ -701,7 +763,7 @@ export function createFixtureApi() {
     authorities: { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } } as Pick<StaffOverview, "contact" | "alerts">,
     /** 3f, Task 2: the orders the walk opened, as their pages stand, and every write the page sent for them, with whether a key confirmed it. */
     orders: [] as OrderView[],
-    orderWrites: [] as { what: "opened" | "items" | "event" | "corrected"; id: string; body: unknown; key: boolean }[],
+    orderWrites: [] as { what: "opened" | "items" | "event" | "corrected" | "effected"; id: string; body: unknown; key: boolean }[],
     requests: [] as RequestRecord[],
     problems: [] as string[],
   };
@@ -786,6 +848,19 @@ export function createFixtureApi() {
     }
     const refusal = flagRefusal(flagsOf(Buffer.from(stepUp.response.authenticatorData, "base64url")));
     if (refusal) throw refuse(refusal === "staff_key_refused" ? "staff_step_up_invalid" : refusal);
+  }
+
+  /**
+   * 3f, Task 3: an order as the API answers it to this person: once an item was disabled a correction is an admin's with
+   * the key, and only Section C's tick under caution for anyone else; a removal order's one extension is an admin's.
+   */
+  function orderAnswer(view: OrderView): OrderView {
+    const given = view.items.some((item) => item.disabledAt !== null);
+    const admin = state.role === "admin";
+    const events = view.mayEvents.filter((kind) => kind !== "hold_extended");
+    const hold = view.hold;
+    const extendable = admin && view.closedAt === null && view.kind === "tco_removal" && view.sectionC && hold !== null && !hold.extended && hold.releasedAt === null && hold.endedAt === null;
+    return { ...view, mayCorrect: view.closedAt !== null ? null : !given ? "entry" : admin ? "admin" : "caution", mayEvents: extendable ? [...events, "hold_extended"] : events };
   }
 
   /** The nearest deadline of the contact point's mail or of an order with an item still open, as the overview answers it. */
@@ -993,7 +1068,7 @@ export function createFixtureApi() {
     // 3f: a message closed, by its id in the path. An id that is no lower-case uuid is the route's 400, as the API's.
     const closing = req.method === "POST" ? /^[/]api[/]staff[/]contact[/]([^/]+)[/]close$/.exec(url.pathname) : null;
     // 3f, Task 2: an order, its links, its events and its corrections, by its id in the path.
-    const ofOrder = /^[/]api[/]staff[/]orders[/]([^/]+)(?:[/](items|events|correct))?$/.exec(url.pathname);
+    const ofOrder = /^[/]api[/]staff[/]orders[/]([^/]+)(?:[/](items|events|correct|effect))?$/.exec(url.pathname);
     if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
@@ -1119,7 +1194,7 @@ export function createFixtureApi() {
       }
       const view = state.orders.find((order) => order.id === id);
       if (!view) throw new Refusal(404, "not_found");
-      if (req.method === "GET" && part === undefined) return { status: 200, body: view };
+      if (req.method === "GET" && part === undefined) return { status: 200, body: orderAnswer(view) };
       if (req.method !== "POST" || part === undefined) throw new Refusal(404, "not_found");
       const at = new Date().toISOString();
       if (part === "items") {
@@ -1127,12 +1202,18 @@ export function createFixtureApi() {
         view.items.push(...request.links.map((link, i) => orderItem(link, view.items.length + i + 1, at)));
         if (view.clock !== null) view.clock.itemsOpen += request.links.length;
         state.orderWrites.push({ what: "items", id, body: request, key: false });
-        return { status: 201, body: view };
+        return { status: 201, body: orderAnswer(view) };
       }
       if (part === "events") {
         const { stepUp, ...params } = parse(OrderEventRecordRequest, body, "an order's event");
         await confirmedOrder(stepUp, { action: "order_event_recorded", target: { type: "order", id }, params }, session);
-        if (!view.mayEvents.includes(params.kind)) throw new Refusal(422, "order_event_refused");
+        if (!orderAnswer(view).mayEvents.includes(params.kind)) throw new Refusal(422, "order_event_refused");
+        // 3f, Task 3: a removal order's one extension, recorded by an admin: the hold runs its extension longer, once.
+        if (params.kind === "hold_extended" && view.hold !== null && view.hold.until !== null) {
+          view.hold = { ...view.hold, extended: true, until: iso(Date.parse(view.hold.until) + ORDER_RULES.holdExtensionDays * 86_400_000) };
+          const message = state.contactMessages.find((m) => m.id === params.messageId);
+          if (message) Object.assign(message, { disposition: "order", handledAt: at, handledBy: PERSON_HANDLE, orders: [view.id] });
+        }
         const clock = view.clock;
         if (params.kind === "annex3_sent" && clock !== null && params.ground !== null) {
           Object.assign(clock, { stopped: true, stoppedAt: at, stopGround: params.ground, deadlineAt: null, targetAt: null });
@@ -1149,15 +1230,17 @@ export function createFixtureApi() {
         }
         view.events.push({ id: randomUUID(), kind: params.kind, ground: params.ground, at, effectiveAt: null, itemId: null, by: PERSON_HANDLE, via: "console" });
         state.orderWrites.push({ what: "event", id, body: params, key: true });
-        return { status: 201, body: view };
+        return { status: 201, body: orderAnswer(view) };
       }
       if (part === "correct") {
         const request = parse(OrderCorrectRequest, body, "the correction of an order");
-        if (view.mayCorrect === null) throw new Refusal(409, "order_closed");
-        if (view.mayCorrect === "admin") {
+        const rule = orderAnswer(view).mayCorrect;
+        if (rule === null) throw new Refusal(409, "order_closed");
+        if (rule === "caution" && Object.keys(request.facts).some((member) => member !== "sectionC")) throw new Refusal(403, "admin_required");
+        if (rule === "admin") {
           if (request.stepUp === undefined) throw refuse("staff_step_up_required");
           await confirmedOrder(request.stepUp, { action: "order_corrected", target: { type: "order", id }, params: { facts: request.facts } }, session);
-        } else if (request.stepUp !== undefined) problem(`${url.pathname}: a key asked for a correction under the rule ${view.mayCorrect}`);
+        } else if (request.stepUp !== undefined) problem(`${url.pathname}: a key asked for a correction under the rule ${rule}`);
         const { closeItems, ...facts } = request.facts;
         for (const close of closeItems ?? []) {
           const item = view.items.find((found) => found.id === close.itemId);
@@ -1166,9 +1249,46 @@ export function createFixtureApi() {
           if (view.clock !== null) view.clock.itemsOpen -= 1;
         }
         Object.assign(view, facts);
-        view.events.push({ id: randomUUID(), kind: "corrected", ground: view.mayCorrect, at, effectiveAt: null, itemId: null, by: PERSON_HANDLE, via: "console" });
+        view.events.push({ id: randomUUID(), kind: "corrected", ground: rule, at, effectiveAt: null, itemId: null, by: PERSON_HANDLE, via: "console" });
         state.orderWrites.push({ what: "corrected", id, body: request.facts, key: request.stepUp !== undefined });
-        return { status: 201, body: view };
+        return { status: 201, body: orderAnswer(view) };
+      }
+      if (part === "effect") {
+        // 3f, Task 3: "Disable for an order", confirmed by the key over exactly these facts and these items.
+        const { stepUp, ...params } = parse(OrderEffectRequest, body, "an order's effect");
+        await confirmedOrder(stepUp, { action: "order_effected", target: { type: "order", id }, params }, session);
+        if (view.closedAt !== null) throw new Refusal(409, "order_closed");
+        if (view.kind === "dsa_art9" && !view.verified && !(state.role === "admin" && params.urgent)) throw new Refusal(409, "order_not_verified");
+        const facts: Record<string, unknown> = { kind: view.kind, memberState: view.memberState, authority: view.authority, reference: view.reference, sectionC: view.sectionC, emergency: view.emergency, withholdFromAuthor: view.withholdFromAuthor };
+        if (Object.entries(facts).some(([member, value]) => (params as Record<string, unknown>)[member] !== value)) throw new Refusal(409, "order_changed");
+        const chosen = params.items.map((one) => view.items.find((item) => item.id === one.itemId && item.postId === one.postId && !item.inForce && item.closedAt === null));
+        if (chosen.some((item) => item === undefined)) throw new Refusal(409, "order_changed");
+        for (const item of chosen as OrderItemView[]) {
+          if (item.disabledAt === null && view.clock !== null) view.clock.itemsOpen -= 1;
+          Object.assign(item, {
+            inForce: true,
+            disabledAt: item.disabledAt ?? at,
+            decisionId: randomUUID(),
+            caseId: randomUUID(),
+            preserveUntil: view.preserve ? preservedUntil(at) : null,
+            preserveEndedAt: null,
+            reinstatedAt: null,
+            reinstatedGround: null,
+            post: item.post === null ? null : { ...item.post, state: "disabled", preview: null },
+          });
+          view.events.push({ id: randomUUID(), kind: "effect_given", ground: null, at, effectiveAt: null, itemId: item.id, by: PERSON_HANDLE, via: "console" });
+        }
+        view.itemsInForce = view.items.filter((item) => item.inForce).length;
+        const open = view.items.filter((item) => item.disabledAt === null && item.closedAt === null).length;
+        if (view.clock !== null) {
+          view.clock.firstEffectAt ??= at;
+          view.clock.lastEffectAt = at;
+          if (open === 0) Object.assign(view.clock, { withinHour: view.clock.deadlineAt === null ? null : Date.parse(at) <= Date.parse(view.clock.deadlineAt) });
+        }
+        if (open === 0) view.state = "given_effect";
+        view.mayEvents = [...view.mayEvents.filter((kind) => kind !== "closed_without_effect" && kind !== "annex2_sent"), ...(view.kind === "tco_removal" ? (["annex2_sent"] as const) : [])];
+        state.orderWrites.push({ what: "effected", id, body: params, key: true });
+        return { status: 201, body: orderAnswer(view) };
       }
       throw new Refusal(404, "not_found");
     }
@@ -1343,7 +1463,8 @@ export function createFixtureApi() {
         if (params.stateVersion !== found.stateVersion) throw new Refusal(MODERATION_REFUSAL_STATUS.case_changed, "case_changed");
         // The snapshot: the case's newest, under the digest of what the page was shown, recomputed here from its members.
         const [newest] = found.snapshots;
-        const shownDigest = !newest || newest.withheld ? null : await snapshotDigest({ ...newest });
+        // 3f, Task 3: on a post preserved for an order every copy is withheld, and the decision signs the newest's stored digest.
+        const shownDigest = !newest ? null : newest.withheld ? (found.preserved ? newest.digest : null) : await snapshotDigest({ ...newest });
         if (!newest || params.snapshotId !== newest.id || params.snapshotDigest !== shownDigest) {
           problem(`${what}: a snapshot that is not the case's newest as the page was shown it`);
           throw new Refusal(MODERATION_REFUSAL_STATUS.snapshot_mismatch, "snapshot_mismatch");
@@ -1424,7 +1545,7 @@ export function createFixtureApi() {
             ? state.cases.has(action.target.id)
             : action.action === "appeals_reviewed"
               ? [...state.cases.values()].some((view) => view.decisions.some((decided) => decided.id === action.target.id))
-              : action.action === "order_event_recorded" || action.action === "order_corrected"
+              : action.action === "order_event_recorded" || action.action === "order_corrected" || action.action === "order_effected"
                 ? state.orders.some((order) => order.id === action.target.id)
                 : state.sessions.has(action.target.id);
       if (!known) throw new Refusal(404, "not_found");
@@ -1439,7 +1560,14 @@ export function createFixtureApi() {
       let bound: StaffStepUpActionInput = action;
       if (state.mismatchNextStepUp) {
         if (decided) bound = { action: "case_decided", target: action.target, params: { ...decided, stateVersion: decided.stateVersion + 1 } } as StaffStepUpActionInput;
-        else bound = { ...action, target: { ...action.target, id: action.action === "identity_revealed" ? randomUUID() : session.handle } } as StaffStepUpActionInput;
+        else if (action.action === "order_effected") {
+          // 3f, Task 3: the effect of the same order with one more of its items than the page ticked.
+          const params = action.params as { items: { itemId: string; postId: string }[] };
+          const order = state.orders.find((found) => found.id === action.target.id);
+          const extra = order?.items.find((item) => item.postId !== null && !params.items.some((one) => one.itemId === item.id));
+          const items = extra ? [...params.items, { itemId: extra.id, postId: extra.postId! }].sort((a, b) => (a.postId < b.postId ? -1 : a.postId > b.postId ? 1 : 0)) : params.items;
+          bound = { ...action, params: { ...params, items } } as StaffStepUpActionInput;
+        } else bound = { ...action, target: { ...action.target, id: action.action === "identity_revealed" ? randomUUID() : session.handle } } as StaffStepUpActionInput;
       }
       state.mismatchNextStepUp = false;
       const challenge = await stepUpChallenge(session.handle, bound);

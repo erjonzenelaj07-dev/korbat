@@ -253,8 +253,9 @@ describe("the export's moderation member", () => {
     expect(withDecision({ postId: null })).toBe(true);
     expect(withDecision({ postId: undefined })).toBe(false);
     expect(withDecision({ postId: "the-post" })).toBe(false);
-    for (const kind of ["interim", "final", "review", "correction"]) expect(withDecision({ kind }), kind).toBe(true);
-    expect(withDecision({ kind: "order" })).toBe(false);
+    // 3f (W.7): an order's decision is an entry like any other once its author was told.
+    for (const kind of ["interim", "final", "order", "review", "correction"]) expect(withDecision({ kind }), kind).toBe(true);
+    expect(withDecision({ kind: "appeal" })).toBe(false);
     for (const outcome of ["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]) expect(withDecision({ outcome }), outcome).toBe(true);
     expect(withDecision({ outcome: "suspended" })).toBe(false);
     expect(withDecision({ ground: "illegal", ruleId: null })).toBe(true);
@@ -262,7 +263,7 @@ describe("the export's moderation member", () => {
     expect(withDecision({ ruleId: "R7" })).toBe(false);
     expect(withDecision({ rulesVersion: 0 })).toBe(false);
     expect(withDecision({ rulesVersion: undefined })).toBe(false);
-    // The thirteen measures (3c's seven and 3e's six) and nothing else; a reversal is no measure, and a measure no reversal.
+    // The fourteen measures (3c's seven, 3e's six and 3f's order measure) and nothing else; a reversal is no measure, and a measure no reversal.
     for (const kind of MEASURE_KINDS) expect(withDecision({ measures: [{ kind, mediaId: null, noEffect: null }] }), kind).toBe(true);
     expect(withDecision({ measures: [{ kind: "restore", mediaId: null, noEffect: null }] })).toBe(false);
     expect(withDecision({ measures: [{ kind: "overrule", mediaId: null, noEffect: null }] })).toBe(false);

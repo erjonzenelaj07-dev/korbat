@@ -1,10 +1,10 @@
-import { ANNEX3_GROUND_LABELS, ORDER_GROUND_LABELS, ORDER_RULES, type ContactMessage, type OrderSummary, type OrderView } from "@korbat/contracts";
+import { ANNEX3_GROUND_LABELS, ORDER_GROUND_LABELS, ORDER_RULES, OrderEffectedParams, type ContactMessage, type OrderSummary, type OrderView } from "@korbat/contracts";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 import { ORDER_WORDS } from "../src/messages";
 import { parseOrderId, type OrderId } from "../src/router";
-import { changedFacts, CheckBlock, CorrectBlock, EventsBlock, EventsList, FormsBlock, NoticeBlock, OrderPage, OwedBlock, utcWithOffset } from "../src/screens/Order";
+import { changedFacts, CheckBlock, CorrectBlock, effectable, EffectBlock, effectParamsOf, EventsBlock, EventsList, FormsBlock, isTicked, NoticeBlock, OrderPage, OwedBlock, utcWithOffset } from "../src/screens/Order";
 import { clockLine, emptyOrderForm, OrderForm, orderRequest, OrdersList, type OrderFormState } from "../src/screens/Orders";
 import { bothTimes } from "../src/ui";
 import { HOSTILE, HOSTILE_ESCAPED } from "./fixtures";
@@ -30,6 +30,11 @@ const noop = () => undefined;
 const ID = "7c4f5e4b-1a7d-4f4b-8e5d-9c3b8a7f6e5d";
 const ITEM = "8d5a6f5c-2b8e-4a5c-9f6e-0d4c9b8a7f6e";
 const MESSAGE = "3f1c2b1e-8d4a-4c1e-9b2a-6f0e5d4c3b2a";
+const CASE = "4e2d3c2f-9e5b-4d2f-8c3b-7a1f6e5d4c3b";
+/** Three posts in the order of their ids: A before B before C. */
+const POST_A = "5a000000-0000-4000-8000-00000000000a";
+const POST_B = "5b000000-0000-4000-8000-00000000000b";
+const POST_C = "5c000000-0000-4000-8000-00000000000c";
 const AT = "2026-10-16T02:00:00.000Z";
 const START = Date.parse(AT);
 /** The instant a number of minutes after AT. */
@@ -267,7 +272,7 @@ describe("the form Open an order (8.4)", () => {
 });
 
 describe("an order's page (8.5, Task 2's blocks)", () => {
-  const me = { homeState: "DE", contactPoint: "orders@korbat.example" } as const;
+  const me = { homeState: "DE", contactPoint: "orders@korbat.example", role: "moderator" } as const;
   const page = (order: OrderView, over: Partial<Parameters<typeof OrderPage>[0]> = {}) =>
     html(
       <OrderPage
@@ -290,12 +295,13 @@ describe("an order's page (8.5, Task 2's blocks)", () => {
       />,
     );
 
-  test("the clock comes first, under the kind; there is no block 4 and no Extension received yet (Task 3's)", () => {
+  test("the clock comes first, under the kind; block 4 only while an item names a post that can be disabled", () => {
     const out = text(page(view()));
     expect(out.indexOf(clockLine({ ...view(), items: 1 }, START))).toBeGreaterThan(0);
     expect(out.indexOf(clockLine({ ...view(), items: 1 }, START))).toBeLessThan(out.indexOf("As written in the order"));
     expect(out).not.toContain("Disable for an order");
     expect(out).not.toContain("Extension received");
+    expect(text(page(view({ items: [item({ postId: POST_A })] })))).toContain("Disable for an order");
   });
 
   test("block 2: a removal order is checked against the register, the authority drawn as text, with the home state's entries", () => {
@@ -329,10 +335,13 @@ describe("an order's page (8.5, Task 2's blocks)", () => {
     const out = html(<EventsBlock order={view({ mayEvents: ["annex3_sent", "clarification_received", "hold_extended"] })} messages={[message()]} busy={false} onRecord={noop} />);
     expect(text(out)).toContain("Annex III sent: Confirm with your staff key");
     expect(text(out)).toContain("Clarification received: Confirm with your staff key");
+    // Task 3: an admin's "Extension received", with the message it came in and the end the database would release at.
+    expect(text(out)).toContain("Extension received: Confirm with your staff key");
+    expect(text(out)).toContain(`The notice is then held ${ORDER_RULES.holdExtensionDays} days longer, once.`);
     expect(text(out)).toContain(ANNEX3_GROUND_LABELS.insufficient_information);
     expect(text(out)).toContain(`Received ${bothTimes(AT)}, Inbox`);
     expect(text(out)).not.toContain("Close without effect");
-    expect(out.match(/<button type="button" disabled="">/g)).toHaveLength(2);
+    expect(out.match(/<button type="button" disabled="">/g)).toHaveLength(3);
     expect(html(<EventsBlock order={view({ mayEvents: [] })} messages={[]} busy={false} onRecord={noop} />)).toBe("");
   });
 
@@ -402,5 +411,130 @@ describe("an order's page (8.5, Task 2's blocks)", () => {
     expect(changedFacts(order, same)).toEqual({});
     expect(changedFacts(order, { ...same, reference: "BKA-2026-2", channel: "post" })).toEqual({ reference: "BKA-2026-2" });
     expect(changedFacts(view({ messageId: null }), { ...same, channel: "post" })).toEqual({ channel: "post" });
+  });
+});
+
+describe("block 4, Disable for an order (8.5, Task 3)", () => {
+  const ids = ["1a000000-0000-4000-8000-000000000001", "1a000000-0000-4000-8000-000000000002", "1a000000-0000-4000-8000-000000000003"];
+  const posts = [POST_C, POST_A, POST_B];
+  const three = () => ids.map((id, i) => item({ id, position: i + 1, postId: posts[i]!, link: `https://korbat.example/p/${i + 1}` }));
+  const block = (order: OrderView, over: Partial<Parameters<typeof EffectBlock>[0]> = {}) =>
+    html(<EffectBlock order={order} role="moderator" ticks={{}} urgent={false} busy={false} effected={null} onUrgent={noop} onEffect={noop} {...over} />);
+  const me = { homeState: "DE", contactPoint: "orders@korbat.example", role: "moderator" } as const;
+  const page = (order: OrderView, over: Partial<Parameters<typeof OrderPage>[0]> = {}) =>
+    html(
+      <OrderPage
+        order={order}
+        me={me}
+        now={START}
+        messages={[]}
+        busy={false}
+        notice={null}
+        error={null}
+        reasons={{}}
+        links=""
+        onReason={noop}
+        onCloseItem={noop}
+        onLinks={noop}
+        onAddLinks={noop}
+        onRecord={noop}
+        onCorrect={noop}
+        {...over}
+      />,
+    );
+
+  test("three items with one key: the params bind the order's facts and each ticked item, sorted by post; the lines of a told removal order", () => {
+    const order = view({ items: three() });
+    const out = text(block(order));
+    expect(out).toContain("Disable 3 posts: confirm with your staff key");
+    for (const line of [ORDER_WORDS.order.effectWhat, ORDER_WORDS.order.effectPreserve, ORDER_WORDS.order.effectTold, ORDER_WORDS.order.effectAnyone]) expect(out).toContain(line);
+    expect(out).toContain("preserved for six months from now");
+    expect(out).not.toContain(ORDER_WORDS.order.effectRemoved);
+    const params = effectParamsOf(order, ids, false);
+    expect(params).toEqual({
+      kind: "tco_removal",
+      memberState: "DE",
+      authority: order.authority,
+      reference: order.reference,
+      sectionC: false,
+      emergency: false,
+      withholdFromAuthor: true,
+      urgent: false,
+      items: [
+        { itemId: ids[1], postId: POST_A },
+        { itemId: ids[2], postId: POST_B },
+        { itemId: ids[0], postId: POST_C },
+      ],
+    });
+    // The params are what the contract takes: one hash for one action.
+    expect(OrderEffectedParams.safeParse(params).success).toBe(true);
+    // An item unticked by the person leaves the params; one in force or closed is never offered.
+    expect(isTicked(order, { [ids[0]!]: false }, ids[0]!)).toBe(false);
+    expect(effectable(view({ items: [item({ postId: POST_A, inForce: true }), item({ id: ids[1]!, postId: POST_B, closedAt: AT, closedReason: "not_named" })] }))).toEqual([]);
+  });
+
+  test("more than itemsPerAction items: the first ten are ticked, [effect.max] says so; the button counts the ticks", () => {
+    const many = Array.from({ length: ORDER_RULES.itemsPerAction + 2 }, (_, i) =>
+      item({ id: `2b000000-0000-4000-8000-${String(i).padStart(12, "0")}`, position: i + 1, postId: `3c000000-0000-4000-8000-${String(i).padStart(12, "0")}` }),
+    );
+    const out = text(block(view({ items: many })));
+    expect(out).toContain(ORDER_WORDS.order.effectMax);
+    expect(out).toContain(`Disable ${ORDER_RULES.itemsPerAction} posts: confirm with your staff key`);
+    // Ticking an eleventh greys the button: the database takes ten an action.
+    const over = block(view({ items: many }), { ticks: { [many[ORDER_RULES.itemsPerAction]!.id]: true } });
+    expect(over).toMatch(/<button type="button" disabled="">Disable 11 posts/);
+  });
+
+  test("the silence: a removal order with Section C is held until the computed end; a DSA order's until the authority's time, or with no end", () => {
+    const hold = { until: t(60_000), basis: "regulation", open: false, extended: false, endedAt: null, endReason: null, releasedAt: null, noticesHeld: 0 } as const;
+    const held = text(block(view({ items: three(), sectionC: true, hold })));
+    expect(held).toContain(ORDER_WORDS.order.effectHeld(bothTimes(t(60_000))));
+    expect(held).not.toContain(ORDER_WORDS.order.effectTold);
+    const dsa = { kind: "dsa_art9", clock: null, verified: true, preserve: false } as const;
+    const dsaHeld = text(block(view({ ...dsa, items: three(), withholdFromAuthor: true, hold: { ...hold, basis: "authority" } })));
+    expect(dsaHeld).toContain(ORDER_WORDS.order.effectHeldDsa(bothTimes(t(60_000))));
+    expect(dsaHeld).not.toContain(ORDER_WORDS.order.effectPreserve);
+    expect(text(block(view({ ...dsa, items: three(), withholdFromAuthor: true, hold: { ...hold, basis: "authority", open: true, until: null } })))).toContain(ORDER_WORDS.order.effectHeldOpen);
+    // A DSA order that does not withhold removes, as a korbat rule does, and tells the author.
+    const removed = text(block(view({ ...dsa, items: three(), withholdFromAuthor: false })));
+    expect(removed).toContain(ORDER_WORDS.order.effectRemoved);
+    expect(removed).toContain(ORDER_WORDS.order.effectTold);
+    expect(removed).not.toContain(ORDER_WORDS.order.effectWhat);
+  });
+
+  test("a DSA Article 9 order that is not verified: no button for a moderator; an admin ticks urgent first, and the params carry it", () => {
+    const order = view({ kind: "dsa_art9", clock: null, verified: false, preserve: false, items: three() });
+    const moderator = text(block(order));
+    expect(moderator).toContain(ORDER_WORDS.order.verifyFirst);
+    expect(moderator).not.toContain("confirm with your staff key");
+    const admin = block(order, { role: "admin" });
+    expect(text(admin)).toContain(ORDER_WORDS.order.effectUrgent);
+    expect(admin).toMatch(/<button type="button" disabled="">Disable 3 posts/);
+    expect(block(order, { role: "admin", urgent: true })).toMatch(/<button type="button">Disable 3 posts/);
+    expect(effectParamsOf(order, ids, true).urgent).toBe(true);
+  });
+
+  test("after an effect: the check from outside, each address as text; [effect.rest] while items are open; an item's preservation, reinstatement and case", () => {
+    const disabled = item({ id: ids[0]!, postId: POST_A, link: HOSTILE.script, inForce: true, disabledAt: t(20), caseId: CASE, decisionId: CASE, preserveUntil: t(300_000) });
+    const order = view({ items: [disabled, item({ id: ids[1]!, position: 2, postId: POST_B })], clock: { ...summary().clock!, itemsOpen: 1, firstEffectAt: t(20) } });
+    const out = block(order, { effected: { at: t(20), links: [HOSTILE.script] } });
+    expect(text(out)).toContain(ORDER_WORDS.order.checkOutside(bothTimes(t(20)), 1));
+    expect(out).toContain(HOSTILE_ESCAPED.script);
+    expect(out).not.toContain("<a");
+    expect(text(out)).toContain(ORDER_WORDS.order.effectRest(1, bothTimes(t(60))));
+    const read = page(order, { onOpenCase: noop });
+    expect(text(read)).toContain(`Preserved until ${bothTimes(t(300_000))}`);
+    expect(read).toContain(`href="/cases/${CASE}"`);
+    const reinstated = text(page(view({ items: [item({ postId: POST_A, disabledAt: t(20), reinstatedAt: t(40), reinstatedGround: "withdrawn" })] })));
+    expect(reinstated).toContain(`Reinstated at ${bothTimes(t(40))}: ${ORDER_GROUND_LABELS.withdrawn}`);
+    expect(text(page(view({ items: [item({ postId: POST_A, inForce: true, disabledAt: t(20), noEffect: "already" })] })))).toContain(ORDER_WORDS.order.alreadyNow);
+  });
+
+  test("block 8's [hold.warn] in the last days before a running hold's end, and not before", () => {
+    const hold = { until: t(3 * 24 * 60), basis: "regulation", open: false, extended: false, endedAt: null, endReason: null, releasedAt: null, noticesHeld: 1 } as const;
+    expect(text(html(<NoticeBlock order={view({ sectionC: true, hold })} now={START} />))).toContain(ORDER_WORDS.order.holdWarn(bothTimes(t(3 * 24 * 60))));
+    const later = { ...hold, until: t((ORDER_RULES.holdWarningDays + 1) * 24 * 60) };
+    expect(text(html(<NoticeBlock order={view({ sectionC: true, hold: later })} now={START} />))).not.toContain("is released on");
+    expect(text(html(<NoticeBlock order={view({ sectionC: true, hold: { ...hold, releasedAt: t(10) } })} now={START} />))).not.toContain("is released on");
   });
 });

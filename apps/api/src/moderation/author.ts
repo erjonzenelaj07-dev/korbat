@@ -7,12 +7,14 @@ import {
   type DecisionStatement,
   type DecisionView,
   type ExportFormat,
+  type OrderTexts,
   type PostModeration,
   type RuleId,
 } from "@korbat/contracts";
 import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
+import { orderNoticeOf } from "./statement-repo";
 import { decisionStandingView, reportingStandingView } from "./standing";
 import { activeStrikesOf } from "./standing-repo";
 
@@ -82,6 +84,8 @@ export async function authorCases(deps: Pick<ModerationDeps, "apiDb">, viewer: s
       // 3e's review (people7): a suspension's or a termination's own words, and a lift's or a withdrawal's.
       ...(row.standingMeasure !== null ? { standingMeasure: row.standingMeasure } : {}),
       ...(row.liftedStanding !== null ? { liftedStanding: row.liftedStanding } : {}),
+      // 3f: an order's notice, or the reinstatement after one, names no rule.
+      ...(row.order !== null ? { order: row.order } : {}),
     })),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > AUTHOR_CASES_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,
@@ -137,17 +141,21 @@ async function appealOf(deps: Pick<ModerationDeps, "apiDb">, appeal: AuthorAppea
  * GET /api/moderation/decisions/:id: one decision as its author reads it, or not_found: for an id that names no
  * decision, for a decision about someone else, and for one its author was not told of.
  */
-export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb">, viewer: string, decisionId: string): Promise<DecisionView> {
+export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb"> & Partial<Pick<ModerationDeps, "config">>, viewer: string, decisionId: string): Promise<DecisionView> {
   const facts = await authorDecision(deps.apiDb, viewer, decisionId);
   if (!facts) throw new ModerationError("not_found");
-  const found = await decisionStatement(deps.apiDb, decisionId);
+  const found = await decisionStatement(deps.apiDb, decisionId, deps.config?.HOME_STATE ?? null);
   if (!found) throw new ModerationError("not_found");
+  // 3f (section 10.4): an order's notice is read fresh, with the authority's words; the post is never shown while the
+  // order's measure stands. Task 4 builds the erasure at the preservation's end, so no erasure is named yet.
+  const notice = found.statement.order ? await orderNoticeOf(deps.apiDb, decisionId, deps.config?.HOME_STATE ?? null) : null;
   return {
     id: decisionId,
     ...found.statement,
     appealUntil: facts.appealUntil,
     reversedOn: facts.reversedOn,
-    content: contentOf(facts),
+    content: facts.orderInForce ? null : contentOf(facts),
+    ...(notice !== null ? { orderTexts: notice.texts, erasedOn: null } : {}),
     appeal: facts.appeal === null ? null : await appealOf(deps, facts.appeal),
     strike: facts.strike,
     // 3e Task 4: where the decision's suspension or termination stands now, beside the statement that never changes.
@@ -171,7 +179,7 @@ const EXPORT_PAGE_SIZE = 100;
  * not: the facts and the reason of a decision that restricted nothing are not in the statement's data, and a text that
  * was erased is null there. A statement names its source as a category; the entry does not carry even that.
  */
-export function exportedDecision(row: Pick<AuthorDecisionRow, "id" | "decidedOn" | "post" | "appeal">, statement: DecisionStatement): ExportedDecision {
+export function exportedDecision(row: Pick<AuthorDecisionRow, "id" | "decidedOn" | "post" | "appeal">, statement: DecisionStatement, texts: OrderTexts | null = null): ExportedDecision {
   return {
     id: row.id,
     decidedOn: row.decidedOn,
@@ -188,6 +196,8 @@ export function exportedDecision(row: Pick<AuthorDecisionRow, "id" | "decidedOn"
     reason: statement.reason,
     legalReference: statement.legalReference,
     appeal: row.appeal === null ? null : row.appeal === "pending" ? { state: "pending", result: null } : { state: "answered", result: row.appeal },
+    // 3f (W.7): an order's notice as its facts, with the authority's words read at the export's time.
+    ...(statement.order ? { order: statement.order, ...(texts ? { orderTexts: texts } : {}), erasedOn: null } : {}),
   };
 }
 
@@ -206,7 +216,8 @@ export async function exportedDecisions(deps: Pick<ModerationDeps, "apiDb">, acc
       const found = await decisionStatement(deps.apiDb, row.id);
       // A decision is a row for good: one the list has just named has a statement.
       if (!found) throw new Error("a decision in its author's list has no statement");
-      exported.push(exportedDecision(row, found.statement));
+      const notice = found.statement.order ? await orderNoticeOf(deps.apiDb, row.id, null) : null;
+      exported.push(exportedDecision(row, found.statement, notice?.texts ?? null));
     }
     const last = page.at(-1);
     // A page that is not full is the last one.

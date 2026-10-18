@@ -189,7 +189,7 @@ describe("the measures", () => {
   const measures = kinds.filter((kind) => MEASURES[kind].lifts === null);
   const reversals = kinds.filter((kind) => MEASURES[kind].lifts !== null);
 
-  test("every action kind has an entry: 3c's seven measures and five reversals, then 3e's six measures and four reversals", () => {
+  test("every action kind has an entry: 3c's seven measures and five reversals, then 3e's six measures and four reversals, then 3f's measure and its reversal", () => {
     expect(kinds).toEqual([
       "withhold",
       "remove",
@@ -213,15 +213,17 @@ describe("the measures", () => {
       "lift_suspension",
       "unretire_handle",
       "lift_reporting",
+      "disable_by_order",
+      "reinstate_by_order",
     ]);
     expect(ACTION_KINDS).toEqual(kinds);
-    expect(ACTION_KINDS).toHaveLength(22);
-    expect(measures).toEqual([...kinds.slice(0, 7), ...kinds.slice(12, 18)]);
-    expect(reversals).toEqual([...kinds.slice(7, 12), ...kinds.slice(18)]);
+    expect(ACTION_KINDS).toHaveLength(24);
+    expect(measures).toEqual([...kinds.slice(0, 7), ...kinds.slice(12, 18), "disable_by_order"]);
+    expect(reversals).toEqual([...kinds.slice(7, 12), ...kinds.slice(18, 22), "reinstate_by_order"]);
     expect(MEASURE_KINDS).toEqual(measures);
-    expect(MEASURE_KINDS).toHaveLength(13);
+    expect(MEASURE_KINDS).toHaveLength(14);
     expect(REVERSAL_KINDS).toEqual(reversals);
-    expect(REVERSAL_KINDS).toHaveLength(9);
+    expect(REVERSAL_KINDS).toHaveLength(10);
   });
 
   test("a post or one image is withheld only while deciding and removed only when the case is decided; a seal and a reset are either; 3e's measures only when it is decided", () => {
@@ -260,6 +262,8 @@ describe("the measures", () => {
       lift_suspension: "account",
       unretire_handle: "handle",
       lift_reporting: "reporting",
+      disable_by_order: "post",
+      reinstate_by_order: "post",
     });
     expect(Object.fromEntries(reversals.map((kind) => [kind, MEASURES[kind].lifts]))).toEqual({
       restore: ["withhold", "remove"],
@@ -271,6 +275,7 @@ describe("the measures", () => {
       lift_suspension: ["suspend", "terminate"],
       unretire_handle: ["retire_handle"],
       lift_reporting: ["warn_reporting", "restrict_reporting"],
+      reinstate_by_order: ["disable_by_order"],
     });
     // Every measure can be lifted, by exactly one kind of reversal, of the measure's own target.
     for (const measure of measures) expect(reversals.filter((kind) => (MEASURES[kind].lifts as readonly ActionKind[]).includes(measure)), measure).toHaveLength(1);
@@ -305,6 +310,9 @@ describe("the measures", () => {
       lift_suspension: "Lift the suspension",
       unretire_handle: "Give the handle back",
       lift_reporting: "Lift the reporting measure",
+      // 3f (W.1).
+      disable_by_order: "Disabled for an order",
+      reinstate_by_order: "Reinstate after an order",
     });
     const labels = kinds.map((kind) => MEASURES[kind].label);
     expect(new Set(labels).size).toBe(labels.length);
@@ -378,6 +386,10 @@ describe("moderation error codes", () => {
       "order_closed",
       "order_event_refused",
       "already_released",
+      "order_changed",
+      "order_not_verified",
+      "order_cap",
+      "not_appealable",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

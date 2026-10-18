@@ -101,7 +101,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retirement of a hand
     // Task 3 opened a suspension at once and its lift, Task 4 a termination, Task 5 the reporting kinds: the list holds
     // every kind of the ledger now.
     for (const kind of ["suspend", "lift_suspension", "terminate", "warn_reporting", "restrict_reporting", "lift_reporting"] as const) expect(ROUTE_KINDS.has(kind), kind).toBe(true);
-    expect([...ACTION_KINDS].filter((kind) => !ROUTE_KINDS.has(kind))).toEqual([]);
+    // 3f Task 3: but disable_by_order, which only the effect of an order writes (POST /api/staff/orders/:order/effect);
+    // its reversal, reinstate_by_order, is a route kind.
+    expect([...ACTION_KINDS].filter((kind) => !ROUTE_KINDS.has(kind))).toEqual(["disable_by_order"]);
+    expect(ROUTE_KINDS.has("reinstate_by_order")).toBe(true);
   });
 
   test("invariant 15: a retirement swaps the handle for the placeholder made from the measure's id and clears the change time; the handle is refused to everyone, its former holder included, and the new handle is chosen at once", async () => {

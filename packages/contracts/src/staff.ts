@@ -15,7 +15,7 @@ import {
   type ActionKind,
   type DecisionActionParams,
 } from "./moderation";
-import { MemberStateCode, OrderCorrectFacts, OrderCorrectedParams, OrderEventRecordedParams } from "./orders";
+import { MemberStateCode, ORDER_ACTION_KINDS, ORDER_GROUNDS, OrderCorrectFacts, OrderCorrectedParams, OrderEffectedParams, OrderEventRecordedParams } from "./orders";
 import { AuthenticationResponseJSON, PasskeyOptionsResponse, RegistrationResponseJSON } from "./passkeys";
 
 // The staff console (3a design, section 10). The console talks only to /api/staff/* on its own origin, and parses every
@@ -184,7 +184,7 @@ const TextVersion = z.number().int().min(1).max(32_767);
  * One measure or reversal, in one of two strict shapes (3e design, section 10.4). For every kind but three: its kind and,
  * for an image measure, the image, as a lower-case uuid (an image id's own schema lower-cases, which a param must not).
  */
-const PlainAction = z.strictObject({ kind: z.enum(ACTION_KINDS).exclude(TIMED_KINDS), mediaId: LowerCaseUuid.nullable() });
+const PlainAction = z.strictObject({ kind: z.enum(ACTION_KINDS).exclude([...TIMED_KINDS, ...ORDER_ACTION_KINDS]), mediaId: LowerCaseUuid.nullable() });
 
 /**
  * A suspension, a termination or a restriction of reporting: also its days (a whole number from 1 to 30, null on a
@@ -195,12 +195,20 @@ const TimedAction = z.strictObject({ kind: z.enum(TIMED_KINDS), mediaId: z.null(
 
 const DecisionAction = z.union([PlainAction, TimedAction]);
 
+/**
+ * 3f (design, section 10.3): the reinstatement after an order, in a third strict shape that signs its ground, one of
+ * ORDER_GROUNDS. Only a correction that reverses an order decision holds it, alone; the database checks both. No action
+ * entry holds disable_by_order: only the effect of an order (order_effected) writes it.
+ */
+const ReinstateAction = z.strictObject({ kind: z.literal("reinstate_by_order"), mediaId: z.null(), orderGround: z.enum(ORDER_GROUNDS) });
+const CaseDecisionActionEntry = z.union([PlainAction, TimedAction, ReinstateAction]);
+
 const isReversal = (kind: ActionKind) => MEASURES[kind].lifts !== null;
 
 /** The six measures of 3e: each only in a final decision that restricts. */
 const MEASURES_OF_3E: readonly ActionKind[] = ["strike", "suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting"];
 
-type SignedAction = DecisionActionParams & { days?: number | null; announced?: boolean };
+type SignedAction = DecisionActionParams & { days?: number | null; announced?: boolean; orderGround?: string };
 
 /**
  * What is wrong with a decision's list of actions, or nothing: they come in the one order compareDecisionActions gives,
@@ -252,7 +260,7 @@ export const CaseDecidedParams = z
     redressVersion: TextVersion,
     category: z.enum(TDB_CATEGORIES),
     categoryKeyword: z.enum(DECISION_KEYWORDS).nullable(),
-    actions: z.array(DecisionAction).max(8),
+    actions: z.array(CaseDecisionActionEntry).max(8),
     factsDigest: Sha256Hex.nullable(),
     reasonDigest: Sha256Hex.nullable(),
     legalReferenceDigest: Sha256Hex.nullable(),
@@ -292,6 +300,10 @@ export const CaseDecidedParams = z
     if (!sortedUnique(params.unfounded)) refuse("unfounded", "the marked items are sorted, without repeats");
     if (params.replaced && !(params.kind === "correction" && params.actions.some((action) => action.kind === "lift_suspension"))) {
       refuse("replaced", "only a correction that lifts a suspension withdraws it for another measure");
+    }
+    // 3f: a reinstatement after an order stands alone in a correction that reverses.
+    if (params.actions.some((action) => action.kind === "reinstate_by_order") && !(params.kind === "correction" && params.outcome === "reversed" && params.actions.length === 1)) {
+      refuse("actions", "a reinstatement after an order is the one action of a correction that reverses");
     }
   });
 export type CaseDecidedParams = z.infer<typeof CaseDecidedParams>;
@@ -344,6 +356,8 @@ export const STAFF_STEP_UP_ACTIONS = {
   order_event_recorded: { targetType: "order", targetId: LowerCaseUuid, params: OrderEventRecordedParams },
   /** 3f: POST /api/staff/orders/:order/correct under the rule admin: the facts to change, by the order's id. */
   order_corrected: { targetType: "order", targetId: LowerCaseUuid, params: OrderCorrectedParams },
+  /** 3f Task 3: POST /api/staff/orders/:order/effect: "Disable for an order" on up to ten of its items, by the order's id. */
+  order_effected: { targetType: "order", targetId: LowerCaseUuid, params: OrderEffectedParams },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -367,6 +381,7 @@ export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [
   stepUpRequest("identity_revealed"),
   stepUpRequest("order_event_recorded"),
   stepUpRequest("order_corrected"),
+  stepUpRequest("order_effected"),
 ]);
 export type StaffStepUpOptionsRequest = z.infer<typeof StaffStepUpOptionsRequest>;
 
@@ -381,6 +396,10 @@ export type StaffSessionRevokeRequest = z.infer<typeof StaffSessionRevokeRequest
 /** 3f: POST /api/staff/orders/:order/events: the action's params with the step-up assertion added as `stepUp`. */
 export const OrderEventRecordRequest = OrderEventRecordedParams.safeExtend({ stepUp: AuthenticationResponseJSON });
 export type OrderEventRecordRequest = z.infer<typeof OrderEventRecordRequest>;
+
+/** 3f Task 3: POST /api/staff/orders/:order/effect: the action's params with the step-up assertion added as `stepUp`. */
+export const OrderEffectRequest = OrderEffectedParams.safeExtend({ stepUp: AuthenticationResponseJSON });
+export type OrderEffectRequest = z.infer<typeof OrderEffectRequest>;
 
 /**
  * 3f: POST /api/staff/orders/:order/correct (section 10.2): the facts to change and, only where the rule is admin, the
