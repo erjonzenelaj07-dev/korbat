@@ -25,7 +25,7 @@ vi.setConfig({ testTimeout: 60_000 });
  * no privilege at all on authority_notifications, its events and productions, EXECUTE on seal_report and
  * report_close_unsealed refused, and only reports_owed() and erase_authority_records() callable. As korbat_auth: no
  * privilege on auth.report_holds, and EXECUTE on auth.address_held, auth.address_held_until and auth.address_hold_final
- * alone of 0030's functions. Each closed list's CHECK is its contracts' constant, and the times are forced.
+ * alone of 0030's functions, and on auth.address_hold_told of 3f's review (0032). Each closed list's CHECK is its contracts' constant, and the times are forced.
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: the grants of the records to authorities", () => {
   let apiDb: Db;
@@ -67,6 +67,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants of the record
     "auth.address_held_until(uuid)",
     "auth.address_held(uuid)",
     "auth.address_hold_final(uuid)",
+    // 3f's review (0032_orders_review): whether the person was told of every seal behind a held address.
+    "auth.address_hold_told(uuid)",
   ];
 
   test("korbat_api holds nothing on the three record tables, column by column too, and reads no row of them", async () => {
@@ -90,17 +92,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants of the record
     for (const row of owed) expect(Object.keys(row).sort()).toEqual(["case_id", "kind", "since"]);
   });
 
-  test("korbat_auth holds nothing on auth.report_holds and may call the three auth.address_* reads alone of 0030's functions", async () => {
+  test("korbat_auth holds nothing on auth.report_holds and may call the auth.address_* reads alone of 0030's functions, and 0032's fourth", async () => {
     expect(await privileges("korbat_auth", "auth.report_holds")).toEqual([]);
     expect(await columnPrivileges("korbat_auth", "auth", "report_holds")).toBe(0);
     expect((await pgError(authDb.execute(sql`select count(*) from auth.report_holds`)))?.code).toBe("42501");
     const callable = [];
     for (const fn of FUNCTIONS) if (await mayExecute("korbat_auth", fn)) callable.push(fn);
-    expect(callable).toEqual(["auth.address_held_until(uuid)", "auth.address_held(uuid)", "auth.address_hold_final(uuid)"]);
-    const [row] = await authDb.execute<{ until: string | null; held: boolean; final: boolean }>(
-      sql`select auth.address_held_until(gen_random_uuid()) as until, auth.address_held(gen_random_uuid()) as held, auth.address_hold_final(gen_random_uuid()) as final`,
+    expect(callable).toEqual(["auth.address_held_until(uuid)", "auth.address_held(uuid)", "auth.address_hold_final(uuid)", "auth.address_hold_told(uuid)"]);
+    const [row] = await authDb.execute<{ until: string | null; held: boolean; final: boolean; told: boolean }>(
+      sql`select auth.address_held_until(gen_random_uuid()) as until, auth.address_held(gen_random_uuid()) as held, auth.address_hold_final(gen_random_uuid()) as final,
+                 auth.address_hold_told(gen_random_uuid()) as told`,
     );
-    expect({ ...row }).toEqual({ until: null, held: false, final: false });
+    // An account with no seal behind it reads as told: the mail may say what it holds.
+    expect({ ...row }).toEqual({ until: null, held: false, final: false, told: true });
     // And nothing of the public record tables.
     expect(await privileges("korbat_auth", "public.authority_notifications")).toEqual([]);
   });

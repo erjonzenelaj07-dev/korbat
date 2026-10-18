@@ -646,14 +646,25 @@ export interface EffectItemRow {
   id: string;
   postId: string | null;
   inForce: boolean;
+  /** Whether a correction had closed it when the effect read the order. */
+  closed: boolean;
 }
 
 /** The order's items of these ids (the effect compares each with what the key signed). */
 export async function effectItems(q: Querier, orderId: string, itemIds: readonly string[]): Promise<EffectItemRow[]> {
-  const found = await q.execute<{ id: string; post_id: string | null; in_force: boolean }>(sql`
-    select i.id, i.post_id, exists (select 1 from public.measures_in_force m where m.id = i.action_id) as in_force
+  const found = await q.execute<{ id: string; post_id: string | null; in_force: boolean; closed: boolean }>(sql`
+    select i.id, i.post_id, exists (select 1 from public.measures_in_force m where m.id = i.action_id) as in_force, i.closed_at is not null as closed
       from public.legal_order_items i where i.order_id = ${orderId}::uuid and i.id = any(${uuidList(itemIds)})`);
-  return found.map((row) => ({ id: row.id, postId: row.post_id, inForce: row.in_force }));
+  return found.map((row) => ({ id: row.id, postId: row.post_id, inForce: row.in_force, closed: row.closed }));
+}
+
+/**
+ * Which of these items are closed now, read as a statement of its own once the effect's transaction holds their rows, so
+ * a closing that committed while the effect waited for a row is seen (3f's review, database4).
+ */
+export async function closedItems(tx: DbTx, itemIds: readonly string[]): Promise<Set<string>> {
+  const found = await tx.execute<{ id: string }>(sql`select id from public.legal_order_items where id = any(${uuidList(itemIds)}) and closed_at is not null`);
+  return new Set(found.map((row) => row.id));
 }
 
 /** The intake item an effect inserted for an order's item: the API role may write that one column, which decisions_record does not trust. */

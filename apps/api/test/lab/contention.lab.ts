@@ -420,4 +420,97 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
       await removeOrderAlerts(migrateDb, started);
     }
   });
+
+  test("3f, Task 3: the ten-item effect of one order against an intake on its posts, a seal on one of its authors and the purge of the other: forty rounds each, both orders", async () => {
+    // Section 13 asked for this part in Task 3, and 3f's review carried it to Task 8 (ruling 14). The effect transaction
+    // (design, section 5, the lock order, items 1 and 2) takes its authors' profiles in id order, the cases through its
+    // intake's items, the items' rows and then, post by post, the snapshot, the decision and the measure, whose triggers
+    // take the post and its images. Against it: a report and a notice on its posts, which take the cases and the posts'
+    // images; an interim seal of one author's images on the path for child sexual abuse material, which takes that
+    // author's profile and every image of the account; and the purge of the other author's account, as the repositories
+    // issue it. One order of ten posts, five by each author, given effect in one transaction with a made-up confirmation
+    // of its params; every side rolls back, so every round finds the order as it was.
+    const started = new Date();
+    world ??= deciderWorld(apiDb);
+    const staff = await world.staff("moderator");
+    const [sealed, purged] = [await newProfile(apiDb), await newProfile(apiDb)];
+    committed.push(sealed.id, purged.id);
+    const posts: string[] = [];
+    for (const author of [sealed, purged]) {
+      for (let n = 0; n < 5; n++) {
+        const postId = await newPostRow(apiDb, author.id);
+        await newImageRow(apiDb, author.id, postId, 0);
+        posts.push(postId);
+      }
+    }
+    const order = await orderForTest(apiDb, staff, { posts });
+    const params = effectParams(order);
+    // The seal's case and params, committed once as the decisions' rounds above do: a notice about the first author's
+    // account on the path for child sexual abuse material, sealed again in every round and rolled back. The moderator's
+    // profile is committed once in the file, whichever test makes it first.
+    const [hasProfile] = await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from profiles where id = ${mod.id}::uuid`);
+    if (hasProfile!.n === 0) {
+      await staffProfile(apiDb, mod);
+      committed.push(mod.id);
+    }
+    const accountCase = (await report(apiDb, anAccount(sealed.id, sealed.handle), "csam")).caseId;
+    const seal = await decisionParams(apiDb, mod, accountCase, { kind: "interim", ruleId: "R2", actions: [act("seal_media")] });
+    const pause = (tx: DbTx) => tx.execute(sql`select pg_sleep(0.015)`);
+    const effect = async (tx: DbTx) => {
+      await effectWith(tx, staff, order.id, params);
+    };
+    const others: Record<string, (tx: DbTx) => Promise<unknown>> = {
+      "report under a rule on one of its posts": async (tx) => {
+        await intake(tx, ground.rule((await newProfile(tx as unknown as Db)).id), aPost(posts[2]!));
+      },
+      "notice naming two of its posts, one of each author, and the first author's account": async (tx) => {
+        await intake(tx, ground.csam(), [aPost(posts[1]!, 1), aPost(posts[7]!, 2), anAccount(sealed.id, sealed.handle, 3)]);
+      },
+      "interim seal of the first author's images": (tx) => decisionWith(tx, mod, sealed.id, accountCase, seal),
+      // As the repositories issue it: the profile, every post of the account in id order, the tombstones, the image rows.
+      "purge of the second author's account": async (tx) => {
+        await tx.execute(sql`select handle from profiles where id = ${purged.id}::uuid for update`);
+        await tx.execute(sql`select id from posts where author_id = ${purged.id}::uuid order by id for update`);
+        await tx.execute(sql`update posts set state = 'deleted_by_author', deleted_at = now(), body = '' where author_id = ${purged.id}::uuid and state <> 'deleted_by_author'`);
+        await tx.execute(sql`update profiles set display_name = 'Deleted account', bio = '', deleted_at = now() where id = ${purged.id}::uuid and deleted_at is null`);
+        await tx.execute(sql`delete from post_media where id in (select id from post_media where owner_id = ${purged.id}::uuid order by id for update) returning id`);
+      },
+    };
+
+    try {
+      const ROUNDS = 40;
+      const load = await busy();
+      line("ten-item effect alone (Task 3)", { items: params.items.length, authors: 2, busyPercent: load, ms: await timed(() => rolledBack(apiDb, effect)) });
+      for (const [otherName, other] of Object.entries(others)) {
+        const counts: Record<string, number> = {};
+        let longest = 0;
+        for (let round = 0; round < ROUNDS; round++) {
+          const side = (fn: (tx: DbTx) => Promise<unknown>, delay: number) => async () => {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            const start = performance.now();
+            const outcome = await rolledBack(apiDb, async (tx) => {
+              await fn(tx);
+              await pause(tx);
+            }).then(
+              () => "ok",
+              (err: unknown) => {
+                const fromDatabase = raised(err);
+                return fromDatabase ? `${fromDatabase.code} ${fromDatabase.message}` : ((err as { code?: string }).code ?? String(err));
+              },
+            );
+            longest = Math.max(longest, performance.now() - start);
+            return outcome;
+          };
+          // Each side starts first in half the rounds, a few milliseconds ahead.
+          const ahead = Math.floor(Math.random() * 8);
+          const [a, b] = await Promise.all(round % 2 === 0 ? [side(effect, 0)(), side(other, ahead)()] : [side(effect, ahead)(), side(other, 0)()]);
+          for (const [who, outcome] of [["effect", a], ["other", b]] as const) counts[`${who}: ${outcome}`] = (counts[`${who}: ${outcome}`] ?? 0) + 1;
+        }
+        line("effect contention", { effect: "the ten-item effect of one order, two authors", against: otherName, rounds: ROUNDS, busyPercent: load, outcomes: counts, longestMs: Math.round(longest) });
+      }
+    } finally {
+      await removeDecided(migrateDb, posts, []);
+      await removeOrderAlerts(migrateDb, started);
+    }
+  });
 });

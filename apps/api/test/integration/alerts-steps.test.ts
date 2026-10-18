@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vite
 import { ALERT_KINDS, ORDER_RULES, renderAlert, type AlertFacts } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import type { StaffMessage } from "../../src/auth";
-import { alertTick, channelHealth, staffAlert } from "../../src/moderation/alerts";
+import { alertMailLeg, alertTick, channelHealth, staffAlert } from "../../src/moderation/alerts";
 import { overview } from "../../src/moderation/cases";
 import { CHANNEL_TABLES, rowCounts } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
@@ -165,13 +165,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
   // ---------------------------------------------------------------- the tick
 
   const tickDeps = (notify: "on" | "off") => ({ ...w.deps, config: { ...w.deps.config, NOTIFY: notify } });
+  /** One round of each of the two jobs, the tick and (a job of its own since 3f's review) its mail leg: the tick's report. */
+  const round = async (notify: "on" | "off") => {
+    const report = await alertTick(tickDeps(notify));
+    await alertMailLeg(tickDeps(notify));
+    return report;
+  };
   const mailsOf = (template: string) => w.mailer.to(staffEmail, template);
 
   test("the tick's mail leg mails a row whose mail is its sentence once, to every staff account, and marks it", async () => {
     const id = await contactMessageForTest(new Date());
     made.push(id);
     const sent = mailsOf("contact_mail").length;
-    const report = await alertTick(tickDeps("off"));
+    const report = await round("off");
     expect(report.channel).toBeNull();
     const [row] = await outboxOf(w.migrateDb, id);
     expect(row!.mailed_at).not.toBeNull();
@@ -179,7 +185,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     expect(mails).toHaveLength(1);
     expect(mails[0]!.data).toMatchObject({ receivedAt: row!.facts.receivedAt, dueAt: row!.facts.dueAt });
     // Mailed once: the next round finds nothing owed.
-    await alertTick(tickDeps("off"));
+    await round("off");
     expect(mailsOf("contact_mail").slice(sent)).toHaveLength(1);
   });
 
@@ -188,12 +194,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     made.push(id);
     w.mailer.mode = "fail";
     try {
-      await alertTick(tickDeps("off"));
+      await round("off");
     } finally {
       w.mailer.mode = "deliver";
     }
     expect((await outboxOf(w.migrateDb, id))[0]!.mailed_at).toBeNull();
-    await alertTick(tickDeps("off"));
+    await round("off");
     expect((await outboxOf(w.migrateDb, id))[0]!.mailed_at).not.toBeNull();
   });
 
@@ -226,7 +232,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
       expect(JSON.stringify(row!.facts), message.template).not.toContain("mod_anna");
     }
     const mailed = messages.map((m) => w.mailer.attempts.filter((a) => a.template === m.template).length);
-    await alertTick(tickDeps("off"));
+    await round("off");
     expect(messages.map((m) => w.mailer.attempts.filter((a) => a.template === m.template).length)).toEqual(mailed);
     await w.migrateDb.execute(sql`delete from public.alert_outbox where kind like 'moderation_%' and created_at >= ${since.toISOString()}::timestamptz`);
   });
@@ -246,7 +252,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     await beat(null, null);
     expect(await channelHealth(tickDeps("off"))).toEqual({ channel: "off", since: null });
     const at = new Date();
-    expect((await alertTick(tickDeps("off"))).raised).toEqual([]);
+    expect((await round("off")).raised).toEqual([]);
     expect(await alarms(at)).toEqual([]);
   });
 
@@ -256,8 +262,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     const health = await channelHealth(tickDeps("on"));
     expect(health.channel).toBe("down");
     const at = new Date(Date.now() - 1000);
-    expect((await alertTick(tickDeps("on"))).raised).toEqual(["alert_channel_down"]);
-    expect((await alertTick(tickDeps("on"))).raised).toEqual([]);
+    expect((await round("on")).raised).toEqual(["alert_channel_down"]);
+    expect((await round("on")).raised).toEqual([]);
     const rows = await alarms(at);
     expect(rows.map((r) => [r.kind, r.mailed])).toEqual([["alert_channel_down", true]]);
     expect(Date.parse(String(rows[0]!.facts.since))).toBe(health.since!.getTime());
@@ -280,9 +286,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     await w.migrateDb.execute(sql`update public.alert_outbox set created_at = now() - make_interval(mins => ${ORDER_RULES.channelDownMinutes + 1}) where message_id = ${id}::uuid`);
     // Every other row still owed is pushed meanwhile, as a working watcher would have: this file judges its own row.
     await w.migrateDb.execute(sql`update public.alert_outbox set pushed_at = now() where pushed_at is null and message_id is distinct from ${id}::uuid`);
+    // 3f's review (operations3): while the watcher's last publish was taken or only throttled (push_ok_at fresh), ntfy
+    // answers and the row waits for its turn: not down. Once no publish has worked for channel_down_minutes, it is.
+    await w.migrateDb.execute(sql`update public.notify_state set push_ok_at = now() where id = 1`);
+    expect((await channelHealth(tickDeps("on"))).channel).toBe("ok");
+    await w.migrateDb.execute(sql`update public.notify_state set push_ok_at = now() - make_interval(mins => ${ORDER_RULES.channelDownMinutes + 1}) where id = 1`);
     expect((await channelHealth(tickDeps("on"))).channel).toBe("down");
     await w.migrateDb.execute(sql`update public.alert_outbox set created_at = now() - make_interval(mins => ${ORDER_RULES.pushOwedMinutes + 1}) where message_id = ${id}::uuid`);
     expect((await channelHealth(tickDeps("on"))).channel).toBe("ok");
+    // The watcher works again for the tests that follow.
+    await w.migrateDb.execute(sql`update public.notify_state set push_ok_at = now() where id = 1`);
     await clearAlarms();
   });
 
@@ -293,8 +306,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     await w.migrateDb.execute(sql`update public.alert_outbox set pushed_at = now() where pushed_at is null`);
     expect((await channelHealth(tickDeps("on"))).channel).toBe("mailbox");
     const at = new Date(Date.now() - 1000);
-    expect((await alertTick(tickDeps("on"))).raised).toEqual(["mailbox_unreachable"]);
-    await alertTick(tickDeps("on"));
+    expect((await round("on")).raised).toEqual(["mailbox_unreachable"]);
+    await round("on");
     expect((await alarms(at)).map((r) => [r.kind, r.mailed])).toEqual([["mailbox_unreachable", true]]);
     expect(ALERT_KINDS.mailbox_unreachable.legs).toEqual(["push", "mail"]);
     await clearAlarms();
@@ -491,6 +504,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
       ]);
       expect(ALERT_KINDS.copy_overdue.legs).toEqual(["push", "mail"]);
     });
+  });
+
+  test("3f's review: a row of report_owed and one of handover_undestroyed pass through the mail leg to every staff account, each once, with their sentence", async () => {
+    const sent = { report_owed: mailsOf("report_owed").length, handover_undestroyed: mailsOf("handover_undestroyed").length };
+    const rows = await w.migrateDb.execute<{ id: string }>(sql`
+      insert into public.alert_outbox (kind, priority, scope, facts)
+      values ('report_owed', 5, 'all', '{"count": 1, "oldestAt": "2026-10-16T08:00:00.000Z"}'::jsonb), ('handover_undestroyed', 3, 'all', '{"count": 2}'::jsonb)
+      returning id`);
+    try {
+      expect(await alertMailLeg(tickDeps("off"))).toBeGreaterThanOrEqual(2);
+      expect(mailsOf("report_owed").slice(sent.report_owed).map((m) => m.data)).toEqual([expect.objectContaining({ count: "1", oldestAt: "2026-10-16T08:00:00.000Z" })]);
+      expect(mailsOf("handover_undestroyed").slice(sent.handover_undestroyed).map((m) => m.data)).toEqual([expect.objectContaining({ count: "2" })]);
+      const marked = await w.migrateDb.execute<{ mailed: boolean }>(sql`select mailed_at is not null as mailed from public.alert_outbox where id = any(${`{${rows.map((r) => r.id).join(",")}}`}::bigint[]) order by id`);
+      expect(marked.map((r) => r.mailed)).toEqual([true, true]);
+    } finally {
+      await w.migrateDb.execute(sql`delete from public.alert_outbox where id = any(${`{${rows.map((r) => r.id).join(",")}}`}::bigint[])`);
+    }
   });
 
   test("leaves no row behind", async () => {

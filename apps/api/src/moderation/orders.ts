@@ -39,6 +39,7 @@ import { orderLinkTarget } from "./links";
 import {
   addOrderItems,
   caseVersion,
+  closedItems,
   closeMessage,
   contactCounts,
   contactMessages,
@@ -403,7 +404,9 @@ const rowValue = (row: OrderRow, member: (typeof CORRECTED_MEMBERS)[number]): un
  * order's row which rule allows it (entry, caution, admin) and writes it; then the audit row `order_corrected`, with the
  * rule, the changed members (old and new values; a closed item as its id and reason) and the event, through
  * append_confirmed_audit under a key and as a plain row otherwise. A correction under the rule admin without a key is
- * "step_up_required", and nothing is kept. After the commit every staff account is alerted (`order_corrected`).
+ * "step_up_required", and nothing is kept. A deadlock or a bound reached runs the transaction once more (order_correct
+ * takes the order's items before its row, as the effect does, so the two no longer meet that way). After the commit
+ * every staff account is alerted (`order_corrected`).
  */
 export async function correctOrderRecord(
   deps: ModerationDeps,
@@ -418,66 +421,76 @@ export async function correctOrderRecord(
   if (facts.memberState !== undefined) dbFacts.crossBorder = crossBorderOf(deps, facts.memberState);
   let changed: Record<string, unknown>[] = [];
   let counted = 0;
-  try {
-    const outcome = await deps.apiDb.transaction(async (tx): Promise<"done" | "late" | "step_up_required"> => {
-      const before = await orderRow(tx, orderId);
-      if (before === null) throw new ModerationError("not_found");
-      const authors = before.givenEffect ? await disabledAuthors(tx, orderId) : [];
-      const waits = CORRECTION_WAITS + authors.length + 2 * before.items;
-      if (confirmed !== null) {
-        if (!(await boundLockWaits(tx, confirmed.expiresAt, waits))) return "late";
-      } else {
-        await tx.execute(sql`select set_config('lock_timeout', ${`${CORRECTION_LOCK_MS}ms`}::text, true)`);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const outcome = await deps.apiDb.transaction(async (tx): Promise<"done" | "late" | "step_up_required"> => {
+        const before = await orderRow(tx, orderId);
+        if (before === null) throw new ModerationError("not_found");
+        const authors = before.givenEffect ? await disabledAuthors(tx, orderId) : [];
+        const waits = CORRECTION_WAITS + authors.length + 2 * before.items;
+        if (confirmed !== null) {
+          if (!(await boundLockWaits(tx, confirmed.expiresAt, waits))) return "late";
+        } else {
+          await tx.execute(sql`select set_config('lock_timeout', ${`${CORRECTION_LOCK_MS}ms`}::text, true)`);
+        }
+        if (authors.length > 0) await deps.social.lockAccounts(tx, authors, "no key update");
+        const eventId = await correctOrder(tx, orderId, dbFacts, session.userId);
+        const rule = await eventGround(tx, eventId);
+        // Under the rule admin a key must confirm: without one, the transaction's rows go.
+        if (rule === "admin" && confirmed === null) throw new StepUpNeeded();
+        const after = (await orderRow(tx, orderId))!;
+        changed = CORRECTED_MEMBERS.filter((member) => member in dbFacts && rowValue(before, member) !== rowValue(after, member)).map((member) => ({
+          member,
+          from: rowValue(before, member),
+          to: rowValue(after, member),
+        }));
+        for (const item of facts.closeItems ?? []) changed.push({ member: "closeItems", itemId: item.itemId, reason: item.reason });
+        counted = changed.length;
+        const metadata = { rule, changed, eventId, ...(confirmed !== null ? { params: confirmed.params } : {}) };
+        if (confirmed !== null) {
+          await appendConfirmedAudit(tx, {
+            actorId: session.userId,
+            keyId: confirmed.keyId,
+            action: "order_corrected",
+            targetType: "order",
+            targetId: orderId,
+            metadata,
+            staffSession: session.handle,
+            actionHash: confirmed.actionHash,
+            stepUp: confirmed.assertion,
+            requestId: ctx.requestId,
+            expiresAt: confirmed.expiresAt,
+          });
+        } else {
+          await appendAuditRow(tx, { actorId: session.userId, action: "order_corrected", targetType: "order", targetId: orderId, requestId: ctx.requestId, staffSession: session.handle, metadata });
+        }
+        return "done";
+      }).catch((err: unknown) => {
+        // A correction the key must confirm, sent without one: the transaction's rows go, and nothing is kept.
+        if (err instanceof StepUpNeeded) return "step_up_required" as const;
+        throw err;
+      });
+      if (outcome !== "done") return outcome;
+      break;
+    } catch (err) {
+      const raised = raisedMessage(err);
+      if (raised === "staff_confirmation_ended") return "ended";
+      if (raised === "staff_confirmation_late") return "late";
+      if (raised === "order_exists") {
+        const now = await orderRow(deps.apiDb, orderId);
+        throw await orderExists(deps, facts.memberState ?? now?.memberState ?? "", facts.authority ?? now?.authority ?? "", facts.reference ?? now?.reference ?? "");
       }
-      if (authors.length > 0) await deps.social.lockAccounts(tx, authors, "no key update");
-      const eventId = await correctOrder(tx, orderId, dbFacts, session.userId);
-      const rule = await eventGround(tx, eventId);
-      // Under the rule admin a key must confirm: without one, the transaction's rows go.
-      if (rule === "admin" && confirmed === null) throw new StepUpNeeded();
-      const after = (await orderRow(tx, orderId))!;
-      changed = CORRECTED_MEMBERS.filter((member) => member in dbFacts && rowValue(before, member) !== rowValue(after, member)).map((member) => ({
-        member,
-        from: rowValue(before, member),
-        to: rowValue(after, member),
-      }));
-      for (const item of facts.closeItems ?? []) changed.push({ member: "closeItems", itemId: item.itemId, reason: item.reason });
-      counted = changed.length;
-      const metadata = { rule, changed, eventId, ...(confirmed !== null ? { params: confirmed.params } : {}) };
-      if (confirmed !== null) {
-        await appendConfirmedAudit(tx, {
-          actorId: session.userId,
-          keyId: confirmed.keyId,
-          action: "order_corrected",
-          targetType: "order",
-          targetId: orderId,
-          metadata,
-          staffSession: session.handle,
-          actionHash: confirmed.actionHash,
-          stepUp: confirmed.assertion,
-          requestId: ctx.requestId,
-          expiresAt: confirmed.expiresAt,
-        });
-      } else {
-        await appendAuditRow(tx, { actorId: session.userId, action: "order_corrected", targetType: "order", targetId: orderId, requestId: ctx.requestId, staffSession: session.handle, metadata });
+      const refusal = orderRefusal(err);
+      if (refusal !== null) throw refusal;
+      // 3f's review (database4): a deadlock or a bound reached changed nothing; the transaction runs once more, while a
+      // key's challenge has more than a minute left, and a second time it answers a refusal, never an error: "late" under a
+      // key, and service_unavailable without one, so the person tries again.
+      if (!isDeadlock(err) && !isBoundReached(err)) throw err;
+      if (attempt > 1 || (confirmed !== null && confirmed.expiresAt.getTime() - deps.now().getTime() <= RETRY_MARGIN_MS)) {
+        if (confirmed !== null) return "late";
+        throw new ModerationError("service_unavailable");
       }
-      return "done";
-    }).catch((err: unknown) => {
-      // A correction the key must confirm, sent without one: the transaction's rows go, and nothing is kept.
-      if (err instanceof StepUpNeeded) return "step_up_required" as const;
-      throw err;
-    });
-    if (outcome !== "done") return outcome;
-  } catch (err) {
-    const raised = raisedMessage(err);
-    if (raised === "staff_confirmation_ended") return "ended";
-    if (raised === "staff_confirmation_late") return "late";
-    if (raised === "order_exists") {
-      const now = await orderRow(deps.apiDb, orderId);
-      throw await orderExists(deps, facts.memberState ?? now?.memberState ?? "", facts.authority ?? now?.authority ?? "", facts.reference ?? now?.reference ?? "");
     }
-    const refusal = orderRefusal(err);
-    if (refusal !== null) throw refusal;
-    throw err;
   }
   const at = deps.now().toISOString();
   deps.background.start(async () => {
@@ -683,8 +696,19 @@ const signedFacts = (row: OrderRow) => ({
  * then the item's intake_item_id; for each item in post order a snapshot of its own, the order decision and its one
  * disable_by_order, whose triggers force everything else. Answers each item's decision. The module's tests call it with
  * an audit row of their own, to meet decision_holds' refusals.
+ *
+ * Once every item's row is held, an item that is closed now and was not in `closedAtRead` (the items the effect found
+ * closed when it read the order) is refused as order_changed (3f's review, database4): a correction that closed it
+ * committed while the effect waited for its row, or before the effect ran again after a deadlock, and the key signed
+ * the effect on an item that was open. An item closed already when the person chose it is given effect, as built.
  */
-export async function effectRows(deps: Pick<ModerationDeps, "social" | "media">, tx: DbTx, deciderId: string, params: OrderEffectedParams): Promise<Record<string, string>> {
+export async function effectRows(
+  deps: Pick<ModerationDeps, "social" | "media">,
+  tx: DbTx,
+  deciderId: string,
+  params: OrderEffectedParams,
+  closedAtRead: ReadonlySet<string> = new Set(),
+): Promise<Record<string, string>> {
   const ordered = ORDER_DECISION[params.kind];
   const intakeId = await insertIntake(tx, {
     kind: "order",
@@ -712,6 +736,9 @@ export async function effectRows(deps: Pick<ModerationDeps, "social" | "media">,
     await setItemIntake(tx, item.itemId, inserted.id);
     cases.set(item.itemId, caseId);
   }
+  // A statement of its own after the item locks: a closing that committed meanwhile is read here.
+  const closedNow = await closedItems(tx, params.items.map((item) => item.itemId));
+  if ([...closedNow].some((id) => !closedAtRead.has(id))) throw new ModerationError("order_changed");
   const takenAt = await snapshotTime(tx);
   const decisionIds: Record<string, string> = {};
   for (const item of params.items) {
@@ -790,6 +817,7 @@ export async function giveEffect(deps: ModerationDeps, session: ActiveStaffSessi
   const items = await effectItems(deps.apiDb, orderId, params.items.map((item) => item.itemId));
   const byId = new Map(items.map((item) => [item.id, item]));
   if (params.items.some((item) => byId.get(item.itemId)?.postId !== item.postId)) throw new ModerationError("order_changed");
+  const closedAtRead = new Set(items.filter((item) => item.closed).map((item) => item.id));
   // A post's author never changes; a post purged since the read has none, and the person reads the order again.
   const authors = new Map<string, string>();
   for (const item of params.items) {
@@ -806,7 +834,7 @@ export async function giveEffect(deps: ModerationDeps, session: ActiveStaffSessi
       const outcome = await deps.apiDb.transaction(async (tx): Promise<"done" | "late"> => {
         if (!(await boundLockWaits(tx, confirmed.expiresAt, ORDER_EFFECT_WAITS(params.items.length)))) return "late";
         await deps.social.lockAccounts(tx, [...new Set(authors.values())].sort(), "no key update");
-        decisionIds = await effectRows(deps, tx, session.userId, params);
+        decisionIds = await effectRows(deps, tx, session.userId, params, closedAtRead);
         // Each gap after the ledger rows and before the audit row (7.6 step 6), in the items' order, so the decisions'
         // own check at commit covers the closings. The audit row names them, item by item, as a decision's names its gap.
         const gapIds: Record<string, string> = {};

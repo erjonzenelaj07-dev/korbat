@@ -20,6 +20,7 @@ import {
   ORDER_CONSOLE_EVENTS,
   ORDER_CORRECTION_RULES,
   ORDER_EVENT_GROUNDS,
+  ORDER_TEXT_KINDS,
   ORDER_EVENT_KINDS,
   ORDER_EVENT_WORDS,
   ORDER_GROUNDS,
@@ -119,6 +120,9 @@ describe("the closed lists (10.1), each in the spelling of 6.2's CHECKs", () => 
       scrutiny_decided: SCRUTINY_OUTCOMES,
     });
     for (const kind of Object.keys(ORDER_EVENT_GROUNDS)) expect(ORDER_EVENT_KINDS, kind).toContain(kind);
+    // 3f's review (people2): texts_recorded names the text it wrote, or nothing when written before the review.
+    expect(ORDER_TEXT_KINDS).toEqual(["reasons", "redress", "scope"]);
+    expect(ORDER_EVENT_GROUNDS).not.toHaveProperty("texts_recorded");
   });
 
   test("an item's closing reasons, the hold's bases, the rules for telling a person, an order's states", () => {

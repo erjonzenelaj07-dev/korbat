@@ -16,6 +16,13 @@ listen-http: ":2586"
 # count every phone as Caddy, and 30 wrong tokens from anyone would shut every phone out (3f, lab L3).
 behind-proxy: true
 proxy-forwarded-header: "X-Forwarded-For"
+# The watcher's own address on the push network (NOTIFY_PUSH_IP in Compose, 172.16.91.254 unless PUSH_SUBNET was
+# changed), exempt from ntfy's request limit (3f's review, operations3): a burst of 60 publishes and then one every 5
+# seconds (lab L1) would hold an order's alert behind a flood of contact mail. ntfy checks the exemption by the address
+# a request comes from, the publisher's token or not; the watcher posts to ntfy directly, while a phone's request comes
+# through Caddy, which sets X-Forwarded-For to the phone's address, so no phone can claim this one. An address and not
+# the name notify, since ntfy resolves a name only when it starts, before notify exists.
+visitor-request-limit-exempt-hosts: "172.16.91.254"
 
 # Private: nobody reads or writes a topic without a user who may, and nobody signs up or logs in to a web app.
 auth-file: "/var/tmp/auth.db"

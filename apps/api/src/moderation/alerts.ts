@@ -22,10 +22,18 @@ export const URGENT_ALERT_WINDOW_MS = 15 * 60_000;
 export const ALERT_TICK_JOB = "alert-tick";
 /** The time between the end of one round of the tick and the start of the next. */
 export const ALERT_TICK_INTERVAL_MS = ALERT_RULES.tickSeconds * 1000;
+/**
+ * The alert tick's mail leg, a job of its own (3f's review, operations2): its lock is `job:alert-mail`, and a round comes
+ * ALERT_TICK_INTERVAL_MS after the last one ended. A relay that answers slowly or not at all then holds only the mail
+ * leg: alert_steps() and the channel's check keep their own time, so the pushes they write (the 15-minute escalation,
+ * the deadline's reminders) are never late behind a mail.
+ */
+export const ALERT_MAIL_JOB = "alert-mail";
 
 /**
- * The kinds whose mail is their push's sentence that the tick mails from a row, each a template of the mailer: those a
- * row can hold so far. Every later kind of 3f joins this list in the task that first writes its rows.
+ * The kinds whose mail is their push's sentence that the tick mails from a row, each a template of the mailer: every
+ * kind of the contracts' SENTENCE_MAIL_KINDS, which a test holds this list to (3f's review, operations4: Task 5's two
+ * kinds were pushed and never mailed).
  */
 export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   "contact_mail",
@@ -43,6 +51,9 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   // Task 6: copy_overdue, which alert_steps() writes daily, and copy_taken, which staffAlert writes after a download.
   "copy_overdue",
   "copy_taken",
+  // Task 5's two daily kinds, joined in 3f's review: a report to an authority owed, and a hand-over's copy not destroyed.
+  "report_owed",
+  "handover_undestroyed",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */
@@ -178,17 +189,20 @@ export interface ChannelHealth {
 /**
  * The channel's state, read fresh (3f design, sections 5 and 7.2 step 3), by the database's clock: `off` with NOTIFY=off;
  * `down` while the watcher's beat is older than channel_down_minutes (or there never was one), or a row still owed its
- * push (a kind with a push leg, not pushed, younger than push_owed_minutes) is older than that; `mailbox` while the beat
- * is fresh and the mailbox was last read longer ago than that; `ok` otherwise. A row past its push's bound counts for
- * nothing any more, so the state clears by itself once the push server is back. `since` is the earliest late time, or the
- * clock's when there is none (a watcher that never beat, a mailbox never read).
+ * push (a kind with a push leg, not pushed, younger than push_owed_minutes) is older than that while no publish has
+ * worked for as long (push_ok_at; 3f's review, operations3: rows waiting behind ntfy's request limit, which answers and
+ * takes some every round, never read as down, and Home never says that alerts arrive by mail only then); `mailbox`
+ * while the beat is fresh and the mailbox was last read longer ago than that; `ok` otherwise. A row past its push's
+ * bound counts for nothing any more, so the state clears by itself once the push server is back. `since` is the earliest
+ * late time, or the clock's when there is none (a watcher that never beat, a mailbox never read).
  */
 export async function channelHealth(deps: Pick<ModerationDeps, "apiDb" | "config">): Promise<ChannelHealth> {
   if (deps.config.NOTIFY === "off") return { channel: "off", since: null };
   const [row] = await deps.apiDb.execute<{ now: string; beat_at: string | null; mailbox_ok_at: string | null; owed_since: string | null; beat_late: boolean; owed_late: boolean; mailbox_late: boolean }>(sql`
     select now() as now, s.beat_at, s.mailbox_ok_at, o.owed_since,
            (s.beat_at is null or s.beat_at < now() - make_interval(mins => r.channel_down_minutes)) as beat_late,
-           coalesce(o.owed_since < now() - make_interval(mins => r.channel_down_minutes), false) as owed_late,
+           coalesce(o.owed_since < now() - make_interval(mins => r.channel_down_minutes), false)
+             and (s.push_ok_at is null or s.push_ok_at < now() - make_interval(mins => r.channel_down_minutes)) as owed_late,
            (s.mailbox_ok_at is null or s.mailbox_ok_at < now() - make_interval(mins => r.channel_down_minutes)) as mailbox_late
       from public.order_rules() r
       left join public.notify_state s on s.id = 1
@@ -225,8 +239,6 @@ async function raiseAlarm(deps: Pick<ModerationDeps, "apiDb">, kind: "alert_chan
 export interface TickReport {
   /** How many rows alert_steps() wrote, or null when the step failed. */
   steps: number | null;
-  /** How many rows the mail leg mailed. */
-  mailed: number;
   /** The channel's state, or null when NOTIFY is off or the step failed. */
   channel: AlertChannelState | null;
   /** The alarms the round raised. */
@@ -236,14 +248,11 @@ export interface TickReport {
 /**
  * One round of the alert tick (3f design, section 7.2), each step in a try of its own:
  *   1. `select alert_steps()`: the database writes every time-driven row that is due;
- *   2. the mail leg: every row of a kind whose mail is its sentence, not yet mailed and younger than
- *      ALERT_RULES.mailRetryHours, whoever wrote it, mailed to every staff account and marked when an address took it; a
- *      row nobody took is tried again next round, and then left;
- *   3. the channel's health, skipped with NOTIFY=off: its alarm rows, which the next round's mail leg mails.
- * It never mails a row of 3c's or 3e's kinds: their mails say more than the row's facts, and staffAlert sends them.
+ *   2. the channel's health, skipped with NOTIFY=off: its alarm rows, which the mail leg mails.
+ * The mail leg (section 7.2's step 2) is alertMailLeg, a job of its own since 3f's review (ALERT_MAIL_JOB).
  */
-export async function alertTick(deps: Pick<ModerationDeps, "apiDb" | "auth" | "config" | "log">): Promise<TickReport> {
-  const report: TickReport = { steps: null, mailed: 0, channel: null, raised: [] };
+export async function alertTick(deps: Pick<ModerationDeps, "apiDb" | "config" | "log">): Promise<TickReport> {
+  const report: TickReport = { steps: null, channel: null, raised: [] };
   const step = async (name: string, run: () => Promise<void>) => {
     try {
       await run();
@@ -257,23 +266,6 @@ export async function alertTick(deps: Pick<ModerationDeps, "apiDb" | "auth" | "c
     report.steps = Number(row!.written);
   });
 
-  await step("mail", async () => {
-    const rows = await deps.apiDb.execute<{ id: string; kind: StaffAlertKind; facts: AlertFacts }>(sql`
-      select id, kind, facts from public.alert_outbox
-       where mailed_at is null and kind = any(${words(TICK_MAILED_KINDS)})
-         and created_at > now() - make_interval(hours => ${ALERT_RULES.mailRetryHours})
-       order by id`);
-    for (const row of rows) {
-      try {
-        const mailed = await mailClaimed(deps, Number(row.id), { template: row.kind, facts: row.facts });
-        if (typeof mailed === "number" && mailed > 0) report.mailed++;
-        else if (mailed === 0) deps.log.warn({ job: ALERT_TICK_JOB, alert: row.id, kind: row.kind }, "alert-tick: no staff address took an alert's mail; it is tried again next round");
-      } catch (err) {
-        deps.log.error({ err, job: ALERT_TICK_JOB, alert: row.id }, "alert-tick: an alert's mail failed; it is tried again next round");
-      }
-    }
-  });
-
   if (deps.config.NOTIFY === "on") {
     await step("channel", async () => {
       const health = await channelHealth(deps);
@@ -285,7 +277,42 @@ export async function alertTick(deps: Pick<ModerationDeps, "apiDb" | "auth" | "c
   return report;
 }
 
+/**
+ * One round of the mail leg (3f design, section 7.2 step 2): every row of a kind whose mail is its sentence, not yet
+ * mailed and younger than ALERT_RULES.mailRetryHours, whoever wrote it, mailed to every staff account and marked when an
+ * address took it; a row nobody took is tried again next round, and then left. Each row in a try of its own. It never
+ * mails a row of 3c's or 3e's kinds: their mails say more than the row's facts, and staffAlert sends them. Answers how
+ * many rows it mailed.
+ */
+export async function alertMailLeg(deps: Pick<ModerationDeps, "apiDb" | "auth" | "log">): Promise<number> {
+  let mailedRows = 0;
+  try {
+    const rows = await deps.apiDb.execute<{ id: string; kind: StaffAlertKind; facts: AlertFacts }>(sql`
+      select id, kind, facts from public.alert_outbox
+       where mailed_at is null and kind = any(${words(TICK_MAILED_KINDS)})
+         and created_at > now() - make_interval(hours => ${ALERT_RULES.mailRetryHours})
+       order by id`);
+    for (const row of rows) {
+      try {
+        const mailed = await mailClaimed(deps, Number(row.id), { template: row.kind, facts: row.facts });
+        if (typeof mailed === "number" && mailed > 0) mailedRows++;
+        else if (mailed === 0) deps.log.warn({ job: ALERT_MAIL_JOB, alert: row.id, kind: row.kind }, "alert-mail: no staff address took an alert's mail; it is tried again next round");
+      } catch (err) {
+        deps.log.error({ err, job: ALERT_MAIL_JOB, alert: row.id }, "alert-mail: an alert's mail failed; it is tried again next round");
+      }
+    }
+  } catch (err) {
+    deps.log.error({ err, job: ALERT_MAIL_JOB }, "alert-mail: the rows owed their mail could not be read; the next round reads them again");
+  }
+  return mailedRows;
+}
+
 /** The alert tick as a job of the shared lock: a round ALERT_TICK_INTERVAL_MS after the last one ended, on one instance at a time. */
 export function createAlertTick(deps: ModerationDeps, lock: JobLock) {
   return createJob({ name: ALERT_TICK_JOB, intervalMs: ALERT_TICK_INTERVAL_MS, lockTtlMs: ALERT_TICK_INTERVAL_MS, lock, log: deps.log, run: () => alertTick(deps) });
+}
+
+/** The mail leg as a job of the shared lock under a key of its own, at the tick's interval, so a slow relay holds only it. */
+export function createAlertMailJob(deps: ModerationDeps, lock: JobLock) {
+  return createJob({ name: ALERT_MAIL_JOB, intervalMs: ALERT_TICK_INTERVAL_MS, lockTtlMs: ALERT_TICK_INTERVAL_MS, lock, log: deps.log, run: () => alertMailLeg(deps) });
 }

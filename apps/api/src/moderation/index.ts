@@ -42,7 +42,7 @@ import type { JobLock } from "../lib/jobs";
 import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
-import { createAlertTick, staffAlert } from "./alerts";
+import { createAlertMailJob, createAlertTick, staffAlert } from "./alerts";
 import { appealsList, review, reviewedCase } from "./appeals";
 import { authorFacts } from "./author";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
@@ -299,7 +299,8 @@ export function createModeration(options: CreateModerationOptions) {
     settle: () => deps.background.settle(),
     /**
      * Starts the module's background work under the jobs' shared lock, on one API instance at a time: the dispatch job
-     * and 3f's alert tick always, and the retention job only while MODERATION_RETENTION is on. The dispatch and retention
+     * and 3f's alert tick and its mail leg (two jobs since 3f's review, so a slow relay never holds the tick) always, and
+     * the retention job only while MODERATION_RETENTION is on. The dispatch and retention
      * jobs' first rounds come ten minutes after the start, the tick's 30 seconds after it. While the switch is off nothing
      * is erased, released or deleted, and the warning is logged at every start, so a switch left off after a restore is
      * seen; the tick runs all the same, since an alert is never about retention. Answers the function that stops them
@@ -308,17 +309,20 @@ export function createModeration(options: CreateModerationOptions) {
     startJobs: (lock: JobLock): (() => void) => {
       const stopDispatch = createDispatchJob(deps, lock).start();
       const stopTick = createAlertTick(deps, lock).start();
+      const stopMail = createAlertMailJob(deps, lock).start();
       if (deps.config.MODERATION_RETENTION !== "on") {
         deps.log.warn(RETENTION_OFF_WARNING);
         return () => {
           stopDispatch();
           stopTick();
+          stopMail();
         };
       }
       const stopRetention = createRetentionJob(deps, lock).start();
       return () => {
         stopDispatch();
         stopTick();
+        stopMail();
         stopRetention();
       };
     },

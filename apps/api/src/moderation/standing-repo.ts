@@ -119,13 +119,14 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
     q,
     sql`select (select count(*)::int from posts p where p.author_id = ${account} and p.created_at > now() - make_interval(mins => k.flood_minutes)) as posts,
                ${iso("(now() - make_interval(mins => k.flood_minutes))")} as from_at, ${iso("now()")} as to_at,
+               -- 3f: each basis below takes only a decision its subject was told of, as decision_actions_check does.
                (select ${iso("x.decided_at")} from decisions x join cases xc on xc.id = x.case_id and xc.target_type = 'post' join posts xp on xp.id = xc.target_id and xp.author_id = ${account}
-                 where x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                 where x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days) and x.informed_at is not null
                    and exists (select 1 from measures_in_force f where f.decision_id = x.id)
                  order by x.decided_at desc, x.id desc limit 1) as threat_at,
                (select ${iso("x.decided_at")} from decisions x join cases xc on xc.id = x.case_id and xc.target_type = 'post' join posts xp on xp.id = xc.target_id and xp.author_id = ${account}
                  where x.kind = 'final' and x.outcome = 'restricted' and x.ground = 'illegal' and x.category_keyword = 'KEYWORD_TERRORIST_CONTENT'
-                   and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                   and x.decided_at >= now() - make_interval(days => k.basis_age_days) and x.informed_at is not null
                    and exists (select 1 from measures_in_force f where f.decision_id = x.id)
                  order by x.decided_at desc, x.id desc limit 1) as terrorist_at,
                exists (select 1 from decision_actions a join decisions ad on ad.id = a.decision_id
@@ -136,18 +137,18 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
                           and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)
                           and public.standing_basis_broken_at(a.id) is null
                           and ad.decided_at >= now() - make_interval(days => k.ladder_memory_days)
-                          and x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                          and x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days) and x.informed_at is not null
                           and exists (select 1 from measures_in_force f where f.decision_id = x.id)) as threat_repeat,
                -- Task 4: the two decisions a termination at once would rest on now, for the console's preview.
                t.earlier as repeat_earlier, t.newer as repeat_newer,
                (select ${day("x.decided_at")} from measures_in_force m join decisions x on x.id = m.decision_id
                  where m.kind = 'seal_media' and m.decision_kind = 'final' and m.subject_account_id = ${account}
-                   and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                   and x.decided_at >= now() - make_interval(days => k.basis_age_days) and x.informed_at is not null
                    and not exists (select 1 from decision_actions p where p.kind = 'suspend' and p.basis = 'protective' and m.decision_id = any(p.rests_on))
                  order by x.decided_at desc, x.id desc limit 1) as seal_on,
                (select ${iso("x.decided_at")} from measures_in_force m join decisions x on x.id = m.decision_id
                  where m.kind = 'seal_media' and m.decision_kind = 'final' and m.subject_account_id = ${account}
-                   and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+                   and x.decided_at >= now() - make_interval(days => k.basis_age_days) and x.informed_at is not null
                    and not exists (select 1 from decision_actions p where p.kind = 'suspend' and p.basis = 'protective' and m.decision_id = any(p.rests_on))
                  order by x.decided_at desc, x.id desc limit 1) as seal_at
           from standing_rules() k
@@ -162,7 +163,7 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
                and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id)
                and public.standing_basis_broken_at(a.id) is null
                and ad.decided_at >= now() - make_interval(days => k.ladder_memory_days)
-               and x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days)
+               and x.kind = 'final' and x.outcome = 'restricted' and x.rule_id = 'R5' and x.decided_at >= now() - make_interval(days => k.basis_age_days) and x.informed_at is not null
                and exists (select 1 from measures_in_force f where f.decision_id = x.id)
              order by x.decided_at desc, x.id desc limit 1
           ) t on true`
@@ -313,6 +314,8 @@ export interface ExportedStrikeRow {
 /**
  * Every strike the account was given, newest first: the decision that gave it, the post it was given for, the rule, when
  * it was given, until when it counts, and when it was overruled. A strike is the account's own data and names nobody else.
+ * A strike whose decision is held with an order's notice (informed_at null) is left out until the release tells it, as
+ * active_strikes leaves it out (3f design, section 7.10: nothing reaches the author while a hold runs).
  */
 export async function exportedStrikes(q: Runner, accountId: string): Promise<ExportedStrikeRow[]> {
   const found = await rows<{ decision_id: string; post_id: string; rule_id: string; given_at: string; counts_until: string; overruled_at: string | null }>(
@@ -320,7 +323,7 @@ export async function exportedStrikes(q: Runner, accountId: string): Promise<Exp
     sql`select a.decision_id, c.target_id as post_id, d.rule_id, ${iso("a.created_at")} as given_at, ${iso("a.ends_at")} as counts_until,
                (select ${iso("r.created_at")} from decision_actions r where r.reverses_action_id = a.id) as overruled_at
           from decision_actions a join decisions d on d.id = a.decision_id join cases c on c.id = d.case_id
-         where a.subject_account_id = ${accountId}::uuid and a.kind = 'strike'
+         where a.subject_account_id = ${accountId}::uuid and a.kind = 'strike' and d.informed_at is not null
          order by a.created_at desc, a.id desc`,
   );
   return found.map((row) => ({ decisionId: row.decision_id, postId: row.post_id, ruleId: row.rule_id, givenAt: row.given_at, countsUntil: row.counts_until, overruledAt: row.overruled_at }));
@@ -656,12 +659,14 @@ export async function finalSettled(q: Runner, decisionId: string, settleMs: numb
 /**
  * Whether a seal of the account's images is in force (3e design, section 7.8 step 3): a seal_media in force, of a case
  * about the account or about one of its posts, whose images stay with korbat for the authorities after the purge, as
- * termination_final then says.
+ * termination_final then says. 3f's review (access3): only a seal the account was told of; one held with an order's
+ * notice (informed_at null) is not said.
  */
 export async function imagesSealed(q: Runner, accountId: string): Promise<boolean> {
   const [row] = await rows<{ sealed: boolean }>(
     q,
-    sql`select exists (select 1 from measures_in_force m where m.kind = 'seal_media' and m.subject_account_id = ${accountId}::uuid) as sealed`,
+    sql`select exists (select 1 from measures_in_force m join decisions d on d.id = m.decision_id
+                        where m.kind = 'seal_media' and m.subject_account_id = ${accountId}::uuid and d.informed_at is not null) as sealed`,
   );
   return row?.sealed ?? false;
 }

@@ -61,14 +61,17 @@ const uuidArray = (ids: readonly string[]): SQL => sql`${`{${ids.join(",")}}`}::
 /**
  * An image the data export hands its owner: ready, in a state its author still sees (a sealed image is exported to
  * nobody, and a state this reader has not been taught is left out), not erased, and either on no post or on a post that
- * is neither deleted nor erased. A row that a case or a freeze kept after its post was deleted is in no export. The
- * query it is used in joins posts by the image's post.
+ * is neither deleted, nor disabled for an authority's order, nor erased. A row that a case or a freeze kept after its
+ * post was deleted is in no export. The query it is used in joins posts by the image's post.
+ *
+ * 3f (design, W.7 and 7.10): an order disables the post and leaves its images' own states as they were, so the post's
+ * state is the only mark; the export leaves the files out as it leaves the post out, held notice or told.
  */
 const EXPORTABLE = and(
   eq(postMedia.status, "ready"),
   inArray(postMedia.moderationState, ["visible", "withheld", "removed"]),
   isNull(postMedia.erasedAt),
-  or(isNull(postMedia.postId), and(ne(posts.state, "deleted_by_author"), isNull(posts.erasedAt))),
+  or(isNull(postMedia.postId), and(ne(posts.state, "deleted_by_author"), ne(posts.state, "disabled"), isNull(posts.erasedAt))),
 );
 
 /**

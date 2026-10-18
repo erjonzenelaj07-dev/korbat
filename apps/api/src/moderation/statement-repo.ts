@@ -407,7 +407,8 @@ export async function repliedTo(q: Runner, decisionId: string): Promise<RepliedT
  * 3f (design, sections 7.10 and 10.4): what the notice of an order decision, or of the correction that reinstates after
  * one, is rendered from, read at every read from the order decision's row, its item's and its order's as they stand, so
  * the notice grows without a new decision; and the authority's words with the time from which the author holds them
- * (the newest texts_recorded event, or the decision's informed_at when that is later). Null for any other decision.
+ * (the newest texts_recorded event, or the decision's informed_at when that is later), and (3f's review) since when it
+ * holds the reasons alone (the newest texts_recorded event of the reasons, the same way). Null for any other decision.
  * The home state is the API's setting, which the caller passes.
  */
 export async function orderNoticeOf(
@@ -431,6 +432,9 @@ export async function orderNoticeOf(
                (select x.order_ground from decision_actions x where x.decision_id = d.id and x.kind::text = 'reinstate_by_order') as order_ground,
                o.reasons, o.redress, o.scope,
                ${iso("(select max(e.at) from legal_order_events e where e.order_id = o.id and e.kind = 'texts_recorded')")} as texts_recorded_at,
+               -- 3f's review (people2): the newest record of the reasons alone. An event written before the review names no
+               -- text and is not counted: the notice then counts from the telling, never from a later text.
+               ${iso("(select max(e.at) from legal_order_events e where e.order_id = o.id and e.kind = 'texts_recorded' and e.ground = 'reasons')")} as reasons_recorded_at,
                ${iso("d.author_mail_at")} as author_mail_at
           from decisions d
           join decisions od on od.id = case when d.kind::text = 'order' then d.id else d.reviews_decision_id end and od.kind::text = 'order'
@@ -446,6 +450,10 @@ export async function orderNoticeOf(
   const anyText = row.reasons !== null || row.redress !== null || row.scope !== null;
   // The author holds a text from the later of its record and the telling: a notice released after the record holds it from the release.
   const textsAt = !anyText || recordedAt === null ? null : informedAt !== null && Date.parse(informedAt) > Date.parse(recordedAt) ? informedAt : recordedAt;
+  // The reasons from the later of their own record and the telling; from the telling when no event names them.
+  const reasonsRecordedAt = row.reasons_recorded_at as string | null;
+  const reasonsAt =
+    row.reasons === null ? null : reasonsRecordedAt === null ? informedAt : informedAt !== null && Date.parse(informedAt) > Date.parse(reasonsRecordedAt) ? informedAt : reasonsRecordedAt;
   return {
     facts: {
       kind: row.kind as OrderNoticeFacts["kind"],
@@ -467,7 +475,7 @@ export async function orderNoticeOf(
       preserveEndedOn: row.preserve_ended_on as string | null,
       orderGround: row.order_ground as OrderNoticeFacts["orderGround"],
     },
-    texts: { reasons: row.reasons as string | null, redress: row.redress as string | null, scope: row.scope as string | null, textsAt },
+    texts: { reasons: row.reasons as string | null, redress: row.redress as string | null, scope: row.scope as string | null, textsAt, reasonsAt },
     authorMailAt: row.author_mail_at as string | null,
     erasedOn: row.erased_on as string | null,
   };

@@ -710,19 +710,21 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(writing(/DELETE FROM (auth[.]report_holds|public[.]authority_notifications|public[.]productions)/i)).toEqual(["public.erase_authority_records"]);
       // report_close_unsealed has its two callers: the final decision that answered a suspect item, and an unseal_media row.
       expect(writing(/report_close_unsealed[(]/).filter((name) => name !== "public.report_close_unsealed")).toEqual(["public.decisions_apply", "public.report_open"]);
-      const fns = ["public.report_open", "public.report_close_unsealed", "public.reports_owed", "public.seal_report", "public.erase_authority_records", "public.authority_records_times", "auth.address_held_until", "auth.address_held", "auth.address_hold_final"];
+      const fns = ["public.report_open", "public.report_close_unsealed", "public.reports_owed", "public.seal_report", "public.erase_authority_records", "public.authority_records_times", "auth.address_held_until", "auth.address_held", "auth.address_hold_final",
+        // 3f's review (0032_orders_review): whether the person was told of every seal behind a held address.
+        "auth.address_hold_told"];
       for (const name of fns) {
         const f = all.find((found) => found.name === name)!;
         expect([f.owner, f.definer, f.config, f.pub], name).toEqual(["korbat_migrate", true, ["search_path=public, pg_temp"], false]);
         expect(f.definition, name).not.toMatch(/interval '/i);
       }
       // seal_report is executable by nobody yet (3d's release will call it), report_close_unsealed by nobody, the auth
-      // module's three reads by korbat_auth alone.
+      // module's three reads, and the fourth of 3f's review, by korbat_auth alone.
       for (const name of ["public.seal_report", "public.report_close_unsealed", "public.report_open"]) {
         const f = all.find((found) => found.name === name)!;
         expect([f.api, f.auth], name).toEqual([false, false]);
       }
-      for (const name of ["auth.address_held_until", "auth.address_held", "auth.address_hold_final"]) {
+      for (const name of ["auth.address_held_until", "auth.address_held", "auth.address_hold_final", "auth.address_hold_told"]) {
         const f = all.find((found) => found.name === name)!;
         expect([f.api, f.auth], name).toEqual([false, true]);
       }

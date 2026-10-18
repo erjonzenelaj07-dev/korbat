@@ -1175,7 +1175,7 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
     });
   const reinstatement = (ground: NonNullable<StatementInput["order"]>["orderGround"]) =>
     statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, legalReference: null, facts: null, reason: "x", source: "order", redressVersion: 3, measures: [], reversals: [reversal("reinstate_by_order")], reviewed: { kind: "order", ground: "illegal", ruleId: null, rulesVersion: 3, legalReference: null, decidedAt: DISABLED }, order: facts({ orderGround: ground }) });
-  const TEXTS = { reasons: "Les raisons.", redress: "Les recours.", scope: null, textsAt: "2026-10-06T08:00:00.000Z" };
+  const TEXTS = { reasons: "Les raisons.", redress: "Les recours.", scope: null, textsAt: "2026-10-06T08:00:00.000Z", reasonsAt: "2026-10-06T08:00:00.000Z" };
   const N = ORDER_NOTICE;
 
   // Every combination the table names: each kind, verified and not, with and without texts, held and not, held by korbat's
@@ -1228,7 +1228,7 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
 
   test("the paragraphs in the table's order, for a held removal order from another state whose texts came later", () => {
     const informed = "2026-11-16T00:10:00.000Z";
-    const paragraphs = statementParagraphs(notice(facts({ held: true, informedAt: informed })), { texts: { ...TEXTS, textsAt: "2026-11-20T08:00:00.000Z" } });
+    const paragraphs = statementParagraphs(notice(facts({ held: true, informedAt: informed })), { texts: { ...TEXTS, textsAt: "2026-11-20T08:00:00.000Z", reasonsAt: "2026-11-20T08:00:00.000Z" } });
     expect(paragraphs).toEqual([
       N.done.disabled(POST_TIME, `/post/${POST.id}`, "2026-10-04 09:30 UTC"),
       N.lead.tco_removal("OCLCTIC", "France", "TCO-2026-17", ", and reached korbat on 2026-10-04"),
@@ -1250,6 +1250,14 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
     expect(paragraphs).not.toContain(N.heldUntilNow.tco_removal("2026-10-04 09:30 UTC", "2026-10-06 10:00 UTC"));
     expect(paragraphs.join(NL)).not.toContain("korbat added the authority's words");
     expect(paragraphs).toContain(`${N.scrutiny("Germany")} ${N.reasonsAt("2026-10-06 10:00 UTC")}`);
+  });
+
+  test("3f's review: the reasons recorded after the telling and the remedies later still: the since line prints the remedies' time, the scrutiny sentence the reasons' own", () => {
+    const told = "2026-10-04T09:30:00.000Z";
+    const texts = { ...TEXTS, reasonsAt: "2026-10-05T11:00:00.000Z", textsAt: "2026-10-06T15:30:00.000Z" };
+    const paragraphs = statementParagraphs(notice(facts({ informedAt: told })), { texts });
+    expect(paragraphs).toContain(N.textsSince("2026-10-06 15:30 UTC"));
+    expect(paragraphs).toContain(`${N.scrutiny("Germany")} ${N.reasonsAt("2026-10-05 11:00 UTC")}`);
   });
 
   test("without texts the notice says that they follow; a measure that changed nothing says so; the erasure replaces the preservation", () => {

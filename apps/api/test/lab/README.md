@@ -343,4 +343,25 @@ sides roll back. PostgreSQL 18 in the scratch stack's container, `busyPercent` 1
   and then each post. The ten posts and the eleventh are different rows, and the end takes no profile, so the two met
   at no row and neither waited on the other for long.
 - Task 3's part of this lab (the ten-item transaction against intakes on the same posts, a seal on one author and the
-  purge of another) is not here yet.
+  purge of another) is the next section.
+
+## The numbers of 2026-10-17: the ten-item effect against intakes, a seal and a purge (3f, Task 3's part)
+
+The test "3f, Task 3" of `contention.lab.ts` (run it alone with `-t "3f, Task 3"`), which section 13 asked of Task 3
+and 3f's review carried to its Task 8. One order of ten posts, five by each of two authors, one image each, given effect
+in one transaction with a made-up confirmation of its params, against four others, 40 rounds each with each side first
+in half of them; every side rolls back. PostgreSQL 18 in the scratch stack's container, over the migrations to
+`0032_orders_review`, `busyPercent` 5.
+
+| measured | result |
+|---|---|
+| the ten-item effect alone (two authors) | 1,293 ms |
+| against a report under a rule on one of its posts | 40 ok and 40 ok; the longest side 1,063 ms |
+| against a notice naming two of its posts (one of each author) and the first author's account | 40 ok and 40 ok; the longest side 1,105 ms |
+| against an interim seal of the first author's images | 40 ok and 40 ok; the longest side 1,091 ms |
+| against the purge of the second author's account | 40 ok and 40 ok; the longest side 978 ms |
+
+- No deadlock, no lock timeout and no refusal on either side in 160 rounds: the effect takes its authors' profiles in
+  id order before any case, so the seal (which takes its author's profile first) and the purge (which takes its
+  account's profile first) wait for it or it for them, and the intakes meet it at the cases, which both take in one
+  order. The longest side is the effect's own time plus one wait for the other, which rolls back after 15 ms.

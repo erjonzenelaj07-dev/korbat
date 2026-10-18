@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { ORDER_RULES, type OrderView } from "@korbat/contracts";
+import type { Db } from "@korbat/db";
 import { ORDER_NOTICE, statementParagraphs } from "@korbat/rules";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { STAFF_USAGE, runStaffCommand } from "../../src/cli/staff";
@@ -11,12 +12,15 @@ import { loadConfig } from "../../src/config";
 import { authorCases, authorDecisionView, authorFacts, exportedDecisions } from "../../src/moderation/author";
 import { ModerationError } from "../../src/moderation/context";
 import { decisionStatement, mailTemplateOf } from "../../src/moderation/statement";
+import { standingFor } from "../../src/moderation/standing";
+import { exportedStrikes } from "../../src/moderation/standing-repo";
 import { orderNoticeOf } from "../../src/moderation/statement-repo";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { CHANNEL_TABLES, aPost, act, ground, imagePost, intake, removeDecided, removeFixtures, rowCounts } from "./moderation-fixtures";
+import { CHANNEL_TABLES, aPost, act, anAccount, decideIn, ground, imagePost, intake, refusal, removeDecided, removeFixtures, rowCounts, timed } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 import { closeNotifyFixtures, outboxSince } from "./notify-fixtures";
-import { ORDER_TABLES, effectForTest, effectParams, orderForTest, removeOrderAlerts } from "./orders-fixtures";
+import { ORDER_TABLES, ageOrderForTest, effectForTest, effectParams, effectWith, orderForTest, removeOrderAlerts } from "./orders-fixtures";
+import { rolledBack } from "./staff-fixtures";
 import { newProfile } from "./social-fixtures";
 
 vi.setConfig({ testTimeout: 180_000 });
@@ -108,6 +112,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
     await expect(authorDecisionView(deps, p.authorId, removal.decisionId)).rejects.toBeInstanceOf(ModerationError);
     expect((await authorFacts(deps, p.authorId, [p.postId])).size).toBe(0);
     expect(await exportedDecisions(deps, p.authorId)).toEqual([]);
+    // The removal gave a strike, which counts nowhere the author can see while it is held: not on Cases' "Your
+    // standing", not in /api/me's standing, not in the export's strikes (section 7.10); the release counts it.
+    const [struck] = await w.apiDb.execute<{ n: number }>(sql`select count(*)::int as n from public.decision_actions where decision_id = ${removal.decisionId}::uuid and kind = 'strike'`);
+    expect(struck!.n).toBe(1);
+    const strikes = async () => [(await authorCases(deps, p.authorId)).activeStrikes, (await standingFor(w.apiDb, p.authorId))?.activeStrikes, (await exportedStrikes(w.apiDb, p.authorId)).length];
+    expect(await strikes()).toEqual([0, 0, 0]);
     // The API role cannot write a decision's informed_at.
     const refused = await w.apiDb.execute(sql`update public.decisions set informed_at = now() where id = ${decisionId}::uuid`).then(
       () => "written",
@@ -126,6 +136,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
     // Never before the end: the stamp is the clock's at the release.
     expect(Date.parse(order_told.informed_at!)).toBeGreaterThanOrEqual(Date.parse(end!.until));
     expect(await told(removal.decisionId)).toMatchObject({ informed: true, mail: "pending" });
+    expect(await strikes()).toEqual([1, 1, 1]);
     const [event] = await w.apiDb.execute<{ n: number }>(sql`select count(*)::int as n from public.legal_order_events where order_id = ${order.id}::uuid and kind = 'notice_released' and via = 'system'`);
     expect(event!.n).toBe(1);
     // Now the author reads both, and the notice says that it was held until now.
@@ -135,6 +146,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
     ]);
     const view = await authorDecisionView(deps, p.authorId, decisionId);
     expect(view.content).toBeNull();
+    // korbat's own removal, held and released with the notice, shows the still disabled post no more than the notice does.
+    expect((await authorDecisionView(deps, p.authorId, removal.decisionId)).content).toBeNull();
     expect(view.appealUntil).toBeNull();
     expect(view.order).toMatchObject({ held: true, kind: "tco_removal", withholdAuthor: true });
     expect(statementParagraphs(view, { texts: view.orderTexts ?? null }).join(" ")).toContain("korbat was not allowed to tell you until now.");
@@ -142,6 +155,59 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
     expect((await authorFacts(deps, p.authorId, [p.postId])).size).toBe(0);
     // A second release tells nothing more.
     expect(await release()).toBe(0);
+  });
+
+  test("a measure never rests on a decision its subject has not been told of: a suspension at once on a threat found in the held post is refused, and allowed once the threat's removal is told", async () => {
+    // As the migrator, who alone may end the hold by hand here; the flows run as they do for the API.
+    await rolledBack(world.migrateDb, async (tx) => {
+      const author = await newProfile(tx as unknown as Db);
+      const p = await imagePost(tx, 0, author.id);
+      const order = await orderForTest(tx, moderator, { posts: [p.postId], sectionC: true });
+      await effectWith(tx, moderator, order.id, effectParams(order));
+      // An admin's own finding of a direct threat in the disabled post, decided as a removal: held with the notice.
+      const finding = await intake(tx, ground.finding(admin.id, "R5"), aPost(p.postId));
+      const threat = await decideIn(tx, admin, finding.items[0]!.caseId!, { kind: "final", ruleId: "R5", actions: [act("remove")] });
+      const [held] = await tx.execute<{ informed: boolean }>(sql`select informed_at is not null as informed from public.decisions where id = ${threat}::uuid`);
+      expect(held!.informed).toBe(false);
+      // The suspension at once on the threat basis would be told at once, on the account's case: no basis while it is held.
+      const onAccount = await intake(tx, ground.finding(admin.id, "R5"), anAccount(author.id, author.handle));
+      const suspend = () => decideIn(tx, admin, onAccount.items[0]!.caseId!, { kind: "final", ruleId: "R5", actions: [timed("suspend", 7, false)] });
+      expect(await refusal(suspend())).toBe("invalid_decision");
+      // Once the hold has ended and the release has told the threat's removal, the same suspension rests on it.
+      await tx.execute(sql`update public.legal_orders set hold_ended_at = now(), hold_end_reason = 'released_by_authority' where id = ${order.id}::uuid`);
+      await tx.execute(sql`select public.order_notices_release()`);
+      const suspension = await suspend();
+      const [rests] = await tx.execute<{ basis: string; rests: string[] }>(sql`select basis, rests_on::text[] as rests from public.decision_actions where decision_id = ${suspension}::uuid and kind = 'suspend'`);
+      expect([rests!.basis, rests!.rests]).toEqual(["threat", [threat]]);
+    });
+  });
+
+  test("a second order on a post whose notice another order holds is held with it, and both are told at the first order's release", async () => {
+    // As the migrator, who alone may end the hold by hand here; the flows run as they do for the API.
+    await rolledBack(world.migrateDb, async (tx) => {
+      const p = await imagePost(tx, 0);
+      const a = await orderForTest(tx, moderator, { posts: [p.postId], sectionC: true, reference: `A-${p.postId}` });
+      const first = (await effectWith(tx, moderator, a.id, effectParams(a))).items[0]!.decisionId!;
+      // B asks for no silence, but its notice would say that another decision already keeps the post from being shown.
+      const b = await orderForTest(tx, moderator, { posts: [p.postId], reference: `B-${p.postId}` });
+      const second = (await effectWith(tx, moderator, b.id, effectParams(b))).items[0]!.decisionId!;
+      const state = async (id: string) =>
+        (await tx.execute<{ informed: boolean; mail: string }>(sql`select informed_at is not null as informed, author_mail::text as mail from public.decisions where id = ${id}::uuid`))[0]!;
+      expect([await state(first), await state(second)]).toEqual([
+        { informed: false, mail: "none" },
+        { informed: false, mail: "none" },
+      ]);
+      const releaseIn = async () => (await tx.execute<{ told: number }>(sql`select public.order_notices_release() as told`))[0]!.told;
+      expect(await releaseIn()).toBe(0);
+      expect(await state(second)).toEqual({ informed: false, mail: "none" });
+      // A's hold ends: one release tells both.
+      await tx.execute(sql`update public.legal_orders set hold_ended_at = now(), hold_end_reason = 'released_by_authority' where id = ${a.id}::uuid`);
+      expect(await releaseIn()).toBeGreaterThanOrEqual(2);
+      expect([await state(first), await state(second)]).toEqual([
+        { informed: true, mail: "pending" },
+        { informed: true, mail: "pending" },
+      ]);
+    });
   });
 
   test("the release waits for a transaction that holds an untold order decision's row, and then tells it", async () => {
@@ -195,6 +261,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
     const afterRelease = (await orderNoticeOf(w.apiDb, heldDecision, "DE"))!;
     expect(afterRelease.texts.textsAt).toBe(afterRelease.facts.informedAt);
     expect(statementParagraphs((await decisionStatement(w.apiDb, heldDecision))!.statement, { texts: afterRelease.texts }).join(" ")).not.toContain("korbat added the authority's words");
+  });
+
+  test("the notice holds the authority's reasons from the record of the reasons, not of a later text: the remedies recorded a day later move textsAt and leave reasonsAt", async () => {
+    const p = await post();
+    // A cross-border removal order, whose notice says since when it holds the reasons (TCO Art. 4(4)).
+    const order = await orderForTest(w.apiDb, moderator, { posts: [p.postId], memberState: "FR" });
+    const done = await effect(order);
+    const decisionId = done.items[0]!.decisionId!;
+    expect((await cli(["order-texts", order.id, "--reasons"], "Les motifs de l'autorite.")).code).toBe(0);
+    // A day passes; then the remedies are recorded.
+    await ageOrderForTest(world.migrateDb, order.id, 24 * 60);
+    expect((await cli(["order-texts", order.id, "--redress"], "Les voies de recours.")).code).toBe(0);
+    const at = async (ground: string) =>
+      (await w.apiDb.execute<{ at: string }>(sql`select to_char(at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at from public.legal_order_events
+                                                  where order_id = ${order.id}::uuid and kind = 'texts_recorded' and ground = ${ground}`))[0]!.at;
+    const notice = (await orderNoticeOf(w.apiDb, decisionId, "DE"))!;
+    expect([notice.texts.reasonsAt, notice.texts.textsAt]).toEqual([await at("reasons"), await at("redress")]);
+    const paragraphs = statementParagraphs((await decisionStatement(w.apiDb, decisionId))!.statement, { texts: notice.texts }).join(" ");
+    expect(paragraphs).toContain(ORDER_NOTICE.reasonsAt(`${(await at("reasons")).slice(0, 10)} ${(await at("reasons")).slice(11, 16)} UTC`));
   });
 
   test("the hold's commands: one extension of 42 days, refused a second time and after the release; a DSA order's end is the authority's, and with none nothing is released; ending a hold tells at the next round", async () => {

@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { ALERT_KINDS, ORDER_RULES, renderAlert } from "@korbat/contracts";
+import { ALERT_KINDS, ALERT_RULES, ORDER_RULES, renderAlert } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
+import { channelHealth } from "../../src/moderation/alerts";
 import { createStore, createWatcher } from "../../src/notify/main";
 import { fakeImap, makeCertificate, type FakeImap, type ScriptFolder } from "../notify/fake-imap";
 import { fakeNtfy, type FakeNtfy } from "../notify/fake-ntfy";
@@ -113,9 +115,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the watcher's role and i
 
   // ---------------------------------------------------------------- the loop's statements
 
-  async function world(inbox: ScriptFolder, junk: ScriptFolder = { uidValidity: nextValidity(), messages: [] }) {
+  async function world(inbox: ScriptFolder, junk: ScriptFolder = { uidValidity: nextValidity(), messages: [] }, ntfyClock: () => number = Date.now) {
     const imap: FakeImap = await fakeImap({ user: "watcher", password: "secret", tls: pair, folders: new Map([["INBOX", inbox], ["Junk", junk]]) });
-    const ntfy: FakeNtfy = await fakeNtfy();
+    const ntfy: FakeNtfy = await fakeNtfy(ntfyClock);
     servers.push(imap, ntfy);
     // Each world starts from no mark: a folder of another world's validity is read whole.
     await migrateDb.execute(sql`delete from public.notify_folders`);
@@ -194,6 +196,59 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the watcher's role and i
     w.ntfy.fail({ count: 0 });
     expect((await w.watcher.round()).pushOk).toBe(true);
     expect((await outboxOf(migrateDb, id))[0]!.pushed_at).not.toBeNull();
+  });
+
+  test("3f's review: a flood past ntfy's request limit is throttled, never down: the round stops at the first 429, the beat says the push works, rows owed past channel_down_minutes read as ok, and an order's reminder written after the flood goes first in the next round", async () => {
+    // 100 unhandled messages received escalate_minutes and one minute ago: the first rang the phone on call, and each is
+    // escalated to every phone as alert_steps() writes it then (alerts-steps.test.ts holds that). The escalations are
+    // written here by the migrator, so that no staff session another file left can stop one.
+    const receivedAt = new Date(Date.now() - (ORDER_RULES.escalateMinutes + 1) * 60_000);
+    const flood: string[] = [];
+    for (let n = 0; n < 100; n++) flood.push(await message(receivedAt));
+    const list = sql`${`{${flood.join(",")}}`}::uuid[]`;
+    await migrateDb.execute(sql`
+      insert into public.alert_outbox (kind, priority, scope, step, facts, message_id)
+      select 'contact_mail_escalated', 5, 'all', 0,
+             jsonb_build_object('receivedAt', public.alert_time(m.received_at), 'dueAt', public.alert_time(m.received_at + make_interval(mins => ${ORDER_RULES.hourMinutes}))), m.id
+        from public.contact_messages m where m.id = any(${list})`);
+    // ntfy's limit as lab L1 measured it, on a clock the test moves: a burst of 60, then one more every 5 s.
+    let clock = Date.now();
+    const w = await world({ uidValidity: nextValidity(), messages: [] }, undefined, () => clock);
+    w.ntfy.limit({ burst: 60, refillMs: 5_000 });
+    const first = await w.watcher.round();
+    expect(first).toMatchObject({ mailboxOk: true, pushOk: true, error: null, throttled: true });
+    // 60 taken, the 61st answered 429, and nothing asked after it.
+    expect([first.pushed, w.ntfy.requests]).toEqual([60, 61]);
+    const owed = async () =>
+      (await migrateDb.execute<{ n: number; attempts: number }>(sql`select count(*)::int as n, coalesce(sum(push_attempts), 0)::int as attempts from public.alert_outbox
+                                                                     where message_id = any(${list}) and pushed_at is null`))[0]!;
+    // The flood's 101 rows less at most the 60 taken stay owed, and a throttle counts no attempt.
+    const left = await owed();
+    expect(left.n).toBeGreaterThanOrEqual(41);
+    expect(left.attempts).toBe(0);
+    const [state] = await migrateDb.execute<{ push: boolean; error: string | null }>(sql`select push_ok_at > now() - interval '1 minute' as push, error from public.notify_state where id = 1`);
+    expect(state).toEqual({ push: true, error: null });
+    // Rows still owed past channel_down_minutes while ntfy only throttles: the channel is not down, and Home does not
+    // say that alerts arrive by mail only.
+    await migrateDb.execute(sql`update public.alert_outbox set created_at = created_at - make_interval(mins => ${ORDER_RULES.channelDownMinutes + 1}) where message_id = any(${list}) and pushed_at is null`);
+    const health = { apiDb, config: { NOTIFY: "on" } } as unknown as Parameters<typeof channelHealth>[0];
+    expect((await channelHealth(health)).channel).toBe("ok");
+    // An order's reminder written after the flood, then a poll later, when the bucket holds four requests again: it goes
+    // first, ahead of every row of the flood.
+    const orderId = randomUUID();
+    try {
+      await migrateDb.execute(sql`insert into public.alert_outbox (kind, priority, scope, step, facts, order_id)
+                                  values ('order_due', 5, 'all', 0, jsonb_build_object('dueAt', public.alert_time(now() + interval '15 minutes'), 'minutesLeft', 15, 'itemsOpen', 1), ${orderId}::uuid)`);
+      const before = w.ntfy.published.length;
+      clock += ALERT_RULES.pollSeconds * 1000;
+      expect(await w.watcher.round()).toMatchObject({ pushOk: true, error: null, throttled: true });
+      expect(w.ntfy.published[before]?.tags).toBe("order_due");
+      const [due] = await migrateDb.execute<{ pushed: boolean }>(sql`select pushed_at is not null as pushed from public.alert_outbox where order_id = ${orderId}::uuid`);
+      expect(due!.pushed).toBe(true);
+      expect((await channelHealth(health)).channel).toBe("ok");
+    } finally {
+      await migrateDb.execute(sql`delete from public.alert_outbox where order_id = ${orderId}::uuid`);
+    }
   });
 
   test("a first start on a mailbox with old mail inserts every message, each stale, and raises nothing", async () => {

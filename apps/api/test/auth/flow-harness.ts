@@ -462,7 +462,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       return "purged";
     },
     // 3f: what the deletion mail reads of a held address; this fake holds none.
-    async addressHold(): Promise<{ until: Date; final: boolean } | null> {
+    async addressHold(): Promise<{ until: Date; final: boolean; told: boolean } | null> {
       return null;
     },
   } satisfies Pick<

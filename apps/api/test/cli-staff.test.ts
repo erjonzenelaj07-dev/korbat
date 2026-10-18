@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { STAFF_USAGE, enrollSettings, migratorUrl, parseStaffArgs, revokeSettings, runStaffCommand, staffDatabaseUrls } from "../src/cli/staff";
 
@@ -284,6 +286,23 @@ describe("staff.js: the commands for moderation cases (3c design, section 7.13)"
     expect(STAFF_USAGE).not.toContain("account-facts");
     for (const words of ["records [--verify]", "notification-facts <record>", "notification-sent <record>", "production-account <order>", "address-check --handle <handle> < address", "handover-list <seal action>", "handover-record <production>", "handover-destroyed <production>"]) {
       expect(STAFF_USAGE, words).toContain(`  ${words}`);
+    }
+  });
+
+  test("3f's review: alert-test, with or without --on-call, and nothing else; and every runbook step that publishes a test names the staff.js command that does", () => {
+    expect(STAFF_USAGE).toContain("  alert-test [--on-call] ");
+    expect(parseStaffArgs(["alert-test"])).toEqual({ command: "alert-test", onCall: false });
+    expect(parseStaffArgs(["alert-test", "--on-call"])).toEqual({ command: "alert-test", onCall: true });
+    for (const args of [["alert-test", "--all"], ["alert-test", "--on-call", "--on-call"]]) expect(() => parseStaffArgs(args), args.join(" ")).toThrow(STAFF_USAGE);
+    // Nobody on call can publish: the phones only subscribe. A step that asks for a test push names the command, and the
+    // command is one the usage lists.
+    const readme = readFileSync(path.resolve(import.meta.dirname, "..", "..", "..", "README.md"), "utf8");
+    const steps = readme.split(String.fromCharCode(10)).filter((line) => /publish(es)? a test/.test(line));
+    expect(steps.length).toBeGreaterThanOrEqual(2);
+    for (const step of steps) {
+      const named = [...step.matchAll(/staff\.js ([a-z-]+)/g)].map((match) => match[1]!);
+      expect(named.length, step).toBeGreaterThan(0);
+      for (const command of named) expect(STAFF_USAGE, command).toContain(`  ${command} `);
     }
   });
 

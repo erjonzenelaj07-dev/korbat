@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { ORDER_DRAFTS, type OrderView } from "@korbat/contracts";
 import { ORDER_NOTICE, statementParagraphs } from "@korbat/rules";
 import type { Db, DbTx } from "@korbat/db";
+import { createMediaRepo } from "../../src/media/repo";
 import { afterDecision } from "../../src/moderation/decide";
 import { decisionStatement, mailTemplateOf } from "../../src/moderation/statement";
 import { CHANNEL_TABLES, decideIn, imagePost, moderationDeps, newTestStaff, removeFixtures, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
@@ -43,10 +44,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reinstating after an ord
     await w.close();
   });
 
-  async function given(tx: DbTx, sectionC = false): Promise<{ view: OrderView; postId: string; authorId: string }> {
+  async function given(tx: DbTx, sectionC = false): Promise<{ view: OrderView; postId: string; authorId: string; mediaIds: string[] }> {
     const p = await imagePost(tx, 1);
     const order = await orderForTest(tx, moderator, { posts: [p.postId], sectionC });
-    return { view: await effectWith(tx, moderator, order.id, effectParams(order)), postId: p.postId, authorId: p.authorId };
+    return { view: await effectWith(tx, moderator, order.id, effectParams(order)), postId: p.postId, authorId: p.authorId, mediaIds: p.mediaIds };
   }
   const reinstate = (tx: DbTx, view: OrderView, ground: keyof typeof ORDER_DRAFTS.reinstate = "withdrawn") =>
     decideIn(tx, admin, view.items[0]!.caseId!, { kind: "correction", reviewsDecisionId: view.items[0]!.decisionId!, outcome: "reversed", actions: [{ kind: "reinstate_by_order", orderGround: ground }] });
@@ -57,8 +58,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reinstating after an ord
 
   test("a told disabling is reinstated by an admin: lifted, reinstated with its ground, the post shown again, told at once with order_reinstated_notice, and every staff account alerted", async () => {
     await rolledBack(w.apiDb, async (tx) => {
-      const { view, postId } = await given(tx);
+      const { view, postId, authorId, mediaIds } = await given(tx);
+      // The disabled post's image is in no data export (W.7); the reinstatement hands it back with the post.
+      const exported = createMediaRepo(tx as unknown as Db);
+      expect(await exported.readyImages(authorId)).not.toContain(mediaIds[0]);
       const correction = await reinstate(tx, view, "not_authentic");
+      expect(await exported.readyImages(authorId)).toContain(mediaIds[0]);
+      expect(await exported.isExportable(authorId, mediaIds[0]!)).toBe(true);
       expect(await row(tx, correction)).toEqual({ informed: true, told_now: true, mail: "pending", needs_admin: true });
       const [post] = await tx.execute<{ level: string; state: string }>(sql`select moderation_level::text as level, state::text as state from public.posts where id = ${postId}::uuid`);
       expect([post!.level, post!.state]).toEqual(["visible", "visible"]);

@@ -372,6 +372,21 @@ describe("the README's authorities' orders say what the constants say (3f design
     expect(readmeLines().join("\n")).toContain("docker compose -f infra/compose.yml run --rm migrate node dist/staff.js tco-counts <year>");
   });
 
+  test("3f's review: a sentence of Restoring or of the orders' runbook that sets APP_SITE recreates Caddy alone, and one that sets an API switch names the start that reads it", () => {
+    // Caddy reads APP_SITE only when its container is created, and the API reads its switches only at its start: a
+    // setting in infra/.env alone changes nothing. Without --no-deps Compose would start the API with Caddy.
+    const sentences = [...sectionLines("## Restoring"), ...sectionLines(ORDERS_HEADING)].flatMap((line) => line.split(/(?<=[.;])\s+(?=[A-Z`(])/));
+    const site = sentences.filter((sentence) => sentence.includes("`APP_SITE="));
+    const api = sentences.filter((sentence) => /`API_[A-Z_]+=/.test(sentence));
+    expect(site.length).toBeGreaterThanOrEqual(4);
+    expect(api.length).toBeGreaterThanOrEqual(4);
+    for (const sentence of site) expect(sentence, sentence).toContain("up -d --no-deps caddy");
+    for (const sentence of api) expect(sentence, sentence).toContain("up -d api");
+    // operations5: a message moved between the two folders is a second row; the runbook says not to, and what then.
+    expect(ordersParts().orders).toContain("Never move a message between the inbox and the junk folder");
+    expect(ordersParts().orders).toContain("close the second row on Contact point with the first row's word");
+  });
+
   test("the lines 3f made false are gone, and the hard gate reads as W.10 words it", () => {
     const all = readmeLines().join("\n");
     expect(all).not.toContain("Until sub-project 3f's off-server copy of decisions");

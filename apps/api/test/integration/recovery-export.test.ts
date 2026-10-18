@@ -179,6 +179,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the daily copy of the au
     expect(again.map((line) => (JSON.parse(line) as { action: string }).action)).toEqual(["copy_marked"]);
   });
 
+  test("3f's review: once the newest copy is staff.js audit-export's, a console download alerts every staff account, the keeper's own too: the system holds the copy, not the caller", async () => {
+    const since = new Date();
+    expect((await marksOf(SYSTEM_ACTOR_ID)).length).toBeGreaterThan(0);
+    expect((await download(keeper, 0, 5)).status).toBe(200);
+    await w.moderation.settle();
+    const [row] = await w.migrateDb.execute<{ n: number }>(sql`select count(*)::int as n from public.alert_outbox where kind = 'copy_taken' and created_at >= ${since.toISOString()}::timestamptz`);
+    expect(row!.n).toBe(1);
+  });
+
   test("the page names each row's key, and lists what one key confirmed in a period", async () => {
     const all = await page(keeper);
     const confirmed = all.entries.find((entry) => entry.action === "audit_exported" && entry.actionHash !== null)!;

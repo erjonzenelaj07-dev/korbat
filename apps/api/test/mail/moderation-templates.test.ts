@@ -1,8 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, ALREADY_NOT_SHOWN, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, isTimeFact, outcomeWords, renderAlert, type AlertKind } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, ALREADY_NOT_SHOWN, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, SENTENCE_MAIL_KINDS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, isTimeFact, outcomeWords, renderAlert, type AlertKind } from "@korbat/contracts";
 import { noticeTime } from "../../src/auth/flows/notify";
 import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } from "../../src/mail/mailer";
 import { MemoryMailer } from "../../src/mail/memory";
+import { TICK_MAILED_KINDS } from "../../src/moderation/alerts";
 import { ACCOUNT_DELETED_HELD, DECISION_MAIL_SUBJECTS, renderMail, renderNoticeUpdate, renderTemplate } from "../../src/mail/templates";
 
 /**
@@ -23,7 +24,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 57 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3 and the two of its Task 6", () => {
+  test("holds 59 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3, the two of its Task 6 and the two of its Task 5 that its review joined", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -37,11 +38,12 @@ describe("the closed union of templates", () => {
       "order_opened", "order_corrected", "order_unverified",
       "order_effected", "order_reinstated", "hold_ending", "order_notice", "order_reinstated_notice", "order_notice_added",
       "copy_overdue", "copy_taken",
+      "report_owed", "handover_undestroyed",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(57);
+    expect(new Set(names).size).toBe(59);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(57);
+    expect(Object.keys(all)).toHaveLength(59);
   });
 });
 
@@ -520,6 +522,16 @@ describe("3f: the staff mails whose words are their push's (W.4)", () => {
       "Mail at the authorities' contact point, received 08:05 UTC. If it is a removal order it is due 09:05 UTC.",
     );
     expect(mail("order_due", { dueAt: "2026-10-16T09:05:00.000Z", minutesLeft: "0" }).subject).toBe("korbat: 0 minutes left");
+  });
+
+  test("3f's review: every kind whose mail is its sentence is one the alert tick mails, and each has its template: Task 5's two daily kinds too", () => {
+    expect([...TICK_MAILED_KINDS].sort()).toEqual([...SENTENCE_MAIL_KINDS].sort());
+    for (const kind of SENTENCE_MAIL_KINDS) {
+      const facts = Object.fromEntries(ALERT_KINDS[kind].facts.map((name) => [name, isTimeFact(name) ? "2026-10-16T08:00:00.000Z" : "2"]));
+      const r = mail(kind as TemplateName, facts);
+      expect(r.subject, kind).toBe(`korbat: ${renderAlert(kind, Object.fromEntries(Object.entries(facts).map(([n, v]) => [n, isTimeFact(n) ? v : Number(v)])), new Date(NOW)).title}`);
+      linkless(r);
+    }
   });
 
   test("they carry counts and UTC times only: a fact of another name, a time that is no time and a missing one are refused, and no handle or address is printed", () => {

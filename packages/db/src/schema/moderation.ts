@@ -800,9 +800,16 @@ const ORDER_EVENT_GROUNDS: Record<string, readonly string[]> = {
   hold_ended: HOLD_END_REASONS,
   scrutiny_decided: ["upheld", "annulled"],
 };
+/**
+ * 3f's review (people2): the one of the authority's three texts a texts_recorded event wrote, from the contracts'
+ * ORDER_TEXT_KINDS, so the notice can say since when it holds the reasons. An event written before has none, which the
+ * last clause below keeps allowed.
+ */
+const ORDER_TEXT_KINDS = ["reasons", "redress", "scope"];
 const eventGroundCheck = sql.raw(
   [
     ...Object.entries(ORDER_EVENT_GROUNDS).map(([kind, grounds]) => `(kind = '${kind}' and ground in (${grounds.map((g) => `'${g}'`).join(", ")}))`),
+    `(kind = 'texts_recorded' and ground in (${ORDER_TEXT_KINDS.map((g) => `'${g}'`).join(", ")}))`,
     `(kind not in (${Object.keys(ORDER_EVENT_GROUNDS)
       .map((kind) => `'${kind}'`)
       .join(", ")}) and ground is null)`,

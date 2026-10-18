@@ -145,6 +145,20 @@ describe("account deletion: the confirmation", () => {
     expect(await failure(startDeletion(h.deps, ada.session, h.ctx))).toMatchObject({ code: "invalid_credentials", status: 401 });
   });
 
+  test("3f's review: the hold's paragraph goes only when the person was told of the seals behind it; otherwise the mail goes in the one wording for every account", async () => {
+    const until = new Date("2026-10-24T05:54:21.499Z");
+    for (const told of [false, true]) {
+      const h = memoryFlowHarness();
+      const ada = h.user("ada@korbat.local");
+      // The address is held either way (a seal opened a record); only what the mail says of it differs.
+      h.deps.repo.addressHold = async () => ({ until, final: false, told });
+      const { flowId, code } = await start(h, ada.session, "ada@korbat.local");
+      await confirmDeletion(h.deps, ada.session, { flowId, code, handle: "ada" });
+      const mail = h.mailer.sent.find((m) => m.template === "account_deleted")!;
+      expect(mail.data, String(told)).toEqual(told ? { heldUntil: "2026-10-24", holdFinal: "false" } : {});
+    }
+  });
+
   test("the notice is best effort: a mail failure does not stop the deletion", async () => {
     const h = memoryFlowHarness();
     const ada = h.user("ada@korbat.local");

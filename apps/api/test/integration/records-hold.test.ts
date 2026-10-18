@@ -6,7 +6,9 @@ import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { runStaffCommand } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
+import { imagesSealed } from "../../src/moderation/standing-repo";
 import { act, appealOf, decideIn, gate, newTestStaff, removeFixtures, reviewIn, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
+import { effectParams, effectWith, orderForTest } from "./orders-fixtures";
 import { NO_SEAL, SEAL_FOR_GOOD, SEAL_WHILE_DECIDING, ageHoldForTest, heldFor, holdOf, recordCounts, recordsOf, removeRecords, sealActionOf, sealedPost, suspectPost } from "./records-fixtures";
 import { newProfile } from "./social-fixtures";
 import { rolledBack } from "./staff-fixtures";
@@ -217,6 +219,64 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the report hold", () => 
     }
     throw new Error(`fewer than ${n} sessions came to wait for a lock`);
   }
+
+  test("a sent record stays past recordKeepYears while the seal for good it answers for is in force, and seal_report still reads it", async () => {
+    await inWorld(async (tx) => {
+      const p = await sealedPost(tx, mod, "deciding");
+      const final = await decideIn(tx, admin, p.caseId, SEAL_FOR_GOOD);
+      const forGood = await sealActionOf(tx, final);
+      const [record] = await recordsOf(tx, p.authorId);
+      // The record holds the first seal's id; the seal taken while deciding ended with the final decision.
+      expect(record!.seal_action_id).toBe(p.sealActionId);
+      const inForce = async (id: string) => (await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.measures_in_force where id = ${id}::uuid`))[0]!.n;
+      expect([await inForce(p.sealActionId), await inForce(forGood)]).toEqual([0, 1]);
+      // The record is sent, as notification-sent writes it.
+      await tx.execute(sql`update public.authority_notifications set state = 'sent', duties = '{dsa18_1}', sent_at = now(), authority = 'BKA', channel = 'portal',
+                             sent_kinds = '{handle}', not_kept_version = 1, closed_at = now() where id = ${record!.id}::uuid`);
+      const reported = async () => (await tx.execute<{ reported: boolean }>(sql`select reported from public.seal_report(${forGood}::uuid)`))[0]!.reported;
+      expect(await reported()).toBe(true);
+      // More than recordKeepYears pass: the seals' times move back, and the record is written again with its times moved
+      // back as an import keeps them (its opening time cannot be updated).
+      const back = `${ORDER_RULES.recordKeepYears + 1} years`;
+      await tx.execute(sql`update public.decision_actions set created_at = created_at - ${back}::interval where id in (${p.sealActionId}::uuid, ${forGood}::uuid)`);
+      await tx.execute(sql`create temp table record_copy on commit drop as select * from public.authority_notifications where id = ${record!.id}::uuid`);
+      await tx.execute(sql`delete from public.authority_notifications where id = ${record!.id}::uuid`);
+      await tx.execute(sql`insert into public.authority_notifications (id, state, duties, case_id, seal_action_id, account_id, opened_at, opened_via, first_report_at, admin_answer_at,
+                               authority, channel, sent_at, sent_kinds, not_kept_version, closed_at, imported_at)
+                           select id, state, duties, case_id, seal_action_id, account_id, opened_at - ${back}::interval, opened_via, first_report_at - ${back}::interval,
+                                  admin_answer_at - ${back}::interval, authority, channel, sent_at - ${back}::interval, sent_kinds, not_kept_version, closed_at - ${back}::interval, now()
+                             from record_copy`);
+      expect(await reported()).toBe(true);
+      // The retention round keeps it: the seal for good is in force, and seal_report answers as before.
+      await tx.execute(sql`select public.erase_authority_records()`);
+      expect((await recordsOf(tx, p.authorId)).map((row) => row.id)).toEqual([record!.id]);
+      expect(await reported()).toBe(true);
+    });
+  });
+
+  test("a seal taken while an order's notice about the post is held holds the address but tells nothing: the deletion mail's hold paragraph and the sealed images wait for the release", async () => {
+    await inWorld(async (tx) => {
+      // A post reported as child sexual abuse material, disabled for an order that must not be told, then sealed.
+      const p = await suspectPost(tx, 2);
+      const order = await orderForTest(tx, mod, { posts: [p.postId], sectionC: true });
+      await effectWith(tx, mod, order.id, effectParams(order));
+      const seal = await decideIn(tx, mod, p.caseId, SEAL_WHILE_DECIDING);
+      const [held] = await tx.execute<{ informed: boolean }>(sql`select informed_at is not null as informed from public.decisions where id = ${seal}::uuid`);
+      expect(held!.informed).toBe(false);
+      // The record opens and the address is held, as for any seal; what the mails may say of it is not told yet.
+      expect((await recordsOf(tx, p.authorId)).map((row) => row.state)).toEqual(["owed"]);
+      expect((await heldFor(tx, p.authorId)).held).toBe(true);
+      const told = async () => ({
+        hold: (await createAuthRepo(tx as unknown as Db).addressHold(p.authorId))?.told,
+        sealed: await imagesSealed(tx, p.authorId),
+      });
+      expect(await told()).toEqual({ hold: false, sealed: false });
+      // The release tells the seal with the notice; from then on the deletion mail may say so.
+      await tx.execute(sql`update public.legal_orders set hold_ended_at = now(), hold_end_reason = 'released_by_authority' where id = ${order.id}::uuid`);
+      await tx.execute(sql`select public.order_notices_release()`);
+      expect(await told()).toEqual({ hold: true, sealed: true });
+    });
+  });
 
   test("leaves no row behind", async () => {
     expect(await rowCounts(apiDb)).toEqual(before);

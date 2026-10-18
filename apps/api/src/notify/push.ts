@@ -22,11 +22,15 @@ export interface OwedPush {
   facts: AlertFacts;
 }
 
-export type PublishOutcome = "ok" | Extract<NotifyError, "push_connect" | "push_refused">;
+/**
+ * "throttled" (3f's review, operations3): ntfy answered 429, its visitor request limit. ntfy is up and took the token; the
+ * row waits for its turn, and the round's beat does not count it as a failure.
+ */
+export type PublishOutcome = "ok" | "throttled" | Extract<NotifyError, "push_connect" | "push_refused">;
 
 /**
- * Publishes one row: a 200 is "ok", any other answer push_refused, and a request that fails or does not finish in time
- * push_connect. Never throws.
+ * Publishes one row: a 200 is "ok", a 429 "throttled", any other answer push_refused, and a request that fails or does
+ * not finish in time push_connect. Never throws.
  */
 export async function publish(fetchFn: typeof fetch, baseUrl: string, token: string, row: OwedPush, now: Date): Promise<PublishOutcome> {
   let text: { title: string; sentence: string };
@@ -52,7 +56,7 @@ export async function publish(fetchFn: typeof fetch, baseUrl: string, token: str
     });
     // The answer's body is ntfy's message as JSON; nothing in it is needed.
     await res.body?.cancel().catch(() => undefined);
-    return res.status === 200 ? "ok" : "push_refused";
+    return res.status === 200 ? "ok" : res.status === 429 ? "throttled" : "push_refused";
   } catch {
     return "push_connect";
   }

@@ -90,12 +90,16 @@ export async function confirmDeletion(deps: AuthDeps, session: Session, input: D
  * two variants (holdFinal, from auth.address_hold_final: a seal for good, or one taken while deciding). Nothing while
  * REPORT_HOLD is off or nothing is held. Best effort, as the mail is: a failed read is logged and the mail goes in its one
  * wording for every account, which says that korbat keeps what the law obliges it to keep for a time.
+ *
+ * 3f's review (access3): nothing either while a seal that holds the address is held with an order's notice (`told`
+ * false): the paragraph says that korbat sealed images of the account, which the person has not been told. The address
+ * stays held all the same; the mail goes in the one wording for every account.
  */
 async function heldAddressFacts(deps: AuthDeps, userId: string): Promise<Record<string, string>> {
   if (!deps.config.reportHold) return {};
   try {
     const hold = await deps.repo.addressHold(userId);
-    return hold === null ? {} : { heldUntil: hold.until.toISOString().slice(0, 10), holdFinal: String(hold.final) };
+    return hold === null || !hold.told ? {} : { heldUntil: hold.until.toISOString().slice(0, 10), holdFinal: String(hold.final) };
   } catch (err) {
     deps.log.error({ err }, "account deletion: whether the address is held could not be read; the mail goes without the hold's paragraph");
     return {};

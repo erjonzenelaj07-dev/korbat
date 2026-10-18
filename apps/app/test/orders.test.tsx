@@ -88,7 +88,7 @@ const notice = (extra: Partial<DecisionView> = {}): DecisionView => ({
   appeal: null,
   strike: null,
   standing: null,
-  orderTexts: { reasons: "Der Beitrag ruft zu Gewalt auf.", redress: "Klage beim Verwaltungsgericht Wiesbaden.", scope: null, textsAt: DISABLED_AT },
+  orderTexts: { reasons: "Der Beitrag ruft zu Gewalt auf.", redress: "Klage beim Verwaltungsgericht Wiesbaden.", scope: null, textsAt: DISABLED_AT, reasonsAt: DISABLED_AT },
   erasedOn: null,
   ...extra,
 });
@@ -116,7 +116,7 @@ describe("the notice of an authority's order (9.3)", () => {
   });
 
   test("without the authority's words, no block; the notice says they follow", () => {
-    const read = textOf(html(<DecisionDetail view={notice({ orderTexts: { reasons: null, redress: null, scope: null, textsAt: null } })} />));
+    const read = textOf(html(<DecisionDetail view={notice({ orderTexts: { reasons: null, redress: null, scope: null, textsAt: null, reasonsAt: null } })} />));
     expect(read).not.toContain(ORDER_NOTICE.wordsBlock);
     expect(read).toContain(ORDER_NOTICE.textsFollow);
   });

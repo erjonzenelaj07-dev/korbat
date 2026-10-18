@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { Db } from "@korbat/db";
 import { serve } from "../../src/media/flows/serve";
+import { mediaForAccount } from "../../src/media";
 import { authorCases, authorDecisionView, authorFacts, exportedDecisions } from "../../src/moderation/author";
 import { deletePost, getPost, thread } from "../../src/social/flows/posts";
 import { setEngagement } from "../../src/social/flows/engagement";
@@ -115,6 +116,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a disabled post, walked 
         const posts: string[] = [];
         for await (const page of exported.posts) posts.push(...page.map((p) => p.id));
         expect(posts, `post ${index}: exported posts`).not.toContain(m.postId);
+        // Nor its image files (W.7): the export's files and the check it makes again before opening each leave them out.
+        const files = (await mediaForAccount(media.deps).exportImages(m.author.id)).map((file) => file.id);
+        for (const id of m.mediaIds) {
+          expect(files, `post ${index}: exported images`).not.toContain(id);
+          expect(await media.deps.repo.isExportable(m.author.id, id), `post ${index}: exportable`).toBe(false);
+        }
       }
       // The held orders' decisions are on no author's list; C's earlier decision is, and reads byte for byte as before.
       expect((await authorCases({ apiDb: db }, made[0]!.author.id)).decisions).toEqual([]);

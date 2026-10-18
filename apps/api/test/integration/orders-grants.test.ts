@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ORDER_CHANNELS, ORDER_CLOSE_GROUNDS, ORDER_CORRECTION_RULES, ORDER_EVENT_GROUNDS, ORDER_EVENT_KINDS, ORDER_EVENT_VIA, ORDER_ITEM_CLOSE_REASONS, ORDER_KINDS, HOLD_END_REASONS } from "@korbat/contracts";
+import { ORDER_CHANNELS, ORDER_CLOSE_GROUNDS, ORDER_CORRECTION_RULES, ORDER_EVENT_GROUNDS, ORDER_EVENT_KINDS, ORDER_EVENT_VIA, ORDER_ITEM_CLOSE_REASONS, ORDER_KINDS, ORDER_TEXT_KINDS, HOLD_END_REASONS } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { appendConfirmedAudit } from "../../src/moderation/repo";
 import { appendAuditRow } from "../../src/staff";
@@ -213,6 +213,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants of order reco
     }
     expect(await checkValues("decision_actions", "decision_actions_order_ground")).toEqual([...ORDER_CLOSE_GROUNDS].filter((g) => g !== "not_addressed"));
     expect(ORDER_CORRECTION_RULES.every((rule) => ground.includes(`'${rule}'`))).toBe(true);
+    // 3f's review (people2): texts_recorded takes the name of the text it wrote, or none.
+    for (const text of ORDER_TEXT_KINDS) expect(ground, text).toContain(`'${text}'`);
   });
 
   test("leaves no row behind", async () => {

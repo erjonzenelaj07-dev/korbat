@@ -17,7 +17,7 @@
  */
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, writeFile } from "node:fs/promises";
+import { link, open, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { crc32 } from "node:zlib";
@@ -156,6 +156,8 @@ export interface HandoverOptions {
   out: string;
   log: (line: string) => void;
   error: (line: string) => void;
+  /** Writes the archive's bytes into the new file; the file handle's own write unless a test passes one that fails. */
+  writeArchive?: (file: FileHandle, data: Buffer) => Promise<void>;
 }
 
 /** Runs one hand-over and answers its exit code: 0 with the archive written and its digests printed, 1 with nothing written. */
@@ -200,12 +202,43 @@ export async function runHandover(options: HandoverOptions): Promise<number> {
     return 1;
   }
   const target = path.join(options.out, `handover-${first[1]}.zip`);
+  const name = path.basename(target);
+  // 3f's review (operations7): the archive is written to <name>.part, a new file only, readable by its owner alone, and
+  // given its name only once it is whole, by a link that never replaces a file. A write that fails halfway (a full disk)
+  // deletes what it wrote, so no part of the sealed files stays behind unrecorded; and the message says so, or names the
+  // file to delete when even that failed.
+  const part = `${target}.part`;
+  const earlier = `handover: ${name} or ${name}.part exists from an earlier run; it may be incomplete and holds the files it lists: delete it before running again; no archive was written`;
+  let file: FileHandle;
   try {
-    // A new file only, readable by its owner alone: an archive of an earlier run is never overwritten.
-    await writeFile(target, archive, { flag: "wx", mode: 0o600 });
+    file = await open(part, "wx", 0o600);
   } catch (err) {
-    options.error(`handover: ${path.basename(target)} could not be written (${(err as NodeJS.ErrnoException).code ?? "error"}); no archive was written`);
+    const code = (err as NodeJS.ErrnoException).code;
+    options.error(code === "EEXIST" ? earlier : `handover: ${name} could not be written (${code ?? "error"}); no archive was written`);
     return 1;
+  }
+  try {
+    await (options.writeArchive ?? ((handle, data) => handle.writeFile(data)))(file, archive);
+    await file.sync();
+    await file.close();
+    await link(part, target);
+  } catch (err) {
+    await file.close().catch(() => undefined);
+    const code = (err as NodeJS.ErrnoException).code;
+    const removed = await unlink(part).then(
+      () => true,
+      () => false,
+    );
+    const left = removed ? "what was written of it was deleted" : `what was written of it could not be deleted: delete ${name}.part by hand`;
+    options.error(code === "EEXIST" ? `${earlier.replace("; no archive was written", "")}; ${left}` : `handover: ${name} could not be written (${code ?? "error"}); ${left}, and no archive was written`);
+    return 1;
+  }
+  // The archive is whole under its name; its second name goes, or the operator is told to delete it with the archive.
+  if (!(await unlink(part).then(
+    () => true,
+    () => false,
+  ))) {
+    options.error(`handover: ${name}.part, a second name of the archive, could not be deleted: delete it by hand when the archive is destroyed`);
   }
   for (const file of files) options.log(`${file.name} ${file.data.length} ${sha256(file.data)}`);
   options.log(`archive ${archive.length} ${sha256(archive)}`);

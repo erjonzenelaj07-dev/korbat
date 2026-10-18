@@ -6,7 +6,7 @@ import { closeDb, createDb, profiles, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { runStaffCommand } from "../../src/cli/staff";
 import { authorityHoldsFor } from "../../src/cli/records";
-import { accessRequest, changeLink, setLimits, textVerify, type TextProblem } from "../../src/cli/staff-cases";
+import { accessRequest, alertTest, changeLink, setLimits, textVerify, type TextProblem } from "../../src/cli/staff-cases";
 import { loadConfig } from "../../src/config";
 import { ACCESS_WORDS, uuidBefore, type AccountAccessDraft, type ContactsAccessDraft } from "../../src/moderation";
 import { newUserWithDevice } from "./auth-fixtures";
@@ -182,6 +182,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, l
       const run = await cli(["limits", "60", "300", "400", "50", "10"], migrateEnv());
       expect(run.code).toBe(1);
       expect(run.lines).toEqual(["err limits: the limits already are 60 decisions an hour, 300 decisions a day, 400 case opens a day, 50 findings a day, 10 reveals a day; nothing changed"]);
+    });
+  });
+
+  describe("alert-test (3f's review)", () => {
+    test("it writes one alert_test row to every staff phone, or with --on-call to the phone on call alone, with its time and the audit row alert_test_sent", async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        for (const onCall of [false, true]) {
+          expect(await alertTest(tx, onCall)).toEqual({
+            ok: true,
+            lines: [`alert-test: a test push to ${onCall ? "the phone on call" : "every staff phone"} is owed; the watcher publishes it at its next round, within a minute. If it does not ring, look at the console's home screen and tell the operator.`],
+          });
+          const row = await one(tx, sql`select kind, priority, scope, step, facts, mailed_at is null as unmailed from public.alert_outbox order by id desc limit 1`);
+          expect(row).toMatchObject({ kind: "alert_test", priority: 3, scope: onCall ? "on_call" : "all", step: null, unmailed: true });
+          expect(Object.keys(row.facts as object)).toEqual(["at"]);
+          expect((await auditRows(tx, "alert_test_sent", null)).at(-1)).toMatchObject({ actor_id: "00000000-0000-0000-0000-000000000000", target_type: null, metadata: { scope: onCall ? "on_call" : "all" }, step_up: null });
+        }
+      });
     });
   });
 

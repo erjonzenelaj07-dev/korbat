@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, isNotNull, lt, lte, sql, type SQL } from "drizzle-orm";
 import { STAFF_AUDIT_PAGE_SIZE, type AuditExportLine, type AuditExportedParams, type AuditMarkRequest, type AuditPage, type AuditPageQuery, type StaffStoredAssertion } from "@korbat/contracts";
 import { auditLog, copyMarks, profiles, type Db, type DbTx } from "@korbat/db";
-import { SYSTEM_ACTOR_ID, type ActiveStaffSession, type StaffStepUpConfirmed } from "../auth";
+import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits } from "../lib/lock-bounds";
 
 /** What a read runs through: the pool, or a transaction that should see its own writes. */
@@ -227,7 +227,9 @@ const EXPORT_WAITS = 3;
  * confirmation is used once, so the action that used it has its row, which says who took which places also when the file
  * never arrives. It writes no mark: the mark is the keeper's confirmation (markCopy). `through` may not be after the head,
  * since the file would end short. Answers the places and whether every staff account is to be alerted (copy_taken): when
- * a staff member other than the caller holds the newest staff copy mark.
+ * anyone but the caller holds the newest copy mark, or nobody does. 3f's review (access5): as built only staff members'
+ * marks were read, and no mark was an alert to nobody, so a stolen key's download went unseen while the keeper copied
+ * only with staff.js audit-export, which marks as the system, or on a fresh installation.
  */
 export async function exportAudit(db: Db, session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<ExportOutcome> {
   // A confirmation of anything else never releases the record: a wiring fault, not a refusal.
@@ -235,10 +237,9 @@ export async function exportAudit(db: Db, session: ActiveStaffSession, confirmed
   const params = confirmed.params as AuditExportedParams;
   if (String(params.through) !== confirmed.target.id) throw new Error("the audit download's target is the place it ends at");
   if (params.through > (await headPlace(db))) return "beyond_head";
-  // The newest staff copy is read before the transaction: the alert is told after the commit and decides nothing.
-  const [holder] = (await db.execute(
-    sql`select m.staff_id from public.copy_marks m where m.staff_id <> ${SYSTEM_ACTOR_ID}::uuid order by m.at desc, m.id desc limit 1`,
-  )) as unknown as { staff_id: string }[];
+  // The newest copy, the command line's included, is read before the transaction: the alert is told after the commit
+  // and decides nothing.
+  const [holder] = (await db.execute(sql`select m.staff_id from public.copy_marks m order by m.at desc, m.id desc limit 1`)) as unknown as { staff_id: string }[];
   try {
     const outcome = await db.transaction(async (tx): Promise<"done" | "late"> => {
       if (!(await boundLockWaits(tx, confirmed.expiresAt, EXPORT_WAITS))) return "late";
@@ -256,7 +257,7 @@ export async function exportAudit(db: Db, session: ActiveStaffSession, confirmed
     if (refusal === "staff_confirmation_late") return "late";
     throw err;
   }
-  return { after: params.after, through: params.through, rows: params.through - params.after, copyTaken: holder !== undefined && holder.staff_id !== session.userId };
+  return { after: params.after, through: params.through, rows: params.through - params.after, copyTaken: holder === undefined || holder.staff_id !== session.userId };
 }
 
 /**

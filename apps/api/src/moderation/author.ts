@@ -154,7 +154,7 @@ export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb"> & P
     ...found.statement,
     appealUntil: facts.appealUntil,
     reversedOn: facts.reversedOn,
-    content: facts.orderInForce || (notice?.erasedOn ?? null) !== null ? null : contentOf(facts),
+    content: facts.orderInForce || facts.toldWhileDisabled || (notice?.erasedOn ?? null) !== null ? null : contentOf(facts),
     ...(notice !== null ? { orderTexts: notice.texts, erasedOn: notice.erasedOn } : {}),
     appeal: facts.appeal === null ? null : await appealOf(deps, facts.appeal),
     strike: facts.strike,

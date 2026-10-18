@@ -772,12 +772,13 @@ export const RECOVERY_WORDS = {
   /** [home.copy] before any copy was taken: the design's sentence has no age to print then. */
   homeCopyNone: `No copy of the audit log's tail has been taken yet. The keeper downloads it on the daily visit: Audit log, "Download since my last copy".`,
   homeRestore: (open: number, measures: number) =>
-    `After a restore: ${open} ${open === 1 ? "gap is" : "gaps are"} open, ${measures} of them measures to take again. The app's site stays closed until every order disabling and seal among them is back.`,
+    `After a restore: ${open} ${open === 1 ? "gap is" : "gaps are"} open, ${measures} of them measures to take again. Keep the app's site closed (APP_SITE=closed, Caddy recreated) until every order disabling and seal among them is back.`,
   // After a restore (8.8).
   title: "After a restore",
   what: "The database was restored from a backup, and the keeper's copy names what the backup lacks. Nothing below is in force until a person takes it again under a key: korbat imports no measure. Work from the top.",
-  site: "The app's site is closed until no order disabling and no seal is open here.",
-  siteOpen: "No order disabling and no seal is open. The operator may open the app's site (APP_SITE=open).",
+  // 3f's review (operations1): the operator's step closes the site, which korbat cannot see; the screen says what to keep.
+  site: "Keep the app's site closed (APP_SITE=closed, Caddy recreated) until no order disabling and no seal is open here.",
+  siteOpen: "No order disabling and no seal is open. The operator may open the app's site (APP_SITE=open, Caddy recreated).",
   retention: "No measure is open. The operator may switch retention and the image sweep back on.",
   lost: "What no import brings back: the texts of the lost decisions, everything after the keeper's last download, and anything the keeper's files do not hold (the import printed every place it found missing in them). For those, the contact-point mailbox and the operator's notes are the record.",
   holds:

@@ -231,7 +231,14 @@ services:
       NOTIFY_IMAP_PASSWORD: ${NOTIFY_IMAP_PASSWORD:-}
       NOTIFY_IMAP_JUNK: ${NOTIFY_IMAP_JUNK:-}
       NTFY_PUBLISH_TOKEN: ${NTFY_PUBLISH_TOKEN:-}
-    networks: [watch, push]
+    # A fixed address on push (3f's review, operations3), which infra/ntfy/server.yml exempts from ntfy's request limit
+    # (visitor-request-limit-exempt-hosts): ntfy lets any one address publish 60 times and then once every 5 seconds (lab
+    # L1), which would hold an order's alert behind a flood of contact mail. It lies inside PUSH_SUBNET, at the top of
+    # the range, which Docker hands out last; change it, and the file's line, with the subnet.
+    networks:
+      watch: {}
+      push:
+        ipv4_address: ${NOTIFY_PUSH_IP:-172.16.91.254}
     depends_on:
       migrate: { condition: service_completed_successfully }
       ntfy: { condition: service_started }

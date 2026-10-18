@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
@@ -225,6 +226,128 @@ describe.skipIf(!process.env.INTEGRATION)("integration: correcting an order's re
       expect(await row(decisionId)).toEqual({ informed: true, mail: "pending" });
       expect(await row(noBreach)).toEqual({ informed: true, mail: "none" });
     });
+  });
+
+  test("\"must not be told\" set again after an admin unset it holds again: the not_ordered end is cleared, the release tells nothing, and a later disabling of the order is held", async () => {
+    await rolledBack(w.apiDb, async (tx) => {
+      const p = await imagePost(tx, 0);
+      const q = await imagePost(tx, 0);
+      const order = await orderForTest(tx, admin, { posts: [p.postId, q.postId], sectionC: true });
+      const first = order.items.find((item) => item.postId === p.postId)!;
+      const second = order.items.find((item) => item.postId === q.postId)!;
+      const done = await effectWith(tx, admin, order.id, effectParams(order, { itemIds: [first.id] }));
+      const firstDecision = done.items.find((item) => item.id === first.id)!.decisionId!;
+      const row = async (id: string) =>
+        (await tx.execute<{ informed: boolean; mail: string }>(sql`select informed_at is not null as informed, author_mail::text as mail from public.decisions where id = ${id}::uuid`))[0]!;
+      const hold = async () =>
+        (await tx.execute<{ holding: boolean; reason: string | null }>(sql`select coalesce(public.order_hold_until(id) > now(), false) as holding, hold_end_reason as reason from public.legal_orders where id = ${order.id}::uuid`))[0]!;
+      expect(await row(firstDecision)).toEqual({ informed: false, mail: "none" });
+      // An admin unsets it under the key: the hold ends as korbat's mistake.
+      view(await correct(tx, admin, order.id, { sectionC: false }, true));
+      expect(await hold()).toEqual({ holding: false, reason: "not_ordered" });
+      // A moderator sets it again, the cautious direction anyone on call may take: the hold runs again.
+      const again = view(await correct(tx, moderator, order.id, { sectionC: true }));
+      expect(again.events.at(-1)).toMatchObject({ kind: "corrected", ground: "caution" });
+      expect(await hold()).toEqual({ holding: true, reason: null });
+      expect((await tx.execute<{ told: number }>(sql`select public.order_notices_release() as told`))[0]!.told).toBe(0);
+      expect(await row(firstDecision)).toEqual({ informed: false, mail: "none" });
+      // A later disabling of the order is held with it, not told at once.
+      const later = await effectWith(tx, admin, order.id, effectParams(again, { itemIds: [second.id] }));
+      expect(await row(later.items.find((item) => item.id === second.id)!.decisionId!)).toEqual({ informed: false, mail: "none" });
+    });
+  });
+
+  test("a removal order corrected to another kind and back is preserved again: the end is cleared, the post preserved and frozen, and the item's preservation runs as order-access reads it", async () => {
+    await rolledBack(w.apiDb, async (tx) => {
+      const p = await imagePost(tx, 1);
+      const order = await orderForTest(tx, moderator, { posts: [p.postId] });
+      await effectWith(tx, moderator, order.id, effectParams(order));
+      // running is the condition order-access and order-preserve-extend read (cli/orders.ts, lockItem).
+      const item = async () =>
+        (await tx.execute<{ running: boolean; preserved: boolean; frozen: boolean; fromDecision: boolean }>(sql`
+          select coalesce(i.preserve_until > now() and i.preserve_ended_at is null, false) as running, public.post_preserved(i.post_id) as preserved,
+                 public.post_frozen(i.post_id) as frozen, coalesce(i.preserve_until = public.order_preserve_until(d.decided_at), false) as "fromDecision"
+            from public.legal_order_items i join public.decisions d on d.id = i.decision_id where i.order_id = ${order.id}::uuid`))[0]!;
+      const preserved = { running: true, preserved: true, frozen: true, fromDecision: true };
+      expect(await item()).toEqual(preserved);
+      view(await correct(tx, admin, order.id, { kind: "dsa_art9" }, true));
+      expect(await item()).toMatchObject({ running: false, preserved: false, frozen: false });
+      view(await correct(tx, admin, order.id, { kind: "tco_removal" }, true));
+      expect(await item()).toEqual(preserved);
+    });
+  });
+
+  /**
+   * The race of a correction that closes an item with "Disable for an order" on the same order (section 5, items 1 and
+   * 2), on committed rows: a third session holds a row the effect or the correction must wait for, for a moment. The
+   * effect runs in a transaction that is rolled back at its end, as the made-up confirmation asks; the correction commits.
+   */
+  async function race(hold: "case" | "item"): Promise<{ effect: string; correction: string; closed: string | null }> {
+    const authors: string[] = [];
+    const made = [await imagePost(w.apiDb, 0), await imagePost(w.apiDb, 0)].sort((a, b) => (a.postId < b.postId ? -1 : 1));
+    for (const m of made) authors.push(m.authorId);
+    // A report keeps a case open on the second post, which the effect takes before the order's row.
+    const reporter = await newProfile(w.apiDb);
+    authors.push(reporter.id);
+    const caseId = (await intake(w.apiDb, ground.rule(reporter.id), aPost(made[1]!.postId))).items[0]!.caseId!;
+    const order = await orderForTest(w.apiDb, moderator, { posts: made.map((m) => m.postId) });
+    orders.push(order.id);
+    const first = order.items.find((item) => item.postId === made[0]!.postId)!;
+    let effect = "none";
+    let correction = "none";
+    try {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holder = w.migrateDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '20s'`);
+        if (hold === "case") await tx.execute(sql`select 1 from public.cases where id = ${caseId}::uuid for update`);
+        else await tx.execute(sql`select 1 from public.legal_order_items where id = ${first.id}::uuid for update`);
+        await released;
+      });
+      await sleep(200);
+      const runEffect = () =>
+        w.apiDb
+          .transaction(async (tx) => {
+            try {
+              const done = await effectWith(tx, moderator, order.id, effectParams(order));
+              effect = done.items.map((item) => (item.inForce ? "in force" : item.closedAt !== null ? "closed" : "open")).join(",");
+            } catch (err) {
+              effect = err instanceof ModerationError ? err.code : `${String(err)} ${String((err as { cause?: unknown }).cause)}`;
+            }
+            throw new Error("the effect's transaction is rolled back");
+          })
+          .catch(() => undefined);
+      const runCorrection = async () => {
+        const outcome = await correct(w.apiDb, admin, order.id, { closeItems: [{ itemId: first.id, reason: "no_post" }] });
+        correction = typeof outcome === "string" ? outcome : "corrected";
+      };
+      // With the case held, the effect starts first and waits on the second post's case holding the first item; with the
+      // item held, the correction starts first and waits for it, and the effect after it.
+      const [a, b] = hold === "case" ? [runEffect, runCorrection] : [runCorrection, runEffect];
+      const started = [a()];
+      await sleep(800);
+      started.push(b());
+      await sleep(800);
+      release();
+      await holder;
+      await Promise.all(started);
+      const [row] = await w.apiDb.execute<{ reason: string | null }>(sql`select closed_reason as reason from public.legal_order_items where id = ${first.id}::uuid`);
+      return { effect, correction, closed: row!.reason };
+    } finally {
+      await removeFixtures(w.migrateDb, authors);
+    }
+  }
+
+  test("a correction that closes an item meets an effect on the same order: never a deadlock; it waits for the effect and is refused, or commits first and the effect is refused", async () => {
+    // The effect holds the first item and waits for the second post's case; the correction comes then. The correction
+    // waits for the first item before it takes the order's row, so the effect goes on to the end; the correction then
+    // closes the first item, which the rolled-back effect left open.
+    const effectFirst = await race("case");
+    expect(effectFirst).toEqual({ effect: "in force,in force", correction: "corrected", closed: "no_post" });
+    // The correction holds the order's items first and closes the first one; the effect, which read the order before,
+    // then holds that item and finds it closed: it gives effect to nothing (order_changed), and the closing stands.
+    const correctionFirst = await race("item");
+    expect(correctionFirst).toEqual({ effect: "order_changed", correction: "corrected", closed: "no_post" });
   });
 
   test("leaves no row behind", async () => {

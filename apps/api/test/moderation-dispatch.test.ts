@@ -5,7 +5,7 @@ import { RULEBOOKS } from "@korbat/rules";
 import type { JobLock } from "../src/lib/jobs";
 import { MemoryStore } from "../src/middleware/rate-limit";
 import { createModeration, type CreateModerationOptions } from "../src/moderation";
-import { ALERT_TICK_INTERVAL_MS, ALERT_TICK_JOB } from "../src/moderation/alerts";
+import { ALERT_MAIL_JOB, ALERT_TICK_INTERVAL_MS, ALERT_TICK_JOB, createAlertMailJob, createAlertTick } from "../src/moderation/alerts";
 import { DISPATCH_INTERVAL_MS, DISPATCH_JOB, WAITING_ALERT_KEY, WAITING_ALERT_WINDOW_MS, stillCalls, updateLine } from "../src/moderation/dispatch";
 import type { OutcomeLineRow, UrgentItemRow } from "../src/moderation/repo";
 
@@ -242,19 +242,58 @@ describe("the module's background work", () => {
   test("3f: startJobs runs the alert tick under its own lock every 30 seconds, also while retention is off, and stops it with the rest", async () => {
     vi.useFakeTimers();
     expect([ALERT_TICK_JOB, ALERT_TICK_INTERVAL_MS]).toEqual(["alert-tick", 30_000]);
+    // 3f's review (operations2): the mail leg is a job of its own, under its own lock, at the same interval.
+    expect(ALERT_MAIL_JOB).toBe("alert-mail");
     for (const retention of ["off", "on"] as const) {
       const w = world(false, retention);
       const stop = w.moderation.startJobs(w.lock);
       await vi.advanceTimersByTimeAsync(ALERT_TICK_INTERVAL_MS - 1);
       expect(w.of(ALERT_TICK_JOB), retention).toEqual([]);
+      expect(w.of(ALERT_MAIL_JOB), retention).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
       expect(w.of(ALERT_TICK_JOB), retention).toEqual([{ key: "job:alert-tick", ttlMs: ALERT_TICK_INTERVAL_MS }]);
+      expect(w.of(ALERT_MAIL_JOB), retention).toEqual([{ key: "job:alert-mail", ttlMs: ALERT_TICK_INTERVAL_MS }]);
       await vi.advanceTimersByTimeAsync(ALERT_TICK_INTERVAL_MS);
       expect(w.of(ALERT_TICK_JOB), retention).toHaveLength(2);
+      expect(w.of(ALERT_MAIL_JOB), retention).toHaveLength(2);
       stop();
       await vi.advanceTimersByTimeAsync(10 * ALERT_TICK_INTERVAL_MS);
       expect(w.of(ALERT_TICK_JOB), retention).toHaveLength(2);
+      expect(w.of(ALERT_MAIL_JOB), retention).toHaveLength(2);
     }
+  });
+
+  test("3f's review: a relay that never answers holds only the mail leg: alert_steps() runs again every ALERT_TICK_INTERVAL_MS while a mail waits", async () => {
+    vi.useFakeTimers();
+    const lock: JobLock = { acquire: async () => true, refresh: async () => undefined, release: async () => undefined };
+    const asked: string[] = [];
+    // A database that answers the tick's one statement, and for the mail leg one owed row and its claim.
+    const execute = async (query: { queryChunks?: unknown[] }) => {
+      const text = JSON.stringify(query);
+      if (text.includes("alert_steps()")) {
+        asked.push("alert_steps");
+        return [{ written: 0 }];
+      }
+      if (text.includes("mailed_at is null and kind = any")) return [{ id: "1", kind: "report_owed", facts: { count: 1, oldestAt: "2026-10-16T08:00:00.000Z" } }];
+      return [{ id: "1" }];
+    };
+    const mails: unknown[] = [];
+    const deps = {
+      apiDb: { execute, transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }) },
+      // The relay: a mail that never returns.
+      auth: { mailStaff: (message: unknown) => (mails.push(message), new Promise<number>(() => undefined)) },
+      config: { NOTIFY: "off" },
+      log: pino({ level: "silent" }),
+    } as unknown as Parameters<typeof createAlertTick>[0];
+    const stopTick = createAlertTick(deps, lock).start();
+    const stopMail = createAlertMailJob(deps, lock).start();
+    await vi.advanceTimersByTimeAsync(ALERT_TICK_INTERVAL_MS);
+    expect([asked.length, mails.length]).toEqual([1, 1]);
+    await vi.advanceTimersByTimeAsync(2 * ALERT_TICK_INTERVAL_MS);
+    // Two more rounds of the tick; the mail leg still waits for its first send and starts no second round.
+    expect([asked.length, mails.length]).toEqual([3, 1]);
+    stopTick();
+    stopMail();
   });
 
   test("the queue-age alert has a key and a window of its own: once a day", () => {

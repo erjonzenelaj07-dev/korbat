@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { crc32 } from "node:zlib";
@@ -132,6 +132,46 @@ describe("the hand-over's program", () => {
     mkdirSync(path.join(s.storeDir, ...storedName(dirId, "small").split("/")), { recursive: true });
     expect((await run([`production ${production}`, storedName(dirId, "small")].join(LF), s.storeDir, s.out)).code).toBe(1);
     expect(existsSync(target)).toBe(false);
+  });
+
+  test("3f's review: a write that fails halfway leaves no part of the files behind and says so; an earlier run's file, whole or not, is never overwritten and must be deleted first", async () => {
+    const id = randomUUID();
+    const s = store([id]);
+    const production = randomUUID();
+    const input = [`production ${production}`, ...s.files.keys()].join(LF);
+    const name = `handover-${production}.zip`;
+    // A full disk: half the archive is written, then the write fails.
+    const errors: string[] = [];
+    const failing = await runHandover({
+      input,
+      store: s.storeDir,
+      out: s.out,
+      log: () => undefined,
+      error: (line) => errors.push(line),
+      writeArchive: async (file, data) => {
+        await file.write(data.subarray(0, Math.floor(data.length / 2)));
+        throw Object.assign(new Error("no space left on device"), { code: "ENOSPC" });
+      },
+    });
+    expect(failing).toBe(1);
+    expect(errors).toEqual([`handover: ${name} could not be written (ENOSPC); what was written of it was deleted, and no archive was written`]);
+    expect(readdirSync(s.out)).toEqual([]);
+    // An earlier run's archive stands: the next run refuses, says what to do, and leaves it as it was.
+    writeFileSync(path.join(s.out, name), "an earlier run's bytes");
+    const again = await run(input, s.storeDir, s.out);
+    expect([again.code, again.lines]).toEqual([1, []]);
+    expect(again.errors).toEqual([`handover: ${name} or ${name}.part exists from an earlier run; it may be incomplete and holds the files it lists: delete it before running again; what was written of it was deleted`]);
+    expect(readFileSync(path.join(s.out, name), "utf8")).toBe("an earlier run's bytes");
+    expect(readdirSync(s.out)).toEqual([name]);
+    // An earlier run's part, left by a run that was killed: refused before anything is written.
+    rmSync(path.join(s.out, name));
+    writeFileSync(path.join(s.out, `${name}.part`), "half");
+    const killed = await run(input, s.storeDir, s.out);
+    expect([killed.code, killed.errors]).toEqual([1, [`handover: ${name} or ${name}.part exists from an earlier run; it may be incomplete and holds the files it lists: delete it before running again; no archive was written`]]);
+    // Once it is deleted, the run writes the archive under its name alone.
+    rmSync(path.join(s.out, `${name}.part`));
+    expect((await run(input, s.storeDir, s.out)).code).toBe(0);
+    expect(readdirSync(s.out)).toEqual([name]);
   });
 
   test("the zip writer: an empty file and a name of several bytes a character, read back by a reader, with CRC-32s from node:zlib", () => {

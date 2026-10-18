@@ -577,13 +577,16 @@ export function createAuthRepo(db: Db) {
     /**
      * 3f (design, section 7.15 step 2): what the deletion mail says of a held address: until when at the latest (a UTC
      * day) and whether the seal behind it is for good, or null when nothing is held. The auth module cannot read the hold
-     * itself; it asks the two definer functions the migration grants it.
+     * itself; it asks the two definer functions the migration grants it. 3f's review (access3): and whether the person
+     * was told of the seals behind it (auth.address_hold_told): false while one is held with an order's notice, and the
+     * mail then says nothing of the hold.
      */
-    async addressHold(userId: string): Promise<{ until: Date; final: boolean } | null> {
-      const [row] = await db.execute<{ until: string | null; final: boolean }>(
-        sql`select to_char(auth.address_held_until(${userId}::uuid) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as until, auth.address_hold_final(${userId}::uuid) as final`,
+    async addressHold(userId: string): Promise<{ until: Date; final: boolean; told: boolean } | null> {
+      const [row] = await db.execute<{ until: string | null; final: boolean; told: boolean }>(
+        sql`select to_char(auth.address_held_until(${userId}::uuid) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as until, auth.address_hold_final(${userId}::uuid) as final,
+                   auth.address_hold_told(${userId}::uuid) as told`,
       );
-      return row?.until ? { until: new Date(row.until), final: row.final } : null;
+      return row?.until ? { until: new Date(row.until), final: row.final, told: row.told } : null;
     },
 
     // ------------------------------------------------------------ lockdown

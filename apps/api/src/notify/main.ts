@@ -101,12 +101,19 @@ export interface NotifyStore {
   insertMessage(folder: ContactFolder, uidvalidity: number, uid: number, receivedAt: Date): Promise<void>;
   /** The folder's mark as the round leaves it, also when the folder held nothing new. */
   setMark(folder: ContactFolder, uidvalidity: number, lastUid: number): Promise<void>;
-  /** Every row still owed its push, oldest first: not pushed, of a kind with a push leg, younger than push_owed_minutes. */
+  /**
+   * Every row still owed its push: not pushed, of a kind with a push leg, younger than push_owed_minutes. Priority 5
+   * first; within a priority an order's rows and each subject's first ring (step 0) first; then oldest first (3f's
+   * review, operations3: a flood of escalations never holds an order's reminder behind it).
+   */
   owedPushes(kinds: readonly AlertKind[]): Promise<OwedPush[]>;
   markPushed(id: number): Promise<void>;
   /** One more failed attempt, for the log: no cap. */
   markFailed(id: number): Promise<void>;
-  /** The beat: now, and now for the mailbox and the push when the round read both folders and pushed what it owed. */
+  /**
+   * The beat: now, and now for the mailbox and the push when the round read both folders and pushed what it owed, or
+   * pushed until ntfy's request limit asked it to wait (the channel's check reads a fresh push_ok_at as ntfy answering).
+   */
   beat(state: { mailboxOk: boolean; pushOk: boolean; error: NotifyError | null }): Promise<void>;
 }
 
@@ -137,7 +144,7 @@ export function createStore(db: Db): NotifyStore {
         select o.id, o.kind, o.priority, o.scope, o.facts from public.alert_outbox o
          where o.pushed_at is null and o.kind = any(${textArray(kinds)})
            and o.created_at > now() - make_interval(mins => (select r.push_owed_minutes from public.order_rules() r))
-         order by o.id`);
+         order by o.priority desc, (o.order_id is not null) desc, coalesce(o.step = 0, false) desc, o.id`);
       return rows.map((row) => ({ id: Number(row.id), kind: row.kind, priority: row.priority === 5 ? 5 : 3, scope: row.scope, facts: row.facts }));
     },
     async markPushed(id) {
@@ -171,10 +178,12 @@ export interface WatcherDeps {
 export interface RoundReport {
   /** Both folders were read. */
   mailboxOk: boolean;
-  /** Every publish of the round succeeded, or nothing was owed. */
+  /** Every publish of the round succeeded, or nothing was owed, or it stopped at ntfy's request limit with none failed. */
   pushOk: boolean;
   /** The word of the round's last failure, or null. */
   error: NotifyError | null;
+  /** ntfy's request limit answered 429 and the round published nothing more: the rest wait for the next round. */
+  throttled: boolean;
   inserted: number;
   pushed: number;
 }
@@ -235,11 +244,19 @@ export function createWatcher(deps: WatcherDeps) {
     }
     let pushOk = true;
     let pushed = 0;
+    let throttled = false;
     for (const row of await deps.store.owedPushes(PUSH_KINDS)) {
       const outcome = await publish(deps.fetch, deps.push.url, deps.push.token, row, deps.now());
       if (outcome === "ok") {
         await deps.store.markPushed(row.id);
         pushed++;
+      } else if (outcome === "throttled") {
+        // 3f's review (operations3): ntfy is up and asks the publisher to wait. The row stays owed with no attempt
+        // counted, the beat does not say the push failed, and the round stops here: every later row would be refused
+        // too, and one taken after a refill mid-round would go ahead of the rows in front of it.
+        throttled = true;
+        deps.log.warn({ alert: row.id, kind: row.kind, pushed }, "notify: ntfy's request limit was reached; the rest are published from the next round");
+        break;
       } else {
         await deps.store.markFailed(row.id);
         pushOk = false;
@@ -248,7 +265,7 @@ export function createWatcher(deps: WatcherDeps) {
       }
     }
     await deps.store.beat({ mailboxOk, pushOk, error });
-    return { mailboxOk, pushOk, error, inserted, pushed };
+    return { mailboxOk, pushOk, error, throttled, inserted, pushed };
   }
 
   /** LOGOUT and the connection closed. */
@@ -300,7 +317,7 @@ export async function runNotify(env: Record<string, string | undefined> = proces
       const report = await watcher.round();
       databaseDownSince = null;
       writeFileSync(HEALTH_FILE, String(Date.now()));
-      if (report.inserted > 0 || report.pushed > 0 || report.error !== null) log.info(report, "notify: round");
+      if (report.inserted > 0 || report.pushed > 0 || report.error !== null || report.throttled) log.info(report, "notify: round");
     } catch (err) {
       databaseDownSince ??= Date.now();
       log.error({ err }, "notify: a round could not reach the database");

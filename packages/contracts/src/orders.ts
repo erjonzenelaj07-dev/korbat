@@ -629,6 +629,14 @@ export const ORDER_EVENT_GROUNDS = {
   scrutiny_decided: SCRUTINY_OUTCOMES,
 } as const satisfies Partial<Record<OrderEventKind, readonly string[]>>;
 
+/**
+ * The authority's three texts, which order-texts records one at a time (3f design, section 7.7 step 3). 3f's review
+ * (people2): each texts_recorded event names the one it wrote as its ground, so the notice can say since when it holds
+ * the reasons; an event written before the review has no ground. legal_order_events_ground is written from it too.
+ */
+export const ORDER_TEXT_KINDS = ["reasons", "redress", "scope"] as const;
+export type OrderTextKind = (typeof ORDER_TEXT_KINDS)[number];
+
 /** The grounds of a kind of event, or null for a kind that takes none. */
 export function orderEventGrounds(kind: OrderEventKind): readonly string[] | null {
   return (ORDER_EVENT_GROUNDS as Partial<Record<OrderEventKind, readonly string[]>>)[kind] ?? null;
@@ -1202,7 +1210,15 @@ export const OrderNoticeFacts = z.object({
 export type OrderNoticeFacts = z.infer<typeof OrderNoticeFacts>;
 
 /** The authority's words as the command line recorded them, read fresh, and since when the author holds the newest (10.4). */
-export const OrderTexts = z.object({ reasons: z.string().nullable(), redress: z.string().nullable(), scope: z.string().nullable(), textsAt: At.nullable() });
+export const OrderTexts = z.object({
+  reasons: z.string().nullable(),
+  redress: z.string().nullable(),
+  scope: z.string().nullable(),
+  textsAt: At.nullable(),
+  // 3f's review (people2): since when the author holds the reasons themselves: the newest record of the reasons, or the
+  // telling when that is later; null without reasons. A later record of the remedies or the scope moves textsAt only.
+  reasonsAt: At.nullable(),
+});
 export type OrderTexts = z.infer<typeof OrderTexts>;
 
 /** Home's [home.unverified] (10.2): the orders with a disabled item that are not verified, or whose disabled item was added after the check. */

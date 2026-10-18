@@ -158,7 +158,10 @@ export type StaffAlertKind =
   | "hold_ending"
   // Task 6: the copy of the audit log's tail is overdue, and someone who did not take the last copy took one.
   | "copy_overdue"
-  | "copy_taken";
+  | "copy_taken"
+  // Task 5's two daily kinds, joined in 3f's review: a report to an authority owed, a hand-over's copy not destroyed.
+  | "report_owed"
+  | "handover_undestroyed";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -183,6 +186,8 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "hold_ending":
     case "copy_overdue":
     case "copy_taken":
+    case "report_owed":
+    case "handover_undestroyed":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest) };

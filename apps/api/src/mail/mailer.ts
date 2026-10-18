@@ -71,6 +71,9 @@ export type TemplateName =
   // Task 6: the copy of the audit log's tail overdue, and taken by an account that did not take the last copy.
   | "copy_overdue"
   | "copy_taken"
+  // Task 5's two daily kinds, joined in 3f's review: their mail is their push's sentence.
+  | "report_owed"
+  | "handover_undestroyed"
   | "order_notice"
   | "order_reinstated_notice"
   | "order_notice_added";

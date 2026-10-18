@@ -201,6 +201,12 @@ export interface AuthorDecisionFacts {
   strike: DecisionStrike | null;
   /** 3f: an order decision whose measure is in force, whose post the notice's screen never shows (section 10.4). */
   orderInForce: boolean;
+  /**
+   * 3f's review (access4): a decision about a post that is disabled for an order now, told after the post was first
+   * disabled (a decision held with the notice and released with it): its screen shows the post no more than the
+   * notice's does. A decision told before the order keeps its content, as row 47 of the design says.
+   */
+  toldWhileDisabled: boolean;
 }
 
 /**
@@ -222,7 +228,9 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
                coalesce(p.state = 'deleted_by_author', false) as post_deleted, coalesce(p.erased_at is not null, false) as post_erased,
                (c.target_type = 'post' and exists (select 1 from seal_posts sp join measures_in_force m on m.id = sp.action_id where sp.post_id = c.target_id)) as sealed,
                ${strikeColumns},
-               (d.kind::text = 'order' and exists (select 1 from measures_in_force m where m.decision_id = d.id)) as order_in_force
+               (d.kind::text = 'order' and exists (select 1 from measures_in_force m where m.decision_id = d.id)) as order_in_force,
+               coalesce(p.state::text = 'disabled'
+                        and d.informed_at > (select min(i.disabled_at) from legal_order_items i where i.post_id = p.id), false) as told_while_disabled
           from decisions d
           join cases c on c.id = d.case_id
           join evidence_snapshots s on s.id = d.snapshot_id
@@ -265,6 +273,7 @@ export async function authorDecision(q: Runner, accountId: string, decisionId: s
         ? null
         : { countsUntil: row.strike_until as string, state: row.strike_state as DecisionStrike["state"], overruledAt: row.strike_overruled_at as string | null },
     orderInForce: row.order_in_force as boolean,
+    toldWhileDisabled: row.told_while_disabled as boolean,
   };
 }
 

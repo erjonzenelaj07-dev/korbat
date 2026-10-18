@@ -396,7 +396,8 @@ async function run(tx: DbTx, cmd: OrderCommand, settings: OrderSettings, stdin: 
               from public.legal_order_items i join public.decisions d on d.order_item_id = i.id
              where i.order_id = ${order.id}::uuid and d.kind::text = 'order' and d.informed_at is null`,
       );
-      await recorded(tx, order.id, "texts_recorded", { text: column, digest, authors: told.length });
+      // 3f's review (people2): the event names the text it wrote, so the notice says since when it holds the reasons.
+      await recorded(tx, order.id, "texts_recorded", { text: column, digest, authors: told.length }, { ground: column });
       const head = `${c}: ${column} recorded (${Array.from(text).length} characters).`;
       if (told.length > 0) return [`${head} ${told.length} authors are sent an email that the notice has grown; the notice shows the text and this time from now.`];
       if (held!.held > 0) return [`${head} The notice is held: it will show the text once it is released, ${held!.until ?? "at a time not recorded yet"}.`];

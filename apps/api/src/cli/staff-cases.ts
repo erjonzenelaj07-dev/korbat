@@ -9,7 +9,7 @@
  * This file has no entry point of its own, so both bundles can include it (build.mjs says why that matters).
  */
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { MEASURE_KINDS, snapshotDigest, textDigest, type SnapshotDigestInput } from "@korbat/contracts";
+import { ALERT_KINDS, MEASURE_KINDS, snapshotDigest, textDigest, type SnapshotDigestInput } from "@korbat/contracts";
 import { moderationLimits, profiles, staffPersonalAccounts, users, type Db, type DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
 import { imageModerationStates } from "../media";
@@ -109,6 +109,27 @@ export async function setLimits(migrateDb: Runner, limits: StaffLimits): Promise
     if (written.length === 0) return { ok: false, problem: `the limits already are ${describeLimits(limits)}; nothing changed` };
     await appendAuditRow(tx, { actorId: SYSTEM_ACTOR_ID, action: "moderation_limits_set", targetType: null, targetId: null, requestId: null, metadata: { ...limits } });
     return { ok: true, lines: [`limits: set to ${describeLimits(limits)}. Keep these numbers in your own records: a restore brings back the ones of its backup.`] };
+  });
+}
+
+// ---------------------------------------------------------------- alert-test
+
+/**
+ * 3f's review (operations6): alert-test [--on-call], the test push that the runbook's hand-over of the on-call phone and
+ * its upgrade of ntfy ask for, since nobody on call can publish: the phones only subscribe. One alert_test row, to every
+ * staff phone or (--on-call) to the phone on call alone, with its time, which the watcher publishes at its next round,
+ * and the audit row alert_test_sent with the scope. A row of this kind is pushed only and never mailed.
+ */
+export async function alertTest(migrateDb: Runner, onCall: boolean): Promise<Changed> {
+  const scope = onCall ? "on_call" : "all";
+  return changing(migrateDb, async (tx): Promise<Changed> => {
+    await tx.execute(sql`insert into public.alert_outbox (kind, priority, scope, facts)
+                         values ('alert_test', ${ALERT_KINDS.alert_test.priority}, ${scope}, jsonb_build_object('at', public.alert_time(now())))`);
+    await appendAuditRow(tx, { actorId: SYSTEM_ACTOR_ID, action: "alert_test_sent", targetType: null, targetId: null, requestId: null, metadata: { scope } });
+    return {
+      ok: true,
+      lines: [`alert-test: a test push to ${onCall ? "the phone on call" : "every staff phone"} is owed; the watcher publishes it at its next round, within a minute. If it does not ring, look at the console's home screen and tell the operator.`],
+    };
   });
 }
 

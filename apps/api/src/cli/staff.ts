@@ -55,7 +55,7 @@ import { COUNT_COMMANDS, COUNT_USAGE, countCommand, parseCountArgs, type CountCo
 import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCommand, type OrderCommandName } from "./orders";
 import { RECORD_COMMANDS, RECORD_USAGE, authorityHoldsFor, parseRecordArgs, recordCommand, type RecordCommand, type RecordCommandName } from "./records";
 import { RESTORE_COMMANDS, RESTORE_USAGE, auditExport, parseRestoreArgs, restoreImport, type RestoreCommand, type RestoreCommandName } from "./restore";
-import { accessRequest, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
+import { accessRequest, alertTest, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
 
 export const STAFF_USAGE = [
   "usage: node dist/staff.js <command>",
@@ -76,6 +76,9 @@ export const STAFF_USAGE = [
   "  revoke <email> <key id>                revoke that staff key and every staff session it opened, and mail its owner",
   "  revoke <email> all                     revoke every staff key and staff session of the account, delete its unused",
   "                                         enrolment links, and mail its owner",
+  // 3f's review (operations6): the test push the runbook's hand-over of the on-call phone and ntfy's upgrade ask for.
+  "  alert-test [--on-call]                 write a test push to every staff phone, or to the phone on call alone,",
+  "                                         which the watcher publishes within a minute; run it in the migrate service",
   // 3f (design, section 8.11): the order commands, each as the migrator in the migrate service.
   ...ORDER_USAGE,
   // 3f Task 5 (design, section 8.11): the records to authorities, each as the migrator in the migrate service.
@@ -103,6 +106,8 @@ export type StaffCommand =
   | { command: "link"; email: string; handle: string }
   | { command: "unlink"; email: string; handle: string }
   | { command: "limits"; limits: StaffLimits }
+  // 3f's review: a test push, to every staff phone or to the phone on call alone.
+  | { command: "alert-test"; onCall: boolean }
   // 3f: an order command, whose words cli/orders.ts reads, and (Task 5) a record command, whose words cli/records.ts reads.
   | { command: "order"; order: OrderCommand }
   | { command: "record"; record: RecordCommand }
@@ -183,6 +188,9 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
       });
       return { command, limits: { decisionsPerHour: numbers[0]!, decisionsPerDay: numbers[1]!, caseOpensPerDay: numbers[2]!, findingsPerDay: numbers[3]!, revealsPerDay: numbers[4]! } };
     }
+    case "alert-test":
+      if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--on-call")) throw new Error(STAFF_USAGE);
+      return { command, onCall: rest[0] === "--on-call" };
     case undefined:
       throw new Error(STAFF_USAGE);
     default:
@@ -970,7 +978,7 @@ export async function runStaffCommand(
   }
   if (command.command === "enroll") return runEnroll(command.email, env, out);
   if (command.command === "revoke") return runRevoke(command.email, command.key, env, out);
-  if (command.command === "link" || command.command === "unlink" || command.command === "limits") return runAsMigrator(command, env, out);
+  if (command.command === "link" || command.command === "unlink" || command.command === "limits" || command.command === "alert-test") return runAsMigrator(command, env, out);
   if (command.command === "access-request") return runAccessRequest(command.who, env, out);
   if (command.command === "order") return runOrderCommand(command.order, env, out, input);
   if (command.command === "record") return runRecordCommand(command.record, env, out, input);
@@ -1056,8 +1064,8 @@ async function runEnroll(email: string, env: Record<string, string | undefined>,
 
 // ---------------------------------------------------------------- the commands for moderation cases
 
-/** link, unlink and limits, on the migrator's own connection: the URL first, so a missing one connects to nothing. */
-async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | "unlink" | "limits" }>, env: Record<string, string | undefined>, out: Output): Promise<number> {
+/** link, unlink, limits and alert-test, on the migrator's own connection: the URL first, so a missing one connects to nothing. */
+async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | "unlink" | "limits" | "alert-test" }>, env: Record<string, string | undefined>, out: Output): Promise<number> {
   let url: string;
   try {
     url = migratorUrl(command.command, env);
@@ -1069,6 +1077,7 @@ async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | 
   try {
     let done: Changed;
     if (command.command === "limits") done = await setLimits(migrateDb, command.limits);
+    else if (command.command === "alert-test") done = await alertTest(migrateDb, command.onCall);
     else done = await changeLink(migrateDb, command.email, command.handle, command.command === "unlink");
     if (!done.ok) {
       out.error(`${command.command}: ${done.problem}`);

@@ -365,6 +365,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
       const logger = pino({ level: "warn" }, { write: (line: string) => void warnings.push((JSON.parse(line) as { msg: string }).msg) });
       const moderation = createModeration({ apiDb, auth: noAuthForModeration(), social: socialForModeration(apiDb), media: casesMedia(apiDb), rateLimitStore: new MemoryStore(), config: { ...loadConfig(), MODERATION_RETENTION: setting }, logger });
       const { lock, asked, until } = watchedLock();
+      // postgres.js opens a connection by setTimeout, which the clock faked below would never run, so a round that needed
+      // a new one would wait forever: the pool's six connections are opened first, while the clock is real. Since 3f's
+      // review the tick and its mail leg run side by side and take two of them in the first 30 seconds.
+      await Promise.all(Array.from({ length: 6 }, () => apiDb.execute(sql`select pg_sleep(0.05)`)));
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       let stop: () => void = () => undefined;
       try {
@@ -373,11 +377,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
         expect(RETENTION_OFF_WARNING).toBe("moderation-retention: off (MODERATION_RETENTION)");
         const dispatched = until("job:moderation-dispatch");
         const retained = setting === "on" ? until("job:moderation-retention") : Promise.resolve();
-        // Nothing of these two runs before the ten minutes are over. 3f's alert tick, which startJobs also starts in
-        // both branches, runs every 30 seconds meanwhile.
+        // Nothing of these two runs before the ten minutes are over. 3f's alert tick and (since 3f's review) its mail
+        // leg, which startJobs also starts in both branches, run every 30 seconds meanwhile.
         await vi.advanceTimersByTimeAsync(RETENTION_INTERVAL_MS - 1);
-        expect(asked.filter((key) => key !== "job:alert-tick")).toEqual([]);
+        expect(asked.filter((key) => key !== "job:alert-tick" && key !== "job:alert-mail")).toEqual([]);
         expect(asked).toContain("job:alert-tick");
+        expect(asked).toContain("job:alert-mail");
         await vi.advanceTimersByTimeAsync(2);
         await Promise.all([dispatched, retained]);
       } finally {

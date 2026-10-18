@@ -909,7 +909,10 @@ function orderNoticeParagraphs(input: StatementInput, extras: OrderNoticeExtras)
   paragraphs.push(texts !== null && texts.reasons !== null && texts.redress !== null ? N.copy : N.textsFollow);
   if (order.kind === "tco_removal" && order.crossBorder) {
     const home = order.homeState === null ? "korbat's Member State" : stateName(order.homeState);
-    const reasonsAt = texts !== null && texts.reasons !== null ? (addedLater ? texts.textsAt : order.informedAt) : null;
+    // 3f's review (people2): since the reasons themselves were held, the later of their record and the telling, never
+    // since a later record of the remedies or the scope.
+    const reasonsLater = texts !== null && texts.reasonsAt !== null && order.informedAt !== null && Date.parse(texts.reasonsAt) > Date.parse(order.informedAt);
+    const reasonsAt = texts !== null && texts.reasons !== null ? (reasonsLater ? texts!.reasonsAt : order.informedAt) : null;
     paragraphs.push(`${N.scrutiny(home)} ${reasonsAt === null ? N.noReasonsYet : N.reasonsAt(utcMinute(reasonsAt))}`);
   }
   if (order.kind === "tco_removal") {

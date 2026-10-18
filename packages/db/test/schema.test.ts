@@ -1370,6 +1370,8 @@ describe("order records 3f", () => {
     const ground = checkSql("legal_order_events", "legal_order_events_ground");
     expect(ground).toContain(`(kind = 'annex3_sent' and ground in ('force_majeure', 'manifest_error', 'insufficient_information'))`);
     expect(ground).toContain(`(kind = 'corrected' and ground in ('entry', 'caution', 'admin'))`);
+    // 3f's review (people2): the text a texts_recorded event wrote; one written before has none.
+    expect(ground).toContain(`(kind = 'texts_recorded' and ground in ('reasons', 'redress', 'scope'))`);
     expect(ground).toContain(`and ground is null)`);
     expect(indexes("legal_order_events")).toEqual([
       ["legal_order_events_opened_key", ["order_id"], true, "kind = 'opened'"],
