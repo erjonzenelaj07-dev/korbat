@@ -171,11 +171,12 @@ export async function staffAlert(deps: Pick<ModerationDeps, "apiDb" | "auth" | "
  * two cases into the lane and sends one alert that counts both. Best effort, after the commit and the answer; the
  * dispatch job repeats it while a lane-0 item still calls for someone.
  */
-export async function alertUrgentLane(deps: Pick<ModerationDeps, "apiDb" | "auth" | "limits" | "log">): Promise<"sent" | "throttled" | "unsent" | "nothing_waiting"> {
+export async function alertUrgentLane(deps: Pick<ModerationDeps, "apiDb" | "auth" | "limits" | "log" | "config">): Promise<"sent" | "throttled" | "unsent" | "nothing_waiting"> {
   const waiting = await urgentWaiting(deps.apiDb);
   // Decided in the moment between the intake's commit and this read: nothing is left to alert about.
   if (waiting.count === 0 || waiting.oldest === null) return "nothing_waiting";
-  return staffAlert(deps, URGENT_ALERT_KEY, URGENT_ALERT_WINDOW_MS, { template: "moderation_urgent", count: waiting.count, oldest: waiting.oldest });
+  // 3f's review (people4): the mail says whether the phone on call got the push, or that it is the only alert.
+  return staffAlert(deps, URGENT_ALERT_KEY, URGENT_ALERT_WINDOW_MS, { template: "moderation_urgent", count: waiting.count, oldest: waiting.oldest, phones: deps.config.NOTIFY !== "off" });
 }
 
 // ---------------------------------------------------------------- the channel's health

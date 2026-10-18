@@ -7,13 +7,13 @@ import type { Db, DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { describeTcoCounts, tcoCounts } from "../../src/cli/counts";
 import { runStaffCommand } from "../../src/cli/staff";
-import { closeContact } from "../../src/moderation/orders";
+import { closeContact, correctOrderRecord } from "../../src/moderation/orders";
 import { retentionRound } from "../../src/moderation/retention";
 import { appendAuditRow } from "../../src/staff";
 import { CHANNEL_TABLES, aPost, act, casesMedia, decideIn, imagePost, moderationDeps, newTestStaff, removeFixtures, report, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 import { closeNotifyFixtures, contactMessageForTest, removeMessages } from "./notify-fixtures";
-import { ORDER_TABLES, ageOrderForTest, effectParams, effectWith, orderForTest, sessionOf } from "./orders-fixtures";
+import { ORDER_TABLES, ageOrderForTest, effectParams, effectWith, orderConfig, orderForTest, sessionOf } from "./orders-fixtures";
 import { recordCounts } from "./records-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
@@ -200,6 +200,58 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js tco-counts, the
       ]);
       // A year after the erased order's last possible row is untouched by its erasure.
       expect((await tcoCounts(tx, new Date().getUTCFullYear() - 1)).received).not.toBeNull();
+    });
+  });
+
+  test("3f's review (proofs3): an erasure counts by what the order was when erased: one opened as a DSA order and corrected to a removal order, and one with no opening row (as restore-import writes an order again), make the year's order figures not recorded", async () => {
+    // G: opened as a DSA order, corrected to a removal order before its effect (its opening row still says dsa_art9),
+    // given effect, reinstated, moved into the year and erased past its three years.
+    await rolledBack(w.migrateDb, async (tx) => {
+      const opened = await orderForTest(tx, moderator, { kind: "dsa_art9", posts: [(await imagePost(tx, 1)).postId] });
+      const corrected = await correctOrderRecord(moderationDeps(tx, { config: orderConfig() }), sessionOf(moderator), opened.id, { kind: "tco_removal" }, null, { requestId: `req-${randomUUID()}` });
+      if (typeof corrected === "string") throw new Error(`the correction was not recorded: ${corrected}`);
+      const g = await effectWith(tx, moderator, opened.id, effectParams(corrected));
+      await reinstate(tx, g, "withdrawn");
+      await ageOrderForTest(tx, g.id, backTo(YEAR));
+      await tx.execute(sql`update public.audit_log set created_at = created_at - ${sameYear(YEAR)} where action = 'order_opened' and target_id = ${g.id}`);
+      const [opening] = await tx.execute<{ kind: string }>(sql`select metadata->>'kind' as kind from public.audit_log where action = 'order_opened' and target_id = ${g.id}`);
+      expect(opening!.kind).toBe("dsa_art9");
+      expect((await retentionRound({ apiDb: tx as unknown as Db, media: casesMedia(tx), log })).orderRecords).toBeGreaterThanOrEqual(1);
+      // The erasure's own row says what the order was when its records went.
+      const [erasure] = await tx.execute<{ metadata: Record<string, unknown> }>(
+        sql`select metadata from public.audit_log where action = 'moderation_retention' and metadata->>'step' = 'order_records' and metadata->>'orderId' = ${g.id}`,
+      );
+      expect(erasure!.metadata).toMatchObject({ orderId: g.id, kind: "tco_removal", receivedAt: null });
+      expect(new Date(String(erasure!.metadata.openedAt)).getUTCFullYear()).toBe(YEAR);
+      const counts = await tcoCounts(tx, YEAR);
+      expect([counts.received, counts.itemsDisabled, counts.reinstated]).toEqual([null, null, null]);
+    });
+    // H: an order with no opening row, as restore-import writes one again (it appends restore_imported alone); here its
+    // opening row is made to name another order.
+    await rolledBack(w.migrateDb, async (tx) => {
+      const h = await effected(tx, { posts: 1 });
+      await reinstate(tx, h, "withdrawn");
+      await ageOrderForTest(tx, h.id, backTo(YEAR));
+      await tx.execute(sql`update public.audit_log set target_id = ${randomUUID()} where action = 'order_opened' and target_id = ${h.id}`);
+      expect((await retentionRound({ apiDb: tx as unknown as Db, media: casesMedia(tx), log })).orderRecords).toBeGreaterThanOrEqual(1);
+      const counts = await tcoCounts(tx, YEAR);
+      expect([counts.received, counts.itemsDisabled, counts.minutes]).toEqual([null, null, null]);
+    });
+    // An erasure row written before the review names no kind: it counts for every year it could reach, and for no later one.
+    await rolledBack(w.migrateDb, async (tx) => {
+      expect((await tcoCounts(tx, YEAR)).received).not.toBeNull();
+      await appendAuditRow(tx, {
+        actorId: SYSTEM_ACTOR_ID,
+        action: "moderation_retention",
+        targetType: null,
+        targetId: null,
+        requestId: null,
+        metadata: { step: "order_records", caseId: null, intakeId: null, decisionId: null, orderId: randomUUID(), count: 3 },
+      });
+      // Written three years and a half after the middle of the year: its order's last row could lie in the year.
+      await tx.execute(sql`update public.audit_log set created_at = make_timestamptz(${YEAR + 3}::int, 12, 31, 0, 0, 0, 'UTC') where chain_seq = (select seq from public.audit_head where id = 1)`);
+      expect((await tcoCounts(tx, YEAR)).received).toBeNull();
+      expect((await tcoCounts(tx, YEAR + 1)).received).not.toBeNull();
     });
   });
 

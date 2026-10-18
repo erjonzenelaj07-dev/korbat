@@ -742,7 +742,9 @@ export function statementParagraphs(input: StatementInput, extras: OrderNoticeEx
       if (redress.replyAtOnce === undefined) throw new Error(`a statement's measure taken at once needs the reply's text, which redress version ${input.redressVersion} does not hold`);
       paragraphs.push(redress.replyAtOnce);
     }
-    const appeal = redress.appeal.replace("{deadline}", () => utcMinute(appealDeadline(new Date(input.decidedAt))));
+    // 3f's review (people3): the six months count from the telling, as the database's appeal_deadline counts them: a
+    // decision held with an order's notice is told at the release, which can be weeks after it was taken.
+    const appeal = redress.appeal.replace("{deadline}", () => utcMinute(appealDeadline(new Date(input.informedAt ?? input.decidedAt))));
     paragraphs.push(input.measures.some((measure) => measure.kind === "seal_media") ? `${appeal} ${W.sealAppeal}` : appeal);
     if (standing !== undefined && standing.announced === true && redress.appealNow !== undefined) paragraphs.push(redress.appealNow);
   } else if (input.kind === "correction" && input.outcome === "kept" && input.repliedTo !== undefined && redress.replyAnswered !== undefined) {
@@ -808,16 +810,21 @@ export const ORDER_NOTICE = {
     `The order comes from another Member State than korbat's. You have the right to ask the competent authority of ${homeState} to scrutinise it, with a reasoned request, within 48 hours of receiving the authority's reasons or a copy of the order (Article 4(4) of the Regulation). korbat cannot make that request for you.`,
   reasonsAt: (at: string) => `This notice has held the authority's reasons since ${at}.`,
   noReasonsYet: "This notice does not hold the authority's reasons yet.",
+  /** `preserveUntil` is the first end, six months from the disabling; an extension's later end is `preservedLonger`'s. */
   preserved: (preserveUntil: string) =>
     `korbat keeps the post, its images and a copy of its text until ${preserveUntil}, six months from the disabling, as Article 6 of the Regulation requires, so that it can be reinstated or examined; longer only if an authority or a court asks. Meanwhile korbat shows them to nobody but the authorities and courts the Regulation names, uses them for nothing else, and leaves them out of your data export. Then korbat erases them, and a later reinstatement cannot bring the post back. If you challenge the order, ask the court or the authority to tell korbat to keep the post until it is decided.`,
   preservedLonger: (preserveUntil: string) => `An authority or a court has asked korbat to keep them longer: until ${preserveUntil}.`,
-  erased: (erasedOn: string) => `The six months ended on ${erasedOn}. korbat erased the post's text, its images and its copies of them. The post cannot be reinstated.`,
+  // 3f's review (people6): the preservation, not six months: an extension or a freeze can make it longer.
+  erased: (erasedOn: string) => `The preservation ended on ${erasedOn}. korbat erased the post's text, its images and its copies of them. The post cannot be reinstated.`,
   everywhere: {
     tco_removal: "This applies everywhere korbat is available.",
     dsa_art9: "korbat cannot restrict content for one country alone, so it gave effect to the order everywhere korbat is available, which may be more than the order asks for.",
   },
   reapplied: (lostOn: string) =>
     `The post was first disabled on ${lostOn}. korbat lost its record of that when it had to restore its database from a backup, and disabled the post again with this decision; the six months above count from the first time.`,
+  /** 3f's review (people7): the same for a notice that shows no preservation above (a DSA order's, or once erased). */
+  reappliedNoPreservation: (lostOn: string) =>
+    `The post was first disabled on ${lostOn}. korbat lost its record of that when it had to restore its database from a backup, and disabled the post again with this decision.`,
   noAppeal: {
     tco_removal:
       "korbat's appeal does not apply: this is not korbat's decision, and korbat cannot lift it on its own review. You have the right to challenge the order before the courts of the Member State whose authority issued it (Article 9 of Regulation (EU) 2021/784). How, where and within what time is for that authority to say; korbat passes on what it said in this notice. If the order is withdrawn or annulled, korbat reinstates your post at once and tells you.",
@@ -830,7 +837,7 @@ export const ORDER_NOTICE = {
     lead: (disabledAt: string, createdAt: string, address: string) => `korbat lifted the measure it took on ${disabledAt} for an authority's order on your post of ${createdAt} (${address}).`,
     ground: ORDER_DRAFTS.reinstate,
     now: "Your post is shown again as before, unless another decision listed under Settings, Cases still restricts it.",
-    erased: (erasedOn: string) => `korbat had already erased the post's content when its six months ended on ${erasedOn}, so nothing can be shown again.`,
+    erased: (erasedOn: string) => `korbat had already erased the post's content when its preservation ended on ${erasedOn}, so nothing can be shown again.`,
   },
   lifted: "Nothing of the order's measure remains on this post. korbat's appeal does not apply to this. Where another decision about the post still stands, its own screen says whether you can appeal it.",
   /**
@@ -915,16 +922,20 @@ function orderNoticeParagraphs(input: StatementInput, extras: OrderNoticeExtras)
     const reasonsAt = texts !== null && texts.reasons !== null ? (reasonsLater ? texts!.reasonsAt : order.informedAt) : null;
     paragraphs.push(`${N.scrutiny(home)} ${reasonsAt === null ? N.noReasonsYet : N.reasonsAt(utcMinute(reasonsAt))}`);
   }
+  let preserved = false;
   if (order.kind === "tco_removal") {
     if (erasedOn !== null) paragraphs.push(N.erased(erasedOn));
     else if (order.preserveUntil !== null && order.preserveEndedOn === null) {
-      paragraphs.push(N.preserved(utcMinute(order.preserveUntil)));
+      // 3f's review (people6): the first end is six months from the disabling; an extended one is printed apart, as longer.
+      paragraphs.push(N.preserved(utcMinute(order.preserveFirstUntil ?? order.preserveUntil)));
       if (order.preserveExtended) paragraphs.push(N.preservedLonger(utcMinute(order.preserveUntil)));
+      preserved = true;
     }
   }
   paragraphs.push(N.everywhere[order.kind]);
-  // Task 6: a disabling taken again after a restore names the first disabling's day; its six months count from then.
-  if (input.reapplied) paragraphs.push(N.reapplied(input.reapplied.lostOn));
+  // Task 6: a disabling taken again after a restore names the first disabling's day; its six months count from then. A
+  // notice that shows no preservation above has no six months to refer to (3f's review, people7).
+  if (input.reapplied) paragraphs.push(preserved ? N.reapplied(input.reapplied.lostOn) : N.reappliedNoPreservation(input.reapplied.lostOn));
   paragraphs.push(N.noAppeal[order.kind]);
   paragraphs.push(N.wrongItem);
   return paragraphs;

@@ -204,7 +204,8 @@ async function repeatUrgent(deps: ModerationDeps, now: Date): Promise<DispatchRe
 async function alertWaiting(deps: ModerationDeps, now: Date): Promise<DispatchReport["waiting"]> {
   const waiting = await waitingCases(deps.apiDb, now);
   if (waiting.lanes.length === 0 && waiting.interim === 0 && waiting.replies === null) return "none";
-  return staffAlert(deps, WAITING_ALERT_KEY, WAITING_ALERT_WINDOW_MS, { template: "moderation_waiting", lanes: waiting.lanes, interim: waiting.interim, replies: waiting.replies });
+  // 3f's review (people4): the mail says whether the staff phones got the push, or that it is the only reminder.
+  return staffAlert(deps, WAITING_ALERT_KEY, WAITING_ALERT_WINDOW_MS, { template: "moderation_waiting", lanes: waiting.lanes, interim: waiting.interim, replies: waiting.replies, phones: deps.config.NOTIFY !== "off" });
 }
 
 /**

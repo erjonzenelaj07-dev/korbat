@@ -1186,6 +1186,8 @@ const Day = z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "must be a UTC day"
  * run (until then the lead says only that the order names that authority); `orderedOn` is the day of the order's own
  * time stamp (`orderedFrom` issued) or of its receipt (received), or null; `held` whether the notice was held, and
  * `informedAt` the one instant the author was told (the release, for a held one); `holdEndReason` a hold ended by hand.
+ * `preserveUntil` is the preservation's end as it stands, and (3f's review, people6) `preserveFirstUntil` its end six months
+ * and a day from the disabling it counts from, before any extension; the two differ only once the preservation was extended.
  */
 export const OrderNoticeFacts = z.object({
   kind: z.enum(["tco_removal", "dsa_art9"]),
@@ -1203,6 +1205,7 @@ export const OrderNoticeFacts = z.object({
   informedAt: At.nullable(),
   holdEndReason: z.enum(HOLD_END_REASONS).nullable(),
   preserveUntil: At.nullable(),
+  preserveFirstUntil: At.nullable(),
   preserveExtended: z.boolean(),
   preserveEndedOn: Day.nullable(),
   orderGround: z.enum(ORDER_GROUNDS).nullable(),

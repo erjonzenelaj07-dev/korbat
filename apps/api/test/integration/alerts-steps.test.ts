@@ -206,8 +206,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
   test("staffAlert writes the row of each kind of 3c and 3e, with its counts and times, and marks it mailed whether or not an address took the mail; the tick never mails it again", async () => {
     const at = new Date();
     const messages: StaffMessage[] = [
-      { template: "moderation_urgent", count: 2, oldest: at },
-      { template: "moderation_waiting", lanes: [{ lane: 1, count: 3, oldest: at }], interim: 0 },
+      { template: "moderation_urgent", count: 2, oldest: at, phones: true },
+      { template: "moderation_waiting", lanes: [{ lane: 1, count: 3, oldest: at }], interim: 0, phones: true },
       { template: "moderation_burst", handle: "mod_anna", count: 20 },
       { template: "moderation_reads", handle: "mod_anna", limit: 200 },
       { template: "moderation_reveal", handle: "mod_anna", at, count: 1, limit: 10 },

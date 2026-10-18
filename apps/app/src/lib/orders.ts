@@ -15,11 +15,18 @@ export const ORDER_TEXTS = {
     disabled: "a post disabled on an authority's order",
     removed: "a post removed on an authority's order",
     lifted: "an authority's order lifted",
+    /** 3f's review (people9): an order decision's row gives the day its author was told, not the disabling's (9.3). */
+    toldOn: (day: string) => `Told on ${day}`,
   },
   notice: {
     /** The screen's title for a decision of the kind `order` and for the reinstatement after one. */
     title: "Notice: an authority's order",
     noContent: "korbat does not show the post here. While it is disabled korbat keeps it only for the purposes the law names, and shows it only to the authorities and courts that law names.",
+    /**
+     * 3f's review (people5): the same place on the notice of a DSA Article 9 order that does not ask that the post be kept
+     * from its author: they still see it, with its chip, and nobody else does.
+     */
+    noContentRemoved: "korbat does not show the post here. You can still see it on your profile; other people cannot, for as long as the order's measure stands.",
     noAppeal: "This is not korbat's decision, so korbat's appeal does not apply. The notice says where the order can be challenged.",
     wrongItem: (contact: string) =>
       `If the order does not name this post, korbat made a mistake that it can correct itself. Write to ${contact} from the email address of your korbat account, with the address of the post and the reference this notice shows.`,

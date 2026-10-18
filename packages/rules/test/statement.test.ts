@@ -126,6 +126,15 @@ describe("statementParagraphs", () => {
       expect(statementParagraphs(statement()).at(-1)).toBe(appeal(DECIDED));
     });
 
+    test("3f's review (people3): a decision its author was told of later than it was taken (held with an order's notice) counts the six months from the telling", () => {
+      const told = "2027-01-02T10:05:00.000Z";
+      expect(statementParagraphs(statement({ informedAt: told })).at(-1)).toBe(appeal(told));
+      // Told at once, held still (null), or written before the member existed: from the decision, as before.
+      expect(statementParagraphs(statement({ informedAt: DECIDED })).at(-1)).toBe(appeal(DECIDED));
+      expect(statementParagraphs(statement({ informedAt: null })).at(-1)).toBe(appeal(DECIDED));
+      expect(statementParagraphs(statement()).at(-1)).toBe(appeal(DECIDED));
+    });
+
     test("every other decision carries the text for a decision its author cannot appeal", () => {
       const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R1" as const, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
       const others: StatementInput[] = [
@@ -1153,6 +1162,7 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
     informedAt: DISABLED,
     holdEndReason: null,
     preserveUntil: "2027-04-05T09:30:15.250Z",
+    preserveFirstUntil: "2027-04-05T09:30:15.250Z",
     preserveExtended: false,
     preserveEndedOn: null,
     orderGround: null,
@@ -1185,7 +1195,7 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
     for (const verified of [false, true]) {
       for (const held of [false, true]) {
         for (const texts of [null, TEXTS]) {
-          const order = facts({ kind, verified, held, informedAt: held ? "2026-11-16T00:10:00.000Z" : DISABLED, withholdAuthor: kind === "tco_removal" || held, preserveUntil: kind === "tco_removal" ? facts().preserveUntil : null, crossBorder: kind === "tco_removal" });
+          const order = facts({ kind, verified, held, informedAt: held ? "2026-11-16T00:10:00.000Z" : DISABLED, withholdAuthor: kind === "tco_removal" || held, preserveUntil: kind === "tco_removal" ? facts().preserveUntil : null, preserveFirstUntil: kind === "tco_removal" ? facts().preserveFirstUntil : null, crossBorder: kind === "tco_removal" });
           cases.push({ name: `${kind} verified=${verified} held=${held} texts=${texts !== null}`, input: notice(order), texts });
         }
       }
@@ -1310,6 +1320,37 @@ describe("3f: the notice of an authority's order (design, sections 7.10 and 10.7
     );
     // A notice of a disabling that was not lost says nothing of a restore.
     expect(statementParagraphs(notice(facts()), { texts: TEXTS }).join(NL)).not.toMatch(/restore/);
+  });
+
+  test("3f's review (people6): an extended preservation prints the first end as six months from the disabling and the extended one as longer; an erasure says that the preservation ended", () => {
+    const extended = statementParagraphs(notice(facts({ preserveExtended: true, preserveFirstUntil: "2027-04-05T09:30:15.250Z", preserveUntil: "2027-10-05T09:30:00.000Z" })), { texts: TEXTS });
+    const at = extended.indexOf(N.preserved("2027-04-05 09:30 UTC"));
+    expect(at).toBeGreaterThan(-1);
+    expect(extended[at + 1]).toBe(N.preservedLonger("2027-10-05 09:30 UTC"));
+    expect(extended.join(NL)).not.toContain("until 2027-10-05 09:30 UTC, six months from the disabling");
+    // Not extended: the one end, as before.
+    const plain = statementParagraphs(notice(facts()), { texts: TEXTS });
+    expect(plain).toContain(N.preserved("2027-04-05 09:30 UTC"));
+    expect(plain.join(NL)).not.toContain("keep them longer");
+    // An erasure after an extension, or one a freeze delayed, ends a preservation that was not six months.
+    expect(N.erased("2027-10-05")).toBe("The preservation ended on 2027-10-05. korbat erased the post's text, its images and its copies of them. The post cannot be reinstated.");
+    expect(N.reinstated.erased("2027-10-05")).toBe("korbat had already erased the post's content when its preservation ended on 2027-10-05, so nothing can be shown again.");
+    expect([N.erased("x"), N.reinstated.erased("x")].join(NL)).not.toContain("six months");
+  });
+
+  test("3f's review (people7): a disabling taken again whose notice shows no preservation (a DSA order, or one already erased) names no six months above", () => {
+    const dsa = statementParagraphs(notice(facts({ kind: "dsa_art9", preserveUntil: null, preserveFirstUntil: null, crossBorder: false }), { reapplied: { lostOn: "2026-10-02" } }), { texts: TEXTS });
+    const everywhere = dsa.indexOf(N.everywhere.dsa_art9);
+    expect(dsa[everywhere + 1]).toBe(N.reappliedNoPreservation("2026-10-02"));
+    expect(N.reappliedNoPreservation("2026-10-02")).toBe(
+      "The post was first disabled on 2026-10-02. korbat lost its record of that when it had to restore its database from a backup, and disabled the post again with this decision.",
+    );
+    expect(dsa.join(NL)).not.toContain("six months");
+    const erased = statementParagraphs(notice(facts(), { reapplied: { lostOn: "2026-10-02" } }), { texts: TEXTS, erasedOn: "2027-04-05" });
+    expect(erased).toContain(N.reappliedNoPreservation("2026-10-02"));
+    expect(erased.join(NL)).not.toContain("six months above");
+    // A removal order's notice that shows its preservation keeps the sentence that counts from the first time.
+    expect(statementParagraphs(notice(facts(), { reapplied: { lostOn: "2026-10-02" } }), { texts: TEXTS })).toContain(N.reapplied("2026-10-02"));
   });
 });
 

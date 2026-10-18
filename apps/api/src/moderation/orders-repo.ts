@@ -813,6 +813,18 @@ export async function dueOrderRecords(q: Querier): Promise<string[]> {
   return found.map((row) => row.order_id);
 }
 
+/**
+ * 3f's review (proofs3): what the yearly counts need to know of an order whose records are about to be erased, read in the
+ * erasure's own transaction: its kind and its receipt and opening times as they stand then. The order_records step's
+ * audit row carries them, since the order's opening row may name another kind (corrected since) or not exist (an order
+ * written again by restore-import), and the records themselves are gone afterwards. Null when no order has the id.
+ */
+export async function erasedOrderFacts(tx: DbTx, orderId: string): Promise<{ kind: string; receivedAt: string | null; openedAt: string } | null> {
+  const [row] = await tx.execute<{ kind: string; received_at: string | null; opened_at: string }>(sql`
+    select o.kind::text as kind, ${isoOf("o.received_at")} as received_at, ${isoOf("o.opened_at")} as opened_at from public.legal_orders o where o.id = ${orderId}::uuid`);
+  return row ? { kind: row.kind, receivedAt: row.received_at, openedAt: row.opened_at } : null;
+}
+
 /** erase_order_records(order), as its owner: how many rows of the order's records it deleted. Raises not_due when it is not due. */
 export async function eraseOrderRecords(tx: DbTx, orderId: string): Promise<number> {
   const [row] = await tx.execute<{ n: number }>(sql`select public.erase_order_records(${orderId}::uuid) as n`);

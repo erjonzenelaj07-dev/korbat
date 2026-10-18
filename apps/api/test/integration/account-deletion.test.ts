@@ -342,6 +342,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     const owner = await account();
     const userId = owner.user.id;
     await authRepo.setPhoneHash(userId, randomBytes(16).toString("hex"));
+    // 3f's review (proofs9): two-factor on, so that the check below of the secret and the codes proves their clearing.
+    await authRepo.enableTotp(userId, { secretEnc: "v1:held-account", recoveryCodesHash: ["code-a", "code-b"], now: new Date() });
+    expect(await authRow(userId)).toMatchObject({ totpSecretEnc: "v1:held-account", recoveryCodesHash: ["code-a", "code-b"] });
     // A seal taken while deciding holds the account's record: its hold, as report_open sets it, written as the migrator.
     await migrateDb.execute(sql`insert into auth.report_holds (user_id, set_at, seal_final) values (${userId}::uuid, now(), false)`);
     try {
@@ -349,7 +352,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
       await confirmDeletion(deps(), owner.session, { flowId, code: h.mailer.lastCodeFor(owner.email)!, handle: owner.handle });
       // Everything but the address went at once: the credentials and personal facts, the profile, the sessions.
       const held = (await authRow(userId))!;
-      expect(held).toMatchObject({ email: owner.email, purgedAt: null, passwordHash: null, totpSecretEnc: null, phoneHash: null, recoveryCodesHash: [], ageConfirmedAt: null, termsVersion: null, termsAcceptedAt: null });
+      expect(held).toMatchObject({ email: owner.email, purgedAt: null, passwordHash: null, totpSecretEnc: null, totpEnabledAt: null, phoneHash: null, recoveryCodesHash: [], ageConfirmedAt: null, termsVersion: null, termsAcceptedAt: null });
       expect(held.deletedAt).not.toBeNull();
       expect(await s.repo.findProfileByHandle(owner.handle)).toBeNull();
       // The mail: the one wording for every account, and the paragraph of the seal taken while deciding, with its day.

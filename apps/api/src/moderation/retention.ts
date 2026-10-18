@@ -6,7 +6,7 @@ import { createJob, type JobLock } from "../lib/jobs";
 import { DISPOSAL_BATCH } from "../media";
 import { appendAuditRow } from "../staff";
 import type { ModerationDeps } from "./context";
-import { deleteContactMessages, dueOrderRecords, duePreservations, endPreservation, eraseAuthorityRecords, eraseOrderRecords } from "./orders-repo";
+import { deleteContactMessages, dueOrderRecords, duePreservations, endPreservation, eraseAuthorityRecords, eraseOrderRecords, erasedOrderFacts } from "./orders-repo";
 import { deleteAccessLog, deleteRestoreGaps, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseReplyStatements, eraseStatementTexts, forgetReportCounts, redactR4, sweepStaffTexts } from "./repo";
 
 /**
@@ -96,6 +96,8 @@ interface StepIds {
   itemId?: string;
   orderId?: string;
   erased?: boolean;
+  /** 3f's review (proofs3): the erased order's kind, receipt and opening as they stood, which tco-counts reads. */
+  order?: { kind: string; receivedAt: string | null; openedAt: string };
 }
 
 /**
@@ -122,6 +124,7 @@ async function inStep(deps: Pick<ModerationDeps, "apiDb">, step: RetentionStep, 
           decisionId: ids.decisionId ?? null,
           ...(ids.itemId !== undefined ? { itemId: ids.itemId, erased: ids.erased ?? false } : {}),
           ...(ids.orderId !== undefined ? { orderId: ids.orderId } : {}),
+          ...(ids.order !== undefined ? { kind: ids.order.kind, receivedAt: ids.order.receivedAt, openedAt: ids.order.openedAt } : {}),
           count,
         },
       });
@@ -182,12 +185,13 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
       deps.log.error({ err, job: RETENTION_JOB, step: name }, "moderation-retention: a step failed; the round goes on");
     }
   };
-  /** Each row of a step in a try of its own, under the row's id. */
-  const each = async (name: RetentionStep, key: "caseId" | "intakeId" | "decisionId" | "orderId", ids: readonly string[], change: (tx: DbTx, id: string) => Promise<number>): Promise<number> => {
+  /** Each row of a step in a try of its own, under the row's id; the change may add to what its audit row names. */
+  const each = async (name: RetentionStep, key: "caseId" | "intakeId" | "decisionId" | "orderId", ids: readonly string[], change: (tx: DbTx, id: string, named: StepIds) => Promise<number>): Promise<number> => {
     let done = 0;
     for (const id of ids) {
       try {
-        if ((await inStep(deps, name, { [key]: id }, (tx) => change(tx, id))) > 0) done++;
+        const named: StepIds = { [key]: id };
+        if ((await inStep(deps, name, named, (tx) => change(tx, id, named))) > 0) done++;
       } catch (err) {
         report.failed++;
         deps.log.error({ err, job: RETENTION_JOB, step: name, [key]: id }, "moderation-retention: a row failed and was left as it was; the round goes on");
@@ -244,8 +248,15 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
     }
   });
   await step("order_records", async () => {
-    // Each order in a transaction of its own; its audit row counts the rows of its records deleted.
-    report.orderRecords = await each("order_records", "orderId", await dueOrderRecords(deps.apiDb), eraseOrderRecords);
+    // Each order in a transaction of its own; its audit row counts the rows of its records deleted and (3f's review,
+    // proofs3) names the order's kind and its receipt and opening as they stand when erased, read first in the same
+    // transaction: tco-counts reads them to know whose year's figures the erasure took, since the opening's own row may
+    // name another kind (a correction) or be missing (an order written again by restore-import).
+    report.orderRecords = await each("order_records", "orderId", await dueOrderRecords(deps.apiDb), async (tx, id, named) => {
+      const facts = await erasedOrderFacts(tx, id);
+      if (facts !== null) named.order = facts;
+      return eraseOrderRecords(tx, id);
+    });
   });
   // One call, which checks its own period against the database's clock: its audit row names no id.
   await step("contact_messages", async () => {

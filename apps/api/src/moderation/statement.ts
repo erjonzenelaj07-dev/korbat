@@ -61,6 +61,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
     reason: told ? decision.reason : null,
     source: decision.source as DecisionStatement["source"],
     decidedAt: decision.decidedAt,
+    // 3f's review (people3): the appeal's six months count from the telling, which a held decision's release sets.
+    informedAt: decision.informedAt,
     post: decision.targetType === "post" && decision.postCreatedAt !== null ? { id: decision.targetId, createdAt: decision.postCreatedAt } : null,
     measures: actions
       .filter((action) => MEASURES[action.kind].lifts === null)

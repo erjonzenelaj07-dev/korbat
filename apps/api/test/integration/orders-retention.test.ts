@@ -218,6 +218,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: retention of orders and 
       await reinstate(tx, old.view);
       await ageOrderForTest(tx, old.view.id, PAST_THE_RECORDS);
       await message(tx, 40, { disposition: "not_an_order", daysAgo: ORDER_RULES.messageKeepDays + 1 });
+      // 3f's review (proofs3): the erasure's audit row names the order's kind, receipt and opening as they stood.
+      const [was] = await tx.execute<{ kind: string; received: string | null; opened: string }>(
+        sql`select kind::text as kind, to_char(received_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as received, to_char(opened_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as opened
+              from public.legal_orders where id = ${old.view.id}::uuid`,
+      );
 
       const report = await retentionRound({ apiDb: tx as unknown as Db, media: casesMedia(tx), log });
       expect(report.preservations).toBeGreaterThanOrEqual(1);
@@ -230,7 +235,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: retention of orders and 
         )
       ).map((row) => row.metadata);
       expect(rows).toContainEqual({ step: "order_preservation", caseId: null, intakeId: null, decisionId: null, itemId: preserved.view.items[0]!.id, erased: true, count: 1 });
-      expect(rows).toContainEqual({ step: "order_records", caseId: null, intakeId: null, decisionId: null, orderId: old.view.id, count: expect.any(Number) });
+      expect(rows).toContainEqual({
+        step: "order_records",
+        caseId: null,
+        intakeId: null,
+        decisionId: null,
+        orderId: old.view.id,
+        kind: was!.kind,
+        receivedAt: was!.received,
+        openedAt: was!.opened,
+        count: expect.any(Number),
+      });
       expect(rows.some((row) => row.step === "contact_messages")).toBe(true);
       // The steps come before the disposal, which then takes the erased post's image rows.
       const steps = rows.map((row) => row.step);

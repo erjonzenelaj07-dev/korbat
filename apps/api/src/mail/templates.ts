@@ -86,6 +86,17 @@ const CSAM_LIFTED_WHAT: Record<string, string> = {
   dismissed: "answered a report or finding of child sexual abuse material without a seal",
 };
 
+/**
+ * 3f's review (people4): whether the phone alerts are on (NOTIFY), which the urgent-lane and waiting mails say, from their
+ * data's `phones`, "on" or "off". It has no default: a mail that would say a push went to a phone that nothing pushes to
+ * is the one this guards against, so a mail whose data does not say is refused as a programming error.
+ */
+function phonesOn(data: Record<string, string>): boolean {
+  const phones = need(data, "phones");
+  if (phones !== "on" && phones !== "off") throw new Error(`mail template data holds phones "${phones}", neither on nor off`);
+  return phones === "on";
+}
+
 /** The lanes as moderation_waiting names them, each with its response time. */
 const WAITING_LANES = [
   { key: "lane0", name: "The urgent lane", time: "24 hours" },
@@ -374,8 +385,9 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       const lane = "in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm)";
       return staffMail("korbat: a case is waiting in the urgent lane", [
         need(data, "count") === "1" ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.` : `${need(data, "count")} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
-        // 3f (W.4): the same alert went to the phone on call as a push.
-        "Open the staff console. The same alert went to the phone on call.",
+        // 3f (W.4): the same alert went to the phone on call as a push; 3f's review (people4): unless the phone alerts are
+        // switched off (NOTIFY=off), when this mail is the only alert, as before 3f.
+        phonesOn(data) ? "Open the staff console. The same alert went to the phone on call." : "Open the staff console. Phone alerts are switched off on this server, so this email is the only alert.",
       ]);
     }
     case "moderation_waiting": {
@@ -406,8 +418,11 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
         );
       }
       if (lines.length === 0) throw new Error("mail template data for moderation_waiting names nothing that waits");
-      // 3f (W.4): the same reminder went to every staff phone as a push.
-      return staffMail("korbat: cases are waiting longer than their response time", [...lines, "Open the staff console. The same reminder went to every staff phone."]);
+      // 3f (W.4): the same reminder went to every staff phone as a push, unless the phone alerts are off (people4).
+      return staffMail("korbat: cases are waiting longer than their response time", [
+        ...lines,
+        phonesOn(data) ? "Open the staff console. The same reminder went to every staff phone." : "Open the staff console. Phone alerts are switched off on this server, so this email is the only reminder.",
+      ]);
     }
     case "moderation_burst": {
       // One staff account confirmed many decisions in a short time (3c design, section 7.5, step 4): every staff

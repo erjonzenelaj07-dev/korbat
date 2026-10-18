@@ -130,7 +130,7 @@ describe("the staff alerts of deciding", () => {
   });
 
   test("moderation_waiting: one line for each lane with a case past its time, in lane order, a single case worded as one, and the cases that hold a measure taken while deciding", () => {
-    const r = renderTemplate("moderation_waiting", { lane0Count: "2", lane0Oldest: TIME, lane1Count: "1", lane1Oldest: TIME, lane2Count: "12", lane2Oldest: TIME, interimCount: "3" });
+    const r = renderTemplate("moderation_waiting", { lane0Count: "2", lane0Oldest: TIME, lane1Count: "1", lane1Oldest: TIME, lane2Count: "12", lane2Oldest: TIME, interimCount: "3", phones: "on" });
     expect(r.subject).toBe("korbat: cases are waiting longer than their response time");
     expect(paragraphs(r.text)).toEqual([
       `The urgent lane: 2 cases waiting longer than 24 hours; the oldest since ${TIME}.`,
@@ -142,16 +142,16 @@ describe("the staff alerts of deciding", () => {
     ]);
     linkless(r);
     // Only the lanes that have such a case, and the measures' line only when there is one.
-    const one = renderTemplate("moderation_waiting", { lane2Count: "1", lane2Oldest: TIME });
+    const one = renderTemplate("moderation_waiting", { lane2Count: "1", lane2Oldest: TIME, phones: "on" });
     expect(paragraphs(one.text)).toEqual([`Lane 2: 1 case waiting longer than 7 days, since ${TIME}.`, "Open the staff console. The same reminder went to every staff phone.", LAST_STAFF]);
-    const held = renderTemplate("moderation_waiting", { interimCount: "1" });
+    const held = renderTemplate("moderation_waiting", { interimCount: "1", phones: "on" });
     expect(paragraphs(held.text)).toEqual([
       "1 case has held a measure taken while deciding for more than 24 hours; its author cannot appeal until the case is decided.",
       "Open the staff console. The same reminder went to every staff phone.",
       LAST_STAFF,
     ]);
     // 3e: the replies to a suspension or a termination unanswered for longer than korbat's aim, after the lanes and the measures.
-    const replies = renderTemplate("moderation_waiting", { lane1Count: "1", lane1Oldest: TIME, replyCount: "2", replyOldest: TIME });
+    const replies = renderTemplate("moderation_waiting", { lane1Count: "1", lane1Oldest: TIME, replyCount: "2", replyOldest: TIME, phones: "on" });
     expect(paragraphs(replies.text)).toEqual([
       `Lane 1: 1 case waiting longer than 24 hours, since ${TIME}.`,
       `2 replies to a suspension or termination have waited more than ${REPLY_AIM_HOURS} hours, the oldest since ${TIME}. A reply sent before the start holds its suspension until someone answers.`,
@@ -159,13 +159,21 @@ describe("the staff alerts of deciding", () => {
       LAST_STAFF,
     ]);
     linkless(replies);
-    expect(paragraphs(renderTemplate("moderation_waiting", { replyCount: "1", replyOldest: TIME }).text)[0]).toBe(
+    expect(paragraphs(renderTemplate("moderation_waiting", { replyCount: "1", replyOldest: TIME, phones: "on" }).text)[0]).toBe(
       `1 reply to a suspension or termination has waited more than ${REPLY_AIM_HOURS} hours, since ${TIME}. A reply sent before the start holds its suspension until someone answers.`,
     );
-    expect(() => renderTemplate("moderation_waiting", { replyCount: "2" })).toThrow(/replyOldest/);
+    expect(() => renderTemplate("moderation_waiting", { replyCount: "2", phones: "on" })).toThrow(/replyOldest/);
     // A count without its time, and a mail about nothing, are programming errors.
-    expect(() => renderTemplate("moderation_waiting", { lane0Count: "2" })).toThrow(/lane0Oldest/);
-    expect(() => renderTemplate("moderation_waiting", {})).toThrow(/nothing/);
+    expect(() => renderTemplate("moderation_waiting", { lane0Count: "2", phones: "on" })).toThrow(/lane0Oldest/);
+    expect(() => renderTemplate("moderation_waiting", { phones: "on" })).toThrow(/nothing/);
+  });
+
+  test("3f's review (people4): with the phone alerts switched off, moderation_waiting says that it is the only reminder and never that one went to a phone", () => {
+    const off = renderTemplate("moderation_waiting", { lane2Count: "1", lane2Oldest: TIME, phones: "off" });
+    expect(paragraphs(off.text)).toEqual([`Lane 2: 1 case waiting longer than 7 days, since ${TIME}.`, "Open the staff console. Phone alerts are switched off on this server, so this email is the only reminder.", LAST_STAFF]);
+    expect(off.text).not.toContain("went to");
+    linkless(off);
+    expect(() => renderTemplate("moderation_waiting", { lane2Count: "1", lane2Oldest: TIME })).toThrow(/phones/);
   });
 });
 

@@ -58,6 +58,7 @@ const facts: OrderNoticeFacts = {
   informedAt: DISABLED_AT,
   holdEndReason: null,
   preserveUntil: "2027-04-17T09:00:00.000Z",
+  preserveFirstUntil: "2027-04-17T09:00:00.000Z",
   preserveExtended: false,
   preserveEndedOn: null,
   orderGround: null,
@@ -115,6 +116,18 @@ describe("the notice of an authority's order (9.3)", () => {
     expect(out).not.toMatch(new RegExp(`aria-level="2"[^>]*>${DECISION_WORDS.title.replace("'", "&#x27;")}<`));
   });
 
+  test("3f's review (people5): a DSA order that does not withhold leaves the post to its author, and the note says so, never that only authorities see it", () => {
+    const removed = notice({ order: { ...facts, kind: "dsa_art9", withholdAuthor: false, preserveUntil: null, preserveFirstUntil: null } });
+    expect(DecisionView.safeParse(removed).success).toBe(true);
+    const read = textOf(html(<DecisionDetail view={removed} />));
+    expect(read).toContain(ORDER_TEXTS.notice.noContentRemoved);
+    expect(read).toContain(ORDER_NOTICE.done.removed("2026-10-01 08:30 UTC", `/post/${id(1)}`, "2026-10-16 09:00 UTC"));
+    expect(read).not.toContain(ORDER_TEXTS.notice.noContent);
+    expect(read).not.toContain("only to the authorities");
+    // A measure that withholds keeps the first note.
+    expect(textOf(html(<DecisionDetail view={notice()} />))).not.toContain(ORDER_TEXTS.notice.noContentRemoved);
+  });
+
   test("without the authority's words, no block; the notice says they follow", () => {
     const read = textOf(html(<DecisionDetail view={notice({ orderTexts: { reasons: null, redress: null, scope: null, textsAt: null, reasonsAt: null } })} />));
     expect(read).not.toContain(ORDER_NOTICE.wordsBlock);
@@ -163,6 +176,14 @@ describe("Cases, the chip and the error (9.1, 9.3, 9.4)", () => {
     expect(read).toContain(ORDER_TEXTS.row.removed);
     expect(read).toContain(ORDER_TEXTS.row.lifted);
     expect(read).not.toContain(CASES_WORDS.law);
+  });
+
+  test("3f's review (people9): an order's row shows the day its author was told, not the disabling's; other rows keep their decision's day", () => {
+    const read = textOf(html(<DecisionsList decisions={[row({ order: "disabled", decidedOn: "2026-08-01", toldOn: "2026-10-16" }), row({ id: id(4), kind: "final", ruleId: "R1", legal: false, actions: ["remove"], decidedOn: "2026-09-01" })]} />));
+    expect(read).toContain(ORDER_TEXTS.row.toldOn("2026-10-16"));
+    expect(ORDER_TEXTS.row.toldOn("2026-10-16")).toBe("Told on 2026-10-16");
+    expect(read).not.toContain(CASES_WORDS.decidedOn("2026-08-01"));
+    expect(read).toContain(CASES_WORDS.decidedOn("2026-09-01"));
   });
 
   test("[chip.order] on a post a DSA order removed without withholding it; not_appealable in [notice.noAppeal]'s first words", () => {

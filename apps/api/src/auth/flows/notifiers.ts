@@ -131,8 +131,10 @@ export type NotifierUpdateResult = "sent" | "suppressed" | "no_address" | "forgo
  */
 export type StaffMessage =
   | StaffAlertMessage
-  | { template: "moderation_urgent"; count: number; oldest: Date }
-  | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number; replies?: { count: number; oldest: Date } | null }
+  // 3f's review (people4): `phones`, whether the phone alerts are on (NOTIFY), so the mail never says a push went to a
+  // phone when nothing publishes one, and says instead that it is the only alert.
+  | { template: "moderation_urgent"; count: number; oldest: Date; phones: boolean }
+  | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number; replies?: { count: number; oldest: Date } | null; phones: boolean }
   | { template: "moderation_burst"; handle: string; count: number }
   | { template: "moderation_reads"; handle: string; limit: number }
   | { template: "moderation_reveal"; handle: string; at: Date; count: number; limit: number }
@@ -190,10 +192,10 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "handover_undestroyed":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
-      return { count: String(message.count), oldest: noticeTime(message.oldest) };
+      return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off" };
     case "moderation_waiting": {
       // A lane's pair only for a lane with a case past its time, and the measures' count only when it is not 0.
-      const data: Record<string, string> = {};
+      const data: Record<string, string> = { phones: message.phones ? "on" : "off" };
       for (const lane of message.lanes) {
         if (lane.count <= 0) continue;
         data[`lane${lane.lane}Count`] = String(lane.count);

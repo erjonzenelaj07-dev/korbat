@@ -14,7 +14,9 @@
  * the time each took effect; the ledger's decisions by when they were decided; the productions by when each was opened;
  * and the audit log's rows by when each was written. An order's records go three years after its last event, and a
  * production's with it (6.8), while the ledger and the audit log stay: so the order figures are "not recorded" for a year
- * in which the retention job erased the records of a removal order that could have held a row of it, and the authority's
+ * in which the retention job erased the records of a removal order that could have held a row of it (3f's review,
+ * proofs3: judged from the erasure's own audit row, which names the order's kind and receipt as they stood then; an
+ * erasure row written before it names neither, and counts for every year it could reach), and the authority's
  * accesses for a year whose audit rows name a production that is gone. A message at the contact point is deleted 30 days
  * after it was handled, so the referrals are counted from the audit rows `contact_closed`, which keep the disposition.
  *
@@ -79,19 +81,22 @@ export async function tcoCounts(tx: DbTx, year: number): Promise<TcoCounts> {
   const from = sql`make_timestamptz(${year}::int, 1, 1, 0, 0, 0, 'UTC')`;
   const to = sql`make_timestamptz(${year + 1}::int, 1, 1, 0, 0, 0, 'UTC')`;
 
-  // Whether the retention job erased the records of a removal order that could have held a row of this year: the order
-  // was received (or opened) before the year ended, and its last row was at most record_keep_years before its erasure.
-  // The audit log keeps both rows that say so, the opening with the order's kind and receipt and the erasure's step.
+  // Whether the retention job erased the records of a removal order that could have held a row of this year: its last
+  // row was at most record_keep_years before its erasure, and the order was received (or opened) before the year ended.
+  // 3f's review (proofs3): the erasure's own audit row says the order's kind and receipt as they stood when it was erased;
+  // the opening's row is not read, since a correction may have changed the kind since and an order written again by
+  // restore-import has none. An erasure row written before the review names neither, and counts for every year it could
+  // reach, whatever the order was: a published zero must be a true one.
   const [ordersErased] = await rows<{ erased: boolean }>(
     tx,
     sql`select exists (
           select 1 from public.audit_log r
-            join public.audit_log o on o.action = 'order_opened' and o.target_id = r.metadata->>'orderId'
            cross join public.order_rules() k
            where r.action = 'moderation_retention' and r.metadata->>'step' = 'order_records'
-             and o.metadata->>'kind' = 'tco_removal'
-             and coalesce((o.metadata->>'receivedAt')::timestamptz, o.created_at) < ${to}
-             and r.created_at - make_interval(years => k.record_keep_years) >= ${from}) as erased`,
+             and r.created_at - make_interval(years => k.record_keep_years) >= ${from}
+             and (not (r.metadata ? 'kind')
+                  or (r.metadata->>'kind' = 'tco_removal'
+                      and coalesce((r.metadata->>'receivedAt')::timestamptz, (r.metadata->>'openedAt')::timestamptz) < ${to}))) as erased`,
   );
 
   const orders = await rows<{ member_state: string; cross_border: boolean; items_open: number; finished: boolean; within_hour: boolean | null; minutes: number | null }>(

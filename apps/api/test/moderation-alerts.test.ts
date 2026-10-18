@@ -17,11 +17,11 @@ import { createBackground, type ModerationDeps } from "../src/moderation/context
  * whether or not an address took the mail, so the alert tick never renders such a mail from a row.
  */
 
-const message: StaffMessage = { template: "moderation_urgent", count: 2, oldest: new Date("2026-10-04T06:59:59.123Z") };
+const message: StaffMessage = { template: "moderation_urgent", count: 2, oldest: new Date("2026-10-04T06:59:59.123Z"), phones: true };
 const dialect = new PgDialect();
 
 /** What the alert needs: a store, an auth module whose mailStaff answers as scripted, a log that keeps its warnings, and a database that records. */
-function world(options: { accepted?: number[]; limits?: RateLimitStore; waiting?: { n: number; oldest: string | null }; insertFails?: boolean } = {}) {
+function world(options: { accepted?: number[]; limits?: RateLimitStore; waiting?: { n: number; oldest: string | null }; insertFails?: boolean; notify?: "on" | "off" } = {}) {
   let now = 1_000_000;
   const store = options.limits ?? new MemoryStore(() => now);
   const mails: StaffMessage[] = [];
@@ -47,6 +47,8 @@ function world(options: { accepted?: number[]; limits?: RateLimitStore; waiting?
     return [options.waiting ?? { n: 2, oldest: "2026-10-04T06:59:59.123Z" }];
   };
   const deps = {
+    // 3f's review (people4): whether the phone alerts are on, which the urgent lane's mail says.
+    config: { NOTIFY: options.notify ?? "on" } as ModerationDeps["config"],
     limits: store,
     auth: {
       mailStaff: async (sent: StaffMessage) => {
@@ -159,8 +161,8 @@ describe("the alert's second leg (3f design, section 7.2)", () => {
     const at = new Date("2026-10-04T07:00:00.000Z");
     const kinds: [StaffMessage, Record<string, number | string>][] = [
       [message, { count: 2, oldestAt: "2026-10-04T06:59:59.123Z" }],
-      [{ template: "moderation_waiting", lanes: [{ lane: 0, count: 2, oldest: at }, { lane: 2, count: 1, oldest: at }], interim: 3, replies: { count: 1, oldest: at } }, { count: 7 }],
-      [{ template: "moderation_waiting", lanes: [], interim: 1 }, { count: 1 }],
+      [{ template: "moderation_waiting", lanes: [{ lane: 0, count: 2, oldest: at }, { lane: 2, count: 1, oldest: at }], interim: 3, replies: { count: 1, oldest: at }, phones: true }, { count: 7 }],
+      [{ template: "moderation_waiting", lanes: [], interim: 1, phones: false }, { count: 1 }],
       [{ template: "moderation_burst", handle: "mod_anna", count: 20 }, { count: 20 }],
       [{ template: "moderation_reads", handle: "mod_anna", limit: 200 }, { limit: 200 }],
       [{ template: "moderation_reveal", handle: "mod_anna", at, count: 1, limit: 10 }, { at: "2026-10-04T07:00:00.000Z" }],
@@ -178,12 +180,18 @@ describe("the urgent lane's alert", () => {
     expect([URGENT_ALERT_KEY, URGENT_ALERT_WINDOW_MS]).toEqual(["moderation-urgent", 15 * 60_000]);
     const w = world({ waiting: { n: 3, oldest: "2026-10-04T06:59:59.123Z" } });
     expect(await alertUrgentLane(w.deps)).toBe("sent");
-    expect(w.mails).toEqual([{ template: "moderation_urgent", count: 3, oldest: new Date("2026-10-04T06:59:59.123Z") }]);
+    expect(w.mails).toEqual([{ template: "moderation_urgent", count: 3, oldest: new Date("2026-10-04T06:59:59.123Z"), phones: true }]);
     expect(await alertUrgentLane(w.deps)).toBe("throttled");
     w.advance(15 * 60_000 + 1);
     expect(await alertUrgentLane(w.deps)).toBe("sent");
     // The key is the one the dispatch job repeats the alert under.
     expect((await w.store.hit("moderation-urgent", URGENT_ALERT_WINDOW_MS)).count).toBe(2);
+  });
+
+  test("3f's review (people4): with NOTIFY=off the mail says that the phones got nothing", async () => {
+    const w = world({ notify: "off" });
+    expect(await alertUrgentLane(w.deps)).toBe("sent");
+    expect(w.mails).toEqual([{ template: "moderation_urgent", count: 2, oldest: new Date("2026-10-04T06:59:59.123Z"), phones: false }]);
   });
 
   test("with nothing waiting any more, nothing is sent and no window is opened", async () => {

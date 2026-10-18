@@ -86,6 +86,8 @@ export async function authorCases(deps: Pick<ModerationDeps, "apiDb">, viewer: s
       ...(row.liftedStanding !== null ? { liftedStanding: row.liftedStanding } : {}),
       // 3f: an order's notice, or the reinstatement after one, names no rule.
       ...(row.order !== null ? { order: row.order } : {}),
+      // 3f's review (people9): an order decision's row shows the day its author was told.
+      ...(row.toldOn !== null ? { toldOn: row.toldOn } : {}),
     })),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > AUTHOR_CASES_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,

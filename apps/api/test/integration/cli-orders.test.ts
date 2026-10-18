@@ -6,6 +6,7 @@ import { closeDb, createDb, type Db } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { loadConfig } from "../../src/config";
 import { STAFF_USAGE, runStaffCommand } from "../../src/cli/staff";
+import { orderNoticeOf } from "../../src/moderation/statement-repo";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import { CHANNEL_TABLES, imagePost, newPostRow, newTestStaff, removeDecided, removeFixtures, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
@@ -348,6 +349,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the preservation's comma
     const done = await cli(args(later));
     expect(done.text).toBe(`out order-preserve-extend: item ${itemId} is preserved until ${later} (was ${was}).`);
     expect((await item(itemId)).until).toBe(later);
+    // 3f's review (people6): the notice prints the first end as six months from the disabling and the extended one as
+    // longer, each a fact of its own.
+    const [held] = await migrateDb.execute<{ decision: string }>(sql`select decision_id as decision from public.legal_order_items where id = ${itemId}::uuid`);
+    const notice = (await orderNoticeOf(w.apiDb, held!.decision, "DE"))!;
+    expect([notice.facts.preserveFirstUntil, notice.facts.preserveUntil, notice.facts.preserveExtended]).toEqual([was, later, true]);
     const [event] = await migrateDb.execute<{ kind: string; via: string; effective: string }>(
       sql`select kind, via, to_char(effective_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as effective from public.legal_order_events where item_id = ${itemId}::uuid and kind = 'preservation_extended'`,
     );

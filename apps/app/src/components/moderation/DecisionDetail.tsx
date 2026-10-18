@@ -121,7 +121,8 @@ function OrderNotice({ view }: { view: DecisionView }) {
         </View>
       ) : null}
       {view.content === null ? (
-        <Note>{ORDER_TEXTS.notice.noContent}</Note>
+        // 3f's review (people5): a DSA order that does not withhold leaves the post to its author, and the note says so.
+        <Note>{view.order?.withholdAuthor === false ? ORDER_TEXTS.notice.noContentRemoved : ORDER_TEXTS.notice.noContent}</Note>
       ) : (
         <Section title={DECISION_WORDS.content}>
           <Content content={view.content} />

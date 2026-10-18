@@ -33,6 +33,8 @@ describe("mail templates", () => {
       oldest: "2026-10-04 06:59 UTC",
       handle: "mod_anna",
       limit: "10",
+      // 3f's review (people4): whether the phone alerts are on, which the urgent-lane and waiting mails say.
+      phones: "on",
       // Moderation cases: a statement's subject key and paragraphs, the queue-age alert's pairs, and what a decision lifted.
       subject: "post_restricted",
       statement: "korbat removed your post of 2026-10-01 12:00 UTC: other people can no longer see it.\nThis applies everywhere korbat is available and has no end date.",
@@ -329,7 +331,7 @@ describe("mail templates", () => {
     });
 
     test("moderation_urgent gives the count and the oldest time, no link and no content, and says that the same alert went to the phone on call", () => {
-      const r = renderTemplate("moderation_urgent", { count: "3", oldest: "2026-10-04 06:59 UTC" });
+      const r = renderTemplate("moderation_urgent", { count: "3", oldest: "2026-10-04 06:59 UTC", phones: "on" });
       expect(r.subject).toBe("korbat: a case is waiting in the urgent lane");
       expect(paragraphs(r.text)).toEqual([
         "3 cases in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) are waiting; the oldest since 2026-10-04 06:59 UTC.",
@@ -339,7 +341,7 @@ describe("mail templates", () => {
       expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
       expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
       // One case reads as one: the only case is the oldest, so the sentence gives its time alone.
-      const one = renderTemplate("moderation_urgent", { count: "1", oldest: "2026-10-04 06:59 UTC" });
+      const one = renderTemplate("moderation_urgent", { count: "1", oldest: "2026-10-04 06:59 UTC", phones: "on" });
       expect(one.subject).toBe("korbat: a case is waiting in the urgent lane");
       expect(paragraphs(one.text)).toEqual([
         "1 case in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) is waiting, since 2026-10-04 06:59 UTC.",
@@ -347,10 +349,22 @@ describe("mail templates", () => {
         LAST_STAFF,
       ]);
       for (const count of ["2", "10", "11", "21"]) {
-        expect(renderTemplate("moderation_urgent", { count, oldest: "2026-10-04 06:59 UTC" }).text, count).toContain(`${count} cases in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) are waiting; the oldest since 2026-10-04 06:59 UTC.`);
+        expect(renderTemplate("moderation_urgent", { count, oldest: "2026-10-04 06:59 UTC", phones: "on" }).text, count).toContain(`${count} cases in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) are waiting; the oldest since 2026-10-04 06:59 UTC.`);
       }
-      expect(() => renderTemplate("moderation_urgent", { count: "3" })).toThrow(/oldest/);
-      expect(() => renderTemplate("moderation_urgent", { oldest: "2026-10-04 06:59 UTC" })).toThrow(/count/);
+      expect(() => renderTemplate("moderation_urgent", { count: "3", phones: "on" })).toThrow(/oldest/);
+      expect(() => renderTemplate("moderation_urgent", { oldest: "2026-10-04 06:59 UTC", phones: "on" })).toThrow(/count/);
+    });
+
+    test("3f's review (people4): with the phone alerts switched off, moderation_urgent says that it is the only alert and never that one went to a phone", () => {
+      const off = renderTemplate("moderation_urgent", { count: "3", oldest: "2026-10-04 06:59 UTC", phones: "off" });
+      expect(paragraphs(off.text)).toEqual([
+        "3 cases in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) are waiting; the oldest since 2026-10-04 06:59 UTC.",
+        "Open the staff console. Phone alerts are switched off on this server, so this email is the only alert.",
+        LAST_STAFF,
+      ]);
+      expect(off.text).not.toContain("went to");
+      // Whether the phones are on is no default: a mail that does not say is a programming error.
+      expect(() => renderTemplate("moderation_urgent", { count: "3", oldest: "2026-10-04 06:59 UTC" })).toThrow(/phones/);
     });
 
     test("moderation_reads names the staff account and the limit it reached, tells its holder what to do, and carries no link", () => {

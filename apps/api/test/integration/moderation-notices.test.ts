@@ -538,7 +538,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices", ()
       expect(await postFrozen(w.apiDb, postId)).toBe(true);
       expect((await w.migrateDb.execute<{ n: number }>(sql`select count(*)::int as n from evidence_snapshots where case_id = ${item!.case_id}::uuid`))[0]!.n).toBe(1);
       expect(urgentMails()).toHaveLength(1);
-      expect(urgentMails()[0]!.data).toEqual({ count: String(waitingBefore + 1), oldest: expect.stringMatching(/^[0-9-]{10} [0-9:]{5} UTC$/) });
+      // 3f's review (people4): and whether the phone alerts are on, which the mail says.
+      expect(urgentMails()[0]!.data).toEqual({ count: String(waitingBefore + 1), oldest: expect.stringMatching(/^[0-9-]{10} [0-9:]{5} UTC$/), phones: w.config.NOTIFY === "off" ? "off" : "on" });
       // A second urgent report within the alert's window sends no second mail.
       await submit(notices.csam([postTarget(postId)]));
       await settle();

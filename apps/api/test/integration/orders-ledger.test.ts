@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { ORDER_RULES, type OrderEffectedParams, type OrderView } from "@korbat/contracts";
-import type { DbTx } from "@korbat/db";
+import type { Db, DbTx } from "@korbat/db";
 import { appendAuditRow } from "../../src/staff";
 import { ModerationError } from "../../src/moderation/context";
 import { addItems, effectRows, orderView } from "../../src/moderation/orders";
@@ -29,6 +29,7 @@ import {
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 import { closeNotifyFixtures } from "./notify-fixtures";
 import { ORDER_TABLES, effectParams, effectWith, orderConfig, orderForTest, sessionOf } from "./orders-fixtures";
+import { newProfile } from "./social-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
 vi.setConfig({ testTimeout: 300_000 });
@@ -85,18 +86,26 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the ledger of an order",
 
   /**
    * The effect's rows with an audit row the test chooses, and decision_holds run at once: answers the refusal's code, or
-   * null when the decisions stand. The savepoint goes either way, so nothing is left behind.
+   * null when the decisions stand. The savepoint goes either way, so nothing is left behind. The audit row is the staff
+   * member's; the decisions name `deciderId` when given (3f's review, proofs5), else the same staff member.
    */
   async function rawEffect(
     tx: DbTx,
     staff: TestStaff,
     view: OrderView,
-    audit: { action?: "order_effected" | "case_decided"; plain?: boolean; params?: (p: OrderEffectedParams) => Record<string, unknown>; decisionIds?: (ids: Record<string, string>) => Record<string, string>; targetId?: string },
+    audit: {
+      action?: "order_effected" | "case_decided";
+      plain?: boolean;
+      params?: (p: OrderEffectedParams) => Record<string, unknown>;
+      decisionIds?: (ids: Record<string, string>) => Record<string, string>;
+      targetId?: string;
+      deciderId?: string;
+    },
     params: OrderEffectedParams = effectParams(view),
   ): Promise<string | null> {
     try {
       await tx.transaction(async (sp) => {
-        const ids = await effectRows(moderationDeps(sp, { config: orderConfig() }), sp, staff.id, params);
+        const ids = await effectRows(moderationDeps(sp, { config: orderConfig() }), sp, audit.deciderId ?? staff.id, params);
         const metadata = { params: audit.params ? audit.params(params) : params, decisionIds: audit.decisionIds ? audit.decisionIds(ids) : ids };
         if (audit.plain) await appendAuditRow(sp, { actorId: staff.id, action: "order_effected", targetType: "order", targetId: audit.targetId ?? view.id, requestId: null, metadata });
         else await appendConfirmedAudit(sp, { actorId: staff.id, action: audit.action ?? "order_effected", targetType: "order", targetId: audit.targetId ?? view.id, metadata, ...confirmedParts(staff) });
@@ -146,6 +155,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the ledger of an order",
       expect(all).toHaveLength(ORDER_RULES.itemsPerAction + 1);
       expect(await rawEffect(tx, moderator, eleven, {}, { ...effectParams(eleven), items: all })).toBe("invalid_decision");
       expect(await counted()).toBe(start);
+    });
+  });
+
+  test("3f's review (proofs5): LAB D's actor check: decisions that name an account that is not staff, or another staff member than the key's holder, are refused at commit", async () => {
+    await rolledBack(w.apiDb, async (tx) => {
+      const p = await imagePost(tx, 0);
+      const order = await orderForTest(tx, moderator, { posts: [p.postId] });
+      // An order decision needs no admin and no texts: only this check ties its decider to the key that signed.
+      const plain = await newProfile(tx as unknown as Db);
+      expect(await rawEffect(tx, moderator, order, { deciderId: plain.id })).toBe("invalid_decision");
+      expect(await rawEffect(tx, moderator, order, { deciderId: admin.id })).toBe("invalid_decision");
+      // Named after the key's holder, the same rows stand.
+      expect(await rawEffect(tx, moderator, order, {})).toBeNull();
     });
   });
 

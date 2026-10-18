@@ -25,6 +25,8 @@ export interface StatementDecisionRow {
   redressVersion: number;
   source: string;
   decidedAt: string;
+  /** 3f's review (people3): when its author was told: decidedAt, or the release for a decision held with an order's notice; null while held. */
+  informedAt: string | null;
   suspect: boolean;
   authorMail: string;
   /** 3f: when the statement's first mail was recorded; an order's notice mailed again after the authority's words is a mail of its own. */
@@ -46,7 +48,7 @@ export interface StatementDecisionRow {
 export async function statementDecision(q: Runner, decisionId: string): Promise<StatementDecisionRow | null> {
   const [row] = await rows<Record<string, unknown>>(
     q,
-    sql`select d.id, d.case_id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.source, ${iso("d.decided_at")} as decided_at, d.suspect, d.author_mail, ${iso("d.author_mail_at")} as author_mail_at, d.decided_by,
+    sql`select d.id, d.case_id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.source, ${iso("d.decided_at")} as decided_at, ${iso("d.informed_at")} as informed_at, d.suspect, d.author_mail, ${iso("d.author_mail_at")} as author_mail_at, d.decided_by,
                (select t.text from staff_texts t where t.digest = d.facts_digest) as facts,
                (select t.text from staff_texts t where t.digest = d.reason_digest) as reason,
                (select t.text from staff_texts t where t.digest = d.legal_reference_digest) as legal_reference,
@@ -71,6 +73,7 @@ export async function statementDecision(q: Runner, decisionId: string): Promise<
     redressVersion: row.redress_version as number,
     source: row.source as string,
     decidedAt: row.decided_at as string,
+    informedAt: row.informed_at as string | null,
     suspect: row.suspect as boolean,
     authorMail: row.author_mail as string,
     authorMailAt: row.author_mail_at as string | null,
@@ -425,6 +428,12 @@ export async function orderNoticeOf(
                coalesce(od.informed_at > od.decided_at, false) as held, ${iso("od.informed_at")} as informed_at, o.hold_end_reason,
                ${iso("i.preserve_until")} as preserve_until,
                exists (select 1 from legal_order_events e where e.item_id = i.id and e.kind = 'preservation_extended') as preserve_extended,
+               -- 3f's review (people6): the preservation's first end, six months and a day from the disabling it counts from,
+               -- which an extension moves no further: this decision's, or for a disabling taken again after a restore the
+               -- item's first disabling, from which the import counted it. Without an extension it is the end itself.
+               case when not exists (select 1 from legal_order_events e where e.item_id = i.id and e.kind = 'preservation_extended') then ${iso("i.preserve_until")}
+                    when i.preserve_until is not null
+                    then ${iso(`public.order_preserve_until(case when exists (select 1 from restore_gaps g where g.closed_by = od.id and g.disposition = 'reapplied') then i.disabled_at else od.decided_at end)`)} end as preserve_first_until,
                to_char(i.preserve_ended_at at time zone 'UTC', 'YYYY-MM-DD') as preserve_ended_on,
                -- Task 4: the day the preservation's end erased the post, which sets the post's erased_at and the item's
                -- preserve_ended_at to the same instant; null for an end without an erasure.
@@ -471,6 +480,7 @@ export async function orderNoticeOf(
       informedAt,
       holdEndReason: row.hold_end_reason as OrderNoticeFacts["holdEndReason"],
       preserveUntil: row.preserve_until as string | null,
+      preserveFirstUntil: row.preserve_first_until as string | null,
       preserveExtended: row.preserve_extended as boolean,
       preserveEndedOn: row.preserve_ended_on as string | null,
       orderGround: row.order_ground as OrderNoticeFacts["orderGround"],

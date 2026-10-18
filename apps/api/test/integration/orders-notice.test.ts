@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ORDER_RULES, type OrderView } from "@korbat/contracts";
+import { ORDER_RULES, RETENTION, appealDeadline, type OrderView } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import { ORDER_NOTICE, statementParagraphs } from "@korbat/rules";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
@@ -10,6 +10,7 @@ import { MemoryJobLock } from "../../src/lib/jobs";
 import { dispatchRound } from "../../src/moderation/dispatch";
 import { loadConfig } from "../../src/config";
 import { authorCases, authorDecisionView, authorFacts, exportedDecisions } from "../../src/moderation/author";
+import { authorDecisions } from "../../src/moderation/author-repo";
 import { ModerationError } from "../../src/moderation/context";
 import { decisionStatement, mailTemplateOf } from "../../src/moderation/statement";
 import { standingFor } from "../../src/moderation/standing";
@@ -139,10 +140,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
     expect(await strikes()).toEqual([1, 1, 1]);
     const [event] = await w.apiDb.execute<{ n: number }>(sql`select count(*)::int as n from public.legal_order_events where order_id = ${order.id}::uuid and kind = 'notice_released' and via = 'system'`);
     expect(event!.n).toBe(1);
-    // Now the author reads both, and the notice says that it was held until now.
+    // Now the author reads both, and the notice says that it was held until now. The notice's row is placed by the day its
+    // author was told, which it shows (3f's review, people9); the removal's by the day it was decided, during the hold.
     expect((await authorCases(deps, p.authorId)).decisions.map((d) => [d.kind, d.order ?? null])).toEqual([
-      ["final", null],
       ["order", "disabled"],
+      ["final", null],
     ]);
     const view = await authorDecisionView(deps, p.authorId, decisionId);
     expect(view.content).toBeNull();
@@ -179,6 +181,30 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
       const suspension = await suspend();
       const [rests] = await tx.execute<{ basis: string; rests: string[] }>(sql`select basis, rests_on::text[] as rests from public.decision_actions where decision_id = ${suspension}::uuid and kind = 'suspend'`);
       expect([rests!.basis, rests!.rests]).toEqual(["threat", [threat]]);
+    });
+  });
+
+  test("3f's review (people3): a decision held with the notice counts its appeal from the release: its statement's deadline is the decision screen's appealUntil, not six months from the day it was taken", async () => {
+    // As the migrator, who alone may move a decision's time and end the hold by hand here; the flows run as for the API.
+    await rolledBack(world.migrateDb, async (tx) => {
+      const p = await imagePost(tx, 0);
+      const order = await orderForTest(tx, moderator, { posts: [p.postId], sectionC: true });
+      await effectWith(tx, moderator, order.id, effectParams(order));
+      const finding = await intake(tx, ground.finding(admin.id, "R5"), aPost(p.postId));
+      const removal = await decideIn(tx, admin, finding.items[0]!.caseId!, { kind: "final", ruleId: "R5", actions: [act("remove")] });
+      // The removal was taken 40 days before the release.
+      await tx.execute(sql`update public.decisions set decided_at = decided_at - make_interval(days => 40) where id = ${removal}::uuid`);
+      await tx.execute(sql`update public.legal_orders set hold_ended_at = now(), hold_end_reason = 'released_by_authority' where id = ${order.id}::uuid`);
+      await tx.execute(sql`select public.order_notices_release()`);
+      const deps = { apiDb: tx as unknown as Db };
+      const view = await authorDecisionView(deps, p.authorId, removal);
+      expect(view.appealUntil).not.toBeNull();
+      const minute = (at: string) => `${at.slice(0, 10)} ${at.slice(11, 16)} UTC`;
+      const text = statementParagraphs((await decisionStatement(tx as unknown as Db, removal))!.statement).join(" ");
+      expect(text).toContain(minute(view.appealUntil!));
+      expect(text).not.toContain(minute(appealDeadline(new Date(view.decidedAt)).toISOString()));
+      // The screen renders the same statement's data, and so the same deadline.
+      expect(statementParagraphs(view).join(" ")).toContain(minute(view.appealUntil!));
     });
   });
 
@@ -334,6 +360,62 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the author's notice of a
     expect(await told(done.items[0]!.decisionId!)).toMatchObject({ informed: true, mail: "pending" });
     const notice = (await orderNoticeOf(w.apiDb, done.items[0]!.decisionId!, "DE"))!;
     expect([notice.facts.held, notice.facts.holdEndReason]).toEqual([true, "not_authentic"]);
+  });
+
+  test("3f's review (proofs8): a mail is given up counted from when it became owed: a notice released after its order aged ten days, and one grown by order-texts on a decision as old, each stay owed after a failed send and the give-up step", async () => {
+    const days = RETENTION.mailGiveUpDays + 5;
+    // Held, then released after the order and its decision were moved ten days back.
+    const p = await post();
+    const held = await orderForTest(w.apiDb, moderator, { posts: [p.postId], sectionC: true });
+    const heldDecision = (await effect(held)).items[0]!.decisionId!;
+    await ageOrderForTest(world.migrateDb, held.id, days * 24 * 60);
+    expect((await cli(["order-hold-end", held.id, "--reason", "released_by_authority", "--how", "the authority's letter"])).code).toBe(0);
+    // Told at once ten days ago, its first mail sent then; the authority's reasons recorded now owe it again.
+    const q = await post();
+    const grown = await orderForTest(w.apiDb, moderator, { posts: [q.postId] });
+    const grownDecision = (await effect(grown)).items[0]!.decisionId!;
+    await ageOrderForTest(world.migrateDb, grown.id, days * 24 * 60);
+    await world.migrateDb.execute(sql`update public.decisions set author_mail = 'sent', author_mail_at = now() - make_interval(days => ${days}) where id = ${grownDecision}::uuid`);
+    expect((await cli(["order-texts", grown.id, "--reasons"], "Reasons.")).code).toBe(0);
+    expect(await told(grownDecision)).toMatchObject({ mail: "pending" });
+    // One round: the release, the statements' sends (no address takes one here), and the give-up step after them.
+    const report = await dispatchRound(world.moderation.deps, new MemoryJobLock());
+    expect(report.noticesReleased).toBeGreaterThanOrEqual(1);
+    expect([await told(heldDecision), await told(grownDecision)]).toMatchObject([
+      { informed: true, mail: "pending" },
+      { informed: true, mail: "pending" },
+    ]);
+  });
+
+  test("3f's review (people9): on Cases a released notice shows the day its author was told and is placed by it, above a decision told after its disabling and before its release", async () => {
+    const p = await post();
+    // The author's other post, disabled for an order told at once twenty days ago.
+    const other = await imagePost(w.apiDb, 0, p.authorId);
+    posts.push(other.postId);
+    const earlier = await orderForTest(w.apiDb, moderator, { posts: [other.postId] });
+    const earlierDecision = (await effect(earlier)).items[0]!.decisionId!;
+    await ageOrderForTest(world.migrateDb, earlier.id, 20 * 24 * 60);
+    // The held notice: disabled forty days ago, released now.
+    const held = await orderForTest(w.apiDb, moderator, { posts: [p.postId], sectionC: true });
+    const heldDecision = (await effect(held)).items[0]!.decisionId!;
+    await ageOrderForTest(world.migrateDb, held.id, 40 * 24 * 60);
+    expect((await cli(["order-hold-end", held.id, "--reason", "released_by_authority", "--how", "the authority's letter"])).code).toBe(0);
+    expect(await release()).toBeGreaterThanOrEqual(1);
+    const days = async (id: string) =>
+      (await w.apiDb.execute<{ decided: string; informed: string }>(
+        sql`select to_char(decided_at at time zone 'UTC', 'YYYY-MM-DD') as decided, to_char(informed_at at time zone 'UTC', 'YYYY-MM-DD') as informed from public.decisions where id = ${id}::uuid`,
+      ))[0]!;
+    const [heldDays, earlierDays] = [await days(heldDecision), await days(earlierDecision)];
+    expect(heldDays.informed).not.toBe(heldDays.decided);
+    const page = await authorCases({ apiDb: w.apiDb }, p.authorId);
+    expect(page.decisions.map((row) => [row.id, row.toldOn ?? null, row.decidedOn])).toEqual([
+      [heldDecision, heldDays.informed, heldDays.decided],
+      [earlierDecision, earlierDays.informed, earlierDays.decided],
+    ]);
+    // Read a row a page: the cursor after the released notice follows the same order.
+    const [first] = await authorDecisions(w.apiDb, p.authorId, null, 1);
+    expect(first!.id).toBe(heldDecision);
+    expect((await authorDecisions(w.apiDb, p.authorId, { at: first!.sortAt, id: first!.id }, 1)).map((row) => row.id)).toEqual([earlierDecision]);
   });
 
   test("hold_ending warns every staff account daily in the last days before a hold's end, and not before", async () => {

@@ -86,7 +86,8 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
             <Pressable className="border-b border-zinc-800 px-4 py-3">
               <Text className="text-base font-semibold text-zinc-50">{row.post ? CASES_WORDS.post(utcMinute(row.post.createdAt)) : CASES_WORDS.profile}</Text>
               <Text className="mt-1 text-sm text-zinc-400">
-                {CASES_WORDS.decidedOn(row.decidedOn)}
+                {/* 3f's review (people9): an order's row shows the day its author was told, which the list sorts it by. */}
+                {row.toldOn !== undefined ? ORDER_TEXTS.row.toldOn(row.toldOn) : CASES_WORDS.decidedOn(row.decidedOn)}
                 {kind ? ` (${kind})` : ""}
               </Text>
               <Text className="mt-1 text-sm leading-5 text-zinc-200">{done(row, now)}</Text>

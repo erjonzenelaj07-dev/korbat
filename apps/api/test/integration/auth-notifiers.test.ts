@@ -489,7 +489,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
       const [moderator, admin, gone] = [await newStaffAccount(db, repo, "moderator"), await newStaffAccount(db, repo, "admin"), await newStaffAccount(db, repo, "moderator")];
       await repo.markDeleted(gone.user.id, h.clock.now());
       const user = await repo.createUser({ email: newTestEmail("plain"), termsVersion: "test", now: h.clock.now() });
-      const accepted = await mailStaff(h.deps, { template: "moderation_urgent", count: 2, oldest: new Date("2026-10-04T06:59:59.123Z") });
+      const accepted = await mailStaff(h.deps, { template: "moderation_urgent", count: 2, oldest: new Date("2026-10-04T06:59:59.123Z"), phones: true });
       // Other suites leave staff accounts in the shared database: every one of them is mailed too.
       expect(accepted).toBe(h.mailer.sent.length);
       const recipients = h.mailer.sent.map((m) => m.to);
@@ -499,7 +499,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
       expect(new Set(recipients).size).toBe(recipients.length);
       for (const sent of h.mailer.sent) {
         expect(sent.template).toBe("moderation_urgent");
-        expect(sent.data).toEqual({ count: "2", oldest: "2026-10-04 06:59 UTC" });
+        expect(sent.data).toEqual({ count: "2", oldest: "2026-10-04 06:59 UTC", phones: "on" });
       }
     });
 
@@ -513,17 +513,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
       await mailStaff(h.deps, { template: "moderation_csam_lifted", handle: "mod_anna", at, what: "dismissed" });
       expect(dataOf()).toMatchObject({ template: "moderation_csam_lifted", data: { handle: "mod_anna", time: "2026-10-04 06:59 UTC", what: "dismissed" } });
       // A lane's pair is there only for a lane with a case past its time, and the measures' count only when it is not 0.
-      await mailStaff(h.deps, { template: "moderation_waiting", lanes: [{ lane: 0, count: 2, oldest: at }, { lane: 2, count: 1, oldest: at }], interim: 0 });
-      expect(dataOf().data).toEqual({ lane0Count: "2", lane0Oldest: "2026-10-04 06:59 UTC", lane2Count: "1", lane2Oldest: "2026-10-04 06:59 UTC" });
-      await mailStaff(h.deps, { template: "moderation_waiting", lanes: [], interim: 3 });
-      expect(dataOf().data).toEqual({ interimCount: "3" });
+      await mailStaff(h.deps, { template: "moderation_waiting", lanes: [{ lane: 0, count: 2, oldest: at }, { lane: 2, count: 1, oldest: at }], interim: 0, phones: true });
+      expect(dataOf().data).toEqual({ phones: "on", lane0Count: "2", lane0Oldest: "2026-10-04 06:59 UTC", lane2Count: "1", lane2Oldest: "2026-10-04 06:59 UTC" });
+      // 3f's review (people4): with the phone alerts off the mail says so.
+      await mailStaff(h.deps, { template: "moderation_waiting", lanes: [], interim: 3, phones: false });
+      expect(dataOf().data).toEqual({ phones: "off", interimCount: "3" });
     });
 
     test("is best effort: a relay that takes no mail gives 0 and nothing is thrown; one that takes some gives their number", async () => {
       const h = flowHarness(repo);
       await newStaffAccount(db, repo, "moderator");
       await newStaffAccount(db, repo, "admin");
-      const message = { template: "moderation_urgent", count: 1, oldest: h.clock.now() } as const;
+      const message = { template: "moderation_urgent", count: 1, oldest: h.clock.now(), phones: true } as const;
       expect(
         await mailStaff(
           withMailer(h, async () => {

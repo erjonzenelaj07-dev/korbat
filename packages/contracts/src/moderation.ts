@@ -1889,6 +1889,12 @@ export const DecisionStatement = z.object({
    * it took again, read from the gap, which is kept for as long as the decision; absent for every other decision.
    */
   reapplied: z.object({ lostOn: z.iso.date() }).nullable().optional(),
+  /**
+   * 3f's review (people3): the instant its author was told of the decision, the decision's informed_at: its own time for a
+   * decision told at once, the release for one held with an order's notice, null while it is held; absent before the
+   * review. The appeal's six months count from it, as appeal_deadline counts them in the database.
+   */
+  informedAt: z.iso.datetime().nullable().optional(),
 });
 export type DecisionStatement = z.infer<typeof DecisionStatement>;
 
@@ -1945,6 +1951,12 @@ export const AuthorCaseRow = z.object({
    * reinstates after one, `lifted`. Such a row names no rule. Absent on every other row.
    */
   order: z.enum(["disabled", "removed", "lifted"]).optional(),
+  /**
+   * 3f's review (people9; design, section 9.3): on the row of an order decision, the UTC day its author was told, which the
+   * row shows in place of `decidedOn` and by which the list places it: a notice released after a hold is told weeks after
+   * the disabling. Absent on every other row.
+   */
+  toldOn: UtcDay.optional(),
 });
 export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 

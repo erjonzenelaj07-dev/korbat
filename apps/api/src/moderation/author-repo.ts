@@ -71,13 +71,22 @@ const casesAbout = (accountId: string) => sql`(
     select c.id, c.target_type, c.target_id from cases c join posts p on p.id = c.target_id where c.target_type = 'post' and p.author_id = ${accountId}::uuid
   )`;
 
+/**
+ * The time by which the author's list places decision `d` (3f's review, people9; section 9.3): an order decision's row
+ * shows, and sorts by, when its author was told, which for a notice released after a hold is weeks after the disabling;
+ * every other decision by its own time. The list reads only told decisions, so informed_at is set.
+ */
+const listedAt = sql.raw(`case when d.kind::text = 'order' then d.informed_at else d.decided_at end`);
+
 /** One decision as the author's list shows it. */
 export interface AuthorDecisionRow {
   id: string;
   kind: "interim" | "final" | "order" | "review" | "correction";
   outcome: string;
   decidedOn: string;
-  /** The decision's time to the microsecond, as text: what the next page starts after. */
+  /** 3f's review (people9): for an order decision, the UTC day its author was told, which its row shows; null otherwise. */
+  toldOn: string | null;
+  /** The time the list places the decision by (listedAt) to the microsecond, as text: what the next page starts after. */
   sortAt: string;
   post: { id: string; createdAt: string } | null;
   actions: ActionKind[];
@@ -110,7 +119,8 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
   const found = await rows<Record<string, unknown>>(
     q,
     sql`select d.id, d.kind, d.outcome, ${day("d.decided_at")} as decided_on,
-               to_char(d.decided_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as sort_at,
+               case when d.kind::text = 'order' then ${day("d.informed_at")} end as told_on,
+               to_char(${listedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as sort_at,
                c.target_type, c.target_id,
                (select ${iso("p.created_at")} from posts p where c.target_type = 'post' and p.id = c.target_id) as post_created_at,
                coalesce((select array_agg(a.kind::text order by a.kind, a.media_id) from decision_actions a where a.decision_id = d.id), '{}') as actions,
@@ -133,14 +143,15 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                     when exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind::text = 'reinstate_by_order') then 'lifted' end as about_order
           from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
          where ${toldToAuthor("d")}
-           ${after === null ? sql`` : sql`and (d.decided_at, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
-         order by d.decided_at desc, d.id desc limit ${limit}::int`,
+           ${after === null ? sql`` : sql`and (${listedAt}, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
+         order by ${listedAt} desc, d.id desc limit ${limit}::int`,
   );
   return found.map((row) => ({
     id: row.id as string,
     kind: row.kind as AuthorDecisionRow["kind"],
     outcome: row.outcome as string,
     decidedOn: row.decided_on as string,
+    toldOn: row.told_on as string | null,
     sortAt: row.sort_at as string,
     post: row.target_type === "post" && row.post_created_at !== null ? { id: row.target_id as string, createdAt: row.post_created_at as string } : null,
     actions: row.actions as ActionKind[],

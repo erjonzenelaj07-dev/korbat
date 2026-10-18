@@ -18,8 +18,9 @@ const LF = String.fromCharCode(10);
 /**
  * A restore and the import of the keeper's files (3f design, sections 7.17 and 12.3, LAB F on the real code; invariants 5
  * and 18). A backup is taken by snapshotForTest; then work is lost: an order opened and given effect with Section C, a
- * removal decided, a record to an authority opened and answered, the order verified from the shell. The keeper's file is
- * the tail from 300 places before the backup's head, as a keeper holds it. The database is restored by restoreForTest.
+ * removal decided, a record to an authority opened and answered, the order verified from the shell, a report answered
+ * with no breach. The keeper's file is the tail from 300 places before the backup's head, as a keeper holds it. The
+ * database is restored by restoreForTest.
  * A tail that begins above the head's next place, a line whose hash does not recompute, a line at the head's place with
  * another hash and a kept place with another hash are each refused whole; a hole is reported and the run before it
  * imported. The import writes again the order with its original times and its verification, the item's first disabling
@@ -46,9 +47,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
   let itemId: string;
   let orderPost: string;
   let removalCase: string;
-  let removalDecision: string;
+  let clearedCase: string;
   let recordId: string;
-  let lostDecision: { decision: unknown; actions: unknown[] };
+  let lostDecision: { decision: Record<string, unknown>; actions: unknown[] };
   let lostEffectAt: string;
   let lostRemovalAt: string;
   let lostOrderOpenedAt: string;
@@ -73,11 +74,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
     mod = await world.staff("moderator");
     admin = await world.staff("admin");
 
-    // Before the backup: the posts, the report on the second, and enough rows that the keeper's file starts 300 places
-    // before the head.
+    // Before the backup: the posts, the reports on the second and the third, and enough rows that the keeper's file
+    // starts 300 places before the head.
     orderPost = (await imagePost(apiDb, 0)).postId;
     const removed = await imagePost(apiDb, 0);
     removalCase = (await report(apiDb, aPost(removed.postId))).caseId;
+    clearedCase = (await report(apiDb, aPost((await imagePost(apiDb, 0)).postId))).caseId;
     await migrateDb.execute(sql`insert into public.audit_log (actor_id, action, metadata) select '00000000-0000-0000-0000-000000000000'::uuid, 'filler', jsonb_build_object('n', n) from generate_series(1, 320) n`);
     head = await readHead();
     backups = [await snapshotForTest(migrateDb), await snapshotForTest(migrateDb)];
@@ -90,7 +92,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
     if (typeof effected === "string") throw new Error(`the effect was not recorded: ${effected}`);
     const decided = await world.decideAs(mod, removalCase, { kind: "final", actions: [act("remove")] });
     if (typeof decided === "string") throw new Error(`the removal was not recorded: ${decided}`);
-    removalDecision = decided.decisionId;
     const opened = await recordCommand(migrateDb, parseRecordArgs("notification-open", ["--case", removalCase, "--duty", "voluntary"]), async () => Buffer.alloc(0));
     if (!opened.ok) throw new Error(opened.problem);
     recordId = /record ([0-9a-f-]{36})/.exec(opened.lines[0]!)![1]!;
@@ -102,8 +103,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
     if (!answered.ok) throw new Error(answered.problem);
     const verified = await orderCommand(migrateDb, parseOrderArgs("order-verify", [orderId, "--how", "compared with the register"]), { homeState: "DE", appOrigin }, async () => Buffer.alloc(0));
     if (!verified.ok) throw new Error(verified.problem);
-    const [decision] = await migrateDb.execute<{ row: unknown }>(sql`select to_jsonb(d) as row from public.decisions d where d.id = ${removalDecision}::uuid`);
-    const actions = await migrateDb.execute<{ row: unknown }>(sql`select to_jsonb(a) as row from public.decision_actions a where a.decision_id = ${removalDecision}::uuid`);
+    // Last, a report answered with no breach (3f's review, proofs7): a final decision with no measure and no texts, whose
+    // copy nothing refuses at insert, so that decision_holds alone refuses it at commit.
+    const cleared = await world.decideAs(mod, clearedCase, { kind: "final", outcome: "no_violation" });
+    if (typeof cleared === "string") throw new Error(`the answer was not recorded: ${cleared}`);
+    const [decision] = await migrateDb.execute<{ row: Record<string, unknown> }>(sql`select to_jsonb(d) as row from public.decisions d where d.id = ${cleared.decisionId}::uuid`);
+    const actions = await migrateDb.execute<{ row: unknown }>(sql`select to_jsonb(a) as row from public.decision_actions a where a.decision_id = ${cleared.decisionId}::uuid`);
     lostDecision = { decision: decision!.row, actions: actions.map((a) => a.row) };
     const times = await migrateDb.execute<{ action: string; at: string; meta: Record<string, unknown> }>(
       sql`select action, to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at, metadata as meta from public.audit_log where chain_seq > ${head.seq} order by chain_seq`,
@@ -207,25 +212,31 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
       ["order_effect", "order_effected"],
       ["restriction", "case_decided"],
       ["record", "notification_recorded"],
+      ["no_measure", "case_decided"],
     ]);
     expect(gaps.filter((g) => !g.open).map((g) => g.action).sort()).toEqual(["notification_recorded", "order_opened", "order_recorded"]);
     const [imported] = await migrateDb.execute<{ action: string; counts: Record<string, number> }>(
       sql`select action, metadata -> 'counts' as counts from public.audit_log where chain_seq = (select seq from public.audit_head where id = 1)`,
     );
-    expect(imported).toEqual({ action: "restore_imported", counts: { order_effect: 1, restriction: 1, record: 4 } });
+    expect(imported).toEqual({ action: "restore_imported", counts: { order_effect: 1, restriction: 1, record: 4, no_measure: 1 } });
   });
 
   test("the migrator's own copy of the lost decision and its measure never commits: decision_holds refuses it without a confirmed audit row", async () => {
     const decisions = await count("decisions");
+    // 3f's review (proofs7): the lost answer of no breach needs no texts, so nothing refuses its row at insert and
+    // decision_holds at commit is the only guard. (A copy of the lost removal is refused first, for its texts, which the
+    // restore lost; the lost order decision for its case, lost with it.)
     const copied = refusal(
       migrateDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '10s'`);
         await tx.execute(sql`insert into public.decisions select * from jsonb_populate_record(null::public.decisions, ${JSON.stringify(lostDecision.decision)}::jsonb)`);
         for (const action of lostDecision.actions) await tx.execute(sql`insert into public.decision_actions select * from jsonb_populate_record(null::public.decision_actions, ${JSON.stringify(action)}::jsonb)`);
       }),
     );
-    expect(await copied).not.toBeNull();
+    expect(await copied).toBe("invalid_decision");
     expect(await count("decisions")).toBe(decisions);
-    expect((await migrateDb.execute<{ state: string }>(sql`select state::text from public.posts p join public.cases c on c.target_id = p.id where c.id = ${removalCase}::uuid`))[0]!.state).toBe("visible");
+    // The case stays open, as the restore left it.
+    expect((await migrateDb.execute<{ open: boolean }>(sql`select closed_at is null as open from public.cases where id = ${clearedCase}::uuid`))[0]!.open).toBe(true);
   });
 
   test("taken again under a key: the disabling keeps its first time and its preservation, its notice stays held, and its gap closes; the removal closes its own, and its statement names the lost day", async () => {

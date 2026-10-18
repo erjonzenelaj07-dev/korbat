@@ -5,6 +5,7 @@ import { GAP_CLASSES, GAP_DISPOSITIONS, ORDER_RULES, type GapClass } from "@korb
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
+import { appendConfirmedAudit } from "../../src/moderation/repo";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import {
   RECOVERY_TABLES,
@@ -14,6 +15,7 @@ import {
   hex64,
   imagePost,
   newTestStaff,
+  raised,
   refusal,
   report,
   rowCounts,
@@ -210,6 +212,46 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the restore gaps", () =>
     // A second closing of the same gap is refused before anything is written.
     const again = await world.confirmAction(real, { action: "gap_closed", target: { type: "restore_gap", id: gap }, params: { disposition: "not_needed" } });
     expect(await refusal(world.moderation.forStaff.closeGap(real.session, again, { requestId: `req-${randomUUID()}` }))).toBe("gap_mismatch");
+  });
+
+  test("3f's review (proofs6): the commit's own check that the confirmed row is an admin's: gap_close naming an admin, with a moderator's confirmed row gap_closed on the gap, is refused at commit; with the admin's own, it stands", async () => {
+    const gap = await gapOf("no_measure");
+    /** The closing with a confirmed row of the signer's key, the commit's check run at once; rolled back either way. */
+    const closing = async (named: TestStaff, signer: TestStaff): Promise<{ code: string; detail: string | null } | null> => {
+      try {
+        await apiDb.transaction(async (tx) => {
+          await tx.execute(sql`set local lock_timeout = '10s'`);
+          // gap_close checks the account it is given, here an admin, before it closes.
+          await tx.execute(sql`select public.gap_close(${gap}::uuid, null, ${named.id}::uuid)`);
+          await appendConfirmedAudit(tx, {
+            actorId: signer.id,
+            keyId: signer.keyId,
+            action: "gap_closed",
+            targetType: "restore_gap",
+            targetId: gap,
+            metadata: { disposition: "not_needed" },
+            staffSession: randomUUID(),
+            actionHash: hex64(),
+            stepUp: { authenticatorData: "AAAA", clientDataJSON: "BBBB", signature: "CCCC" },
+            requestId: `req-${randomUUID()}`,
+            expiresAt: new Date(Date.now() + 10 * 60_000),
+          });
+          await tx.execute(sql`set constraints public.restore_gaps_confirmed immediate`);
+          throw new Error("held");
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message === "held") return null;
+        const found = raised(err);
+        return found === null ? { code: String(err), detail: null } : { code: found.message, detail: found.detail };
+      }
+      return null;
+    };
+    // Another account than the one named, a moderator, signed the row: only the commit's check sees it.
+    const refused = await closing(admin, mod);
+    expect(refused?.code).toBe("gap_mismatch");
+    expect(refused?.detail).toMatch(/^actor: /);
+    expect(await closing(admin, admin)).toBeNull();
+    expect((await gapRow(apiDb, gap)).closed).toBe(false);
   });
 
   test("delete_restore_gaps: a gap closed as not needed or imported goes 12 months on, a gap a decision closed never; the copy marks that old go, but the newest", async () => {

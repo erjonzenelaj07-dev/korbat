@@ -184,6 +184,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
 
   test("3f Task 5: while a report of the account's sealed images is owed, its deletion answers as ever, 204 and gone for everyone; the address alone waits, and the mail says until when", async () => {
     const ada = await signUp();
+    // 3f's review (proofs9): two-factor on, so that the check below of the secret and the codes proves their clearing.
+    await auth.deps.repo.enableTotp(ada.userId, { secretEnc: "v1:held-account", recoveryCodesHash: ["code-a"], now: new Date() });
     // A seal for good holds the account's record: its hold, as report_open sets it, written as the migrator.
     await migrateDb.execute(sql`insert into auth.report_holds (user_id, set_at, seal_final) values (${ada.userId}::uuid, now(), true)`);
     try {
@@ -193,8 +195,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
       expect((await app.request(`/api/profiles/${ada.handle}`)).status).toBe(404);
       // The address waits for the report: the account stays pending, its credentials gone.
       expect(await auth.deps.repo.pendingPurges()).toContain(ada.userId);
-      const [row] = await migrateDb.execute<{ email: string; password_hash: string | null; purged_at: string | null }>(sql`select email, password_hash, purged_at from auth.users where id = ${ada.userId}::uuid`);
-      expect({ ...row }).toEqual({ email: ada.email, password_hash: null, purged_at: null });
+      const [row] = await migrateDb.execute<{ email: string; password_hash: string | null; totp_secret_enc: string | null; recovery_codes_hash: string[]; purged_at: string | null }>(
+        sql`select email, password_hash, totp_secret_enc, recovery_codes_hash, purged_at from auth.users where id = ${ada.userId}::uuid`,
+      );
+      expect({ ...row }).toEqual({ email: ada.email, password_hash: null, totp_secret_enc: null, recovery_codes_hash: [], purged_at: null });
       const [until] = await migrateDb.execute<{ day: string }>(sql`select to_char(auth.address_held_until(${ada.userId}::uuid) at time zone 'UTC', 'YYYY-MM-DD') as day`);
       const mail = mailer.sent.filter((m) => m.to === ada.email && m.template === "account_deleted").at(-1)!;
       expect(mail.data).toEqual({ heldUntil: until!.day, holdFinal: "true" });
