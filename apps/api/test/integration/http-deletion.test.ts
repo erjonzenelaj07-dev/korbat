@@ -182,6 +182,30 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion over HT
     expect(await auth.deps.repo.pendingPurges()).not.toContain(ada.userId);
   });
 
+  test("3f Task 5: while a report of the account's sealed images is owed, its deletion answers as ever, 204 and gone for everyone; the address alone waits, and the mail says until when", async () => {
+    const ada = await signUp();
+    // A seal for good holds the account's record: its hold, as report_open sets it, written as the migrator.
+    await migrateDb.execute(sql`insert into auth.report_holds (user_id, set_at, seal_final) values (${ada.userId}::uuid, now(), true)`);
+    try {
+      const { flowId } = DeleteStartResponse.parse(await (await startOf(ada.b)).json());
+      const confirmed = await ada.b.fetch("/api/account/delete/confirm", { json: { flowId, code: mailer.lastCodeFor(ada.email)!, handle: ada.handle } });
+      expect(confirmed.status).toBe(204);
+      expect((await app.request(`/api/profiles/${ada.handle}`)).status).toBe(404);
+      // The address waits for the report: the account stays pending, its credentials gone.
+      expect(await auth.deps.repo.pendingPurges()).toContain(ada.userId);
+      const [row] = await migrateDb.execute<{ email: string; password_hash: string | null; purged_at: string | null }>(sql`select email, password_hash, purged_at from auth.users where id = ${ada.userId}::uuid`);
+      expect({ ...row }).toEqual({ email: ada.email, password_hash: null, purged_at: null });
+      const [until] = await migrateDb.execute<{ day: string }>(sql`select to_char(auth.address_held_until(${ada.userId}::uuid) at time zone 'UTC', 'YYYY-MM-DD') as day`);
+      const mail = mailer.sent.filter((m) => m.to === ada.email && m.template === "account_deleted").at(-1)!;
+      expect(mail.data).toEqual({ heldUntil: until!.day, holdFinal: "true" });
+    } finally {
+      // Released, and the address overwritten as the next purge round would.
+      await migrateDb.execute(sql`update auth.report_holds set released_at = now(), release_reason = 'sent' where user_id = ${ada.userId}::uuid`);
+      expect(await auth.deps.repo.finishPurge(ada.userId, new Date())).toBe("purged");
+      await migrateDb.execute(sql`delete from auth.report_holds where user_id = ${ada.userId}::uuid`);
+    }
+  });
+
   test("3e: while the account's suspension runs, its deletion answers as ever: no hold (GDPR Art. 17)", async () => {
     const ada = await signUp();
     const created = await ada.b.fetch("/api/posts", { json: { body: "posted before the suspension" } });

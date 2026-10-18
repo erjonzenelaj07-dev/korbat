@@ -450,6 +450,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.delete_access_log",
         // Task 4 (0029_orders_retention): the retention job's three steps of 3f.
         "public.delete_contact_messages",
+        // Task 5 (0030_authority_records): the retention step of the records to authorities, which answers a count.
+        "public.erase_authority_records",
         "public.erase_case_evidence",
         "public.erase_intake",
         "public.erase_order_records",
@@ -474,6 +476,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.post_preserved",
         "public.redact_r4_body",
         "public.release_outcomes",
+        // Task 5: what the console learns of the records to authorities: a case, a kind and a time for each owed one.
+        "public.reports_owed",
         "public.review_needs_admin",
         "public.snapshot_withheld",
         "public.staff_case_conflict",
@@ -636,6 +640,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         decision_actions_check: "BEFORE INSERT ON public.decision_actions FOR EACH ROW",
         // The decision's check at commit, queued again by every row of its ledger.
         decision_actions_recheck: "AFTER INSERT ON public.decision_actions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
+        // 3f Task 5 (0030_authority_records): a seal opens its record to the authorities, after decision_actions_apply.
+        decision_actions_report: "AFTER INSERT ON public.decision_actions FOR EACH ROW",
         decisions_apply: "AFTER INSERT ON public.decisions FOR EACH ROW",
         decisions_check: "AFTER INSERT ON public.decisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW",
         // 3e: a statement mail's outcome moves one way, and fixes the start of an announced measure.
@@ -690,6 +696,36 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       }
       const views = (await otherDefinitions()).filter((d) => d.kind === "view" && d.name === "legal_order_clock");
       expect(views.map((v) => /interval '/i.test(v.definition))).toEqual([false]);
+    });
+
+    test("3f Task 5's writers (0030_authority_records; design, section 6.7): only report_open and report_close_unsealed write a hold and a notification record, erase_authority_records deletes them, and none holds a number of order_rules()", async () => {
+      const all = await functions();
+      const writing = (pattern: RegExp) => all.filter((f) => pattern.test(f.definition)).map((f) => f.name);
+      expect(writing(/(UPDATE|INSERT INTO) auth[.]report_holds/i)).toEqual(["public.report_close_unsealed", "public.report_open"]);
+      expect(writing(/(UPDATE|INSERT INTO) public[.]authority_notifications /i)).toEqual(["public.report_close_unsealed", "public.report_open"]);
+      expect(writing(/DELETE FROM (auth[.]report_holds|public[.]authority_notifications|public[.]productions)/i)).toEqual(["public.erase_authority_records"]);
+      // report_close_unsealed has its two callers: the final decision that answered a suspect item, and an unseal_media row.
+      expect(writing(/report_close_unsealed[(]/).filter((name) => name !== "public.report_close_unsealed")).toEqual(["public.decisions_apply", "public.report_open"]);
+      const fns = ["public.report_open", "public.report_close_unsealed", "public.reports_owed", "public.seal_report", "public.erase_authority_records", "public.authority_records_times", "auth.address_held_until", "auth.address_held", "auth.address_hold_final"];
+      for (const name of fns) {
+        const f = all.find((found) => found.name === name)!;
+        expect([f.owner, f.definer, f.config, f.pub], name).toEqual(["korbat_migrate", true, ["search_path=public, pg_temp"], false]);
+        expect(f.definition, name).not.toMatch(/interval '/i);
+      }
+      // seal_report is executable by nobody yet (3d's release will call it), report_close_unsealed by nobody, the auth
+      // module's three reads by korbat_auth alone.
+      for (const name of ["public.seal_report", "public.report_close_unsealed", "public.report_open"]) {
+        const f = all.find((found) => found.name === name)!;
+        expect([f.api, f.auth], name).toEqual([false, false]);
+      }
+      for (const name of ["auth.address_held_until", "auth.address_held", "auth.address_hold_final"]) {
+        const f = all.find((found) => found.name === name)!;
+        expect([f.api, f.auth], name).toEqual([false, true]);
+      }
+      // The trigger fires after decision_actions_apply, by name, on every insert of a ledger row.
+      const [trigger] = await apiDb.execute<{ definition: string }>(sql`select pg_get_triggerdef(t.oid) as definition from pg_trigger t where t.tgname = 'decision_actions_report'`);
+      expect(trigger!.definition).toMatch(/AFTER INSERT ON public[.]decision_actions FOR EACH ROW EXECUTE FUNCTION (public[.])?report_open[(][)]/);
+      expect("decision_actions_apply" < "decision_actions_report").toBe(true);
     });
 
     test("measures_in_force runs with its reader's rights and names exactly the contracts' measures", async () => {

@@ -191,6 +191,8 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     preserved: false,
     noticeHeld: null,
     orderErasedOn: null,
+    // 3f Task 5: no report to the authorities is owed for this case.
+    reportOwed: null,
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },
@@ -454,6 +456,8 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     contact: { open: 0, oldestAt: null, dueAt: null },
     alerts: { channel: "ok", since: null },
     ordersUnverified: { total: 0, items: [] },
+    // 3f Task 5: no report to the authorities owed.
+    reportsOwed: { total: 0, items: [] },
     ...overrides,
   };
 }

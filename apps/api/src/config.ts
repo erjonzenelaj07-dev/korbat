@@ -215,6 +215,12 @@ const schema = z.object({
    */
   NOTIFY: blankAsUnset.pipe(z.enum(["on", "off"]).optional()),
   /**
+   * 3f (design, sections 2 row 35, 7.15 and 10.7): whether a deletion keeps an account's address while a report of its
+   * sealed images to the authorities is owed, for at most ORDER_RULES.reportHoldDays: everything else of the account goes
+   * at once. On unless set to off; off restores 1b's purge, which overwrites the address at once.
+   */
+  REPORT_HOLD: blankAsUnset.pipe(z.enum(["on", "off"]).default("on")),
+  /**
    * 3f (design, sections 2 row 41 and 10.7): the operator's Member State, a key of the contracts' STATE_FACTS (a state whose
    * facts are filled in), from which an order is judged cross-border and the console reads the register's entries and
    * Annex II's copy address. Unset until the owner names it; required once CONTACT_POINT is set.

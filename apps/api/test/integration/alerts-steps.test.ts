@@ -408,6 +408,59 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the alert steps and the 
     });
   });
 
+  test("3f Task 5: report_owed, daily, while a notification record is owed and was opened more than reportAlertHours ago, with how many and the oldest; none once it is sent", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const since = new Date();
+      // Inside a transaction that ends in a rollback: no other file's owed record may count here.
+      await tx.execute(sql`delete from public.alert_outbox where kind = 'report_owed'`);
+      await tx.execute(sql`delete from public.authority_notifications`);
+      const record = async (hoursAgo: number) => {
+        const [row] = await tx.execute<{ id: string }>(sql`
+          insert into public.authority_notifications (state, duties, case_id, account_id, opened_at, opened_via, imported_at)
+          values ('owed', '{voluntary}', gen_random_uuid(), gen_random_uuid(), now() - make_interval(hours => ${hoursAgo}), 'cli', now()) returning id`);
+        return row!.id;
+      };
+      await record(ORDER_RULES.reportAlertHours - 1);
+      await steps(tx);
+      expect(await outboxSince(tx, "report_owed", since)).toEqual([]);
+      const late = await record(ORDER_RULES.reportAlertHours + 2);
+      await record(ORDER_RULES.reportAlertHours + 1);
+      await steps(tx);
+      await steps(tx);
+      const rows = await outboxSince(tx, "report_owed", since);
+      expect(rows.map((r) => [r.step, r.scope, r.priority, r.facts.count, typeof r.facts.oldestAt])).toEqual([[0, "all", 5, 2, "string"]]);
+      // Sent, and the day over: nothing more.
+      await tx.execute(sql`update public.authority_notifications set state = 'declined', declined_reason = 'not identifiable', closed_at = now() where id <> ${late}::uuid`);
+      await tx.execute(sql`update public.authority_notifications set state = 'declined', declined_reason = 'a check that ended in no', closed_at = now() where id = ${late}::uuid`);
+      await tx.execute(sql`update public.alert_outbox set created_at = created_at - interval '1 day 1 minute' where kind = 'report_owed'`);
+      await steps(tx);
+      expect((await outboxSince(tx, "report_owed", new Date(since.getTime() - 2 * 24 * 60 * MIN))).map((r) => r.step)).toEqual([0]);
+      expect(ALERT_KINDS.report_owed.legs).toEqual(["push", "mail"]);
+    });
+  });
+
+  test("3f Task 5: handover_undestroyed, daily, while a production with files was delivered more than handoverAlertDays ago and is not destroyed", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const since = new Date();
+      await tx.execute(sql`delete from public.alert_outbox where kind = 'handover_undestroyed'`);
+      await tx.execute(sql`delete from public.productions`);
+      const production = async (daysAgo: number, destroyed = false) =>
+        tx.execute(sql`
+          insert into public.productions (instrument, produced, files, archive_sha256, delivered_at, destroyed_at, destroyed_how, opened_at)
+          values ('demand', '{files}', '[{"name": "files/ab/x/small.webp", "bytes": 1, "sha256": null}]'::jsonb, ${"a".repeat(64)},
+                  now() - make_interval(days => ${daysAgo}), ${destroyed ? sql`now()` : sql`null`}, ${destroyed ? "deleted" : null}, now())`);
+      await production(ORDER_RULES.handoverAlertDays - 1);
+      await production(ORDER_RULES.handoverAlertDays + 3, true);
+      await steps(tx);
+      expect(await outboxSince(tx, "handover_undestroyed", since)).toEqual([]);
+      await production(ORDER_RULES.handoverAlertDays + 1);
+      await steps(tx);
+      await steps(tx);
+      const rows = await outboxSince(tx, "handover_undestroyed", since);
+      expect(rows.map((r) => [r.step, r.scope, r.priority, r.facts.count, Object.keys(r.facts)])).toEqual([[0, "all", 3, 1, ["count"]]]);
+    });
+  });
+
   test("leaves no row behind", async () => {
     await removeMessages(w.migrateDb, made.splice(0));
     // The tick's own daily test, which no message names, and the rows of this file's kinds of 3f.

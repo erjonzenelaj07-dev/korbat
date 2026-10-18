@@ -153,6 +153,9 @@ services:
       # point is set.
       HOME_STATE: ${API_HOME_STATE:-}
       CONTACT_POINT: ${API_CONTACT_POINT:-}
+      # 3f Task 5: whether a deletion keeps an account's address, at most seven days, while a report of its sealed images
+      # to the authorities is owed. Empty means on; off restores the purge that overwrites the address at once.
+      REPORT_HOLD: ${API_REPORT_HOLD:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store
@@ -239,6 +242,26 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+
+  # The hand-over of one seal's files (3f design, sections 5 and 7.14), under the profile handover, started by the operator
+  # alone: docker compose --profile handover run --rm -T -v <directory>:/handover handover < list > digests. The API's
+  # image with dist/handover.js, which opens no database and no socket: no network at all, no credential, no capability,
+  # the image store read-only. It has no bind mount here: the directory for the archive is an argument of the command
+  # (an empty source would stop every Compose command of the stack), on an encrypted volume owned by uid 1000, the
+  # image's user node, the only place it can write. No setting of it is required.
+  handover:
+    image: ${COMPOSE_PROJECT_NAME}-api
+    profiles: ["handover"]
+    command: ["node", "dist/handover.js"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    stdin_open: true
+    volumes:
+      - media-store:/media/store:ro
 
   # The push server (3f design, section 5), under the profile notify, never linked into korbat's programs: ntfy at its
   # pinned release, reading its users, rights and tokens from infra/ntfy/server.yml (git-ignored, made from

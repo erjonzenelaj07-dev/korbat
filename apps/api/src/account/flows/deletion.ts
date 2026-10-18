@@ -25,7 +25,7 @@ export function startDeletion(deps: AccountDeps, session: Session, ctx: RequestC
  * hold the purge back. Every step changes only what is still there, so the purge can run again after a
  * failure, from the request or from the job, and finish what an earlier run left.
  */
-export async function purge(deps: AccountDeps, userId: string): Promise<void> {
+export async function purge(deps: AccountDeps, userId: string): Promise<"purged" | "held" | "none"> {
   let images: string[] = [];
   await deps.social.purgeProfile(userId, deps.now(), async (tx) => {
     images = await deps.media.purgeOwner(tx, userId);
@@ -38,7 +38,9 @@ export async function purge(deps: AccountDeps, userId: string): Promise<void> {
   // After the profile is marked deleted and before the account counts as purged: a failure here leaves the purge pending,
   // and its rerun, like every step's, changes nothing that is already done.
   await deps.moderation?.forgetAccount(userId);
-  await deps.auth.finishPurge(userId);
+  // 3f (7.15): `held` while the address waits for a report to the authorities; every step before it ran again and
+  // changed nothing, and the purge job's next round tries the last one again.
+  return deps.auth.finishPurge(userId);
 }
 
 /**

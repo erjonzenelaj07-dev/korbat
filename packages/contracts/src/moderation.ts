@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 import { MediaId } from "./media";
-import { ALERT_CHANNEL_STATES, OrderNoticeFacts, OrderTexts, OrdersUnverified, type OrderGround } from "./orders";
+import { ALERT_CHANNEL_STATES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -1684,6 +1684,11 @@ export const CaseView = z.object({
    * erasure happened.
    */
   orderErasedOn: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/, "must be a UTC day").nullable(),
+  /**
+   * Task 5 (sections 7.13 and 10.2): since when a report to the authorities is owed for this case, from reports_owed();
+   * null when none is. The console learns nothing else of a notification record.
+   */
+  reportOwed: z.object({ since: z.iso.datetime() }).nullable(),
 });
 export type CaseView = z.infer<typeof CaseView>;
 
@@ -2167,6 +2172,8 @@ export const StaffOverview = z.object({
   alerts: z.object({ channel: z.enum(ALERT_CHANNEL_STATES), since: z.iso.datetime().nullable() }),
   /** 3f Task 3: the orders given effect and not verified, or holding a disabled post added after their check ([home.unverified]). */
   ordersUnverified: OrdersUnverified,
+  /** 3f Task 5: the notification records owed, from reports_owed() and nothing more ([home.owed]). */
+  reportsOwed: ReportsOwed,
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
 

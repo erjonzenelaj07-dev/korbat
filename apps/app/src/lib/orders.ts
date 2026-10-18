@@ -5,6 +5,8 @@
  * Nothing here is shown while a notice is held: the API answers the author then as it answers a stranger, so no screen of
  * the app has a branch for it.
  */
+import { ORDER_RULES } from "@korbat/contracts";
+
 export const ORDER_TEXTS = {
   /** [chip.order]: the author's own post that a DSA Article 9 order removed without withholding it from them. */
   chip: { order: "Removed: an authority's order" },
@@ -28,3 +30,10 @@ export const ORDER_TEXTS = {
 
 /** The app's words for `not_appealable` (9.4): [notice.noAppeal]'s first sentence. */
 export const NOT_APPEALABLE = "This is not korbat's decision, so korbat's appeal does not apply.";
+
+/**
+ * 3f Task 5 (design, section 9.4, [delete.hold]): what the deletion screen says, under its warning, of the two things the
+ * law can oblige korbat to keep for a time. Shown to every account, since it is a rule and not a finding about this one:
+ * it promises no report and names no post. Its number is the contracts' ORDER_RULES.reportHoldDays.
+ */
+export const DELETE_HOLD = `Two things the law can oblige korbat to keep for a time (Terms, Your data). If korbat has sealed images of this account, it keeps your email address, and nothing else, for up to ${ORDER_RULES.reportHoldDays} days, until it has reported them to the authorities or has decided that it need not. And a post that an authority's order obliges korbat to preserve is kept until that time ends. Everything else is deleted at once, as described above.`;

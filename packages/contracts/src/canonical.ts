@@ -1,6 +1,7 @@
 // The canonical text and the hashes that the step-up actions (staff.ts) and the moderation digests (moderation.ts) are
 // built on. The API, audit-verify, text-verify and the console all call these, so each writes the same text and the same
-// hash. The package's index does not export this module: its callers are the two files above.
+// hash. The package's index does not export this module: its callers are the two files above, and (3f) orders.ts for the
+// digests of the records to authorities.
 
 /**
  * JSON with every object's keys sorted and no whitespace. Keys are sorted by UTF-16 code units (Array.prototype.sort's

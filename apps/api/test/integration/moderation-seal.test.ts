@@ -321,6 +321,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the seal, the freeze and
     });
   });
 
+  describe("3f Task 5: the report a seal makes owed", () => {
+    test("a seal taken while deciding makes a report owed for its case, which the API role learns through reports_owed() alone; the seal for good keeps it owed; a correction that lifts the seal closes it", async () => {
+      await inWorld(async (tx) => {
+        const p = await imagePost(tx, 2);
+        const { caseId } = await report(tx, aPost(p.postId), "csam");
+        const owed = async () => (await tx.execute<{ kind: string }>(sql`select kind from public.reports_owed() where case_id = ${caseId}::uuid`)).map((row) => row.kind);
+        expect(await owed()).toEqual([]);
+        await decideIn(tx, mod, caseId, SEAL_WHILE_DECIDING);
+        expect(await owed()).toEqual(["sealed_images"]);
+        // The API role reads no record itself.
+        expect((await pgError(tx.transaction((sp) => sp.execute(sql`select count(*) from public.authority_notifications`))))?.code).toBe("42501");
+        const final = await decideIn(tx, admin, caseId, SEAL_FOR_GOOD);
+        expect(await owed()).toEqual(["sealed_images"]);
+        await decideIn(tx, admin, caseId, { kind: "correction", reviewsDecisionId: final, actions: [act("unseal_media")] });
+        expect(await owed()).toEqual([]);
+      });
+    });
+  });
+
   describe("the range of an admin's answer", () => {
     test("the answer ends a seal taken while deciding also while an item of another kind keeps the case open, and tells its author", async () => {
       await inWorld(async (tx) => {

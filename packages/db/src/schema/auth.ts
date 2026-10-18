@@ -385,3 +385,30 @@ export const staffPersonalAccounts = auth.table(
     pgPolicy("staff_personal_accounts_auth_none", { for: "select", to: authRole, using: sql`false` }),
   ],
 ).enableRLS();
+
+/**
+ * 3f (design, sections 6.5 and 7.15): the hold of an account's address while a report of its sealed images is owed. One
+ * row an account, written only by the trigger report_open(), report_close_unsealed() and the command line, as the
+ * migrator: migration 0030 revokes everything from the auth role, which reads it only through auth.address_held,
+ * auth.address_held_until and auth.address_hold_final, and its one policy lets that role see no row. It holds no
+ * address: the address stays in auth.users until finishPurge's second statement finds no hold. A hold reads as held
+ * while it is not released and set_at + reportHoldDays is ahead; after that it releases nothing by itself.
+ */
+export const reportHolds = auth.table(
+  "report_holds",
+  {
+    /** No foreign key: the row outlives nothing, and the record that set it names the account by its id too. */
+    userId: uuid("user_id").primaryKey(),
+    setAt: ts("set_at").notNull(),
+    /** False while only a seal taken while deciding holds the record; true once a seal for good does. */
+    sealFinal: boolean("seal_final").notNull(),
+    releasedAt: ts("released_at"),
+    releaseReason: text("release_reason"),
+  },
+  (t) => [
+    check("report_holds_release_reason", sql`${t.releaseReason} in ('sent', 'declined', 'expired')`),
+    // A row inserted only to be locked is released with no reason; a reason is only ever given with its time.
+    check("report_holds_released", sql`${t.releaseReason} is null or ${t.releasedAt} is not null`),
+    pgPolicy("report_holds_auth_none", { for: "select", to: authRole, using: sql`false` }),
+  ],
+).enableRLS();

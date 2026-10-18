@@ -46,12 +46,13 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 49 tables in total", () => {
+  test("there are 53 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
-    // legal_order_events.
-    expect(tables.length).toBe(49);
+    // legal_order_events; then the four of the records to authorities: authority_notifications,
+    // authority_notification_events, productions and auth.report_holds.
+    expect(tables.length).toBe(53);
   });
   test("the tables 3c retired are gone, with their enums and the reputation column", () => {
     for (const name of ["reports", "strikes", "transparency_log"]) expect(byName.has(name), name).toBe(false);

@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { ORDER_RULES } from "@korbat/contracts";
 import path from "node:path";
 import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -8,6 +9,7 @@ import { exportMessage } from "../src/app/settings/account";
 import { SettingsNav, type SettingsPage } from "../src/components/SettingsNav";
 import { VerifiedChip } from "../src/components/ui";
 import { ApiError } from "../src/lib/api";
+import { DELETE_HOLD } from "../src/lib/orders";
 import { exportFilename } from "../src/lib/download";
 
 /**
@@ -179,6 +181,17 @@ describe("the settings forms", () => {
     const section = block(account, "DeleteSection");
     expect(section).toContain("{ACCOUNT_DELETION_WORDS}");
     expect(section).not.toMatch(/for good|are gone|removes your posts and images/);
+  });
+
+  test("3f Task 5: the deletion screen says beforehand, to every account, the two things the law can oblige korbat to keep, with reportHoldDays from the contracts", () => {
+    const section = block(account, "DeleteSection");
+    expect(section).toContain("<Body>{DELETE_HOLD}</Body>");
+    expect(section.indexOf("{DELETE_HOLD}")).toBeGreaterThan(section.indexOf("{ACCOUNT_DELETION_WORDS}"));
+    expect(DELETE_HOLD).toBe(
+      `Two things the law can oblige korbat to keep for a time (Terms, Your data). If korbat has sealed images of this account, it keeps your email address, and nothing else, for up to ${ORDER_RULES.reportHoldDays} days, until it has reported them to the authorities or has decided that it need not. And a post that an authority's order obliges korbat to preserve is kept until that time ends. Everything else is deleted at once, as described above.`,
+    );
+    // It promises no report and names no post: it is a rule, not a finding about this account.
+    expect(DELETE_HOLD).not.toMatch(/will report|your post /);
   });
 
   test("the account's own address is refused in its own words, without asking the API", () => {

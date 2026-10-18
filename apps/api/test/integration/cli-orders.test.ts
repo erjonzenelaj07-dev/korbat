@@ -277,8 +277,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the order commands", () 
  * preservation ended (not_preserved); its event preservation_extended names the item and its audit row order_recorded
  * holds the request's facts, the proceedings only as a digest. order-access prints the preserved snapshot's text, its
  * alt texts and the images' ids, sizes and creation times, never an image, and records the access as preserved_accessed
- * with the purpose and the counts; an access for an authority is recorded with its production, which Task 5 builds, so
- * it is refused until then. The effect commits with a real key; the last test removes what the block made.
+ * with the purpose and the counts; an access for an authority is a production (Task 5): the command takes the
+ * authority's name and reference, opens a production of the instrument preserved_access and names it in the audit row.
+ * The effect commits with a real key; the last test removes what the block made.
  */
 describe.skipIf(!process.env.INTEGRATION)("integration: the preservation's commands", () => {
   let w: NoticesWorld;
@@ -361,7 +362,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the preservation's comma
     );
   });
 
-  test("order-access prints the preserved text, alt texts and image facts, never an image, and records the access; an authority's access waits for its production", async () => {
+  test("order-access prints the preserved text, alt texts and image facts, never an image, and records the access; an authority's access is a production", async () => {
     const { itemId, mediaIds } = await preserved();
     const done = await cli(["order-access", itemId, "--purpose", "review", "--for", "the court asked to see it"]);
     expect(done.code).toBe(0);
@@ -372,9 +373,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the preservation's comma
     const audit = await lastAudit(itemId);
     expect([audit.action, audit.actor_id, audit.target_type]).toEqual(["preserved_accessed", SYSTEM_ACTOR_ID, "order_item"]);
     expect(audit.metadata).toEqual({ purpose: "review", productionId: null, forSha256: digest("the court asked to see it"), images: 2, altTexts: 2, textLength: 6 });
-    expect((await cli(["order-access", itemId, "--purpose", "authority", "--for", "BKA"])).text).toBe(
-      "err order-access: an access for an authority is recorded with its production, which this server cannot record yet; nothing changed",
+    // Task 5: an authority's access names the authority and its reference, and is recorded as a production.
+    expect((await cli(["order-access", itemId, "--purpose", "authority", "--for", "BKA"])).text).toBe("err order-access: --authority is required; nothing changed");
+    const forAuthority = await cli(["order-access", itemId, "--purpose", "authority", "--for", "the proceedings", "--authority", "BKA", "--reference", "ST 7/26"]);
+    expect(forAuthority.code).toBe(0);
+    const recorded = /^out order-access: recorded, purpose authority, production ([0-9a-f-]{36})[.]$/.exec(forAuthority.lines[0]!);
+    expect(recorded).not.toBeNull();
+    const [production] = await migrateDb.execute<Record<string, unknown>>(
+      sql`select instrument, purpose, order_item_id, authority, their_reference, produced, account_id is not null as named from public.productions where id = ${recorded![1]!}::uuid`,
     );
+    expect({ ...production }).toEqual({ instrument: "preserved_access", purpose: "authority", order_item_id: itemId, authority: "BKA", their_reference: "ST 7/26", produced: ["content"], named: true });
+    expect((await lastAudit(itemId)).metadata).toMatchObject({ purpose: "authority", productionId: recorded![1]! });
     expect((await cli(["order-access", itemId, "--purpose", "curiosity", "--for", "x"])).code).toBe(1);
     expect((await cli(["order-access", randomUUID(), "--purpose", "review", "--for", "x"])).text).toMatch(/^err order-access: not_preserved: /);
   });

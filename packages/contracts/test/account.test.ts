@@ -118,9 +118,9 @@ const full = {
 const NO_STANDING = { standing: [], replies: [], reporting: { frameDays: 90, days: [], marks: [], markedReports: 0 } };
 
 describe("what deleting an account removes, and what korbat keeps", () => {
-  test("one sentence, word for word, that the deletion screen and both deletion mails say: nothing in it says that everything is gone for good", () => {
+  test("one sentence, word for word, that the deletion screen and both deletion mails say: nothing in it says that everything is gone for good, and (3f) it names what the law obliges korbat to keep, for every account", () => {
     expect(ACCOUNT_DELETION_WORDS).toBe(
-      "Your posts, images and profile are removed from korbat for everyone, but where a post or your profile was reported or restricted, korbat keeps its copy for that case for the periods in its terms (Terms, Your data).",
+      "Your posts, images and profile are removed from korbat for everyone, except what korbat keeps for a time: where a post or your profile was reported or restricted, its copy for that case, and what the law obliges korbat to keep, each for the periods in its terms (Terms, Your data).",
     );
     expect(ACCOUNT_DELETION_WORDS).not.toMatch(/for good|gone/);
   });

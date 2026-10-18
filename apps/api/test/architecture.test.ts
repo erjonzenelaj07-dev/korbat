@@ -403,6 +403,58 @@ describe("the watcher's boundary (3f)", () => {
   });
 });
 
+/**
+ * The hand-over's boundary (3f design, section 5 and invariant 16): handover.ts, an entry point of its own
+ * (dist/handover.js), imports nothing under ./ (no module of the API, so no database, no configuration and no copy of
+ * anything that could reach either) and only Node's own modules, none of which opens a socket or a process; nothing
+ * imports it. And no file outside media/ but config.ts and index.ts names the store's directory setting, MEDIA_STORE_DIR:
+ * the store is read through the media module, or by the hand-over's program under its fixed mount.
+ */
+const SOCKET_MODULES = new Set(["node:net", "node:http", "node:https", "node:http2", "node:dgram", "node:tls", "node:child_process", "node:worker_threads", "node:cluster"]);
+function findHandoverViolations(files: SourceFile[]): string[] {
+  const violations: string[] = [];
+  for (const { path, source } of files) {
+    for (const spec of specifiers(source)) {
+      if (path === "handover.ts") {
+        if (spec.startsWith(".")) violations.push(`${path}: imports ${spec}, a module of the API`);
+        else if (!spec.startsWith("node:")) violations.push(`${path}: imports ${spec}, which is not one of Node's own modules`);
+        else if (SOCKET_MODULES.has(spec)) violations.push(`${path}: imports ${spec}, which can open a socket or a process`);
+      } else if (spec.startsWith(".") && posix.normalize(posix.join(posix.dirname(path), spec)).replace(/[.]ts$/, "") === "handover") {
+        violations.push(`${path}: imports ${spec}, the hand-over's program`);
+      }
+    }
+    if (/MEDIA_STORE_DIR/.test(source) && !path.startsWith("media/") && path !== "config.ts" && path !== "index.ts") {
+      violations.push(`${path}: names MEDIA_STORE_DIR, which only the media module, config.ts and index.ts may`);
+    }
+  }
+  return violations;
+}
+
+describe("the hand-over's boundary (3f Task 5)", () => {
+  test("handover.ts imports only Node's own modules and none that opens a socket, nothing imports it, and no file outside media/ but config.ts and index.ts names the store's directory setting", () => {
+    const files = loadSources();
+    expect(files.map((file) => file.path)).toContain("handover.ts");
+    expect(findHandoverViolations(files)).toEqual([]);
+  });
+
+  test("catches an import of an API module or a package from the hand-over, a socket's module, an import of the hand-over, and the store's setting named elsewhere", () => {
+    expect(
+      findHandoverViolations([
+        { path: "handover.ts", source: 'import { storedImageName } from "./media"; import { sql } from "drizzle-orm"; import { connect } from "node:net"; import { crc32 } from "node:zlib";' },
+        { path: "cli/records.ts", source: 'import { zipStored } from "../handover";' },
+        { path: "cli/staff.ts", source: "const dir = env.MEDIA_STORE_DIR;" },
+        { path: "media/files.ts", source: "const dir = config.MEDIA_STORE_DIR;" },
+      ]),
+    ).toEqual([
+      "handover.ts: imports ./media, a module of the API",
+      "handover.ts: imports drizzle-orm, which is not one of Node's own modules",
+      "handover.ts: imports node:net, which can open a socket or a process",
+      "cli/records.ts: imports ../handover, the hand-over's program",
+      "cli/staff.ts: names MEDIA_STORE_DIR, which only the media module, config.ts and index.ts may",
+    ]);
+  });
+});
+
 describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);

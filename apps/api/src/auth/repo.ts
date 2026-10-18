@@ -520,39 +520,70 @@ export function createAuthRepo(db: Db) {
       });
     },
 
-    /** Deleted accounts whose row the purge has not anonymised yet, oldest deletion first, at most 100 a round. */
+    /**
+     * Deleted accounts whose row the purge has not anonymised yet, oldest deletion first, at most 100 a round. 3f (design,
+     * section 7.15 step 5): an account whose address is held for a report to the authorities stays pending until its hold
+     * ends, and comes last, so that held rows never crowd out the round's 100.
+     */
     async pendingPurges(): Promise<string[]> {
       const rows = await db
         .select({ id: users.id })
         .from(users)
         .where(and(isNotNull(users.deletedAt), isNull(users.purgedAt)))
-        .orderBy(users.deletedAt, users.id)
+        .orderBy(sql`auth.address_held(${users.id})`, users.deletedAt, users.id)
         .limit(100);
       return rows.map((r) => r.id);
     },
 
     /**
-     * The last step of a deletion: the address becomes deleted:<id> (unique, and never a real address),
-     * every credential and personal fact is cleared, and purged_at says it is done. Only a deleted row
-     * not purged yet is written, so a second call, or a call for a live account, changes nothing.
+     * The last step of a deletion: every credential and personal fact is cleared, the address becomes deleted:<id>
+     * (unique, and never a real address), and purged_at says it is done. Only a deleted row not purged yet is written, so
+     * a second call, or a call for a live account, changes nothing.
+     *
+     * 3f (design, sections 6.5 and 7.15): two statements, in one transaction. The first clears the credentials and the
+     * personal facts but the address, without condition: the password hash, the TOTP secret, the recovery codes, the phone
+     * hash, the age and terms marks. The second overwrites the address and sets purged_at only where
+     * auth.address_held(id) is false, while `holdAddress` (REPORT_HOLD) is on: a report of the account's sealed images is
+     * owed, and the law may oblige korbat to give the address with it. One update with that condition on all of it would
+     * keep the credentials too; the hold is for the address alone. Answers what it did: purged, held (the address waits,
+     * and the next round tries again), or none (nothing to do).
      */
-    async finishPurge(userId: string, now: Date): Promise<void> {
-      await db
-        .update(users)
-        .set({
-          email: `deleted:${userId}`,
-          emailVerifiedAt: null,
-          passwordHash: null,
-          totpSecretEnc: null,
-          totpEnabledAt: null,
-          recoveryCodesHash: [],
-          phoneHash: null,
-          ageConfirmedAt: null,
-          termsVersion: null,
-          termsAcceptedAt: null,
-          purgedAt: now,
-        })
-        .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt)));
+    async finishPurge(userId: string, now: Date, holdAddress = true): Promise<"purged" | "held" | "none"> {
+      return db.transaction(async (tx) => {
+        const cleared = await tx
+          .update(users)
+          .set({
+            passwordHash: null,
+            totpSecretEnc: null,
+            totpEnabledAt: null,
+            recoveryCodesHash: [],
+            phoneHash: null,
+            ageConfirmedAt: null,
+            termsVersion: null,
+            termsAcceptedAt: null,
+          })
+          .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt)))
+          .returning({ id: users.id });
+        if (cleared.length === 0) return "none";
+        const purged = await tx
+          .update(users)
+          .set({ email: `deleted:${userId}`, emailVerifiedAt: null, purgedAt: now })
+          .where(and(eq(users.id, userId), isNotNull(users.deletedAt), isNull(users.purgedAt), holdAddress ? sql`not auth.address_held(${users.id})` : undefined))
+          .returning({ id: users.id });
+        return purged.length > 0 ? "purged" : "held";
+      });
+    },
+
+    /**
+     * 3f (design, section 7.15 step 2): what the deletion mail says of a held address: until when at the latest (a UTC
+     * day) and whether the seal behind it is for good, or null when nothing is held. The auth module cannot read the hold
+     * itself; it asks the two definer functions the migration grants it.
+     */
+    async addressHold(userId: string): Promise<{ until: Date; final: boolean } | null> {
+      const [row] = await db.execute<{ until: string | null; final: boolean }>(
+        sql`select to_char(auth.address_held_until(${userId}::uuid) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as until, auth.address_hold_final(${userId}::uuid) as final`,
+      );
+      return row?.until ? { until: new Date(row.until), final: row.final } : null;
     },
 
     // ------------------------------------------------------------ lockdown

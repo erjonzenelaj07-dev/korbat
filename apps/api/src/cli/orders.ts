@@ -18,6 +18,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import {
+  ACCESS_PURPOSES,
   ALERT_KINDS,
   FORBIDDEN_FORMAT,
   HOLD_END_REASONS,
@@ -88,7 +89,8 @@ export const ORDER_USAGE = [
   "  order-hold-end <order> --reason <not_authentic|annulled|released_by_authority|not_ordered> --how <text>   end a hold at once",
   "  order-preserve-extend <item> --until <instant> --by <text> --reference <text> --proceedings <text> --received <instant>",
   "                                         keep a preserved post longer, on an authority's or a court's request; never shorter",
-  "  order-access <item> --purpose <review|complaint|authority> --for <text>   print a preserved post's text and its images' facts, and record it",
+  "  order-access <item> --purpose <review|complaint|authority> --for <text> [--authority <name> --reference <text>]",
+  "                                         print a preserved post's text and its images' facts, and record it; for an authority, as a production",
   "  An <order> is its id, or <CC>:<reference> while one order of that state has the reference. An <item> is its id. Every instant has its offset.",
 ];
 
@@ -136,21 +138,21 @@ export interface OrderSettings {
   appOrigin: string | null;
 }
 
-/** A refusal: one sentence, then "nothing changed". */
-class Refusal extends Error {}
-const refuse = (command: string, why: string): never => {
+/** A refusal: one sentence, then "nothing changed". Task 5: shared with cli/records.ts. */
+export class Refusal extends Error {}
+export const refuse = (command: string, why: string): never => {
   throw new Refusal(`${command}: ${why}; nothing changed`);
 };
 
 /** An instant with its offset (2026-10-10T01:00:12Z, 2026-10-10T03:00:12+02:00); a time without one names two on a night the clocks go back. */
 const INSTANT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]{1,6})?)?(Z|[+-][0-9]{2}:[0-9]{2})$/;
-function instant(command: string, word: string | undefined): Date {
+export function instant(command: string, word: string | undefined): Date {
   if (word === undefined || !INSTANT.test(word) || Number.isNaN(Date.parse(word))) return refuse(command, `${word ?? "nothing"} is not an instant with an offset`);
   return new Date(word);
 }
 
 /** The one value of a flag, or a refusal naming it. */
-function flag(cmd: OrderCommand, name: string, required = true): string | null {
+export function flag(cmd: { command: string; flags: Map<string, string[]> }, name: string, required = true): string | null {
   const values = cmd.flags.get(name);
   if (values === undefined || values.length === 0) return required ? refuse(cmd.command, `${name} is required`) : null;
   if (values.length > 1) return refuse(cmd.command, `${name} is given more than once`);
@@ -167,7 +169,7 @@ function hasControl(text: string, allowLineFeed: boolean): boolean {
 }
 
 /** A free text of the command line (--how, --basis): about the act and never about the person, one line, at most 500 characters. */
-function freeText(command: string, name: string, text: string): string {
+export function freeText(command: string, name: string, text: string): string {
   if (!(text as string & { isWellFormed(): boolean }).isWellFormed() || hasControl(text, false) || FORBIDDEN_FORMAT.test(text) || text.trim() === "") {
     return refuse(command, `${name} is one line of text without control or invisible characters`);
   }
@@ -175,12 +177,18 @@ function freeText(command: string, name: string, text: string): string {
   return text;
 }
 
-const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
-const rows = async <T>(q: Db | DbTx, query: ReturnType<typeof sql>): Promise<T[]> => (await q.execute(query)) as unknown as T[];
-const isoOf = (expression: string) => sql.raw(`to_char(${expression} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
+/** An authority's name or a reference as the command line takes it (Task 5): under the contracts' rules for an order's. */
+export function authorityText(command: string, name: string, text: string): string {
+  const parsed = (name === "--authority" ? OrderAuthority : OrderReference).safeParse(text);
+  return parsed.success ? parsed.data : refuse(command, `${name} is one line of 1 to 200 characters without control or invisible characters`);
+}
+
+export const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
+export const rows = async <T>(q: Db | DbTx, query: ReturnType<typeof sql>): Promise<T[]> => (await q.execute(query)) as unknown as T[];
+export const isoOf = (expression: string) => sql.raw(`to_char(${expression} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
 
 /** The order a command names, by its id or as <CC>:<reference>; order_ambiguous when several orders of the state share the reference. */
-async function orderNamed(tx: DbTx, command: string, name: string): Promise<string> {
+export async function orderNamed(tx: DbTx, command: string, name: string): Promise<string> {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(name)) {
     const [found] = await rows<{ id: string }>(tx, sql`select id from public.legal_orders where id = ${name}::uuid`);
     return found?.id ?? refuse(command, `no order has the id ${name}`);
@@ -651,7 +659,7 @@ async function open(tx: DbTx, cmd: OrderCommand, settings: OrderSettings): Promi
 
 // ---------------------------------------------------------------- preservation (Task 4; design, sections 7.11 and 8.11)
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The facts of an order's item that the two preservation commands read under the item's row lock. */
 interface PreservedItem {
@@ -728,25 +736,36 @@ async function preserveExtend(tx: DbTx, cmd: OrderCommand): Promise<string[]> {
   return [`${c}: item ${item.id} is preserved until ${moved!.until} (was ${was}).`];
 }
 
-/** The purposes of TCO Art. 6(3) for which preserved content is opened. */
-const ACCESS_PURPOSES = ["review", "complaint", "authority"] as const;
-
 /**
  * order-access: preserved content opened for a purpose of TCO Art. 6(3), only from here (no console screen and no route
  * opens it). Under the item's share lock, on an item whose preservation runs, it prints the preserved copy's text (the
  * snapshot the effect took, else the post's newest copy), its alt texts and the images' ids, pixel sizes and creation
  * times through the media module's preservedImages, never an image, and records the access as preserved_accessed with
- * the purpose and the counts. An access for an authority is a production (section 7.14), whose record Task 5 builds: it
- * is refused until then, since it would otherwise leave without its record.
+ * the purpose and the counts. An access for an authority is a production (sections 6.5 and 7.14, Task 5): the command
+ * then takes the authority's name and reference, opens a production of the instrument preserved_access for the order's
+ * item and the post's author, by kind (`content`) and never by value, and names it in the audit row.
  */
 async function preservedAccess(tx: DbTx, cmd: OrderCommand): Promise<string[]> {
   const c = cmd.command;
   const purpose = flag(cmd, "--purpose")!;
   if (!(ACCESS_PURPOSES as readonly string[]).includes(purpose)) refuse(c, "--purpose is review, complaint or authority");
   const forWhat = freeText(c, "--for", flag(cmd, "--for")!);
-  if (purpose === "authority") refuse(c, "an access for an authority is recorded with its production, which this server cannot record yet");
+  // An authority's name and reference, as an order's are typed: one line each, under the contracts' bounds.
+  const authority = purpose === "authority" ? authorityText(c, "--authority", flag(cmd, "--authority")!) : null;
+  const reference = purpose === "authority" ? authorityText(c, "--reference", flag(cmd, "--reference")!) : null;
   const item = await lockItem(tx, cmd.order!, "share");
   if (!item || !item.running || item.postId === null) return notPreserved(c, cmd.order!);
+  let productionId: string | null = null;
+  if (purpose === "authority") {
+    const [made] = await rows<{ id: string }>(
+      tx,
+      sql`insert into public.productions (instrument, order_id, order_item_id, account_id, purpose, authority, their_reference, produced, opened_at)
+          values ('preserved_access', ${item.orderId}::uuid, ${item.id}::uuid, (select p.author_id from public.posts p where p.id = ${item.postId}::uuid),
+                  'authority', ${authority}, ${reference}, '{content}', now())
+          returning id`,
+    );
+    productionId = made!.id;
+  }
   // The copy the effect took, which the item's decision names; else the post's newest copy that is not erased.
   const [copy] = await rows<{ taken_at: string; body: string | null; media: { id: string; alt: string | null }[] | null }>(
     tx,
@@ -767,9 +786,9 @@ async function preservedAccess(tx: DbTx, cmd: OrderCommand): Promise<string[]> {
     targetId: item.id,
     requestId: null,
     // The purpose and the counts; the words of --for only as their digest, and never a word of the content.
-    metadata: { purpose, productionId: null, forSha256: sha256(forWhat), images: images.length, altTexts: alts.length, textLength: text === null ? 0 : Array.from(text).length },
+    metadata: { purpose, productionId, forSha256: sha256(forWhat), images: images.length, altTexts: alts.length, textLength: text === null ? 0 : Array.from(text).length },
   });
-  const lines = [`${c}: recorded, purpose ${purpose}.`];
+  const lines = [productionId === null ? `${c}: recorded, purpose ${purpose}.` : `${c}: recorded, purpose ${purpose}, production ${productionId}.`];
   if (copy === undefined) lines.push(`${c}: no copy of the post's text is kept.`);
   else {
     // The author's text as it was copied, between two marker lines, each of its own lines as it stands.

@@ -194,9 +194,13 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
         "If this was not you, do not enter the code: sign in, open Security, and revoke your other sessions.",
       ]);
     case "account_deleted":
+      // 3f (W.5): one wording for every account, since a rule and not a finding about this one (ACCOUNT_DELETION_WORDS
+      // says that korbat keeps what the law obliges it to keep for a time), and the hold's paragraph when the address is
+      // held for a report to the authorities, in the variant of the seal that holds it.
       return build("Your korbat account was deleted", [
         "Your korbat account was deleted as you asked, and your handle stays reserved so nobody can take it.",
         ACCOUNT_DELETION_WORDS,
+        ...heldAddressParagraph(data),
         "This cannot be undone. Thank you for having been part of korbat; you are welcome back with a new account any time.",
       ]);
     case "passkey_added":
@@ -308,6 +312,8 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
           ...(sealed ? ["Images of yours that korbat sealed stay with it for the authorities alone, as the decision that sealed them said."] : []),
           "A new account that carries on what this one was terminated for breaks korbat's terms.",
         ].join(" "),
+        // 3f (7.15 step 8): a termination's take-down holds the address as a deletion does, and says so the same way.
+        ...heldAddressParagraph(data),
       ]);
     }
     case "suspension_started_at_once": {
@@ -524,6 +530,26 @@ const ORDER_MAIL_WORDS = {
   added: "korbat has added to a notice about one of your posts. Sign in to korbat and read it under Settings, Cases.",
   only: "This email says no more than that, and korbat's emails never contain a link to act on a notice.",
 } as const;
+
+/**
+ * 3f (design, sections 7.15 and W.5): the paragraph a deletion's mail gains while the account's address is held for a
+ * report to the authorities, in one of two variants by the seal that holds the record (`holdFinal`, from
+ * auth.address_hold_final): after a seal for good, whose statement already said that korbat reports the matter; after a
+ * seal taken while deciding, whose statement said only that the images are hidden until an admin has answered a report,
+ * with no word of a report. Each gives the reason, the last day (`heldUntil`, the day of auth.address_held_until) and the
+ * three routes GDPR Art. 12(4) asks for, and neither offers a right to object. No paragraph without `heldUntil`.
+ */
+export const ACCOUNT_DELETED_HELD = {
+  final: (heldUntil: string) =>
+    `One thing korbat keeps for a short time: your email address, and nothing else of the account. korbat has sealed images of the account, and the law may oblige it to report them to the authorities, for which it needs the address. It uses the address for nothing else and erases it as soon as that is settled, on ${heldUntil} at the latest. You can write to korbat about this at the address under Contact in korbat's Terms, complain to a data protection authority, and go to court.`,
+  deciding: (heldUntil: string) =>
+    `One thing korbat keeps for a short time: your email address, and nothing else of the account. korbat has sealed images of the account until an admin has answered a report about them. Until that is settled, and until ${heldUntil} at the latest, korbat keeps the address because the law may oblige it to keep it for that time, and uses it for nothing else. You can write to korbat about this at the address under Contact in korbat's Terms, complain to a data protection authority, and go to court.`,
+} as const;
+
+function heldAddressParagraph(data: Record<string, string>): string[] {
+  if (data.heldUntil === undefined || data.heldUntil === "") return [];
+  return [need(data, "holdFinal") === "true" ? ACCOUNT_DELETED_HELD.final(data.heldUntil) : ACCOUNT_DELETED_HELD.deciding(data.heldUntil)];
+}
 
 function userMail(subject: string, paragraphs: string[]): RenderedMail {
   return build(subject, [...paragraphs, "korbat staff never ask for your password or a code, and korbat does not read replies to this email."]);

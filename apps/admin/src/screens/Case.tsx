@@ -46,7 +46,7 @@ import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router"
 import { revealWithKey } from "../step-up";
 import type { DraftSlots } from "../store";
 import { normalised, saveStaffText, type RandomBytes } from "../texts";
-import { dateTime, Loaded, UserText, type Loadable } from "../ui";
+import { bothTimes, dateTime, Loaded, UserText, type Loadable } from "../ui";
 import { categoryLabel, COLLAPSED_RULES, counted, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
 import type { CredentialsLike } from "../webauthn";
 import { AnswerControl, ComposerView, CorrectControl, ReinstateControl, ReviewControl, WithdrawControl, WithdrawMarksControl, type ComposerViewProps } from "./Composer";
@@ -744,6 +744,8 @@ export function CaseScreenView(props: CaseScreenViewProps) {
       {view.preserved ? <p className="notice">{ORDER_WORDS.caseOrder.preserved}</p> : null}
       {view.decisions.some((decision) => decision.kind === "order") ? <p className="hint">{ORDER_WORDS.caseOrder.own}</p> : null}
       {view.noticeHeld === null ? null : <p className="notice">{ORDER_WORDS.caseOrder.heldToo(view.noticeHeld.until === null ? null : dateTime(view.noticeHeld.until))}</p>}
+      {/* 3f Task 5 (sections 7.13 and 8.6): a report to the authorities owed for this case, since when; nothing more. */}
+      {view.reportOwed === null ? null : <p className="notice">{ORDER_WORDS.caseOwed(bothTimes(view.reportOwed.since))}</p>}
       <Target view={view} />
       {targetDiffers(view) ? (
         <button type="button" onClick={props.onSnapshot} disabled={busy !== null} aria-busy={busy === "snapshot"}>

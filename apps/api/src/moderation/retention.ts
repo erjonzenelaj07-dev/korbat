@@ -6,7 +6,7 @@ import { createJob, type JobLock } from "../lib/jobs";
 import { DISPOSAL_BATCH } from "../media";
 import { appendAuditRow } from "../staff";
 import type { ModerationDeps } from "./context";
-import { deleteContactMessages, dueOrderRecords, duePreservations, endPreservation, eraseOrderRecords } from "./orders-repo";
+import { deleteContactMessages, dueOrderRecords, duePreservations, endPreservation, eraseAuthorityRecords, eraseOrderRecords } from "./orders-repo";
 import { deleteAccessLog, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseReplyStatements, eraseStatementTexts, forgetReportCounts, redactR4, sweepStaffTexts } from "./repo";
 
 /**
@@ -53,6 +53,7 @@ export type RetentionStep =
   | "order_preservation"
   | "order_records"
   | "contact_messages"
+  | "authority_records"
   | "images";
 
 /** What one round did, for its log line and for the tests: counts only. */
@@ -71,6 +72,8 @@ export interface RetentionReport {
   preservations: number;
   orderRecords: number;
   contactMessages: number;
+  /** 3f Task 5: the rows of the records to authorities deleted (notification records, productions and released holds). */
+  authorityRecords: number;
   /** The access rows deleted, with the reveal reasons erased before them. */
   accessLog: number;
   /** The size of each batch of image rows the disposal deleted, in order; the last one is smaller than a full batch. */
@@ -164,7 +167,7 @@ async function dispose(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, re
 
 /** One round. A plain function, so the tests call it directly. */
 export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">): Promise<RetentionReport> {
-  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, accessLog: 0, batches: [], failed: 0 };
+  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, accessLog: 0, batches: [], failed: 0 };
   /** A step in a try of its own: what it raises is logged with the step, and the round goes on. */
   const step = async (name: RetentionStep, run: () => Promise<void>) => {
     try {
@@ -243,11 +246,16 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
   await step("contact_messages", async () => {
     report.contactMessages = await inStep(deps, "contact_messages", {}, (tx) => deleteContactMessages(tx));
   });
+  // 3f Task 5: one call, which checks its own rule (three years, a seal in force, an archive not destroyed, an authority's
+  // "not to the person") and answers a count: its audit row names no id, and the API learns nothing of the records.
+  await step("authority_records", async () => {
+    report.authorityRecords = await inStep(deps, "authority_records", {}, (tx) => eraseAuthorityRecords(tx));
+  });
   await step("images", () => dispose(deps, report));
 
   // One line for a round that did something or failed somewhere: counts only.
   const images = report.batches.reduce((sum, size) => sum + size, 0);
-  const orders = report.preservations + report.orderRecords + report.contactMessages;
+  const orders = report.preservations + report.orderRecords + report.contactMessages + report.authorityRecords;
   if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.replies + report.reportCounts + orders + report.accessLog + images + report.failed > 0) {
     deps.log.info({ job: RETENTION_JOB, ...report, images }, "moderation-retention: round");
   }

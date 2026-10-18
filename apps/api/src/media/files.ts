@@ -13,6 +13,18 @@ import { MediaError } from "./context";
  * and the open handle is checked afterwards, which leaves no gap between the check and the use.
  */
 
+/**
+ * 3f (design, sections 5 and 7.14): the store's naming rule as one pure function. Where the worker keeps one size of an
+ * image, relative to the store's root and with forward slashes, as storeLayout lays the store out: files/<aa>/<id>/
+ * <size>.webp, <aa> the id's first two characters. staff.js handover-list prints these names, and the hand-over's
+ * program (src/handover.ts) keeps its own copy of the rule, since an entry point imports no module: a unit test feeds
+ * both the same names and fails when they differ.
+ */
+export function storedImageName(id: string, size: MediaSize): string {
+  if (!isMediaId(id)) throw new TypeError("not a media id");
+  return `files/${id.slice(0, 2)}/${id}/${size}.webp`;
+}
+
 export interface StoredFile {
   handle: FileHandle;
   size: number;

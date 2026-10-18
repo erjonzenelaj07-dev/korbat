@@ -35,7 +35,7 @@ import { ModerationError, type ModerationDeps } from "./context";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
-import { caseOrderFacts, noticeHeldOn, orderErasedOn, postPreserved, unverifiedOrders } from "./orders-repo";
+import { caseOrderFacts, noticeHeldOn, orderErasedOn, postPreserved, reportOwedOn, reportsOwed, unverifiedOrders } from "./orders-repo";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
 import { caseReplies, repliesWaiting, standingColumns, standingOnDecisions, strikeAccounts, unansweredReplies, type ReplyColumns } from "./standing-repo";
 
@@ -234,6 +234,8 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     alerts: await channelAlerts(deps),
     // Task 3: the orders given effect and not verified, or holding a disabled post added after their check.
     ordersUnverified: await unverifiedOrders(q, OVERVIEW_LIST_MAX),
+    // Task 5: the reports to the authorities owed, from reports_owed() and nothing more: a case, a kind, a time.
+    reportsOwed: await reportsOwed(q, OVERVIEW_LIST_MAX),
   };
 }
 
@@ -548,6 +550,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     noticeHeld: row.targetType === "post" ? await noticeHeldOn(q, row.targetId) : null,
     // Task 4 (section 8.6, [reinstate.erased]): the day an order's preservation ended by erasing the post, if one did.
     orderErasedOn: row.targetType === "post" ? await orderErasedOn(q, row.targetId) : null,
+    // Task 5 (sections 7.13 and 10.2): since when a report to the authorities is owed for this case, from reports_owed().
+    reportOwed: await reportOwedOn(q, row.id),
   };
 }
 

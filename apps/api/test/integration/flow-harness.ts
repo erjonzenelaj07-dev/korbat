@@ -74,6 +74,8 @@ export function flowHarness(repo: AuthRepo, options: { profiles?: ProfileStore; 
     console: options.console ?? null,
     homeState: null,
     contactPoint: null,
+    // 3f Task 5: the report hold, on as by default.
+    reportHold: true,
   };
   const deps: AuthDeps = {
     repo,

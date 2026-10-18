@@ -1,4 +1,4 @@
-import { OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
+import { ORDER_RULES, OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
 import { APPEAL_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, STANDING_WORDS } from "../messages";
@@ -130,11 +130,13 @@ export function AuthoritiesLines({
   now = Date.now(),
   onNavigate,
   onOpenOrder,
+  onOpenCase,
 }: {
   overview: StaffOverview;
   now?: number;
   onNavigate?: (path: ConsolePath) => void;
   onOpenOrder?: (id: OrderId) => void;
+  onOpenCase?: (id: CaseId) => void;
 }) {
   const W = ORDER_WORDS.home;
   const { contact, alerts } = overview;
@@ -180,6 +182,24 @@ export function AuthoritiesLines({
         </p>,
       );
     }
+  }
+  // Task 5: [home.owed], one line a case, each a link built from its checked id; after reportAlertHours the daily alert's
+  // sentence too. In the design's order, before [home.unverified].
+  for (const owed of overview.reportsOwed.items) {
+    const id = parseCaseId(owed.caseId);
+    const late = now - Date.parse(owed.since) > ORDER_RULES.reportAlertHours * 3_600_000;
+    const words = ORDER_WORDS.homeOwed(bothTimes(owed.since), late);
+    lines.push(
+      <p key={`owed-${owed.caseId}`} className={late ? "error" : "notice"}>
+        {id !== null && onOpenCase !== undefined ? (
+          <CaseLink id={id} onOpen={onOpenCase}>
+            {words}
+          </CaseLink>
+        ) : (
+          words
+        )}
+      </p>,
+    );
   }
   // Task 3: [home.unverified], each order a link built from its checked id.
   const unverified = overview.ordersUnverified;
@@ -229,7 +249,7 @@ export function OverviewView({
   const mails = (m: StaffOverview["mailsWaiting"]) => `${counted(m.receipts, "receipt", "receipts")}, ${counted(m.authorMails, "statement to an author", "statements to authors")}, ${counted(m.outcomes, "outcome", "outcomes")}`;
   return (
     <>
-      <AuthoritiesLines overview={overview} now={now} {...(onNavigate === undefined ? {} : { onNavigate })} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} />
+      <AuthoritiesLines overview={overview} now={now} onOpenCase={onOpenCase} {...(onNavigate === undefined ? {} : { onNavigate })} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} />
       <h3>Cases</h3>
       <ul className="lanes">
         {overview.lanes.map((lane) => (

@@ -10,6 +10,12 @@ export interface PurgeReport {
   failed: number;
   /** 3e: the terminated accounts this round took down (the moderation module's takeDownDue). */
   terminated: number;
+  /**
+   * 3f (design, section 7.15 step 5): the accounts whose purge ran but whose address is held for a report to the
+   * authorities: the credentials are gone, the address waits for the record to be sent or declined, at most
+   * ORDER_RULES.reportHoldDays, and the account is counted here, not under purged, until a round overwrites it.
+   */
+  held: number;
 }
 
 /**
@@ -22,7 +28,7 @@ export interface PurgeReport {
  * stays pending and is tried again next round. A plain function, so tests call it directly.
  */
 export async function purgePending(deps: AccountDeps): Promise<PurgeReport> {
-  const report: PurgeReport = { purged: 0, failed: 0, terminated: 0 };
+  const report: PurgeReport = { purged: 0, failed: 0, terminated: 0, held: 0 };
   if (deps.moderation) {
     try {
       const taken = await deps.moderation.takeDownDue((account, facts) => deps.auth.takeDownTerminated(account, facts));
@@ -34,14 +40,16 @@ export async function purgePending(deps: AccountDeps): Promise<PurgeReport> {
   }
   for (const userId of await deps.auth.pendingPurges()) {
     try {
-      await purge(deps, userId);
-      report.purged++;
+      // 3f: an account whose address is held is counted as held; one another instance finished meanwhile, as purged.
+      if ((await purge(deps, userId)) === "held") report.held++;
+      else report.purged++;
     } catch (err) {
       report.failed++;
       deps.log.error({ err, userId }, "account purge: the account could not be purged; it stays pending for the next round");
     }
   }
-  // As the janitor: a round that did something is logged with its counts, an idle one is not.
+  // As the janitor: a round that did something is logged with its counts, an idle one is not. A round that only met held
+  // addresses again changed nothing and is idle.
   if (report.purged > 0 || report.failed > 0 || report.terminated > 0) deps.log.info(report, "account purge: round finished");
   return report;
 }

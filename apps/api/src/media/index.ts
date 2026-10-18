@@ -4,13 +4,14 @@
  */
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
+import { MEDIA_SIZES } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { HEARTBEAT_STALE_MS, type MediaFormat } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import { mediaForCases } from "./cases";
 import type { MediaDeps, MediaForPosts } from "./context";
-import { createMediaFiles, type StoredFile } from "./files";
+import { createMediaFiles, storedImageName, type StoredFile } from "./files";
 import { createMediaRepo } from "./repo";
 import { mediaFileRoutes, mediaRoutes } from "./routes";
 import type { JobLock } from "../lib/jobs";
@@ -76,6 +77,27 @@ export interface PreservedImage {
 export function preservedImages(q: Db | DbTx, postId: string): Promise<PreservedImage[]> {
   return createMediaRepo(q as Db).preservedImages(q, postId);
 }
+
+/** One post of a seal as staff.js handover-list reads it: its image rows now, and the store's name of every size of each. */
+export interface SealFilesPost {
+  postId: string;
+  /** How many image rows the post holds now, which the command compares with the seal's own count. */
+  rows: number;
+  names: string[];
+}
+
+/**
+ * 3f (design, sections 5 and 7.14): for each post of one seal (its seal_posts), the store's names of every stored size of
+ * every image row of the post, and the number of rows, for `staff.js handover-list`, which compares that number with
+ * seal_posts.images itself. Read-only, through the caller's own transaction, with no files and no configuration: no
+ * file outside this module may name the image table, and the hand-over's program, which reads the files, has no database.
+ */
+export async function sealFiles(q: Db | DbTx, sealActionId: string): Promise<SealFilesPost[]> {
+  const posts = await createMediaRepo(q as Db).sealImageRows(q, sealActionId);
+  return posts.map(({ postId, mediaIds }) => ({ postId, rows: mediaIds.length, names: mediaIds.flatMap((id) => MEDIA_SIZES.map((size) => storedImageName(id, size))) }));
+}
+
+export { storedImageName } from "./files";
 
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {

@@ -453,6 +453,24 @@ export function createMediaRepo(db: Db) {
         .orderBy(postMedia.position, postMedia.id);
     },
 
+    /**
+     * 3f (design, section 7.14): for each post a seal lists (seal_posts), the ids of its image rows now, in their order.
+     * Read-only, through the caller's transaction; handover-list compares their number with what the seal recorded.
+     */
+    async sealImageRows(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, sealActionId: string): Promise<{ postId: string; mediaIds: string[] }[]> {
+      const found = await q.execute<{ post_id: string; media_id: string | null }>(
+        sql`select s.post_id, m.id as media_id from public.seal_posts s left join public.post_media m on m.post_id = s.post_id
+             where s.action_id = ${sealActionId}::uuid order by s.post_id, m.position, m.id`,
+      );
+      const byPost = new Map<string, string[]>();
+      for (const row of found) {
+        const ids = byPost.get(row.post_id) ?? [];
+        if (row.media_id !== null) ids.push(row.media_id);
+        byPost.set(row.post_id, ids);
+      }
+      return [...byPost].map(([postId, mediaIds]) => ({ postId, mediaIds }));
+    },
+
     async moderationStates(afterId: string | null, limit: number): Promise<{ id: string; postId: string; moderationState: MediaRow["moderationState"]; erasedAt: Date | null }[]> {
       const found = await db
         .select({ id: postMedia.id, postId: postMedia.postId, moderationState: postMedia.moderationState, erasedAt: postMedia.erasedAt })

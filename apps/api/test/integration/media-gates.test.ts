@@ -103,6 +103,9 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   imagePost: { is: "neither", why: "answers which post an image id is attached to, for an order's item, and nothing of the image" },
   imageCounts: { is: "neither", why: "answers how many image rows each post holds, for an order's screen, and nothing of an image" },
   preservedImages: { is: "neither", why: "answers a preserved post's image ids, pixel sizes and creation times for order-access, never a file or its content" },
+  // 3f Task 5: the image rows of one seal's posts, by id, for handover-list, which prints their stored names; it opens no
+  // file, and the hand-over's program, which copies the files, has no database.
+  sealImageRows: { is: "neither", why: "answers the ids of the image rows of a seal's posts for handover-list, never a file or its content" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 
@@ -234,7 +237,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         startDeletion: notHere,
         confirmDeletion: notHere,
         pendingPurges: async () => pending,
-        finishPurge: async (userId) => void finished.push(userId),
+        finishPurge: async (userId) => {
+          finished.push(userId);
+          return "purged";
+        },
         takeDownTerminated: notHere,
         exportAccount: async (userId) => exported(userId),
         appendEvent: async () => undefined,
@@ -406,7 +412,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         // files of the rows that went are requested.
         const deps = accountDeps(w, [ada.id]);
         await purge(deps, ada.id);
-        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 0 });
         expect(deps.finished).toEqual([ada.id, ada.id]);
         expect(await existing(w.tx, [...frozen.mediaIds, ...free.mediaIds, upload])).toEqual(sorted(kept));
         expect(await requested()).toEqual([]);
@@ -443,7 +449,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         const suspect = await report(w.tx, anAccount(ada.id, ada.handle), "csam");
         expect(await postFrozen(w.tx, own.postId)).toBe(true);
         // The job's rerun keeps the frozen rows and asks for nothing of them.
-        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 0 });
         expect(await existing(w.tx, own.mediaIds)).toEqual(sorted(own.mediaIds));
         expect(await requested()).toEqual([]);
         // The sweeper, which asks again for whatever a deleter still owes: a row that is still there is owed nothing,
@@ -544,7 +550,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
 
         // The request's run, and the job's after it.
         await purge(deps, ada.id);
-        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
+        expect(await purgePending(deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 0 });
         expect(deps.finished).toEqual([ada.id, ada.id]);
         const [profile] = await w.tx.execute<{ display_name: string; bio: string; deleted: boolean; handle: string }>(sql`select display_name, bio, deleted_at is not null as deleted, handle from profiles where id = ${ada.id}::uuid`);
         expect({ ...profile! }).toEqual({ display_name: "Deleted account", bio: "", deleted: true, handle: ada.handle });

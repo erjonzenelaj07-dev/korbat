@@ -1,4 +1,4 @@
-import { CaseDecidedParams, MEASURES, ORDER_DRAFTS, ORDER_GROUND_LABELS, SOURCE_LABELS, type CaseView, type StaffMe, type StaffOverview } from "@korbat/contracts";
+import { CaseDecidedParams, MEASURES, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_RULES, SOURCE_LABELS, type CaseView, type StaffMe, type StaffOverview } from "@korbat/contracts";
 import { ORDER_NOTICE } from "@korbat/rules";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -215,6 +215,7 @@ describe("Home's [home.unverified] (8.2)", () => {
       contact: { open: 0, oldestAt: null, dueAt: null },
       alerts: { channel: "ok", since: null },
       ordersUnverified,
+      reportsOwed: { total: 0, items: [] },
     }) as unknown as StaffOverview;
 
   test("the count, and each order a link built from its checked id; nothing when none", () => {
@@ -223,5 +224,45 @@ describe("Home's [home.unverified] (8.2)", () => {
     expect(text(out)).toContain(`Given effect at ${bothTimes(UNTIL)}`);
     expect(out.match(/href="[^"]+"/g)).toEqual([`href="/orders/${ORDER}"`]);
     expect(html(<AuthoritiesLines overview={overview({ total: 0, items: [] })} now={NOW.getTime()} />)).toBe("");
+  });
+});
+
+describe("Task 5: Home's [home.owed] (8.2) and the case page's line (8.6)", () => {
+  const CASE_OWED = "3a0b1c2d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const overview = (reportsOwed: StaffOverview["reportsOwed"]) =>
+    ({
+      contact: { open: 0, oldestAt: null, dueAt: null },
+      alerts: { channel: "ok", since: null },
+      ordersUnverified: { total: 0, items: [] },
+      reportsOwed,
+    }) as unknown as StaffOverview;
+  const hoursBefore = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000).toISOString();
+
+  test("one line a case, each a link to it: since when; after reportAlertHours the daily alert's sentence too; nothing when none is owed", () => {
+    const fresh = hoursBefore(ORDER_RULES.reportAlertHours - 1);
+    const late = hoursBefore(ORDER_RULES.reportAlertHours + 1);
+    const out = html(
+      <AuthoritiesLines
+        overview={overview({ total: 2, items: [{ caseId: CASE_OWED, kind: "sealed_images", since: late }, { caseId: CASE_OWED.toUpperCase(), kind: "dsa18_1", since: fresh }] })}
+        now={NOW.getTime()}
+        onOpenCase={noop}
+      />,
+    );
+    expect(text(out)).toContain(ORDER_WORDS.homeOwed(bothTimes(late), true));
+    expect(text(out)).toContain(ORDER_WORDS.homeOwed(bothTimes(fresh), false));
+    expect(ORDER_WORDS.homeOwed("x", true)).toBe(
+      `A report to the authorities is owed since x. More than ${ORDER_RULES.reportAlertHours} hours: every staff account is alerted daily until whoever has the server records it as sent or declined.`,
+    );
+    // The link is built from the checked id alone: an id that does not parse is printed without one.
+    expect(out.match(/href="[^"]+"/g)).toEqual([`href="/cases/${CASE_OWED}"`]);
+    // Nothing of a notification but the case, the time and that it is owed: no kind, no authority.
+    expect(text(out)).not.toMatch(/sealed_images|dsa18|authority named|BKA/);
+    expect(html(<AuthoritiesLines overview={overview({ total: 0, items: [] })} now={NOW.getTime()} />)).toBe("");
+  });
+
+  test("the case page says since when a report is owed for the case, and nothing while none is", () => {
+    const since = hoursBefore(3);
+    expect(text(page(postCase({ reportOwed: { since } })))).toContain(ORDER_WORDS.caseOwed(bothTimes(since)));
+    expect(text(page(postCase()))).not.toContain("A report to the authorities is owed");
   });
 });

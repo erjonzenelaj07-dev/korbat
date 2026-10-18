@@ -213,6 +213,7 @@ select 'profiles_kept|' || count(*) from kept where kind = 'profile';
 select 'cases|' || count(*) from doomed_cases;
 select 'orders|' || count(*) from doomed_orders;
 select 'messages|' || count(*) from doomed_messages;
+select 'records|' || count(*) from public.authority_notifications where case_id in (select id from doomed_cases) or account_id in (select id from doomed);
 select 'posts|' || count(*) from public.posts where author_id in (select id from doomed);
 select 'images|' || count(*) from public.post_media where owner_id in (select id from doomed);
 select 'touched_profiles|' || count(*) from touched_profiles;
@@ -238,6 +239,11 @@ delete from public.legal_order_events where order_id in (select id from doomed_o
 delete from public.legal_order_items where order_id in (select id from doomed_orders);
 delete from public.legal_orders where id in (select id from doomed_orders);
 delete from public.contact_messages where id in (select id from doomed_messages);
+-- 3f Task 5: the records to authorities about these cases or accounts, and the accounts' address holds. None holds a
+-- foreign key, so they would outlive what they name.
+delete from public.authority_notifications where case_id in (select id from doomed_cases) or account_id in (select id from doomed);
+delete from public.productions where account_id in (select id from doomed) or order_id in (select id from doomed_orders);
+delete from auth.report_holds where user_id in (select id from doomed);
 -- The items first: deleting an unanswered suspect item is what ends its freeze.
 delete from public.intake_items where case_id in (select id from doomed_cases);
 -- A hold is released before it is deleted: the release's trigger takes the image's hold_until back, a delete would not.
@@ -309,6 +315,7 @@ if (count("accounts") + count("profiles") === 0) {
 }
 console.log(`their posts: ${count("posts")}, image rows: ${count("images")}, undecided moderation cases about them: ${count("cases")}`);
 console.log(`authorities' orders that name only their posts: ${count("orders")}, with ${count("messages")} messages they came in with`);
+console.log(`records to authorities about them: ${count("records")}`);
 console.log(`kept profiles and posts whose counters include them: ${count("touched_profiles")} and ${count("touched_posts")}`);
 if (report.get("deleted") === "yes") {
   console.log(`Deleted ${count("accounts")} accounts and ${count("profiles")} profiles with everything they made, ${count("cases")} undecided moderation cases about them, and ${count("orders")} orders that named only their posts with ${count("messages")} of their messages; recomputed the counters of ${count("touched_profiles")} profiles and ${count("touched_posts")} posts.`);

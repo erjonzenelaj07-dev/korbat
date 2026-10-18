@@ -196,3 +196,185 @@ export const notifyFolders = pgTable(
   },
   (t) => [check("notify_folders_folder", sql`${t.folder} in ('inbox', 'junk')`), fullAccess("notify_folders_api_all", apiRole), fullAccess("notify_folders_notify_all", notifyRole)],
 ).enableRLS();
+
+// ---------------------------------------------------------------- records to authorities (3f design, section 6.5)
+// The lists are written from the contracts' constants of the same meaning (NOTIFICATION_STATES, NOTIFICATION_DUTIES,
+// NOTIFICATION_SENT_KINDS, NOTIFICATION_ANSWERS, NOTIFICATION_EVENT_KINDS, NOTIFICATION_OPENED_VIA,
+// PRODUCTION_INSTRUMENTS, ACCESS_PURPOSES, PRODUCED_KINDS, NOT_HELD_KINDS): @korbat/db does not depend on
+// @korbat/contracts, so a database test holds each migrated CHECK to its constant.
+const NOTIFICATION_DUTIES = ["dsa18_1", "dsa18_2", "tco14_5", "voluntary"];
+const NOTIFICATION_SENT_KINDS = ["handle", "address", "created_at", "post_ids", "post_times", "report_time", "files"];
+const PRODUCED_KINDS = [...NOTIFICATION_SENT_KINDS, "content"];
+const NOT_HELD_KINDS = ["name", "postal_address", "date_of_birth", "phone_number", "ip_address"];
+/** The values as a SQL array of string literals: plain lower-case words of this file. */
+const arrayOf = (values: readonly string[]) => sql.raw(`array[${values.map((value) => `'${value}'`).join(", ")}]::text[]`);
+
+/**
+ * One notification to an authority that is owed, sent or declined (3f design, sections 6.5 and 7.13). Only the command
+ * line, as the migrator, reads and writes it, and the trigger report_open() opens one when a seal is taken: the API role
+ * holds no grant, and its one policy lets it see no row. No column holds an address, a handle or a value that was sent; an
+ * account, a case and a seal are named by their ids, without foreign keys, since the record outlives a purge and a case.
+ * opened_at is forced, except that a row with imported_at keeps a supplied time that is not after the clock.
+ */
+export const authorityNotifications = pgTable(
+  "authority_notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    state: text("state").notNull(),
+    /** The duties it meets; empty while a seal's record is only owed. */
+    duties: text("duties").array().notNull().default(sql`'{}'::text[]`),
+    caseId: uuid("case_id"),
+    /** The seal_media row that opened it; null for one the command line opened. */
+    sealActionId: uuid("seal_action_id"),
+    accountId: uuid("account_id"),
+    openedAt: ts("opened_at").notNull(),
+    openedVia: text("opened_via").notNull(),
+    /** Awareness: the first suspect report's time, and the admin's answer's. */
+    firstReportAt: ts("first_report_at"),
+    adminAnswerAt: ts("admin_answer_at"),
+    /** The check: who, when, yes or no, why. */
+    checkedBy: text("checked_by"),
+    checkedAt: ts("checked_at"),
+    checkResult: boolean("check_result"),
+    checkReason: text("check_reason"),
+    /** An ISO code and why that state; or null and why none is identifiable. */
+    stateConcerned: text("state_concerned"),
+    stateBasis: text("state_basis"),
+    authority: text("authority"),
+    channel: text("channel"),
+    sentAt: ts("sent_at"),
+    receipt: text("receipt"),
+    sentBy: text("sent_by"),
+    ownReference: text("own_reference"),
+    theirReference: text("their_reference"),
+    /** What was sent, by kind, never by value. */
+    sentKinds: text("sent_kinds").array(),
+    /** Which version of the fixed sentence of what korbat does not hold went with it (RECORDS_NOT_HELD). */
+    notKeptVersion: smallint("not_kept_version"),
+    /** The authority's answer as one word, and its day. */
+    answer: text("answer"),
+    answeredAt: ts("answered_at"),
+    /** `unsealed` when the database closed it; else the operator's reason. */
+    declinedReason: text("declined_reason"),
+    closedAt: ts("closed_at"),
+    importedAt: ts("imported_at"),
+  },
+  (t) => [
+    check("authority_notifications_state", sql`${t.state} in ('owed', 'sent', 'declined')`),
+    check("authority_notifications_duties", sql`${t.duties} <@ ${arrayOf(NOTIFICATION_DUTIES)}`),
+    check("authority_notifications_sent_kinds", sql`${t.sentKinds} <@ ${arrayOf(NOTIFICATION_SENT_KINDS)}`),
+    check("authority_notifications_answer", sql`${t.answer} in ('not_illegal', 'illegal', 'no_assessment', 'other')`),
+    check("authority_notifications_opened_via", sql`${t.openedVia} in ('system', 'cli')`),
+    // A seal opens a record and names its row; the command line opens one for a duty and names no seal.
+    check("authority_notifications_seal", sql`(${t.openedVia} = 'system') = (${t.sealActionId} is not null)`),
+    check("authority_notifications_closed", sql`(${t.state} = 'owed') = (${t.closedAt} is null)`),
+    check("authority_notifications_declined", sql`(${t.state} = 'declined') = (${t.declinedReason} is not null)`),
+    check(
+      "authority_notifications_sent",
+      sql`${t.state} <> 'sent' or (${t.sentAt} is not null and ${t.authority} is not null and ${t.channel} is not null and ${t.sentKinds} is not null and cardinality(${t.duties}) > 0 and ${t.notKeptVersion} is not null)`,
+    ),
+    check("authority_notifications_answered", sql`${t.answer} is null or ${t.answeredAt} is not null`),
+    check(
+      "authority_notifications_texts",
+      sql`char_length(${t.checkReason}) <= 500 and char_length(${t.stateBasis}) <= 500 and char_length(${t.declinedReason}) <= 500 and char_length(${t.checkedBy}) <= 200 and char_length(${t.sentBy}) <= 200 and char_length(${t.authority}) <= 200 and char_length(${t.channel}) <= 200 and char_length(${t.receipt}) <= 500 and char_length(${t.ownReference}) <= 200 and char_length(${t.theirReference}) <= 200`,
+    ),
+    /** One owed record a seal opened, for each account: a second seal finds it, and the trigger's lock orders the two. */
+    uniqueIndex("authority_notifications_owed_seal_key").on(t.accountId).where(sql`state = 'owed' and opened_via = 'system'`),
+    /** reports_owed() and the alert's count. */
+    index("authority_notifications_owed_idx").on(t.openedAt).where(sql`state = 'owed'`),
+    index("authority_notifications_account_idx").on(t.accountId),
+    index("authority_notifications_case_idx").on(t.caseId),
+    pgPolicy("authority_notifications_api_none", { for: "select", to: apiRole, using: sql`false` }),
+  ],
+).enableRLS();
+
+/**
+ * A later request or answer of the authority about a notification's matter, or the operator's note (7.13 step 6), with
+ * the authority's demand that the person is not told and that demand's end, which may be open (null with the mark set).
+ * `at` is forced, except for an imported record's event, which keeps a supplied time that is not after the clock.
+ */
+export const authorityNotificationEvents = pgTable(
+  "authority_notification_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => authorityNotifications.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    at: ts("at").notNull(),
+    /** When the request or answer was made, as the authority dated it. */
+    occurredAt: ts("occurred_at"),
+    reference: text("reference"),
+    /** How it came and what it asked, about the act and never about the person (at most 500 characters). */
+    how: text("how").notNull(),
+    notToPerson: boolean("not_to_person").notNull(),
+    notToPersonUntil: ts("not_to_person_until"),
+  },
+  (t) => [
+    check("authority_notification_events_kind", sql`${t.kind} in ('request', 'answer', 'note')`),
+    check("authority_notification_events_until", sql`${t.notToPerson} or ${t.notToPersonUntil} is null`),
+    check("authority_notification_events_texts", sql`char_length(${t.how}) between 1 and 500 and char_length(${t.reference}) <= 200`),
+    index("authority_notification_events_notification_idx").on(t.notificationId, t.at),
+    pgPolicy("authority_notification_events_api_none", { for: "select", to: apiRole, using: sql`false` }),
+  ],
+).enableRLS();
+
+/**
+ * One row for every time something leaves korbat for an authority (3f design, sections 6.5 and 7.14): account data for
+ * an order or a notification, a hand-over of one seal's files, a seizure, an access to preserved content for an
+ * authority. What was asked for, produced and not held is stored by kind, never as a text; a hand-over's files by name,
+ * size and SHA-256. opened_at is forced as a notification's.
+ */
+export const productions = pgTable(
+  "productions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    instrument: text("instrument").notNull(),
+    notificationId: uuid("notification_id"),
+    orderId: uuid("order_id"),
+    orderItemId: uuid("order_item_id"),
+    sealActionId: uuid("seal_action_id"),
+    accountId: uuid("account_id"),
+    /** For preserved_access alone: why the content was opened. */
+    purpose: text("purpose"),
+    authority: text("authority"),
+    ownReference: text("own_reference"),
+    theirReference: text("their_reference"),
+    asked: text("asked").array(),
+    produced: text("produced").array().notNull(),
+    notHeld: text("not_held").array(),
+    /** A hand-over: each listed file's name, and once recorded its size and SHA-256. */
+    files: jsonb("files").$type<{ name: string; bytes: number | null; sha256: string | null }[]>(),
+    archiveSha256: text("archive_sha256"),
+    channel: text("channel"),
+    receipt: text("receipt"),
+    deliveredAt: ts("delivered_at"),
+    destroyedAt: ts("destroyed_at"),
+    destroyedHow: text("destroyed_how"),
+    notToPersonUntil: ts("not_to_person_until"),
+    openedAt: ts("opened_at").notNull(),
+    recordedBy: text("recorded_by"),
+    importedAt: ts("imported_at"),
+  },
+  (t) => [
+    check("productions_instrument", sql`${t.instrument} in ('notification', 'demand', 'court_order', 'seizure', 'dsa_art10', 'preserved_access')`),
+    check("productions_purpose", sql`(${t.instrument} = 'preserved_access') = (${t.purpose} is not null)`),
+    // Compared as text: 'authority' is also a value 3f added to an enum (intake_channel), and the enum-literal rule reads
+    // the migrations' words, not their types.
+    check("productions_purposes", sql`${t.purpose}::text in ('review', 'complaint', 'authority')`),
+    check("productions_asked", sql`${t.asked} <@ ${arrayOf(NOTIFICATION_SENT_KINDS)}`),
+    check("productions_produced", sql`${t.produced} <@ ${arrayOf(PRODUCED_KINDS)}`),
+    check("productions_not_held", sql`${t.notHeld} <@ ${arrayOf(NOT_HELD_KINDS)}`),
+    check("productions_archive", sql`${t.archiveSha256} ~ '^[0-9a-f]{64}$'`),
+    check("productions_files", sql`jsonb_typeof(${t.files}) = 'array'`),
+    check("productions_destroyed", sql`(${t.destroyedAt} is null) = (${t.destroyedHow} is null)`),
+    check(
+      "productions_texts",
+      sql`char_length(${t.authority}) <= 200 and char_length(${t.ownReference}) <= 200 and char_length(${t.theirReference}) <= 200 and char_length(${t.channel}) <= 200 and char_length(${t.receipt}) <= 500 and char_length(${t.destroyedHow}) <= 500 and char_length(${t.recordedBy}) <= 200`,
+    ),
+    /** handover_undestroyed's count, and the records command's list. */
+    index("productions_undestroyed_idx").on(t.deliveredAt).where(sql`files is not null and destroyed_at is null`),
+    index("productions_account_idx").on(t.accountId),
+    pgPolicy("productions_api_none", { for: "select", to: apiRole, using: sql`false` }),
+  ],
+).enableRLS();

@@ -8,6 +8,7 @@ import { SettingsNav } from "@/components/SettingsNav";
 import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/components/ui";
 import { api, ApiError, apiResponse, errorMessage } from "@/lib/api";
 import { exportFilename, saveBlob } from "@/lib/download";
+import { DELETE_HOLD } from "@/lib/orders";
 import { useSession } from "@/lib/session";
 import { STANDING_TEXTS } from "@/lib/standing";
 
@@ -303,6 +304,8 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
         {ACCOUNT_DELETION_WORDS} Your likes, reposts, bookmarks, follows, blocks and mutes are removed too. Your handle stays reserved, so nobody can take it. This
         cannot be undone.
       </Body>
+      {/* 3f Task 5 ([delete.hold]): what the law can oblige korbat to keep for a time, said to every account beforehand. */}
+      <Body>{DELETE_HOLD}</Body>
       {flowId ? (
         <>
           <Body>We emailed a code to {me.user.email}.</Body>

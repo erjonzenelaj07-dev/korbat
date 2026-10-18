@@ -132,6 +132,7 @@ describe("the appeals as the console reads them", () => {
       contact: { open: 0, oldestAt: null, dueAt: null },
       alerts: { channel: "off", since: null },
       ordersUnverified: { total: 0, items: [] },
+      reportsOwed: { total: 0, items: [] },
     };
     expect(StaffOverview.parse(overview)).toEqual(overview);
     for (const member of ["appealsWaiting", "appealsYouMayReview", "appealsWithoutReviewer"]) {

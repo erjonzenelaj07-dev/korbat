@@ -48,6 +48,12 @@ export interface AuthConfig {
    */
   homeState: MemberState | null;
   contactPoint: string | null;
+  /**
+   * 3f (design, sections 7.15 and 10.7): REPORT_HOLD. While on (the default), a deletion's last step keeps the address of
+   * an account whose report to the authorities is owed, for at most reportHoldDays, and the deletion mail says so; off
+   * restores 1b's behaviour. Read in the auth module alone, at those two places.
+   */
+  reportHold: boolean;
 }
 
 export function authConfigFrom(config: Config): AuthConfig {
@@ -75,6 +81,7 @@ export function authConfigFrom(config: Config): AuthConfig {
     // The configuration takes only a state whose facts the contracts hold, which is a member state's code.
     homeState: (config.HOME_STATE as MemberState | undefined) ?? null,
     contactPoint: config.CONTACT_POINT ?? null,
+    reportHold: config.REPORT_HOLD === "on",
   };
 }
 

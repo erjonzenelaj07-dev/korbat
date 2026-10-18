@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { count, eq, sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { ORDER_RULES } from "@korbat/contracts";
 import { blocks, bookmarks, closeDb, createDb, follows, handleHistory, likes, mutes, posts, profiles, reposts, users, type Db } from "@korbat/db";
 import type { AccountDeps } from "../../src/account/context";
 import { confirmDeletion, purge, startDeletion } from "../../src/account/flows/deletion";
@@ -335,5 +336,58 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     await authRepo.finishPurge(alive.user.id, new Date());
     expect(await authRow(alive.user.id)).toMatchObject({ email: alive.email, purgedAt: null, deletedAt: null });
     expect(await authRepo.findUserById(alive.user.id)).toBeDefined();
+  });
+
+  test("3f: with an address held for a report, the deletion takes everything down at once but the address: the credentials go in the purge's first statement, the address and purged_at wait, the mail gains the hold's paragraph, and the next round after the hold is released overwrites the address", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    await authRepo.setPhoneHash(userId, randomBytes(16).toString("hex"));
+    // A seal taken while deciding holds the account's record: its hold, as report_open sets it, written as the migrator.
+    await migrateDb.execute(sql`insert into auth.report_holds (user_id, set_at, seal_final) values (${userId}::uuid, now(), false)`);
+    try {
+      const { flowId } = await startDeletion(deps(), owner.session, h.ctx);
+      await confirmDeletion(deps(), owner.session, { flowId, code: h.mailer.lastCodeFor(owner.email)!, handle: owner.handle });
+      // Everything but the address went at once: the credentials and personal facts, the profile, the sessions.
+      const held = (await authRow(userId))!;
+      expect(held).toMatchObject({ email: owner.email, purgedAt: null, passwordHash: null, totpSecretEnc: null, phoneHash: null, recoveryCodesHash: [], ageConfirmedAt: null, termsVersion: null, termsAcceptedAt: null });
+      expect(held.deletedAt).not.toBeNull();
+      expect(await s.repo.findProfileByHandle(owner.handle)).toBeNull();
+      // The mail: the one wording for every account, and the paragraph of the seal taken while deciding, with its day.
+      const mail = h.mailer.sent.filter((m) => m.to === owner.email && m.template === "account_deleted").at(-1)!;
+      const [until] = await migrateDb.execute<{ day: string }>(sql`select to_char(auth.address_held_until(${userId}::uuid) at time zone 'UTC', 'YYYY-MM-DD') as day`);
+      expect(mail.data).toEqual({ heldUntil: until!.day, holdFinal: "false" });
+      // The account stays pending, last, and each round counts it as held and changes nothing.
+      const first = await purgePending(deps());
+      expect(first.held).toBeGreaterThanOrEqual(1);
+      expect(await authRow(userId)).toMatchObject({ email: owner.email, purgedAt: null });
+      const pending = await authRepo.pendingPurges();
+      expect(pending.at(-1)).toBe(userId);
+      // The record is sent: the hold is released, and the next round overwrites the address.
+      await migrateDb.execute(sql`update auth.report_holds set released_at = now(), release_reason = 'sent' where user_id = ${userId}::uuid`);
+      await purgePending(deps());
+      expect(await authRow(userId)).toMatchObject({ email: `deleted:${userId}`, emailVerifiedAt: null });
+      expect((await authRow(userId))!.purgedAt).not.toBeNull();
+    } finally {
+      await migrateDb.execute(sql`delete from auth.report_holds where user_id = ${userId}::uuid`);
+    }
+  });
+
+  test("3f: a hold older than reportHoldDays reads as not held, and REPORT_HOLD off purges a held address at once, as 1b did", async () => {
+    const aged = await account();
+    const off = await account();
+    for (const user of [aged, off]) {
+      await migrateDb.execute(sql`insert into auth.report_holds (user_id, set_at, seal_final) values (${user.user.id}::uuid, now(), true)`);
+      await authRepo.markDeleted(user.user.id, new Date(Date.now() - 60_000));
+    }
+    try {
+      expect(await authRepo.finishPurge(aged.user.id, new Date())).toBe("held");
+      await migrateDb.execute(sql`update auth.report_holds set set_at = set_at - make_interval(days => ${ORDER_RULES.reportHoldDays}, secs => 1) where user_id = ${aged.user.id}::uuid`);
+      expect(await authRepo.finishPurge(aged.user.id, new Date())).toBe("purged");
+      expect(await authRepo.finishPurge(off.user.id, new Date(), false)).toBe("purged");
+      expect(await authRow(off.user.id)).toMatchObject({ email: `deleted:${off.user.id}` });
+      expect(await authRepo.finishPurge(off.user.id, new Date())).toBe("none");
+    } finally {
+      await migrateDb.execute(sql`delete from auth.report_holds where user_id = any(${`{${aged.user.id},${off.user.id}}`}::uuid[])`);
+    }
   });
 });

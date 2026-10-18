@@ -692,6 +692,16 @@ export const ORDER_WORDS = {
   /** Task 3: Home's [home.unverified] (8.2), before the orders' links. */
   homeUnverified: (n: number) =>
     `Orders given effect and not verified, or with a post added after the check: ${n}. Whoever has the server compares each with the order in the mailbox and records the check with staff.js order-verify; every staff account is alerted daily until then.`,
+  /**
+   * Task 5: Home's [home.owed] (8.2), one line a case, each a link to it: since when a report to the authorities is owed,
+   * and after ORDER_RULES.reportAlertHours the daily alert. The console sees of a notification only that one is owed, for
+   * which case and since when; who was reported to whom is the command line's.
+   */
+  homeOwed: (since: string, late: boolean) =>
+    `A report to the authorities is owed since ${since}.${late ? ` More than ${ORDER_RULES.reportAlertHours} hours: every staff account is alerted daily until whoever has the server records it as sent or declined.` : ""}`,
+  /** Task 5: the case page's line (8.6, CaseView.reportOwed), in [home.owed]'s words: the design gives the page none of its own. */
+  caseOwed: (since: string) =>
+    `A report to the authorities is owed for this case since ${since}. Whoever has the server records it as sent or declined; nothing more of it is shown here.`,
   /** Task 3: a case that holds an order's measure (8.6). */
   caseOrder: {
     source: "An authority's order",

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { hex, sha256, sortedJson } from "./canonical";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Authorities' orders and the alert channel (3f design, sections 6.1, 6.2, 10.1, 10.2 and 18, W.1 and W.4). This module
@@ -555,6 +556,68 @@ export type TellPersonRule = (typeof TELL_PERSON_RULES)[number];
 /** A scrutiny's outcome (TCO Art. 4). */
 export const SCRUTINY_OUTCOMES = ["upheld", "annulled"] as const;
 export type ScrutinyOutcome = (typeof SCRUTINY_OUTCOMES)[number];
+
+// ---------------------------------------------------------------- records to authorities (Task 5)
+// Each list below is the one spelling of section 6.5's CHECK of the same meaning; a database test holds them equal.
+
+/** A notification record's state: owed until the command line records it as sent or declined. */
+export const NOTIFICATION_STATES = ["owed", "sent", "declined"] as const;
+export type NotificationState = (typeof NOTIFICATION_STATES)[number];
+/** The duties a notification meets (one may meet several): DSA Art. 18 (two readings), TCO Art. 14(5), or none. */
+export const NOTIFICATION_DUTIES = ["dsa18_1", "dsa18_2", "tco14_5", "voluntary"] as const;
+export type NotificationDuty = (typeof NOTIFICATION_DUTIES)[number];
+/**
+ * What a notification sent, and what an order to provide information asked for, by kind and never by value: the one
+ * list of `notification-sent --kinds`, of `production-account --asked` and of the CHECKs on `sent_kinds` and `asked`.
+ */
+export const NOTIFICATION_SENT_KINDS = ["handle", "address", "created_at", "post_ids", "post_times", "report_time", "files"] as const;
+export type NotificationSentKind = (typeof NOTIFICATION_SENT_KINDS)[number];
+/** An authority's answer to a notification: a word, never a sentence about a person. No word releases or destroys anything. */
+export const NOTIFICATION_ANSWERS = ["not_illegal", "illegal", "no_assessment", "other"] as const;
+export type NotificationAnswer = (typeof NOTIFICATION_ANSWERS)[number];
+/** A later step of a notification's matter: the authority's request, its answer, or the operator's note. */
+export const NOTIFICATION_EVENT_KINDS = ["request", "answer", "note"] as const;
+export type NotificationEventKind = (typeof NOTIFICATION_EVENT_KINDS)[number];
+/** Who opened a notification record: a seal (the database's trigger) or the command line. */
+export const NOTIFICATION_OPENED_VIA = ["system", "cli"] as const;
+/** What a production answers. A recipient is an authority, never a hotline, a lawyer or a company. */
+export const PRODUCTION_INSTRUMENTS = ["notification", "demand", "court_order", "seizure", "dsa_art10", "preserved_access"] as const;
+export type ProductionInstrument = (typeof PRODUCTION_INSTRUMENTS)[number];
+/** The instruments under which sealed files are handed over (`handover-list --instrument`). */
+export const HANDOVER_INSTRUMENTS = ["notification", "demand", "court_order", "seizure"] as const satisfies readonly ProductionInstrument[];
+/** Why preserved content was opened (`order-access --purpose`); only `authority` is a production. */
+export const ACCESS_PURPOSES = ["review", "complaint", "authority"] as const;
+export type AccessPurpose = (typeof ACCESS_PURPOSES)[number];
+/**
+ * What a production gave, by kind: the kinds a notification can send, and `content`, a preserved post's text, alt texts
+ * and its images' facts as `order-access` prints them. Never a value.
+ */
+export const PRODUCED_KINDS = [...NOTIFICATION_SENT_KINDS, "content"] as const;
+/** What korbat does not hold of an account (W.8's sentence), by kind, as a production stores it. */
+export const NOT_HELD_KINDS = ["name", "postal_address", "date_of_birth", "phone_number", "ip_address"] as const;
+/**
+ * Why an address hold was released: the record was sent, or declined (also by the database when no seal of the account
+ * is left). A hold older than ORDER_RULES.reportHoldDays simply reads as not held; `expired` is kept for a hand-written end.
+ */
+export const REPORT_HOLD_RELEASES = ["sent", "declined", "expired"] as const;
+/**
+ * W.8's sentence of what korbat does not hold, and of what it holds and has not produced, by version: a notification's
+ * record stores the version that went with it (`not_kept_version`), so a changed sentence is a new version.
+ */
+export const RECORDS_NOT_HELD = {
+  1: "korbat holds no name, postal address, date of birth, phone number or IP address of this account. It holds IP addresses, and a phone number the account verified, only as keyed hashes that identify nobody outside korbat; a device's hash is deleted 30 days after the device was last seen. korbat also holds, and has not produced here, the times and device types of the account's sign-ins.",
+} as const;
+export const RECORDS_NOT_HELD_VERSION = 1;
+
+/**
+ * The digest that a later step of a notification record (its answer, an event) and every step of a production hold in
+ * their audit row in place of the facts (10.5): the SHA-256, in hex, of the record's row at that step in the canonical
+ * JSON (canonical.ts), as the database printed it. The chain proves the record existed and was not changed afterwards,
+ * and `staff.js records --verify` recomputes it from the row, without the audit log ever naming the person.
+ */
+export async function recordDigestOf(row: unknown): Promise<string> {
+  return hex(await sha256(sortedJson(row)));
+}
 
 /** The grounds each kind of event takes; a kind not named here takes none. legal_order_events_ground is written from it. */
 export const ORDER_EVENT_GROUNDS = {
@@ -1145,3 +1208,15 @@ export type OrderTexts = z.infer<typeof OrderTexts>;
 /** Home's [home.unverified] (10.2): the orders with a disabled item that are not verified, or whose disabled item was added after the check. */
 export const OrdersUnverified = z.object({ total: z.number().int().nonnegative(), items: z.array(z.object({ orderId: z.uuid(), effectAt: At })).max(100) });
 export type OrdersUnverified = z.infer<typeof OrdersUnverified>;
+
+/**
+ * Task 5 (sections 7.13 and 10.2): what `reports_owed()` answers and nothing more, for Home's [home.owed]: each owed
+ * notification record's case, its kind (`sealed_images` for a seal's record, otherwise its first duty) and since when.
+ * Who was reported to whom is the command line's alone.
+ */
+export const REPORT_OWED_KINDS = ["sealed_images", ...NOTIFICATION_DUTIES] as const;
+export const ReportsOwed = z.object({
+  total: z.number().int().nonnegative(),
+  items: z.array(z.object({ caseId: z.uuid(), kind: z.enum(REPORT_OWED_KINDS), since: At })).max(100),
+});
+export type ReportsOwed = z.infer<typeof ReportsOwed>;

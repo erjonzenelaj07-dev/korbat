@@ -1,6 +1,7 @@
 /**
- * The staff command line's commands for moderation cases (3c design, section 7.13): link, unlink, limits, text-verify,
- * account-facts and access-request. staff.ts parses their arguments, reads their settings and opens their connections;
+ * The staff command line's commands for moderation cases (3c design, section 7.13): link, unlink, limits, text-verify
+ * and access-request (3f's notification-facts, in records.ts, replaces account-facts). staff.ts parses their arguments,
+ * reads their settings and opens their connections;
  * this file holds what each does, over the connections it is handed. Each sets the 10-second lock timeout in every
  * transaction it opens, writes its audit row in the transaction of its change and as that transaction's last statement
  * (the insert holds the chain's head until the commit), and says so when it changed nothing it was asked to.
@@ -111,38 +112,6 @@ export async function setLimits(migrateDb: Runner, limits: StaffLimits): Promise
   });
 }
 
-// ---------------------------------------------------------------- account-facts
-
-/**
- * Prints an account's handle, address and creation time for the runbook's Art. 18 step, as the migrator, and records
- * that it did. Only for the subject of the named case: the account the case is about, or the author of its post.
- */
-export async function accountFacts(migrateDb: Runner, handleGiven: string, caseId: string): Promise<Changed> {
-  const handle = handleArg(handleGiven);
-  return changing(migrateDb, async (tx): Promise<Changed> => {
-    const [profile] = await tx.select({ id: profiles.id, handle: profiles.handle }).from(profiles).where(eq(profiles.handle, handle)).limit(1);
-    if (!profile) return { ok: false, problem: `no account has the handle @${handle}` };
-    const [subject] = await rowsOf<{ subject: string | null }>(
-      tx,
-      sql`select case when c.target_type = 'account' then c.target_id else (select p.author_id from posts p where p.id = c.target_id) end as subject from cases c where c.id = ${caseId}::uuid`,
-    );
-    if (!subject) return { ok: false, problem: `no case has the id ${caseId}` };
-    if (subject.subject !== profile.id) return { ok: false, problem: `@${handle} is not the subject of case ${caseId}; nothing was read` };
-    const [account] = await tx.select({ email: users.email, createdAt: users.createdAt }).from(users).where(eq(users.id, profile.id)).limit(1);
-    if (!account) return { ok: false, problem: `@${handle} has no account row` };
-    await appendAuditRow(tx, { actorId: SYSTEM_ACTOR_ID, action: "account_facts_read", targetType: "user", targetId: profile.id, requestId: null, metadata: { caseId } });
-    return {
-      ok: true,
-      lines: [
-        `handle: @${profile.handle}`,
-        `email: ${account.email}`,
-        `account created: ${account.createdAt.toISOString()}`,
-        "Keep this off the server, with your R2 or Art. 18 record of the case, and destroy it after an answer without a seal (README, runbook).",
-      ],
-    };
-  });
-}
-
 // ---------------------------------------------------------------- access-request
 
 /**
@@ -156,12 +125,14 @@ export async function accessRequest(
   appOrigin: string,
   who: { handle: string } | { email: string },
   contactsOf: (email: string) => Promise<{ id: string; name: string | null }[]>,
+  // 3f (W.8): for a handle, which of its cases an authority asked to keep from the person, read as the migrator.
+  authorityHolds?: (caseIds: readonly string[]) => Promise<Map<string, string | null>>,
 ): Promise<{ ok: true; draft: AccountAccessDraft | ContactsAccessDraft } | { ok: false; problem: string }> {
   if ("handle" in who) {
     const handle = handleArg(who.handle);
     const [profile] = await apiDb.select({ id: profiles.id, handle: profiles.handle }).from(profiles).where(eq(profiles.handle, handle)).limit(1);
     if (!profile) return { ok: false, problem: `no account has the handle @${handle}` };
-    const draft = await accessDraftForAccount(apiDb, appOrigin, profile);
+    const draft = await accessDraftForAccount(apiDb, appOrigin, profile, authorityHolds);
     await changing(apiDb, (tx) => appendAuditRow(tx, { actorId: SYSTEM_ACTOR_ID, action: "access_request_drafted", targetType: "user", targetId: profile.id, requestId: null, metadata: { cases: draft.cases.length, contacts: 0 } }));
     return { ok: true, draft };
   }

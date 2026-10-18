@@ -29,6 +29,13 @@ export const ACCESS_WORDS = {
    */
   noticeHeld: (until: string | null) =>
     `${until === null ? "An order's notice about this post is held, with no end recorded." : `An order's notice about this post is held until ${until}.`} Leave the order, the post and every decision marked below out of the answer, and note the reason in the operator's records, not in the answer.`,
+  /**
+   * 3f Task 5 (design, W.8): printed in place of a case's mark for the authorities' check when a notification record of
+   * the case carries an authority's demand that the person is not told, whose end is ahead or open. `day` is that end as
+   * a UTC day, or null while it is open.
+   */
+  authorityHold: (day: string | null) =>
+    `${day === null ? "An authority asked that this person is not told of its request (no end given yet)." : `An authority asked that this person is not told of its request (until ${day}).`} Do not send this case's part of the draft, and do not say that an authority is the reason, before counsel has read it.`,
   /** The source of an item, as a category: never a count, a name or a report's words. */
   sources: { report: "a report by another user", notice: "a notice under Article 16", finding: "found by a moderator" },
 } as const;
@@ -114,9 +121,16 @@ export interface AccountAccessDraft {
  * source category, ground, rule and category; its snapshots with their content unless it is withheld; every decision
  * with its statement's data and its texts while they are held; and the account's own appeals with their statements.
  * Then the account's own reports and notices. A case that holds an item of the urgent lane, open or closed, is marked
- * for the check of the authorities' records.
+ * for the check of the authorities' records; 3f Task 5: a case whose notification record carries an authority's demand
+ * that the person is not told, still running, is marked with access.authorityHold in that mark's place, from
+ * `authorityHolds`, which the command line reads as the migrator (the API's role holds no grant on the records).
  */
-export async function accessDraftForAccount(q: Runner, appOrigin: string, account: { id: string; handle: string }): Promise<AccountAccessDraft> {
+export async function accessDraftForAccount(
+  q: Runner,
+  appOrigin: string,
+  account: { id: string; handle: string },
+  authorityHolds?: (caseIds: readonly string[]) => Promise<Map<string, string | null>>,
+): Promise<AccountAccessDraft> {
   const cases = await rows<{
     id: string;
     target_type: "post" | "account";
@@ -196,19 +210,24 @@ export async function accessDraftForAccount(q: Runner, appOrigin: string, accoun
     if (item.statement !== null) withheldTexts.push({ caseId: item.case_id, kind: "reexamination_statement", text: item.statement, note: ACCESS_WORDS.weigh });
   }
 
+  const holds = authorityHolds === undefined ? new Map<string, string | null>() : await authorityHolds(cases.map((c) => c.id));
+  /** The authority's mark of a case, when one runs. */
+  const authorityHold = (caseId: string) => (holds.has(caseId) ? ACCESS_WORDS.authorityHold(holds.get(caseId)!) : null);
   return {
     subject: { handle: account.handle },
     cases: cases.map((c) =>
       // 3f (section 7.10): a case about a post whose order's notice is held is marked for the operator in the place of its
       // part, and nothing of the order, the post or a decision held with it is in what the draft offers to send.
       c.order_held || c.held_decisions.length > 0
-        ? { id: c.id, noticeHeld: ACCESS_WORDS.noticeHeld(c.hold_until), heldDecisions: c.held_decisions }
+        ? { id: c.id, noticeHeld: ACCESS_WORDS.noticeHeld(c.hold_until), heldDecisions: c.held_decisions, authorityHold: authorityHold(c.id) }
         : {
       id: c.id,
       target: c.target_type === "post" ? { type: "post", link: postLink(appOrigin, c.target_id) } : { type: "account", link: accountLink(appOrigin, account.handle) },
       openedAt: c.opened_at,
       closedAt: c.closed_at,
-      authoritiesCheck: c.urgent ? ACCESS_WORDS.authorities : null,
+      // 3f Task 5 (W.8): an authority's demand that the person is not told stands in place of the mark for the check.
+      authoritiesCheck: holds.has(c.id) ? null : c.urgent ? ACCESS_WORDS.authorities : null,
+      authorityHold: authorityHold(c.id),
       items: items
         .filter((item) => item.case_id === c.id)
         .map((item) => ({

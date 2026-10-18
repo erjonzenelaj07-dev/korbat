@@ -8,17 +8,19 @@
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-head
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-verify [<chain_seq>:<hash> ...]
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js text-verify
- *   docker compose -f infra/compose.yml run --rm api node dist/staff.js access-request <@handle | email>
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js access-request <@handle>
+ *   docker compose -f infra/compose.yml run --rm api node dist/staff.js access-request <email>
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js link|unlink <staff email> <personal handle>
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js limits <five numbers>
- *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js account-facts <handle> <case id>
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js notification-facts <record>   (3f: cli/records.ts)
  *
  * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
- * staff member's personal accounts for the recusal check, limits sets the limits on staff, and account-facts prints an
- * account's address for a report to the police: each as the migrator, in the migrate service. text-verify holds what the
- * record names, and what posts and images show, to the record, on the API's role. access-request drafts the moderation
- * part of an answer to a GDPR access request in the API service, whose whole configuration it reads: a notifier's
- * contact is found and opened only with the API's keys.
+ * staff member's personal accounts for the recusal check and limits sets the limits on staff, each as the migrator, in
+ * the migrate service; 3f's notification-facts (cli/records.ts) replaces account-facts. text-verify holds what the record
+ * names, and what posts and images show, to the record, on the API's role. access-request drafts the moderation part of
+ * an answer to a GDPR access request: for an address in the API service, whose whole configuration it reads, since a
+ * notifier's contact is found and opened only with the API's keys; for a handle (3f) in the migrate service, as the
+ * migrator, since only the migrator reads whether an authority asked that the person is not told.
  *
  * enroll prints a one-time link that registers one staff key for a live staff account with a handle; the database lets
  * only the migrator issue one. keys lists an account's staff keys, or every staff account with its keys, for the
@@ -47,7 +49,8 @@ import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 import { mailerFor, type CommandLineMailSettings } from "./mail";
 import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCommand, type OrderCommandName } from "./orders";
-import { accessRequest, accountFacts, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
+import { RECORD_COMMANDS, RECORD_USAGE, authorityHoldsFor, parseRecordArgs, recordCommand, type RecordCommand, type RecordCommandName } from "./records";
+import { accessRequest, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
 
 export const STAFF_USAGE = [
   "usage: node dist/staff.js <command>",
@@ -57,13 +60,12 @@ export const STAFF_USAGE = [
   "                                         and the number of personal accounts linked to it",
   "  text-verify                            check that every text and snapshot a confirmed row names is held or erased, every decision",
   "                                         against its row, and every post's level and image's state against the ledger of measures",
-  "  access-request <@handle | email>       draft the moderation part of an answer to a GDPR access request, as JSON; run it in the api service",
+  "  access-request <@handle | email>       draft the moderation part of an answer to a GDPR access request, as JSON; for a handle",
+  "                                         run it in the migrate service, for an address in the api service",
   "  link <staff email> <personal handle>   record that the personal account is this staff member's own, for the recusal check;",
   "  unlink <staff email> <personal handle> take that record back; both run in the migrate service, as enroll does",
   "  limits <decisions per hour> <decisions per day> <case opens per day> <findings per day> <reveals per day>",
   "                                         set the limits on staff; run it in the migrate service",
-  "  account-facts <handle> <case id>       print the handle, address and creation time of the account the case is about; run it in the",
-  "                                         migrate service",
   "  audit-head                             print the audit log's newest place, its hash and its time, to keep off the server",
   "  audit-verify [<chain_seq>:<hash> ...]  recompute the audit chain and check it against places kept before",
   "  revoke <email> <key id>                revoke that staff key and every staff session it opened, and mail its owner",
@@ -71,6 +73,8 @@ export const STAFF_USAGE = [
   "                                         enrolment links, and mail its owner",
   // 3f (design, section 8.11): the order commands, each as the migrator in the migrate service.
   ...ORDER_USAGE,
+  // 3f Task 5 (design, section 8.11): the records to authorities, each as the migrator in the migrate service.
+  ...RECORD_USAGE,
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -90,9 +94,9 @@ export type StaffCommand =
   | { command: "link"; email: string; handle: string }
   | { command: "unlink"; email: string; handle: string }
   | { command: "limits"; limits: StaffLimits }
-  | { command: "account-facts"; handle: string; caseId: string }
-  // 3f: an order command, whose words cli/orders.ts reads.
-  | { command: "order"; order: OrderCommand };
+  // 3f: an order command, whose words cli/orders.ts reads, and (Task 5) a record command, whose words cli/records.ts reads.
+  | { command: "order"; order: OrderCommand }
+  | { command: "record"; record: RecordCommand };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
 const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
@@ -166,16 +170,11 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
       });
       return { command, limits: { decisionsPerHour: numbers[0]!, decisionsPerDay: numbers[1]!, caseOpensPerDay: numbers[2]!, findingsPerDay: numbers[3]!, revealsPerDay: numbers[4]! } };
     }
-    case "account-facts": {
-      if (rest.length !== 2) throw new Error(STAFF_USAGE);
-      const caseId = rest[1]!.toLowerCase();
-      if (!KEY_ID.test(caseId)) throw new Error(`not a case id: ${rest[1]} (the console shows a case's id in its address)\n${STAFF_USAGE}`);
-      return { command, handle: handleOf(rest[0]!), caseId };
-    }
     case undefined:
       throw new Error(STAFF_USAGE);
     default:
       if ((ORDER_COMMANDS as readonly string[]).includes(command)) return { command: "order", order: parseOrderArgs(command as OrderCommandName, rest) };
+      if ((RECORD_COMMANDS as readonly string[]).includes(command)) return { command: "record", record: parseRecordArgs(command as RecordCommandName, rest) };
       throw new Error(`unknown command: ${command}\n${STAFF_USAGE}`);
   }
 }
@@ -200,7 +199,7 @@ function readEnv<T extends z.ZodType>(schema: T, env: Record<string, string | un
 /**
  * The database URLs a command connects with: the API role's, and the auth role's for audit-verify and keys, which read the
  * staff keys there (keys also the number of links). text-verify reads on the API's role alone. enroll connects as the
- * migrator alone and reads its settings with enrollSettings; link, unlink, limits and account-facts with migratorUrl.
+ * migrator alone and reads its settings with enrollSettings; link, unlink and limits with migratorUrl.
  */
 export function staffDatabaseUrls(command: Extract<StaffCommand, { command: "keys" | "audit-head" | "audit-verify" | "text-verify" }>, env: Record<string, string | undefined>): { api: string; auth: string | null } {
   if (command.command === "audit-verify" || command.command === "keys") {
@@ -237,7 +236,7 @@ export function enrollSettings(env: Record<string, string | undefined>): EnrollS
   return { migrate: settings.DATABASE_URL_MIGRATE, consoleOrigin, consoleRpId: settings.CONSOLE_RP_ID ?? consoleHostOf(consoleOrigin) };
 }
 
-/** What link, unlink, limits and account-facts read: the migrator's URL, which only the migrate service holds, and nothing else. */
+/** What link, unlink, limits and the order and record commands read: the migrator's URL, which only the migrate service holds. */
 const MIGRATOR_ENV = z.object({ DATABASE_URL_MIGRATE: databaseUrl });
 
 export function migratorUrl(command: string, env: Record<string, string | undefined>): string {
@@ -943,7 +942,8 @@ export async function runStaffCommand(
   args: readonly string[],
   env: Record<string, string | undefined> = process.env,
   out: Output = console,
-  // 3f: what order-texts and order-document read; the process's standard input, unless a test hands its own.
+  // 3f: what order-texts, order-document, address-check and handover-record read; the process's standard input, unless a
+  // test hands its own.
   input: () => Promise<Buffer> = readStandardInput,
 ): Promise<number> {
   let command: StaffCommand;
@@ -955,9 +955,10 @@ export async function runStaffCommand(
   }
   if (command.command === "enroll") return runEnroll(command.email, env, out);
   if (command.command === "revoke") return runRevoke(command.email, command.key, env, out);
-  if (command.command === "link" || command.command === "unlink" || command.command === "limits" || command.command === "account-facts") return runAsMigrator(command, env, out);
+  if (command.command === "link" || command.command === "unlink" || command.command === "limits") return runAsMigrator(command, env, out);
   if (command.command === "access-request") return runAccessRequest(command.who, env, out);
   if (command.command === "order") return runOrderCommand(command.order, env, out, input);
+  if (command.command === "record") return runRecordCommand(command.record, env, out, input);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -1038,8 +1039,8 @@ async function runEnroll(email: string, env: Record<string, string | undefined>,
 
 // ---------------------------------------------------------------- the commands for moderation cases
 
-/** link, unlink, limits and account-facts, on the migrator's own connection: the URL first, so a missing one connects to nothing. */
-async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | "unlink" | "limits" | "account-facts" }>, env: Record<string, string | undefined>, out: Output): Promise<number> {
+/** link, unlink and limits, on the migrator's own connection: the URL first, so a missing one connects to nothing. */
+async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | "unlink" | "limits" }>, env: Record<string, string | undefined>, out: Output): Promise<number> {
   let url: string;
   try {
     url = migratorUrl(command.command, env);
@@ -1051,7 +1052,6 @@ async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | 
   try {
     let done: Changed;
     if (command.command === "limits") done = await setLimits(migrateDb, command.limits);
-    else if (command.command === "account-facts") done = await accountFacts(migrateDb, command.handle, command.caseId);
     else done = await changeLink(migrateDb, command.email, command.handle, command.command === "unlink");
     if (!done.ok) {
       out.error(`${command.command}: ${done.problem}`);
@@ -1068,11 +1068,16 @@ async function runAsMigrator(command: Extract<StaffCommand, { command: "link" | 
 }
 
 /**
- * access-request, in the API service: it reads the API's whole configuration, as the API does, because a notifier's
- * contact is found by a keyed hash of the address and its name opened with the notifier key, both the API's secrets. The
- * draft is printed as JSON on standard output, for the operator, and on nothing else.
+ * access-request. For an address, in the API service: it reads the API's whole configuration, as the API does, because a
+ * notifier's contact is found by a keyed hash of the address and its name opened with the notifier key, both the API's
+ * secrets. For a handle (3f, W.8), in the migrate service, as the migrator: the draft reads what the API role reads, and
+ * besides it whether an authority asked that the person is not told (access.authorityHold), which only the migrator may
+ * read (3f design, section 2 row 31: the API's role never learns that an authority is looking at a person); it reads the
+ * migrator's URL and APP_ORIGIN, which Compose gives the migrate service, and nothing else. The draft is printed as JSON
+ * on standard output, for the operator, and on nothing else.
  */
 async function runAccessRequest(who: { handle: string } | { email: string }, env: Record<string, string | undefined>, out: Output): Promise<number> {
+  if ("handle" in who) return runAccessRequestForHandle(who, env, out);
   let config: ReturnType<typeof loadConfig>;
   try {
     config = loadConfig(env);
@@ -1100,7 +1105,7 @@ async function runAccessRequest(who: { handle: string } | { email: string }, env
 
 // ---------------------------------------------------------------- the order commands (3f)
 
-/** Everything on standard input, as order-texts and order-document read it (run with docker compose run -T). */
+/** Everything on standard input, as order-texts, order-document, address-check and handover-record read it (run with docker compose run -T). */
 async function readStandardInput(): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
@@ -1129,6 +1134,67 @@ async function runOrderCommand(command: OrderCommand, env: Record<string, string
       return 1;
     }
     for (const line of done.lines) out.log(line);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
+  }
+}
+
+/** access-request for a handle, as the migrator in the migrate service: its URL and the app's origin first, so a missing one connects to nothing. */
+async function runAccessRequestForHandle(who: { handle: string }, env: Record<string, string | undefined>, out: Output): Promise<number> {
+  const appOrigin = env.APP_ORIGIN?.trim() ?? "";
+  let url: string;
+  try {
+    url = migratorUrl("access-request", env);
+    if (appOrigin === "" || new URL(appOrigin).origin !== appOrigin) throw new Error("APP_ORIGIN is not set");
+  } catch {
+    out.error("access-request: a handle's draft runs in the migrate service, which holds DATABASE_URL_MIGRATE and APP_ORIGIN; nothing was drafted");
+    return 1;
+  }
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    const drafted = await accessRequest(migrateDb, appOrigin, who, async () => [], (caseIds) => authorityHoldsFor(migrateDb, caseIds));
+    if (!drafted.ok) {
+      out.error(`access-request: ${drafted.problem}; nothing was drafted`);
+      return 1;
+    }
+    out.log(JSON.stringify(drafted.draft, null, 2));
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `access-request: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
+  }
+}
+
+// ---------------------------------------------------------------- the record commands (3f Task 5)
+
+/**
+ * A record command (3f design, sections 7.13, 7.14 and 8.11), on the migrator's own connection in the migrate service: its
+ * URL first, so a missing one connects to nothing, and none of the API's settings. Its lines go to standard output; the
+ * hand-over list's note goes to standard error, so that the output can be handed to the hand-over's program as it is.
+ */
+async function runRecordCommand(command: RecordCommand, env: Record<string, string | undefined>, out: Output, input: () => Promise<Buffer>): Promise<number> {
+  let url: string;
+  try {
+    url = migratorUrl(command.command, env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    const done = await recordCommand(migrateDb, command, input);
+    if (!done.ok) {
+      out.error(done.problem);
+      return 1;
+    }
+    for (const line of done.lines) out.log(line);
+    for (const note of done.notes) out.error(note);
     return 0;
   } catch (err) {
     out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));

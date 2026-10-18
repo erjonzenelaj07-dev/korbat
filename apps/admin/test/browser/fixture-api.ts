@@ -762,6 +762,8 @@ export function createFixtureApi() {
     contactClosed: [] as { id: string; disposition: string }[],
     /** 3f: the home screen's contact point and alert channel, as the overview answers them. */
     authorities: { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } } as Pick<StaffOverview, "contact" | "alerts">,
+    /** 3f, Task 5: the reports to the authorities owed, as reports_owed() answers them through the overview. */
+    reportsOwed: { total: 0, items: [] } as StaffOverview["reportsOwed"],
     /** 3f, Task 2: the orders the walk opened, as their pages stand, and every write the page sent for them, with whether a key confirmed it. */
     orders: [] as OrderView[],
     orderWrites: [] as { what: "opened" | "items" | "event" | "corrected" | "effected"; id: string; body: unknown; key: boolean }[],
@@ -1101,6 +1103,7 @@ export function createFixtureApi() {
           // 3f: what the walk's step set, nothing at the contact point and a working channel otherwise.
           ...state.authorities,
           contact: { ...state.authorities.contact, dueAt: nearestDue() },
+          reportsOwed: state.reportsOwed,
         }),
       };
     }

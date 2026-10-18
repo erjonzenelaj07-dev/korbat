@@ -21,7 +21,7 @@ import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-de
 import { aPost, act, anAccount, authCaseCounts, casesMedia, gate, ground, imagePost, insertItem, intake, moderationCounts, newImageRow, newMarker, newPostRow, noAuthForModeration, refusal, removeFixtures, report, saveText, untilBlocked } from "./moderation-fixtures";
 import { ageCase, ageIntake, authAccount, evidenceLeft, one, releaseItems } from "./retention-fixtures";
 import { newProfile } from "./social-fixtures";
-import { withLockTimeout } from "./staff-fixtures";
+import { rolledBack, withLockTimeout } from "./staff-fixtures";
 
 // Real decisions are confirmed with a software authenticator, and each round reads and writes dozens of rows.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
@@ -155,7 +155,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     );
     // A second round changes nothing and writes no audit row.
     const again = recordingMedia();
-    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, accessLog: 0, batches: [0], failed: 0 });
     expect(again.requested).toEqual([]);
     expect(await head()).toBe(start + 3);
   });
@@ -242,7 +242,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     now += ERASURE_OVERDUE_TTL_MS + 1;
     expect(await late()).toEqual({ ...baseline, contacts: 0 });
     const after = await head();
-    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, accessLog: 0, batches: [0], failed: 0 });
     expect(await head()).toBe(after);
   });
 
@@ -593,6 +593,27 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
       expect(await refusal(correcting)).toBe("snapshot_erased");
       expect(await snapshotErased(r.earlier)).toBe(true);
       expect(await one(apiDb, sql`select count(*)::int as n from decisions where case_id = ${r.earlier}::uuid`)).toEqual({ n: 1 });
+    });
+  });
+
+  test("3f Task 5: the step authority_records runs before the disposal and erases the records to authorities that are due, with its audit row and a count", async () => {
+    // As the migrator in a transaction that ends in a rollback, as the round's own steps run: the record's times can only
+    // be supplied there, with imported_at, since every writer of the records is the migrator and the times are forced.
+    await rolledBack(w.migrateDb, async (tx) => {
+      const start = (await tx.execute<{ seq: number }>(sql`select seq::int as seq from public.audit_head where id = 1`))[0]!.seq;
+      const [old] = await tx.execute<{ id: string }>(sql`
+        insert into public.authority_notifications (state, duties, case_id, account_id, opened_at, opened_via, closed_at, declined_reason, imported_at)
+        values ('declined', '{voluntary}', gen_random_uuid(), gen_random_uuid(), now() - interval '3 years 2 days', 'cli', now() - interval '3 years 1 day', 'nothing to report', now())
+        returning id`);
+      const report = await retentionRound({ apiDb: tx as unknown as Db, media: casesMedia(tx), log });
+      expect(report.authorityRecords).toBeGreaterThanOrEqual(1);
+      expect(report.failed).toBe(0);
+      const [left] = await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.authority_notifications where id = ${old!.id}::uuid`);
+      expect(left!.n).toBe(0);
+      const steps = (await tx.execute<{ metadata: Record<string, unknown> }>(sql`select metadata from public.audit_log where action = ${RETENTION_ACTION} and chain_seq > ${start} order by chain_seq`)).map((row) => row.metadata);
+      expect(steps).toContainEqual({ step: "authority_records", caseId: null, intakeId: null, decisionId: null, count: report.authorityRecords });
+      const names = steps.map((row) => row.step);
+      if (names.includes("images")) expect(names.indexOf("authority_records")).toBeLessThan(names.indexOf("images"));
     });
   });
 

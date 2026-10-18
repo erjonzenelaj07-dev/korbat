@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { ACCOUNT_DELETION_WORDS } from "@korbat/contracts";
 import { MemoryMailer } from "../../src/mail/memory";
-import { renderTemplate } from "../../src/mail/templates";
+import { ACCOUNT_DELETED_HELD, renderTemplate } from "../../src/mail/templates";
 
 describe("mail templates", () => {
   test("code emails carry the code and expiry, and no links or images", () => {
@@ -150,6 +150,21 @@ describe("mail templates", () => {
       expect(mail.text).toContain(ACCOUNT_DELETION_WORDS);
       expect(mail.text).not.toMatch(/for good|are gone/);
     }
+    // 3f (W.5): with the address held for a report, the paragraph of the seal that holds it, with its last day; never both.
+    const final = renderTemplate("account_deleted", { heldUntil: "2026-10-24", holdFinal: "true" });
+    const deciding = renderTemplate("account_deleted", { heldUntil: "2026-10-24", holdFinal: "false" });
+    expect(final.text).toContain(ACCOUNT_DELETED_HELD.final("2026-10-24"));
+    expect(final.text).not.toContain(ACCOUNT_DELETED_HELD.deciding("2026-10-24"));
+    expect(deciding.text).toContain(ACCOUNT_DELETED_HELD.deciding("2026-10-24"));
+    expect(deciding.text).not.toMatch(/report them to the authorities|to the authorities/);
+    for (const mail of [final, deciding]) {
+      expect(mail.text).toContain(ACCOUNT_DELETION_WORDS);
+      expect(mail.text).toContain("2026-10-24 at the latest");
+      expect(mail.text).toMatch(/complain to a data protection authority, and go to court/);
+      expect(mail.text).not.toMatch(/object|@|http/i);
+    }
+    // Without a hold the mail is the one wording for every account.
+    expect(renderTemplate("account_deleted", {}).text).not.toMatch(/email address, and nothing else/);
     expect(renderTemplate("badge_verified", {}).text).toMatch(/verified/i);
     expect(renderTemplate("badge_removed", {}).text).toMatch(/removed/i);
   });

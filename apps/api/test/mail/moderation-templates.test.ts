@@ -3,7 +3,7 @@ import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, ALREADY_NOT_SHO
 import { noticeTime } from "../../src/auth/flows/notify";
 import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } from "../../src/mail/mailer";
 import { MemoryMailer } from "../../src/mail/memory";
-import { DECISION_MAIL_SUBJECTS, renderMail, renderNoticeUpdate, renderTemplate } from "../../src/mail/templates";
+import { ACCOUNT_DELETED_HELD, DECISION_MAIL_SUBJECTS, renderMail, renderNoticeUpdate, renderTemplate } from "../../src/mail/templates";
 
 /**
  * The mails of deciding and of the dispatch (3c design, section 7.15): the author's statement, the staff alerts for a
@@ -447,6 +447,10 @@ describe("3e Task 4: the mails of an announced measure, of the answer to a reply
     );
     for (const mail of [r, sealed]) expect(mail.text).not.toMatch(/https?:|www[.]|@[a-z]/);
     expect(() => renderTemplate("termination_final", { imagesSealed: "false" })).toThrow(/decided/);
+    // 3f (7.15 step 8): a termination's take-down holds the address as a deletion does, and its mail says so the same way.
+    const held = renderTemplate("termination_final", { decided: "2026-04-04 09:30 UTC", imagesSealed: "true", heldUntil: "2026-04-11", holdFinal: "true" });
+    expect(paragraphs(held.text)[3]).toBe(ACCOUNT_DELETED_HELD.final("2026-04-11"));
+    expect(paragraphs(held.text).at(-1)).toBe(LAST_USER);
   });
 });
 

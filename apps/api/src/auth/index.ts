@@ -142,8 +142,11 @@ export interface AuthForAccount {
   confirmDeletion(session: Session, input: DeleteConfirmRequest): Promise<void>;
   /** Deleted accounts whose auth row is not anonymised yet, oldest deletion first. */
   pendingPurges(): Promise<string[]>;
-  /** Finishes step 1's rows if a take-down stopped after the mark, then anonymises the auth row and marks it purged; a no-op when it already is. */
-  finishPurge(userId: string): Promise<void>;
+  /**
+   * Finishes step 1's rows if a take-down stopped after the mark, then anonymises the auth row and marks it purged; a
+   * no-op when it already is. 3f: `held` while the account's address is held for a report (the credentials are gone).
+   */
+  finishPurge(userId: string): Promise<"purged" | "held" | "none">;
   /**
    * 3e (design, sections 5 and 7.8): the take-down of an account whose termination is final, as the system: the account
    * marked deleted and every session revoked in one transaction, then termination_final to the address read before it,

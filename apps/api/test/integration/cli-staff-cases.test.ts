@@ -5,7 +5,8 @@ import { STANDING_RULES } from "@korbat/contracts";
 import { closeDb, createDb, profiles, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { runStaffCommand } from "../../src/cli/staff";
-import { accessRequest, accountFacts, changeLink, setLimits, textVerify, type TextProblem } from "../../src/cli/staff-cases";
+import { authorityHoldsFor } from "../../src/cli/records";
+import { accessRequest, changeLink, setLimits, textVerify, type TextProblem } from "../../src/cli/staff-cases";
 import { loadConfig } from "../../src/config";
 import { ACCESS_WORDS, uuidBefore, type AccountAccessDraft, type ContactsAccessDraft } from "../../src/moderation";
 import { newUserWithDevice } from "./auth-fixtures";
@@ -21,12 +22,13 @@ const ORIGIN = "https://korbat.example";
 
 /**
  * The staff command line's commands for moderation cases (3c design, section 7.13), against the real database: link,
- * unlink and the count that keys prints; limits; text-verify; account-facts; and access-request. What a command commits
- * is taken back by the command itself (a link by unlink); everything else runs as the migrator in a transaction that is
- * rolled back, with its audit row. The suites share one database, in which earlier suites left audit rows of decisions
+ * unlink and the count that keys prints; limits; text-verify; and access-request (3f: account-facts is gone, replaced by
+ * notification-facts, which cli-records.test.ts holds; access-request marks a case an authority asked to keep from the
+ * person). What a command commits is taken back by the command itself (a link by unlink); everything else runs as the
+ * migrator in a transaction that is rolled back, with its audit row. The suites share one database, in which earlier suites left audit rows of decisions
  * they removed again: text-verify reports those, rightly, so each test here looks at the problems about its own rows.
  */
-describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, limits, text-verify, account-facts and access-request", () => {
+describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, limits, text-verify and access-request", () => {
   let apiDb: Db;
   let authDb: Db;
   let migrateDb: Db;
@@ -357,35 +359,50 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, l
     });
   });
 
-  describe("account-facts", () => {
-    test("it prints the handle, address and creation time of the case's subject with one audit row, and refuses any other account", async () => {
+  describe("access-request and an authority's demand (3f Task 5)", () => {
+    test("a case whose notification record carries a running 'not to the person' is marked access.authorityHold in place of the lane-0 mark, with its day or an open end; one whose end passed is not; the handle's draft runs as the migrator", async () => {
       await inWorld(async (tx) => {
-        const p = await imagePost(tx, 0);
+        const p = await imagePost(tx, 2);
         const author = await one<{ handle: string }>(tx, sql`select handle from profiles where id = ${p.authorId}::uuid`);
-        const stranger = await newProfile(tx as unknown as Db);
-        await authAccount(tx, p.authorId);
-        await authAccount(tx, stranger.id);
-        const { caseId } = await report(tx, aPost(p.postId), "csam");
-        const accountCase = (await report(tx, anAccount(p.authorId, author.handle), "csam")).caseId;
+        // A seal opens the case's record; an authority then asks that the person is not told, with no end.
+        const suspect = await report(tx, aPost(p.postId), "csam");
+        await decideIn(tx, mod, suspect.caseId, { kind: "interim", ruleId: "R2", actions: [act("seal_media")] });
+        const event = (caseId: string, until: string | null) =>
+          tx.execute(sql`insert into public.authority_notification_events (notification_id, kind, at, how, not_to_person, not_to_person_until)
+                         select n.id, 'request', now(), 'a letter', true, ${until}::timestamptz from public.authority_notifications n where n.case_id = ${caseId}::uuid`);
+        await event(suspect.caseId, null);
+        // Two lane-0 cases with records the command line opened: one with an end ahead, one whose end passed.
+        const second = await imagePost(tx, 0, p.authorId);
+        const ahead = await report(tx, aPost(second.postId), "rule", "R5");
+        const third = await imagePost(tx, 0, p.authorId);
+        const passed = await report(tx, aPost(third.postId), "rule", "R5");
+        for (const caseId of [ahead.caseId, passed.caseId]) {
+          await tx.execute(sql`insert into public.authority_notifications (state, duties, case_id, account_id, opened_at, opened_via) values ('owed', '{dsa18_1}', ${caseId}::uuid, ${p.authorId}::uuid, now(), 'cli')`);
+        }
+        await event(ahead.caseId, "2030-01-02T03:00:00Z");
+        await event(passed.caseId, "2020-01-02T03:00:00Z");
 
-        // Another account, a case that does not exist, a handle nobody has: nothing is read and nothing recorded.
-        expect(await accountFacts(tx, stranger.handle, caseId)).toEqual({ ok: false, problem: `@${stranger.handle} is not the subject of case ${caseId}; nothing was read` });
-        expect(await accountFacts(tx, author.handle, randomUUID())).toMatchObject({ ok: false, problem: expect.stringMatching(/^no case has the id /) });
-        expect(await accountFacts(tx, "nobody_has_this", caseId)).toEqual({ ok: false, problem: "no account has the handle @nobody_has_this" });
-        expect((await auditRows(tx, "account_facts_read", p.authorId)).length).toBe(0);
-        expect((await auditRows(tx, "account_facts_read", stranger.id)).length).toBe(0);
-
-        // The author of the case's post, then the account of an account case.
-        const facts = await accountFacts(tx, `@${author.handle.toUpperCase()}`, caseId);
-        expect(facts).toMatchObject({ ok: true });
-        const lines = (facts as { lines: string[] }).lines;
-        expect(lines.slice(0, 2)).toEqual([`handle: @${author.handle}`, `email: retention-${p.authorId}@korbat.local`]);
-        expect(lines[2]).toMatch(/^account created: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$/);
-        expect((await auditRows(tx, "account_facts_read", p.authorId)).map((row) => ({ ...row }))).toEqual([{ actor_id: "00000000-0000-0000-0000-000000000000", target_type: "user", target_id: p.authorId, metadata: { caseId }, step_up: null }]);
-        expect(await accountFacts(tx, author.handle, accountCase)).toMatchObject({ ok: true });
-        expect((await auditRows(tx, "account_facts_read", p.authorId)).map((row) => row.metadata)).toEqual([{ caseId }, { caseId: accountCase }]);
+        const drafted = await accessRequest(tx, ORIGIN, { handle: author.handle }, noContactsHere, (ids) => authorityHoldsFor(tx, ids));
+        const cases = new Map(((drafted as { draft: AccountAccessDraft }).draft.cases as { id: string; authoritiesCheck: string | null; authorityHold: string | null }[]).map((c) => [c.id, c]));
+        expect(cases.get(suspect.caseId)).toMatchObject({ authoritiesCheck: null, authorityHold: ACCESS_WORDS.authorityHold(null) });
+        expect(cases.get(ahead.caseId)).toMatchObject({ authoritiesCheck: null, authorityHold: ACCESS_WORDS.authorityHold("2030-01-02") });
+        expect(cases.get(passed.caseId)).toMatchObject({ authoritiesCheck: ACCESS_WORDS.authorities, authorityHold: null });
+        expect(ACCESS_WORDS.authorityHold(null)).toBe(
+          "An authority asked that this person is not told of its request (no end given yet). Do not send this case's part of the draft, and do not say that an authority is the reason, before counsel has read it.",
+        );
+        // Without the migrator's reader nothing is marked: the API's role reads no record.
+        const plain = await accessRequest(tx, ORIGIN, { handle: author.handle }, noContactsHere);
+        expect(((plain as { draft: AccountAccessDraft }).draft.cases as { authorityHold: string | null }[]).every((c) => c.authorityHold === null)).toBe(true);
       });
     });
+
+    test("a handle's draft runs in the migrate service: without the migrator's URL and APP_ORIGIN it is refused and drafts nothing", async () => {
+      const lines: string[] = [];
+      const code = await runStaffCommand(["access-request", "@someone"], { DATABASE_URL_API: loadConfig().DATABASE_URL_API }, { log: (line) => lines.push(line), error: (line) => lines.push(line) });
+      expect(code).toBe(1);
+      expect(lines).toEqual(["access-request: a handle's draft runs in the migrate service, which holds DATABASE_URL_MIGRATE and APP_ORIGIN; nothing was drafted"]);
+    });
+    const noContactsHere = async () => [];
   });
 
   describe("access-request", () => {

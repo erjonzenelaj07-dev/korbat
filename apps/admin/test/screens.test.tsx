@@ -82,6 +82,7 @@ const QUIET: StaffOverview = {
   contact: { open: 0, oldestAt: null, dueAt: null },
   alerts: { channel: "ok", since: null },
   ordersUnverified: { total: 0, items: [] },
+  reportsOwed: { total: 0, items: [] },
   repliesWaiting: { count: 0, oldestAt: null },
   strikeAccounts: 0,
 };

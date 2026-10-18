@@ -12,6 +12,7 @@ import type {
   OrderGround,
   OrderItemCloseReason,
   OrderKind,
+  ReportsOwed,
   TellPersonRule,
 } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
@@ -653,6 +654,24 @@ export async function unverifiedOrders(q: Querier, limit: number): Promise<{ tot
 }
 
 /**
+ * Task 5 (sections 7.13 and 10.2, Home's [home.owed]): the notification records owed, as reports_owed() answers them and
+ * nothing more: each one's case, kind and since when, oldest first, at most `limit`, and how many. The API's role reads
+ * no record itself; the definer function is all it may ask.
+ */
+export async function reportsOwed(q: Querier, limit: number): Promise<{ total: number; items: { caseId: string; kind: ReportsOwed["items"][number]["kind"]; since: string }[] }> {
+  const found = await q.execute<{ case_id: string; kind: ReportsOwed["items"][number]["kind"]; since: string; total: number }>(sql`
+    select r.case_id, r.kind, ${isoOf("r.since")} as since, (count(*) over ())::int as total
+      from public.reports_owed() r order by r.since, r.case_id limit ${limit}`);
+  return { total: found[0]?.total ?? 0, items: found.map((row) => ({ caseId: row.case_id, kind: row.kind, since: row.since })) };
+}
+
+/** Task 5 (8.6, CaseView.reportOwed): since when a report to the authorities is owed for this case, from reports_owed(); null when none is. */
+export async function reportOwedOn(q: Querier, caseId: string): Promise<{ since: string } | null> {
+  const [row] = await q.execute<{ since: string | null }>(sql`select ${isoOf("min(r.since)")} as since from public.reports_owed() r where r.case_id = ${caseId}::uuid`);
+  return row?.since ? { since: row.since } : null;
+}
+
+/**
  * Whether an order's notice about this post is held (8.6, CaseView.noticeHeld): an untold order decision about it whose
  * measure is in force, with the earliest end of such a hold, null while it has none recorded ('infinity'); null when no
  * notice is held. The same test as the database's order_notice_held.
@@ -752,6 +771,15 @@ export async function deleteContactMessages(tx: DbTx): Promise<number> {
   const [row] = await tx.execute<{ n: number }>(
     sql`select public.delete_contact_messages(now() - make_interval(days => (select r.message_keep_days from public.order_rules() r))) as n`,
   );
+  return row?.n ?? 0;
+}
+
+/**
+ * Task 5 (sections 6.5 and 7.18): the retention step authority_records, one call of erase_authority_records(), which checks
+ * its own rule against the database's clock and answers a count and nothing else: the API's role reads no record.
+ */
+export async function eraseAuthorityRecords(tx: DbTx): Promise<number> {
+  const [row] = await tx.execute<{ n: number }>(sql`select public.erase_authority_records() as n`);
   return row?.n ?? 0;
 }
 

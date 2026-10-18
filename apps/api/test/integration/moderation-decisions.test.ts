@@ -19,6 +19,7 @@ import {
   decisionRow,
   ground,
   hex64,
+  imagePost,
   inForce,
   intake,
   itemsOf,
@@ -31,6 +32,7 @@ import {
   readCase,
   refusal,
   refusalDetail,
+  report,
   rowCounts,
   saveText,
   staffProfile,
@@ -635,6 +637,30 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the decision triggers", 
         await alsoReported(tx, r.postId, "csam");
         const answer = await decideIn(tx, mod, r.caseId, { kind: "final", outcome: "no_violation", throughSeq: 1 });
         expect(await decisionRow(tx, answer)).toMatchObject({ suspect: false, needs_admin: false, unseen: true });
+      });
+    });
+  });
+
+  describe("3f Task 5: a final decision that answers a suspect item", () => {
+    test("without a seal of the account left in force it closes the report its seal made owed; with another seal of the account in force the report stays owed", async () => {
+      await inWorld(async (tx) => {
+        const author = await profile(tx);
+        const owedFor = async (caseId: string) => (await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.reports_owed() where case_id = ${caseId}::uuid`))[0]!.n;
+        const sealed = async () => {
+          const p = await imagePost(tx, 1, author.id);
+          const { caseId } = await report(tx, aPost(p.postId), "csam");
+          await decideIn(tx, mod, caseId, { kind: "interim", ruleId: "R2", actions: [act("seal_media")] });
+          return caseId;
+        };
+        const first = await sealed();
+        const second = await sealed();
+        expect(await owedFor(first)).toBe(1);
+        // The second seal found the account's record owed: one record, under the first case.
+        expect(await owedFor(second)).toBe(0);
+        await decideIn(tx, admin, first, { kind: "final", outcome: "no_violation" });
+        expect(await owedFor(first)).toBe(1);
+        await decideIn(tx, admin, second, { kind: "final", outcome: "no_violation" });
+        expect(await owedFor(first)).toBe(0);
       });
     });
   });

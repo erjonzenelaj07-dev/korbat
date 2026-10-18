@@ -38,6 +38,8 @@ function harness() {
   const purgedProfiles = new Map<string, Date>();
   const failing = new Set<string>();
   const failingCommit = new Set<string>();
+  /** 3f: the accounts whose address the auth module holds for a report to the authorities. */
+  const held = new Set<string>();
   /** When set, the next request for files fails, as it does while the uploads volume cannot be written. */
   const failingRequest = { once: false };
   const images = new Map<string, string[]>();
@@ -68,8 +70,12 @@ function harness() {
       finishPurge: async (userId) => {
         calls.push("auth.finishPurge");
         const user = users.get(userId);
-        // As the real statement: a row already purged, or never deleted, is left alone.
-        if (user?.deletedAt && !user.purgedAt) user.purgedAt = new Date(t);
+        // As the real statement: a row already purged, or never deleted, is left alone. 3f: an address held for a report
+        // waits, and the answer says so.
+        if (!user?.deletedAt || user.purgedAt) return "none";
+        if (held.has(userId)) return "held";
+        user.purgedAt = new Date(t);
+        return "purged";
       },
       exportAccount: async () => {
         throw new Error("not exercised here");
@@ -145,6 +151,7 @@ function harness() {
     failing,
     failingCommit,
     failingRequest,
+    held,
     images,
     requested,
     started,
@@ -262,7 +269,7 @@ describe("the purge job", () => {
     h.account();
     h.failing.add(ada.userId);
 
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 1, terminated: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 1, terminated: 0, held: 0 });
     expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
     expect(h.users.get(bob.userId)!.purgedAt).toEqual(h.now());
     expect(await h.deps.auth.pendingPurges()).toEqual([ada.userId]);
@@ -271,14 +278,32 @@ describe("the purge job", () => {
     expect(h.lines.filter((line) => line.purged !== undefined).map((line) => [line.purged, line.failed])).toEqual([[1, 1]]);
 
     h.advance(PURGE_INTERVAL_MS);
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 0 });
     expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
     expect(h.requested).toEqual([[], [expect.any(String)]]);
     expect(await h.deps.auth.pendingPurges()).toEqual([]);
     // A round with nothing to do reports zeros and logs nothing.
     h.lines.length = 0;
-    expect(await purgePending(h.deps)).toEqual({ purged: 0, failed: 0, terminated: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 0, failed: 0, terminated: 0, held: 0 });
     expect(h.lines).toEqual([]);
+  });
+
+  test("3f: an account whose address is held for a report is counted as held, not purged, stays pending each round, and is purged once the hold ends", async () => {
+    const h = harness();
+    const ada = h.account({ deletedAt: new Date(T0 - 60_000) });
+    const bob = h.account({ deletedAt: new Date(T0 - 30_000) });
+    h.held.add(ada.userId);
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 1 });
+    expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
+    expect(h.users.get(bob.userId)!.purgedAt).toEqual(h.now());
+    // Each round runs the purge again, which changes nothing, and counts the account as held again.
+    h.advance(PURGE_INTERVAL_MS);
+    expect(await purgePending(h.deps)).toEqual({ purged: 0, failed: 0, terminated: 0, held: 1 });
+    // The record is sent, declined or seven days old: the next round overwrites the address.
+    h.held.delete(ada.userId);
+    h.advance(PURGE_INTERVAL_MS);
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 0 });
+    expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
   });
 
   test("3e: the round first takes down the terminations that are due, adds what failed to `failed`, and purges the deletions whatever happened there", async () => {
@@ -299,14 +324,14 @@ describe("the purge job", () => {
       },
     };
     h.deps.auth = { ...h.deps.auth, takeDownTerminated: async () => true };
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 1, terminated: 1 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 1, terminated: 1, held: 0 });
     expect(taken).toEqual(["terminated-1"]);
     expect(h.calls[0]).toBe("moderation.takeDownDue");
     expect(h.users.get(bob.userId)!.purgedAt).toEqual(h.now());
     // A step that throws as a whole is logged, and the person's own deletion is purged all the same.
     const carl = h.account({ deletedAt: new Date(T0 - 30_000) });
     h.deps.moderation = { ...h.deps.moderation, takeDownDue: async () => Promise.reject(new Error("the moderation module is down")) };
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 0 });
     expect(h.users.get(carl.userId)!.purgedAt).toEqual(h.now());
     expect(h.lines.some((line) => line.level >= 50 && /terminations due/.test(String(line.msg)))).toBe(true);
   });
@@ -367,7 +392,7 @@ describe("the purge and the reports the account sent (3c design, section 7.10)",
     expect(h.users.get(ada.userId)!.purgedAt).toBeNull();
     expect(await h.deps.auth.pendingPurges()).toEqual([ada.userId]);
     // The job's next round: the same steps, and this time the account is purged.
-    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0 });
+    expect(await purgePending(h.deps)).toEqual({ purged: 1, failed: 0, terminated: 0, held: 0 });
     expect(h.forgotten).toEqual([ada.userId]);
     expect(h.users.get(ada.userId)!.purgedAt).toEqual(h.now());
   });

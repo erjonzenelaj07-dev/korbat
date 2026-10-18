@@ -80,7 +80,26 @@ export async function confirmDeletion(deps: AuthDeps, session: Session, input: D
   await tombstoneQuietly(deps, user.id, revoked);
   // Told once the account is gone, and never before: a take-down that failed leaves the account as it was. The address
   // still belongs to the row until finishPurge; best effort, since no mail failure may keep an account its owner has given up.
-  await notifyAccount(deps, user.email, "account_deleted");
+  // 3f (W.5): one wording for every account, and the hold's paragraph when its address is held for a report.
+  await notifyAccount(deps, user.email, "account_deleted", await heldAddressFacts(deps, user.id));
+}
+
+/**
+ * 3f (design, sections 7.15 and W.5): what a deletion's mail says of an address held for a report to the authorities:
+ * the day the hold ends at the latest (heldUntil, a UTC day, from auth.address_held_until) and which of the paragraph's
+ * two variants (holdFinal, from auth.address_hold_final: a seal for good, or one taken while deciding). Nothing while
+ * REPORT_HOLD is off or nothing is held. Best effort, as the mail is: a failed read is logged and the mail goes in its one
+ * wording for every account, which says that korbat keeps what the law obliges it to keep for a time.
+ */
+async function heldAddressFacts(deps: AuthDeps, userId: string): Promise<Record<string, string>> {
+  if (!deps.config.reportHold) return {};
+  try {
+    const hold = await deps.repo.addressHold(userId);
+    return hold === null ? {} : { heldUntil: hold.until.toISOString().slice(0, 10), holdFinal: String(hold.final) };
+  } catch (err) {
+    deps.log.error({ err }, "account deletion: whether the address is held could not be read; the mail goes without the hold's paragraph");
+    return {};
+  }
 }
 
 /**
@@ -104,7 +123,9 @@ export async function takeDownTerminated(deps: AuthDeps, userId: string, facts: 
   const revoked = await deps.repo.takeDownTerminated(user.id, deps.now());
   if (revoked === null) return false;
   await tombstoneQuietly(deps, user.id, revoked);
-  void notifyAccount(deps, user.email, "termination_final", { decided: noticeTime(facts.decidedAt), imagesSealed: String(facts.imagesSealed) });
+  // 3f (7.15 step 8): a termination's take-down is held the same way, and its mail gains the same paragraph.
+  const held = await heldAddressFacts(deps, user.id);
+  void notifyAccount(deps, user.email, "termination_final", { decided: noticeTime(facts.decidedAt), imagesSealed: String(facts.imagesSealed), ...held });
   return true;
 }
 
@@ -113,10 +134,12 @@ export async function takeDownTerminated(deps: AuthDeps, userId: string, facts: 
  * step 1 again (sessions still live revoked with their tombstones, devices, codes and passkeys deleted,
  * the WebAuthn user handle cleared), for an account marked deleted without the rest, then the row
  * anonymised and marked purged. Both parts change nothing for an account that is live or already
- * purged, so the job can repeat it after any failure.
+ * purged, so the job can repeat it after any failure. 3f (7.15): while REPORT_HOLD is on and the
+ * account's address is held for a report, the credentials go and the address waits: the answer is then
+ * `held`, and the account stays pending for the next round.
  */
-export async function finishPurge(deps: AuthDeps, userId: string): Promise<void> {
+export async function finishPurge(deps: AuthDeps, userId: string): Promise<"purged" | "held" | "none"> {
   const revoked = await deps.repo.finishTakeDown(userId, deps.now());
   await tombstoneQuietly(deps, userId, revoked);
-  await deps.repo.finishPurge(userId, deps.now());
+  return deps.repo.finishPurge(userId, deps.now(), deps.config.reportHold);
 }

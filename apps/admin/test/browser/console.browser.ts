@@ -2003,6 +2003,38 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     }
   });
 
+  test("3f Task 5: at 360 by 740 px, home shows [home.owed] for a case, a link to the case, whose page says since when a report is owed", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const since = new Date(Date.now() - (ORDER_RULES.reportAlertHours + 2) * 3_600_000).toISOString();
+    const view = fixtures.state.cases.get(CASE_POST)!;
+    fixtures.state.reportsOwed = { total: 1, items: [{ caseId: CASE_POST, kind: "sealed_images", since }] };
+    fixtures.state.cases.set(CASE_POST, { ...view, reportOwed: { since } });
+    try {
+      await page.goto(`${origin}/`);
+      await shown(page.getByRole("heading", { name: "Authorities" }));
+      const words = ORDER_WORDS.homeOwed(bothTimes(since), true);
+      const line = page.locator(".authorities p", { hasText: "A report to the authorities is owed" });
+      expect(await line.textContent()).toBe(words);
+      // Nothing of the record but that it is owed, for which case and since when: no kind, no authority.
+      expect(await line.textContent()).not.toMatch(/sealed_images/);
+      const link = line.locator("a");
+      expect(await link.getAttribute("href")).toBe(`/cases/${CASE_POST}`);
+      await shown(page.locator("ul.signins"));
+      await shown(page.locator("ul.keys"));
+      await shown(page.getByText("This session", { exact: true }));
+      await texts();
+      await cleanOnPhone();
+      await link.click();
+      await shown(page.getByText(ORDER_WORDS.caseOwed(bothTimes(since)), { exact: true }));
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.reportsOwed = { total: 0, items: [] };
+      fixtures.state.cases.set(CASE_POST, view);
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
   test("an address the console does not have says so, inside the console", async () => {
     await page.goto(`${origin}/no/such/page`);
     await shown(page.getByRole("heading", { name: "No such page" }));

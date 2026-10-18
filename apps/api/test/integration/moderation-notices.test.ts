@@ -975,7 +975,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices", ()
           const { postId, mediaIds } = await imagePost(w.apiDb, 3, author.id);
           const [locked, wait] = [gate(), gate()];
           let noticing: Promise<void> = Promise.resolve();
-          let removing: Promise<void> = Promise.resolve();
+          let removing: Promise<unknown> = Promise.resolve();
           try {
             noticing = withLockTimeout(w.apiDb, async (tx) => {
               const deps = depsOver(tx);
@@ -1006,7 +1006,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: reports and notices", ()
           const author = await w.account();
           const { postId, mediaIds } = await imagePost(w.apiDb, 3, author.id);
           const [removed, wait] = [gate(), gate()];
-          let removing: Promise<void> = Promise.resolve();
+          let removing: Promise<unknown> = Promise.resolve();
           let noticing: Promise<{ ref: string; token?: string } | null> = Promise.resolve(null);
           try {
             removing = withLockTimeout(w.apiDb, async (tx) => {

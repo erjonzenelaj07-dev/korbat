@@ -99,6 +99,12 @@ describe("loadConfig", () => {
       expect(loadConfig({ ...good, NODE_ENV: "test" }).NOTIFY).toBe("off");
       for (const refused of ["yes", "1", "ON", "Off"]) expect(() => loadConfig({ ...good, NOTIFY: refused }), refused).toThrow(/NOTIFY/);
     });
+    test("3f Task 5: REPORT_HOLD is on unless set to off; a blank value is the default, and nothing but on and off is taken", () => {
+      expect(loadConfig(good).REPORT_HOLD).toBe("on");
+      expect(loadConfig({ ...good, REPORT_HOLD: " " }).REPORT_HOLD).toBe("on");
+      expect(loadConfig({ ...good, REPORT_HOLD: "off" }).REPORT_HOLD).toBe("off");
+      for (const refused of ["no", "0", "OFF"]) expect(() => loadConfig({ ...good, REPORT_HOLD: refused }), refused).toThrow(/REPORT_HOLD/);
+    });
 
     test("MODERATION_DEFER_UNPROVEN is off unless set to on; a blank value is the default and nothing else is taken", () => {
       expect(loadConfig(good).MODERATION_DEFER_UNPROVEN).toBe("off");

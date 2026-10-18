@@ -909,6 +909,8 @@ export async function removeDecided(migrateDb: Db, postIds: readonly string[], s
     const intakes = await tx.execute<{ id: string }>(sql`
       select distinct i.intake_id as id from intake_items i where i.case_id = any(${caseIds})
       union select n.id from intakes n where n.finding_by = any(${uuids(staffIds)})`);
+    // 3f Task 5: the records to authorities a seal of these cases opened, and the holds of these posts' authors.
+    await removeRecordsOf(tx, caseIds, sql`(select p.author_id from posts p where p.id = any(${uuids(postIds)}) union select unnest(${uuids(accountIds)}))`);
     await removeCasesIn(tx, caseIds, uuids(intakes.map((row) => row.id)));
     await tx.execute(sql`select public.moderation_apply(${uuids(postIds)}, true)`);
     // And their authors' standing, which a decision removed with its case may have held.
@@ -944,6 +946,8 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
     const intakeIds = uuids(intakes.map((row) => row.id));
     // 3f: the orders that name these accounts' posts or that they opened, before the intake items their items point at.
     await removeOrderRowsOf(tx, sql`(select p.id from posts p where p.author_id = any(${profiles}))`, profiles);
+    // 3f Task 5: the records to authorities of these accounts and their cases, and their holds.
+    await removeRecordsOf(tx, caseIds, sql`(select unnest(${profiles}))`);
     // 3e: what these accounts hold in the tables of account sanctions, before their cases and their profiles.
     await tx.execute(sql`delete from unfounded_marks where account_id = any(${profiles})`);
     await tx.execute(sql`delete from report_tallies where account_id = any(${profiles})`);
@@ -973,10 +977,23 @@ export async function removeOrderRowsOf(tx: DbTx, postIds: SQL, staffIds: SQL): 
     ...(await tx.execute<{ id: string }>(sql`select id from public.contact_messages where handled_by = any(${staffIds})`)).map((row) => row.id),
   ]);
   await tx.execute(sql`delete from public.alert_outbox where order_id = any(${ids}) or message_id = any(${messages})`);
+  // Task 5: the productions made for these orders (production-account, order-access for an authority).
+  await tx.execute(sql`delete from public.productions where order_id = any(${ids})`);
   await tx.execute(sql`delete from public.legal_order_events where order_id = any(${ids})`);
   await tx.execute(sql`delete from public.legal_order_items where order_id = any(${ids})`);
   await tx.execute(sql`delete from public.legal_orders where id = any(${ids})`);
   await tx.execute(sql`delete from public.contact_messages m where m.id = any(${messages}) and not exists (select 1 from public.legal_orders o where o.message_id = m.id)`);
+}
+
+/**
+ * 3f Task 5: removes, as the migrator in the caller's transaction, the records to authorities about these cases or these
+ * accounts (a parenthesised subquery of their ids): the notification records with their events, the productions and the
+ * address holds. None of them has a foreign key to a case or an account, so they would outlive their fixtures.
+ */
+export async function removeRecordsOf(tx: DbTx, caseIds: SQL, accounts: SQL): Promise<void> {
+  await tx.execute(sql`delete from public.authority_notifications where case_id = any(${caseIds}) or account_id in ${accounts}`);
+  await tx.execute(sql`delete from public.productions where account_id in ${accounts}`);
+  await tx.execute(sql`delete from auth.report_holds where user_id in ${accounts}`);
 }
 
 /** 3f: the tables of the contact point and the alert channel, which a suite that writes them adds to its counts. */

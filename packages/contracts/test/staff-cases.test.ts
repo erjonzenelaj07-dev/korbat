@@ -291,6 +291,8 @@ describe("the case answer", () => {
     preserved: false,
     noticeHeld: null,
     orderErasedOn: null,
+    // 3f Task 5: since when a report to the authorities is owed for the case; none here.
+    reportOwed: null,
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {
@@ -462,8 +464,11 @@ describe("the queue and the overview", () => {
       contact: { open: 2, oldestAt: TIME, dueAt: TIME },
       alerts: { channel: "down", since: TIME },
       ordersUnverified: { total: 1, items: [{ orderId: POST, effectAt: TIME }] },
+      // 3f Task 5: a report owed for a case, from reports_owed(): a case, a kind and a time.
+      reportsOwed: { total: 1, items: [{ caseId: CASE, kind: "sealed_images" as const, since: TIME }] },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
+    expect(StaffOverview.safeParse({ ...overview, reportsOwed: { total: 1, items: [{ caseId: CASE, kind: "an authority", since: TIME }] } }).success).toBe(false);
     // Each of the three lists holds at most as many rows as the reveals' list does.
     expect(StaffOverview.safeParse({ ...overview, interimSeals: { total: 101, items: Array.from({ length: 101 }, () => overview.interimSeals.items[0]) } }).success).toBe(false);
     expect(StaffOverview.safeParse({ ...overview, lanes: overview.lanes.slice(0, 2) }).success).toBe(false);

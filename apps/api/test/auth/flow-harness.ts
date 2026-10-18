@@ -442,9 +442,10 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
       if (!row || row.deletedAt === null || row.purgedAt !== null) return [];
       return takeDownRows(userId, at);
     },
-    async finishPurge(userId: string, at: Date): Promise<void> {
+    // 3f: no address is held in this fake, so a deleted row is always purged.
+    async finishPurge(userId: string, at: Date): Promise<"purged" | "held" | "none"> {
       const row = users.get(userId);
-      if (!row || row.deletedAt === null || row.purgedAt !== null) return;
+      if (!row || row.deletedAt === null || row.purgedAt !== null) return "none";
       Object.assign(row, {
         email: `deleted:${userId}`,
         emailVerifiedAt: null,
@@ -458,6 +459,11 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
         termsAcceptedAt: null,
         purgedAt: at,
       });
+      return "purged";
+    },
+    // 3f: what the deletion mail reads of a held address; this fake holds none.
+    async addressHold(): Promise<{ until: Date; final: boolean } | null> {
+      return null;
     },
   } satisfies Pick<
     AuthRepo,
@@ -502,6 +508,7 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     | "takeDown"
     | "finishTakeDown"
     | "finishPurge"
+    | "addressHold"
   >;
   const authRepo = repo as unknown as AuthRepo;
   const kv = new MemoryKv(() => t);
@@ -527,6 +534,8 @@ export function memoryFlowHarness(start = 1_789_000_000_000) {
     console: null,
     homeState: null,
     contactPoint: null,
+    // 3f Task 5: the report hold, on as by default.
+    reportHold: true,
   };
   const deps: AuthDeps = {
     repo: authRepo,
