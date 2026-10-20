@@ -193,7 +193,11 @@ export type StaffAlertKind =
   | "release_undestroyed"
   | "seal_released"
   // 3d Task 3: the edge's job gave up on purges, which it writes as its own row of the outbox.
-  | "edge_purge_failed";
+  | "edge_purge_failed"
+  // 3d Task 5: the transparency job published a day's value without an outside timestamp, or found the day before
+  // without a published value, each written as the job's own row of the outbox.
+  | "head_unwitnessed"
+  | "head_missed";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -225,6 +229,8 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "release_undestroyed":
     case "seal_released":
     case "edge_purge_failed":
+    case "head_unwitnessed":
+    case "head_missed":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off" };
@@ -477,6 +483,44 @@ export async function mailStaff(deps: AuthDeps, message: StaffMessage): Promise<
     }
   }
   return accepted;
+}
+
+/**
+ * 3d Task 5 (design, sections 5, 7.7 and 18, W.8): the audit head's daily mail to the keeper, the copy that is not on
+ * korbat's server: the day, the value, the place and the hash, from which the keeper computes the value again, and whether
+ * an outside timestamp is stored. Typed like every message, so no caller passes free text.
+ */
+export interface KeeperMessage {
+  template: "head_published";
+  day: string;
+  value: string;
+  seq: number;
+  hash: string;
+  witnessed: boolean;
+}
+
+/** What became of the keeper's mail: sent, not sent while HEAD_KEEPER_MAIL is empty, refused by the relay, or failed. */
+export type KeeperMailResult = "sent" | "off" | "refused" | "failed";
+
+/**
+ * Sends the keeper's daily mail to HEAD_KEEPER_MAIL and to nobody else: the caller names no address, and none is read from
+ * an account or a staff list. While the setting is empty it sends nothing ("off"). A failure is logged, without the
+ * address, and answered, never thrown: the day's value stands published either way, and nothing retries the mail.
+ */
+export async function mailKeeper(deps: AuthDeps, message: KeeperMessage): Promise<KeeperMailResult> {
+  const to = deps.config.keeperMail;
+  if (to === null) return "off";
+  try {
+    await deps.mailer.send({
+      to,
+      template: "head_published",
+      data: { day: message.day, value: message.value, seq: String(message.seq), hash: message.hash, witnessed: message.witnessed ? "stored" : "none" },
+    });
+    return "sent";
+  } catch (err) {
+    deps.log.error({ err, template: "head_published", day: message.day }, "keeper's mail: not sent");
+    return err instanceof MailRefused ? "refused" : "failed";
+  }
 }
 
 /** For each id: whether a contact has it, whether a name and an address were given, and whether the address is confirmed or stopped now. */

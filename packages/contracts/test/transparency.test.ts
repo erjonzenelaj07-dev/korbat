@@ -6,6 +6,7 @@ import {
   MEASURE_KINDS,
   ORDER_GROUNDS,
   PublicFacts,
+  PublicHead,
   PublicTransparency,
   RECIPIENT_READ_ROUTES,
   RECIPIENT_RULES,
@@ -154,8 +155,19 @@ describe("the public figures' contracts (3d Task 4)", () => {
     const leaves: { path: string; type: string }[] = [];
     walk(PublicFacts, "facts", leaves);
     walk(PublicTransparency, "transparency", leaves);
+    // 3d Task 5: the head's answer. Its `day` is the day a value was published, never a decision's.
+    walk(PublicHead, "head", leaves);
     const forbidden = /(^|[.])(id|[a-z]*Id|handle|decidedAt|day|chainSeq|seq|place|hash|score|sha256|pdq|file|post|case|decision|account)$/;
-    for (const leaf of leaves) expect([leaf.path, forbidden.test(leaf.path.replaceAll("[]", ""))]).toEqual([leaf.path, false]);
+    for (const leaf of leaves.filter((leaf) => leaf.path !== "head.days[].day")) expect([leaf.path, forbidden.test(leaf.path.replaceAll("[]", ""))]).toEqual([leaf.path, false]);
+    expect(leaves.filter((leaf) => leaf.path.startsWith("head.")).map((leaf) => leaf.path)).toEqual([
+      "head.days[].day",
+      "head.days[].kind",
+      "head.days[].value",
+      "head.days[].witness",
+      "head.days[].token",
+      "head.days[].retiredOn",
+      "head.days[].lastDay",
+    ]);
     const outsideOrders = leaves.filter((leaf) => !leaf.path.includes(".orders"));
     const numbers = outsideOrders.filter((leaf) => leaf.type === "number").map((leaf) => leaf.path);
     expect(numbers.sort()).toEqual(
@@ -182,6 +194,13 @@ describe("the public figures' contracts (3d Task 4)", () => {
         "transparency.editions[].older[].publishedOn",
         "transparency.editions[].older[].replacedOn",
         "transparency.editions[].publishedOn",
+        // The head (Task 5): a publication's day, its value (a digest that shows neither the place nor a row's hash), the
+        // outside token as base64, the day a restore retired it, and on a restore the last day that still fits.
+        "head.days[].day",
+        "head.days[].value",
+        "head.days[].token",
+        "head.days[].retiredOn",
+        "head.days[].lastDay",
       ].sort(),
     );
     // Every other string leaf is a band, a closed list or a literal.

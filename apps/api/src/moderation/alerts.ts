@@ -62,6 +62,9 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   "seal_released",
   // 3d Task 3: edge_purge_failed, which the media module's job edge-purge writes as its own row, at most once in 24 hours.
   "edge_purge_failed",
+  // 3d Task 5: head_unwitnessed and head_missed, which the transparency job writes as its own rows, each at most once in 24 hours.
+  "head_unwitnessed",
+  "head_missed",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */

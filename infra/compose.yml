@@ -168,6 +168,12 @@ services:
       # 3d Task 4: whether readers without an account are counted among the recipients, each day's by a keyed digest of
       # the network and the browser's name under a salt that lives 26 hours; on unless set to off (README, The yearly edition).
       RECIPIENTS_SIGNED_OUT: ${API_RECIPIENTS_SIGNED_OUT:-}
+      # 3d Task 5: the audit head's daily value. Its outside timestamp: off (empty, the default), test (refused while
+      # APP_SITE is open) or rfc3161, which needs the timestamp authority's https address; and the one address the
+      # keeper's daily mail goes to, empty for none (README, The yearly edition).
+      HEAD_WITNESS: ${API_HEAD_WITNESS:-}
+      HEAD_WITNESS_URL: ${API_HEAD_WITNESS_URL:-}
+      HEAD_KEEPER_MAIL: ${API_HEAD_KEEPER_MAIL:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

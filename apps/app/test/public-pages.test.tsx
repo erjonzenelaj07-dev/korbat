@@ -3,7 +3,7 @@ import path from "node:path";
 import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
-import { EDGE_CACHE, EDGE_WORDS, RECIPIENT_RULES, TRANSPARENCY_RULES, type PublicFacts, type PublicTransparency, type TransparencyFigures } from "@korbat/contracts";
+import { EDGE_CACHE, EDGE_WORDS, RECIPIENT_RULES, TRANSPARENCY_RULES, type PublicFacts, type PublicHead, type PublicTransparency, type TransparencyFigures } from "@korbat/contracts";
 import { RULES, RULES_CHANGES, RULES_VERSION } from "@korbat/rules";
 
 vi.mock("expo-router", () => ({
@@ -284,6 +284,86 @@ describe("the transparency page (3d Task 4)", () => {
     expect(TRANSPARENCY_PAGE.none).toContain(`${TRANSPARENCY_RULES.dueDay} March`);
     expect(TRANSPARENCY_PAGE.method(1)).toContain(`exists for ${RECIPIENT_RULES.saltHours} hours`);
     expect(TRANSPARENCY_PAGE.read).not.toContain("1 June");
+  });
+});
+
+describe("the transparency page's daily value (3d Task 5, 9.3 item 6, W.2)", () => {
+  const value = (c: string) => c.repeat(64);
+  const head: PublicHead = {
+    days: [
+      { day: "2026-10-19", kind: "head", value: value("a"), witness: "rfc3161", token: "MAMCAQA=", retiredOn: null, lastDay: null },
+      { day: "2026-10-18", kind: "restore", value: value("b"), witness: "none", token: null, retiredOn: null, lastDay: "2026-10-15" },
+      { day: "2026-10-17", kind: "head", value: value("c"), witness: "none", token: null, retiredOn: "2026-10-18", lastDay: null },
+      { day: "2026-10-15", kind: "head", value: value("d"), witness: "none", token: null, retiredOn: null, lastDay: null },
+    ],
+  };
+  const T = TRANSPARENCY_PAGE;
+
+  test("its section stands after the editions and before the Transparency Database: [tr.head], a row a day newest first with its value and its witness, [tr.restore], [tr.retired] and [tr.headMissing] in their places", () => {
+    const text = textOf(html(<TransparencyView answer={{ editions: [] }} head={head} />));
+    const at = (part: string) => {
+      expect(text, part).toContain(part);
+      return text.indexOf(part);
+    };
+    const order = [
+      at(T.none),
+      at(T.headHeading),
+      at(T.head),
+      at(T.headRow("2026-10-19", value("a"), "rfc3161")),
+      at(T.restore("2026-10-18", "2026-10-15")),
+      at(T.headMissingRow("2026-10-18")),
+      at(`${T.headRow("2026-10-17", value("c"), "none")} ${T.retired("2026-10-18")}`),
+      at(T.headMissingRow("2026-10-16")),
+      at(T.headRow("2026-10-15", value("d"), "none")),
+      at(T.tdbHeading),
+    ];
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // A restore that found nothing that still fits says so; a day after the newest row is not shown as missing.
+    expect(T.restore("2026-10-18", null)).toBe("2026-10-18: korbat restored its database from a backup. No value above still fits the restored log.");
+    expect(text).not.toContain(T.headMissingRow("2026-10-20"));
+    expect(text).not.toContain(T.headMissingRow("2026-10-14"));
+    // A public page points at no person, and the head's place is in no row.
+    expect(text).not.toMatch(/@|chainSeq|chain_seq|Place:/);
+  });
+
+  test("while a shown row has a proof: [tr.verify] as the lab ran it, with that day's value and file, and the proof to download as <day>.tsr; without one, neither", () => {
+    const markup = html(<TransparencyView answer={{ editions: [] }} head={head} />);
+    const text = textOf(markup);
+    expect(text).toContain(T.verify(value("a"), "2026-10-19"));
+    expect(T.verify(value("a"), "2026-10-19")).toBe(
+      `To check a day: download its proof, get the timestamp authority's certificates from the authority itself, and run: openssl ts -verify -digest ${value("a")} -in 2026-10-19.tsr -CAfile <certificates>. It answers "Verification: OK" when that authority signed this value at the time the proof states.`,
+    );
+    expect(text).toContain(T.download("2026-10-19"));
+    // One row has a proof, so one download: the words before the day are the same for every row.
+    expect(text.split(T.download("DAY").split("DAY")[0]!).length - 1).toBe(1);
+    const unwitnessed: PublicHead = { days: head.days.map((row) => ({ ...row, witness: "none", token: null })) };
+    const plain = textOf(html(<TransparencyView answer={{ editions: [] }} head={unwitnessed} />));
+    expect(plain).not.toContain("openssl");
+    expect(plain).not.toContain(T.download("2026-10-19"));
+    expect(plain).toContain(T.headRow("2026-10-19", value("a"), "none"));
+  });
+
+  test("[page.down] for this part alone; no value yet reads its sentence; while it loads, the section holds [tr.head] alone", () => {
+    const down = textOf(html(<TransparencyView answer={{ editions: [] }} head="down" />));
+    expect(down).toContain(T.none);
+    expect(down.split(PAGE_DOWN).length - 1).toBe(1);
+    expect(down.indexOf(PAGE_DOWN)).toBeGreaterThan(down.indexOf(T.head));
+    const both = textOf(html(<TransparencyView answer="down" head="down" />));
+    expect(both.split(PAGE_DOWN).length - 1).toBe(2);
+    expect(textOf(html(<TransparencyView answer={{ editions: [] }} head={{ days: [] }} />))).toContain(T.headNone);
+    const loading = textOf(html(<TransparencyView answer={{ editions: [] }} head="loading" />));
+    expect(loading).toContain(T.head);
+    expect(loading).not.toContain(PAGE_DOWN);
+    expect(loading).not.toContain(T.headNone);
+  });
+
+  test("its words are W.2's: [tr.head], [tr.headMissing], [tr.restore] and [tr.retired]", () => {
+    expect(T.head).toBe(
+      "Each day korbat publishes one value computed from the day and the newest entry of its staff audit log, the record of everything korbat's staff confirm with their keys. If an earlier entry were changed or removed later, the log would no longer lead to the values published since. A value shows neither how many entries the log has nor any entry, and it differs from one day to the next also when nothing was added to the log. A value on korbat's own page proves nothing against korbat's operator, who could change this page too: so the same value goes each day to a person who does not run the server, and, when the outside timestamp is on, to a timestamp authority.",
+    );
+    expect(T.headMissingRow("2026-10-16")).toBe("2026-10-16: no value was published");
+    expect(T.restore("2026-10-18", "2026-10-15")).toBe("2026-10-18: korbat restored its database from a backup. The newest value above that still fits the restored log is of 2026-10-15.");
+    expect(T.retired("2026-10-18")).toBe("retired by the restore of 2026-10-18: true when published, and fits no log now");
   });
 });
 

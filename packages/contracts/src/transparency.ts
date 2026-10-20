@@ -2,7 +2,8 @@ import { z } from "zod";
 import { MEASURE_KINDS, RULE_IDS } from "./moderation";
 import { ANNEX3_GROUNDS, ORDER_GROUNDS } from "./orders";
 
-// The public figures (3d design, sections 2 rows 1 to 3 and 8, 6.4, 7.5, 7.6, 10.1 and 10.6; Task 4). This module
+// The public figures (3d design, sections 2 rows 1 to 3 and 8, 6.4, 7.5, 7.6, 10.1 and 10.6; Task 4) and the audit head's
+// daily value (sections 2 row 9, 6.5 and 7.7; Task 5). This module
 // imports moderation.ts and orders.ts for closed lists alone, and nothing imports it but the index, so it loads last.
 
 // ---------------------------------------------------------------- the numbers
@@ -68,6 +69,26 @@ export const RECIPIENT_READ_ROUTES = [
 /** Why a version of a year's edition was stored (the CHECK of transparency_editions.reason): version 1 alone is `first`. */
 export const EDITION_REASONS = ["first", "hold_ended", "correction"] as const;
 export type EditionReason = (typeof EDITION_REASONS)[number];
+
+/**
+ * The audit head's daily value (3d design, sections 2 row 9, 6.5, 7.7 and 10.1; Task 5): the tag its digest begins with
+ * (head_value(), "korbat.head.v2", then the day, the place and the hash, each after a line feed), the days the public
+ * route and the page show, how long the witness is waited for, and the largest token kept. What only the API reads.
+ */
+export const HEAD_RULES = {
+  tag: "korbat.head.v2",
+  shownDays: 30,
+  witnessTimeoutMs: 10_000,
+  tokenMaxBytes: 16_384,
+} as const;
+
+/** A row of head_publications (the CHECK of its kind): the day's value, or the public mark of a restore. */
+export const HEAD_KINDS = ["head", "restore"] as const;
+export type HeadKind = (typeof HEAD_KINDS)[number];
+
+/** Who was asked to witness a value (the CHECK of its witness): nobody while HEAD_WITNESS is off, else the adapter's name. */
+export const HEAD_WITNESSES = ["none", "rfc3161", "test"] as const;
+export type HeadWitness = (typeof HEAD_WITNESSES)[number];
 
 // ---------------------------------------------------------------- the public answers
 
@@ -174,8 +195,8 @@ export type PublicTransparency = z.infer<typeof PublicTransparency>;
 
 /**
  * GET /api/public/facts (10.6): what is switched on now, read from the API's settings: booleans, names, days and numbers,
- * never a token, a zone, a host or an address. Until the tasks that build them, the R1 check, the comparison with known
- * material and the head's witness print off; the edge prints its adapter (Task 3). `dpia` and `dpiaActs` are each a
+ * never a token, a zone, a host or an address. Until the tasks that build them, the R1 check and the comparison with known
+ * material print off; the edge prints its adapter (Task 3) and the head's witness its own (Task 5, HEAD_WITNESS). `dpia` and `dpiaActs` are each a
  * tool's own impact assessment and the one that covers its measure, so no date of one tool stands over another.
  */
 export const PublicFacts = z.strictObject({
@@ -203,3 +224,32 @@ export const PublicFacts = z.strictObject({
   recipientsSignedOut: z.boolean(),
 });
 export type PublicFacts = z.infer<typeof PublicFacts>;
+
+/** A head's value: the hex SHA-256 of the tag, the day, the place and the hash, which shows neither of the last two. */
+const HeadValue = z.string().regex(/^[0-9a-f]{64}$/);
+/** The outside witness's token as base64, at most HEAD_RULES.tokenMaxBytes bytes before it was encoded. */
+const HeadToken = z
+  .string()
+  .max(Math.ceil(HEAD_RULES.tokenMaxBytes / 3) * 4)
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/);
+
+/**
+ * GET /api/public/head (10.6): the published rows of the last HEAD_RULES.shownDays days, newest first, each a day's value or
+ * a restore's mark. `witness` reads `none` for a row without a token, whatever was asked; `retiredOn` is the day a restore
+ * retired the value; `lastDay`, on a restore's row alone, is the day of the newest published value that still fits the
+ * restored log ([tr.restore]), null on every other row. Never the place, the hash or a time of day.
+ */
+export const PublicHead = z.strictObject({
+  days: z.array(
+    z.strictObject({
+      day: Day,
+      kind: z.enum(HEAD_KINDS),
+      value: HeadValue,
+      witness: z.enum(HEAD_WITNESSES),
+      token: HeadToken.nullable(),
+      retiredOn: Day.nullable(),
+      lastDay: Day.nullable(),
+    }),
+  ),
+});
+export type PublicHead = z.infer<typeof PublicHead>;

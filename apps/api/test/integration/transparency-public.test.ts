@@ -3,7 +3,7 @@ import type { MiddlewareHandler } from "hono";
 import Redis from "ioredis";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { PublicFacts, PublicTransparency, RECIPIENT_RULES } from "@korbat/contracts";
+import { PublicFacts, PublicHead, PublicTransparency, RECIPIENT_RULES } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { createApp } from "../../src/app";
 import { createAuth } from "../../src/auth";
@@ -48,7 +48,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
       turnstile: { verify: async () => true },
       breachChecker: { isBreached: async () => false },
     });
-    const module = createTransparency({ apiDb, redis, config: settings, logger, now: () => clock });
+    const module = createTransparency({ apiDb, redis, auth: auth.forTransparency, config: settings, logger, now: () => clock });
     auth.onSeen(module.forAuth);
     // The session's resolution, counted: the public routes must never reach it.
     const resolveSession: MiddlewareHandler<AppEnv> = (c, next) => {
@@ -67,6 +67,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
   };
   const removeYear = (year: number) => migrateDb.execute(sql`delete from public.transparency_editions where year = ${year}`);
   const removeMonths = () => migrateDb.execute(sql`delete from public.recipient_months where month < '2010-01-01'::date`);
+  // 3d Task 5: a round after the dispatch hour publishes the database's own today's head value, which the test deletes.
+  const removeHead = async () => {
+    await migrateDb.execute(sql`delete from public.head_publications`);
+    await migrateDb.execute(sql`delete from public.alert_outbox where kind in ('head_unwitnessed', 'head_missed')`);
+  };
   const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 
   beforeAll(async () => {
@@ -77,11 +82,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
     ({ app, module: transparency } = build());
     await removeKeys();
+    await removeHead();
   });
   afterAll(async () => {
     await removeKeys();
     await removeYear(YEAR);
     await removeMonths();
+    await removeHead();
     redis.disconnect();
     await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
   });
@@ -99,6 +106,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     // A server with the test adapter at the edge on a closed site, and signed-out readers not counted, says so.
     const other = build({ EDGE_PURGE: "test", APP_SITE: "closed", RECIPIENTS_SIGNED_OUT: "off" }).app;
     expect(PublicFacts.parse(await (await other.request("/api/public/facts")).json())).toMatchObject({ edge: { on: true, test: true }, recipientsSignedOut: false });
+    // 3d Task 5: the head's witness prints its adapter, a test one on a closed site as such.
+    const witnessed = build({ HEAD_WITNESS: "test", APP_SITE: "closed" }).app;
+    expect(PublicFacts.parse(await (await witnessed.request("/api/public/facts")).json())).toMatchObject({ witness: { on: true, test: true }, edge: { on: false, test: false } });
+    // The head's route is mounted before the session's resolution too, and reads none.
+    resolved = 0;
+    const head = await app.request("/api/public/head", { headers: carried });
+    expect([head.status, head.headers.get("cache-control")]).toEqual([200, "public, max-age=3600"]);
+    PublicHead.parse(await head.json());
+    expect(resolved).toBe(0);
   });
 
   test("GET /api/public/transparency answers every year's editions with their older versions, public for an hour, and reads no session", async () => {
@@ -134,7 +150,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     const auth = createAuth({ config, logger, authDb, kv: new MemoryKv(), mailer: new MemoryMailer(), profiles: createProfileStore(apiDb), turnstile: { verify: async () => true }, breachChecker: { isBreached: async () => false } });
     const limited = createApp({ config, logger, rateLimitStore: store, healthChecks: {}, auth, transparency });
     let last = 0;
-    for (let n = 0; n < 301; n++) last = (await limited.request(n % 2 === 0 ? "/api/public/facts" : "/api/public/transparency")).status;
+    for (let n = 0; n < 301; n++) last = (await limited.request(["/api/public/facts", "/api/public/transparency", "/api/public/head"][n % 3]!)).status;
     expect(last).toBe(429);
   });
 
@@ -168,7 +184,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     const broken = new Redis("redis://127.0.0.1:1/0", { maxRetriesPerRequest: 0, lazyConnect: true, enableOfflineQueue: false, retryStrategy: () => null });
     broken.on("error", () => undefined);
     const auth = createAuth({ config, logger, authDb, kv: new MemoryKv(), mailer: new MemoryMailer(), profiles: createProfileStore(apiDb) });
-    const failing = createTransparency({ apiDb, redis: broken, config, logger, now: () => clock });
+    const failing = createTransparency({ apiDb, redis: broken, auth: auth.forTransparency, config, logger, now: () => clock });
     auth.onSeen(failing.forAuth);
     const failingApp = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, social: createSocial({ apiDb, rateLimitStore: new MemoryStore(), logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth() }), transparency: failing });
     const res = await failingApp.request("/api/timeline/latest");
@@ -194,7 +210,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     clock = new Date(Date.UTC(2009, 4, 1, config.MODERATION_DISPATCH_HOUR - 1, 30));
     try {
       const first = await transparency.round();
-      expect(first).toEqual({ months: ["2009-04"], editions: null });
+      expect(first).toEqual({ months: ["2009-04"], editions: null, head: null });
       const [row] = await migrateDb.execute<{ month: string; signed_in: number; signed_out_days: number; method: number; fresh: boolean }>(
         sql`select month::text, signed_in, signed_out_days, method, computed_at > now() - interval '1 minute' as fresh from public.recipient_months where month = '2009-04-01'::date`,
       );
@@ -205,19 +221,21 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
       // After the dispatch hour: the last closed year's edition (2008) is due and published once, by the API's role.
       clock = new Date(Date.UTC(2009, 4, 1, config.MODERATION_DISPATCH_HOUR, 5));
       const second = await transparency.round();
-      expect(second).toEqual({ months: [], editions: [{ year: YEAR, version: 1 }] });
+      // 3d Task 5: the same daily pass publishes the head's value of the database's today, which writes no audit row.
+      expect(second).toMatchObject({ months: [], editions: [{ year: YEAR, version: 1 }], head: { inserted: true, published: true } });
       const [audit] = await migrateDb.execute<{ action: string; target_id: string }>(sql`select action, target_id from public.audit_log where chain_seq = (select seq from public.audit_head where id = 1)`);
       expect({ ...audit }).toEqual({ action: "edition_published", target_id: `${YEAR}.1` });
       // Later the same day: nothing more. The next day: asked again, and nothing new is written.
       clock = new Date(Date.UTC(2009, 4, 1, 23, 0));
-      expect(await transparency.round()).toEqual({ months: [], editions: null });
+      expect(await transparency.round()).toEqual({ months: [], editions: null, head: null });
       clock = new Date(Date.UTC(2009, 4, 2, config.MODERATION_DISPATCH_HOUR, 5));
-      expect(await transparency.round()).toEqual({ months: [], editions: [] });
+      expect(await transparency.round()).toMatchObject({ months: [], editions: [], head: { inserted: false, published: false } });
     } finally {
       clock = new Date("2009-05-17T10:00:00.000Z");
       await removeYear(YEAR);
       await removeMonths();
       await removeKeys();
+      await removeHead();
     }
   });
 });

@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
-import { ANNEX3_GROUNDS, ORDER_GROUNDS, PublicTransparency, type OrderFigures, type TransparencyFigures } from "@korbat/contracts";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { ANNEX3_GROUNDS, ORDER_GROUNDS, PublicHead, PublicTransparency, type OrderFigures, type TransparencyFigures } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { TextLink } from "@/components/ui";
 import { api } from "@/lib/api";
+import { saveBlob } from "@/lib/download";
 import { PAGE_DOWN, TRANSPARENCY_PAGE, recipientsMonth } from "@/lib/public-pages";
 
 const T = TRANSPARENCY_PAGE;
@@ -152,13 +153,94 @@ function EditionView({ edition, newest }: { edition: Edition; newest: boolean })
   );
 }
 
+type HeadDay = PublicHead["days"][number];
+
+/** A day before another, as the page prints a day. */
+const dayBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
+
+/** One line of the head's section: a published row, or a day between two shown days that has no head value. */
+type HeadLine = { kind: "row"; row: HeadDay } | { kind: "missing"; day: string };
+
 /**
- * The transparency page as it reads with the editions it was given (3d design, section 9.3, without the audit head's
- * section, which is Task 5's; W.2). It shows what the stored editions hold and never a live count: no year section for
- * the running year, and [tr.none] while no edition exists. When the route did not answer, the fixed texts stand and the
- * editions' place reads [page.down].
+ * The section's lines (9.3 item 6): the rows newest first as the route gives them, and [tr.headMissing] for each day
+ * between the newest and the oldest shown day that has no head value, after that day's restore row when it has one. A
+ * day after the newest row is not shown as missing: its value may not be published yet.
  */
-export function TransparencyView({ answer }: { answer: PublicTransparency | "loading" | "down" }) {
+export function headLines(days: readonly HeadDay[]): HeadLine[] {
+  const lines: HeadLine[] = [];
+  const valued = new Set(days.filter((row) => row.kind === "head").map((row) => row.day));
+  const newest = days[0]?.day;
+  const oldest = days.at(-1)?.day;
+  if (newest === undefined || oldest === undefined) return lines;
+  for (let day = newest; day >= oldest; day = dayBefore(day)) {
+    for (const row of days) if (row.day === day) lines.push({ kind: "row", row });
+    if (!valued.has(day)) lines.push({ kind: "missing", day });
+  }
+  return lines;
+}
+
+/** A day's proof saved as <day>.tsr: the token as the authority sent it, the TimeStampResp that openssl reads. */
+function saveProof(day: string, token: string) {
+  const bytes = Uint8Array.from(atob(token), (char) => char.charCodeAt(0));
+  saveBlob(new Blob([bytes], { type: "application/timestamp-reply" }), `${day}.tsr`);
+}
+
+/**
+ * Section 6, the audit log's daily value (3d design, section 9.3 item 6; W.2; Task 5): [tr.head], then a row a day,
+ * newest first, with its value and who witnessed it, a restore's row with [tr.restore], a retired value with
+ * [tr.retired] and a day without a value with [tr.headMissing]; while a shown row has a proof, [tr.verify] with the newest
+ * such day's value and file, and each day's proof to download on the web. When the route did not answer, this part alone
+ * reads [page.down]. The place is in no answer and on no row.
+ */
+function HeadSection({ head }: { head: PublicHead | "loading" | "down" }) {
+  const T = TRANSPARENCY_PAGE;
+  const witnessed = head === "loading" || head === "down" ? undefined : head.days.find((row) => row.token !== null);
+  return (
+    <View>
+      <Heading level={2}>{T.headHeading}</Heading>
+      <Paragraph>{T.head}</Paragraph>
+      {head === "loading" ? null : head === "down" ? (
+        <Paragraph>{PAGE_DOWN}</Paragraph>
+      ) : head.days.length === 0 ? (
+        <Paragraph>{T.headNone}</Paragraph>
+      ) : (
+        <View role="list" aria-label={T.headHeading}>
+          {headLines(head.days).map((line) =>
+            line.kind === "missing" ? (
+              <Text key={`${line.day}-missing`} role="listitem" className="mt-1 text-base leading-6 text-zinc-300">
+                {T.headMissingRow(line.day)}
+              </Text>
+            ) : (
+              <View key={`${line.row.day}-${line.row.kind}`} role="listitem" className="mt-1">
+                <Text className="break-all text-base leading-6 text-zinc-300">
+                  {line.row.kind === "restore"
+                    ? T.restore(line.row.day, line.row.lastDay)
+                    : line.row.retiredOn === null
+                      ? T.headRow(line.row.day, line.row.value, line.row.witness)
+                      : `${T.headRow(line.row.day, line.row.value, line.row.witness)} ${T.retired(line.row.retiredOn)}`}
+                </Text>
+                {line.row.token !== null && Platform.OS === "web" ? (
+                  <Pressable accessibilityRole="button" onPress={() => saveProof(line.row.day, line.row.token!)} className="mt-1 self-start">
+                    <Text className="text-sm text-sky-400 underline">{T.download(line.row.day)}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ),
+          )}
+        </View>
+      )}
+      {witnessed ? <Paragraph>{T.verify(witnessed.value, witnessed.day)}</Paragraph> : null}
+    </View>
+  );
+}
+
+/**
+ * The transparency page as it reads with the editions and the head's values it was given (3d design, section 9.3; W.2).
+ * It shows what the stored editions hold and never a live count: no year section for the running year, and [tr.none]
+ * while no edition exists. When a route did not answer, the fixed texts stand and that route's part alone reads
+ * [page.down].
+ */
+export function TransparencyView({ answer, head = "loading" }: { answer: PublicTransparency | "loading" | "down"; head?: PublicHead | "loading" | "down" }) {
   return (
     <View>
       <Text accessibilityRole="header" className="text-3xl font-bold tracking-tight text-zinc-50">
@@ -173,6 +255,7 @@ export function TransparencyView({ answer }: { answer: PublicTransparency | "loa
       ) : (
         answer.editions.map((edition, index) => <EditionView key={edition.year} edition={edition} newest={index === 0} />)
       )}
+      <HeadSection head={head} />
       <Heading level={2}>{T.tdbHeading}</Heading>
       <Paragraph>{T.tdb}</Paragraph>
       <TextLink label={T.rulesLink} href="/rules" />
@@ -183,10 +266,12 @@ export function TransparencyView({ answer }: { answer: PublicTransparency | "loa
 
 /**
  * /transparency (3d design, sections 9.1 and 9.3), public, signed in or out: it reads no session for its content and
- * sends one GET, /api/public/transparency, which may be an hour old: nothing in it changes within a day.
+ * sends two GETs, /api/public/transparency and (Task 5) /api/public/head, each of which may be an hour old: nothing in
+ * them changes within a day. Each fails alone: the other part still shows.
  */
 export default function TransparencyPage() {
   const [answer, setAnswer] = useState<PublicTransparency | "loading" | "down">("loading");
+  const [head, setHead] = useState<PublicHead | "loading" | "down">("loading");
   useEffect(() => {
     let live = true;
     api("/api/public/transparency", { schema: PublicTransparency })
@@ -196,6 +281,13 @@ export default function TransparencyPage() {
       .catch(() => {
         if (live) setAnswer("down");
       });
+    api("/api/public/head", { schema: PublicHead })
+      .then((read) => {
+        if (live) setHead(read);
+      })
+      .catch(() => {
+        if (live) setHead("down");
+      });
     return () => {
       live = false;
     };
@@ -204,7 +296,7 @@ export default function TransparencyPage() {
     <AppShell>
       <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 pb-16 pt-6">
         <View className="w-full max-w-xl">
-          <TransparencyView answer={answer} />
+          <TransparencyView answer={answer} head={head} />
         </View>
       </ScrollView>
     </AppShell>

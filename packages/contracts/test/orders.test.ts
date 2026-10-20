@@ -175,6 +175,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       "release_undestroyed",
       "seal_released",
       "edge_purge_failed",
+      "head_unwitnessed",
+      "head_missed",
     ]);
     expect(Object.keys(ALERT_KINDS).sort()).toEqual([...ALERT_KIND_LIST].sort());
     expect(Object.keys(ALERT_TEXTS).sort()).toEqual([...ALERT_KIND_LIST].sort());
@@ -213,6 +215,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       release_undestroyed: [3, "all", "push+mail", "sentence"],
       seal_released: [3, "all", "push+mail", "sentence"],
       edge_purge_failed: [3, "all", "push+mail", "sentence"],
+      head_unwitnessed: [3, "all", "push+mail", "sentence"],
+      head_missed: [3, "all", "push+mail", "sentence"],
     };
     for (const kind of ALERT_KIND_LIST) expect(row(kind), kind).toEqual(table[kind]);
   });
@@ -247,9 +251,11 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       release_undestroyed: ["count", "oldestAt"],
       seal_released: ["at", "posts", "uploads"],
       edge_purge_failed: ["count", "oldestAt"],
+      head_unwitnessed: ["day"],
+      head_missed: ["day"],
     });
     for (const kind of ALERT_KIND_LIST) expect(ALERT_KINDS[kind].facts.length, kind).toBeLessThanOrEqual(6);
-    expect(["receivedAt", "dueAt", "oldestAt", "at", "since"].every(isTimeFact)).toBe(true);
+    expect(["receivedAt", "dueAt", "oldestAt", "at", "since", "day"].every(isTimeFact)).toBe(true);
     expect(["count", "items", "minutesLeft", "hours", "rows", "limit", "urgent"].some(isTimeFact)).toBe(false);
   });
 
@@ -288,8 +294,9 @@ describe("ALERT_TEXTS (W.4): one text serves both legs, and it carries counts an
     for (const kind of ALERT_KIND_LIST) {
       // The flags of order_effected and order_opened chose a variant: both sets hold the same flags.
       const flags = { urgent: 0, unknown: 0 };
-      const first = all(kind, factsOf(kind, 3, "2026-10-16T07:05:00.000Z", flags));
-      const second = all(kind, factsOf(kind, 1234, "2026-10-16T22:49:59.999Z", flags));
+      // A day (3d's head alerts) prints as its date, so the two sets name two days: they differ in digits alone.
+      const first = all(kind, factsOf(kind, 3, "2026-10-16T07:05:00.000Z", { ...flags, day: "2026-10-13T00:00:00.000Z" }));
+      const second = all(kind, factsOf(kind, 1234, "2026-10-16T22:49:59.999Z", { ...flags, day: "2026-10-12T00:00:00.000Z" }));
       expect(first.replace(DIGITS, ""), kind).toBe(second.replace(DIGITS, ""));
       expect(first, kind).not.toBe(second);
     }

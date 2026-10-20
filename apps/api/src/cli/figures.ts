@@ -4,6 +4,7 @@
  *
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js recipients [--months 6]
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js edition <year> [--correct]
+ *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js head-restore-mark [<day>:<value> ...]
  *
  * recipients prints the figure of DSA Art. 24(2) and (3) exactly, for the authority that asks: the stored months of the
  * full months before today, and their average as two bounds, accounts alone and accounts plus the sum of each day's
@@ -14,17 +15,25 @@
  * version with the reason correction (edition_publish, which only the migrator may ask for that): the one way a table is
  * computed a second time. The older versions stay, and the transaction ends with the edition's audit row.
  *
+ * head-restore-mark (Task 5; sections 6.5, 7.3 step 4 and 7.7 step 7), after a restore: it stores the values the keeper's
+ * mails hold for the days the restored database lacks, each as a retired row without a place (the mail's day and value
+ * are what the command is given); retires every stored value whose place and hash the restored chain no longer holds,
+ * and deletes none; and writes today's public restore row from the restored head, naming the newest published value that
+ * still fits. The transaction ends with the system's audit row head_restore_marked.
+ *
  * No command here sends anything to anyone. This file has no entry point of its own, so both bundles can include it
  * (build.mjs says why that matters).
  */
 import { sql } from "drizzle-orm";
 import { RECIPIENT_RULES, TRANSPARENCY_RULES, type OrderFigures, type TransparencyFigures } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
+import { SYSTEM_ACTOR_ID } from "../auth";
+import { appendAuditRow } from "../staff";
 import { describeTcoCounts } from "./counts";
 import { Refusal, refuse, rows, type OrderDone } from "./orders";
 
 /** The public figures' commands, each with its first lines of STAFF_USAGE. */
-export const FIGURE_COMMANDS = ["recipients", "edition"] as const;
+export const FIGURE_COMMANDS = ["recipients", "edition", "head-restore-mark"] as const;
 export type FigureCommandName = (typeof FIGURE_COMMANDS)[number];
 
 export const FIGURE_USAGE = [
@@ -32,17 +41,43 @@ export const FIGURE_USAGE = [
   `${"".padEnd(41)}authority that asks (DSA Art. 24(3)), a line a month; read-only; run it in the migrate service`,
   `${"  edition <year> [--correct]".padEnd(41)}print the newest stored version of that year's edition, a line a figure; read-only. With`,
   `${"".padEnd(41)}--correct, compute every table again and store it as the next version; run it in the migrate service`,
+  `${"  head-restore-mark [<day>:<value> ...]".padEnd(41)}after a restore: store the keeper's values of the days the restored database lacks,`,
+  `${"".padEnd(41)}retire every published value that no longer fits, and record the restore; run it in the migrate service`,
 ];
 
-export type FigureCommand = { command: "recipients"; months: number } | { command: "edition"; year: number; correct: boolean };
+/** A keeper's value as the command is given it: the day of the mail and the value it holds. */
+export interface KeeperValue {
+  day: string;
+  value: string;
+}
+
+export type FigureCommand =
+  | { command: "recipients"; months: number }
+  | { command: "edition"; year: number; correct: boolean }
+  | { command: "head-restore-mark"; values: KeeperValue[] };
 
 /** A calendar year as the operator types it: four digits, never with a leading zero. */
 const YEAR = /^[1-9][0-9]{3}$/;
 /** How many full months recipients may average: one to five years of them. */
 const MONTHS = /^[1-9][0-9]?$/;
 
+/** A keeper's value as the operator types it: the day, a colon and the value's 64 lower-case hexadecimal characters. */
+const KEEPER_VALUE = /^([0-9]{4}-[0-9]{2}-[0-9]{2}):([0-9a-f]{64})$/;
+/** Whether a yyyy-mm-dd is a day of the calendar. */
+const isDay = (day: string) => !Number.isNaN(Date.parse(`${day}T00:00:00.000Z`)) && new Date(`${day}T00:00:00.000Z`).toISOString().slice(0, 10) === day;
+
 /** Reads a figure command's words. */
 export function parseFigureArgs(command: FigureCommandName, rest: readonly string[]): FigureCommand {
+  if (command === "head-restore-mark") {
+    const usage = "head-restore-mark: takes the keeper's values as <day>:<value>, a day as 2026-10-18 and a value of 64 lower-case hexadecimal characters, each day once, or nothing";
+    const values = rest.map((word) => {
+      const found = KEEPER_VALUE.exec(word);
+      if (found === null || !isDay(found[1]!)) throw new Error(usage);
+      return { day: found[1]!, value: found[2]! };
+    });
+    if (new Set(values.map((entry) => entry.day)).size !== values.length) throw new Error(usage);
+    return { command, values };
+  }
   if (command === "recipients") {
     if (rest.length === 0) return { command, months: RECIPIENT_RULES.months };
     if (rest.length === 2 && rest[0] === "--months" && MONTHS.test(rest[1]!) && Number(rest[1]) <= 60) return { command, months: Number(rest[1]) };
@@ -172,6 +207,7 @@ async function newestVersion(tx: DbTx, year: number): Promise<VersionRow | null>
  */
 export async function figureCommand(migrateDb: Db, cmd: FigureCommand, now: Date = new Date()): Promise<OrderDone> {
   try {
+    if (cmd.command === "head-restore-mark") return { ok: true, lines: await headRestoreMark(migrateDb, cmd.values) };
     if (cmd.command === "recipients") {
       const from = `${monthBefore(now, cmd.months)}-01`;
       const to = `${monthBefore(now, 0)}-01`;
@@ -212,4 +248,72 @@ export async function figureCommand(migrateDb: Db, cmd: FigureCommand, now: Date
     if (err instanceof Refusal) return { ok: false, problem: err.message };
     throw err;
   }
+}
+
+/**
+ * head-restore-mark (3d design, sections 6.5, 7.3 step 4 and 7.7 step 7), in one transaction as the migrator, whose
+ * inserts and updates the head's two triggers leave as written. Every refusal comes before the first write: one restore
+ * a day (the restore row's key is the day), no keeper's day after today, and no keeper's value that differs from the one
+ * the restored database holds for that day. Then:
+ *
+ *   1. each keeper's value of a day the database lacks is stored as that day's head row, published and retired at once,
+ *      with no place (the mail's place is not asked for: no check needs it, and a value of a day after the backup fits
+ *      no restored log anyway); a value the database holds already is counted and left;
+ *   2. every stored value, of either kind, whose place and hash the restored chain no longer holds is retired, never
+ *      deleted: a place above the restored head, or a place whose hash does not give the value;
+ *   3. today's restore row from the restored head, published, naming the newest published head value that still fits,
+ *      or none (last_day, which the page prints as [tr.restore]'s day);
+ *   4. last, the system's audit row head_restore_marked with the day and the count of values retired.
+ */
+async function headRestoreMark(migrateDb: Db, values: readonly KeeperValue[]): Promise<string[]> {
+  const c = "head-restore-mark";
+  return migrateDb.transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '10s'`);
+    const [state] = await rows<{ today: string; seq: number; hash: string }>(
+      tx,
+      sql`select to_char((now() at time zone 'UTC')::date, 'YYYY-MM-DD') as today, a.seq::int as seq, a.hash from public.audit_head a where a.id = 1`,
+    );
+    const { today, seq, hash } = state!;
+    const [marked] = await rows<{ one: number }>(tx, sql`select 1 as one from public.head_publications where kind = 'restore' and day = ${today}::date`);
+    if (marked !== undefined) refuse(c, `restore_marked: a restore is recorded for ${today} already`);
+    const held: string[] = [];
+    for (const { day, value } of values) {
+      if (day > today) refuse(c, `invalid_day: ${day} is after today`);
+      const [row] = await rows<{ value: string }>(tx, sql`select value from public.head_publications where kind = 'head' and day = ${day}::date`);
+      if (row !== undefined && row.value !== value) refuse(c, `head_mismatch: the value of ${day} differs from the one the database holds`);
+      if (row !== undefined) held.push(day);
+    }
+    let stored = 0;
+    for (const { day, value } of values) {
+      if (held.includes(day)) continue;
+      await tx.execute(sql`
+        insert into public.head_publications (day, kind, chain_seq, value, witness, published_at, retired_at)
+        values (${day}::date, 'head', null, ${value}, 'none', now(), now())`);
+      stored++;
+    }
+    // A value fits while the restored chain holds its place with a hash that gives it: at the head itself, or at a row of
+    // the log. A place above the restored head has neither.
+    const retired = await tx.execute(sql`
+      update public.head_publications h set retired_at = now()
+       where h.retired_at is null and h.chain_seq is not null
+         and not exists (
+           select 1 from public.audit_head a where a.id = 1 and a.seq = h.chain_seq and public.head_value(h.day, a.seq, a.hash) = h.value
+           union all
+           select 1 from public.audit_log l where l.chain_seq = h.chain_seq and public.head_value(h.day, l.chain_seq, l.hash) = h.value)
+      returning 1`);
+    const [last] = await rows<{ day: string | null }>(
+      tx,
+      sql`select to_char(max(h.day), 'YYYY-MM-DD') as day from public.head_publications h where h.kind = 'head' and h.published_at is not null and h.retired_at is null`,
+    );
+    const lastDay = last?.day ?? null;
+    await tx.execute(sql`
+      insert into public.head_publications (day, kind, chain_seq, value, witness, published_at, last_day)
+      values (${today}::date, 'restore', ${seq}, public.head_value(${today}::date, ${seq}::bigint, ${hash}), 'none', now(), ${lastDay}::date)`);
+    const count = stored + retired.length;
+    await appendAuditRow(tx, { actorId: SYSTEM_ACTOR_ID, action: "head_restore_marked", targetType: null, targetId: null, requestId: null, metadata: { day: today, retired: count } });
+    return [
+      ...(values.length > 0 ? [`${c}: ${stored} values of the keeper's mails stored, retired; ${held.length} already held.`] : []),
+      `${c}: restore recorded for ${today}. ${lastDay === null ? "No published value still verifies." : `The last published value that still verifies is of ${lastDay}.`} ${count} later values are shown as retired.`,
+    ];
+  });
 }

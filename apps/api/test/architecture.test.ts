@@ -578,11 +578,11 @@ describe("the quarantine's boundary (3d Task 1)", () => {
 /**
  * The adapters' files (3d design, section 5 "The adapters"): each adapter is a file of its own that imports nothing of its
  * module, so it is given what its interface names and nothing more: no media file, no repository and no database. Task
- * 3 builds the first, the edge's purge (media/edge-adapter.ts); the matcher's (media/match-adapter.ts) and the witness's
- * (transparency/witness.ts) join this list with the tasks that build them. A package import that is no database stays
- * allowed: the adapter reads its numbers from the contracts.
+ * 3 builds the first, the edge's purge (media/edge-adapter.ts), and Task 5 the head's witness (transparency/witness.ts);
+ * the matcher's (media/match-adapter.ts) joins this list with the task that builds it. A package import that is no
+ * database stays allowed: the adapter reads its numbers from the contracts.
  */
-const ADAPTER_FILES = ["media/edge-adapter.ts"];
+const ADAPTER_FILES = ["media/edge-adapter.ts", "transparency/witness.ts"];
 function findAdapterViolations(files: SourceFile[]): string[] {
   const violations: string[] = [];
   for (const { path, source } of files) {
@@ -610,13 +610,21 @@ describe("the adapters' files (3d Task 3)", () => {
       ]),
     ).toEqual(["media/edge-adapter.ts: imports ./repo, a file of the API", "media/edge-adapter.ts: imports ./context, a file of the API", "media/edge-adapter.ts: imports @korbat/db, the database"]);
     expect(findAdapterViolations([{ path: "media/edge-adapter.ts", source: 'import { media } from "../media";' }])).toEqual(["media/edge-adapter.ts: imports ../media, a file of the API"]);
+    // Task 5: the witness's file imports nothing of the transparency module, no repository and no database.
+    expect(
+      findAdapterViolations([
+        { path: "transparency/witness.ts", source: 'import { createTransparencyRepo } from "./repo"; import { headPublications } from "@korbat/db"; import { HEAD_RULES } from "@korbat/contracts";' },
+        { path: "transparency/head.ts", source: 'import { createTransparencyRepo } from "./repo";' },
+      ]),
+    ).toEqual(["transparency/witness.ts: imports ./repo, a file of the API", "transparency/witness.ts: imports @korbat/db, the database"]);
   });
 });
 
 /**
  * The transparency module (3d design, section 5, "The architecture test"; Task 4): it reads no session and no table of a
- * person, so a file under transparency/ imports from @korbat/db no schema name but those of schema/transparency.ts and the
- * audit head (Task 5's daily value), and no namespace of it. Db and DbTx, which are no schema names, stay allowed.
+ * person, so a file under transparency/ imports from @korbat/db no schema name but those of schema/transparency.ts (Task 5
+ * adds head_publications there) and the audit head, and no namespace of it. Db and DbTx, which are no schema names, stay
+ * allowed.
  */
 const TRANSPARENCY_SCHEMA_FILE = "transparency.ts";
 const TRANSPARENCY_EXTRA_NAMES = new Set(["auditHead"]);
@@ -637,10 +645,10 @@ describe("the transparency module's tables (3d Task 4)", () => {
   const schemaNames = () => new Set([...publicSchemaNames(), ...authSchemaNames()]);
   const allowed = () => new Set([...exportedNames(TRANSPARENCY_SCHEMA_FILE), ...TRANSPARENCY_EXTRA_NAMES]);
 
-  test("the module exists, and its files name no table of @korbat/db but the public figures' two and the audit head", () => {
+  test("the module exists, and its files name no table of @korbat/db but the public figures' three and the audit head", () => {
     const files = loadSources();
     expect(files.map((file) => file.path)).toContain("transparency/index.ts");
-    expect([...allowed()].sort()).toEqual(["auditHead", "recipientMonths", "transparencyEditions"]);
+    expect([...allowed()].sort()).toEqual(["auditHead", "headPublications", "recipientMonths", "transparencyEditions"]);
     expect(findTransparencyViolations(files, schemaNames(), allowed())).toEqual([]);
   });
 

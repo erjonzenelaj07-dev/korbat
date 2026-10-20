@@ -263,11 +263,14 @@ describe("the month's close (3d Task 4)", () => {
 
 describe("the public answers' shape (3d Task 4)", () => {
   test("the facts of a server with every tool off, the edge as its adapter, and the setting", () => {
-    const off = publicFacts({ EDGE_PURGE: "off", RECIPIENTS_SIGNED_OUT: "on" });
+    const off = publicFacts({ EDGE_PURGE: "off", RECIPIENTS_SIGNED_OUT: "on", HEAD_WITNESS: "off" });
     expect(PublicFacts.parse(off)).toEqual(off);
     expect([off.r1.state, off.match.state, off.edge, off.witness, off.recipientsSignedOut]).toEqual(["off", "off", { on: false, test: false }, { on: false, test: false }, true]);
-    expect(publicFacts({ EDGE_PURGE: "test", RECIPIENTS_SIGNED_OUT: "off" })).toMatchObject({ edge: { on: true, test: true }, recipientsSignedOut: false });
-    expect(publicFacts({ EDGE_PURGE: "cloudflare", RECIPIENTS_SIGNED_OUT: "on" }).edge).toEqual({ on: true, test: false });
+    expect(publicFacts({ EDGE_PURGE: "test", RECIPIENTS_SIGNED_OUT: "off", HEAD_WITNESS: "off" })).toMatchObject({ edge: { on: true, test: true }, recipientsSignedOut: false });
+    expect(publicFacts({ EDGE_PURGE: "cloudflare", RECIPIENTS_SIGNED_OUT: "on", HEAD_WITNESS: "off" }).edge).toEqual({ on: true, test: false });
+    // 3d Task 5: the head's witness prints its adapter, a test one as such.
+    expect(publicFacts({ EDGE_PURGE: "off", RECIPIENTS_SIGNED_OUT: "on", HEAD_WITNESS: "rfc3161" }).witness).toEqual({ on: true, test: false });
+    expect(publicFacts({ EDGE_PURGE: "off", RECIPIENTS_SIGNED_OUT: "on", HEAD_WITNESS: "test" }).witness).toEqual({ on: true, test: true });
   });
 
   test("the editions' answer: each year's newest version, newest year first, with its older versions and the day each was replaced", () => {

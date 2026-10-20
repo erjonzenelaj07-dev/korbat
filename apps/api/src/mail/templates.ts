@@ -469,7 +469,28 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "release_undestroyed":
     case "seal_released":
     case "edge_purge_failed":
+    case "head_unwitnessed":
+    case "head_missed":
       return alertMail(template, data);
+    case "head_published": {
+      // 3d Task 5 (design, sections 7.7 and 18, W.8): the audit head's daily value, to HEAD_KEEPER_MAIL and to nobody else,
+      // built as a staff mail. The day, the value, the place and the hash, from which the keeper computes the value again,
+      // and whether an outside timestamp is stored. Each is held to its form, so the mail carries nothing else.
+      const day = need(data, "day");
+      const value = need(data, "value");
+      const seq = need(data, "seq");
+      const hash = need(data, "hash");
+      const witnessed = need(data, "witnessed");
+      if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(day)) throw new Error(`mail template data holds a day that head_published does not take: "${day}"`);
+      if (!/^[0-9a-f]{64}$/.test(value)) throw new Error("mail template data holds a value that head_published does not take");
+      if (!/^(0|[1-9][0-9]*)$/.test(seq)) throw new Error(`mail template data holds a seq that head_published does not take: "${seq}"`);
+      if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error("mail template data holds a hash that head_published does not take");
+      if (witnessed !== "stored" && witnessed !== "none") throw new Error(`mail template data holds a witnessed that head_published does not have: "${witnessed}"`);
+      return staffMail(`korbat: the audit log's value of ${day}`, [
+        `Value: ${value}. Place: ${seq}. Hash: ${hash}. Outside timestamp: ${witnessed}.`,
+        "Keep this mail. The value is public; the place and the hash are not: they let you check the value, and they go to you alone.",
+      ]);
+    }
     case "release_notice": {
       // 3d Task 2 (design, sections 7.2 and 7.15; W.6 and W.8): RELEASE_NOTICE's paragraphs, rendered by the one function
       // the app's notice screen uses, then where to read it. It names no authority, no reference, no assessment, no file

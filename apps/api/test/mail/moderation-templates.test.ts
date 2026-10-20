@@ -25,7 +25,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds 59 templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3, the two of its Task 6 and the two of its Task 5 that its review joined", () => {
+  test("holds the templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3, the two of its Task 6 and the two of its Task 5 that its review joined", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -46,11 +46,13 @@ describe("the closed union of templates", () => {
       "release_undestroyed", "seal_released", "release_notice",
       // 3d Task 3.
       "edge_purge_failed",
+      // 3d Task 5: the transparency job's two alerts, and the keeper's daily mail of the head.
+      "head_unwitnessed", "head_missed", "head_published",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(66);
+    expect(new Set(names).size).toBe(69);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(66);
+    expect(Object.keys(all)).toHaveLength(69);
   });
 });
 
@@ -639,5 +641,49 @@ describe("3d Task 3: the edge's staff alert (W.7)", () => {
     // The alert tick mails a row the job wrote, as it mails every kind whose mail is its sentence.
     expect(TICK_MAILED_KINDS).toContain("edge_purge_failed");
     expect(ALERT_KINDS.edge_purge_failed.mail).toBe("sentence");
+  });
+});
+
+describe("3d Task 5: the transparency job's two alerts and the keeper's mail (W.7, W.8)", () => {
+  const NOW = "2026-10-19T12:00:00.000Z";
+  const VALUE = "917907fc36f065a78e0b730230eac9c4f1c2882c77efc7a868a65ee336e0899e";
+  const HASH = "24cc975360df565521f1acca5b67f924d33ca0a0999355f667c4c289b1632fe1";
+
+  test("head_unwitnessed and head_missed: their pushes' sentences with the line of what to do, the day printed as a date", () => {
+    const unwitnessed = renderTemplate("head_unwitnessed", { day: "2026-10-19T00:00:00.000Z", now: NOW });
+    expect(unwitnessed.subject).toBe("korbat: A daily value has no outside timestamp");
+    expect(paragraphs(unwitnessed.text)).toEqual([
+      "The audit log's value of 2026-10-19 was published without an outside timestamp: the timestamp authority did not answer.",
+      "Nothing to do for one day. If it repeats, the operator checks the authority's address.",
+      LAST_STAFF,
+    ]);
+    const missed = renderTemplate("head_missed", { day: "2026-10-18T00:00:00.000Z", now: NOW });
+    expect(missed.subject).toBe("korbat: No daily value was published");
+    expect(paragraphs(missed.text)).toEqual([
+      "No value of the audit log was published for 2026-10-18.",
+      "The operator checks that the API ran at the dispatch hour. The keeper notes the gap; the page shows it.",
+      LAST_STAFF,
+    ]);
+    for (const r of [unwitnessed, missed]) linkless(r);
+    expect(TICK_MAILED_KINDS).toEqual(expect.arrayContaining(["head_unwitnessed", "head_missed"]));
+    expect(() => renderTemplate("head_missed", { day: "yesterday", now: NOW })).toThrow(/day/);
+  });
+
+  test("head_published: to the keeper alone, the day in the subject, the value, the place, the hash and whether a timestamp is stored, pinned", () => {
+    const r = renderTemplate("head_published", { day: "2026-10-18", value: VALUE, seq: "42", hash: HASH, witnessed: "stored" });
+    expect(r.subject).toBe("korbat: the audit log's value of 2026-10-18");
+    expect(paragraphs(r.text)).toEqual([
+      `Value: ${VALUE}. Place: 42. Hash: ${HASH}. Outside timestamp: stored.`,
+      "Keep this mail. The value is public; the place and the hash are not: they let you check the value, and they go to you alone.",
+      LAST_STAFF,
+    ]);
+    linkless(r);
+    expect(paragraphs(renderTemplate("head_published", { day: "2026-10-18", value: VALUE, seq: "0", hash: "0".repeat(64), witnessed: "none" }).text)[0]).toBe(
+      `Value: ${VALUE}. Place: 0. Hash: ${"0".repeat(64)}. Outside timestamp: none.`,
+    );
+    // Nothing but a day, a value of the head's form, a place and a hash: a mail never carries anything else.
+    for (const [name, bad] of [["day", "18 October"], ["value", "x".repeat(64)], ["seq", "-1"], ["hash", "an entry"], ["witnessed", "yes"]] as const) {
+      expect(() => renderTemplate("head_published", { day: "2026-10-18", value: VALUE, seq: "42", hash: HASH, witnessed: "none", [name]: bad }), name).toThrow(new RegExp(name));
+    }
   });
 });

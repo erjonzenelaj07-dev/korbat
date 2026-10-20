@@ -54,6 +54,11 @@ export interface AuthConfig {
    * restores 1b's behaviour. Read in the auth module alone, at those two places.
    */
   reportHold: boolean;
+  /**
+   * 3d Task 5 (design, sections 5 and 7.7): HEAD_KEEPER_MAIL, the one address the audit head's daily mail goes to, or null
+   * while it is empty and no such mail is sent. Read by mailKeeper alone; no account and no staff list receives that mail.
+   */
+  keeperMail: string | null;
 }
 
 export function authConfigFrom(config: Config): AuthConfig {
@@ -82,6 +87,7 @@ export function authConfigFrom(config: Config): AuthConfig {
     homeState: (config.HOME_STATE as MemberState | undefined) ?? null,
     contactPoint: config.CONTACT_POINT ?? null,
     reportHold: config.REPORT_HOLD === "on",
+    keeperMail: config.HEAD_KEEPER_MAIL ?? null,
   };
 }
 

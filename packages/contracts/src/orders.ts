@@ -187,6 +187,10 @@ export const ALERT_KIND_LIST = [
   "seal_released",
   // Task 3: the outbox's job gave up on purges at the edge (its own row, under F's daily rule).
   "edge_purge_failed",
+  // Task 5: the transparency job published a day's value without an outside timestamp, or found the day before without
+  // a published value (each its own row, under F's daily rule).
+  "head_unwitnessed",
+  "head_missed",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -245,6 +249,8 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   release_undestroyed: sentenceKind(3, "all", ["count", "oldestAt"]),
   seal_released: sentenceKind(3, "all", ["at", "posts", "uploads"]),
   edge_purge_failed: sentenceKind(3, "all", ["count", "oldestAt"]),
+  head_unwitnessed: sentenceKind(3, "all", ["day"]),
+  head_missed: sentenceKind(3, "all", ["day"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -255,8 +261,14 @@ export const SENTENCE_MAIL_KINDS: readonly AlertKind[] = ALERT_KIND_LIST.filter(
 /** The facts of a row: counts, and instants as ISO strings in UTC. */
 export type AlertFacts = Readonly<Record<string, number | string>>;
 
-/** A fact that is a time: `at`, `since`, or a name that ends in At. Every other fact is a count. */
-export const isTimeFact = (name: string): boolean => name === "at" || name === "since" || name.endsWith("At");
+/**
+ * A fact that is a day (3d Task 5's head alerts): the row holds the day's first instant, as it holds every time, and
+ * renderAlert prints it as the day itself ("2026-10-16", rule 7 of the 3d design's section 18), never as a time of day.
+ */
+export const isDayFact = (name: string): boolean => name === "day";
+
+/** A fact that is a time: `at`, `since`, a name that ends in At, or a day. Every other fact is a count. */
+export const isTimeFact = (name: string): boolean => name === "at" || name === "since" || name.endsWith("At") || isDayFact(name);
 
 /** What a part of a sentence is printed under: a fact present or missing, above zero, or equal to 1 or not. */
 export interface AlertCondition {
@@ -420,6 +432,17 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     sentence: one("{count} purges at the network provider failed for {giveUpHours} hours, the first of {oldestAt}."),
     todo: "The measures themselves stand. A copy may have been served for up to {edgeMinutes} minutes after each. The operator checks the provider's token and zone.",
   },
+  // Task 5: the day is printed as a date (isDayFact).
+  head_unwitnessed: {
+    title: "A daily value has no outside timestamp",
+    sentence: one("The audit log's value of {day} was published without an outside timestamp: the timestamp authority did not answer."),
+    todo: "Nothing to do for one day. If it repeats, the operator checks the authority's address.",
+  },
+  head_missed: {
+    title: "No daily value was published",
+    sentence: one("No value of the audit log was published for {day}."),
+    todo: "The operator checks that the API ran at the dispatch hour. The keeper notes the gap; the page shows it.",
+  },
 };
 
 /** A placeholder in braces: a fact's name, or a member of ORDER_RULES, of QUARANTINE_RULES or (3d Task 3) of EDGE_WORDS. */
@@ -479,8 +502,9 @@ function checkFacts(kind: AlertKind, facts: AlertFacts): void {
 
 /**
  * A kind's title, sentence and line of what to do, filled from the facts, ORDER_RULES, QUARANTINE_RULES and EDGE_WORDS. A time
- * prints as alertTime does at `now`. A placeholder with nothing to fill it, a fact of another kind and a fact of the
- * wrong form throw: an alert never goes out with a hole or with anything but counts and times in it.
+ * prints as alertTime does at `now`, and a day as the date of its instant in UTC. A placeholder with nothing to fill it, a
+ * fact of another kind and a fact of the wrong form throw: an alert never goes out with a hole or with anything but
+ * counts and times in it.
  */
 export function renderAlert(kind: AlertKind, facts: AlertFacts, now: Date): { title: string; sentence: string; todo: string | null } {
   checkFacts(kind, facts);
@@ -488,7 +512,7 @@ export function renderAlert(kind: AlertKind, facts: AlertFacts, now: Date): { ti
   const fill = (text: string) =>
     text.replace(PLACEHOLDER, (_match, name: string) => {
       const value = facts[name];
-      if (value !== undefined) return typeof value === "string" ? alertTime(value, now) : String(value);
+      if (value !== undefined) return typeof value === "string" ? (isDayFact(name) ? value.slice(0, 10) : alertTime(value, now)) : String(value);
       const rule = Object.hasOwn(rules, name) ? rules[name] : undefined;
       if (typeof rule === "number") return String(rule);
       throw new Error(`alert ${kind}: nothing fills {${name}}`);

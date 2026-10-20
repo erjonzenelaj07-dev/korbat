@@ -468,6 +468,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.frozen_for",
         // Task 6: a gap's closing, with the decision that took the measure again or, by an admin, with none.
         "public.gap_close",
+        // 3d Task 5 (0037_head_publications): the head's digest, which the insert trigger computes as the API's role.
+        "public.head_value",
         "public.intake_due_at",
         // 3d Task 1 (0033_quarantine): the six functions by which the API's role reaches the quarantine, which answer counts,
         // one time and booleans: a lost image's notice owed and told, an image's custody, the home's counts and a seal's.

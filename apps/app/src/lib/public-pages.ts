@@ -1,9 +1,9 @@
-import { EDGE_CACHE, EDGE_WORDS, MEASURES, RECIPIENT_RULES, TRANSPARENCY_RULES, type MeasureKind, type PublicFacts } from "@korbat/contracts";
+import { EDGE_CACHE, EDGE_WORDS, MEASURES, RECIPIENT_RULES, TRANSPARENCY_RULES, type HeadWitness, type MeasureKind, type PublicFacts } from "@korbat/contracts";
 import { RULES } from "@korbat/rules";
 import { numberWord } from "./moderation-words";
 
 /**
- * The fixed texts of the two public pages (3d design, sections 9.1 to 9.3 and 18, W.1 and W.2; Task 4): the rules page's
+ * The fixed texts of the two public pages (3d design, sections 9.1 to 9.3 and 18, W.1 and W.2; Tasks 4 and 5): the rules page's
  * (RULES_PAGE), what it says of each tool in each state (TOOL_TEXTS), and the transparency page's (TRANSPARENCY_PAGE).
  * Every number is printed from its constant. The words hold the design's nine rules for every text of 3d: a public page
  * points at no person, says no more of a tool than is true in every state the design builds, and names the order
@@ -147,6 +147,13 @@ const FLOOR = numberWord(TRANSPARENCY_RULES.floor);
 const UNDER_FLOOR = `1 to ${TRANSPARENCY_RULES.floor - 1}`;
 const ROUND_TO = numberWord(TRANSPARENCY_RULES.roundTo);
 
+/** Who witnessed a day's value, as its row says it. */
+const HEAD_WITNESS_WORDS: Record<HeadWitness, string> = {
+  rfc3161: "with an outside timestamp",
+  test: "with a test adapter's timestamp, which proves nothing",
+  none: "without an outside timestamp",
+};
+
 /** The labels of a measure in the tables: the ledger's own. */
 const measureLabel = (kind: string) => (kind in MEASURES ? MEASURES[kind as MeasureKind].label : kind);
 /** A rule's title in force, for the table by ground. */
@@ -250,6 +257,27 @@ export const TRANSPARENCY_PAGE = {
   recipientsNotYet: "korbat has not counted six full months yet.",
   method: (method: number) =>
     `How korbat counts (method ${method}). An account that was used while signed in during a month is counted once for that month. A reader without an account is counted once for each day they read korbat: korbat cannot tell whether Tuesday's reader is Monday's, because it keeps nothing that could tell. So the true number lies between the first figure, accounts alone, and the second, accounts plus the sum of each day's readers. To count, korbat feeds a counting sketch: a small summary that cannot list who was counted. For a reader without an account it is fed with a keyed digest of the network address and the browser's name, under a random key that exists for ${RECIPIENT_RULES.saltHours} hours in korbat's short-lived store and is written nowhere else. Until a month's sketch is deleted at the month's end, whoever runs korbat's server could still ask it whether one given account was probably counted in that month; after that korbat keeps two numbers and nothing else. A crawler is left out only when it names itself. korbat does not record where a reader is, so readers outside the European Union are counted too.`,
+  // The audit log's daily value (3d Task 5; 9.3 item 6, W.2).
+  headHeading: "The audit log's daily value",
+  head: "Each day korbat publishes one value computed from the day and the newest entry of its staff audit log, the record of everything korbat's staff confirm with their keys. If an earlier entry were changed or removed later, the log would no longer lead to the values published since. A value shows neither how many entries the log has nor any entry, and it differs from one day to the next also when nothing was added to the log. A value on korbat's own page proves nothing against korbat's operator, who could change this page too: so the same value goes each day to a person who does not run the server, and, when the outside timestamp is on, to a timestamp authority.",
+  /** A day's row: its value, and who witnessed it ("witness" reads none for a row without a token). */
+  headRow: (day: string, value: string, witness: HeadWitness) => `${day}: ${value}, ${HEAD_WITNESS_WORDS[witness]}`,
+  /** [tr.headMissing], in the row of a day between two shown days that has no value. */
+  headMissingRow: (day: string) => `${day}: no value was published`,
+  /** [tr.restore], a restore's row; the second sentence names the newest value above it that still fits, or says none does. */
+  restore: (day: string, lastDay: string | null) =>
+    `${day}: korbat restored its database from a backup. ${lastDay === null ? "No value above still fits the restored log." : `The newest value above that still fits the restored log is of ${lastDay}.`}`,
+  /** [tr.retired], after a retired value. */
+  retired: (day: string) => `retired by the restore of ${day}: true when published, and fits no log now`,
+  /**
+   * [tr.verify], while a shown row has a proof, with the newest such day's value and file: the command as it was run once
+   * against a proof of a local test authority (OpenSSL 3.5.4), where it answered "Verification: OK" for the value and
+   * failed for another value and for another authority's certificates.
+   */
+  verify: (value: string, day: string) =>
+    `To check a day: download its proof, get the timestamp authority's certificates from the authority itself, and run: openssl ts -verify -digest ${value} -in ${day}.tsr -CAfile <certificates>. It answers "Verification: OK" when that authority signed this value at the time the proof states.`,
+  download: (day: string) => `Download the proof of ${day} (${day}.tsr)`,
+  headNone: "korbat has published no daily value yet.",
   tdbHeading: "The Transparency Database",
   tdb: "korbat does not send its statements of reasons to the European Commission's DSA Transparency Database. That duty (Article 24(5) of the Digital Services Act) does not apply to micro and small enterprises (Article 19(1)), which korbat is, and a statement sent there cannot be taken back. Should korbat outgrow the exemption, this page will say from which day it sends them.",
   rulesLink: "The rules",

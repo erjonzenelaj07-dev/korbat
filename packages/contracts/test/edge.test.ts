@@ -61,7 +61,8 @@ describe("the edge's contracts (3d Task 3)", () => {
   });
 
   test("edge_purge_failed: a push and a sentence to every staff account, the job's facts, as W.7 words it with every number from a constant", () => {
-    expect(ALERT_KIND_LIST.at(-1)).toBe("edge_purge_failed");
+    // Task 3's kind follows Task 2's; Task 5's two head alerts come after it.
+    expect(ALERT_KIND_LIST.indexOf("edge_purge_failed")).toBe(ALERT_KIND_LIST.indexOf("seal_released") + 1);
     expect(ALERT_KINDS.edge_purge_failed).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["count", "oldestAt"] });
     expect(SENTENCE_MAIL_KINDS).toContain("edge_purge_failed");
     expect(alertPlaceholders("edge_purge_failed").sort()).toEqual(["count", "edgeMinutes", "giveUpHours", "oldestAt"]);

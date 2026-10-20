@@ -23,6 +23,7 @@
  *   cat <the keeper's files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-replay
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js recipients [--months 6]   (3d Task 4: cli/figures.ts)
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js edition <year> [--correct]
+ *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js head-restore-mark [<day>:<value> ...]   (3d Task 5)
  *
  * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
  * staff member's personal accounts for the recusal check and limits sets the limits on staff, each as the migrator, in
@@ -98,7 +99,8 @@ export const STAFF_USAGE = [
   ...COUNT_USAGE,
   // 3d Task 1 (design, section 8.10): the quarantine's list and record, as the migrator in the migrate service.
   ...CUSTODY_USAGE,
-  // 3d Task 4 (design, section 8.10): the recipients' figure and the yearly edition, as the migrator in the migrate service.
+  // 3d Task 4 (design, section 8.10): the recipients' figure and the yearly edition, and (Task 5) the head's restore mark,
+  // as the migrator in the migrate service.
   ...FIGURE_USAGE,
 ].join("\n");
 
@@ -130,7 +132,7 @@ export type StaffCommand =
   | { command: "counts"; counts: CountCommand }
   // 3d Task 1: quarantine-list and quarantine-record, whose words cli/custody.ts reads.
   | { command: "custody"; custody: CustodyCommand }
-  // 3d Task 4: recipients and edition, whose words cli/figures.ts reads.
+  // 3d Task 4: recipients and edition, and Task 5's head-restore-mark, whose words cli/figures.ts reads.
   | { command: "figures"; figures: FigureCommand };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
@@ -1367,11 +1369,12 @@ async function runCustodyCommand(command: CustodyCommand, env: Record<string, st
   }
 }
 
-// ---------------------------------------------------------------- the public figures (3d Task 4)
+// ---------------------------------------------------------------- the public figures and the head (3d Tasks 4 and 5)
 
 /**
- * recipients and edition (3d design, sections 7.5, 7.6 and 8.10), on the migrator's own connection, which reads only
- * DATABASE_URL_MIGRATE: the migrator alone may store a correction, and both reads are its as well.
+ * recipients, edition and head-restore-mark (3d design, sections 6.5, 7.5 to 7.7 and 8.10), on the migrator's own
+ * connection, which reads only DATABASE_URL_MIGRATE: the migrator alone may store a correction or mark a restore, and
+ * both reads are its as well.
  */
 async function runFigureCommand(command: FigureCommand, env: Record<string, string | undefined>, out: Output): Promise<number> {
   let url: string;

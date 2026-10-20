@@ -89,7 +89,13 @@ export type TemplateName =
   | "seal_released"
   | "release_notice"
   // Task 3: the edge's job gave up on purges at the network provider, a staff alert whose mail is its push's sentence.
-  | "edge_purge_failed";
+  | "edge_purge_failed"
+  // Task 5: the transparency job's two alerts, each a staff alert whose mail is its push's sentence (a day's value without
+  // an outside timestamp, a day without a published value); and the keeper's daily mail of the audit head, to the one
+  // address HEAD_KEEPER_MAIL.
+  | "head_unwitnessed"
+  | "head_missed"
+  | "head_published";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

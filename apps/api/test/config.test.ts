@@ -265,6 +265,29 @@ describe("loadConfig", () => {
       }
     });
   });
+  describe("3d Task 5: the head's witness and the keeper's address (design, sections 5 and 10.8; 12.1 row 27)", () => {
+    test("HEAD_WITNESS is off unless set; a blank value is off, and nothing but off, test and rfc3161 is taken", () => {
+      const c = loadConfig(good);
+      expect([c.HEAD_WITNESS, c.HEAD_WITNESS_URL, c.HEAD_KEEPER_MAIL]).toEqual(["off", undefined, undefined]);
+      expect(loadConfig({ ...good, HEAD_WITNESS: "", HEAD_WITNESS_URL: "", HEAD_KEEPER_MAIL: "" })).toMatchObject({ HEAD_WITNESS: "off", HEAD_WITNESS_URL: undefined, HEAD_KEEPER_MAIL: undefined });
+      for (const refused of ["on", "RFC3161", "openssl"]) expect(() => loadConfig({ ...good, HEAD_WITNESS: refused }), refused).toThrow(/HEAD_WITNESS/);
+    });
+    test("the test witness is refused while the app's site is open, in every environment, and taken on a site that is closed", () => {
+      expect(() => loadConfig({ ...good, HEAD_WITNESS: "test" })).toThrow(/HEAD_WITNESS=test is refused while APP_SITE is open/);
+      expect(() => loadConfig({ ...good, HEAD_WITNESS: "test", APP_SITE: "" })).toThrow(/HEAD_WITNESS=test/);
+      expect(loadConfig({ ...good, HEAD_WITNESS: "test", APP_SITE: "closed" }).HEAD_WITNESS).toBe("test");
+    });
+    test("rfc3161 needs its authority's address, an https one; with it the witness is taken on an open site", () => {
+      expect(() => loadConfig({ ...good, HEAD_WITNESS: "rfc3161" })).toThrow(/HEAD_WITNESS_URL[^]*is required when HEAD_WITNESS is rfc3161/);
+      expect(() => loadConfig({ ...good, HEAD_WITNESS: "rfc3161", HEAD_WITNESS_URL: "" })).toThrow(/HEAD_WITNESS_URL/);
+      for (const url of ["http://tsa.example/", "tsa.example", "ftp://tsa.example/"]) expect(() => loadConfig({ ...good, HEAD_WITNESS: "rfc3161", HEAD_WITNESS_URL: url }), url).toThrow(/HEAD_WITNESS_URL/);
+      expect(loadConfig({ ...good, HEAD_WITNESS: "rfc3161", HEAD_WITNESS_URL: "https://tsa.example/tsr" })).toMatchObject({ HEAD_WITNESS: "rfc3161", HEAD_WITNESS_URL: "https://tsa.example/tsr", APP_SITE: "open" });
+    });
+    test("HEAD_KEEPER_MAIL is an address or empty", () => {
+      expect(loadConfig({ ...good, HEAD_KEEPER_MAIL: "keeper@korbat.example" }).HEAD_KEEPER_MAIL).toBe("keeper@korbat.example");
+      expect(() => loadConfig({ ...good, HEAD_KEEPER_MAIL: "the keeper" })).toThrow(/HEAD_KEEPER_MAIL/);
+    });
+  });
   describe("the WebAuthn relying party", () => {
     test("defaults to the host of APP_ORIGIN and the name korbat; an empty value, as compose passes it, counts as unset", () => {
       expect(loadConfig(good)).toMatchObject({ WEBAUTHN_RP_ID: "localhost", WEBAUTHN_RP_NAME: "korbat" });

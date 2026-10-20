@@ -46,7 +46,7 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 63 tables in total", () => {
+  test("there are 64 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
@@ -54,8 +54,42 @@ describe("trust and safety schema", () => {
     // authority_notification_events, productions and auth.report_holds; then the two of recovery: restore_gaps and
     // copy_marks; then 3d's first, quarantine_files; then the release's four (Task 2): release_leaves, releases,
     // release_posts and release_notices; then the edge's outbox (Task 3), edge_purges; then the public figures' two (Task
-    // 4), transparency_editions and recipient_months.
-    expect(tables.length).toBe(63);
+    // 4), transparency_editions and recipient_months; then the head's (Task 5), head_publications.
+    expect(tables.length).toBe(64);
+  });
+  test("3d's head_publications (section 6.5): a day's value or a restore's mark under closed lists, the place, the witness and its token, published and retired, read and allowed for the API's role alone", () => {
+    const head = byName.get("head_publications")!;
+    const checkSql = (name: string) => new PgDialect().sqlToQuery(head.checks.find((c) => c.name === name)!.value).sql;
+    expect(head.schema ?? "public").toBe("public");
+    expect(head.columns.map((c) => [c.name, c.getSQLType(), c.notNull])).toEqual([
+      ["day", "date", true],
+      ["kind", "text", true],
+      ["chain_seq", "bigint", false],
+      ["value", "text", true],
+      ["witness", "text", true],
+      ["token", "bytea", false],
+      ["witnessed_at", "timestamp with time zone", false],
+      ["published_at", "timestamp with time zone", false],
+      ["retired_at", "timestamp with time zone", false],
+      ["last_day", "date", false],
+    ]);
+    expect(head.primaryKeys.map((key) => key.columns.map((c) => c.name))).toEqual([["day", "kind"]]);
+    expect(head.checks.map((c) => c.name).sort()).toEqual(["head_publications_kind", "head_publications_last_day", "head_publications_place", "head_publications_token", "head_publications_value", "head_publications_witness"]);
+    expect(checkSql("head_publications_kind")).toBe(`"head_publications"."kind" in ('head', 'restore')`);
+    expect(checkSql("head_publications_witness")).toBe(`"head_publications"."witness" in ('none', 'rfc3161', 'test')`);
+    expect(checkSql("head_publications_value")).toBe(`"head_publications"."value" ~ '^[0-9a-f]{64}$'`);
+    // A token and its time together, of at most 16 KB, and only from a witness that was asked.
+    expect(checkSql("head_publications_token")).toBe(
+      `("head_publications"."token" is null) = ("head_publications"."witnessed_at" is null) and ("head_publications"."token" is null or ("head_publications"."witness" <> 'none' and octet_length("head_publications"."token") between 1 and 16384))`,
+    );
+    // The place is known for every row but a keeper's value that a restore stored retired: the mail carries none.
+    expect(checkSql("head_publications_place")).toBe(
+      `("head_publications"."chain_seq" is not null and "head_publications"."chain_seq" >= 0) or ("head_publications"."chain_seq" is null and "head_publications"."kind" = 'head' and "head_publications"."retired_at" is not null)`,
+    );
+    expect(checkSql("head_publications_last_day")).toBe(`"head_publications"."last_day" is null or "head_publications"."kind" = 'restore'`);
+    expect(head.foreignKeys).toEqual([]);
+    expect(head.enableRLS).toBe(true);
+    expect(head.policies.map((p) => [p.name, p.for, p.to])).toEqual([["head_publications_api_all", "all", apiRole]]);
   });
   test("3d's public figures (section 6.4): an edition's versions under their reason, and a month's two numbers, each read and allowed for the API's role alone", () => {
     const editions = byName.get("transparency_editions")!;
@@ -1283,8 +1317,10 @@ describe("the contact point and the alert channel 3f", () => {
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
     // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two,
-    // then Task 3's one.
-    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed')");
+    // then Task 3's one, then Task 5's two.
+    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain(
+      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed')",
+    );
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);
     // Counts and times only: an object of at most six members, each a number or an instant in UTC.

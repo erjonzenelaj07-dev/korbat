@@ -76,6 +76,8 @@ export function flowHarness(repo: AuthRepo, options: { profiles?: ProfileStore; 
     contactPoint: null,
     // 3f Task 5: the report hold, on as by default.
     reportHold: true,
+    // 3d Task 5: no keeper's address, so the head's daily mail is not sent from a flow.
+    keeperMail: null,
   };
   const deps: AuthDeps = {
     repo,

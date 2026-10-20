@@ -61,8 +61,9 @@ const stopJanitor = auth.startJanitor(jobLock);
 // 3d Task 4: the public figures. The module is built once auth exists, and auth is handed its count afterwards, as the
 // wiring hands the media module its handler: resolveSession then counts the month's signed-in accounts and, while
 // RECIPIENTS_SIGNED_OUT is on, each day's signed-out readers. Its job closes a month's count and, once a day after the
-// dispatch hour, publishes what edition is due.
-const transparency = createTransparency({ apiDb, redis, config, logger });
+// dispatch hour, publishes what edition is due. 3d Task 5: and the audit head's daily value, witnessed while HEAD_WITNESS
+// is on and mailed to the keeper through the auth module's one sender to HEAD_KEEPER_MAIL.
+const transparency = createTransparency({ apiDb, redis, auth: auth.forTransparency, config, logger });
 auth.onSeen(transparency.forAuth);
 const stopTransparency = transparency.startJobs(jobLock);
 

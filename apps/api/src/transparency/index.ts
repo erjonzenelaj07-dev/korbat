@@ -1,28 +1,39 @@
 /**
- * The transparency module (3d design, sections 4 row 4, 5, 7.5, 7.6 and 7.14; Task 4): the public figures and the
- * public answers. The only file outside src/transparency/ may import; it reads no session and no table of a person, and
- * the architecture test holds every file of it to the names of @korbat/db's schema/transparency.ts and the audit head.
+ * The transparency module (3d design, sections 4 rows 4 and 5, 5, 7.5, 7.6, 7.7 and 7.14; Tasks 4 and 5): the public
+ * figures, the audit head's daily value and the public answers. The only file outside src/transparency/ may import; it
+ * reads no session and no table of a person, and the architecture test holds every file of it to the names of
+ * @korbat/db's schema/transparency.ts and the audit head.
  *
  *   - the recipients' count: the two calls the auth module's resolveSession makes (forAuth, registered with auth.onSeen
  *     once both modules exist) and the month's close;
  *   - the yearly edition: the daily call of edition_publish() for the last closed year and every earlier year with one;
- *   - GET /api/public/facts and GET /api/public/transparency;
- *   - one job, `transparency`, every ten minutes under the jobs' shared lock: the month's close each round, and once a
- *     day after MODERATION_DISPATCH_HOUR the editions. Each daily part is idempotent by its table's key, so a round after a
- *     restart that runs it again writes nothing.
+ *   - the head's daily value (Task 5): the day's row of head_publications, the witness adapter (witness.ts, HEAD_WITNESS)
+ *     and the keeper's mail through the auth module's mailKeeper (AuthForTransparency);
+ *   - GET /api/public/facts, GET /api/public/transparency and GET /api/public/head;
+ *   - one job, `transparency`, every ten minutes under the jobs' shared lock: the month's close each round, and after
+ *     MODERATION_DISPATCH_HOUR the editions once a day and the head in each round until the day's value is published and
+ *     witnessed, or needs no witness. Each daily part is idempotent by its table's key, so a round after a restart that
+ *     runs it again writes nothing.
  */
 import type { Logger } from "pino";
 import type { Db } from "@korbat/db";
+import type { AuthForTransparency } from "../auth";
 import type { Config } from "../config";
 import { createJob, type JobLock } from "../lib/jobs";
 import { publishEditions } from "./editions";
+import { publishHead, type HeadPass } from "./head";
 import { closeMonths, createRecipientCounter, type RecipientCounter, type SketchStore } from "./recipients";
 import { createTransparencyRepo } from "./repo";
 import { publicFacts, transparencyRoutes } from "./routes";
+import { witnessFrom, type WitnessAdapter } from "./witness";
 
 export type { SketchStore } from "./recipients";
+export type { HeadPass } from "./head";
+export type { WitnessAdapter } from "./witness";
 export { publicTransparency } from "./editions";
+export { headValue, publicHead } from "./head";
 export { isReadRoute, sketchKeys } from "./recipients";
+export { witnessFrom } from "./witness";
 
 /**
  * What the auth module needs from this one (section 5, `auth.onSeen`): resolveSession calls `seen` when a session
@@ -40,16 +51,24 @@ export interface CreateTransparencyOptions {
   apiDb: Db;
   /** Valkey, for the sketches and the salt. */
   redis: SketchStore;
-  config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "MODERATION_DISPATCH_HOUR">;
+  /** The auth module's one sender this module needs: the keeper's daily mail to HEAD_KEEPER_MAIL (section 5). */
+  auth: AuthForTransparency;
+  config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "MODERATION_DISPATCH_HOUR" | "HEAD_WITNESS" | "HEAD_WITNESS_URL" | "APP_SITE">;
   logger: Logger;
-  /** The clock of the counts and of the job's rounds; tests move it. */
+  /** The clock of the counts and of the job's rounds; tests move it. The head's day is the database's own. */
   now?: () => Date;
+  /** The head's witness in place of the one HEAD_WITNESS names; for tests (fakeWitness() is no https address). */
+  witness?: WitnessAdapter;
 }
 
-/** What one round of the job did: the months it closed, and the editions it published once a day. */
+/**
+ * What one round of the job did: the months it closed, the editions it published once a day, and the head's pass, null
+ * when the round ran none (before the dispatch hour, or once the day's value needs nothing more).
+ */
 export interface TransparencyRound {
   months: string[];
   editions: { year: number; version: number }[] | null;
+  head: HeadPass | null;
 }
 
 export function createTransparency(options: CreateTransparencyOptions) {
@@ -58,25 +77,43 @@ export function createTransparency(options: CreateTransparencyOptions) {
   const repo = createTransparencyRepo(options.apiDb);
   const signedOut = options.config.RECIPIENTS_SIGNED_OUT === "on";
   const forAuth: TransparencyForAuth = createRecipientCounter({ store: options.redis, signedOut, log, now });
-  // The UTC day of this process's last daily pass: one a day, after the dispatch hour. A restart runs it again, which
-  // the editions' key makes harmless.
+  // HEAD_WITNESS's adapter; the configuration refused a test adapter on an open site, and the builder refuses it again.
+  const witness = options.witness ?? witnessFrom(options.config);
+  const head = { repo, witness, mailKeeper: options.auth.mailKeeper, log };
+  // The UTC day of this process's last daily pass of the editions: one a day, after the dispatch hour. A restart runs it
+  // again, which the editions' key makes harmless.
   let lastDaily: string | null = null;
+  // The day whose first head pass ran (it alone looks for a missed day before), and the day whose value needs nothing
+  // more: published, and witnessed or never to be. Until then each round passes again, so a witness that did not answer
+  // is asked again in the day's later rounds.
+  let headFirst: string | null = null;
+  let headDone: string | null = null;
 
   async function round(): Promise<TransparencyRound> {
     const at = now();
     const months = await closeMonths({ store: options.redis, repo, signedOut }, at);
     if (months.length > 0) log.info({ job: TRANSPARENCY_JOB, months }, "transparency: the recipients' months were stored");
     const day = at.toISOString().slice(0, 10);
-    if (lastDaily === day || at.getUTCHours() < options.config.MODERATION_DISPATCH_HOUR) return { months, editions: null };
-    const pass = await publishEditions({ repo, log }, at);
-    lastDaily = day;
-    return { months, editions: pass.published };
+    if (at.getUTCHours() < options.config.MODERATION_DISPATCH_HOUR) return { months, editions: null, head: null };
+    let editions: TransparencyRound["editions"] = null;
+    if (lastDaily !== day) {
+      editions = (await publishEditions({ repo, log }, at)).published;
+      lastDaily = day;
+    }
+    // After the editions, so the day's value covers an edition's audit row written in the same round.
+    let pass: HeadPass | null = null;
+    if (headDone !== day) {
+      pass = await publishHead(head, { firstOfDay: headFirst !== day });
+      headFirst = day;
+      if (pass.done) headDone = day;
+    }
+    return { months, editions, head: pass };
   }
 
   return {
     /** The interface the auth module calls, registered with auth.onSeen in index.ts. */
     forAuth,
-    /** The two public routes, mounted by app.ts at /api before the session's resolution. */
+    /** The three public routes, mounted by app.ts at /api before the session's resolution. */
     routes: transparencyRoutes({ repo, facts: publicFacts(options.config) }),
     /** One round of the job, as the timer runs it; for tests. */
     round,

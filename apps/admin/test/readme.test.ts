@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { ALERT_RULES, ALERT_TEXTS, EDGE_CACHE, EDGE_RULES, ORDER_RULES, RECIPIENT_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES, TRANSPARENCY_RULES } from "@korbat/contracts";
+import { ALERT_RULES, ALERT_TEXTS, EDGE_CACHE, EDGE_RULES, HEAD_RULES, ORDER_RULES, RECIPIENT_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES, TRANSPARENCY_RULES } from "@korbat/contracts";
 import { AUTOMATION_WORDS } from "../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK, RELEASE_OVERDUE_RUNBOOK } from "../src/screens/Home";
 
@@ -577,5 +577,53 @@ describe("the README's yearly edition (3d design, W.11)", () => {
     expect(orders).toContain("staff.js tco-counts <last year> in the migrate service stays for an authority that asks");
     expect(orders).toContain("the yearly edition on /transparency");
     expect(ordersParts().owners).toContain("the yearly report is the edition on /transparency, which korbat publishes itself on or after 1 March");
+  });
+});
+
+/**
+ * 3d Task 5 (design, sections 7.3 step 4, 7.7, 8.10 and 15; W.11's Restoring step 4 and "The yearly edition, the monthly
+ * count and the daily value"): the head's daily value replaces both of the README's "Until sub-project 3d publishes the
+ * head"; the paragraph "Who can rewrite the audit log" ends as W.11 words it; the yearly edition's section gains the daily
+ * value, its three settings and the keeper's notes; and Restoring gains head-restore-mark. The keeper's daily visit stays.
+ */
+describe("the README's daily value of the head (3d design, W.11)", () => {
+  test("no line still waits for 3d to publish the head, and the paragraph on who can rewrite the audit log ends as W.11 says", () => {
+    const all = readmeLines().join(" ");
+    expect(all).not.toContain("Until sub-project 3d publishes the head");
+    expect(all).not.toContain("nothing detects the operator's own changes until 3d");
+    const rewrite = readmeLines().find((line) => line.startsWith("Who can rewrite the audit log:"))!;
+    expect(rewrite.endsWith("The head's daily value is public and goes to the keeper each day; the keeper's daily visit stays.")).toBe(true);
+    const kept = readmeLines().find((line) => line.startsWith("- **The kept head.**"))!;
+    expect(kept).toContain("The keeper's daily visit stays");
+    expect(kept).toContain("`API_HEAD_KEEPER_MAIL`");
+  });
+
+  test("The yearly edition gains the daily value: the job, the keeper's mail and notes, the outside timestamp's settings and the alerts' titles", () => {
+    const text = sectionLines("## The yearly edition").join(" ");
+    expect(text).toContain("**The yearly edition, the monthly count and the daily value.**");
+    for (const words of [
+      "`API_HEAD_KEEPER_MAIL`",
+      "`API_HEAD_WITNESS`",
+      "`API_HEAD_WITNESS_URL`",
+      "The keeper keeps each day's mail with the value, the place and the hash",
+      `"${ALERT_TEXTS.head_missed.title}" is noted by the keeper`,
+      `("${ALERT_TEXTS.head_unwitnessed.title}")`,
+      "openssl ts -verify -digest <value> -in <day>.tsr -CAfile <certificates>",
+      "docker compose -f infra/compose.yml up -d api",
+    ]) {
+      expect(text, words).toContain(words);
+    }
+    expect(withoutCodeMarks(text)).toContain(`the last ${HEAD_RULES.shownDays} days`);
+  });
+
+  test("Restoring gains head-restore-mark with the keeper's values for the days after the backup, before the site opens", () => {
+    const lines = sectionLines("## Restoring");
+    const text = lines.join(" ");
+    expect(text).toContain("docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js head-restore-mark <day>:<value> ...");
+    expect(text).toContain("with the values of the keeper's mails for the days after the backup");
+    const mark = lines.findIndex((line) => line.includes("head-restore-mark"));
+    const opens = lines.findIndex((line) => line.includes('the class "Releases and held uploads to replay" included'));
+    expect(mark).toBeGreaterThan(-1);
+    expect(mark).toBeLessThanOrEqual(opens);
   });
 });

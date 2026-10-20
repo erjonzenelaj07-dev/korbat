@@ -32,6 +32,7 @@ import {
   findNotifierContacts,
   forgetNotifierAfter,
   mailAccount,
+  mailKeeper,
   mailNotifier,
   mailNotifierUpdates,
   mailStaff,
@@ -44,6 +45,8 @@ import {
   storeNotifierContact,
   type AccountMailResult,
   type AccountMessage,
+  type KeeperMailResult,
+  type KeeperMessage,
   type NotifierFacts,
   type NotifierMailResult,
   type NotifierMessage,
@@ -80,6 +83,8 @@ export type {
   AccountMessage,
   AccountUpdateMessage,
   DecisionMessage,
+  KeeperMailResult,
+  KeeperMessage,
   NoticeReceivedMessage,
   NotifierFacts,
   NotifierMailResult,
@@ -256,6 +261,15 @@ export interface AuthForModeration {
   overdueContacts(): Promise<number>;
 }
 
+/**
+ * What the transparency module needs from this one (3d design, sections 5 and 7.7): the keeper's daily mail of the audit
+ * head. It takes the message and no address: the one address is HEAD_KEEPER_MAIL, which this module holds, and no
+ * account and no staff list receives that mail. "off" while the setting is empty; a failure is answered, never thrown.
+ */
+export interface AuthForTransparency {
+  mailKeeper(message: KeeperMessage): Promise<KeeperMailResult>;
+}
+
 export interface CreateAuthOptions {
   config: Config;
   logger: Logger;
@@ -360,6 +374,9 @@ export function createAuth(options: CreateAuthOptions) {
     findNotifierContacts: (email) => findNotifierContacts(deps, email),
     overdueContacts: () => overdueContacts(deps),
   };
+  const forTransparency: AuthForTransparency = {
+    mailKeeper: (message) => mailKeeper(deps, message),
+  };
   return {
     deps,
     routes: authRoutes(deps),
@@ -373,6 +390,8 @@ export function createAuth(options: CreateAuthOptions) {
     forStaff,
     /** The interface the moderation module uses. */
     forModeration,
+    /** 3d Task 5: the interface the transparency module uses, the keeper's daily mail alone. */
+    forTransparency,
     /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it, and its network with it. */
     clientIdentity: clientIdentity({ trust: deps.config.trustProxy, ipHashKey: deps.config.ipHashKey }),
     resolveSession: resolveSession(deps, () => seenBy),

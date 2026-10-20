@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import pino from "pino";
 import { afterEach, describe, expect, test } from "vitest";
-import { ALERT_KIND_LIST, ALERT_KINDS, renderAlert, type AlertFacts, type AlertKind } from "@korbat/contracts";
+import { ALERT_KIND_LIST, ALERT_KINDS, isTimeFact, renderAlert, type AlertFacts, type AlertKind } from "@korbat/contracts";
 import { createWatcher, type NotifyStore, type OwedPush } from "../../src/notify/main";
 import { TOPICS, publish } from "../../src/notify/push";
 import { fakeNtfy, type FakeNtfy } from "./fake-ntfy";
@@ -67,7 +67,8 @@ describe("one publish", () => {
     let id = 0;
     for (const kind of ALERT_KIND_LIST.filter((k) => ALERT_KINDS[k].legs.includes("push"))) {
       const facts: Record<string, number | string> = {};
-      for (const name of ALERT_KINDS[kind].facts) facts[name] = name === "at" || name === "since" || name.endsWith("At") ? "2026-10-16T08:59:00.000Z" : 2;
+      // A time fact holds an instant, 3d's day (the head's alerts) the day's first one; every other fact is a count.
+      for (const name of ALERT_KINDS[kind].facts) facts[name] = isTimeFact(name) ? "2026-10-16T08:59:00.000Z" : 2;
       expect(await publish(fetch, s.url, "tk_secret", row(++id, kind, facts), NOW), kind).toBe("ok");
     }
     expect(s.published.length).toBe(ALERT_KIND_LIST.length - 1);

@@ -261,14 +261,29 @@ const schema = z.object({
    * unless set to off, the owner's to decide; off leaves the second figure out, and the pages say "at least".
    */
   RECIPIENTS_SIGNED_OUT: blankAsUnset.pipe(z.enum(["on", "off"]).default("on")),
+  /**
+   * 3d Task 5 (design, sections 2 row 9, 5 "The adapters", 7.7 and 10.8): who witnesses the audit head's daily value.
+   * `off` (the default): the value stands on the transparency page and in the keeper's mail only; `test` answers a fixed
+   * token (refused while APP_SITE is open); `rfc3161` asks the timestamp authority at HEAD_WITNESS_URL, which it requires.
+   */
+  HEAD_WITNESS: blankAsUnset.pipe(z.enum(["off", "test", "rfc3161"]).default("off")),
+  /** The timestamp authority's address, https: the API posts one RFC 3161 request a day there, the value and nothing else. */
+  HEAD_WITNESS_URL: blankAsUnset.pipe(z.url({ protocol: /^https$/ }).optional()),
+  /**
+   * The keeper's address (design, sections 7.7 and 10.8): the one address the head's daily mail goes to, with the day, the
+   * value, the place and the hash. Empty, no such mail is sent. No account and no staff list receives that mail.
+   */
+  HEAD_KEEPER_MAIL: blankAsUnset.pipe(z.email().optional()),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // 3d (design, section 5, review ruling 11): in every environment, a test adapter never runs on a site people can reach.
   if (c.EDGE_PURGE === "test" && c.APP_SITE === "open") refuse("EDGE_PURGE", "EDGE_PURGE=test is refused while APP_SITE is open: a test adapter answers only on a site that is closed");
+  if (c.HEAD_WITNESS === "test" && c.APP_SITE === "open") refuse("HEAD_WITNESS", "HEAD_WITNESS=test is refused while APP_SITE is open: a test adapter answers only on a site that is closed");
   // An adapter named without its settings stops the process at start, as every missing setting does.
   if (c.EDGE_PURGE === "cloudflare") {
     for (const name of ["EDGE_ZONE_ID", "EDGE_API_TOKEN", "EDGE_HOST"] as const) if (c[name] === undefined) refuse(name, `${name} is required when EDGE_PURGE is cloudflare`);
   }
+  if (c.HEAD_WITNESS === "rfc3161" && c.HEAD_WITNESS_URL === undefined) refuse("HEAD_WITNESS_URL", "HEAD_WITNESS_URL is required when HEAD_WITNESS is rfc3161");
   // 3f: a contact point is published for one Member State, whose facts the console then reads.
   if (c.CONTACT_POINT !== undefined && c.HOME_STATE === undefined) refuse("HOME_STATE", "HOME_STATE is required once CONTACT_POINT is set");
   // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS
