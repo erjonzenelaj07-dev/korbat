@@ -18,6 +18,9 @@
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js tco-counts <year>   (3f: cli/counts.ts)
  *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js quarantine-list > list   (3d: cli/custody.ts)
  *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js quarantine-record < receipt
+ *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-leave <seal> --by <authority|court> ...   (3d Task 2)
+ *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-show <release>
+ *   cat <the keeper's files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-replay
  *
  * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
  * staff member's personal accounts for the recusal check and limits sets the limits on staff, each as the migrator, in

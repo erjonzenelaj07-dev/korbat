@@ -319,6 +319,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/audit/export/mark",
         "GET /api/staff/restore",
         "POST /api/staff/restore/gaps/:gap/close",
+        // 3d Task 2: an admin's release of a seal for good.
+        "POST /api/staff/seals/:action/release",
       ].sort(),
     );
   });
@@ -340,6 +342,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       // Task 6: the audit log's download, and a gap closed as not needed.
       "POST /api/staff/audit/export": "audit_exported",
       "POST /api/staff/restore/gaps/:gap/close": "gap_closed",
+      // 3d Task 2: the release of a seal for good.
+      "POST /api/staff/seals/:action/release": "seal_released",
     });
     // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
     // none of which changes anything a user sees (3c design, section 2, Free text under the step-up).
@@ -523,6 +527,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/orders/:order/items",
       // 3f Task 6: a restore gap.
       "POST /api/staff/restore/gaps/:gap/close",
+      // 3d Task 2: a seal, by its ledger row.
+      "POST /api/staff/seals/:action/release",
     ]);
     const answers = {
       StaffMe,

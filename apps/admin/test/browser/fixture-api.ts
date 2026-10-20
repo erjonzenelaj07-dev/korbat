@@ -35,6 +35,7 @@ import {
   stepUpActionHash,
   stepUpBinding,
   textDigest,
+  SealReleaseRequest,
   type AppealRow,
   type AppealsPage,
   type AppealsReviewedParams,
@@ -689,6 +690,10 @@ export function createFixtureApi() {
     enrolmentUsed: false,
     /** The next step-up options bind another action than the one the page asked for: the revocation of another session. */
     mismatchNextStepUp: false,
+    /** 3d Task 2: every release the page sent, by the seal's ledger row, with the params the key confirmed. */
+    releases: [] as { actionId: string; params: unknown }[],
+    /** 3d Task 2: the release of the seal that the Appeals list's appeal of a seal is about, or null ([appeals.released]). */
+    appealReleased: null as AppealRow["released"],
     /**
      * The next sign-in options carry a step-up challenge for an action of this server's choosing, as an API under an
      * attacker's control would hand out to have the key sign it at an ordinary sign-in.
@@ -793,6 +798,8 @@ export function createFixtureApi() {
     restoreOverview: { open: 0, measures: 0, importedAt: null } as StaffOverview["restore"],
     /** 3d Task 1: the quarantine's four values, as quarantine_counts() answers them through the overview. */
     quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null } as StaffOverview["quarantine"],
+    /** 3d Task 2: the releases of the last 30 days that Home lists ([home.released]). */
+    destructive: [] as StaffOverview["destructive"],
     restore: NO_RESTORE,
     gapsClosed: [] as string[],
     /** 3f, Task 2: the orders the walk opened, as their pages stand, and every write the page sent for them, with whether a key confirmed it. */
@@ -1146,7 +1153,9 @@ export function createFixtureApi() {
     const ofOrder = /^[/]api[/]staff[/]orders[/]([^/]+)(?:[/](items|events|correct|effect))?$/.exec(url.pathname);
     // 3f, Task 6: a gap closed as not needed, by its id in the path.
     const gapClose = req.method === "POST" ? /^[/]api[/]staff[/]restore[/]gaps[/]([0-9a-f-]{36})[/]close$/.exec(url.pathname) : null;
-    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder && !gapClose) throw new Refusal(404, "not_found");
+    // 3d Task 2: an admin's release of a seal for good, by the seal's ledger row.
+    const sealRelease = req.method === "POST" ? /^[/]api[/]staff[/]seals[/]([0-9a-f-]{36})[/]release$/.exec(url.pathname) : null;
+    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder && !gapClose && !sealRelease) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
     // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
@@ -1181,6 +1190,7 @@ export function createFixtureApi() {
           copy: state.copy,
           restore: state.restoreOverview,
           quarantine: state.quarantine,
+          destructive: state.destructive,
         }),
       };
     }
@@ -1400,6 +1410,7 @@ export function createFixtureApi() {
         needsAdmin: true,
         mayReview: false,
         standingFirst: false,
+        released: state.appealReleased,
       };
       return { status: 200, body: { appeals: [unreviewable, ...pendingAppeals()], nextCursor: null } satisfies AppealsPage };
     }
@@ -1636,6 +1647,39 @@ export function createFixtureApi() {
       return { status: 204 };
     }
     if (key === "GET /api/staff/restore") return { status: 200, body: state.restore };
+    if (sealRelease) {
+      // 3d Task 2: the release, as the API answers it: an admin's, under a key that confirmed exactly this seal, these
+      // posts, the ground and the recorded leave with its reference as the case showed them; the case as it now stands.
+      if (state.role !== "admin") throw new Refusal(403, "admin_required");
+      const what = "POST /api/staff/seals/:action/release";
+      const { stepUp, ...params } = parse(SealReleaseRequest, body, what);
+      const actionId = sealRelease[1]!;
+      await confirmedOrder(stepUp, { action: "seal_released", target: { type: "seal", id: actionId }, params } as StaffStepUpActionInput, session);
+      const found = [...state.cases.entries()].find(([, view]) => view.decisions.some((decided) => decided.actions.some((one) => one.id === actionId)));
+      if (found === undefined) throw new Refusal(404, "not_found");
+      const [caseId, view] = found;
+      const sealing = view.decisions.find((decided) => decided.actions.some((one) => one.id === actionId))!;
+      const block = sealing.release;
+      if (block === undefined || block.leave === null || block.leave.id !== params.leaveId || block.leave.reference !== params.theirReference || block.postIds.join(",") !== params.postIds.join(",")) {
+        throw new Refusal(409, "release_mismatch");
+      }
+      const released = {
+        ...block,
+        postIds: [],
+        remaining: 0,
+        releasedAt: iso(Date.now()),
+        basis: "leave" as const,
+        backupsClearAt: iso(Date.now() + 30 * 24 * HOUR),
+        noticeHeld: block.tellHeld,
+        releasedPosts: block.releasedPosts + params.postIds.length,
+        releasedImages: block.releasedImages + 2 * params.postIds.length,
+      };
+      const custody = sealing.custody === undefined ? undefined : { ...sealing.custody, files: 0, moved: 0, movedAt: null, filesLeft: sealing.custody.moved };
+      const answered = { ...view, decisions: view.decisions.map((decided) => (decided.id === sealing.id ? { ...decided, release: released, ...(custody === undefined ? {} : { custody }) } : decided)) };
+      state.cases.set(caseId, answered);
+      state.releases.push({ actionId, params });
+      return { status: 201, body: answered };
+    }
     if (gapClose) {
       if (state.role !== "admin") throw new Refusal(403, "admin_required");
       const input = parse(GapCloseBody, body, "POST /api/staff/restore/gaps/:gap/close");
@@ -1666,7 +1710,9 @@ export function createFixtureApi() {
                   ? Number(action.target.id) <= Math.max(...state.audit.map((row) => row.seq))
                   : action.action === "gap_closed"
                     ? state.restore.gaps.some((gap) => gap.id === action.target.id)
-                    : state.sessions.has(action.target.id);
+                    : action.action === "seal_released"
+                      ? [...state.cases.values()].some((view) => view.decisions.some((decided) => decided.actions.some((one) => one.id === action.target.id)))
+                      : state.sessions.has(action.target.id);
       if (!known) throw new Refusal(404, "not_found");
       // The page builds a reveal's or a decision's params from the digests it computed itself: one a save's answer carried never gets here.
       const decided = action.action === "case_decided" ? CaseDecidedParams.parse(action.params) : null;
@@ -1686,6 +1732,9 @@ export function createFixtureApi() {
           const extra = order?.items.find((item) => item.postId !== null && !params.items.some((one) => one.itemId === item.id));
           const items = extra ? [...params.items, { itemId: extra.id, postId: extra.postId! }].sort((a, b) => (a.postId < b.postId ? -1 : a.postId > b.postId ? 1 : 0)) : params.items;
           bound = { ...action, params: { ...params, items } } as StaffStepUpActionInput;
+        } else if (action.action === "seal_released") {
+          // 3d Task 2: the release of the same seal on the same leave, under another reference than the page showed.
+          bound = { ...action, params: { ...(action.params as object), theirReference: "OTHER 9/99" } } as StaffStepUpActionInput;
         } else bound = { ...action, target: { ...action.target, id: action.action === "identity_revealed" ? randomUUID() : session.handle } } as StaffStepUpActionInput;
       }
       state.mismatchNextStepUp = false;

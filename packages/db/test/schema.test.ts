@@ -46,14 +46,53 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 53 tables in total", () => {
+  test("there are 60 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
     // legal_order_events; then the four of the records to authorities: authority_notifications,
     // authority_notification_events, productions and auth.report_holds; then the two of recovery: restore_gaps and
-    // copy_marks; then 3d's first, quarantine_files.
-    expect(tables.length).toBe(56);
+    // copy_marks; then 3d's first, quarantine_files; then the release's four (Task 2): release_leaves, releases,
+    // release_posts and release_notices.
+    expect(tables.length).toBe(60);
+  });
+  test("3d's release (section 6.2): the leave, the release with its notice's state, its mark keyed on the post, and the day's notice; the API's role is granted nothing on the leave", () => {
+    const leaves = byName.get("release_leaves")!;
+    expect(leaves.columns.map((c) => c.name).sort()).toEqual(
+      ["id", "notification_id", "leave_from", "reference", "received_on", "untold", "untold_until", "recorded_at", "recorded_by", "withdrawn_at", "withdrawn_by"].sort(),
+    );
+    expect(leaves.checks.map((c) => c.name).sort()).toEqual(["release_leaves_from", "release_leaves_reference", "release_leaves_texts", "release_leaves_untold", "release_leaves_withdrawn"]);
+    expect(leaves.foreignKeys).toEqual([]);
+    expect(leaves.policies.map((p) => [p.name, p.for, p.to])).toEqual([["release_leaves_api_none", "select", apiRole]]);
+    const releases = byName.get("releases")!;
+    expect(releases.columns.map((c) => c.name).sort()).toEqual(
+      [
+        "id",
+        "seal_action_id",
+        "upload_refusal_id",
+        "post_ids",
+        "basis",
+        "leave_id",
+        "their_reference",
+        "released_by",
+        "released_at",
+        "replay_of",
+        "backups_clear_at",
+        "author_notice",
+        "author_notice_at",
+        "imported_at",
+      ].sort(),
+    );
+    expect(releases.checks.map((c) => c.name).sort()).toEqual(["releases_basis", "releases_leave", "releases_notice", "releases_reference", "releases_replay"]);
+    // The admin who released is a profile; no foreign key names a seal, a leave or a refusal: a replay may come first.
+    expect(releases.foreignKeys.map((fk) => fk.reference().foreignTable[Symbol.for("drizzle:Name") as never])).toEqual(["profiles"]);
+    const marks = byName.get("release_posts")!;
+    expect(marks.primaryKeys.length + marks.columns.filter((c) => c.primary).length).toBe(1);
+    expect(marks.columns.find((c) => c.primary)?.name).toBe("post_id");
+    expect(marks.foreignKeys.map((fk) => fk.reference().foreignTable[Symbol.for("drizzle:Name") as never])).toEqual(["releases"]);
+    const notices = byName.get("release_notices")!;
+    expect(notices.columns.find((c) => c.primary)?.name).toBe("subject_id");
+    for (const table of [leaves, releases, marks, notices]) expect(table.enableRLS, table.name).toBe(true);
   });
   test("3d's quarantine_files: a file's row keyed by its image and its name, with its three ends and no right for the API (section 6.1)", () => {
     const files = byName.get("quarantine_files")!;
@@ -63,7 +102,8 @@ describe("trust and safety schema", () => {
     );
     expect(files.primaryKeys.map((k) => [k.getName(), k.columns.map((c) => c.name)])).toEqual([["quarantine_files_pkey", ["media_id", "file"]]]);
     expect(files.checks.map((c) => c.name).sort()).toEqual(["quarantine_files_digest", "quarantine_files_ends", "quarantine_files_file", "quarantine_files_release", "quarantine_files_told"]);
-    expect(files.foreignKeys).toEqual([]);
+    // Task 2: a destroyed file names the release it was destroyed for.
+    expect(files.foreignKeys.map((fk) => fk.reference().foreignTable[Symbol.for("drizzle:Name") as never])).toEqual(["releases"]);
     expect(files.indexes.map((i) => i.config.name).sort()).toEqual(["quarantine_files_post_idx", "quarantine_files_untold_idx"]);
     expect(files.enableRLS).toBe(true);
     expect(files.policies.map((p) => [p.name, p.for, p.to])).toEqual([["quarantine_files_api_none", "select", apiRole]]);
@@ -1179,8 +1219,8 @@ describe("the contact point and the alert channel 3f", () => {
     expect(byName.get("alert_outbox")!.foreignKeys).toEqual([]);
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
-    // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two.
-    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost')");
+    // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two.
+    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released')");
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);
     // Counts and times only: an object of at most six members, each a number or an instant in UTC.

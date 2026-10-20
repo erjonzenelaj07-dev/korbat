@@ -1,7 +1,7 @@
 import { ORDER_RULES, OVERVIEW_LIST_MAX, QUARANTINE_RULES, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, CUSTODY_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, CUSTODY_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, RELEASE_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, NavLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type ConsolePath, type OrderId } from "../router";
 import { readSignInsAtOpening } from "../signins";
@@ -259,7 +259,7 @@ export function AuthoritiesLines({
  * store is due, from the four values of quarantine_counts(); once the oldest due move is older than the alert's threshold
  * it says that every staff account is alerted daily.
  */
-export function CustodyLines({ overview, now = Date.now() }: { overview: StaffOverview; now?: number }) {
+export function CustodyLines({ overview, now = Date.now(), onOpenCase }: { overview: StaffOverview; now?: number; onOpenCase?: (id: CaseId) => void }) {
   const { quarantine } = overview;
   const lines: ReactNode[] = [];
   if ((quarantine.dueIn > 0 || quarantine.dueOut > 0) && quarantine.oldest !== null) {
@@ -268,6 +268,24 @@ export function CustodyLines({ overview, now = Date.now() }: { overview: StaffOv
       <p key="quarantine" className={late ? "error" : "notice"}>
         {CUSTODY_WORDS.homeQuarantine(quarantine.dueIn, quarantine.dueOut, bothTimes(quarantine.oldest))}
         {late ? ` ${CUSTODY_WORDS.homeQuarantineLate}` : ""}
+      </p>,
+    );
+  }
+  // 3d Task 2 (8.2): [home.undestroyed] while released files are still in the quarantine, and [home.released], one line
+  // a release of the last 30 days, newest first, each linking its case.
+  if (quarantine.undestroyed > 0) lines.push(<p key="undestroyed" className="notice">{RELEASE_WORDS.homeUndestroyed(quarantine.undestroyed)}</p>);
+  for (const [index, entry] of overview.destructive.filter((act) => act.kind === "seal_released").entries()) {
+    const id = entry.caseId === null ? null : parseCaseId(entry.caseId);
+    const words = RELEASE_WORDS.homeReleased(bothTimes(entry.at));
+    lines.push(
+      <p key={`released-${index}`} className="notice">
+        {id !== null && onOpenCase !== undefined ? (
+          <CaseLink id={id} onOpen={onOpenCase}>
+            {words}
+          </CaseLink>
+        ) : (
+          words
+        )}
       </p>,
     );
   }
@@ -301,7 +319,7 @@ export function OverviewView({
   return (
     <>
       <AuthoritiesLines overview={overview} now={now} onOpenCase={onOpenCase} {...(onNavigate === undefined ? {} : { onNavigate })} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} />
-      <CustodyLines overview={overview} now={now} />
+      <CustodyLines overview={overview} now={now} onOpenCase={onOpenCase} />
       <h3>Cases</h3>
       <ul className="lanes">
         {overview.lanes.map((lane) => (

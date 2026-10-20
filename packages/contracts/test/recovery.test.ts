@@ -11,10 +11,11 @@ describe("recovery", () => {
   const AT = "2026-10-10T01:00:00.000Z";
 
   test("the classes in the order a person takes them again, the measures among them, and those that keep the app's site closed", () => {
-    expect(GAP_CLASSES).toEqual(["order_effect", "seal_final", "seal_interim", "standing", "restriction", "reversal", "no_measure", "record"]);
+    // 3d Task 2: the class release, after seal_interim, for a lost release, leave or withdrawal of a leave.
+    expect(GAP_CLASSES).toEqual(["order_effect", "seal_final", "seal_interim", "release", "standing", "restriction", "reversal", "no_measure", "record"]);
     expect(GAP_DISPOSITIONS).toEqual(["reapplied", "not_needed", "imported"]);
     expect(GAP_MEASURE_CLASSES).toEqual(["order_effect", "seal_final", "seal_interim", "standing", "restriction"]);
-    expect(GAP_SITE_CLASSES).toEqual(["order_effect", "seal_final", "seal_interim"]);
+    expect(GAP_SITE_CLASSES).toEqual(["order_effect", "seal_final", "seal_interim", "release"]);
   });
 
   test("RestoreView holds a gap's members and nothing more, and the held notices' ends as imported", () => {

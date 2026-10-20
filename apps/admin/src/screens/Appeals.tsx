@@ -1,7 +1,7 @@
 import { MEASURES, type AppealRow } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, describeError, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, describeError, RELEASE_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { dateTime, Loaded, type Loadable } from "../ui";
@@ -74,7 +74,11 @@ export function AppealsView({ rows, more, loadingMore, onLoadMore, onOpenCase }:
                         <td>
                           <time dateTime={row.deadline}>{dateTime(row.deadline)}</time>
                         </td>
-                        <td>{[...(row.standingFirst ? [`${STANDING_WORDS.appealsFirst}.`] : []), ...marksOf(row)].join(" ")}</td>
+                        <td>
+                          {[...(row.standingFirst ? [`${STANDING_WORDS.appealsFirst}.`] : []), ...marksOf(row)].join(" ")}
+                          {/* 3d Task 2 [appeals.released] (8.7): the appeal of a seal whose posts were released stays open. */}
+                          {row.released ? <p className="notice">{RELEASE_WORDS.appealReleased(dateTime(row.released.at), row.released.basis)}</p> : null}
+                        </td>
                         <td>
                           {id ? (
                             <CaseLink id={id} onOpen={onOpenCase}>

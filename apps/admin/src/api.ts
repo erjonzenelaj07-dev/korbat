@@ -36,6 +36,7 @@ import {
   type OrderEventRecordRequest,
   type OrderItemsRequest,
   type OrderOpenRequest,
+  type SealReleaseRequest,
   type StaffEnrollOptionsRequest,
   type StaffEnrollVerifyRequest,
   type StaffSessionRevokeRequest,
@@ -330,6 +331,15 @@ export function createStaffApi(deps: StaffApiDeps) {
     closeGap: async (gapId: string, body: { disposition: "not_needed"; stepUp: AuthenticationResponseJSON }, call: Call = {}) => {
       if (!isLowerUuid(gapId)) throw new ApiError(0, "invalid_request");
       return request("POST", `/api/staff/restore/gaps/${gapId}/close`, RestoreView, call, body);
+    },
+    /**
+     * 3d Task 2: an admin's release of a seal for good, with the key's confirmation: the seal's ledger row must already be
+     * the lower-case uuid the step-up confirmed, since it is the action's target. The answer is the seal's case as it now
+     * stands, and it must be the case of the page that asked.
+     */
+    releaseSeal: async (caseId: string, actionId: string, body: SealReleaseRequest, call: Call = {}) => {
+      if (!isLowerUuid(actionId)) throw new ApiError(0, "invalid_request");
+      return sameCase(caseId, await request("POST", `/api/staff/seals/${actionId}/release`, CaseView, call, body));
     },
     /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {

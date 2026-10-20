@@ -1,6 +1,8 @@
 import {
   MEASURES,
   ORDER_GROUND_LABELS,
+  RELEASE_POSTS_MAX,
+  RETENTION,
   REVEAL_REASON_CATEGORIES,
   SUSPECT_EARLIER_MONTHS,
   type CaseDecision,
@@ -10,6 +12,8 @@ import {
   type CaseView,
   type RevealReasonCategory,
   type RevealResponse,
+  type SealRelease,
+  type SealReleasedParams,
 } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
@@ -40,10 +44,10 @@ import {
 } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { APPEAL_WORDS, CASE_WORDS, CUSTODY_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, CASE_WORDS, CUSTODY_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
-import { revealWithKey } from "../step-up";
+import { releaseWithKey, revealWithKey } from "../step-up";
 import type { DraftSlots } from "../store";
 import { normalised, saveStaffText, type RandomBytes } from "../texts";
 import { bothTimes, dateTime, Loaded, UserText, type Loadable } from "../ui";
@@ -184,6 +188,8 @@ export interface CaseScreenViewProps {
   onOpenOrder?: (id: OrderId) => void;
   /** 3f Task 6: [restore.again], when the decision taken here takes again one lost with a restore. */
   again?: string | null;
+  /** 3d Task 2: the release of a seal for good, on its decision's block; without it the block shows its facts and no working control. */
+  release?: ReleaseProps;
   /**
    * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
    * beside the decisions. Without it the page shows the case and decides nothing.
@@ -635,7 +641,108 @@ function CustodyLines({ decision }: { decision: CaseDecision }) {
   );
 }
 
-function Decision({ decision, view, compose }: { decision: CaseDecision; view: CaseView; compose: CaseScreenViewProps["compose"] }) {
+/** 3d Task 2: the release of a seal for good, as the case page runs it: whose role, whether a release is on its way, and its refusal. */
+export interface ReleaseProps {
+  role: StaffRole;
+  busy: boolean;
+  error: string | null;
+  onRelease(decision: CaseDecision): void;
+}
+
+/** The params the key signs for the next release of this seal: the posts as the page shows them, the ground leave, and the recorded leave with its reference. */
+export function releaseParams(release: SealRelease): SealReleasedParams | null {
+  if (release.leave === null || release.postIds.length === 0) return null;
+  return { postIds: [...release.postIds], basis: "leave", leaveId: release.leave.id, theirReference: release.leave.reference };
+}
+
+/** "The author may be told" (8.5): at once; not yet, by the leave's own mark; or not yet, by the record of the report or an order. */
+function tellWords(release: SealRelease): string {
+  const W = RELEASE_WORDS.facts.tell;
+  if (!release.tellHeld) return W.atOnce;
+  const leave = release.leave;
+  if (leave !== null && leave.untold && (leave.untoldUntil === null || Date.parse(leave.untoldUntil) > Date.now())) return W.untold(leave.untoldUntil === null ? null : bothTimes(leave.untoldUntil));
+  return W.record;
+}
+
+/**
+ * 3d Task 2 (design, sections 7.2 and 8.5): the block "Release" under a seal for good in force: the facts of
+ * release_facts, each a label and a value, then the words. An authority's assessment is shown as what it is and offers no
+ * control; the one control, "Release and destroy", is offered only while a leave or an instruction to destroy is recorded,
+ * and only to an admin: a moderator sees the block greyed with admin_required's words. The reference of the authority and
+ * the leave's are drawn framed. No image is requested or drawn here.
+ */
+function ReleaseBlock({ decision, release }: { decision: CaseDecision; release: ReleaseProps | undefined }) {
+  const facts = decision.release;
+  if (facts === undefined) return null;
+  const W = RELEASE_WORDS;
+  const F = W.facts;
+  const admin = release?.role === "admin";
+  const params = releaseParams(facts);
+  const day = (at: string | null, none: string) => (at === null ? none : bothTimes(at));
+  return (
+    <section className={`block release${admin ? "" : " greyed"}`} aria-labelledby={`release-${decision.id}`}>
+      <h4 id={`release-${decision.id}`}>{W.title}</h4>
+      <dl>
+        <dt>{F.reported.label}</dt>
+        <dd>{facts.reported ? F.reported.yes : F.reported.no}</dd>
+        <dt>{F.theirReference.label}</dt>
+        <dd>{facts.theirReference === null ? F.theirReference.none : <Frame by={F.theirReference.frame} text={facts.theirReference} />}</dd>
+        <dt>{F.answer.label}</dt>
+        <dd>{facts.answer === null ? F.answer.none : F.answer.values[facts.answer]}</dd>
+        <dt>{F.answeredAt.label}</dt>
+        <dd>{day(facts.answeredAt, F.answeredAt.none)}</dd>
+        <dt>{F.handedOverAt.label}</dt>
+        <dd>{day(facts.handedOverAt, F.handedOverAt.none)}</dd>
+        <dt>{F.leave.label}</dt>
+        <dd>{facts.leave === null ? F.leave.none : F.leave.from[facts.leave.from]}</dd>
+        <dt>{F.leaveReference.label}</dt>
+        <dd>{facts.leave === null ? F.leaveReference.none : <Frame by={F.theirReference.frame} text={facts.leave.reference} />}</dd>
+        <dt>{F.leaveDay.label}</dt>
+        <dd>{facts.leave === null ? F.leaveDay.none : facts.leave.receivedOn}</dd>
+        <dt>{F.tell.label}</dt>
+        <dd>{tellWords(facts)}</dd>
+        <dt>{F.quarantined.label}</dt>
+        <dd>{facts.quarantined ? F.quarantined.yes : F.quarantined.no}</dd>
+        <dt>{F.preserved.label}</dt>
+        <dd>{facts.preserved ? F.preserved.yes : F.preserved.no}</dd>
+      </dl>
+      {facts.releasedAt !== null && facts.backupsClearAt !== null ? (
+        <p className="notice">
+          {W.done(bothTimes(facts.releasedAt), facts.releasedPosts, facts.releasedImages, decision.custody?.filesLeft ?? 0, facts.noticeHeld === true, bothTimes(facts.backupsClearAt))}
+        </p>
+      ) : null}
+      <p>{W.what}</p>
+      <p>{W.tells}</p>
+      <p className="hint">{W.backups(RETENTION.backupDays)}</p>
+      {facts.silenceDays === null ? <p className="hint">{W.periodUnset}</p> : null}
+      {facts.leave === null ? (
+        <p className="notice">{facts.answer === "illegal" ? W.assessed : facts.answer === "not_illegal" ? W.notIllegal : W.nothing}</p>
+      ) : (
+        <>
+          {facts.answer === "not_illegal" ? <p className="error">{W.conflict}</p> : null}
+          <p>{W.leave(F.leave.from[facts.leave.from]!)}</p>
+        </>
+      )}
+      {facts.remaining > 0 ? <p className="notice">{W.more(RELEASE_POSTS_MAX, facts.remaining)}</p> : null}
+      {params === null ? null : (
+        <div className="actions">
+          <p className="hint">{W.sign(params.postIds.length)}</p>
+          {admin ? null : <p className="hint">{W.adminOnly}</p>}
+          {release?.error ? (
+            <p role="alert" className="error">
+              {release.error}
+            </p>
+          ) : null}
+          <button type="button" disabled={!admin || release === undefined || release.busy} aria-busy={release?.busy === true} onClick={() => release?.onRelease(decision)}>
+            {W.button}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Decision({ decision, view, compose, release }: { decision: CaseDecision; view: CaseView; compose: CaseScreenViewProps["compose"]; release?: ReleaseProps }) {
   const lifted = (id: string | null) => {
     const by = id === null ? undefined : view.decisions.find((other) => other.id === id);
     return by ? `lifted by the decision of ${dateTime(by.decidedAt)}` : "lifted";
@@ -689,6 +796,7 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
         </ul>
       )}
       <CustodyLines decision={decision} />
+      <ReleaseBlock decision={decision} release={release} />
       {compose === undefined ? null : <CorrectControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onCorrect={compose.onCorrect} />}
       {compose === undefined ? null : <WithdrawControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdraw={compose.onWithdraw} />}
       {compose === undefined ? null : <WithdrawMarksControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdrawMarks={compose.onWithdrawMarks} />}
@@ -800,7 +908,7 @@ export function CaseScreenView(props: CaseScreenViewProps) {
       ) : (
         <ul className="plain">
           {view.decisions.map((decision) => (
-            <Decision key={decision.id} decision={decision} view={view} compose={props.compose} />
+            <Decision key={decision.id} decision={decision} view={view} compose={props.compose} {...(props.release === undefined ? {} : { release: props.release })} />
           ))}
         </ul>
       )}
@@ -905,6 +1013,8 @@ export function CaseScreen({
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [reveal, setReveal] = useState<RevealState | null>(null);
+  const [releasing, setReleasing] = useState(false);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
   // The composer's draft lives in the store's slot for this case, so that it is still there after a session that ended
   // and a sign-in by the same handle; the page keeps its own copy to draw.
   const [draft, setDraft] = useState<CaseDraft | null>(() => drafts.get(id));
@@ -1016,6 +1126,31 @@ export function CaseScreen({
     setReveal((current) => (current === null ? null : { ...current, busy: false, answer: outcome.answer }));
     // The history gains the reveal. Should this read fail, the page and the name it shows stay as they are.
     void read();
+  };
+
+  /**
+   * 3d Task 2 (section 7.2): "Release and destroy" on a seal for good, confirmed by the key with exactly the params the
+   * block shows. The answer is the case as it now stands; a refusal is worded in place and the case is read again, since
+   * the facts it rests on moved between the read and the key.
+   */
+  const release = async (decision: CaseDecision) => {
+    const seal = decision.actions.find((action) => action.kind === "seal_media");
+    const params = decision.release === undefined ? null : releaseParams(decision.release);
+    if (releasing || seal === undefined || params === null) return;
+    setReleasing(true);
+    setReleaseError(null);
+    try {
+      const answer = await releaseWithKey({ api, credentials }, id, seal.id, params);
+      if (!alive.current) return;
+      page.current = { state: "ready", value: answer };
+      setView(page.current);
+    } catch (err) {
+      if (!alive.current) return;
+      setReleaseError(describeError(err));
+      void read();
+    } finally {
+      if (alive.current) setReleasing(false);
+    }
   };
 
   /** A text that is saved now: the refusal of an earlier save of it, worded under its field, no longer holds. */
@@ -1209,6 +1344,7 @@ export function CaseScreen({
           onOpenCase={onOpenCase}
           {...(onOpenOrder === undefined ? {} : { onOpenOrder })}
           again={gap === null ? null : RECOVERY_WORDS.again(bothTimes(gap.actedAt))}
+          release={{ role, busy: releasing, error: releaseError, onRelease: (decision) => void release(decision) }}
           // One image at a time: showing another puts the first back behind its placeholder.
           onShowImage={(image) => setShownImage({ id: image, clear: false, failed: false })}
           onShowClearly={() => setShownImage((current) => (current === null ? null : { ...current, clear: true }))}

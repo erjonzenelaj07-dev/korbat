@@ -406,6 +406,14 @@ describe("moderation error codes", () => {
       "not_appealable",
       "gap_mismatch",
       "copy_mismatch",
+      "release_not_open",
+      "release_not_reported",
+      "release_not_quarantined",
+      "release_preserved",
+      "release_no_leave",
+      "release_period_unset",
+      "release_period_running",
+      "release_mismatch",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

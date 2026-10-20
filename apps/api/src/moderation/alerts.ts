@@ -57,6 +57,9 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   // 3d Task 1: quarantine_due, which alert_steps() writes daily, and quarantine_lost, which quarantine-record writes.
   "quarantine_due",
   "quarantine_lost",
+  // 3d Task 2: release_undestroyed, which alert_steps() writes daily, and seal_released, which staffAlert writes after a release.
+  "release_undestroyed",
+  "seal_released",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */

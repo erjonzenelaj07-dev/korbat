@@ -71,6 +71,7 @@ interface GapRow {
   closed_by: string | null;
   case_id: string | null;
   order_id: string | null;
+  released: boolean;
 }
 
 /**
@@ -92,10 +93,15 @@ export async function restoreView(deps: Pick<ModerationDeps, "apiDb">): Promise<
                ${isoOf("g.closed_at")} as closed_at, g.disposition, g.closed_by,
                case when g.target_type = 'case' then (select c.id from public.cases c where c.id::text = g.target_id)
                     when g.target_type = 'decision' then (select d.case_id from public.decisions d where d.id::text = g.target_id)
+                    -- 3d Task 2: a lost release of a seal names the seal's ledger row; the console links its case.
+                    when g.target_type = 'seal' then (select d.case_id from public.decision_actions a join public.decisions d on d.id = a.decision_id where a.id::text = g.target_id)
                end as case_id,
                case when g.target_type = 'order_item' then (select i.order_id from public.legal_order_items i where i.id::text = g.target_id)
                     when g.target_type = 'order' then (select o.id from public.legal_orders o where o.id::text = g.target_id)
-               end as order_id
+               end as order_id,
+               -- 3d Task 2: a lost seal for good of a post that a release (or its replay) has marked: [restore.sealAgain].
+               g.class = 'seal_final' and exists (select 1 from public.release_posts r
+                                                   where (g.metadata -> 'target' ->> 'type') = 'post' and r.post_id::text = (g.metadata -> 'target' ->> 'id')) as released
           from public.restore_gaps g
          where g.closed_at is null or g.import_id = ${newest?.import_id ?? null}::uuid
          order by array_position(${classList(GAP_CLASSES)}, g.class), g.acted_at, g.place, g.id
@@ -113,6 +119,7 @@ export async function restoreView(deps: Pick<ModerationDeps, "apiDb">): Promise<
     closedAt: row.closed_at,
     disposition: row.disposition,
     closedByDecisionId: row.closed_by,
+    ...(row.released ? { released: true } : {}),
   }));
   const open = gaps.filter((gap) => gap.closedAt === null);
   // A held notice: an order with Section C whose hold has not ended and runs past now, about which an untold decision

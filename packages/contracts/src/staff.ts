@@ -5,6 +5,8 @@ import {
   ACTION_KINDS,
   DECISION_KEYWORDS,
   MEASURES,
+  RELEASE_BASES,
+  RELEASE_POSTS_MAX,
   REVEAL_REASON_CATEGORIES,
   RULE_IDS,
   STANDING_DAYS,
@@ -15,7 +17,7 @@ import {
   type ActionKind,
   type DecisionActionParams,
 } from "./moderation";
-import { AUDIT_EXPORT_MAX, MemberStateCode, ORDER_ACTION_KINDS, ORDER_GROUNDS, OrderCorrectFacts, OrderCorrectedParams, OrderEffectedParams, OrderEventRecordedParams } from "./orders";
+import { AUDIT_EXPORT_MAX, MemberStateCode, ORDER_ACTION_KINDS, ORDER_GROUNDS, OrderCorrectFacts, OrderCorrectedParams, OrderEffectedParams, OrderEventRecordedParams, OrderReference } from "./orders";
 import { AuthenticationResponseJSON, PasskeyOptionsResponse, RegistrationResponseJSON } from "./passkeys";
 
 // The staff console (3a design, section 10). The console talks only to /api/staff/* on its own origin, and parses every
@@ -355,6 +357,30 @@ export const GapClosedParams = z.strictObject({ disposition: z.literal("not_need
 export type GapClosedParams = z.infer<typeof GapClosedParams>;
 
 /**
+ * 3d Task 2 (sections 7.2 and 10.4): POST /api/staff/seals/:action/release, an admin's release of a seal for good, by the
+ * seal's ledger row. `postIds`: the lowest unreleased posts of the seal, as the page showed them, sorted and without a
+ * repeat, at most RELEASE_POSTS_MAX; `basis`; and the recorded leave by its id with its reference as its record holds it
+ * (`leaveId`, `theirReference`), set exactly when the basis is `leave`. No param carries an authority's answer: an answer
+ * is no ground. `theirReference` is the one string, a reference as 3f binds one; releases_confirmed compares it and
+ * `leaveId` with the leave's record at commit, and every other member with the release's row.
+ */
+export const SealReleasedParams = z
+  .strictObject({
+    postIds: z.array(LowerCaseUuid).min(1).max(RELEASE_POSTS_MAX),
+    basis: z.enum(RELEASE_BASES),
+    leaveId: LowerCaseUuid.nullable(),
+    theirReference: OrderReference.nullable(),
+  })
+  .superRefine((params, ctx) => {
+    if (!sortedUnique(params.postIds)) ctx.addIssue({ code: "custom", path: ["postIds"], message: "the posts are sorted, without repeats" });
+    const leave = params.basis === "leave";
+    if (leave !== (params.leaveId !== null) || leave !== (params.theirReference !== null)) {
+      ctx.addIssue({ code: "custom", path: ["leaveId"], message: "a release on the ground leave names the recorded leave and its reference, and no other ground does" });
+    }
+  });
+export type SealReleasedParams = z.infer<typeof SealReleasedParams>;
+
+/**
  * Every action a staff key confirms, one at a time (3a design, section 7): the type of its target, the schema of the
  * target's id and the schema of its params. The step-up options, requireStaffStepUp, audit-verify and the console read it.
  * The params are hashed exactly as sent, so their schemas are strict: a member they do not know is refused, never dropped.
@@ -378,6 +404,8 @@ export const STAFF_STEP_UP_ACTIONS = {
   gap_closed: { targetType: "restore_gap", targetId: LowerCaseUuid, params: GapClosedParams },
   /** 3f Task 6: POST /api/staff/audit/export: the audit log's tail after one place up to another, by the place it ends at. */
   audit_exported: { targetType: "audit", targetId: AuditThroughId, params: AuditExportedParams },
+  /** 3d Task 2: POST /api/staff/seals/:action/release: a release of a seal for good, by the seal's ledger row. */
+  seal_released: { targetType: "seal", targetId: LowerCaseUuid, params: SealReleasedParams },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -404,6 +432,7 @@ export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [
   stepUpRequest("order_effected"),
   stepUpRequest("gap_closed"),
   stepUpRequest("audit_exported"),
+  stepUpRequest("seal_released"),
 ]);
 export type StaffStepUpOptionsRequest = z.infer<typeof StaffStepUpOptionsRequest>;
 
@@ -447,6 +476,13 @@ export type CaseDecisionRequest = z.infer<typeof CaseDecisionRequest>;
  */
 export const AppealReviewRequest = AppealsReviewedParams.extend({ stepUp: AuthenticationResponseJSON });
 export type AppealReviewRequest = z.infer<typeof AppealReviewRequest>;
+
+/**
+ * 3d Task 2: POST /api/staff/seals/:action/release: the action's params with the step-up assertion added as `stepUp`. The
+ * route answers 201 with the seal's case as it now stands (CaseView), as a decision's does.
+ */
+export const SealReleaseRequest = SealReleasedParams.safeExtend({ stepUp: AuthenticationResponseJSON });
+export type SealReleaseRequest = z.infer<typeof SealReleaseRequest>;
 
 /**
  * Which ceremony a WebAuthn challenge was issued for: its second byte, in either layout below. A challenge answers only

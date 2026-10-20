@@ -281,7 +281,10 @@ describe("Cases, under Settings", () => {
     expect(current).toHaveLength(1);
     expect(current[0]).toContain('href="/settings/cases"');
     expect(textOf(out)).toContain("Cases");
-    expect(readdirSync(path.join(SRC, "app", "settings", "cases")).sort()).toEqual(["[id]", "[id].tsx", "index.tsx"]);
+    // 3d Task 2: a release's notice has its screen in a folder of its own, at /settings/cases/releases/<id>.
+    expect(readdirSync(path.join(SRC, "app", "settings", "cases")).sort()).toEqual(["[id]", "[id].tsx", "index.tsx", "releases"]);
+    expect(readdirSync(path.join(SRC, "app", "settings", "cases", "releases")).sort()).toEqual(["[id].tsx"]);
+    expect(read("app", "settings", "cases", "releases", "[id].tsx")).toContain('<SettingsNav current="cases" />');
     // 3e Task 4: the reply screen sits beside the decision's screen, at /settings/cases/<id>/reply.
     expect(readdirSync(path.join(SRC, "app", "settings", "cases", "[id]")).sort()).toEqual(["reply.tsx"]);
     for (const file of ["index.tsx", "[id].tsx"]) expect(read("app", "settings", "cases", file), file).toContain('<SettingsNav current="cases" />');

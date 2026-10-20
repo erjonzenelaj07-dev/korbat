@@ -526,9 +526,10 @@ export function createMediaRepo(db: Db) {
     },
 
     /**
-     * 3d: for every post sealed for good (a seal_media in force whose decision is not interim), its image rows now, erased
-     * or not, and the counts that each such seal recorded for it in seal_posts, which quarantine-list compares. Through the
-     * caller's transaction.
+     * 3d: for every post sealed for good (a seal_media in force whose decision is not interim) and not released (Task 2:
+     * a released post's rows are erased and then dropped by the disposal, while its seal still lists it), its image rows
+     * now, erased or not, and the counts that each such seal recorded for it in seal_posts, which quarantine-list compares.
+     * Through the caller's transaction.
      */
     async sealedForGoodCounts(q: Pick<Db, "execute"> | Pick<DbTx, "execute">): Promise<{ postId: string; rows: number; images: number[] }[]> {
       const found = (await q.execute(sql`
@@ -536,9 +537,38 @@ export function createMediaRepo(db: Db) {
                (select count(*)::int from post_media m where m.post_id = s.post_id) as rows
           from public.seal_posts s join public.measures_in_force f on f.id = s.action_id
          where f.kind = 'seal_media' and f.decision_kind <> 'interim'
+           and not exists (select 1 from public.release_posts r where r.post_id = s.post_id)
          group by s.post_id
          order by s.post_id`)) as unknown as { post_id: string; rows: number; images: number[] }[];
       return found.map((row) => ({ postId: row.post_id, rows: row.rows, images: row.images }));
+    },
+
+    /**
+     * 3d Task 2 (sections 5 and 8.10): text-verify's first read of the release. The images of the quarantine whose file
+     * still lies there (a row without an end), not marked unknown, whose image row is gone and whose post is not released:
+     * a file korbat holds of an image it no longer has, which no release accounts for. Through the caller's transaction,
+     * which reads as the migrator: quarantine_files is closed to the API's role.
+     */
+    async quarantineOrphans(q: Pick<Db, "execute"> | Pick<DbTx, "execute">): Promise<{ mediaId: string; postId: string | null }[]> {
+      const found = (await q.execute(sql`
+        select f.media_id, min(f.post_id::text)::uuid as post_id from public.quarantine_files f
+         where f.returned_at is null and f.destroyed_at is null and f.lost_at is null and not f.unknown and f.release_id is null
+           and not exists (select 1 from post_media m where m.id = f.media_id)
+           and not exists (select 1 from public.release_posts r where r.post_id = f.post_id)
+         group by f.media_id order by f.media_id`)) as unknown as { media_id: string; post_id: string | null }[];
+      return found.map((row) => ({ mediaId: row.media_id, postId: row.post_id }));
+    },
+
+    /**
+     * 3d Task 2: text-verify's second read. The released posts that still hold an image row without erased_at: the release
+     * erases every row of its posts in its own transaction, and a replay does the same, so such a row means a write around
+     * them. Through the caller's transaction; the API's role reads both tables.
+     */
+    async releasedUnerased(q: Pick<Db, "execute"> | Pick<DbTx, "execute">): Promise<{ postId: string; images: number }[]> {
+      const found = (await q.execute(sql`
+        select r.post_id, count(*)::int as images from public.release_posts r join post_media m on m.post_id = r.post_id
+         where m.erased_at is null group by r.post_id order by r.post_id`)) as unknown as { post_id: string; images: number }[];
+      return found.map((row) => ({ postId: row.post_id, images: row.images }));
     },
 
     async moderationStates(afterId: string | null, limit: number): Promise<{ id: string; postId: string; moderationState: MediaRow["moderationState"]; erasedAt: Date | null }[]> {

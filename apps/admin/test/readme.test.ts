@@ -192,8 +192,9 @@ describe("the README's account sanctions say what the constants say (3e design, 
     expect(all).not.toContain("Until sub-project 3e's formula version 2");
     expect(all).not.toContain("EXPLORE_V1");
     expect(all).not.toContain("still names sub-project 3e");
-    // The hard gate names 3f's order path and 3d's handling of sealed images, as it did since 3e's design.
-    expect(all).toContain("until sub-project 3f's order path and sub-project 3d's handling of sealed images have both shipped");
+    // The hard gate names 3f's order path and 3d's handling of sealed images, as it did since 3e's design; since 3d Task 2
+    // in W.11's words, its quarantine and release.
+    expect(all).toContain("until sub-project 3f's order path and sub-project 3d's quarantine and release have shipped");
   });
 });
 
@@ -396,7 +397,8 @@ describe("the README's authorities' orders say what the constants say (3f design
     expect(all).not.toContain("Authorities' orders before 3f.");
     expect(all).not.toContain("in their own records until sub-project 3f");
     expect(all).not.toContain("With sub-project 3f the authorities' contact address is published as well");
-    expect(all).toContain("until sub-project 3f's order path and sub-project 3d's handling of sealed images have both shipped and the list below is done");
+    // 3d Task 2 (W.11): the gate's first line reads 3d's quarantine and release.
+    expect(all).toContain("until sub-project 3f's order path and sub-project 3d's quarantine and release have shipped and the list below is done");
   });
 });
 
@@ -433,5 +435,45 @@ describe("the README's Quarantine and Backups (3d design, W.11)", () => {
     const text = sectionLines("## Backups").join(" ");
     expect(text).toContain(`is deleted ${RETENTION.backupDays} days after it was taken`);
     expect(text).toContain("`media-quarantine` is never backed up");
+  });
+});
+
+/**
+ * 3d Task 2 (design, sections 7.2, 7.3 and W.11): the release's runbook, "A release" under Quarantine, and the steps of
+ * Restoring that replay releases. An assessment releases nothing; the leave is recorded with release-leave, withdrawn
+ * at once when it was a mistake; release-show prints the record; the backups' day comes from RETENTION.backupDays. After
+ * a restore, release-replay, the inventory, the lost leave and the lost withdrawal, and the site that opens only when no
+ * gap is left. No line of the README says the software cannot release, and the R2 bullet no longer destroys by hand.
+ */
+describe("the README's release (3d design, W.11)", () => {
+  test("A release stands under Quarantine: an assessment releases nothing, the leave is a fact of its own, a mistaken one is withdrawn, release-show prints the record", () => {
+    const lines = readmeLines();
+    const at = lines.indexOf("### A release");
+    expect(at).toBeGreaterThan(lines.indexOf("## Quarantine"));
+    const text = sectionLines("## Quarantine").slice(sectionLines("## Quarantine").indexOf("### A release")).join(" ");
+    expect(text).toContain("An authority's assessment is not leave to destroy.");
+    expect(text).toContain("staff.js release-leave <seal> --by <authority|court> --reference <text> --day <yyyy-mm-dd> --operator <name>");
+    expect(text).toContain("`release-leave --end-untold <leave>`");
+    expect(text).toContain("`release-leave --withdraw <leave> --operator <name>`");
+    expect(text).toContain("a leave that a release already rests on cannot be withdrawn");
+    expect(text).toContain("staff.js release-show <release>");
+    expect(text).toContain("korbat promises nobody a destruction");
+  });
+
+  test("Restoring replays the releases: release-replay, the inventory first, the lost leave and withdrawal, and the site opens only with no gap left", () => {
+    const text = sectionLines("## Restoring").join(" ");
+    expect(text).toContain("**Restoring the releases** (sub-project 3d)");
+    expect(text).toContain("cat <the keeper's files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-replay");
+    expect(text).toContain("beginning with step 6 (the inventory)");
+    expect(text).toContain("`release-leave <seal> ... --gap <gap>`");
+    expect(text).toContain("`release-leave --withdraw <leave> --operator <name> --gap <gap>`");
+    expect(text).toContain('the class "Releases and held uploads to replay" included');
+  });
+
+  test("the lines 3d's release made false are gone", () => {
+    const all = readmeLines().join(" ");
+    expect(all).not.toContain("but nothing releases or erases them before 3d");
+    expect(all).not.toContain("its software has no function yet to hand them over or to erase them");
+    expect(all).not.toContain("before sub-project 3d, the operator copies out or destroys the files");
   });
 });

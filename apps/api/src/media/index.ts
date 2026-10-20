@@ -141,6 +141,19 @@ export async function quarantineNames(q: Db | DbTx): Promise<{ lines: Quarantine
   return { lines, mismatched };
 }
 
+/**
+ * 3d Task 2 (design, sections 5 and 8.10): text-verify's two reads of the release, plain functions that take the caller's
+ * transaction, as quarantineNames does, since no file outside this module names the image table. quarantineOrphans
+ * reads quarantine_files, which only the migrator reads: a file in the quarantine without an image row and without a
+ * release. releasedUnerased reads on any role: a released post that still has an image row without erased_at.
+ */
+export function quarantineOrphans(q: Db | DbTx): Promise<{ mediaId: string; postId: string | null }[]> {
+  return createMediaRepo(q as Db).quarantineOrphans(q);
+}
+export function releasedUnerased(q: Db | DbTx): Promise<{ postId: string; images: number }[]> {
+  return createMediaRepo(q as Db).releasedUnerased(q);
+}
+
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
   /**

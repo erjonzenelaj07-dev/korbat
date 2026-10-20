@@ -179,6 +179,10 @@ export const ALERT_KIND_LIST = [
   // due (alert_steps(), daily) and files the quarantine's record says are lost (staff.js quarantine-record).
   "quarantine_due",
   "quarantine_lost",
+  // Task 2: a released file still recorded in the quarantine (alert_steps(), daily), and an admin's release of sealed
+  // images (after the release's commit, to every staff account, the admin who released included).
+  "release_undestroyed",
+  "seal_released",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -234,6 +238,8 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   moderation_csam_lifted: ownKind(3, "all", ["at"]),
   quarantine_due: sentenceKind(3, "all", ["count", "oldestAt"]),
   quarantine_lost: sentenceKind(3, "all", ["count", "at"]),
+  release_undestroyed: sentenceKind(3, "all", ["count", "oldestAt"]),
+  seal_released: sentenceKind(3, "all", ["at", "posts", "uploads"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -390,6 +396,18 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     title: "Sealed files are lost",
     sentence: one("{count} files that were to be kept apart are recorded as lost at {at}: they are in neither the image store nor the quarantine."),
     todo: "Whoever has the server reads the README's section Quarantine, on a file in neither place. An image whose seal was lifted cannot be shown again, and its author is told; a file kept for an authority cannot be handed over, and the operator tells the authority.",
+  },
+  // Task 2. release_undestroyed is mailed alone, so its line names the README's steps where W.7 says "the same steps";
+  // seal_released's line names the case alone until Held uploads exists (Task 7 adds "or at Held uploads").
+  release_undestroyed: {
+    title: "Released files still exist",
+    sentence: one("{count} released files are still recorded in the quarantine, the oldest release of {oldestAt}."),
+    todo: "Whoever has the server runs the README's steps under Quarantine: the list's destroy lines name them. This repeats daily until each is recorded as destroyed.",
+  },
+  seal_released: {
+    title: "An admin released sealed images",
+    sentence: one("An admin released sealed images at {at}: {posts} posts, {uploads} held uploads. The files are to be destroyed."),
+    todo: "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
   },
 };
 
@@ -1275,15 +1293,23 @@ export type ReportsOwed = z.infer<typeof ReportsOwed>;
  * reversals, decisions without a measure (for reference), and the records the import could only note. The one list of
  * the CHECK on restore_gaps.class, of the import, of the console's After a restore screen and of the home screen's count.
  */
-export const GAP_CLASSES = ["order_effect", "seal_final", "seal_interim", "standing", "restriction", "reversal", "no_measure", "record"] as const;
+export const GAP_CLASSES = ["order_effect", "seal_final", "seal_interim", "release", "standing", "restriction", "reversal", "no_measure", "record"] as const;
 export type GapClass = (typeof GAP_CLASSES)[number];
 /** How a gap was closed: by a decision that took the measure again, by an admin as not needed, or as a record written again. */
 export const GAP_DISPOSITIONS = ["reapplied", "not_needed", "imported"] as const;
 export type GapDisposition = (typeof GAP_DISPOSITIONS)[number];
-/** The classes 1 to 5: lost measures. While one of them is open, retention and the image sweep stay off (7.17 step 8). */
-export const GAP_MEASURE_CLASSES = GAP_CLASSES.slice(0, 5) as readonly GapClass[];
-/** The classes 1 to 3: while one of them is open, the app's site stays closed (RestoreView.mayOpen). */
-export const GAP_SITE_CLASSES = GAP_CLASSES.slice(0, 3) as readonly GapClass[];
+/**
+ * The lost measures: while one of them is open, retention and the image sweep stay off (7.17 step 8). 3d's `release` (a
+ * lost release, a lost leave or a lost withdrawal of one, which the operator replays or records again) is no measure, so
+ * the list names its five classes rather than taking a slice of GAP_CLASSES, in which `release` stands fourth.
+ */
+export const GAP_MEASURE_CLASSES: readonly GapClass[] = ["order_effect", "seal_final", "seal_interim", "standing", "restriction"];
+/**
+ * The classes 1 to 4: while one of them is open, the app's site stays closed (RestoreView.mayOpen). 3d design, sections
+ * 7.3 and 8.7: a `release` gap keeps it closed too, since until the replay the restored database counts as sealed and
+ * kept what the record says was released. They are the first four of GAP_CLASSES, so the import's "gaps 1 to n" holds.
+ */
+export const GAP_SITE_CLASSES: readonly GapClass[] = GAP_CLASSES.slice(0, 4);
 
 /** The most rows one download of the audit log's tail holds (7.16): a longer log is taken in several downloads. */
 export const AUDIT_EXPORT_MAX = 50_000;

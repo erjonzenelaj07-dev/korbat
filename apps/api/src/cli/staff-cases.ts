@@ -12,7 +12,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { ALERT_KINDS, MEASURE_KINDS, snapshotDigest, textDigest, type SnapshotDigestInput } from "@korbat/contracts";
 import { moderationLimits, profiles, staffPersonalAccounts, users, type Db, type DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
-import { imageModerationStates } from "../media";
+import { imageModerationStates, releasedUnerased } from "../media";
 import { accessDraftForAccount, accessDraftForContacts, type AccountAccessDraft, type ContactsAccessDraft } from "../moderation";
 import { appendAuditRow } from "../staff";
 
@@ -502,6 +502,14 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
            and not exists (select 1 from audit_log l where l.action = 'gap_closed' and l.target_type = 'restore_gap' and l.target_id = g.id::text and l.step_up is not null)`,
   )) {
     problem("gap", row.id, "it is closed as not needed, and no confirmed audit row gap_closed names it");
+  }
+  // ---- 6. 3d Task 2 (sections 6.2 and 8.10): a released post holds no image row that is not erased. The release and its
+  // replay erase every row of their posts in their own transactions, so such a row is a write made around them. The
+  // media module's index reads it, since no file outside it names the image table. (A quarantined file without an image
+  // row or a release is reported by quarantine-list, which reads the quarantine as the migrator: this command reads on
+  // the API's role, which holds no right on quarantine_files.)
+  for (const row of await releasedUnerased(q as DbTx)) {
+    problem("post", row.postId, `it is released and still holds ${row.images} image ${row.images === 1 ? "row" : "rows"} that ${row.images === 1 ? "is" : "are"} not erased`);
   }
 
   return { ok: problemCount === 0, auditRows, decisions, posts, images, seals: sealsInForce.size, problems, problemCount };

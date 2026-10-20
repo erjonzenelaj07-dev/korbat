@@ -690,7 +690,7 @@ export interface ConfirmedAuditRow {
    * 3f adds the two actions of an order's record that a key confirms and its effect, and (Task 6) a gap closed as not
    * needed and the audit log's download (append_confirmed_audit's list, 0027_orders).
    */
-  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected" | "order_effected" | "gap_closed" | "audit_exported";
+  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected" | "order_effected" | "gap_closed" | "audit_exported" | "seal_released";
   targetType: string;
   targetId: string;
   metadata: Record<string, unknown>;

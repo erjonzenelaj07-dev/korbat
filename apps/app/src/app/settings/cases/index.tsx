@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import type { AuthorCaseRow, ReportItem, ReportRow } from "@korbat/contracts";
+import type { AuthorCaseRow, AuthorNoticesPage, ReportItem, ReportRow } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
-import { DecisionsList, ReportsList, StandingBlock } from "@/components/moderation/CasesLists";
+import { DecisionsList, NoticesList, ReportsList, StandingBlock } from "@/components/moderation/CasesLists";
 import { SettingsNav } from "@/components/SettingsNav";
 import { ErrorText, TextButton } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
@@ -40,6 +40,8 @@ export default function Cases() {
   const [mailStopped, setMailStopped] = useState(false);
   // 3e: how many of the account's strikes count now, as every page of "About you" says.
   const [activeStrikes, setActiveStrikes] = useState(0);
+  // 3d Task 2: the notices that are not decisions (the releases of the account's sealed images), their first page.
+  const [notices, setNotices] = useState<AuthorNoticesPage["notices"]>([]);
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
 
@@ -49,6 +51,8 @@ export default function Cases() {
     try {
       const page = await moderation.cases(cursor);
       setActiveStrikes(page.activeStrikes);
+      // 3d Task 2: the notices, read with the decisions' first page; a failure to read them leaves the list out.
+      if (!cursor) setNotices(await moderation.notices().then((found) => found.notices, () => []));
       setDecisions((current) => ({ rows: cursor ? [...current.rows, ...page.decisions] : page.decisions, next: page.nextCursor, loaded: true, busy: false, error: null }));
     } catch (err) {
       setDecisions((current) => ({ ...current, busy: false, error: errorMessage(err) }));
@@ -114,6 +118,7 @@ export default function Cases() {
           </View>
         </View>
         {tab === "about" && decisions.loaded ? <StandingBlock activeStrikes={activeStrikes} standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
+        {tab === "about" && decisions.loaded ? <NoticesList notices={notices} /> : null}
         {tab === "about" && decisions.loaded ? <DecisionsList decisions={decisions.rows} /> : null}
         {tab === "reports" && reports.loaded ? <ReportsList page={{ reports: reports.rows, reportMailStopped: mailStopped }} onResume={() => void resume()} onReexamine={reexamine} busy={resuming} error={resumeError} /> : null}
         <View className="px-4 pb-10">

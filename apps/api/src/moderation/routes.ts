@@ -8,6 +8,7 @@ import { fileAppeal } from "./appeals";
 import { authorCases, authorDecisionView } from "./author";
 import type { ModerationDeps } from "./context";
 import { noticeContact, noticeStatus, reexamineNotice, reexamineOwnItem, submitNotice, type NoticeSender } from "./intake";
+import { authorNotices, authorRelease } from "./release";
 import { reporterList, resumeReportMail } from "./reports";
 import { fileReply } from "./standing";
 
@@ -15,6 +16,10 @@ import { fileReply } from "./standing";
 const DecisionParam = z.object({ id: z.uuid().transform((id) => id.toLowerCase()) });
 /** An item's id, the same way. */
 const ItemParam = z.object({ item: z.uuid().transform((id) => id.toLowerCase()) });
+/** 3d Task 2: a release's id, the same way. */
+const ReleaseParam = z.object({ release: z.uuid().transform((id) => id.toLowerCase()) });
+/** 3d Task 2: a page of the notices after the cursor the API handed out. */
+const NoticesQuery = z.strictObject({ cursor: z.string().min(1).max(200).optional() });
 
 /**
  * The guard the signed-in routes stand behind when the module is built without the server's: it refuses every request.
@@ -33,7 +38,7 @@ export const noSession: MiddlewareHandler<AppEnv> = async (c) => c.json(errorBod
  * browser, it carries the token as every cookie request does. The status page's tokens travel in the body of a POST, so
  * no address, and no server log, ever holds one.
  *
- * The seven routes under `/api/moderation` are the signed-in account's own (sections 7.6 and 7.7, and 3e's 7.6 step 9). `guard` is the auth
+ * The nine routes under `/api/moderation` are the signed-in account's own (sections 7.6 and 7.7, and 3e's 7.6 step 9). `guard` is the auth
  * module's requireSession: an onboarded account, with CSRF and Origin already checked for cookie sessions. Each answers
  * only for the session's account: the decisions about it and its appeal of one, and the reports it sent and its request
  * to have one of their items examined again.
@@ -77,6 +82,11 @@ export function moderationRoutes(deps: ModerationDeps, guard: MiddlewareHandler<
   r.post("/moderation/items/:item/reexamine", guard, validate("param", ItemParam), validate("json", ReexamineRequest), async (c) =>
     c.json(await reexamineOwnItem(deps, me(c), c.req.valid("param").item, c.req.valid("json")), 201),
   );
+  // 3d Task 2 (sections 9.6 and 10.2): the notices about the account's own posts that are not decisions, newest first:
+  // the releases of its sealed images, never one whose notice is held. And one of them, for its author alone, not_found
+  // for anyone else and while its notice is held.
+  r.get("/moderation/notices", guard, validate("query", NoticesQuery), async (c) => c.json(await authorNotices(deps, me(c), c.req.valid("query").cursor)));
+  r.get("/moderation/releases/:release", guard, validate("param", ReleaseParam), async (c) => c.json(await authorRelease(deps, me(c), c.req.valid("param").release)));
   // Lifts a stop of korbat's report mails to the account's address; the same answer whether or not there was one.
   r.post("/moderation/report-mail/resume", guard, async (c) => {
     await resumeReportMail(deps, me(c));

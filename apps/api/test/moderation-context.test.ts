@@ -3,7 +3,7 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import { ModerationError, isModerationErrorCode, moderationErrorMessage } from "../src/moderation/context";
 
 describe("the moderation module's refusals", () => {
-  test("each of the forty-three codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6)", () => {
+  test("each of the fifty-one codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6; 3d design, section 10.7)", () => {
     const statuses = {
       notice_link_invalid: 422,
       notice_link_offsite: 422,
@@ -52,6 +52,15 @@ describe("the moderation module's refusals", () => {
       // Task 6: recovery.
       gap_mismatch: 409,
       copy_mismatch: 409,
+      // 3d Task 2 (section 10.7): the release, in the order seal_release checks, and its check at commit.
+      release_not_open: 409,
+      release_not_reported: 422,
+      release_not_quarantined: 422,
+      release_preserved: 422,
+      release_no_leave: 422,
+      release_period_unset: 422,
+      release_period_running: 422,
+      release_mismatch: 409,
     } as const;
     // The table above is the whole of the contracts' list, so a code added there fails here until its status is pinned.
     expect(Object.keys(statuses).sort()).toEqual([...ModerationErrorCode.options].sort());

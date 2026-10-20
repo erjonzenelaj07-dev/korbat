@@ -48,6 +48,8 @@ function lineOf(gap: RestoreGap, n: number): string {
       return c.no_measure.line(at);
     case "record":
       return c.record.line(at, W.recordWhat(gap.action));
+    case "release":
+      return c.release.line(gap.action, at);
   }
 }
 
@@ -80,7 +82,11 @@ function ClassBlock({ cls, gaps, props }: { cls: GapClass; gaps: RestoreGap[]; p
           return (
             <li key={gap.id}>
               <p>{lineOf(gap, n)}</p>
-              {cls === "record" ? null : cls === "order_effect" ? (
+              {/* 3d Task 2: [restore.sealAgain] beside a lost seal for good whose post is released. */}
+              {gap.released === true ? <p className="hint">{W.sealAgain}</p> : null}
+              {/* 3d Task 2 (8.7): no key closes a gap of the class release: the line says who does, and nothing else is offered. */}
+              {cls === "release" ? <p className="hint">{W.classes.release.control(gap.action)}</p> : null}
+              {cls === "record" || cls === "release" ? null : cls === "order_effect" ? (
                 orderId !== null ? (
                   <p>
                     <OrderLink id={orderId} onOpen={props.onOpenOrder}>
@@ -99,7 +105,7 @@ function ClassBlock({ cls, gaps, props }: { cls: GapClass; gaps: RestoreGap[]; p
               ) : (
                 <p className="hint">{W.noTarget}</p>
               )}
-              {props.role === "admin" ? (
+              {props.role === "admin" && cls !== "release" ? (
                 <div className="actions">
                   <button type="button" disabled={props.busy !== null} aria-busy={props.busy === gap.id} onClick={() => props.onNotNeeded(gap)}>
                     {W.notNeeded}

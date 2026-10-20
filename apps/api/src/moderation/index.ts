@@ -52,6 +52,7 @@ import { closeGapNotNeeded, restoreView } from "./gaps";
 import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
 import { addItems, closeContact, contactPage, correctOrderRecord, giveEffect, openOrder, orderView, ordersPage, recordEvent, type OrderOutcome } from "./orders";
+import { releaseSeal, type ReleaseOutcome } from "./release";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { standingFor, standingLists, takeDownDue, type TakeDown } from "./standing";
@@ -66,6 +67,7 @@ export type { ModerationDeps, ModerationErrorKind } from "./context";
 export type { DecideContext, DecideOutcome } from "./decide";
 export type { ModerationExport } from "./export";
 export type { RevealOutcome } from "./reveal";
+export type { ReleaseOutcome } from "./release";
 // 3f (design, sections 5 and 8.11): plain functions for the command line, each taking the caller's connection or
 // transaction and no dependency of the module, since a command does not hold the API's whole configuration: how a link
 // is read, the items an order's links resolve to, and the rows of opening an order, which the console's route, order-open
@@ -159,6 +161,13 @@ export interface ModerationForStaff {
    * open, and a failure is logged.
    */
   copyTaken(facts: { at: string; rows: number }): Promise<void>;
+  /**
+   * 3d Task 2 (sections 6.2 and 7.2): an admin's release of a seal for good a step-up confirmed, through seal_release and
+   * the confirmed audit row seal_released, which releases_confirmed holds it to at commit; the seal's case and the
+   * release's id once it committed. "ended" and "late" as for a decision. After the commit every staff account is
+   * alerted and the author's notice goes out unless it was born held.
+   */
+  release(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<ReleaseOutcome>;
 }
 
 /**
@@ -253,6 +262,7 @@ export function createModeration(options: CreateModerationOptions) {
     giveOrderEffect: (session, confirmed, ctx) => giveEffect(deps, session, confirmed, ctx),
     restore: () => restoreView(deps),
     closeGap: (session, confirmed, ctx) => closeGapNotNeeded(deps, session, confirmed, ctx),
+    release: (session, confirmed, ctx) => releaseSeal(deps, session, confirmed, ctx),
     copyTaken: async (facts) => {
       // Started and not waited for, as what follows a decision is: the download's answer never waits for a mail relay.
       deps.background.start(async () => {

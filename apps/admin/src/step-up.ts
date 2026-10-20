@@ -11,6 +11,7 @@ import {
   type OrderCorrectFacts,
   type OrderEffectedParams,
   type OrderEventRecordedParams,
+  type SealReleasedParams,
 } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
 import { messageFor } from "./messages";
@@ -165,6 +166,21 @@ export function reviewWithKey(deps: { api: StaffApi; credentials: CredentialsLik
 export function exportAuditWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, params: AuditExportedParams) {
   const action: StaffStepUpOptionsRequest = { action: "audit_exported", target: { type: "audit", id: String(params.through) }, params };
   return confirmWithKey(deps, action, (stepUp) => deps.api.exportAudit({ ...params, stepUp }, { activity: true }));
+}
+
+/**
+ * 3d Task 2 (sections 7.2, 8.5 and 10.4): the action of a release of a seal for good: the seal's ledger row as the target,
+ * and as params the posts, the ground, and the recorded leave with its reference, as the page showed them. checkStepUpOptions
+ * compares the options the server answers with exactly this before the key is asked.
+ */
+export function releaseAction(actionId: string, params: SealReleasedParams): StaffStepUpOptionsRequest {
+  return { action: "seal_released", target: { type: "seal", id: actionId }, params };
+}
+
+/** "Release and destroy": the release confirmed by the key. Answers the seal's case as it now stands, which the page shows. */
+export function releaseWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, actionId: string, params: SealReleasedParams) {
+  const action = releaseAction(actionId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.releaseSeal(caseId, actionId, { ...params, stepUp }, { activity: true }));
 }
 
 /** 3f Task 6 (8.8): an admin's "Not needed" on a gap, confirmed by the key. Answers After a restore as it now stands. */

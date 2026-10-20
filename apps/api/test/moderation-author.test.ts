@@ -100,14 +100,19 @@ describe("the module's signed-in routes", () => {
     ["POST", "/api/moderation/items/00000000-0000-4000-8000-000000000001/reexamine"],
     // 3e Task 4: the reply to a suspension or a termination.
     ["POST", "/api/moderation/decisions/00000000-0000-4000-8000-000000000001/reply"],
+    // 3d Task 2: the notices that are not decisions, and a release's notice.
+    ["GET", "/api/moderation/notices"],
+    ["GET", "/api/moderation/releases/00000000-0000-4000-8000-000000000001"],
   ];
 
-  test("are the seven of the design (3e adds the reply), beside the four public ones", () => {
+  test("are the nine of the design (3e adds the reply, 3d the notices and a release's), beside the four public ones", () => {
     const routes = createModeration(options()).routes.routes.filter((route) => route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
     expect([...new Set(routes)].sort()).toEqual(
       [
         "GET /moderation/cases",
         "GET /moderation/decisions/:id",
+        "GET /moderation/notices",
+        "GET /moderation/releases/:release",
         "GET /moderation/reports",
         "POST /moderation/decisions/:id/appeal",
         "POST /moderation/decisions/:id/reply",

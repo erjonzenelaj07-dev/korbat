@@ -5,7 +5,7 @@ import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } fr
 import { MemoryMailer } from "../../src/mail/memory";
 import { TICK_MAILED_KINDS } from "../../src/moderation/alerts";
 import { ACCOUNT_DELETED_HELD, DECISION_MAIL_SUBJECTS, renderMail, renderNoticeUpdate, renderTemplate } from "../../src/mail/templates";
-import { IMAGE_LOST_NOTICE } from "@korbat/rules";
+import { IMAGE_LOST_NOTICE, RELEASE_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
 
 /**
  * The mails of deciding and of the dispatch (3c design, section 7.15): the author's statement, the staff alerts for a
@@ -42,11 +42,13 @@ describe("the closed union of templates", () => {
       "report_owed", "handover_undestroyed",
       // 3d Task 1.
       "quarantine_due", "quarantine_lost", "image_lost",
+      // 3d Task 2.
+      "release_undestroyed", "seal_released", "release_notice",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(62);
+    expect(new Set(names).size).toBe(65);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(62);
+    expect(Object.keys(all)).toHaveLength(65);
   });
 });
 
@@ -583,5 +585,37 @@ describe("3d Task 1: the quarantine's two staff mails and the mail of a lost ima
     expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
     expect(r.text).not.toMatch(/webp|files[/]|wait/);
     expect(() => renderTemplate("image_lost", {})).toThrow(/createdAt/);
+  });
+});
+
+describe("3d Task 2: the release's two staff mails and the author's notice (W.6, W.7, W.8)", () => {
+  const NOW = "2026-10-18T12:00:00.000Z";
+
+  test("seal_released and release_undestroyed are their pushes' sentences with the line of what to do, counts and times only", () => {
+    const released = renderTemplate("seal_released", { at: "2026-10-18T11:40:00.000Z", posts: "2", uploads: "0", now: NOW });
+    expect(released.subject).toBe("korbat: An admin released sealed images");
+    expect(paragraphs(released.text).slice(0, 2)).toEqual([
+      "An admin released sealed images at 11:40 UTC: 2 posts, 0 held uploads. The files are to be destroyed.",
+      "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
+    ]);
+    const undestroyed = renderTemplate("release_undestroyed", { count: "4", oldestAt: "2026-10-16T08:05:00.000Z", now: NOW });
+    expect(undestroyed.subject).toBe("korbat: Released files still exist");
+    expect(paragraphs(undestroyed.text)[0]).toBe("4 released files are still recorded in the quarantine, the oldest release of 2026-10-16 08:05 UTC.");
+    for (const r of [released, undestroyed]) linkless(r);
+    expect(TICK_MAILED_KINDS).toEqual(expect.arrayContaining(["seal_released", "release_undestroyed"]));
+  });
+
+  test("release_notice: RELEASE_NOTICE's paragraphs by the same function as the app's screen, where to read it and the user mail's last sentence; no link, no authority, no reference, no assessment", () => {
+    const data = { basis: "leave", releasedAt: "2026-10-18T10:05:00.000Z", backupsClearAt: "2026-11-17T10:05:00.000Z", upload: "no", postCount: "1", images: "2", createdAt: "2026-09-01T08:30:00.000Z" };
+    const r = renderTemplate("release_notice", data);
+    expect(r.subject).toBe("korbat released sealed images of yours");
+    const expected = releaseNoticeParagraphs({ basis: "leave", releasedAt: data.releasedAt, backupsClearAt: data.backupsClearAt, upload: false, posts: [{ createdAt: data.createdAt }], postCount: 1, images: 2 });
+    expect(paragraphs(r.text)).toEqual([...expected, "Read it in korbat under Settings, Cases.", LAST_USER]);
+    expect(paragraphs(r.text)).toContain(RELEASE_NOTICE.what);
+    expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]|no longer holds|destroyed|assessed|illegal|reference/i);
+    expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+    // Several posts take the other lead; a basis the template does not have is refused.
+    expect(paragraphs(renderTemplate("release_notice", { ...data, postCount: "3", images: "5" }).text)[0]).toBe("korbat has released the sealed images of 3 of your posts (5 in all): it will not show them again or give them back.");
+    expect(() => renderTemplate("release_notice", { ...data, basis: "answer" })).toThrow(/basis/);
   });
 });

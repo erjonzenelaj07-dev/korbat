@@ -531,6 +531,16 @@ export const ModerationErrorCode = z.enum([
   // place that does not hold the named hash, or that the caller's own newest confirmed download did not release.
   "gap_mismatch",
   "copy_mismatch",
+  // 3d Task 2 (design, section 10.7): the release of a seal, refused by seal_release in the order of its checks, or at
+  // commit by releases_confirmed when what the key signed is not what was released.
+  "release_not_open",
+  "release_not_reported",
+  "release_not_quarantined",
+  "release_preserved",
+  "release_no_leave",
+  "release_period_unset",
+  "release_period_running",
+  "release_mismatch",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -1515,6 +1525,84 @@ export const SealCustody = z.object({
 });
 export type SealCustody = z.infer<typeof SealCustody>;
 
+// ---------------------------------------------------------------- the release (3d design, sections 6.2, 7.2 and 10)
+
+/**
+ * 3d Task 2 (sections 6.2 and 10.1): the mirror of release_rules(), which a database test holds member for column.
+ * `silenceDays` is counsel's and ships null, so nothing is released by time: the ground `period` answers
+ * release_period_unset. `periodNoticeDays` is how long before such a release its author would be told the day;
+ * `backupDays` is RETENTION.backupDays, the age after which a backup that is deleted on time is gone. No member lets an
+ * authority's answer release: the ground is a recorded leave or instruction to destroy.
+ */
+export const RELEASE_RULES = {
+  silenceDays: null,
+  periodNoticeDays: 30,
+  backupDays: 30,
+} as const satisfies { silenceDays: number | null; periodNoticeDays: number; backupDays: number };
+/** The mirror of release_rules().posts_max: the most posts one release's params name; a seal over more is released in parts, lowest ids first. */
+export const RELEASE_POSTS_MAX = 1000;
+/** The grounds of a release: a recorded leave or instruction to destroy, or the period's end (unreachable while silenceDays is null). */
+export const RELEASE_BASES = ["leave", "period"] as const;
+export type ReleaseBasis = (typeof RELEASE_BASES)[number];
+/** Who gave a leave or an instruction to destroy (release_leaves.leave_from; `from` is reserved in SQL). */
+export const RELEASE_LEAVE_FROM = ["authority", "court"] as const;
+export type ReleaseLeaveFrom = (typeof RELEASE_LEAVE_FROM)[number];
+/**
+ * releases.author_notice: 3c's delivery states (the enum delivery_state, which gains no value) and `held`, while one of
+ * release_tellable's three holds stands and the author may not be told yet. The column is text under this CHECK.
+ */
+export const RELEASE_NOTICE_STATES = ["pending", "sent", "folded", "suppressed", "no_address", "none", "failed", "held"] as const;
+export type ReleaseNoticeState = (typeof RELEASE_NOTICE_STATES)[number];
+
+/** A leave or an instruction to destroy that stands, as release_facts answers its six leave_ columns; a withdrawn leave is in no answer. */
+export const ReleaseLeave = z.object({
+  id: z.uuid(),
+  from: z.enum(RELEASE_LEAVE_FROM),
+  /** The reference of the letter or order that holds it: an outsider's text, which the console draws framed. */
+  reference: z.string().min(1).max(400),
+  receivedOn: UtcDay,
+  untold: z.boolean(),
+  /** With `untold`, the end of the hold on telling the person; null with `untold` true is an open end. */
+  untoldUntil: z.iso.datetime().nullable(),
+});
+export type ReleaseLeave = z.infer<typeof ReleaseLeave>;
+
+/**
+ * 3d Task 2 (sections 7.2, 8.5 and 10.3): the release block of a seal for good in force, on its decision. The facts of
+ * release_facts(action) (`reported`, `theirReference`, `answer` and `answeredAt`, the authority's assessment shown as
+ * what it is, `handedOverAt`, `quarantined` and `preserved` over every unreleased post of the seal, `leave`, and
+ * `tellHeld`, whether the author's notice of a release taken now would be held); `postIds`, the lowest RELEASE_POSTS_MAX
+ * posts of the seal not yet released, which the params the key signs name, and `remaining`, how many more; `silenceDays`;
+ * and, once a part was released, the newest release's `releasedAt`, `basis`, `backupsClearAt` and `noticeHeld` with the
+ * seal's released posts and their image rows (`releasedPosts`, `releasedImages`, counted from seal_posts.images, which
+ * the disposal never changes), which [release.done] prints. No member is a file's name or digest.
+ */
+export const SealRelease = z.object({
+  reported: z.boolean(),
+  theirReference: z.string().max(400).nullable(),
+  answer: z.enum(["not_illegal", "illegal", "no_assessment", "other"]).nullable(),
+  answeredAt: z.iso.datetime().nullable(),
+  handedOverAt: z.iso.datetime().nullable(),
+  quarantined: z.boolean(),
+  preserved: z.boolean(),
+  leave: ReleaseLeave.nullable(),
+  tellHeld: z.boolean(),
+  postIds: z.array(z.uuid()).max(RELEASE_POSTS_MAX),
+  remaining: Count,
+  silenceDays: z.number().int().positive().nullable(),
+  releasedAt: z.iso.datetime().nullable(),
+  basis: z.enum(RELEASE_BASES).nullable(),
+  backupsClearAt: z.iso.datetime().nullable(),
+  noticeHeld: z.boolean().nullable(),
+  releasedPosts: Count,
+  releasedImages: Count,
+});
+export type SealRelease = z.infer<typeof SealRelease>;
+
+/** 3d Task 2 (sections 8.7 and 10.3): an appeal of a seal whose posts were released, with when and on which ground ([appeals.released]). */
+export const AppealReleased = z.object({ at: z.iso.datetime(), basis: z.enum(RELEASE_BASES) });
+export type AppealReleased = z.infer<typeof AppealReleased>;
+
 /**
  * A decision as the case page shows it: the statement's data, who decided (a staff handle), the stored facts that it
  * was taken on a suspicion and with the images out of sight, and its measures. A text is null when the decision has
@@ -1559,6 +1647,11 @@ export const CaseDecision = z.object({
    * list by image ([case.custody.in], [case.custody.return], [case.custody.lost]). Absent on every other decision.
    */
   custody: SealCustody.optional(),
+  /**
+   * 3d Task 2 (sections 7.2, 8.5 and 10.3): on such a decision while its seal is in force, the release block's facts
+   * (SealRelease). Absent on every other decision.
+   */
+  release: SealRelease.optional(),
 });
 export type CaseDecision = z.infer<typeof CaseDecision>;
 
@@ -1589,6 +1682,8 @@ export const CaseAppeal = z.object({
   reviewer: ReviewerState.nullable(),
   needsAdmin: z.boolean(),
   mayReview: z.boolean(),
+  /** 3d Task 2: the appealed seal's posts were released; the appeal stays open for an admin ([appeals.released]). */
+  released: AppealReleased.nullable().optional(),
 });
 export type CaseAppeal = z.infer<typeof CaseAppeal>;
 
@@ -1619,6 +1714,8 @@ export const AppealRow = z.object({
    * that stands; such appeals come first in the list, oldest first: the person who can do nothing while waiting is read first.
    */
   standingFirst: z.boolean(),
+  /** 3d Task 2 (sections 7.2 and 8.7): the appealed seal's posts were released, when and on which ground; null otherwise. */
+  released: AppealReleased.nullable().optional(),
 });
 export type AppealRow = z.infer<typeof AppealRow>;
 
@@ -1990,6 +2087,42 @@ export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 export const AuthorCasesPage = z.object({ decisions: z.array(AuthorCaseRow).max(AUTHOR_CASES_PAGE_SIZE), nextCursor: z.string().nullable(), activeStrikes: Count });
 export type AuthorCasesPage = z.infer<typeof AuthorCasesPage>;
 
+/** 3d Task 2 (section 10.2): how many notices one page of GET /api/moderation/notices holds. */
+export const AUTHOR_NOTICES_PAGE_SIZE = 20;
+/** How many of a release's posts its notice lists by their time; `postCount` counts them all. */
+export const RELEASE_NOTICE_POSTS_MAX = 20;
+/**
+ * 3d Task 2 (sections 9.6 and 10.2): GET /api/moderation/notices, the notices about the viewer's own posts that are not
+ * decisions, newest first: the releases of sealed images of their posts, each with its id and time, and never one
+ * whose notice is held. Task 7 adds the refusals of uploads (`upload_refused`).
+ */
+export const AuthorNoticesPage = z.object({
+  notices: z.array(z.object({ kind: z.enum(["release"]), id: z.uuid(), at: z.iso.datetime() })).max(AUTHOR_NOTICES_PAGE_SIZE),
+  nextCursor: z.string().nullable(),
+});
+export type AuthorNoticesPage = z.infer<typeof AuthorNoticesPage>;
+
+/**
+ * 3d Task 2 (sections 9.6, 10.2 and W.6): GET /api/moderation/releases/:release, what releaseNoticeParagraphs reads, and
+ * the decision that sealed, for the link to its screen and its appeal. Never an answer's word or an assessment, who gave
+ * the leave, an authority or a reference. The route answers not_found to anyone but the posts' author, and while the
+ * release's notice is held.
+ */
+export const ReleaseNoticeView = z.object({
+  id: z.uuid(),
+  basis: z.enum(RELEASE_BASES),
+  releasedAt: z.iso.datetime(),
+  backupsClearAt: z.iso.datetime(),
+  /** A held upload's release (Task 7); false for a seal's. */
+  upload: z.boolean(),
+  posts: z.array(z.object({ id: z.uuid(), createdAt: z.iso.datetime() })).max(RELEASE_NOTICE_POSTS_MAX),
+  postCount: Count,
+  /** The image rows the release erased: the seal's count of each post's images. */
+  images: Count,
+  sealDecisionId: z.uuid().nullable(),
+});
+export type ReleaseNoticeView = z.infer<typeof ReleaseNoticeView>;
+
 /** A strike as its decision's screen shows it: until when it counts, whether it still counts, ran out or was overruled, and when. */
 export const DecisionStrike = z.object({ countsUntil: z.iso.datetime(), state: z.enum(["counts", "expired", "overruled"]), overruledAt: z.iso.datetime().nullable() });
 export type DecisionStrike = z.infer<typeof DecisionStrike>;
@@ -2199,6 +2332,11 @@ const HandleCount = z.object({ handle: z.string(), count: Count });
  * many images have files to destroy, and since when the oldest move in or out has been due (null when none is).
  */
 export const QuarantineCounts = z.object({ dueIn: Count, dueOut: Count, undestroyed: Count, oldest: z.iso.datetime().nullable() });
+/** 3d Task 2 (sections 8.2 and 10.3): the kinds of act Home lists for DESTRUCTIVE_DAYS, as 3c lists a lifted seal. */
+export const DESTRUCTIVE_KINDS = ["seal_released", "upload_released", "hold_ended_unreported"] as const;
+/** How long Home lists such an act, and at most how many. */
+export const DESTRUCTIVE_DAYS = 30;
+export const DESTRUCTIVE_MAX = 50;
 export type QuarantineCounts = z.infer<typeof QuarantineCounts>;
 
 /**
@@ -2263,6 +2401,14 @@ export const StaffOverview = z.object({
   restore: z.object({ open: Count, measures: Count, importedAt: z.iso.datetime().nullable() }),
   /** 3d Task 1 (sections 7.1, 8.2 and 10.3): the quarantine's counts, from quarantine_counts() alone ([home.quarantine]). */
   quarantine: QuarantineCounts,
+  /**
+   * 3d Task 2 (sections 7.2, 8.2 and 10.3): the acts of the last DESTRUCTIVE_DAYS that cannot be taken back, newest first,
+   * at most DESTRUCTIVE_MAX, each with its kind, its time and its case ([home.released]). Task 2 writes `seal_released`
+   * alone; a held upload's release and a hold ended without a report, with the refusal's id, are Task 7's.
+   */
+  destructive: z
+    .array(z.object({ kind: z.enum(DESTRUCTIVE_KINDS), at: z.iso.datetime(), caseId: z.uuid().nullable(), refusalId: z.uuid().nullable() }))
+    .max(DESTRUCTIVE_MAX),
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
 
@@ -2287,6 +2433,8 @@ export const RestoreGap = z.object({
   closedAt: z.iso.datetime().nullable(),
   disposition: z.enum(GAP_DISPOSITIONS).nullable(),
   closedByDecisionId: z.uuid().nullable(),
+  /** 3d Task 2 ([restore.sealAgain], 8.7): the gap's case is about a post that is released, so a seal taken again freezes nothing. */
+  released: z.boolean().optional(),
 });
 export type RestoreGap = z.infer<typeof RestoreGap>;
 /** How many gaps one read of After a restore lists at most: every open gap, then the newest import's closed ones. */

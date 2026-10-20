@@ -1,5 +1,6 @@
 import {
   AuthorCasesPage,
+  AuthorNoticesPage,
   CSAM_NOTICE_MAX_ACCOUNTS,
   DecisionView,
   NOTICE_LIMITS,
@@ -8,6 +9,7 @@ import {
   NoticeStatus,
   NoticeTarget,
   ReexamineResponse,
+  ReleaseNoticeView,
   ReplyResponse,
   ReportsPage,
   type CsamKeywordChoice,
@@ -57,6 +59,10 @@ export const moderation = {
   cases: (cursor?: string) => api(`/api/moderation/cases${query(cursor)}`, { schema: AuthorCasesPage }),
   decision: (id: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}`, { schema: DecisionView }),
   reports: (cursor?: string) => api(`/api/moderation/reports${query(cursor)}`, { schema: ReportsPage }),
+  /** 3d Task 2: the notices about the account's posts that are not decisions, newest first: the releases of its sealed images. */
+  notices: (cursor?: string) => api(`/api/moderation/notices${query(cursor)}`, { schema: AuthorNoticesPage }),
+  /** 3d Task 2: one release's notice, for its author alone; not_found for anyone else, and while it may not be told yet. */
+  release: (id: string) => api(`/api/moderation/releases/${encodeURIComponent(id)}`, { schema: ReleaseNoticeView }),
   resumeReportMail: () => api("/api/moderation/report-mail/resume", { method: "POST" }),
   /** The author's appeal of a decision about them. The answer is the decision as it now reads, with the appeal waiting. */
   appeal: (id: string, statement: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}/appeal`, { json: statementOf(statement), schema: DecisionView }),

@@ -123,6 +123,23 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
     },
   );
 
+  // 3d Task 2 (sections 7.2 and 10.4): an admin's release of a seal for good. The path's seal (its ledger row) is the
+  // action's target, and the body the params of seal_released with the assertion as `stepUp`: the lowest unreleased
+  // posts as the page showed them, the ground, and the recorded leave by its id with its reference. The release commits
+  // with its audit row or not at all; an ended confirmation and a late one answer as a decision's do. The answer is the
+  // seal's case as it now stands.
+  routes.post(
+    "/seals/:action/release",
+    auth.requireStaff,
+    auth.requireStaffStepUp("seal_released", (c) => c.req.param("action")),
+    async (c) => {
+      const outcome = await moderation.release(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId") });
+      if (outcome === "ended") throw new AuthError("staff_session_required", 401);
+      if (outcome === "late") throw new AuthError("challenge_expired", 400);
+      return c.json(await moderation.decidedCase(staffSession(c), outcome.caseId), 201);
+    },
+  );
+
   // Who sent an item: the path's item is the action's target, and the body is the reason's category and the digest of
   // the saved reason, with the assertion as `stepUp`. The access row and the audit row commit together or not at all, and
   // the identity is read only after that commit. An ended confirmation and a late one answer as a decision's do.

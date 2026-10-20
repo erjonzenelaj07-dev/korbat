@@ -2,7 +2,7 @@ import { QUARANTINE_RULES, type CaseDecision, type CaseView, type StaffOverview 
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
-import { CUSTODY_WORDS } from "../src/messages";
+import { CUSTODY_WORDS, RELEASE_WORDS } from "../src/messages";
 import { parseCaseId } from "../src/router";
 import { CaseScreenView, type CaseScreenViewProps } from "../src/screens/Case";
 import { CustodyLines, OverviewView } from "../src/screens/Home";
@@ -86,7 +86,9 @@ describe("Home's [home.quarantine] (3d design, section 8.2)", () => {
     const late = text(html(<CustodyLines overview={quarantined({ dueIn: 0, dueOut: 2, undestroyed: 0, oldest: old })} now={NOW} />));
     expect(late).toBe(`${CUSTODY_WORDS.homeTitle}${CUSTODY_WORDS.homeQuarantine(0, 2, bothTimes(old))} ${CUSTODY_WORDS.homeQuarantineLate}`);
     expect(CUSTODY_WORDS.homeQuarantineLate).toBe(`More than ${QUARANTINE_RULES.dueHours} hours: every staff account is alerted daily until the move is recorded.`);
-    expect(html(<CustodyLines overview={quarantined({ dueIn: 0, dueOut: 0, undestroyed: 4, oldest: null })} now={NOW} />)).toBe("");
+    expect(html(<CustodyLines overview={quarantined({ dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null })} now={NOW} />)).toBe("");
+    // 3d Task 2: released files to destroy have a line of their own, [home.undestroyed], whatever else is due.
+    expect(text(html(<CustodyLines overview={quarantined({ dueIn: 0, dueOut: 0, undestroyed: 4, oldest: null })} now={NOW} />))).toBe(`${CUSTODY_WORDS.homeTitle}${RELEASE_WORDS.homeUndestroyed(4)}`);
     // The block stands below "Authorities", before the lanes.
     const home = text(html(<OverviewView overview={quarantined({ dueIn: 1, dueOut: 0, undestroyed: 0, oldest: fresh })} now={NOW} onOpenCase={noop} />));
     expect(home.indexOf(CUSTODY_WORDS.homeTitle)).toBeLessThan(home.indexOf("Cases"));

@@ -113,6 +113,8 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   lostTold: { is: "neither", why: "records a lost image's notice's outcome, and reads nothing" },
   quarantinePlan: { is: "neither", why: "answers the quarantine's plan, image ids and the store's names, for quarantine-list as the migrator; never a file or its content" },
   sealedForGoodCounts: { is: "neither", why: "answers how many image rows each post sealed for good holds, for quarantine-list, and nothing of an image" },
+  quarantineOrphans: { is: "neither", why: "answers the ids of quarantined files' images whose rows are gone and that no release accounts for, for text-verify; never a file" },
+  releasedUnerased: { is: "neither", why: "answers the released posts that still hold an unerased image row, with a count, for text-verify; never a file" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 

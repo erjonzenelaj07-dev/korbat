@@ -1,4 +1,4 @@
-import { RETENTION, type AlertFacts } from "@korbat/contracts";
+import { RETENTION, type AlertFacts, type ReleaseNoticeView } from "@korbat/contracts";
 import { MailRefused, type MailMessage, type NoticeUpdateLine } from "../../mail/mailer";
 import type { DecisionMailSubject } from "../../mail/templates";
 import type { AuthDeps } from "../context";
@@ -117,8 +117,18 @@ export interface ImageLostMessage {
   postCreatedAt: Date;
 }
 
-/** What may be sent to an account: the receipt and the daily update of its reports, the statement of a decision about it, and (3d) the notice of a lost image. */
-export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage | ImageLostMessage;
+/**
+ * 3d Task 2 (design, sections 7.2 and 7.15; W.6 and W.8): the author's notice of a release of sealed images of their
+ * posts, with the view its paragraphs are rendered from: the ground, the times, the posts' times and the counts, never an
+ * authority, a reference or an assessment. No stop of the address holds it back: it is about the account's own posts.
+ */
+export interface ReleaseNoticeMessage {
+  template: "release_notice";
+  view: ReleaseNoticeView;
+}
+
+/** What may be sent to an account: the receipt and the daily update of its reports, the statement of a decision about it, and (3d) the notices of a lost image and of a release. */
+export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage | ImageLostMessage | ReleaseNoticeMessage;
 
 /** One contact's share of the daily update: the lines of its notice, and its receipt when the 24-hour cap folded it. */
 export interface NotifierUpdatePart {
@@ -177,7 +187,11 @@ export type StaffAlertKind =
   // 3d Task 1: a move of sealed files that is due, which alert_steps() writes daily, and files the quarantine's record
   // says are lost, which staff.js quarantine-record writes with its record.
   | "quarantine_due"
-  | "quarantine_lost";
+  | "quarantine_lost"
+  // 3d Task 2: a released file still recorded in the quarantine, which alert_steps() writes daily, and an admin's release
+  // of sealed images, which staffAlert writes after the release's commit.
+  | "release_undestroyed"
+  | "seal_released";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -206,6 +220,8 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "handover_undestroyed":
     case "quarantine_due":
     case "quarantine_lost":
+    case "release_undestroyed":
+    case "seal_released":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off" };
@@ -346,6 +362,24 @@ export async function mailAccount(deps: AuthDeps, userId: string, message: Accou
   }
   // 3d: nor is the notice of a lost image, which is about the account's own post and not about its reports.
   if (message.template === "image_lost") return deliver(deps, { to: user.email, template: "image_lost", data: { createdAt: noticeTime(message.postCreatedAt) } });
+  // 3d Task 2: nor is the notice of a release. Its paragraphs are rendered from these flat members by the template, from
+  // the same function as the app's notice screen; the times go as ISO text and are printed as korbat's mails print them.
+  if (message.template === "release_notice") {
+    const view = message.view;
+    return deliver(deps, {
+      to: user.email,
+      template: "release_notice",
+      data: {
+        basis: view.basis,
+        releasedAt: view.releasedAt,
+        backupsClearAt: view.backupsClearAt,
+        upload: view.upload ? "yes" : "no",
+        postCount: String(view.postCount),
+        images: String(view.images),
+        createdAt: view.posts[0]?.createdAt ?? "",
+      },
+    });
+  }
   const hash = emailHash(deps.config.authHmacKey, user.email);
   if ((await deps.repo.suppressedNotifierHashes([hash])).has(hash)) return "suppressed";
   if (message.template === "notice_update") return deliver(deps, { to: user.email, template: "notice_update", data: { signedIn: true, lines: [...message.lines], receipts: [], pages: [] } });

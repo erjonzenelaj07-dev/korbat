@@ -1,5 +1,5 @@
 import { ACCOUNT_DELETION_WORDS, REPLY_AIM_HOURS, isTimeFact, renderAlert, type AlertKind } from "@korbat/contracts";
-import { IMAGE_LOST_NOTICE } from "@korbat/rules";
+import { IMAGE_LOST_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
 import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
@@ -466,7 +466,28 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "handover_undestroyed":
     case "quarantine_due":
     case "quarantine_lost":
+    case "release_undestroyed":
+    case "seal_released":
       return alertMail(template, data);
+    case "release_notice": {
+      // 3d Task 2 (design, sections 7.2 and 7.15; W.6 and W.8): RELEASE_NOTICE's paragraphs, rendered by the one function
+      // the app's notice screen uses, then where to read it. It names no authority, no reference, no assessment, no file
+      // and no link, and says "released", never that korbat no longer holds the images or destroyed them.
+      const basis = need(data, "basis");
+      if (basis !== "leave" && basis !== "period") throw new Error(`mail template data holds a basis that release_notice does not have: "${basis}"`);
+      const upload = need(data, "upload") === "yes";
+      const postCount = Number(need(data, "postCount"));
+      const paragraphs = releaseNoticeParagraphs({
+        basis,
+        releasedAt: need(data, "releasedAt"),
+        backupsClearAt: need(data, "backupsClearAt"),
+        upload,
+        posts: upload || postCount !== 1 ? [] : [{ createdAt: need(data, "createdAt") }],
+        postCount,
+        images: Number(need(data, "images")),
+      });
+      return userMail("korbat released sealed images of yours", [...paragraphs, "Read it in korbat under Settings, Cases."]);
+    }
     case "image_lost":
       // 3d (design, sections 7.1 and 7.15; W.8): sent once, when the quarantine's record says the files of an image whose
       // seal was lifted are lost. `createdAt` is the day of the post the image is on; nothing names a file, a seal, a

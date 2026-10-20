@@ -8,6 +8,7 @@ import { reviewerOf } from "./cases";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
 import { recordConfirmed, refuseUnopened, subjectLockMode, type AnsweredFacts, type DecideContext, type DecideOptions, type DecideOutcome } from "./decide";
 import { countOrRefuse, saltedStatement } from "./intake";
+import { releasedSeals } from "./release";
 import { holdsAnnouncedStanding, insertAction, insertAppeal, insertReview, pendingAppeals, raisedMessage, reviewedDecision, violatedUniqueConstraint } from "./repo";
 
 /**
@@ -90,6 +91,8 @@ export async function appealsList(deps: Pick<ModerationDeps, "apiDb">, session: 
   const page = [...first, ...rest.slice(0, room)];
   // The cursor is the last row of the rest: the first group is never paged.
   const last = rest.slice(0, room).at(-1);
+  // 3d Task 2 (sections 7.2 and 8.7): an appeal of a seal whose posts were released stays open, marked with the release.
+  const released = await releasedSeals(deps.apiDb, page.map((row) => row.decisionId));
   return {
     appeals: page.map(
       (row): AppealRow => ({
@@ -106,6 +109,8 @@ export async function appealsList(deps: Pick<ModerationDeps, "apiDb">, session: 
         needsAdmin: row.needsAdmin,
         mayReview: row.mayReview,
         standingFirst: row.standingFirst,
+        // Only a released seal adds the mark; a row of any other appeal stays as it was.
+        ...(released.has(row.decisionId) ? { released: released.get(row.decisionId)! } : {}),
       }),
     ),
     // One row more than the room was read: only then is there a next page.

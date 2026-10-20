@@ -235,7 +235,7 @@ describe("the staff account and its session", () => {
 });
 
 describe("step-up actions", () => {
-  test("there are nine: revoking a staff session, whose target is a staff session and whose params are empty, the three of moderation cases, 3f's two of an order's record and its effect, and recovery's gap and download", () => {
+  test("there are ten: revoking a staff session, whose target is a staff session and whose params are empty, the three of moderation cases, 3f's two of an order's record and its effect, recovery's gap and download, and 3d's release of a seal", () => {
     expect(Object.keys(STAFF_STEP_UP_ACTIONS)).toEqual([
       "staff_session_revoked",
       "case_decided",
@@ -246,6 +246,7 @@ describe("step-up actions", () => {
       "order_effected",
       "gap_closed",
       "audit_exported",
+      "seal_released",
     ]);
     expect(StaffStepUpActionName.options).toEqual(Object.keys(STAFF_STEP_UP_ACTIONS));
     const spec = STAFF_STEP_UP_ACTIONS.staff_session_revoked;
@@ -618,7 +619,9 @@ describe("the step-up actions of moderation cases", () => {
   test("no params schema of any action lets a free string through: every string is a lower-case uuid or a hex digest", () => {
     // 3f (design, section 10.3): the one named exception, an authority's name and its file number in a correction's facts.
     // They are no words about a person, are bound one line of 1 to 200 characters, and are compared with the order's row.
-    const named: Record<string, string[]> = { order_corrected: ["$.facts.authority", "$.facts.reference"], order_effected: ["$.authority", "$.reference"] };
+    // 3d Task 2 (section 10.4): the release's reference, the file number under which an authority or a court gave its
+    // leave, bound as 3f binds one and compared with the leave's record at commit by releases_confirmed.
+    const named: Record<string, string[]> = { order_corrected: ["$.facts.authority", "$.facts.reference"], order_effected: ["$.authority", "$.reference"], seal_released: ["$.theirReference"] };
     // 3f Task 6: the audit download's target is a place, as decimal digits: no text at all.
     const PLACE = "/^[1-9][0-9]{0,14}$/";
     const place = (action: string) => (s: { format: string | undefined; patterns: string[] }) => action === "audit_exported" && s.format === undefined && s.patterns.length === 1 && s.patterns[0] === PLACE;

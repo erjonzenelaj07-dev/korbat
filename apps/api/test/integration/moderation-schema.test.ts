@@ -486,11 +486,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.post_preserved",
         "public.quarantine_counts",
         "public.redact_r4_body",
+        // 3d Task 2 (0034_release): the day of a release by period (which nothing reaches while its period is unset), the
+        // release block's facts, the release's constants, whether a release's author may be told, and the release itself.
+        "public.release_announce",
+        "public.release_facts",
         "public.release_outcomes",
+        "public.release_rules",
+        "public.release_tellable",
         // Task 5: what the console learns of the records to authorities: a case, a kind and a time for each owed one.
         "public.reports_owed",
         "public.review_needs_admin",
         "public.seal_custody",
+        "public.seal_release",
         "public.snapshot_withheld",
         "public.staff_case_conflict",
         "public.standing_basis_broken_at",
@@ -553,7 +560,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const snapshotErased = written("evidence_snapshots", "erased_at");
       expect(matching(postLevel)).toEqual(["public.moderation_apply"]);
       expect(matching(postErased)).toEqual(["public.order_preservation_end", "public.redact_r4_body"]);
-      expect(matching(imageErased)).toEqual(["public.order_preservation_end", "public.redact_r4_body"]);
+      // 3d Task 2 (0034_release; C 17, extended): a release and its replay erase the image rows of their posts.
+      expect(matching(imageErased)).toEqual(["public.order_preservation_end", "public.redact_r4_body", "public.release_replay", "public.seal_release"]);
       // Gate E: one function writes a snapshot's erasure, no function deletes a snapshot, and that one function is called
       // by the two erasures of 0018 and by nothing else.
       expect(matching(snapshotErased)).toEqual(["public.erase_snapshots"]);
@@ -745,7 +753,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
     test("3f Task 6's writers (0031_recovery; design, sections 6.6 and 6.7): only gap_close and delete_restore_gaps write a gap, a not-needed closing is held to its audit row at commit, a mark's time is forced, and an imported order's old events pass", async () => {
       const all = await functions();
       const writing = (pattern: RegExp) => all.filter((f) => pattern.test(f.definition)).map((f) => f.name);
-      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]restore_gaps/i)).toEqual(["public.delete_restore_gaps", "public.gap_close"]);
+      // 3d Task 2 (0034_release; design, section 6.2): the replay of a release closes its gap, as the migrator.
+      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]restore_gaps/i)).toEqual(["public.delete_restore_gaps", "public.gap_close", "public.release_replay"]);
       expect(writing(/DELETE FROM public[.]copy_marks/i)).toEqual(["public.delete_restore_gaps"]);
       // gap_close is called by the routes alone, never by another function: a decision closes a gap in the API's transaction.
       expect(writing(/gap_close[(]/).filter((name) => name !== "public.gap_close")).toEqual([]);

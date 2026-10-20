@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ANNEX3_GROUND_LABELS, AUDIT_EXPORT_MAX, DISPOSITION_LABELS, GAP_CLASSES, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, QUARANTINE_RULES, SEAL_DRAFTS, type CaseView, type ContactMessage, type RestoreGap } from "@korbat/contracts";
+import { ANNEX3_GROUND_LABELS, AUDIT_EXPORT_MAX, DISPOSITION_LABELS, GAP_CLASSES, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, QUARANTINE_RULES, RELEASE_POSTS_MAX, RETENTION, SEAL_DRAFTS, type CaseView, type ContactMessage, type RestoreGap } from "@korbat/contracts";
 import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, CUSTODY_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, CUSTODY_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
@@ -2145,8 +2145,10 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       await noMeasure.getByRole("button", { name: RECOVERY_WORDS.notNeeded }).click();
       await shown(page.getByText(RECOVERY_WORDS.notNeededDone, { exact: true }));
       expect(await signatures()).toBe(before + 1);
-      expect(fixtures.state.gapsClosed).toEqual([gapId(7)]);
-      await shown(page.getByText(RECOVERY_WORDS.closed("not_needed", bothTimes(fixtures.state.restore.gaps[6]!.closedAt!)), { exact: true }));
+      // 3d Task 2 put the class release fourth: the gap of a decision without a measure is found by its class's place.
+      const noMeasureAt = GAP_CLASSES.indexOf("no_measure");
+      expect(fixtures.state.gapsClosed).toEqual([gapId(noMeasureAt + 1)]);
+      await shown(page.getByText(RECOVERY_WORDS.closed("not_needed", bothTimes(fixtures.state.restore.gaps[noMeasureAt]!.closedAt!)), { exact: true }));
       // Open the case of the lost removal: the composer's line says the decision takes a lost one again.
       const removal = page.locator("li").filter({ hasText: RECOVERY_WORDS.classes.restriction.line(`"${MEASURES.remove.label}"`, bothTimes(at)) });
       await removal.getByRole("link", { name: RECOVERY_WORDS.openCase }).click();
@@ -2242,6 +2244,197 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       }
     } finally {
       fixtures.state.cases.set(CASE_FROZEN, view);
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  // ---------------------------------------------------------------- 3d Task 2: the release, at a phone's width
+
+  const RELEASE_LEAVE = "c5364758-6a7b-4c8d-9e0f-142536475869";
+  /** A release block as the API answers it: a seal reported, assessed illegal, moved, with a leave from a court and a hostile reference. */
+  function releaseBlock(overrides: Partial<NonNullable<CaseView["decisions"][number]["release"]>> = {}): NonNullable<CaseView["decisions"][number]["release"]> {
+    return {
+      reported: true,
+      theirReference: HOSTILE.bidi,
+      answer: "illegal",
+      answeredAt: new Date(Date.now() - 2 * 24 * 3_600_000).toISOString(),
+      handedOverAt: null,
+      quarantined: true,
+      preserved: false,
+      leave: { id: RELEASE_LEAVE, from: "court", reference: "4 O 1/26", receivedOn: "2026-10-15", untold: false, untoldUntil: null },
+      tellHeld: false,
+      postIds: [POST_ID],
+      remaining: 0,
+      silenceDays: null,
+      releasedAt: null,
+      basis: null,
+      backupsClearAt: null,
+      noticeHeld: null,
+      releasedPosts: 0,
+      releasedImages: 0,
+      ...overrides,
+    };
+  }
+  /** The case with a seal for good in force whose decision carries this release block and its custody, all files moved. */
+  function withRelease(view: CaseView, release: NonNullable<CaseView["decisions"][number]["release"]>): CaseView {
+    const sealed = withSealForGood(view, { files: 2, moved: 2, movedAt: new Date(Date.now() - 3_600_000).toISOString(), toReturn: 0, filesLeft: 0, lost: 0 }, true);
+    return { ...sealed, decisions: sealed.decisions.map((decided, index) => (index === sealed.decisions.length - 1 ? { ...decided, release } : decided)) };
+  }
+  const releaseRegion = () => page.getByRole("region", { name: RELEASE_WORDS.title, exact: true });
+
+  test("3d Task 2: at 360 by 740 px, the release block in each state: a leave with the control, an assessment without one, the answers that support nothing, a conflict, more posts than one release names, and the author's telling in its three values", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    fixtures.state.role = "admin";
+    const view = fixtures.state.cases.get(CASE_FROZEN)!;
+    const until = new Date(Date.now() + 5 * 24 * 3_600_000).toISOString();
+    const states: [NonNullable<CaseView["decisions"][number]["release"]>, string[], boolean][] = [
+      [releaseBlock(), [RELEASE_WORDS.leave("from a court"), RELEASE_WORDS.sign(1), `${RELEASE_WORDS.facts.tell.label}${RELEASE_WORDS.facts.tell.atOnce}`], true],
+      [releaseBlock({ leave: null }), [RELEASE_WORDS.assessed], false],
+      [releaseBlock({ leave: null, answer: "not_illegal" }), [RELEASE_WORDS.notIllegal], false],
+      [releaseBlock({ leave: null, answer: "no_assessment" }), [RELEASE_WORDS.nothing], false],
+      [releaseBlock({ leave: null, answer: null, answeredAt: null }), [RELEASE_WORDS.nothing, RELEASE_WORDS.facts.answer.none], false],
+      [releaseBlock({ answer: "not_illegal" }), [RELEASE_WORDS.conflict], true],
+      [releaseBlock({ remaining: 7 }), [RELEASE_WORDS.more(RELEASE_POSTS_MAX, 7)], true],
+      [releaseBlock({ tellHeld: true, leave: { ...releaseBlock().leave!, untold: true, untoldUntil: until } }), [RELEASE_WORDS.facts.tell.untold(bothTimes(until))], true],
+      [releaseBlock({ tellHeld: true, leave: { ...releaseBlock().leave!, untold: true, untoldUntil: null } }), [RELEASE_WORDS.facts.tell.untold(null)], true],
+      [releaseBlock({ tellHeld: true }), [RELEASE_WORDS.facts.tell.record], true],
+    ];
+    try {
+      await page.goto(`${origin}/`);
+      for (const [block, words, control] of states) {
+        fixtures.state.cases.set(CASE_FROZEN, withRelease(view, block));
+        await page.goto(`${origin}/cases/${CASE_FROZEN}`);
+        await shown(releaseRegion());
+        const text = (await releaseRegion().textContent()) ?? "";
+        for (const sentence of words) expect(text, sentence).toContain(sentence);
+        expect(text).toContain(RELEASE_WORDS.what);
+        expect(text).toContain(RELEASE_WORDS.backups(RETENTION.backupDays));
+        expect(text).toContain(RELEASE_WORDS.periodUnset);
+        expect(await releaseRegion().getByRole("button", { name: RELEASE_WORDS.button }).count(), words[0]).toBe(control ? 1 : 0);
+        // The authority's reference is an outsider's text, in its frame, never in a label's place.
+        expect(await releaseRegion().locator(".frame").count()).toBeGreaterThan(0);
+        await texts();
+        await cleanOnPhone();
+      }
+    } finally {
+      fixtures.state.cases.set(CASE_FROZEN, view);
+      fixtures.state.role = "moderator";
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 2: at 360 by 740 px, the block greyed for a moderator, with admin_required's words and the control disabled", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    fixtures.state.role = "moderator";
+    const view = fixtures.state.cases.get(CASE_FROZEN)!;
+    fixtures.state.cases.set(CASE_FROZEN, withRelease(view, releaseBlock()));
+    try {
+      await page.goto(`${origin}/cases/${CASE_FROZEN}`);
+      await shown(releaseRegion());
+      expect(await releaseRegion().textContent()).toContain(RELEASE_WORDS.adminOnly);
+      expect(await releaseRegion().getByRole("button", { name: RELEASE_WORDS.button }).isDisabled()).toBe(true);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.cases.set(CASE_FROZEN, view);
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 2: at 360 by 740 px, options that bind another reference are refused before the key is asked; then the key confirms this seal, its posts, the ground and the leave, and the block reads [release.done]", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    fixtures.state.role = "admin";
+    const view = fixtures.state.cases.get(CASE_FROZEN)!;
+    fixtures.state.cases.set(CASE_FROZEN, withRelease(view, releaseBlock()));
+    const before = await signatures();
+    const sent = () => fixtures.state.requests.filter((r) => r.method === "POST" && r.path.endsWith("/release")).length;
+    try {
+      await page.goto(`${origin}/cases/${CASE_FROZEN}`);
+      await shown(releaseRegion());
+      const button = releaseRegion().getByRole("button", { name: RELEASE_WORDS.button });
+      const [options, posted] = [fixtures.state.stepUpOptionsServed, sent()];
+      fixtures.state.mismatchNextStepUp = true;
+      await button.click();
+      await shown(releaseRegion().getByRole("alert").filter({ hasText: messageFor("step_up_mismatch") }));
+      expect(fixtures.state.stepUpOptionsServed).toBe(options + 1);
+      expect(await signatures()).toBe(before);
+      expect(sent()).toBe(posted);
+      await clean();
+      await button.click();
+      await shown(page.getByText(/^Released at /));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.releases.at(-1)).toEqual({ actionId: "b4253647-5869-4a7b-8ce8-031425364758", params: { postIds: [POST_ID], basis: "leave", leaveId: RELEASE_LEAVE, theirReference: "4 O 1/26" } });
+      const done = await page.getByText(/^Released at /).textContent();
+      expect(done).toContain("Files left to destroy: 2.");
+      expect(done).toContain("The author's notice: sent at once.");
+      expect(await releaseRegion().getByRole("button", { name: RELEASE_WORDS.button }).count()).toBe(0);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.cases.set(CASE_FROZEN, view);
+      fixtures.state.role = "moderator";
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 2: at 360 by 740 px, Appeals with [appeals.released], Home with [home.released] and [home.undestroyed], and After a restore with a lost release, a lost leave and a lost withdrawal, none with a control", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const at = new Date(Date.now() - 4 * 3_600_000).toISOString();
+    fixtures.state.role = "admin";
+    fixtures.state.appealReleased = { at, basis: "leave" };
+    fixtures.state.destructive = [{ kind: "seal_released", at, caseId: CASE_FROZEN, refusalId: null }];
+    fixtures.state.quarantine = { dueIn: 0, dueOut: 0, undestroyed: 4, oldest: null };
+    const restore = fixtures.state.restore;
+    const gap = (action: string, id: string): RestoreGap => ({
+      id,
+      class: "release",
+      actedAt: at,
+      action,
+      caseId: action === "seal_released" ? CASE_FROZEN : null,
+      orderId: null,
+      itemId: null,
+      kinds: [],
+      closedAt: null,
+      disposition: null,
+      closedByDecisionId: null,
+    });
+    fixtures.state.restore = {
+      importedAt: new Date().toISOString(),
+      mayOpen: false,
+      retentionMay: true,
+      gaps: [gap("seal_released", "0000000b-7a1b-4c2d-8e3f-4a5b6c7d8e01"), gap("release_leave_recorded", "0000000b-7a1b-4c2d-8e3f-4a5b6c7d8e02"), gap("release_leave_withdrawn", "0000000b-7a1b-4c2d-8e3f-4a5b6c7d8e03")],
+      holds: [],
+    };
+    const restoreOverview = fixtures.state.restoreOverview;
+    fixtures.state.restoreOverview = { open: 3, measures: 0, importedAt: fixtures.state.restore.importedAt };
+    try {
+      await page.goto(`${origin}/appeals`);
+      await shown(page.getByText(RELEASE_WORDS.appealReleased(dateTime(at), "leave")));
+      await texts();
+      await cleanOnPhone();
+      await page.goto(`${origin}/`);
+      await shown(page.getByText(RELEASE_WORDS.homeReleased(bothTimes(at))));
+      await shown(page.getByText(RELEASE_WORDS.homeUndestroyed(4)));
+      await texts();
+      await cleanOnPhone();
+      await page.goto(`${origin}/restore`);
+      const C = RECOVERY_WORDS.classes.release;
+      await shown(page.getByRole("heading", { name: C.heading }));
+      for (const action of ["seal_released", "release_leave_recorded", "release_leave_withdrawn"]) {
+        await shown(page.getByText(C.line(action, bothTimes(at))));
+        await shown(page.getByText(C.control(action)));
+      }
+      expect(await page.getByRole("button", { name: RECOVERY_WORDS.notNeeded }).count()).toBe(0);
+      expect(await page.getByRole("link", { name: RECOVERY_WORDS.openCase }).count()).toBe(0);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.appealReleased = null;
+      fixtures.state.destructive = [];
+      fixtures.state.quarantine = { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null };
+      fixtures.state.restore = restore;
+      fixtures.state.restoreOverview = restoreOverview;
+      fixtures.state.role = "moderator";
       await page.setViewportSize({ width: 1280, height: 900 });
     }
   });

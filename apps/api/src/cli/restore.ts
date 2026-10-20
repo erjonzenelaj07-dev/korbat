@@ -26,7 +26,7 @@ import type { Db, DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
 import { insertOrder, postLink, type NewOrderItem } from "../moderation";
 import { CHAIN_ZERO_HASH, appendAuditRow, canonicalText, chainHash, exportLines } from "../staff";
-import { Refusal, refuse, rows } from "./orders";
+import { Refusal, isoOf, refuse, rows } from "./orders";
 
 /** The recovery commands, each with its first line of STAFF_USAGE. */
 export const RESTORE_COMMANDS = ["audit-export", "restore-import"] as const;
@@ -540,11 +540,53 @@ class Importer {
   async noted(entry: TailLine): Promise<void> {
     await this.gap(entry, "record", true);
   }
+
+  /**
+   * 3d Task 2 (design, sections 6.2 and 7.3 step 1): a lost release of a seal is a gap of the class release, which
+   * staff.js release-replay closes: the restored database again treats its images as sealed and kept.
+   */
+  async released(entry: TailLine): Promise<void> {
+    await this.gap(entry, "release", true);
+  }
+
+  /**
+   * A lost leave (release_leave_recorded): a gap of the class release, which release-leave --gap closes when the operator
+   * records it again, under the id its line names; none for a leave that a later line of the copy withdraws (it supported
+   * no release), and none where the restored database holds the leave as the line records it (nothing was lost). A line
+   * that ended an open hold on telling of a leave the database holds is a gap that release-leave --end-untold --gap closes.
+   */
+  async leaveRecorded(entry: TailLine, withdrawnLater: ReadonlySet<string>): Promise<void> {
+    const leaveId = entry.metadata.leaveId;
+    if (typeof leaveId !== "string" || withdrawnLater.has(leaveId)) return;
+    const [held] = await rows<{ until: string | null }>(this.tx, sql`select ${isoOf("l.untold_until")} as until from public.release_leaves l where l.id = ${leaveId}::uuid`);
+    if (held !== undefined && held.until === (entry.metadata.untoldUntil ?? null)) return;
+    await this.gap(entry, "release", true);
+  }
+
+  /**
+   * A lost withdrawal of a leave (release_leave_withdrawn): a gap of the class release only where the restored database
+   * holds the leave and shows it standing, which release-leave --withdraw --gap closes; a leave it does not hold supported
+   * no release and is not recorded again.
+   */
+  async leaveWithdrawn(entry: TailLine): Promise<void> {
+    const leaveId = entry.metadata.leaveId;
+    if (typeof leaveId !== "string") return;
+    const [held] = await rows<{ withdrawn: boolean }>(this.tx, sql`select l.withdrawn_at is not null as withdrawn from public.release_leaves l where l.id = ${leaveId}::uuid`);
+    if (held === undefined || held.withdrawn) return;
+    await this.gap(entry, "release", true);
+  }
 }
 
 /** Runs one lost row through the importer, by its action; a row that describes neither a record nor a decision writes nothing. */
-async function importLine(importer: Importer, entry: TailLine): Promise<void> {
+async function importLine(importer: Importer, entry: TailLine, withdrawnLater: ReadonlySet<string>): Promise<void> {
   switch (entry.line.action) {
+    // 3d Task 2: a release of a seal, a leave recorded and a leave withdrawn, each a gap of the class release.
+    case "seal_released":
+      return importer.released(entry);
+    case "release_leave_recorded":
+      return importer.leaveRecorded(entry, withdrawnLater);
+    case "release_leave_withdrawn":
+      return importer.leaveWithdrawn(entry);
     case "order_opened":
       return importer.orderOpened(entry);
     case "order_items_added":
@@ -593,7 +635,9 @@ export async function restoreImport(migrateDb: Db, kept: readonly { seq: number;
       const head = { seq: Number(row!.seq), hash: row!.hash };
       const walked = walkTail(readTail(input, head), head, kept);
       const importer = new Importer(tx, randomUUID(), appOrigin);
-      for (const entry of walked.run) await importLine(importer, entry);
+      // 3d Task 2: a leave that a later line of the copy withdraws gets no gap: it supported no release.
+      const withdrawnLater = new Set(walked.run.filter((entry) => entry.line.action === "release_leave_withdrawn").map((entry) => String(entry.metadata.leaveId)));
+      for (const entry of walked.run) await importLine(importer, entry, withdrawnLater);
       const first = walked.run[0]?.line.place ?? null;
       const last = walked.run[walked.run.length - 1]?.line.place ?? null;
       const byClass = Object.fromEntries(GAP_CLASSES.map((cls) => [cls, importer.gaps.filter((gap) => gap.class === cls).length]).filter(([, n]) => (n as number) > 0));

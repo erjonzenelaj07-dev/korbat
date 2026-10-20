@@ -82,7 +82,12 @@ export type TemplateName =
   // its push's sentence; and the one mail to an author whose image's files korbat lost while they were kept apart.
   | "quarantine_due"
   | "quarantine_lost"
-  | "image_lost";
+  | "image_lost"
+  // Task 2: a released file still in the quarantine and an admin's release, each a staff alert whose mail is its push's
+  // sentence; and the author's notice of a release of sealed images of their posts.
+  | "release_undestroyed"
+  | "seal_released"
+  | "release_notice";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

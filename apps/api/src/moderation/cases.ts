@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
+  DESTRUCTIVE_DAYS,
+  DESTRUCTIVE_MAX,
   OVERVIEW_LIST_MAX,
   QUEUE_PAGE_SIZE,
   RETENTION,
@@ -36,6 +38,7 @@ import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTa
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
 import { copyOverview, restoreOverview } from "./gaps";
+import { recentReleases, releaseBlocks, releasedSeals } from "./release";
 import { caseOrderFacts, noticeHeldOn, orderErasedOn, postPreserved, reportOwedOn, reportsOwed, unverifiedOrders } from "./orders-repo";
 import { authorStanding, caseStanding, strikeDue } from "./standing";
 import { caseReplies, repliesWaiting, standingColumns, standingOnDecisions, strikeAccounts, unansweredReplies, type ReplyColumns } from "./standing-repo";
@@ -246,7 +249,16 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     // 3d Task 1 (sections 7.1 and 8.2): the moves into and out of the quarantine that are due, and the files to destroy,
     // from quarantine_counts() alone.
     quarantine: await quarantineCounts(q),
+    // 3d Task 2 (sections 7.2 and 8.2): the acts of the last 30 days that cannot be taken back, as 3c lists a lifted seal:
+    // the releases of sealed images, each with its seal's case ([home.released]).
+    destructive: await recentReleases(q, DESTRUCTIVE_DAYS, DESTRUCTIVE_MAX),
   };
+}
+
+/** 3d Task 2: each appeal of the case whose decision's seal released posts marked with that release; any other appeal stays as it was. */
+async function withReleases<T extends { decisionId: string }>(q: Parameters<typeof releasedSeals>[0], appeals: T[]): Promise<(T & { released?: { at: string; basis: "leave" | "period" } })[]> {
+  const released = await releasedSeals(q, appeals.map((appeal) => appeal.decisionId));
+  return appeals.map((appeal) => (released.has(appeal.decisionId) ? { ...appeal, released: released.get(appeal.decisionId)! } : appeal));
 }
 
 /** StaffOverview.alerts: the channel's state as the tick judges it, with the time since when. */
@@ -478,7 +490,11 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     (action) => action.kind === "seal_media" && caseDecisionRows.some((decision) => decision.id === action.decisionId && decision.kind !== "interim"),
   );
   const custody = await sealCustody(q, sealsForGood.map((action) => action.id));
-  const custodyOf = (actionId: string | undefined) => (actionId !== undefined && custody.has(actionId) ? { custody: custody.get(actionId)! } : {});
+  // 3d Task 2 (sections 7.2, 8.5 and 10.3): the release block of each seal for good that is in force, with the facts of
+  // release_facts and the posts the next release would name; a seal that is lifted has none.
+  const releases = await releaseBlocks(q, sealsForGood.filter((action) => action.inForce).map((action) => action.id));
+  const custodyOf = (actionId: string | undefined) =>
+    actionId === undefined ? {} : { ...(custody.has(actionId) ? { custody: custody.get(actionId)! } : {}), ...(releases.has(actionId) ? { release: releases.get(actionId)! } : {}) };
   const decisions: CaseDecision[] = [];
   for (const decision of caseDecisionRows) {
     const own: CaseDecision["actions"] = [];
@@ -554,7 +570,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     snapshots: (await caseSnapshots(q, row.id)).map(snapshotView),
     items,
     decisions,
-    appeals: await caseAppeals(q, row.id, reviewerOf(session)),
+    appeals: await withReleases(q, await caseAppeals(q, row.id, reviewerOf(session))),
     drafts: (await ownDrafts(q, row.id, session.userId)) as StaffTextDraft[],
     notes: texts.filter((text) => text.kind === "note").map(staffText),
     sealsDeclined: texts.filter((text) => text.kind === "seal_declined").map(staffText),

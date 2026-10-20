@@ -380,6 +380,15 @@ export const CONSOLE_MODERATION_CODES = [
   // database did not take.
   "gap_mismatch",
   "copy_mismatch",
+  // 3d Task 2 (design, section 8.8): the release's refusals and its check at commit.
+  "release_not_open",
+  "release_not_reported",
+  "release_not_quarantined",
+  "release_preserved",
+  "release_no_leave",
+  "release_period_unset",
+  "release_period_running",
+  "release_mismatch",
 ] as const satisfies readonly ModerationErrorCode[];
 export type ConsoleModerationCode = (typeof CONSOLE_MODERATION_CODES)[number];
 
@@ -432,6 +441,15 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
   gap_mismatch: "That gap is closed already, or this decision does not take again what it lost. Read After a restore again.",
   // [copy.broken] (8.7).
   copy_mismatch: COPY_BROKEN,
+  // 3d Task 2 (8.8): the release's refusals, each worded in place; release_mismatch is [changed] (8.1).
+  release_not_open: "This seal cannot be released: it is not a seal for good in force, or its posts are released already. Read the case again.",
+  release_not_reported: "No report of this seal to an authority is recorded. Whoever has the server records the report first (staff.js notification-sent).",
+  release_not_quarantined: "Not every file of this seal is recorded as moved to the quarantine. Whoever has the server moves and records them first (the README, Quarantine).",
+  release_preserved: "A post of this seal is preserved for an authority's order. Nothing of it is released while that lasts.",
+  release_no_leave: "No leave or instruction to destroy is recorded for this. An authority's assessment alone releases nothing. Whoever has the server records the leave first (staff.js release-leave).",
+  release_period_unset: "korbat has set no period after which sealed images are released when an authority stays silent. Until counsel has set one and the terms publish it, nothing is released by time.",
+  release_period_running: "The period has not ended, the author was not told the day in time, or an objection of the author's is unanswered.",
+  release_mismatch: "The database refused this: the seal, the upload, the record of the report or the recorded leave is no longer what this page showed. Read the page again.",
 };
 
 /** A small number as a word, as the design's sentences write it; a larger one in digits. */
@@ -767,6 +785,69 @@ export const CUSTODY_WORDS = {
 } as const;
 
 /**
+ * 3d Task 2 (design, sections 8.2, 8.5 and 8.7): the console's words of the release, each under the design's key
+ * (`what` is [release.what]). Every number is printed from the answer or from the contracts' constants, never typed;
+ * every time is the database's instant, printed by the screen with bothTimes. An authority's reference and a leave's are
+ * an outsider's text, drawn framed, never in a label's place.
+ */
+export const RELEASE_WORDS = {
+  title: "Release",
+  /** The block's labels and values (8.5's table). */
+  facts: {
+    reported: { label: "Reported to an authority", yes: "yes", no: "no" },
+    theirReference: { label: "The authority's reference", frame: "As recorded from the authority", none: "not recorded" },
+    answer: {
+      label: "The authority's assessment",
+      values: { illegal: "illegal", not_illegal: "not illegal", no_assessment: "no assessment", other: "another answer" } as Record<string, string>,
+      none: "none recorded",
+    },
+    answeredAt: { label: "Assessed on", none: "no answer" },
+    handedOverAt: { label: "Files handed over on", none: "nothing was handed over" },
+    leave: { label: "Leave or instruction to destroy", none: "none recorded", from: { authority: "from the authority", court: "from a court" } as Record<string, string> },
+    leaveReference: { label: "Its reference", none: "none recorded" },
+    leaveDay: { label: "Its day", none: "none recorded" },
+    tell: {
+      label: "The author may be told",
+      atOnce: "at once",
+      untold: (until: string | null) => `not yet: the leave is recorded as not to be told to the person, ${until === null ? "with no end recorded" : `until ${until}`}`,
+      record: "not yet: the record of the report, or an authority's order about one of these posts, says that the person is not to be told",
+    },
+    quarantined: { label: "Files in the quarantine", yes: "all of them, by the record", no: "not all: the move is not recorded" },
+    preserved: { label: "Preserved for an order", yes: "yes", no: "no" },
+  },
+  what: "A release ends korbat's keeping of these sealed images for good. It marks the posts as released and erases their image rows now. Whoever has the server then destroys the files in the quarantine, and the digest of each destroyed file is recorded as the proof. It cannot be undone: nothing brings a destroyed file back. The seal stays in the record as a measure, and the post's text is not touched.",
+  tells:
+    `The author is told what korbat did: that it released the images, and that an authority's or a court's leave or instruction is its ground. The notice names no authority and no reference and says nothing of what any authority found. It is sent at once, or, while the leave, the record of the report or an authority's order says that the person is not to be told, when the last of these has ended and never before. If an authority has asked korbat not to tell the person and the line above still reads "at once", do not release: whoever has the server records the authority's request first (with the leave when the leave is recorded, staff.js release-leave --untold; for a leave that is recorded already, notification-event on the record of the report).`,
+  backups: (backupDays: number) =>
+    `A backup of the image store taken before the files moved may still hold them: korbat's backups are deleted ${backupDays} days after they were taken, except a backup kept for an authority, which is destroyed by hand (the README, Backups). The release's record prints the day after which no backup that is deleted on time holds these files.`,
+  leave: (from: string) => `Ground: leave to destroy. The record holds a leave or an instruction to destroy these images, ${from}, of the day and with the reference shown above.`,
+  assessed:
+    "The authority assessed these images as illegal. An assessment is not leave to destroy: it is a reason an authority may want them kept. The images stay sealed and kept until the authority or a court gives korbat leave or an instruction to destroy them and whoever has the server has recorded it (staff.js release-leave).",
+  notIllegal:
+    "The authority answered that the images are not illegal. That is no ground for a release. Lift the seal instead (Correct this decision, Lift the seal): the images are shown again once their files are returned.",
+  conflict:
+    'The record holds an assessment "not illegal" and a leave to destroy. The two do not fit. Ask whoever has the server which is wrong before you do either: lifting the seal returns the images, a release destroys them.',
+  nothing: "This ends nothing by itself. The images stay sealed and kept.",
+  periodUnset: "korbat has set no period after which sealed images are released when an authority stays silent. Until counsel has set one and the terms publish it, nothing is released by time.",
+  more: (max: number, remaining: number) =>
+    `This seal lists more posts than one confirmation can release. This one releases the first ${max} of them, in the order of their ids; ${remaining} more remain. Read the case again and confirm again for the rest.`,
+  sign: (posts: number) => `You confirm with your staff key: this seal, its ${posts} ${posts === 1 ? "post" : "posts"}, the ground, and the leave with its reference as shown above.`,
+  done: (releasedAt: string, posts: number, images: number, filesLeft: number, held: boolean, backupsClearAt: string) =>
+    `Released at ${releasedAt}: ${posts} ${posts === 1 ? "post" : "posts"}, ${images} image rows erased. Files left to destroy: ${filesLeft}. They are in the quarantine until whoever has the server destroys them (the README, Quarantine), and every staff account is alerted daily while one is still recorded there. The author's notice: ${held ? "held until the person may be told" : "sent at once"}. No backup that is deleted on time holds these files after ${backupsClearAt}; a backup kept for an authority is destroyed by hand (the README, Backups).`,
+  button: "Release and destroy",
+  /** The block greyed for a moderator: admin_required's words. */
+  adminOnly: "Only an admin can release sealed images.",
+  /** [appeals.released] (8.7). */
+  appealReleased: (releasedAt: string, basis: "leave" | "period") =>
+    `The images this appeal is about were released on ${releasedAt}, on the ground: ${basis === "leave" ? "a recorded leave to destroy" : "the period's end"}. korbat has released them: it will not show them again or give them back. The appeal is still open: an admin reviews it, and the release closed nothing.`,
+  /** [home.undestroyed] (8.2). */
+  homeUndestroyed: (undestroyed: number) =>
+    `Released files to destroy: ${undestroyed}. Their release is recorded and the files are still in the quarantine. Whoever has the server runs the same steps; the list's destroy lines name them.`,
+  /** [home.released] (8.2): one line a release, newest first. */
+  homeReleased: (at: string) => `Released in the last 30 days, each by an admin's key: ${at}, sealed images of a case.`,
+} as const;
+
+/**
  * 3f Task 6 (design, sections 8.2, 8.5, 8.7 and 8.8): the console's sentences of recovery, each under the design's key
  * (`restore.what` is [restore.what]). Every number is printed from the answer or from the contracts, never typed, and
  * every time is the database's instant, printed by the screen with bothTimes.
@@ -821,6 +902,23 @@ export const RECOVERY_WORDS = {
     restriction: { heading: "Other restrictions", line: (measure: string, actedAt: string) => `Lost: ${measure}, decided at ${actedAt}.` },
     reversal: { heading: "Reversals", line: (actedAt: string) => `Lost: a reversal, decided at ${actedAt}.` },
     no_measure: { heading: "Decisions without a measure", line: (actedAt: string) => `Lost: a decision without a measure, of ${actedAt}. Listed for reference.` },
+    // 3d Task 2 (8.7): a lost release, a lost leave, a lost withdrawal of a leave; no key closes any of them.
+    release: {
+      heading: "Releases and held uploads to replay",
+      line: (action: string, actedAt: string) =>
+        action === "release_leave_recorded"
+          ? `Lost: a leave or an instruction to destroy, recorded on ${actedAt}. The database no longer holds it, so nothing can be released on it.`
+          : action === "release_leave_withdrawn"
+            ? `Lost: the withdrawal, on ${actedAt}, of a leave that had been recorded by mistake. The database shows that leave as standing again. Do not release on it.`
+            : `Lost: a release of ${actedAt}. The database again treats its images as sealed and kept.`,
+      /** [restore.release], [restore.leave] and [restore.withdrawn], in place of a control. */
+      control: (action: string) =>
+        action === "release_leave_recorded"
+          ? "No key closes this. Whoever has the server records the leave again from what korbat holds in writing (staff.js release-leave, naming this gap); that closes it."
+          : action === "release_leave_withdrawn"
+            ? "No key closes this. Whoever has the server withdraws the leave again (staff.js release-leave --withdraw, naming this gap); that closes it."
+            : "No key closes this. Whoever has the server replays it from the keeper's files (staff.js release-replay), then destroys again what a restored store or the quarantine holds.",
+    },
     record: {
       heading: "Records to enter again",
       line: (actedAt: string, what: string) =>
@@ -845,6 +943,8 @@ export const RECOVERY_WORDS = {
   notNeededDone: "Closed as not needed.",
   closed: (disposition: "reapplied" | "not_needed" | "imported", at: string) =>
     `${disposition === "reapplied" ? "Taken again" : disposition === "not_needed" ? "Not needed" : "Entered again"} at ${at}.`,
+  /** 3d Task 2 [restore.sealAgain] (8.7): beside a lost seal for good whose post is released. */
+  sealAgain: "This seal's post was released. Take the seal again all the same, so that the record is whole: it freezes nothing and brings nothing back.",
   /** [restore.again] (8.8): the composer's line when a decision takes a lost one again. */
   again: (actedAt: string) => `This takes again a decision of ${actedAt} that was lost with a restore. Its statement says so. Write the facts and the reason again: the lost texts are gone.`,
   /** [effect.preserve] for a disabling taken again after a restore (8.5): the end it had stays. */

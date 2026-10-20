@@ -990,7 +990,7 @@ export const legalOrderEvents = pgTable(
  * image store, written only by `staff.js quarantine-record`, as the migrator, from the service's receipt. The API's role
  * holds no right on it: it reaches the quarantine through six functions that answer counts, one time and booleans. No
  * foreign key to the image row: the row outlives it, and `post_id` is what still ties a file to its post. A file has
- * three ends at most one of which is set: returned to the store, destroyed (Task 2 adds the release's foreign key), or
+ * three ends at most one of which is set: returned to the store, destroyed (with the release it was destroyed for), or
  * lost (found in neither place by a run with --lost). The insert trigger quarantine_files_insert forces `moved_at`,
  * `unknown`, `post_id` and the ends; quarantine_files_times forces the time of every end and `lost_told`.
  */
@@ -1008,7 +1008,8 @@ export const quarantineFiles = pgTable(
     movedAt: ts("moved_at").notNull(),
     returnedAt: ts("returned_at"),
     destroyedAt: ts("destroyed_at"),
-    releaseId: uuid("release_id"),
+    /** 3d Task 2: the release the file was destroyed for, written by quarantine-record from the release of its post. */
+    releaseId: uuid("release_id").references((): AnyPgColumn => releases.id, { onDelete: "restrict" }),
     lostAt: ts("lost_at"),
     /** Forced with lost_at: the author's notice of the lost file, pending only for an image on a post not sealed for good. */
     lostTold: deliveryState("lost_told"),
@@ -1037,5 +1038,143 @@ export const quarantineFiles = pgTable(
     index("quarantine_files_untold_idx").on(t.mediaId).where(sql`lost_told = 'pending'`),
     // The API's role is granted nothing; this policy only says so to row level security, as 3f's records do.
     pgPolicy("quarantine_files_api_none", { for: "select", to: apiRole, using: sql`false` }),
+  ],
+).enableRLS();
+
+// ---------------------------------------------------------------- the release (3d design, section 6.2; Task 2)
+// The closed lists are the contracts' RELEASE_BASES, RELEASE_LEAVE_FROM and RELEASE_NOTICE_STATES, written out here as
+// the records' lists are; a database test holds each migrated CHECK to its constant.
+const releaseList = (values: readonly string[]) => sql.raw(values.map((value) => `'${value}'`).join(", "));
+
+/**
+ * A leave or an instruction to destroy, from an authority or a court, recorded as a fact of its own by staff.js
+ * release-leave, as the migrator (3d design, section 6.2; review ruling 1): the one thing a release on the ground leave
+ * rests on. An authority's assessment is not in this table and is no ground. The API's role holds no right on it: it
+ * reads a leave only through release_facts. A leave recorded by mistake is withdrawn, never deleted or rewritten: the
+ * guard release_leaves_guard forces withdrawn_at, refuses a withdrawal once a release rests on the leave (leave_used),
+ * and lets nothing else of a recorded leave change but the end of an open untold_until.
+ */
+export const releaseLeaves = pgTable(
+  "release_leaves",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** 3f's record of the report that the leave answers (the seal's, as seal_report finds it). No foreign key into 3f's table. */
+    notificationId: uuid("notification_id").notNull(),
+    /** authority or court (the contracts' `from`; the word is reserved in SQL). */
+    leaveFrom: text("leave_from").notNull(),
+    reference: text("reference").notNull(),
+    /** The day the letter or order bears, not after the day it was recorded. */
+    receivedOn: date("received_on").notNull(),
+    /** The authority forbids telling the person, and until when; null with the mark set is an open end. */
+    untold: boolean("untold").notNull(),
+    untoldUntil: ts("untold_until"),
+    /** Forced now(). */
+    recordedAt: ts("recorded_at").notNull(),
+    recordedBy: text("recorded_by"),
+    /** Forced now() when first written, with withdrawn_by, once. */
+    withdrawnAt: ts("withdrawn_at"),
+    withdrawnBy: text("withdrawn_by"),
+  },
+  (t) => [
+    // ::text, as productions_purposes compares: `authority` is also a value 3f added to intake_channel (the enum-literal rule).
+    check("release_leaves_from", sql`${t.leaveFrom}::text in (${releaseList(["authority", "court"])})`),
+    check("release_leaves_reference", sql`char_length(${t.reference}) between 1 and 200`),
+    check("release_leaves_untold", sql`${t.untold} or ${t.untoldUntil} is null`),
+    check("release_leaves_withdrawn", sql`(${t.withdrawnAt} is null) = (${t.withdrawnBy} is null)`),
+    check("release_leaves_texts", sql`char_length(${t.recordedBy}) <= 200 and char_length(${t.withdrawnBy}) <= 200`),
+    /** release_facts and seal_release: the newest leave of a report that is not withdrawn. */
+    index("release_leaves_notification_idx").on(t.notificationId, t.recordedAt),
+    // The API's role is granted nothing; this policy only says so to row level security, as quarantine_files' does.
+    pgPolicy("release_leaves_api_none", { for: "select", to: apiRole, using: sql`false` }),
+  ],
+).enableRLS();
+
+/**
+ * One row a release (3d design, section 6.2): the one-way end of korbat's keeping of the images of a seal for good, on a
+ * recorded leave, by an admin's confirmed action, or a replay of one after a restore. No role but the owner inserts it:
+ * seal_release and release_replay are its writers, and the deferred releases_confirmed holds an admin's release to its
+ * audit row seal_released at commit. The API's role reads it and moves the author's notice: releases_notice forces its
+ * first state (held while release_tellable answers false) and lets the API move it from held only to pending, and only
+ * once the author may be told.
+ */
+export const releases = pgTable(
+  "releases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** The seal's ledger row the admin named; null for a replay. No foreign key. */
+    sealActionId: uuid("seal_action_id"),
+    /** A held upload's refusal, from Task 7; null for a seal's release. */
+    uploadRefusalId: uuid("upload_refusal_id"),
+    /** The posts released, in id order. */
+    postIds: uuid("post_ids").array().notNull(),
+    basis: text("basis").notNull(),
+    /** The leave the release rests on; null with the basis period. No foreign key: a replay may come before its lost leave is recorded again. */
+    leaveId: uuid("leave_id"),
+    /** The leave's reference, copied from its row. The record's answer is not copied: an assessment is no ground. */
+    theirReference: text("their_reference"),
+    releasedBy: uuid("released_by").references(() => profiles.id, { onDelete: "restrict" }),
+    releasedAt: ts("released_at").notNull(),
+    replayOf: uuid("replay_of"),
+    /** The day after which no backup that is deleted on time holds a released file. */
+    backupsClearAt: ts("backups_clear_at").notNull(),
+    /** One of 3c's delivery states or held, forced at insert by releases_notice. */
+    authorNotice: text("author_notice").notNull(),
+    authorNoticeAt: ts("author_notice_at"),
+    importedAt: ts("imported_at"),
+  },
+  (t) => [
+    check("releases_basis", sql`${t.basis} in (${releaseList(["leave", "period"])})`),
+    check("releases_leave", sql`(${t.basis} = 'leave') = (${t.leaveId} is not null) and (${t.leaveId} is null) = (${t.theirReference} is null)`),
+    check("releases_reference", sql`char_length(${t.theirReference}) between 1 and 200`),
+    check("releases_notice", sql`${t.authorNotice} in (${releaseList(["pending", "sent", "folded", "suppressed", "no_address", "none", "failed", "held"])})`),
+    // An admin's release names its admin; a replay names none, and no seal, and keeps its original's id.
+    check("releases_replay", sql`(${t.replayOf} is null) = (${t.releasedBy} is not null) and (${t.replayOf} is null or ${t.sealActionId} is null)`),
+    unique("releases_replay_of_key").on(t.replayOf),
+    /** The case answer's release block and Appeals' mark: the releases of one seal. */
+    index("releases_seal_idx").on(t.sealActionId),
+    /** The dispatch round's notices: the releases whose notice is pending or held. */
+    index("releases_notice_idx").on(t.releasedAt).where(sql`author_notice in ('pending', 'held')`),
+    fullAccess("releases_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * The release's mark, keyed on the post (3d design, section 2, row 43): a released post is no longer frozen through its
+ * seal, whichever seal row lists it, also a seal for good taken again after a restore. No foreign key to posts: a replay
+ * marks a post the restored database may not hold. Insert-only for its owner; the API's role reads it.
+ */
+export const releasePosts = pgTable(
+  "release_posts",
+  {
+    postId: uuid("post_id").primaryKey(),
+    releaseId: uuid("release_id")
+      .notNull()
+      .references(() => releases.id, { onDelete: "restrict" }),
+  },
+  (t) => [index("release_posts_release_idx").on(t.releaseId), fullAccess("release_posts_api_all", apiRole)],
+).enableRLS();
+
+/**
+ * The day of a release by period, told to the author beforehand (3d design, section 6.2; row 41), keyed on the seal's
+ * ledger row (or, from Task 7, a held upload's refusal). Its one writer is release_announce, which nothing reaches while
+ * release_rules().silence_days is null: the route, the screen and the objection's form are built by the task that sets
+ * the period, on counsel's answer.
+ */
+export const releaseNotices = pgTable(
+  "release_notices",
+  {
+    subjectId: uuid("subject_id").primaryKey(),
+    releaseOn: date("release_on").notNull(),
+    /** Forced now(). */
+    createdAt: ts("created_at").notNull(),
+    told: deliveryState("told").notNull().default("pending"),
+    toldAt: ts("told_at"),
+    objection: text("objection"),
+    objectedAt: ts("objected_at"),
+    objectionAnsweredAt: ts("objection_answered_at"),
+  },
+  (t) => [
+    check("release_notices_objection", sql`(${t.objection} is null) = (${t.objectedAt} is null) and char_length(${t.objection}) between 1 and 2000`),
+    fullAccess("release_notices_api_all", apiRole),
   ],
 ).enableRLS();

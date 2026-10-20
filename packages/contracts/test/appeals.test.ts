@@ -137,6 +137,7 @@ describe("the appeals as the console reads them", () => {
       copy: { newestAt: null, overdue: false },
       restore: { open: 0, measures: 0, importedAt: null },
       quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null },
+      destructive: [],
     };
     expect(StaffOverview.parse(overview)).toEqual(overview);
     for (const member of ["appealsWaiting", "appealsYouMayReview", "appealsWithoutReviewer"]) {

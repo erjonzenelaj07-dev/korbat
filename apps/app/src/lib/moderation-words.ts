@@ -257,6 +257,24 @@ export const IMAGE_FAULT_WORDS = {
   lost: IMAGE_LOST_NOTICE.onImage,
 } as const;
 
+/**
+ * 3d Task 2 (design, sections 7.2 and 9.6; W.6): a release of sealed images of the author's posts, on its screen under
+ * Settings, Cases, and its entry in "About you". The notice's paragraphs are RELEASE_NOTICE's (packages/rules), which the
+ * mail release_notice shares; these are the screen's own words around them. None names an authority, a reference or an
+ * assessment.
+ */
+export const RELEASE_TEXTS = {
+  title: "Sealed images released",
+  /** The entry in "About you", with its day. */
+  entry: "Sealed images released",
+  entryOn: (day: string) => `On ${day}`,
+  noticesTitle: "Notices",
+  /** The link to the decision that sealed, and [release.appeal] while an appeal of it waits. */
+  decision: "The decision that sealed the images",
+  appeal: "Your appeal is still open. An admin reviews it; korbat has released the images and will not show them again.",
+  notFound: "That notice does not exist, or it is not about your posts.",
+} as const;
+
 /** The terms page's Contact section, built from the build's contact address; it is not part of the terms' own sections. */
 export const CONTACT_WORDS = {
   title: "Contact",
