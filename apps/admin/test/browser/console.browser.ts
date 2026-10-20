@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ANNEX3_GROUND_LABELS, AUDIT_EXPORT_MAX, DISPOSITION_LABELS, GAP_CLASSES, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, SEAL_DRAFTS, type ContactMessage, type RestoreGap } from "@korbat/contracts";
+import { ANNEX3_GROUND_LABELS, AUDIT_EXPORT_MAX, DISPOSITION_LABELS, GAP_CLASSES, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, QUARANTINE_RULES, SEAL_DRAFTS, type CaseView, type ContactMessage, type RestoreGap } from "@korbat/contracts";
 import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
+import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, CUSTODY_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
@@ -2163,6 +2163,88 @@ describe("the staff console in Chromium, under the console site's policy", () =>
   });
 
   // ---------------------------------------------------------------- 3f Task 7: every screen 3f gave the console, in one pass
+
+  // ---------------------------------------------------------------- 3d Task 1: the quarantine, at a phone's width
+
+  /** The case as the fixtures hold it, with a seal for good of its own, in force or lifted, whose custody is as given. */
+  function withSealForGood(view: CaseView, custody: NonNullable<CaseView["decisions"][number]["custody"]>, inForce: boolean): CaseView {
+    const interim = view.decisions[0]!;
+    return {
+      ...view,
+      decisions: [
+        ...view.decisions,
+        {
+          ...interim,
+          id: "a3142536-4758-496a-9bd7-f20314253647",
+          kind: "final",
+          needsAdmin: true,
+          decidedAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+          actions: [{ ...interim.actions[0]!, id: "b4253647-5869-4a7b-8ce8-031425364758", noEffect: null, inForce }],
+          custody,
+        },
+      ],
+    };
+  }
+
+  test("3d Task 1: at 360 by 740 px, Home shows [home.quarantine] in the block Sealed files and programs, and from the alert's threshold that every staff account is alerted daily", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const oldest = new Date(Date.now() - (QUARANTINE_RULES.dueHours + 2) * 3_600_000).toISOString();
+    fixtures.state.quarantine = { dueIn: 2, dueOut: 1, undestroyed: 0, oldest };
+    try {
+      await page.goto(`${origin}/`);
+      await shown(page.getByRole("heading", { name: CUSTODY_WORDS.homeTitle }));
+      const line = page.locator(".authorities p", { hasText: "Files to move or return" });
+      expect(await line.textContent()).toBe(`${CUSTODY_WORDS.homeQuarantine(2, 1, bothTimes(oldest))} ${CUSTODY_WORDS.homeQuarantineLate}`);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.quarantine = { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null };
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 1: at 360 by 740 px, a seal for good's [case.custody.in]: some files in the quarantine since a time, the others still in the image store", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const view = fixtures.state.cases.get(CASE_FROZEN)!;
+    const movedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    fixtures.state.cases.set(CASE_FROZEN, withSealForGood(view, { files: 4, moved: 2, movedAt, toReturn: 0, filesLeft: 0, lost: 0 }, true));
+    try {
+      await page.goto(`${origin}/cases/${CASE_FROZEN}`);
+      const line = page.locator(".custody p").first();
+      await shown(line);
+      expect(await line.textContent()).toBe(`${CUSTODY_WORDS.custodyIn(2, 4, bothTimes(movedAt))} ${CUSTODY_WORDS.custodyInRest}`);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.cases.set(CASE_FROZEN, view);
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 1: at 360 by 740 px, a lifted seal's [case.custody.return], and [case.custody.lost] under a seal that stands and after a lifted one", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const view = fixtures.state.cases.get(CASE_FROZEN)!;
+    const movedAt = new Date(Date.now() - 5 * 3_600_000).toISOString();
+    try {
+      const steps: [NonNullable<CaseView["decisions"][number]["custody"]>, boolean, string][] = [
+        [{ files: 2, moved: 2, movedAt, toReturn: 2, filesLeft: 0, lost: 0 }, false, CUSTODY_WORDS.custodyReturn(2)],
+        [{ files: 4, moved: 2, movedAt, toReturn: 0, filesLeft: 0, lost: 2 }, true, CUSTODY_WORDS.custodyLost(2, true)],
+        [{ files: 2, moved: 0, movedAt: null, toReturn: 0, filesLeft: 0, lost: 2 }, false, CUSTODY_WORDS.custodyLost(2, false)],
+      ];
+      for (const [custody, inForce, words] of steps) {
+        fixtures.state.cases.set(CASE_FROZEN, withSealForGood(view, custody, inForce));
+        await page.goto(`${origin}/cases/${CASE_FROZEN}`);
+        await shown(page.getByText(words, { exact: true }));
+        // A lifted seal's custody says nothing of a move in.
+        if (!inForce) expect(await page.locator(".custody p", { hasText: "are in the quarantine, since" }).count()).toBe(0);
+        await texts();
+        await cleanOnPhone();
+      }
+    } finally {
+      fixtures.state.cases.set(CASE_FROZEN, view);
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
 
   test("3f Task 7: at 360 by 740 px, every screen of 8.10 once more in one pass, under the phone's rules: Home with its 3f lines, Contact point, Orders, an order, its case, the audit log with its download and key filter, After a restore", async () => {
     await page.setViewportSize({ width: 360, height: 740 });

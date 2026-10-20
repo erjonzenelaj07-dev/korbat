@@ -106,6 +106,13 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   // 3f Task 5: the image rows of one seal's posts, by id, for handover-list, which prints their stored names; it opens no
   // file, and the hand-over's program, which copies the files, has no database.
   sealImageRows: { is: "neither", why: "answers the ids of the image rows of a seal's posts for handover-list, never a file or its content" },
+  // 3d Task 1: the quarantine's custody of an image, the lost images' notices, and the plan and the seals' counts that
+  // quarantine-list prints from; none opens a file, and the mover, which moves the files, has no database.
+  custody: { is: "neither", why: "answers two booleans of the quarantine's record (being restored, lost), asked only for a visible image whose file is missing" },
+  lostUntold: { is: "neither", why: "answers the ids of images whose files are lost, with their owner and post time, for the notice; never a file" },
+  lostTold: { is: "neither", why: "records a lost image's notice's outcome, and reads nothing" },
+  quarantinePlan: { is: "neither", why: "answers the quarantine's plan, image ids and the store's names, for quarantine-list as the migrator; never a file or its content" },
+  sealedForGoodCounts: { is: "neither", why: "answers how many image rows each post sealed for good holds, for quarantine-list, and nothing of an image" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 

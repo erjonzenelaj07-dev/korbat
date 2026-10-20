@@ -455,6 +455,126 @@ describe("the hand-over's boundary (3f Task 5)", () => {
   });
 });
 
+/**
+ * The quarantine's mover (3d design, section 5 "The services"; 12.1 rows 13 and 14): quarantine.ts, an entry point of its
+ * own (dist/quarantine.js), is as bare as the hand-over: it imports nothing under ./ and only Node's own modules, none
+ * that opens a socket or a process, and nothing imports it.
+ */
+function findQuarantineViolations(files: SourceFile[]): string[] {
+  const violations: string[] = [];
+  for (const { path, source } of files) {
+    for (const spec of specifiers(source)) {
+      if (path === "quarantine.ts") {
+        if (spec.startsWith(".")) violations.push(`${path}: imports ${spec}, a module of the API`);
+        else if (!spec.startsWith("node:")) violations.push(`${path}: imports ${spec}, which is not one of Node's own modules`);
+        else if (SOCKET_MODULES.has(spec)) violations.push(`${path}: imports ${spec}, which can open a socket or a process`);
+      } else if (spec.startsWith(".") && posix.normalize(posix.join(posix.dirname(path), spec)).replace(/[.]ts$/, "") === "quarantine") {
+        violations.push(`${path}: imports ${spec}, the quarantine's mover`);
+      }
+    }
+  }
+  return violations;
+}
+
+const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+const LF = String.fromCharCode(10);
+
+/** The service blocks of a Compose file's services section, by name, as text: from a service's name to the next one's. */
+function composeServices(text: string): Map<string, string> {
+  const head = `${LF}services:${LF}`;
+  const section = text.slice(text.indexOf(head) + head.length - 1);
+  // The section ends at the next top-level key.
+  const end = section.slice(1).search(new RegExp(`${LF}[a-z][a-z0-9_-]*:`));
+  const body = end === -1 ? section : section.slice(0, end + 1);
+  const blocks = new Map<string, string>();
+  const names = [...body.matchAll(new RegExp(`${LF} {2}([a-z][a-z0-9_-]*):${LF}`, "g"))];
+  names.forEach((match, i) => blocks.set(match[1]!, body.slice(match.index!, names[i + 1]?.index ?? body.length)));
+  return blocks;
+}
+
+/**
+ * Who mounts the quarantine (3d design, section 5; 12.1 row 14): in compose.yml only `quarantine`, read-write, and
+ * `handover`, read-only, name the volume media-quarantine, and compose.dev.yml names it nowhere, so neither the api, the
+ * migrate nor the worker service mounts it. The mover has no network, no environment, every capability dropped, a
+ * read-only root and the two volumes alone; the worker keeps network_mode: none.
+ */
+function findComposeViolations(compose: string, dev: string): string[] {
+  const violations: string[] = [];
+  const services = composeServices(compose);
+  for (const [name, block] of services) {
+    const mounts = block.split(LF).filter((line) => line.includes("media-quarantine"));
+    if (mounts.length === 0) continue;
+    const expected = name === "quarantine" ? "- media-quarantine:/media/quarantine" : name === "handover" ? "- media-quarantine:/media/quarantine:ro" : null;
+    if (expected === null) violations.push(`compose.yml: ${name} names media-quarantine`);
+    else if (mounts.map((line) => line.trim()).join("|") !== expected) violations.push(`compose.yml: ${name} mounts media-quarantine otherwise than ${expected}`);
+  }
+  for (const [name, block] of composeServices(dev)) {
+    if (block.includes("media-quarantine")) violations.push(`compose.dev.yml: ${name} names media-quarantine`);
+  }
+  const mover = services.get("quarantine");
+  if (!mover) violations.push("compose.yml: no service quarantine");
+  else {
+    for (const line of ["network_mode: none", "read_only: true", "cap_drop: [ALL]", '"no-new-privileges:true"', 'profiles: ["quarantine"]', 'entrypoint: ["node", "dist/quarantine.js", "/media/store", "/media/quarantine"]']) {
+      if (!mover.includes(line)) violations.push(`compose.yml: quarantine lacks ${line}`);
+    }
+    for (const key of ["environment:", "env_file:", "networks:", "ports:", "secrets:"]) {
+      if (mover.includes(key)) violations.push(`compose.yml: quarantine has ${key}`);
+    }
+    const volumes = mover
+      .split(LF)
+      .filter((line) => /^ {6}- /.test(line))
+      .map((line) => line.trim());
+    if (volumes.join("|") !== "- media-store:/media/store|- media-quarantine:/media/quarantine") violations.push(`compose.yml: quarantine mounts ${volumes.join(", ")}`);
+  }
+  if (!services.get("worker")?.includes("network_mode: none")) violations.push("compose.yml: worker has a network");
+  return violations;
+}
+
+describe("the quarantine's boundary (3d Task 1)", () => {
+  test("quarantine.ts imports only Node's own modules and none that opens a socket, and nothing imports it", () => {
+    const files = loadSources();
+    expect(files.map((file) => file.path)).toContain("quarantine.ts");
+    expect(findQuarantineViolations(files)).toEqual([]);
+  });
+
+  test("catches an import of an API module or a package from the mover, a socket's module, and an import of the mover", () => {
+    expect(
+      findQuarantineViolations([
+        { path: "quarantine.ts", source: 'import { storedImageName } from "./media"; import { z } from "zod"; import { request } from "node:https"; import { open } from "node:fs/promises";' },
+        { path: "cli/custody.ts", source: 'import { runQuarantine } from "../quarantine";' },
+      ]),
+    ).toEqual([
+      "quarantine.ts: imports ./media, a module of the API",
+      "quarantine.ts: imports zod, which is not one of Node's own modules",
+      "quarantine.ts: imports node:https, which can open a socket or a process",
+      "cli/custody.ts: imports ../quarantine, the quarantine's mover",
+    ]);
+  });
+
+  test("only quarantine (read-write) and handover (read-only) mount media-quarantine; the mover is bare and the worker keeps no network", () => {
+    const compose = readFileSync(join(REPO_ROOT, "infra", "compose.yml"), "utf8");
+    const dev = readFileSync(join(REPO_ROOT, "infra", "compose.dev.yml"), "utf8");
+    expect([...composeServices(compose).keys()]).toEqual(expect.arrayContaining(["api", "migrate", "worker", "handover", "quarantine"]));
+    expect(findComposeViolations(compose, dev)).toEqual([]);
+  });
+
+  test("catches the volume in the api or the development file, a writable hand-over and a mover with an environment", () => {
+    const compose = readFileSync(join(REPO_ROOT, "infra", "compose.yml"), "utf8");
+    const dev = readFileSync(join(REPO_ROOT, "infra", "compose.dev.yml"), "utf8");
+    const broken = compose
+      .replace(`      - media-store:/media/store:ro${LF}      - media-quarantine:/media/quarantine:ro`, `      - media-store:/media/store:ro${LF}      - media-quarantine:/media/quarantine`)
+      .replace(`      - media-uploads:/media/uploads${LF}`, `      - media-uploads:/media/uploads${LF}      - media-quarantine:/media/quarantine:ro${LF}`)
+      .replace(`    profiles: ["quarantine"]${LF}`, `    profiles: ["quarantine"]${LF}    environment:${LF}      X: "1"${LF}`);
+    const devBroken = dev.replace(`  api:${LF}`, `  api:${LF}    volumes: [media-quarantine:/media/quarantine]${LF}`);
+    expect(findComposeViolations(broken, devBroken)).toEqual([
+      "compose.yml: api names media-quarantine",
+      "compose.yml: handover mounts media-quarantine otherwise than - media-quarantine:/media/quarantine:ro",
+      "compose.dev.yml: api names media-quarantine",
+      "compose.yml: quarantine has environment:",
+    ]);
+  });
+});
+
 describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);

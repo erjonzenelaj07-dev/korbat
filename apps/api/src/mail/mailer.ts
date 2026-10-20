@@ -76,7 +76,13 @@ export type TemplateName =
   | "handover_undestroyed"
   | "order_notice"
   | "order_reinstated_notice"
-  | "order_notice_added";
+  | "order_notice_added"
+  // Transparency and automation (3d design, sections 7.15 and 18, W.7 and W.8). Task 1: a move of sealed files into the
+  // quarantine or back that is due, and files the quarantine's record says are lost, each a staff alert whose mail is
+  // its push's sentence; and the one mail to an author whose image's files korbat lost while they were kept apart.
+  | "quarantine_due"
+  | "quarantine_lost"
+  | "image_lost";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

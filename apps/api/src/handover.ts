@@ -10,9 +10,13 @@
  * `staff.js handover-record` stores. It decodes nothing and shows nothing. A missing file, or anything that is not a plain
  * file of the store, ends it with exit 1 and no archive.
  *
+ * 3d (design, sections 5 and 7.1; section 2, row 38): the files of a seal for good are moved out of the store into the
+ * quarantine, so the program looks for each listed file in the quarantine first and in the store otherwise: a seal taken
+ * while deciding still has its files in the store. The service mounts both read-only.
+ *
  * It opens no database and no socket, and imports no module of the API: the service has no network, mounts the image
- * store read-only, and holds no credential, so the program that reads sealed files can send them nowhere, and the
- * database's most privileged role never mounts the store. It keeps its own copy of the store's naming rule (the media
+ * store and the quarantine read-only, and holds no credential, so the program that reads sealed files can send them
+ * nowhere, and the database's most privileged role never mounts the store. It keeps its own copy of the store's naming rule (the media
  * module's storedImageName); a unit test feeds both the same names and fails when they differ.
  */
 import { createHash } from "node:crypto";
@@ -22,8 +26,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { crc32 } from "node:zlib";
 
-/** Where the service mounts the image store, read-only, and the operator's directory for the archive. */
+/** Where the service mounts the image store and the quarantine, both read-only, and the operator's directory for the archive. */
 export const HANDOVER_STORE = "/media/store";
+export const HANDOVER_QUARANTINE = "/media/quarantine";
 export const HANDOVER_OUT = "/handover";
 
 /** The sizes the worker stores of every image, as the contracts' MEDIA_SIZES lists them. */
@@ -131,11 +136,11 @@ export function zipStored(files: readonly { name: string; data: Buffer }[]): Buf
 /** Follows no symlink at the last path component where the platform can say so, and never waits on a FIFO. */
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
-/** The bytes of a plain file of the store, or null for anything else (missing, a directory, a link, a device). */
-async function readStored(store: string, name: string): Promise<Buffer | null> {
+/** The bytes of a plain file under the root, or null for anything else (missing, a directory, a link, a device). */
+async function readStored(root: string, name: string): Promise<Buffer | null> {
   let handle;
   try {
-    handle = await open(path.join(store, ...name.split("/")), READ_FLAGS);
+    handle = await open(path.join(root, ...name.split("/")), READ_FLAGS);
   } catch {
     return null;
   }
@@ -153,6 +158,8 @@ export interface HandoverOptions {
   /** The list on standard input. */
   input: string;
   store: string;
+  /** 3d: the quarantine's root, where the files of a seal for good are: read first. */
+  quarantine: string;
   out: string;
   log: (line: string) => void;
   error: (line: string) => void;
@@ -187,9 +194,10 @@ export async function runHandover(options: HandoverOptions): Promise<number> {
   // Every file is read before anything is written: a missing one leaves no archive behind.
   const files: { name: string; data: Buffer }[] = [];
   for (const name of names) {
-    const data = await readStored(options.store, name);
+    // 3d: the quarantine first, where a seal for good's files are once moved; the store for a seal taken while deciding.
+    const data = (await readStored(options.quarantine, name)) ?? (await readStored(options.store, name));
     if (data === null) {
-      options.error(`handover: ${name} is missing or is not a plain file of the store; no archive was written`);
+      options.error(`handover: ${name} is missing or is not a plain file of the quarantine or the store; no archive was written`);
       return 1;
     }
     files.push({ name, data });
@@ -255,7 +263,7 @@ async function readInput(): Promise<string> {
 const invokedDirectly = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   void readInput()
-    .then((input) => runHandover({ input, store: HANDOVER_STORE, out: HANDOVER_OUT, log: (line) => console.log(line), error: (line) => console.error(line) }))
+    .then((input) => runHandover({ input, store: HANDOVER_STORE, quarantine: HANDOVER_QUARANTINE, out: HANDOVER_OUT, log: (line) => console.log(line), error: (line) => console.error(line) }))
     .then((code) => {
       process.exitCode = code;
     });

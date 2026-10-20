@@ -16,6 +16,8 @@
  *   docker compose -f infra/compose.yml run --rm api node dist/staff.js audit-export [--after <place>]   (3f: cli/restore.ts)
  *   cat <files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js restore-import [<place>:<hash> ...]
  *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js tco-counts <year>   (3f: cli/counts.ts)
+ *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js quarantine-list > list   (3d: cli/custody.ts)
+ *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js quarantine-record < receipt
  *
  * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
  * staff member's personal accounts for the recusal check and limits sets the limits on staff, each as the migrator, in
@@ -52,6 +54,7 @@ import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../staff";
 import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 import { mailerFor, type CommandLineMailSettings } from "./mail";
 import { COUNT_COMMANDS, COUNT_USAGE, countCommand, parseCountArgs, type CountCommand, type CountCommandName } from "./counts";
+import { CUSTODY_COMMANDS, CUSTODY_USAGE, custodyCommand, parseCustodyArgs, type CustodyCommand, type CustodyCommandName } from "./custody";
 import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCommand, type OrderCommandName } from "./orders";
 import { RECORD_COMMANDS, RECORD_USAGE, authorityHoldsFor, parseRecordArgs, recordCommand, type RecordCommand, type RecordCommandName } from "./records";
 import { RESTORE_COMMANDS, RESTORE_USAGE, auditExport, parseRestoreArgs, restoreImport, type RestoreCommand, type RestoreCommandName } from "./restore";
@@ -87,6 +90,8 @@ export const STAFF_USAGE = [
   ...RESTORE_USAGE,
   // 3f Task 7 (design, sections 7.18 and 8.11): the yearly counts, read-only, as the migrator in the migrate service.
   ...COUNT_USAGE,
+  // 3d Task 1 (design, section 8.10): the quarantine's list and record, as the migrator in the migrate service.
+  ...CUSTODY_USAGE,
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -114,7 +119,9 @@ export type StaffCommand =
   // Task 6: audit-export and restore-import, whose words cli/restore.ts reads.
   | { command: "restore"; restore: RestoreCommand }
   // Task 7: tco-counts, whose words cli/counts.ts reads.
-  | { command: "counts"; counts: CountCommand };
+  | { command: "counts"; counts: CountCommand }
+  // 3d Task 1: quarantine-list and quarantine-record, whose words cli/custody.ts reads.
+  | { command: "custody"; custody: CustodyCommand };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
 const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
@@ -198,6 +205,7 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
       if ((RECORD_COMMANDS as readonly string[]).includes(command)) return { command: "record", record: parseRecordArgs(command as RecordCommandName, rest) };
       if ((RESTORE_COMMANDS as readonly string[]).includes(command)) return { command: "restore", restore: parseRestoreArgs(command as RestoreCommandName, rest) };
       if ((COUNT_COMMANDS as readonly string[]).includes(command)) return { command: "counts", counts: parseCountArgs(command as CountCommandName, rest) };
+      if ((CUSTODY_COMMANDS as readonly string[]).includes(command)) return { command: "custody", custody: parseCustodyArgs(command as CustodyCommandName, rest) };
       throw new Error(`unknown command: ${command}\n${STAFF_USAGE}`);
   }
 }
@@ -984,6 +992,7 @@ export async function runStaffCommand(
   if (command.command === "record") return runRecordCommand(command.record, env, out, input);
   if (command.command === "restore") return runRestoreCommand(command.restore, env, out, input);
   if (command.command === "counts") return runCountCommand(command.counts, env, out);
+  if (command.command === "custody") return runCustodyCommand(command.custody, env, out, input);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -1304,6 +1313,40 @@ async function runCountCommand(command: CountCommand, env: Record<string, string
     }
     for (const line of done.lines) out.log(line);
     return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
+  }
+}
+
+// ---------------------------------------------------------------- the quarantine (3d Task 1)
+
+/**
+ * quarantine-list and quarantine-record (3d design, sections 7.1 and 8.10), on the migrator's own connection, which reads
+ * only DATABASE_URL_MIGRATE. The list's lines go to standard output, as the quarantine service reads them, and its count
+ * and the posts it left out to standard error; the record's summary to standard output and each line it reported to
+ * standard error. Each exits 1 after its work when it left out a post or reported a line.
+ */
+async function runCustodyCommand(command: CustodyCommand, env: Record<string, string | undefined>, out: Output, input: () => Promise<Buffer>): Promise<number> {
+  let url: string;
+  try {
+    url = migratorUrl(command.command, env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    const done = await custodyCommand(migrateDb, command, input);
+    if (!done.ok) {
+      out.error(done.problem);
+      return 1;
+    }
+    for (const line of done.lines) out.log(line);
+    for (const note of done.notes) out.error(note);
+    return done.failed ? 1 : 0;
   } catch (err) {
     out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
     return 1;

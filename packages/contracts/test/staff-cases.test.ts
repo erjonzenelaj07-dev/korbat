@@ -470,6 +470,7 @@ describe("the queue and the overview", () => {
       // them, and when the newest import ran.
       copy: { newestAt: TIME, overdue: true },
       restore: { open: 3, measures: 2, importedAt: TIME },
+      quarantine: { dueIn: 1, dueOut: 2, undestroyed: 0, oldest: TIME },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
     expect(StaffOverview.safeParse({ ...overview, copy: { newestAt: null } }).success).toBe(false);

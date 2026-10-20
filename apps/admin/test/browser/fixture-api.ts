@@ -791,6 +791,8 @@ export function createFixtureApi() {
     exportCut: null as number | null,
     copy: { newestAt: iso(now - 2 * HOUR), overdue: false } as StaffOverview["copy"],
     restoreOverview: { open: 0, measures: 0, importedAt: null } as StaffOverview["restore"],
+    /** 3d Task 1: the quarantine's four values, as quarantine_counts() answers them through the overview. */
+    quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null } as StaffOverview["quarantine"],
     restore: NO_RESTORE,
     gapsClosed: [] as string[],
     /** 3f, Task 2: the orders the walk opened, as their pages stand, and every write the page sent for them, with whether a key confirmed it. */
@@ -1178,6 +1180,7 @@ export function createFixtureApi() {
           reportsOwed: state.reportsOwed,
           copy: state.copy,
           restore: state.restoreOverview,
+          quarantine: state.quarantine,
         }),
       };
     }

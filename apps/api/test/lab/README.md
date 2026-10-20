@@ -365,3 +365,13 @@ in half of them; every side rolls back. PostgreSQL 18 in the scratch stack's con
   id order before any case, so the seal (which takes its author's profile first) and the purge (which takes its
   account's profile first) wait for it or it for them, and the intakes meet it at the cases, which both take in one
   order. The longest side is the effect's own time plus one wait for the other, which rolls back after 15 ms.
+
+## automation/: the lab of transparency and automation (sub-project 3d)
+
+`automation/` is the lab the 3d design rests on (its section 3, LAB A, C, D and E), copied here unchanged but for its
+line ends from `korbat-scratch/research-3d/lab-3d/`, which lies outside the repository: `RUN.txt` holds every command
+and the machine it ran on, `make_proto.py` and `30-tables.sql` the prototype, `31-helpers.sql` the API's statements, the
+lettered SQL files the labs themselves, and `out-*.txt` their raw outputs. It ran on a throwaway cluster of PostgreSQL
+18.6 over the migrations 0000 to 0017, with stand-ins for statements that 3e and 3f have since changed, so it is the
+record of what was measured and is not run (3d design, section 12.3): Tasks 2, 6 and 7 turn each case it accepted and
+each refusal it measured into a test on the built code.

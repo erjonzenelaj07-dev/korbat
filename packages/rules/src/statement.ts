@@ -940,3 +940,17 @@ function orderNoticeParagraphs(input: StatementInput, extras: OrderNoticeExtras)
   paragraphs.push(N.wrongItem);
   return paragraphs;
 }
+
+// ---------------------------------------------------------------- an image korbat lost (3d design, sections 7.1, 9.6; W.8)
+
+/**
+ * The words about an image whose files korbat lost while they were kept apart in the quarantine (3d design, sections 7.1
+ * and 9.6; W.8): the mail `image_lost`, sent once, with the day of the post the image is on, and the sentence the app
+ * prints in the place of that image for its author ([image.lost]). Neither names a file, a seal or a person; neither
+ * tells the author to wait, since the image cannot come back.
+ */
+export const IMAGE_LOST_NOTICE = {
+  mail: (createdAt: string) =>
+    `korbat lost the files of an image of your post of ${createdAt} while they were kept apart from its other images. The image cannot be shown again. You can delete the post, or post the image again. This is korbat's fault, not a decision about you.`,
+  onImage: "korbat lost this image's files while they were kept apart from its other images. It cannot be shown again. You can delete the post, or post the image again.",
+} as const;

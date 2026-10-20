@@ -1,0 +1,51 @@
+== E1 the raw cells of 2025 (never published)
+ ground | count 
+--------+-------
+ law    |     4
+ R1     |    61
+ R2     |     3
+ R3     |    94
+ R4     |    35
+ R5     |    12
+ R6     |     7
+(7 rows)
+
+== E2 the edition of 2025 as computed on 2026-10-09
+      label       | exact | published 
+------------------+-------+-----------
+ all restrictions |   216 | about 220
+ other grounds    |    14 | about 10
+ R1               |    61 | about 60
+ R3               |    94 | about 90
+ R4               |    35 | about 40
+ R5               |    12 | about 10
+(6 rows)
+
+== E3 the edition of 2025 asked for on 2026-02-28, and the open year 2026 asked for today
+ERROR:  edition_not_due
+ERROR:  edition_not_due
+== E4 subtraction: the published total minus the published rows leaves a range, not a number
+                    rows_published                    | total_published 
+------------------------------------------------------+-----------------
+ about 10 + about 60 + about 90 + about 40 + about 10 | about 220
+(1 row)
+
+== E5 orders of 2025 countable on 2026-03-01: one of the two is under a hold until 2027
+ counted | exact_in_database 
+---------+-------------------
+ 1 to 9  |                 2
+(1 row)
+
+== E6 the rate rule: found by automated means under R1 in 2025, and the share a person then restricted, printed only when the base is ten or more
+ r1_found_by_program |  r1_all  
+---------------------+----------
+ about 20            | about 60
+(1 row)
+
+== E7 cost on 20000 more decisions
+ rows_of_edition_2024 
+----------------------
+                    7
+(1 row)
+
+Time: 21.453 ms

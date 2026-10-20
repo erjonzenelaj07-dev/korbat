@@ -1,0 +1,46 @@
+== C1 a match on d02 of post b02 (two images): the automated seal while an admin decides
+t
+level=visible images=[sealed,sealed] frozen=t in_force=[interim:seal_media]
+decision: kind=interim suspect=t detection=t decision=fully needs_admin=f; seal_posts: post ..b02 images=2
+== C2 gate K while frozen: the API role deletes the image rows of b02 (rows deleted, then rows left)
+0
+2
+== C3 a person seals while deciding on the same case, the automatic seal in force (admin A)
+t
+WARNING:  there is no transaction in progress
+level=visible images=[sealed,sealed] frozen=t in_force=[interim:seal_media,interim:seal_media]
+== C4 the other order (b07): a
+unterminated quoted string
+t
+t
+level=visible images=[sealed] frozen=t in_force=[interim:seal_media]
+t
+WARNING:  there is no transaction in progress
+level=visible images=[sealed] frozen=t in_force=[interim:seal_media,interim:seal_media]
+== C5 the fallback for a match (act off) on b06: the finding freezes, nothing is sealed
+t
+level=visible images=[visible] frozen=t in_force=[]
+== C6 an automatic seal that an admin answers without a seal (b03): the seal ends with the answer
+t
+level=visible images=[sealed,sealed] frozen=t in_force=[interim:seal_media]
+-- a moderator may not answer it
+ERROR:  admin_required
+WARNING:  there is no transaction in progress
+t
+level=visible images=[visible,visible] frozen=f in_force=[]
+the answer: unseen=t suspect=t detection=t decision=not_automated
+== C7 the seal for good on b02: a moderator is refused, the admin seals unseen
+ERROR:  admin_required
+WARNING:  there is no transaction in progress
+t
+level=visible images=[sealed,sealed] frozen=t in_force=[final:seal_media]
+interim by system: unseen=f detection=t decision=fully needs_admin=f
+interim by staff: unseen=f detection=t decision=partially needs_admin=f
+final by staff: unseen=t detection=t decision=partially needs_admin=t
+== D1 the release refused: not reported; reported without an answer; answered not_illegal; a seal taken while deciding
+ERROR:  release_not_reported
+ERROR:  release_not_for_answer
+ERROR:  release_period_unset
+ERROR:  release_not_for_answer
+ERROR:  release_not_open
+level=visible images=[sealed,sealed] frozen=t in_force=[final:seal_media]

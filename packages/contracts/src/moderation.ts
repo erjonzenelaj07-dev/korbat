@@ -1499,6 +1499,23 @@ export const CaseDecisionAction = z.object({
 export type CaseDecisionAction = z.infer<typeof CaseDecisionAction>;
 
 /**
+ * 3d (design, sections 6.1 and 10.3): the custody of one seal for good's files, the answer of seal_custody(action). `files`
+ * is two for each image row of the seal's posts that is not erased; `moved` how many of those files are in the quarantine,
+ * and `movedAt` the newest time one was recorded there (null when none is); `toReturn` the files of the seal's posts that
+ * the quarantine's plan lists for a return to the image store; `filesLeft` the files of its released posts not yet
+ * destroyed (0 until the release exists); `lost` the files of its posts that are recorded as lost.
+ */
+export const SealCustody = z.object({
+  files: Count,
+  moved: Count,
+  movedAt: z.iso.datetime().nullable(),
+  toReturn: Count,
+  filesLeft: Count,
+  lost: Count,
+});
+export type SealCustody = z.infer<typeof SealCustody>;
+
+/**
  * A decision as the case page shows it: the statement's data, who decided (a staff handle), the stored facts that it
  * was taken on a suspicion and with the images out of sight, and its measures. A text is null when the decision has
  * none of that kind or it was erased.
@@ -1536,6 +1553,12 @@ export const CaseDecision = z.object({
    * Absent where none rests on it.
    */
   standingOn: z.array(z.object({ kind: z.enum(["suspend", "terminate", "restrict_reporting"]), basis: z.enum(STANDING_BASES) })).optional(),
+  /**
+   * 3d Task 1 (design, sections 6.1, 8.4 and 10.3): on a decision that is not interim and holds a seal_media, where its
+   * seal's files are, as seal_custody answers it for that seal: counts and one time, never a file's name or digest and no
+   * list by image ([case.custody.in], [case.custody.return], [case.custody.lost]). Absent on every other decision.
+   */
+  custody: SealCustody.optional(),
 });
 export type CaseDecision = z.infer<typeof CaseDecision>;
 
@@ -2170,6 +2193,30 @@ const HandleCount = z.object({ handle: z.string(), count: Count });
  * choices not to seal of the last 30 days, and the seals taken while deciding that are in force, each with what it
  * covers. Counts, times, handles and cases only.
  */
+/**
+ * 3d (design, sections 6.1, 8.1 and 10.3): the quarantine's four values on the home screen, those of quarantine_counts()
+ * and nothing else: how many images are to be moved into the quarantine and how many returned to the image store, how
+ * many images have files to destroy, and since when the oldest move in or out has been due (null when none is).
+ */
+export const QuarantineCounts = z.object({ dueIn: Count, dueOut: Count, undestroyed: Count, oldest: z.iso.datetime().nullable() });
+export type QuarantineCounts = z.infer<typeof QuarantineCounts>;
+
+/**
+ * 3d (design, sections 6.1, 7.1, 8.10 and 10.1): the four directions of a line of staff.js quarantine-list, and the words
+ * the one-shot mover prints at the end of a line of its receipt: for a move in or out, `done`, `already` (the file was
+ * where its direction wants it), `missing` (in neither place), `lost` (the same, on a run with --lost) or `refused` (a
+ * name outside the store's layout, or a copy whose digest differs); for a destroy line, where the file was found
+ * (`quarantine`, `store`, `both`), `already` when it was in neither, or `refused` for a name outside the layout; and the
+ * line kind `have` of an inventory. The mover, which imports nothing, keeps its own copy, held equal to this by a test.
+ */
+export const QUARANTINE_DIRECTIONS = ["in", "out", "destroy", "operator"] as const;
+export type QuarantineDirection = (typeof QUARANTINE_DIRECTIONS)[number];
+export const QUARANTINE_WORDS = {
+  move: ["done", "already", "missing", "lost", "refused"],
+  destroy: ["quarantine", "store", "both", "already", "refused"],
+  have: "have",
+} as const;
+
 export const StaffOverview = z.object({
   lanes: z.array(z.object({ lane: LaneNumber, open: Count, oldestAt: z.iso.datetime().nullable() })).length(3),
   appealsWaiting: Count,
@@ -2214,6 +2261,8 @@ export const StaffOverview = z.object({
    */
   copy: z.object({ newestAt: z.iso.datetime().nullable(), overdue: z.boolean() }),
   restore: z.object({ open: Count, measures: Count, importedAt: z.iso.datetime().nullable() }),
+  /** 3d Task 1 (sections 7.1, 8.2 and 10.3): the quarantine's counts, from quarantine_counts() alone ([home.quarantine]). */
+  quarantine: QuarantineCounts,
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
 

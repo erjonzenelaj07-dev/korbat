@@ -1,0 +1,39 @@
+LAB 3d, run 2026-10-09 between about 19:30 and 19:50 local time (the outputs' times are UTC).
+
+Where it ran. One throwaway container, korbat3d-lab-1, from the local image postgres:18 (no pull, no build):
+"PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu", trust authentication, no published port, every
+statement through `docker exec ... psql`. No other container was touched. The container was removed at the end
+(docker rm -f korbat3d-lab-1).
+
+Schema. Roles as research-3e/lab-3f/00-roles.sql (copied here). Migrations 0000 to 0017 of the scratch clone at HEAD
+aab8345, each with `psql -U korbat_migrate -d lab -v ON_ERROR_STOP=1 -q -1` (39 tables). 0018 (retention) is in the
+clone's working tree, uncommitted, and was NOT applied; 3e's 0019 to 0023 and 3f's 0024 to 0029 are not built. Then
+30-proto.sql in ONE transaction (python make_proto.py 0016.sql 0017.sql 30-tables.sql > 30-proto.sql): the two enum
+values (intake_kind 'automated', intake_channel 'system'), the changed CHECKs, automated_signals, automation_rules(),
+releases, seal_releases, the clause in frozen_for, seal_release, release_replay, a stand-in for 3f's record of a report
+(lab_notifications, seal_report), and 3c's own decisions_record (0017) and decision_holds (0016) patched by exact text
+replacement. 31-helpers.sql stands in for the API's statements (SECURITY INVOKER, called as korbat_api); 32-seed.sql.
+
+Commands (C = korbat3d-lab-1):
+  sh reset.sh                                                         -> lab3d from the template lab
+  A: docker exec -i C psql -U korbat_api -d lab3d -X -q < a-system.sql   > out-A.txt   (fresh reset)
+  C: sh reset.sh ; psql -U postgres -d lab3d < c1-seal.sql > out-C.txt ; CREATE DATABASE labq TEMPLATE lab3d ;
+     psql -U postgres -d lab3d < c2-final.sql >> out-C.txt ; CREATE DATABASE labr TEMPLATE lab3d
+  D: psql -U postgres -d lab3d < d1-release.sql > out-D.txt (writes the release's record, tail.jsonl) ;
+     psql -U postgres -d labr -v rec=<tail.jsonl> < d2-replay.sql ; the same on labq ; psql -d labq < d3-again.sql ;
+     psql -d labq < d4-bypost.sql                                                       > out-D2.txt
+  E: sh reset.sh ; CREATE DATABASE labe TEMPLATE lab3d ; psql -U postgres -d labe < e-counts.sql > out-E.txt
+The scripts that run as postgres switch to the API's role with SET ROLE korbat_api for every statement the API would run.
+
+Reading the outputs. "WARNING: there is no transaction in progress" follows each COMMIT that a deferred check refused
+(the script's ROLLBACK after it finds nothing to roll back). "unterminated quoted string" is psql's \echo meeting an
+apostrophe in a caption; it is not a statement. In out-D2.txt the first "permission denied for table release_posts"
+is the lab's own fault (the table was created by the superuser, and gate K reads as korbat_migrate); the grant and
+the repeated delete follow it.
+
+Not measured: lock contention (one session at a time); the lock order of the automated step against a concurrent
+post, deletion or decision; the audit tie of the release (seal_release is a plain definer function here);
+audit-verify on an automated decision; anything of the worker, the files, the quarantine's one-shot service, the
+edge, Valkey's sketches or a timestamp authority; 3e's and 3f's functions (the prototype sits on 0017, so the real
+decisions_record and decision_holds that 3d replaces will carry 3e's and 3f's branches too); a refusal of a second
+seal while one is in force (the database accepts it: C3, C4); the edition on real decisions.

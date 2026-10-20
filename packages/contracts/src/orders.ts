@@ -66,6 +66,16 @@ export const ALERT_RULES = {
   mailRetryHours: 24,
 } as const;
 
+/**
+ * 3d (design, sections 6.1, 7.1 and 8.2; W.7): a move of sealed files into the quarantine, or back to the image store, is
+ * alerted once it has been due this long, and then daily (quarantine_due), as alert_steps() judges it: F's daily
+ * threshold, make_interval(days => 1), which a database test holds to this number. The words that state it print it from
+ * here, as the words of 3f print ORDER_RULES.
+ */
+export const QUARANTINE_RULES = {
+  dueHours: 24,
+} as const;
+
 // ---------------------------------------------------------------- the contact point
 
 /** The two folders the watcher reads: the inbox, and the folder the mail host files junk in. */
@@ -140,7 +150,7 @@ export type AlertChannelState = (typeof ALERT_CHANNEL_STATES)[number];
 
 /**
  * The closed list of alerts, the CHECK of alert_outbox.kind written from it: 3f's kinds, then 3c's and 3e's six, whose
- * mails stay their own and which gain a push.
+ * mails stay their own and which gain a push, then 3d's.
  */
 export const ALERT_KIND_LIST = [
   "contact_mail",
@@ -165,6 +175,10 @@ export const ALERT_KIND_LIST = [
   "moderation_reads",
   "moderation_reveal",
   "moderation_csam_lifted",
+  // 3d (design, section 10.1): its kinds, each a sentence to every staff account. Task 1: a move of sealed files that is
+  // due (alert_steps(), daily) and files the quarantine's record says are lost (staff.js quarantine-record).
+  "quarantine_due",
+  "quarantine_lost",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -218,6 +232,8 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   moderation_reads: ownKind(3, "all", ["limit"]),
   moderation_reveal: ownKind(3, "all", ["at"]),
   moderation_csam_lifted: ownKind(3, "all", ["at"]),
+  quarantine_due: sentenceKind(3, "all", ["count", "oldestAt"]),
+  quarantine_lost: sentenceKind(3, "all", ["count", "at"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -364,9 +380,20 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
   moderation_reads: { title: "A daily case limit was reached", sentence: one("One staff account opened {limit} different cases today. The staff mail says which."), todo: null },
   moderation_reveal: { title: "A reporter was revealed", sentence: one("One staff account revealed who sent a report, at {at}. The staff mail says which."), todo: null },
   moderation_csam_lifted: { title: "Reported images are no longer protected", sentence: one("A decision at {at} ended the protection of reported images. Read the staff mail."), todo: null },
+  // 3d (design, W.7): counts and times only, never a file's name, an image's id or a handle.
+  quarantine_due: {
+    title: "Sealed files are waiting to be moved",
+    sentence: one("{count} images have waited more than {dueHours} hours to be moved into the quarantine or back, the oldest since {oldestAt}."),
+    todo: "Whoever has the server runs the README's steps under Quarantine. This repeats daily until the move is recorded.",
+  },
+  quarantine_lost: {
+    title: "Sealed files are lost",
+    sentence: one("{count} files that were to be kept apart are recorded as lost at {at}: they are in neither the image store nor the quarantine."),
+    todo: "Whoever has the server reads the README's section Quarantine, on a file in neither place. An image whose seal was lifted cannot be shown again, and its author is told; a file kept for an authority cannot be handed over, and the operator tells the authority.",
+  },
 };
 
-/** A placeholder in braces: a fact's name or a member of ORDER_RULES. */
+/** A placeholder in braces: a fact's name, or a member of ORDER_RULES or of QUARANTINE_RULES. */
 const PLACEHOLDER = /[{]([a-zA-Z]+)[}]/g;
 
 /** Every placeholder a kind's words name, each once. */
@@ -422,13 +449,13 @@ function checkFacts(kind: AlertKind, facts: AlertFacts): void {
 }
 
 /**
- * A kind's title, sentence and line of what to do, filled from the facts and ORDER_RULES. A time prints as alertTime
- * does at `now`. A placeholder with nothing to fill it, a fact of another kind and a fact of the wrong form throw: an
- * alert never goes out with a hole or with anything but counts and times in it.
+ * A kind's title, sentence and line of what to do, filled from the facts, ORDER_RULES and QUARANTINE_RULES. A time
+ * prints as alertTime does at `now`. A placeholder with nothing to fill it, a fact of another kind and a fact of the
+ * wrong form throw: an alert never goes out with a hole or with anything but counts and times in it.
  */
 export function renderAlert(kind: AlertKind, facts: AlertFacts, now: Date): { title: string; sentence: string; todo: string | null } {
   checkFacts(kind, facts);
-  const rules = ORDER_RULES as Record<string, number | null>;
+  const rules = { ...ORDER_RULES, ...QUARANTINE_RULES } as Record<string, number | null>;
   const fill = (text: string) =>
     text.replace(PLACEHOLDER, (_match, name: string) => {
       const value = facts[name];

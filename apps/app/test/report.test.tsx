@@ -224,7 +224,8 @@ describe("what leads to the form", () => {
 
   test("the grid hands the viewer its post, and a quoted post's images belong to the quoted post", () => {
     const grid = read("components", "social", "MediaGrid.tsx");
-    expect(grid).toContain("<MediaViewer media={media} index={open} onIndex={setOpen} onClose={() => setOpen(null)} postId={own ? undefined : postId} />");
+    // 3d Task 1: the viewer is also told whether the reader wrote the post, for an image that fails to load.
+    expect(grid).toContain("<MediaViewer media={media} index={open} onIndex={setOpen} onClose={() => setOpen(null)} postId={own ? undefined : postId} own={own === true} />");
     const card = read("components", "social", "PostCard.tsx");
     expect(card).toContain("<MediaGrid media={post.media} postId={post.id} own={post.author.id === me} />");
     expect(card).toContain("<MediaGrid media={quote.media} compact postId={quote.id} />");

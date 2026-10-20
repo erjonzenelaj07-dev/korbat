@@ -474,6 +474,73 @@ export function createMediaRepo(db: Db) {
       return [...byPost].map(([postId, mediaIds]) => ({ postId, mediaIds }));
     },
 
+    /**
+     * 3d (design, sections 6.1 and 7.1): whether a file of the image is in the quarantine without an end (it is being
+     * restored), and whether one is recorded as lost, through the two functions the API's role may call; the table itself
+     * is closed to it. Asked only for a visible image whose file is missing from the store.
+     */
+    async custody(id: string): Promise<{ quarantined: boolean; lost: boolean }> {
+      const [row] = (await db.execute(sql`select public.media_quarantined(${id}::uuid) as quarantined, public.media_lost(${id}::uuid) as lost`)) as unknown as { quarantined: boolean; lost: boolean }[];
+      return { quarantined: row!.quarantined, lost: row!.lost };
+    },
+
+    /**
+     * 3d: up to `limit` images whose files the quarantine's record says are lost and whose author is owed the notice
+     * (lost_untold), the earliest first, each with its owner and its post's creation time when the image row and the post
+     * are still there (null otherwise: nobody is left to tell).
+     */
+    async lostUntold(limit: number): Promise<{ mediaId: string; lostAt: Date; ownerId: string | null; postCreatedAt: Date | null }[]> {
+      const found = (await db.execute(sql`
+        select l.media_id, l.lost_at, m.owner_id, p.created_at as post_created_at
+          from public.lost_untold(${limit}) l
+          left join post_media m on m.id = l.media_id
+          left join posts p on p.id = m.post_id
+         order by l.lost_at, l.media_id`)) as unknown as { media_id: string; lost_at: Date | string; owner_id: string | null; post_created_at: Date | string | null }[];
+      return found.map((row) => ({ mediaId: row.media_id, lostAt: new Date(row.lost_at), ownerId: row.owner_id, postCreatedAt: row.post_created_at === null ? null : new Date(row.post_created_at) }));
+    },
+
+    /** 3d: records the outcome of a lost image's notice (lost_told), which changes the image's rows only from pending. */
+    async lostTold(mediaId: string, outcome: "sent" | "suppressed" | "no_address" | "none" | "failed"): Promise<void> {
+      await db.execute(sql`select public.lost_told(${mediaId}::uuid, ${outcome}::delivery_state)`);
+    },
+
+    /**
+     * 3d (design, sections 6.1, 7.1 and 8.10): quarantine_plan() as staff.js quarantine-list reads it, through the caller's
+     * transaction, which reads as the migrator (the function is executable by nobody else). For each image of the plan:
+     * its direction, its post (the image row's, or for an image row that is gone the post its quarantine rows recorded),
+     * the names of its files whose rows have no end, and of those whose rows are neither returned nor destroyed (a lost
+     * file is among them: there is nothing of it to move).
+     */
+    async quarantinePlan(q: Pick<Db, "execute"> | Pick<DbTx, "execute">): Promise<{ direction: string; mediaId: string; postId: string | null; open: string[]; kept: string[] }[]> {
+      const found = (await q.execute(sql`
+        select p.direction, p.media_id,
+               coalesce(m.post_id, (select min(f.post_id::text)::uuid from public.quarantine_files f where f.media_id = p.media_id)) as post_id,
+               coalesce((select array_agg(f.file order by f.file) from public.quarantine_files f
+                          where f.media_id = p.media_id and f.returned_at is null and f.destroyed_at is null and f.lost_at is null), '{}') as open,
+               coalesce((select array_agg(f.file order by f.file) from public.quarantine_files f
+                          where f.media_id = p.media_id and f.returned_at is null and f.destroyed_at is null), '{}') as kept
+          from public.quarantine_plan() p
+          left join post_media m on m.id = p.media_id
+         order by p.direction, p.media_id`)) as unknown as { direction: string; media_id: string; post_id: string | null; open: string[]; kept: string[] }[];
+      return found.map((row) => ({ direction: row.direction, mediaId: row.media_id, postId: row.post_id, open: row.open, kept: row.kept }));
+    },
+
+    /**
+     * 3d: for every post sealed for good (a seal_media in force whose decision is not interim), its image rows now, erased
+     * or not, and the counts that each such seal recorded for it in seal_posts, which quarantine-list compares. Through the
+     * caller's transaction.
+     */
+    async sealedForGoodCounts(q: Pick<Db, "execute"> | Pick<DbTx, "execute">): Promise<{ postId: string; rows: number; images: number[] }[]> {
+      const found = (await q.execute(sql`
+        select s.post_id, array_agg(distinct s.images::int) as images,
+               (select count(*)::int from post_media m where m.post_id = s.post_id) as rows
+          from public.seal_posts s join public.measures_in_force f on f.id = s.action_id
+         where f.kind = 'seal_media' and f.decision_kind <> 'interim'
+         group by s.post_id
+         order by s.post_id`)) as unknown as { post_id: string; rows: number; images: number[] }[];
+      return found.map((row) => ({ postId: row.post_id, rows: row.rows, images: row.images }));
+    },
+
     async moderationStates(afterId: string | null, limit: number): Promise<{ id: string; postId: string; moderationState: MediaRow["moderationState"]; erasedAt: Date | null }[]> {
       const found = await db
         .select({ id: postMedia.id, postId: postMedia.postId, moderationState: postMedia.moderationState, erasedAt: postMedia.erasedAt })

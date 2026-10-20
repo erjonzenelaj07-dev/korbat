@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { ALERT_RULES, ORDER_RULES, REPLY_AIM_HOURS, STANDING_RULES } from "@korbat/contracts";
+import { ALERT_RULES, ORDER_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES } from "@korbat/contracts";
 import { ERASURE_OVERDUE_RUNBOOK, RELEASE_OVERDUE_RUNBOOK } from "../src/screens/Home";
 
 /**
@@ -397,5 +397,41 @@ describe("the README's authorities' orders say what the constants say (3f design
     expect(all).not.toContain("in their own records until sub-project 3f");
     expect(all).not.toContain("With sub-project 3f the authorities' contact address is published as well");
     expect(all).toContain("until sub-project 3f's order path and sub-project 3d's handling of sealed images have both shipped and the list below is done");
+  });
+});
+
+/**
+ * 3d Task 1 (design, W.11): the README's sections Quarantine and Backups. Quarantine stands after Authorities' orders
+ * with its six steps in W.11's order, each command as the operator types it; Backups before Restoring, with the days of
+ * RETENTION.backupDays and the quarantine that is never backed up.
+ */
+describe("the README's Quarantine and Backups (3d design, W.11)", () => {
+  const QUARANTINE_STEPS = [
+    "docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js quarantine-list > list",
+    "docker compose -f infra/compose.yml --profile quarantine run --rm -T quarantine < list > receipt",
+    "docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js quarantine-record < receipt",
+    "Nobody opens a file of the quarantine",
+    "**A file in neither place**",
+    "**A file without a record**",
+  ];
+
+  test("Quarantine stands after Authorities' orders, with its six steps in their order, each command as the operator types it", () => {
+    const lines = readmeLines();
+    expect(lines.indexOf("## Quarantine")).toBeGreaterThan(lines.indexOf("## Authorities' orders"));
+    const steps = sectionLines("## Quarantine").filter((line) => /^[0-9][.] /.test(line));
+    expect(steps.map((line) => line.slice(0, 2))).toEqual(["1.", "2.", "3.", "4.", "5.", "6."]);
+    for (const [n, lead] of QUARANTINE_STEPS.entries()) expect(withoutCodeMarks(steps[n]!).includes(withoutCodeMarks(lead)), lead).toBe(true);
+    const text = sectionLines("## Quarantine").join(" ");
+    expect(text).toContain("--inventory > have");
+    expect(text).toContain("with `--lost` appended");
+    expect(text).toContain("(uid 1000, mode 0700)");
+  });
+
+  test("Backups stands before Restoring and says the backup's days from RETENTION.backupDays and that the quarantine is never backed up", () => {
+    const lines = readmeLines();
+    expect(lines.indexOf("## Backups")).toBeLessThan(lines.indexOf("## Restoring"));
+    const text = sectionLines("## Backups").join(" ");
+    expect(text).toContain(`is deleted ${RETENTION.backupDays} days after it was taken`);
+    expect(text).toContain("`media-quarantine` is never backed up");
   });
 });

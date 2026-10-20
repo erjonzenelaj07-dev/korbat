@@ -1,4 +1,5 @@
 import { ACCOUNT_DELETION_WORDS, REPLY_AIM_HOURS, isTimeFact, renderAlert, type AlertKind } from "@korbat/contracts";
+import { IMAGE_LOST_NOTICE } from "@korbat/rules";
 import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
@@ -463,7 +464,14 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "copy_taken":
     case "report_owed":
     case "handover_undestroyed":
+    case "quarantine_due":
+    case "quarantine_lost":
       return alertMail(template, data);
+    case "image_lost":
+      // 3d (design, sections 7.1 and 7.15; W.8): sent once, when the quarantine's record says the files of an image whose
+      // seal was lifted are lost. `createdAt` is the day of the post the image is on; nothing names a file, a seal, a
+      // person or a link, and nothing tells the author to wait.
+      return userMail("korbat lost an image of yours", [IMAGE_LOST_NOTICE.mail(need(data, "createdAt")), "Read it in korbat under Settings, Cases."]);
     case "moderation_reads": {
       // A staff account opened as many different cases today as one account may (3c design, section 7.3): every staff
       // account is told, the account itself included, since a stolen key reads at the speed of requests.

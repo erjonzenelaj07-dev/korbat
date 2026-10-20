@@ -86,6 +86,7 @@ const QUIET: StaffOverview = {
   reportsOwed: { total: 0, items: [] },
   copy: { newestAt: "2026-10-01T08:00:00.000Z", overdue: false },
   restore: { open: 0, measures: 0, importedAt: null },
+  quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null },
   repliesWaiting: { count: 0, oldestAt: null },
   strikeAccounts: 0,
 };

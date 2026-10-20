@@ -648,6 +648,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: notifier contacts and th
     });
   });
 
+  describe("3d Task 1: the notice of a lost image, to an account", () => {
+    test("image_lost goes to the account's address with its post's time as the notices print one; a stop of the address never holds it back, and a gone account has no address", async () => {
+      const h = flowHarness(repo);
+      const email = newTestEmail("author");
+      addresses.push(email);
+      const { id } = await repo.createUser({ email, termsVersion: "test", now: h.clock.now() });
+      const lost = { template: "image_lost", postCreatedAt: new Date("2026-10-01T12:00:30.000Z") } as const;
+      expect(await mailAccount(h.deps, id, lost)).toBe("sent");
+      expect(h.mailer.sent[0]).toEqual({ to: email, template: "image_lost", data: { createdAt: "2026-10-01 12:00 UTC" } });
+      // The address asked korbat to stop its report mails: the notice of a lost image is no report mail.
+      const signedOut = await contact(h, { email });
+      expect(await mailNotifier(h.deps, signedOut.id, receipt())).toBe("sent");
+      expect(await stopNotifier(h.deps, signedOut.id, tokenSentTo(h, email))).toBe(true);
+      expect(await mailAccount(h.deps, id, receipt())).toBe("suppressed");
+      expect(await mailAccount(h.deps, id, lost)).toBe("sent");
+      expect(await mailAccount(h.deps, randomUUID(), lost)).toBe("no_address");
+    });
+  });
+
   test("this file left no row behind: the four auth tables of moderation cases and the moderation tables hold what they held before it", async () => {
     const hashes = addresses.map((address) => emailHash(flowHarness(repo).deps.config.authHmacKey, address));
     if (contactIds.length > 0) await db.execute(sql`delete from auth.notifier_contacts where id = any(${`{${contactIds.join(",")}}`}::uuid[])`);

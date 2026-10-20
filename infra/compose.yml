@@ -253,9 +253,10 @@ services:
   # The hand-over of one seal's files (3f design, sections 5 and 7.14), under the profile handover, started by the operator
   # alone: docker compose --profile handover run --rm -T -v <directory>:/handover handover < list > digests. The API's
   # image with dist/handover.js, which opens no database and no socket: no network at all, no credential, no capability,
-  # the image store read-only. It has no bind mount here: the directory for the archive is an argument of the command
-  # (an empty source would stop every Compose command of the stack), on an encrypted volume owned by uid 1000, the
-  # image's user node, the only place it can write. No setting of it is required.
+  # the image store and (3d) the quarantine read-only, the quarantine looked in first. It has no bind mount here: the
+  # directory for the archive is an argument of the command (an empty source would stop every Compose command of the
+  # stack), on an encrypted volume owned by uid 1000, the image's user node, the only place it can write. No setting of
+  # it is required.
   handover:
     image: ${COMPOSE_PROJECT_NAME}-api
     profiles: ["handover"]
@@ -269,6 +270,29 @@ services:
     stdin_open: true
     volumes:
       - media-store:/media/store:ro
+      - media-quarantine:/media/quarantine:ro
+
+  # The quarantine's mover (3d design, sections 5 and 7.1), under the profile quarantine, started by the operator alone:
+  # docker compose -f infra/compose.yml --profile quarantine run --rm -T quarantine < list > receipt, with the list that
+  # staff.js quarantine-list printed, and the receipt then recorded by staff.js quarantine-record (the README,
+  # Quarantine). The API's image with dist/quarantine.js, which opens no database and no socket: no network at all, no
+  # environment, no credential, no capability and a read-only root; the image store and the quarantine read-write, and
+  # nothing else. Its two roots are arguments of its entry point, and it refuses to start without both; what follows the
+  # service's name on the command line (--lost, --inventory) is appended to them. It is the one service that writes the
+  # quarantine; handover reads it, and the api, migrate and worker services never mount it.
+  quarantine:
+    image: ${COMPOSE_PROJECT_NAME}-api
+    profiles: ["quarantine"]
+    entrypoint: ["node", "dist/quarantine.js", "/media/store", "/media/quarantine"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stdin_open: true
+    volumes:
+      - media-store:/media/store
+      - media-quarantine:/media/quarantine
 
   # The push server (3f design, section 5), under the profile notify, never linked into korbat's programs: ntfy at its
   # pinned release, reading its users, rights and tokens from infra/ntfy/server.yml (git-ignored, made from
@@ -376,6 +400,10 @@ volumes:
   media-uploads:
   # The images korbat serves. Back it up together with the database.
   media-store:
+  # 3d: the files of images sealed for good, moved out of the store by the quarantine service, on the host's encrypted
+  # disk. It is in no backup, by decision: a restore never brings a destroyed file back. Owned by uid 1000, mode 0700, the
+  # path the API's image makes (the README, Quarantine and Backups).
+  media-quarantine:
   # Caddy's state, owned by its own user; the earlier root-owned caddydata and caddyconfig volumes can go.
   caddy-data:
   caddy-config:

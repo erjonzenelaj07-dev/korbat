@@ -52,8 +52,21 @@ describe("trust and safety schema", () => {
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
     // legal_order_events; then the four of the records to authorities: authority_notifications,
     // authority_notification_events, productions and auth.report_holds; then the two of recovery: restore_gaps and
-    // copy_marks.
-    expect(tables.length).toBe(55);
+    // copy_marks; then 3d's first, quarantine_files.
+    expect(tables.length).toBe(56);
+  });
+  test("3d's quarantine_files: a file's row keyed by its image and its name, with its three ends and no right for the API (section 6.1)", () => {
+    const files = byName.get("quarantine_files")!;
+    expect(files.schema ?? "public").toBe("public");
+    expect(files.columns.map((c) => c.name).sort()).toEqual(
+      ["media_id", "file", "post_id", "size", "sha256", "moved_at", "returned_at", "destroyed_at", "release_id", "lost_at", "lost_told", "imported_at", "unknown"].sort(),
+    );
+    expect(files.primaryKeys.map((k) => [k.getName(), k.columns.map((c) => c.name)])).toEqual([["quarantine_files_pkey", ["media_id", "file"]]]);
+    expect(files.checks.map((c) => c.name).sort()).toEqual(["quarantine_files_digest", "quarantine_files_ends", "quarantine_files_file", "quarantine_files_release", "quarantine_files_told"]);
+    expect(files.foreignKeys).toEqual([]);
+    expect(files.indexes.map((i) => i.config.name).sort()).toEqual(["quarantine_files_post_idx", "quarantine_files_untold_idx"]);
+    expect(files.enableRLS).toBe(true);
+    expect(files.policies.map((p) => [p.name, p.for, p.to])).toEqual([["quarantine_files_api_none", "select", apiRole]]);
   });
   test("3f's recovery tables: a gap's class and disposition, its closing and the copy marks (section 6.6)", () => {
     const gaps = byName.get("restore_gaps")!;
@@ -1166,7 +1179,8 @@ describe("the contact point and the alert channel 3f", () => {
     expect(byName.get("alert_outbox")!.foreignKeys).toEqual([]);
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
-    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted')");
+    // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two.
+    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost')");
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);
     // Counts and times only: an object of at most six members, each a number or an instant in UTC.

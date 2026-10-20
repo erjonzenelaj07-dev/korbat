@@ -107,8 +107,18 @@ function decisionData(message: DecisionMessage): Record<string, string> {
 
 /** What may be sent to a signed-out notifier's contact by itself: the receipt. Its updates go by address, through mailNotifierUpdates. */
 export type NotifierMessage = NoticeReceivedMessage;
-/** What may be sent to an account: the receipt and the daily update of its reports, and the statement of a decision about it. */
-export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage;
+/**
+ * 3d (design, sections 7.1 and 7.15; W.8): the notice that korbat lost the files of an image of the account's post while
+ * they were kept apart in the quarantine, with the post's creation time. No stop of the address holds it back: it is no
+ * mail about the account's reports.
+ */
+export interface ImageLostMessage {
+  template: "image_lost";
+  postCreatedAt: Date;
+}
+
+/** What may be sent to an account: the receipt and the daily update of its reports, the statement of a decision about it, and (3d) the notice of a lost image. */
+export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage | ImageLostMessage;
 
 /** One contact's share of the daily update: the lines of its notice, and its receipt when the 24-hour cap folded it. */
 export interface NotifierUpdatePart {
@@ -163,7 +173,11 @@ export type StaffAlertKind =
   | "copy_taken"
   // Task 5's two daily kinds, joined in 3f's review: a report to an authority owed, a hand-over's copy not destroyed.
   | "report_owed"
-  | "handover_undestroyed";
+  | "handover_undestroyed"
+  // 3d Task 1: a move of sealed files that is due, which alert_steps() writes daily, and files the quarantine's record
+  // says are lost, which staff.js quarantine-record writes with its record.
+  | "quarantine_due"
+  | "quarantine_lost";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -190,6 +204,8 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "copy_taken":
     case "report_owed":
     case "handover_undestroyed":
+    case "quarantine_due":
+    case "quarantine_lost":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off" };
@@ -328,6 +344,8 @@ export async function mailAccount(deps: AuthDeps, userId: string, message: Accou
     // A statement is never held back by a stop of the address.
     return deliver(deps, { to: user.email, template: message.template, data: decisionData(message) });
   }
+  // 3d: nor is the notice of a lost image, which is about the account's own post and not about its reports.
+  if (message.template === "image_lost") return deliver(deps, { to: user.email, template: "image_lost", data: { createdAt: noticeTime(message.postCreatedAt) } });
   const hash = emailHash(deps.config.authHmacKey, user.email);
   if ((await deps.repo.suppressedNotifierHashes([hash])).has(hash)) return "suppressed";
   if (message.template === "notice_update") return deliver(deps, { to: user.email, template: "notice_update", data: { signedIn: true, lines: [...message.lines], receipts: [], pages: [] } });

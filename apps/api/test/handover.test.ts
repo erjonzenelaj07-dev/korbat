@@ -47,7 +47,7 @@ describe("the hand-over's program", () => {
   async function run(input: string, storeDir: string, out: string) {
     const lines: string[] = [];
     const errors: string[] = [];
-    const code = await runHandover({ input, store: storeDir, out, log: (line) => lines.push(line), error: (line) => errors.push(line) });
+    const code = await runHandover({ input, store: storeDir, quarantine: path.join(path.dirname(storeDir), "quarantine"), out, log: (line) => lines.push(line), error: (line) => errors.push(line) });
     return { code, lines, errors };
   }
 
@@ -124,7 +124,7 @@ describe("the hand-over's program", () => {
     expect([outside.code, outside.lines, outside.errors]).toEqual([1, [], ['handover: refused: "../../outside.webp" is outside the store']]);
     const missing = storedName(randomUUID(), "small");
     const gone = await run([`production ${production}`, names[0], missing].join(LF), s.storeDir, s.out);
-    expect([gone.code, gone.lines, gone.errors]).toEqual([1, [], [`handover: ${missing} is missing or is not a plain file of the store; no archive was written`]]);
+    expect([gone.code, gone.lines, gone.errors]).toEqual([1, [], [`handover: ${missing} is missing or is not a plain file of the quarantine or the store; no archive was written`]]);
     expect((await run(names.join(LF), s.storeDir, s.out)).code).toBe(1);
     expect((await run([`production ${production}`, names[0], names[0]].join(LF), s.storeDir, s.out)).code).toBe(1);
     // A directory where a file should be is no plain file either.
@@ -145,6 +145,7 @@ describe("the hand-over's program", () => {
     const failing = await runHandover({
       input,
       store: s.storeDir,
+      quarantine: path.join(path.dirname(s.storeDir), "quarantine"),
       out: s.out,
       log: () => undefined,
       error: (line) => errors.push(line),
@@ -172,6 +173,31 @@ describe("the hand-over's program", () => {
     rmSync(path.join(s.out, `${name}.part`));
     expect((await run(input, s.storeDir, s.out)).code).toBe(0);
     expect(readdirSync(s.out)).toEqual([name]);
+  });
+
+  test("3d: a listed file is read from the quarantine first, and from the store when the quarantine does not hold it", async () => {
+    const [moved, kept] = [randomUUID(), randomUUID()];
+    const s = store([moved, kept]);
+    // The first image's files are in the quarantine, with other bytes than the store's stale copy beside them: the
+    // archive holds the quarantine's. The second's are only in the store, as a seal taken while deciding leaves them.
+    const quarantine = path.join(path.dirname(s.storeDir), "quarantine");
+    const fromQuarantine = new Map<string, Buffer>();
+    for (const size of MEDIA_SIZES) {
+      const name = storedName(moved, size);
+      const data = Buffer.from(`kept apart: ${size} of ${moved}`, "utf8");
+      mkdirSync(path.join(quarantine, ...name.split("/").slice(0, -1)), { recursive: true });
+      writeFileSync(path.join(quarantine, ...name.split("/")), data);
+      fromQuarantine.set(name, data);
+    }
+    const production = randomUUID();
+    const result = await run([`production ${production}`, ...s.files.keys()].join(LF), s.storeDir, s.out);
+    expect([result.code, result.errors]).toEqual([0, []]);
+    const entries = unzipSync(new Uint8Array(readFileSync(path.join(s.out, `handover-${production}.zip`))));
+    for (const [name, data] of s.files) expect(Buffer.from(entries[name]!), name).toEqual(fromQuarantine.get(name) ?? data);
+    expect(result.lines.slice(0, -1)).toEqual([...s.files.keys()].map((name) => {
+      const data = fromQuarantine.get(name) ?? s.files.get(name)!;
+      return `${name} ${data.length} ${sha256(data)}`;
+    }));
   });
 
   test("the zip writer: an empty file and a name of several bytes a character, read back by a reader, with CRC-32s from node:zlib", () => {

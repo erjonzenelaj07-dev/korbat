@@ -269,6 +269,7 @@ describe("the home screen's three lists of the path for child sexual abuse mater
     // 3f Task 6: the copy's age and the gaps after a restore.
     copy: { newestAt: null, overdue: false },
     restore: { open: 0, measures: 0, importedAt: null },
+    quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null },
   };
 
   test("StaffOverview carries the decisions that lifted the protection of reported images, the choices not to seal and the seals taken while deciding that are in force", () => {

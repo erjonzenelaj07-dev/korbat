@@ -111,6 +111,8 @@ export interface DispatchReport {
   givenUp: { receipts: number; authorMails: number; outcomes: number };
   /** 3f: the decisions the release of held notices told in this round. */
   noticesReleased: number;
+  /** 3d Task 1: the authors told in this round that korbat lost the files of an image of theirs. */
+  lostNotices: number;
 }
 
 /** What a mail's result is recorded as; nothing is recorded where the relay could not take the mail, so the next round sends it again. */
@@ -460,6 +462,42 @@ async function outcomeMails(deps: ModerationDeps, report: DispatchReport): Promi
   if (nobody.length > 0) await recordOutcomeMails(q, nobody, "no_address");
 }
 
+// ---------------------------------------------------------------- the notices of lost images (3d)
+
+/** How many lost images' notices one round takes at most; the rest wait for the next round. */
+const LOST_NOTICES_PER_ROUND = 50;
+
+/**
+ * 3d Task 1 (design, sections 7.1, 7.14 and 7.15; W.8): the mail image_lost to each author whose image's files the
+ * quarantine's record says are lost, once an image, recorded as a statement's mail is: a result the relay took or refused
+ * for good is recorded, and a relay that could not take it leaves the notice pending for the next round, until the give-up
+ * days of 3c have passed since the record, when it is given up. An image whose row or post is gone has nobody left to tell
+ * (`none`). Answers how many were sent; a row that fails is logged by its image's id and left as it was.
+ */
+export async function lostImageNotices(deps: ModerationDeps, now: Date): Promise<number> {
+  let sent = 0;
+  for (const lost of await deps.media.lostUntold(LOST_NOTICES_PER_ROUND)) {
+    try {
+      if (lost.ownerId === null || lost.postCreatedAt === null) {
+        await deps.media.lostTold(lost.mediaId, "none");
+        continue;
+      }
+      if (now.getTime() - lost.lostAt.getTime() > RETENTION.mailGiveUpDays * DAY_MS) {
+        await deps.media.lostTold(lost.mediaId, "failed");
+        deps.log.warn({ job: DISPATCH_JOB, kind: "image_lost", id: lost.mediaId }, "moderation: mail given up");
+        continue;
+      }
+      const state = RECORDED[await deps.auth.mailAccount(lost.ownerId, { template: "image_lost", postCreatedAt: lost.postCreatedAt })];
+      if (state === null) continue;
+      await deps.media.lostTold(lost.mediaId, state);
+      if (state === "sent") sent++;
+    } catch (err) {
+      logUnsent(deps, err, "notices", { mediaId: lost.mediaId });
+    }
+  }
+  return sent;
+}
+
 // ---------------------------------------------------------------- the round
 
 /**
@@ -478,6 +516,7 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
     outcomeMails: 0,
     givenUp: { receipts: 0, authorMails: 0, outcomes: 0 },
     noticesReleased: 0,
+    lostNotices: 0,
   };
   const step = async (name: string, run: () => Promise<void>) => {
     try {
@@ -526,6 +565,13 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
     });
   });
 
+  // 3d Task 1 (sections 7.1 and 7.14): the notices, before the statements. The authors whose image's files the
+  // quarantine's record says are lost are mailed image_lost, once an image; the media module reads and records them
+  // through lost_untold and lost_told, since the quarantine's table is closed to the API's role.
+  await step("notices", async () => {
+    report.lostNotices = await lostImageNotices(deps, now);
+  });
+
   // 2. The statements that were not mailed after their decision's commit, as they are mailed there.
   await step("statements", async () => {
     for (const decisionId of await pendingAuthorMails(deps.apiDb, due)) {
@@ -564,7 +610,7 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
 
   // One line for a round that did something, so the day's release and its mails can be found in the log: counts only.
   const gaveUp = report.givenUp.receipts + report.givenUp.authorMails + report.givenUp.outcomes;
-  if (report.daily || report.receipts + report.statements + report.outcomeMails + gaveUp + report.noticesReleased > 0 || report.urgent === "sent" || report.waiting === "sent") {
+  if (report.daily || report.receipts + report.statements + report.outcomeMails + gaveUp + report.noticesReleased + report.lostNotices > 0 || report.urgent === "sent" || report.waiting === "sent") {
     deps.log.info({ job: DISPATCH_JOB, ...report }, "moderation-dispatch: round");
   }
   return report;

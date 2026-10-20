@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, rm, stat, statfs, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
-import type { MediaSize } from "@korbat/contracts";
+import { MEDIA_SIZES, type MediaSize } from "@korbat/contracts";
 import { Heartbeat, MAX_RESULT_BYTES, MAX_VARIANT_BYTES, ResultFile, SNIFF_BYTES, isMediaId, storeLayout, uploadsLayout } from "@korbat/media-protocol";
 import { MediaError } from "./context";
 
@@ -237,6 +237,18 @@ export function createMediaFiles(options: MediaFilesOptions) {
     },
 
     withdrawDeletion: (id: string): Promise<void> => rm(uploads.deletion(id), { force: true }),
+
+    /**
+     * 3d (design, section 7.1): whether both stored sizes of the image are in the store. A visible image whose files are
+     * not, after its seal was lifted, is in the quarantine waiting to return, or lost; only then is the database asked.
+     */
+    async imageFilesPresent(id: string): Promise<boolean> {
+      for (const size of MEDIA_SIZES) {
+        const found = await lstat(store.image(id, size)).catch(() => null);
+        if (!found?.isFile()) return false;
+      }
+      return true;
+    },
 
     /** Whether the worker still holds anything for this id. */
     async imageRemains(id: string): Promise<boolean> {

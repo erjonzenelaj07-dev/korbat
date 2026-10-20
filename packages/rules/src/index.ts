@@ -220,4 +220,4 @@ export function getRedress(version: number): RedressTexts | undefined {
 
 // The statement of reasons, rendered over the rulebooks and the redress texts above. The package exports only this file,
 // so the app, the console and the API reach the statement through it.
-export { ORDER_NOTICE, STATEMENT_WORDS, retireEnd, statementParagraphs, type OrderNoticeExtras, type RetireEnd, type StatementInput } from "./statement";
+export { IMAGE_LOST_NOTICE, ORDER_NOTICE, STATEMENT_WORDS, retireEnd, statementParagraphs, type OrderNoticeExtras, type RetireEnd, type StatementInput } from "./statement";

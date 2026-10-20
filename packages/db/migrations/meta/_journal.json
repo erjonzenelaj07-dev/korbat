@@ -232,6 +232,13 @@
       "when": 1792229526652,
       "tag": "0032_orders_review",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1792328625812,
+      "tag": "0033_quarantine",
+      "breakpoints": true
     }
   ]
 }

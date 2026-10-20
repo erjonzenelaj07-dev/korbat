@@ -1,0 +1,71 @@
+== A1 automated R1 withhold of one image (b01, d01): commits
+t
+level=visible images=[withheld] frozen=f in_force=[interim:withhold_media]
+kind=interim decided_by=null detection=t decision=fully needs_admin=f source=own_initiative suspect=f author_mail=pending facts=null
+audit: actor=00000000-0000-0000-0000-000000000000 action=automated_decided step_up=null key=null
+== A2 the faults, each on post b04 (image d06): every one must be refused, and nothing may remain
+-- final kind as the system
+ERROR:  invalid_decision
+WARNING:  there is no transaction in progress
+-- no audit row
+t
+ERROR:  invalid_decision
+WARNING:  there is no transaction in progress
+unterminated quoted string
+-- a staff
+t
+ERROR:  invalid_decision
+WARNING:  there is no transaction in progress
+-- no signal linked
+t
+ERROR:  invalid_decision
+-- two measures
+WARNING:  there is no transaction in progress
+t
+ERROR:  invalid_decision
+WARNING:  there is no transaction in progress
+-- a final measure (remove_media)
+ERROR:  invalid_decision
+WARNING:  there is no transaction in progress
+-- rule R3 on the decision
+ERROR:  invalid_decision
+-- an automated intake citing R3
+WARNING:  there is no transaction in progress
+ERROR:  new row for relation "intakes" violates check constraint "intakes_automated"
+WARNING:  there is no transaction in progress
+-- a seal (R2 measure) resting on an R1 score
+ERROR:  new row for relation "intakes" violates check constraint "intakes_automated"
+WARNING:  there is no transaction in progress
+-- a person as decider of an insert that claims automated_decision fully (the trigger forces the columns)
+t
+t
+person interim: detection=f decision=not_automated
+after the faults: decisions=1 cases=1 state b04: level=visible images=[visible] frozen=f in_force=[]
+== A3 a direct insert as korbat_api with decided_by null and no trigger path around: the CHECK and the commit check
+ERROR:  permission denied for table decisions
+== A4 the fallback (act off): finding and signal only
+t
+level=visible images=[visible] frozen=f in_force=[]
+unterminated quoted string
+items: lane=2 suspect=f kind=automated
+== A5 a moderator decides the R1 case of b01 for good (remove_media): the flags of a
+t
+level=visible images=[removed] frozen=f in_force=[final:remove_media]
+interim: decided_by=null detection=t decision=fully ended_interim=f
+final: decided_by=staff detection=t decision=not_automated ended_interim=t
+== A6 a moderator lifts an automated withhold at once by a correction (b06, d08)
+t
+level=visible images=[withheld] frozen=f in_force=[interim:withhold_media]
+t
+level=visible images=[visible] frozen=f in_force=[]
+== A7 or decides no breach: the automated withhold ends with the case (b07, d09)
+t
+t
+level=visible images=[visible] frozen=f in_force=[]
+== A8 the cap (automation_rules: 5 an hour): the system has decided 3 times; three more on b08, b09, b10
+t
+t
+-- the sixth within the hour
+ERROR:  automation_capped
+WARNING:  there is no transaction in progress
+system decisions: 5; b02: level=visible images=[visible,visible] frozen=f in_force=[]

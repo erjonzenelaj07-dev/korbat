@@ -54,6 +54,9 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   // Task 5's two daily kinds, joined in 3f's review: a report to an authority owed, and a hand-over's copy not destroyed.
   "report_owed",
   "handover_undestroyed",
+  // 3d Task 1: quarantine_due, which alert_steps() writes daily, and quarantine_lost, which quarantine-record writes.
+  "quarantine_due",
+  "quarantine_lost",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */

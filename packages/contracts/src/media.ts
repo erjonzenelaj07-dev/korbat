@@ -60,12 +60,24 @@ export type UploadResponse = z.infer<typeof UploadResponse>;
 /**
  * The state of one upload, for its owner. Width and height are those of the large size, after rotation. A ready image
  * carries its blurhash, except one that moderation sealed: it is shown to nobody, and the blurhash is made from the image.
+ * 3d (design, sections 7.1, 9.6 and 10.2): a ready image on a post whose seal was lifted and whose files are not back in
+ * the image store yet says `restoring`, and one whose files korbat recorded as lost says `lost`; at most one of the two.
  */
-export const MediaStatusResponse = z.discriminatedUnion("status", [
-  z.object({ id: MediaId, status: z.literal("processing") }),
-  z.object({ id: MediaId, status: z.literal("ready"), width: z.number().int().positive(), height: z.number().int().positive(), blurhash: z.string().min(6).optional() }),
-  z.object({ id: MediaId, status: z.literal("failed"), error: MediaFailure }),
-]);
+export const MediaStatusResponse = z
+  .discriminatedUnion("status", [
+    z.object({ id: MediaId, status: z.literal("processing") }),
+    z.object({
+      id: MediaId,
+      status: z.literal("ready"),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      blurhash: z.string().min(6).optional(),
+      restoring: z.literal(true).optional(),
+      lost: z.literal(true).optional(),
+    }),
+    z.object({ id: MediaId, status: z.literal("failed"), error: MediaFailure }),
+  ])
+  .refine((answer) => !(answer.status === "ready" && answer.restoring && answer.lost), { message: "an image is either being restored or lost, never both" });
 export type MediaStatusResponse = z.infer<typeof MediaStatusResponse>;
 
 /**

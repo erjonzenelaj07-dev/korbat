@@ -8,6 +8,7 @@ import { API_BASE } from "@/lib/api";
 import { reportHref } from "@/lib/moderation";
 import { CHIP_WORDS, REPORT_WORDS } from "@/lib/moderation-words";
 import { HiddenImage } from "./HiddenImage";
+import { ImageFaultView, useImageFault } from "./ImageFault";
 
 interface MediaViewerProps {
   media: (MediaView | HiddenMedia)[];
@@ -16,6 +17,8 @@ interface MediaViewerProps {
   onClose: () => void;
   /** The post that holds the images: an image is reported on it. Absent for the reader's own post, which they do not report. */
   postId?: string;
+  /** 3d: the reader wrote the post, so an image that fails to load asks its status once and says why it is missing. */
+  own?: boolean;
 }
 
 /**
@@ -25,9 +28,10 @@ interface MediaViewerProps {
  * reader, which is never loaded: its placeholder stands in the image's place. An image that is shown can
  * be reported from here, on the post that holds it; the author's own withheld or removed image says so.
  */
-export function MediaViewerContent({ media, index, onIndex, onClose, postId }: MediaViewerProps) {
+export function MediaViewerContent({ media, index, onIndex, onClose, postId, own = false }: MediaViewerProps) {
   const still = useReducedMotion();
   const item = media[index]!;
+  const { fault, onError } = useImageFault(item.id, own && !isHiddenMedia(item));
   const many = media.length > 1;
   const step = (by: number) => onIndex((index + by + media.length) % media.length);
 
@@ -42,8 +46,10 @@ export function MediaViewerContent({ media, index, onIndex, onClose, postId }: M
       <View className="flex-1 px-2">
         {isHiddenMedia(item) ? (
           <HiddenImage item={item} />
+        ) : fault !== null ? (
+          <ImageFaultView fault={fault} />
         ) : (
-          <Image source={{ uri: `${API_BASE}${item.large}` }} placeholder={{ blurhash: item.blurhash }} contentFit="contain" transition={still ? 0 : 150} accessibilityLabel={item.alt} style={{ flex: 1 }} />
+          <Image source={{ uri: `${API_BASE}${item.large}` }} placeholder={{ blurhash: item.blurhash }} contentFit="contain" transition={still ? 0 : 150} accessibilityLabel={item.alt} style={{ flex: 1 }} onError={onError} />
         )}
       </View>
       {isHiddenMedia(item) ? null : <Text className="px-4 py-3 text-center text-sm leading-5 text-zinc-200">{item.alt}</Text>}
@@ -79,7 +85,7 @@ export function MediaViewerContent({ media, index, onIndex, onClose, postId }: M
  * Modal closes it on Escape and returns focus to the image that opened it. It appears at once: nothing
  * about it needs motion, and the image fades in from its blurhash only when reduced motion is not asked for.
  */
-export function MediaViewer({ media, index, onIndex, onClose, postId }: MediaViewerProps) {
+export function MediaViewer({ media, index, onIndex, onClose, postId, own }: MediaViewerProps) {
   const many = media.length > 1;
 
   useEffect(() => {
@@ -94,7 +100,7 @@ export function MediaViewer({ media, index, onIndex, onClose, postId }: MediaVie
 
   return (
     <Modal visible transparent animationType="none" onRequestClose={onClose}>
-      <MediaViewerContent media={media} index={index} onIndex={onIndex} onClose={onClose} postId={postId} />
+      <MediaViewerContent media={media} index={index} onIndex={onIndex} onClose={onClose} postId={postId} own={own} />
     </Modal>
   );
 }

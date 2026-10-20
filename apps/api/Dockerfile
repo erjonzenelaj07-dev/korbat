@@ -23,6 +23,11 @@ COPY --from=build /repo/node_modules/@node-rs ./node_modules/@node-rs
 # The media volumes mount here. A new volume takes the owner of the path in the image, so both paths
 # exist and belong to the user the process runs as, in this image and in the worker's.
 RUN mkdir -p /media/uploads /media/store && chown node:node /media/uploads /media/store
+# 3d: the quarantine's volume mounts here, in the one-shot services quarantine (read-write) and handover (read-only),
+# never in the API's or the worker's. A new volume takes this path's owner and mode, so it is the image's user's alone
+# (uid 1000, mode 0700): a path the image lacked would be root's, which the mover, with every capability dropped,
+# could neither write nor repair.
+RUN mkdir -p /media/quarantine && chown node:node /media/quarantine && chmod 0700 /media/quarantine
 USER node
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

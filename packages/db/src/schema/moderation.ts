@@ -984,3 +984,58 @@ export const legalOrderEvents = pgTable(
     fullAccess("legal_order_events_api_all", apiRole),
   ],
 ).enableRLS();
+
+/**
+ * 3d (design, section 6.1): one row a file of a sealed image that the one-shot service `quarantine` moved out of the
+ * image store, written only by `staff.js quarantine-record`, as the migrator, from the service's receipt. The API's role
+ * holds no right on it: it reaches the quarantine through six functions that answer counts, one time and booleans. No
+ * foreign key to the image row: the row outlives it, and `post_id` is what still ties a file to its post. A file has
+ * three ends at most one of which is set: returned to the store, destroyed (Task 2 adds the release's foreign key), or
+ * lost (found in neither place by a run with --lost). The insert trigger quarantine_files_insert forces `moved_at`,
+ * `unknown`, `post_id` and the ends; quarantine_files_times forces the time of every end and `lost_told`.
+ */
+export const quarantineFiles = pgTable(
+  "quarantine_files",
+  {
+    mediaId: uuid("media_id").notNull(),
+    /** The store's name under its root: files/<aa>/<id>/small.webp or large.webp. */
+    file: text("file").notNull(),
+    /** Forced: the image's post when the row was written, null for an upload on no post or an image the database does not know. */
+    postId: uuid("post_id"),
+    size: bigint("size", { mode: "number" }),
+    sha256: text("sha256"),
+    /** Forced: when the move was recorded (a row imported after a restore keeps its own, never after the clock). */
+    movedAt: ts("moved_at").notNull(),
+    returnedAt: ts("returned_at"),
+    destroyedAt: ts("destroyed_at"),
+    releaseId: uuid("release_id"),
+    lostAt: ts("lost_at"),
+    /** Forced with lost_at: the author's notice of the lost file, pending only for an image on a post not sealed for good. */
+    lostTold: deliveryState("lost_told"),
+    importedAt: ts("imported_at"),
+    /** Forced at insert: no image row with this id existed, so the database cannot place the file. */
+    unknown: boolean("unknown").notNull(),
+  },
+  (t) => [
+    primaryKey({ name: "quarantine_files_pkey", columns: [t.mediaId, t.file] }),
+    // One of the image's two stored names, as the store's naming rule makes them (the contracts' MEDIA_SIZES).
+    check(
+      "quarantine_files_file",
+      sql`${t.file} in ('files/' || left(${t.mediaId}::text, 2) || '/' || ${t.mediaId}::text || '/small.webp', 'files/' || left(${t.mediaId}::text, 2) || '/' || ${t.mediaId}::text || '/large.webp')`,
+    ),
+    // Both or neither; neither only on a row written as lost before its file was ever moved.
+    check(
+      "quarantine_files_digest",
+      sql`(${t.size} is null) = (${t.sha256} is null) and (${t.size} is null or (${t.size} > 0 and ${t.sha256} ~ '^[0-9a-f]{64}$')) and (${t.size} is not null or ${t.lostAt} is not null)`,
+    ),
+    check("quarantine_files_ends", sql`num_nonnulls(${t.returnedAt}, ${t.destroyedAt}, ${t.lostAt}) <= 1`),
+    check("quarantine_files_release", sql`${t.releaseId} is null or ${t.destroyedAt} is not null`),
+    check("quarantine_files_told", sql`(${t.lostTold} is null) = (${t.lostAt} is null)`),
+    /** seal_custody's count of a seal's files by post, and from 0031 the released files left to destroy. */
+    index("quarantine_files_post_idx").on(t.postId),
+    /** lost_untold: the notices of lost files still owed. */
+    index("quarantine_files_untold_idx").on(t.mediaId).where(sql`lost_told = 'pending'`),
+    // The API's role is granted nothing; this policy only says so to row level security, as 3f's records do.
+    pgPolicy("quarantine_files_api_none", { for: "select", to: apiRole, using: sql`false` }),
+  ],
+).enableRLS();

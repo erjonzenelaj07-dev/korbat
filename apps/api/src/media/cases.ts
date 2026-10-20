@@ -69,6 +69,22 @@ export interface MediaForCases {
    * it before its first batch of a round and takes none while the answer is not zero.
    */
   requestOwed(): Promise<number>;
+  /**
+   * 3d (design, sections 6.1, 7.1 and 7.14): up to `limit` images whose files the quarantine's record says are lost and
+   * whose author is owed the notice, the earliest first, with the author and the post's creation time while the image
+   * row and its post are there (null otherwise). The dispatch job mails each and records the outcome with lostTold.
+   */
+  lostUntold(limit: number): Promise<LostImage[]>;
+  /** 3d: the outcome of a lost image's notice, which changes only a notice still pending. */
+  lostTold(mediaId: string, outcome: "sent" | "suppressed" | "no_address" | "none" | "failed"): Promise<void>;
+}
+
+/** 3d: an image whose files are lost, as the dispatch job tells its author of it. */
+export interface LostImage {
+  mediaId: string;
+  lostAt: Date;
+  ownerId: string | null;
+  postCreatedAt: Date | null;
 }
 
 /**
@@ -132,5 +148,7 @@ export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log"> & 
       await deps.files.settleOwed(ids);
     },
     requestOwed: async () => (await requestOwed(deps, nowMs())).owed,
+    lostUntold: (limit) => deps.repo.lostUntold(limit),
+    lostTold: (mediaId, outcome) => deps.repo.lostTold(mediaId, outcome),
   };
 }

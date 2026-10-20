@@ -1,0 +1,31 @@
+== labr (backup after the seal for good)
+before: level=visible images=[sealed,sealed] frozen=t in_force=[final:seal_media]
+replayed: 1 marks, 2 image rows
+after:  level=visible images=[sealed(erased),sealed(erased)] frozen=f in_force=[final:seal_media]
+-- run again (idempotent)
+present
+releases=1 marks=1 (of seals: final by staff)
+== labq (backup before the seal for good)
+before: level=visible images=[sealed,sealed] frozen=t in_force=[interim:seal_media,interim:seal_media]
+replayed: 2 marks, 2 image rows
+after:  level=visible images=[sealed(erased),sealed(erased)] frozen=t in_force=[interim:seal_media,interim:seal_media]
+-- run again (idempotent)
+present
+releases=1 marks=2 (of seals: interim by system, interim by staff)
+== the seal for good taken again on b02 after the replay
+t
+WARNING:  there is no transaction in progress
+level=visible images=[sealed(erased),sealed(erased)] frozen=t in_force=[final:seal_media]
+seal_posts rows: 3; marks: 2
+== or answered without a seal instead (run on a second copy)
+== a release whose post no seal of this database lists (b08)
+replayed: 0 marks, 1 image rows
+level=visible images=[visible(erased)] frozen=f in_force=[]
+b02, sealed for good again after the replay: level=visible images=[sealed(erased),sealed(erased)] frozen=f in_force=[final:seal_media]
+b07, sealed and not released: level=visible images=[sealed] frozen=t in_force=[interim:seal_media,interim:seal_media]
+ERROR:  permission denied for table release_posts
+NOTICE:  by post, a post nobody reported: 0.0485 ms a call, answer f
+NOTICE:  by post, a sealed post: 0.0381 ms a call, answer t
+-- (the table above was created by the superuser: gate K runs as korbat_migrate, which needs the read; granted, and the delete run again)
+rows of b02 the API role deletes: 2
+rows of b07 (sealed, not released) the API role deletes: 0

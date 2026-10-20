@@ -58,6 +58,8 @@ import {
   imagesOpenedOn,
   insertAccess,
   interimSealsInForce,
+  quarantineCounts,
+  sealCustody,
   lateErasures,
   liveAccount,
   livePost,
@@ -241,6 +243,9 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     // among them and the newest import's time.
     copy: await copyOverview(q),
     restore: await restoreOverview(q),
+    // 3d Task 1 (sections 7.1 and 8.2): the moves into and out of the quarantine that are due, and the files to destroy,
+    // from quarantine_counts() alone.
+    quarantine: await quarantineCounts(q),
   };
 }
 
@@ -466,8 +471,16 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   const replies = await caseReplies(q, row.id);
   // 3f Task 3: an order's measure names its order and whether it keeps the post from its author; a reinstatement its ground.
   const orderFacts = await caseOrderFacts(q, row.id);
+  // 3d Task 1 (sections 6.1, 8.4 and 10.3): where the files of each seal for good of the case are, read for the seals of
+  // the decisions that are not interim: a seal taken while deciding leaves its files in the store.
+  const caseDecisionRows = await caseDecisions(q, row.id);
+  const sealsForGood = actions.filter(
+    (action) => action.kind === "seal_media" && caseDecisionRows.some((decision) => decision.id === action.decisionId && decision.kind !== "interim"),
+  );
+  const custody = await sealCustody(q, sealsForGood.map((action) => action.id));
+  const custodyOf = (actionId: string | undefined) => (actionId !== undefined && custody.has(actionId) ? { custody: custody.get(actionId)! } : {});
   const decisions: CaseDecision[] = [];
-  for (const decision of await caseDecisions(q, row.id)) {
+  for (const decision of caseDecisionRows) {
     const own: CaseDecision["actions"] = [];
     for (const action of actions.filter((candidate) => candidate.decisionId === decision.id)) {
       const more = columns.get(action.id);
@@ -521,6 +534,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
       legalReference: decision.legalReference,
       actions: own,
       ...(standingOn.has(decision.id) ? { standingOn: standingOn.get(decision.id)!.map((entry) => ({ kind: entry.kind, basis: entry.basis as StandingBasis })) } : {}),
+      ...custodyOf(sealsForGood.find((action) => action.decisionId === decision.id)?.id),
     });
   }
 

@@ -40,7 +40,7 @@ import {
 } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { APPEAL_WORDS, CASE_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, CASE_WORDS, CUSTODY_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
 import { revealWithKey } from "../step-up";
@@ -610,6 +610,31 @@ function ReplyBlock({ decision, compose }: { decision: CaseDecision; compose: Ca
   );
 }
 
+/**
+ * 3d (design, section 8.4): under a seal for good's decision, where its files are, from its `custody` (counts and one
+ * time, never a file's name): [case.custody.in] while the seal is in force, adding that the others are still in the
+ * image store while some but not all are moved; [case.custody.return] while a lifted seal's files are still in the
+ * quarantine; [case.custody.lost] in its form for a seal that stands or one that was lifted.
+ */
+function CustodyLines({ decision }: { decision: CaseDecision }) {
+  const custody = decision.custody;
+  if (custody === undefined) return null;
+  const inForce = decision.actions.some((action) => action.kind === "seal_media" && action.inForce);
+  const W = CUSTODY_WORDS;
+  return (
+    <div className="custody">
+      {inForce ? (
+        <p className={custody.moved + custody.lost < custody.files ? "notice" : "hint"}>
+          {W.custodyIn(custody.moved, custody.files, custody.movedAt === null ? null : bothTimes(custody.movedAt))}
+          {custody.moved > 0 && custody.moved + custody.lost < custody.files ? ` ${W.custodyInRest}` : ""}
+        </p>
+      ) : null}
+      {custody.toReturn > 0 ? <p className="notice">{W.custodyReturn(custody.toReturn)}</p> : null}
+      {custody.lost > 0 ? <p className="error">{W.custodyLost(custody.lost, inForce)}</p> : null}
+    </div>
+  );
+}
+
 function Decision({ decision, view, compose }: { decision: CaseDecision; view: CaseView; compose: CaseScreenViewProps["compose"] }) {
   const lifted = (id: string | null) => {
     const by = id === null ? undefined : view.decisions.find((other) => other.id === id);
@@ -663,6 +688,7 @@ function Decision({ decision, view, compose }: { decision: CaseDecision; view: C
           ))}
         </ul>
       )}
+      <CustodyLines decision={decision} />
       {compose === undefined ? null : <CorrectControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onCorrect={compose.onCorrect} />}
       {compose === undefined ? null : <WithdrawControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdraw={compose.onWithdraw} />}
       {compose === undefined ? null : <WithdrawMarksControl view={view} decision={decision} role={compose.role} disabled={compose.busy} onWithdrawMarks={compose.onWithdrawMarks} />}

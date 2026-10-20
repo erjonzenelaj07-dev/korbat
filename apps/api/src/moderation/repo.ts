@@ -1778,6 +1778,34 @@ export async function interimSealsInForce(q: Runner, max: number): Promise<{ tot
   return { total: found[0]?.total ?? 0, items: found.map((row) => ({ at: row.at, handle: row.handle, caseId: row.case_id, posts: row.posts, images: row.images })) };
 }
 
+/**
+ * 3d (design, sections 6.1, 8.2 and 10.3): the quarantine's counts for the home screen, the four values of
+ * quarantine_counts() and nothing else: the API's role reaches the quarantine through such functions alone.
+ */
+export async function quarantineCounts(q: Runner): Promise<{ dueIn: number; dueOut: number; undestroyed: number; oldest: string | null }> {
+  const [row] = await rows<{ due_in: number; due_out: number; undestroyed: number; oldest: string | null }>(
+    q,
+    sql`select c.due_in, c.due_out, c.undestroyed, ${iso("c.oldest")} as oldest from public.quarantine_counts() c`,
+  );
+  return { dueIn: row!.due_in, dueOut: row!.due_out, undestroyed: row!.undestroyed, oldest: row!.oldest };
+}
+
+/**
+ * 3d (design, sections 6.1, 8.4 and 10.3): where the files of each of these seals are, by seal_custody(action), keyed by
+ * the seal's ledger row: counts and one time, never a file's name or digest.
+ */
+export async function sealCustody(q: Runner, actionIds: readonly string[]): Promise<Map<string, { files: number; moved: number; movedAt: string | null; toReturn: number; filesLeft: number; lost: number }>> {
+  const custody = new Map<string, { files: number; moved: number; movedAt: string | null; toReturn: number; filesLeft: number; lost: number }>();
+  for (const actionId of actionIds) {
+    const [row] = await rows<{ files: number; moved: number; moved_at: string | null; to_return: number; files_left: number; lost: number }>(
+      q,
+      sql`select c.files, c.moved, ${iso("c.moved_at")} as moved_at, c.to_return, c.files_left, c.lost from public.seal_custody(${actionId}::uuid) c`,
+    );
+    custody.set(actionId, { files: row!.files, moved: row!.moved, movedAt: row!.moved_at, toReturn: row!.to_return, filesLeft: row!.files_left, lost: row!.lost });
+  }
+  return custody;
+}
+
 /** What became of a mail korbat owed: the delivery states a send can end in. */
 export type MailState = "sent" | "suppressed" | "no_address" | "failed";
 

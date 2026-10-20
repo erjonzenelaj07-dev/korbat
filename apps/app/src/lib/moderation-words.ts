@@ -1,4 +1,5 @@
 import { CSAM_NOTICE_MAX_ACCOUNTS, DAILY_LIMITS, NOTICE_LIMITS, type CsamKeywordChoice, type TdbFormCategory } from "@korbat/contracts";
+import { IMAGE_LOST_NOTICE } from "@korbat/rules";
 
 /**
  * The app's words for reports, notices and moderation cases (3c design, section 9): the report form, the notice status
@@ -243,6 +244,17 @@ export const CHIP_WORDS = {
   underReview: "Under review",
   removed: "Removed",
   illegal: "illegal content",
+} as const;
+
+/**
+ * 3d (design, sections 7.1 and 9.6): what the author reads in the place of an image of their own post that did not load,
+ * once the image's status says why: its files are being moved back after its seal was lifted ([image.restoring]), or
+ * korbat lost them while they were kept apart ([image.lost], the words of the mail image_lost, IMAGE_LOST_NOTICE). Anyone
+ * else sees what a missing image shows.
+ */
+export const IMAGE_FAULT_WORDS = {
+  restoring: "This image is being restored. It is shown again once korbat has moved it back; you do not need to do anything.",
+  lost: IMAGE_LOST_NOTICE.onImage,
 } as const;
 
 /** The terms page's Contact section, built from the build's contact address; it is not part of the terms' own sections. */

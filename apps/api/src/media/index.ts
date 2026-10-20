@@ -4,7 +4,7 @@
  */
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
-import { MEDIA_SIZES } from "@korbat/contracts";
+import { MEDIA_SIZES, type QuarantineDirection } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { HEARTBEAT_STALE_MS, type MediaFormat } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
@@ -18,7 +18,7 @@ import type { JobLock } from "../lib/jobs";
 import { createSweeper, sweep } from "./sweeper";
 
 export { DISPOSAL_BATCH, mediaForCases } from "./cases";
-export type { MediaForCases, StaffImage } from "./cases";
+export type { LostImage, MediaForCases, StaffImage } from "./cases";
 export { MediaError } from "./context";
 export type { MediaDeps, MediaForPosts, PostImage } from "./context";
 export type { StoredFile } from "./files";
@@ -98,6 +98,48 @@ export async function sealFiles(q: Db | DbTx, sealActionId: string): Promise<Sea
 }
 
 export { storedImageName } from "./files";
+
+/** One image of the quarantine's plan as staff.js quarantine-list prints it: its direction, its post, and the files to name. */
+export interface QuarantineLine {
+  direction: QuarantineDirection;
+  mediaId: string;
+  /** The image's post, or for an image row that is gone the post its quarantine rows recorded; null for neither. */
+  postId: string | null;
+  /** The store's names of the files the line is about, one line of the list each. */
+  files: string[];
+}
+
+/** A post sealed for good whose image rows now are not as many as a seal of it recorded. */
+export interface QuarantineMismatch {
+  postId: string;
+  rows: number;
+  images: number[];
+}
+
+/**
+ * 3d (design, sections 5, 6.1, 7.1 and 8.10): the quarantine's plan joined to the store's naming rule, for staff.js
+ * quarantine-list, through the caller's transaction, which reads as the migrator: quarantine_plan() is executable by
+ * nobody else, and the command line cannot build the module (F 5), nor may any file outside it name the image table.
+ *
+ * An image to move in names each of its files that is not in the quarantine already (a lost file counts as there: nothing
+ * of it is left to move); an image to return, to destroy or for the operator names each of its files whose row has no end.
+ * For every post sealed for good, its image rows now, erased or not, are compared with the count each of its seals
+ * recorded (seal_posts.images): a post whose rows differ gets no line and is answered among `mismatched`, so the command
+ * names it and still prints every other post's lines. A list that missed a row would leave a sealed file in the store.
+ */
+export async function quarantineNames(q: Db | DbTx): Promise<{ lines: QuarantineLine[]; mismatched: QuarantineMismatch[] }> {
+  const repo = createMediaRepo(q as Db);
+  const mismatched = (await repo.sealedForGoodCounts(q)).filter((post) => post.images.some((images) => images !== post.rows));
+  const left = new Set(mismatched.map((post) => post.postId));
+  const lines: QuarantineLine[] = [];
+  for (const image of await repo.quarantinePlan(q)) {
+    if (image.postId !== null && left.has(image.postId)) continue;
+    const names = MEDIA_SIZES.map((size) => storedImageName(image.mediaId, size));
+    const files = image.direction === "in" ? names.filter((name) => !image.kept.includes(name)) : names.filter((name) => image.open.includes(name));
+    if (files.length > 0) lines.push({ direction: image.direction as QuarantineDirection, mediaId: image.mediaId, postId: image.postId, files });
+  }
+  return { lines, mismatched };
+}
 
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {

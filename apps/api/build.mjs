@@ -7,8 +7,17 @@ await build({
   // Each entry is a bundle of its own. The command lines check that they were run directly by comparing import.meta.url,
   // which in a bundle is the bundle's, so no entry may import another entry's file.
   // notify (3f) is the contact point's watcher, a service of its own on its own database role; handover (3f Task 5) is
-  // the one-shot copy of one seal's files, with no database, no network and no module of the API.
-  entryPoints: { index: "src/index.ts", migrate: "src/migrate.ts", "grant-role": "src/cli/grant-role.ts", staff: "src/cli/staff.ts", notify: "src/notify/main.ts", handover: "src/handover.ts" },
+  // the one-shot copy of one seal's files, with no database, no network and no module of the API; quarantine (3d Task 1)
+  // is the one-shot mover of sealed files between the image store and the quarantine, as bare as the hand-over.
+  entryPoints: {
+    index: "src/index.ts",
+    migrate: "src/migrate.ts",
+    "grant-role": "src/cli/grant-role.ts",
+    staff: "src/cli/staff.ts",
+    notify: "src/notify/main.ts",
+    handover: "src/handover.ts",
+    quarantine: "src/quarantine.ts",
+  },
   outdir: "dist",
   bundle: true,
   format: "esm",

@@ -465,6 +465,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         // Task 6: a gap's closing, with the decision that took the measure again or, by an admin, with none.
         "public.gap_close",
         "public.intake_due_at",
+        // 3d Task 1 (0033_quarantine): the six functions by which the API's role reaches the quarantine, which answer counts,
+        // one time and booleans: a lost image's notice owed and told, an image's custody, the home's counts and a seal's.
+        "public.lost_told",
+        "public.lost_untold",
+        "public.media_lost",
+        "public.media_quarantined",
         // 3f's Task 2 (0027_orders): the hold and the preservation, and the two writers a key's audit row binds.
         "public.order_correct",
         "public.order_event_record",
@@ -478,11 +484,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.order_rules",
         "public.post_frozen",
         "public.post_preserved",
+        "public.quarantine_counts",
         "public.redact_r4_body",
         "public.release_outcomes",
         // Task 5: what the console learns of the records to authorities: a case, a kind and a time for each owed one.
         "public.reports_owed",
         "public.review_needs_admin",
+        "public.seal_custody",
         "public.snapshot_withheld",
         "public.staff_case_conflict",
         "public.standing_basis_broken_at",

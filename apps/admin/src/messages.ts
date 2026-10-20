@@ -1,5 +1,6 @@
 import {
   ORDER_RULES,
+  QUARANTINE_RULES,
   REPLY_AIM_HOURS,
   RETENTION,
   STANDING_RULES,
@@ -737,6 +738,32 @@ export const ORDER_WORDS = {
     `A deadline passed at ${dueAt} and not everything is done: a message is unread, or an order has an item that is neither disabled nor closed. Open Orders and act now, then tell the operator.`,
   /** Contact point's button (8.3). */
   openFromMessage: "Open an order from this message",
+} as const;
+
+/**
+ * 3d (design, sections 8.1, 8.2 and 8.4): the words of sealed files and their custody, the quarantine, the release and
+ * held uploads, each under its key. Every number is printed from the answer or from a constant (QUARANTINE_RULES), never
+ * typed; every time is the database's instant, printed by the screen with bothTimes. Task 1 has the quarantine's.
+ */
+export const CUSTODY_WORDS = {
+  /** The home screen's block below "Authorities", each line only while it applies. */
+  homeTitle: "Sealed files and programs",
+  /** [home.quarantine], while a move into the quarantine or back is due. */
+  homeQuarantine: (dueIn: number, dueOut: number, oldest: string) =>
+    `Files to move or return: ${dueIn} images to move into the quarantine, ${dueOut} to return to the image store, the oldest due since ${oldest}. Whoever has the server runs the README's steps under Quarantine (staff.js quarantine-list). Until then a sealed image's files are still in the image store, and an image whose seal was lifted is not shown.`,
+  /** Its addition once the oldest due move is older than the alert's threshold. */
+  homeQuarantineLate: `More than ${QUARANTINE_RULES.dueHours} hours: every staff account is alerted daily until the move is recorded.`,
+  /** [case.custody.in], on a seal for good in force. */
+  custodyIn: (moved: number, files: number, movedAt: string | null) => (moved > 0 && movedAt !== null ? `Files: ${moved} of ${files} are in the quarantine, since ${movedAt}.` : "Files: not moved to the quarantine yet."),
+  custodyInRest: "The others are still in the image store until whoever has the server moves them (the README, Quarantine).",
+  /** [case.custody.return], while files of a lifted seal are still in the quarantine. */
+  custodyReturn: (toReturn: number) =>
+    `Files to return: the seal was lifted and ${toReturn} files of its images are still in the quarantine. The images are shown again once whoever has the server has returned them (the README, Quarantine).`,
+  /** [case.custody.lost], under a seal for good in force, and after a lifted seal. */
+  custodyLost: (lost: number, inForce: boolean) =>
+    inForce
+      ? `Files lost: ${lost}. They were found in neither the image store nor the quarantine and are recorded as lost; there is nothing to move, hand over or destroy for them.`
+      : `Files lost: ${lost}. Their images cannot be shown again; their author was told so.`,
 } as const;
 
 /**

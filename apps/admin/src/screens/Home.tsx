@@ -1,7 +1,7 @@
-import { ORDER_RULES, OVERVIEW_LIST_MAX, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
+import { ORDER_RULES, OVERVIEW_LIST_MAX, QUARANTINE_RULES, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, CUSTODY_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, NavLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type ConsolePath, type OrderId } from "../router";
 import { readSignInsAtOpening } from "../signins";
@@ -253,6 +253,33 @@ export function AuthoritiesLines({
   );
 }
 
+/**
+ * 3d (design, section 8.2): the block "Sealed files and programs" below "Authorities", each line only while it applies,
+ * in the design's order. Task 1: [home.quarantine], while a move of sealed files into the quarantine or back to the image
+ * store is due, from the four values of quarantine_counts(); once the oldest due move is older than the alert's threshold
+ * it says that every staff account is alerted daily.
+ */
+export function CustodyLines({ overview, now = Date.now() }: { overview: StaffOverview; now?: number }) {
+  const { quarantine } = overview;
+  const lines: ReactNode[] = [];
+  if ((quarantine.dueIn > 0 || quarantine.dueOut > 0) && quarantine.oldest !== null) {
+    const late = now - Date.parse(quarantine.oldest) > QUARANTINE_RULES.dueHours * 3_600_000;
+    lines.push(
+      <p key="quarantine" className={late ? "error" : "notice"}>
+        {CUSTODY_WORDS.homeQuarantine(quarantine.dueIn, quarantine.dueOut, bothTimes(quarantine.oldest))}
+        {late ? ` ${CUSTODY_WORDS.homeQuarantineLate}` : ""}
+      </p>,
+    );
+  }
+  if (lines.length === 0) return null;
+  return (
+    <div role="status" className="authorities">
+      <h3>{CUSTODY_WORDS.homeTitle}</h3>
+      {lines}
+    </div>
+  );
+}
+
 export function OverviewView({
   overview,
   now,
@@ -274,6 +301,7 @@ export function OverviewView({
   return (
     <>
       <AuthoritiesLines overview={overview} now={now} onOpenCase={onOpenCase} {...(onNavigate === undefined ? {} : { onNavigate })} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} />
+      <CustodyLines overview={overview} now={now} />
       <h3>Cases</h3>
       <ul className="lanes">
         {overview.lanes.map((lane) => (

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { MEASURES, MEASURE_KINDS, ORDER_DRAFTS, ORDER_GROUNDS, ORDER_RULES, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
-import { ORDER_NOTICE, REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
+import { IMAGE_LOST_NOTICE, ORDER_NOTICE, REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
 
 /**
  * The statement of reasons (3c design, section 10): one pure function renders it for the author's screen, the console's
@@ -1379,5 +1379,18 @@ describe("the package", () => {
   test("its index re-exports the statement and its words: the index is the package's only door", () => {
     expect(typeof statementParagraphs).toBe("function");
     expect(STATEMENT_WORDS.automation).toBe("No automated means were used to find this or to decide it.");
+  });
+});
+
+describe("IMAGE_LOST_NOTICE (3d design, sections 7.1 and 9.6; W.8): an image korbat lost", () => {
+  test("the mail names the post's day and says the image cannot come back; the app's sentence says the same in place of the image", () => {
+    expect(IMAGE_LOST_NOTICE.mail("2026-10-01")).toBe(
+      "korbat lost the files of an image of your post of 2026-10-01 while they were kept apart from its other images. The image cannot be shown again. You can delete the post, or post the image again. This is korbat's fault, not a decision about you.",
+    );
+    expect(IMAGE_LOST_NOTICE.onImage).toBe("korbat lost this image's files while they were kept apart from its other images. It cannot be shown again. You can delete the post, or post the image again.");
+    // Nothing tells the author to wait, and nothing names a file, a seal or a person.
+    for (const text of [IMAGE_LOST_NOTICE.mail("2026-10-01"), IMAGE_LOST_NOTICE.onImage]) {
+      expect(text).not.toMatch(/wait|restored|seal|file name|@/i);
+    }
   });
 });

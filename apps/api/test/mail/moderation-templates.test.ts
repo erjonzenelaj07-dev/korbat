@@ -5,6 +5,7 @@ import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } fr
 import { MemoryMailer } from "../../src/mail/memory";
 import { TICK_MAILED_KINDS } from "../../src/moderation/alerts";
 import { ACCOUNT_DELETED_HELD, DECISION_MAIL_SUBJECTS, renderMail, renderNoticeUpdate, renderTemplate } from "../../src/mail/templates";
+import { IMAGE_LOST_NOTICE } from "@korbat/rules";
 
 /**
  * The mails of deciding and of the dispatch (3c design, section 7.15): the author's statement, the staff alerts for a
@@ -39,11 +40,13 @@ describe("the closed union of templates", () => {
       "order_effected", "order_reinstated", "hold_ending", "order_notice", "order_reinstated_notice", "order_notice_added",
       "copy_overdue", "copy_taken",
       "report_owed", "handover_undestroyed",
+      // 3d Task 1.
+      "quarantine_due", "quarantine_lost", "image_lost",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(59);
+    expect(new Set(names).size).toBe(62);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(59);
+    expect(Object.keys(all)).toHaveLength(62);
   });
 });
 
@@ -551,5 +554,34 @@ describe("3f: the staff mails whose words are their push's (W.4)", () => {
       const facts = Object.fromEntries(ALERT_KINDS[template].facts.map((name) => [name, isTimeFact(name) ? "2026-10-16T08:00:00.000Z" : "3"]));
       expect(mail(template, facts).text, template).not.toMatch(/@/);
     }
+  });
+});
+
+describe("3d Task 1: the quarantine's two staff mails and the mail of a lost image (W.7, W.8)", () => {
+  const NOW = "2026-10-18T12:00:00.000Z";
+
+  test("quarantine_due and quarantine_lost are their pushes' sentences with the line of what to do, and carry counts and times only", () => {
+    const due = renderTemplate("quarantine_due", { count: "3", oldestAt: "2026-10-17T08:05:00.000Z", now: NOW });
+    expect(due.subject).toBe("korbat: Sealed files are waiting to be moved");
+    expect(paragraphs(due.text)).toEqual([
+      "3 images have waited more than 24 hours to be moved into the quarantine or back, the oldest since 2026-10-17 08:05 UTC.",
+      "Whoever has the server runs the README's steps under Quarantine. This repeats daily until the move is recorded.",
+      LAST_STAFF,
+    ]);
+    const lost = renderTemplate("quarantine_lost", { count: "2", at: "2026-10-18T11:40:00.000Z", now: NOW });
+    expect(lost.subject).toBe("korbat: Sealed files are lost");
+    expect(paragraphs(lost.text)[0]).toBe("2 files that were to be kept apart are recorded as lost at 11:40 UTC: they are in neither the image store nor the quarantine.");
+    for (const r of [due, lost]) linkless(r);
+    expect(() => renderTemplate("quarantine_lost", { count: "2", at: "2026-10-18T11:40:00.000Z", file: "files/aa/x/small.webp", now: NOW })).toThrow(/file/);
+  });
+
+  test("image_lost: the post's day in IMAGE_LOST_NOTICE, where to read it, and the user mail's last sentence; no link and no file", () => {
+    const r = renderTemplate("image_lost", { createdAt: "2026-10-01 12:00 UTC" });
+    expect(r.subject).toBe("korbat lost an image of yours");
+    expect(paragraphs(r.text)).toEqual([IMAGE_LOST_NOTICE.mail("2026-10-01 12:00 UTC"), "Read it in korbat under Settings, Cases.", LAST_USER]);
+    expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
+    expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+    expect(r.text).not.toMatch(/webp|files[/]|wait/);
+    expect(() => renderTemplate("image_lost", {})).toThrow(/createdAt/);
   });
 });

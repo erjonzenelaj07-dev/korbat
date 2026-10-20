@@ -6,6 +6,7 @@ import { isHiddenMedia, type HiddenMedia, type MediaView } from "@korbat/contrac
 import { API_BASE } from "@/lib/api";
 import { CHIP_WORDS } from "@/lib/moderation-words";
 import { HiddenImage, HiddenRowWords, HiddenThumbnail, hiddenImageWords } from "./HiddenImage";
+import { ImageFaultView, useImageFault } from "./ImageFault";
 import { MediaViewer } from "./MediaViewer";
 
 /** A single image keeps its own shape, within limits, so a very tall or very wide one cannot take over the timeline. */
@@ -21,11 +22,11 @@ export const clampRatio = (width: number, height: number): number => Math.min(MA
  * The small size of an image with its blurhash; expo-image loads it lazily on the web. The blurhash
  * fades into the image unless the system asks for reduced motion, which swaps it at once.
  */
-function Picture({ item, style }: { item: MediaView; style: { width: number | "100%"; height: number | "100%"; borderRadius?: number } }) {
+function Picture({ item, style, onError }: { item: MediaView; style: { width: number | "100%"; height: number | "100%"; borderRadius?: number }; onError?: () => void }) {
   const still = useReducedMotion();
   return (
     // On the web expo-image takes the <img alt> from accessibilityLabel, not from alt.
-    <Image source={{ uri: `${API_BASE}${item.small}` }} placeholder={{ blurhash: item.blurhash }} contentFit="cover" transition={still ? 0 : 150} accessibilityLabel={item.alt} style={style} />
+    <Image source={{ uri: `${API_BASE}${item.small}` }} placeholder={{ blurhash: item.blurhash }} contentFit="cover" transition={still ? 0 : 150} accessibilityLabel={item.alt} style={style} onError={onError} />
   );
 }
 
@@ -42,13 +43,22 @@ export function OwnImageLabel({ state }: { state: NonNullable<MediaView["moderat
   );
 }
 
-/** One image of the frame: the control that opens it and, beside that control, the label of the author's own restricted image, as text of its own. */
-function Cell({ item, onPress }: { item: MediaView; onPress: () => void }) {
+/**
+ * One image of the frame: the control that opens it and, beside that control, the label of the author's own restricted
+ * image, as text of its own. 3d: when an image of the reader's own post fails to load, its status is asked once, and an
+ * image being restored or lost shows why in its place, with nothing to open.
+ */
+function Cell({ item, onPress, own }: { item: MediaView; onPress: () => void; own: boolean }) {
+  const { fault, onError } = useImageFault(item.id, own);
   return (
     <View style={{ flex: 1 }}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`Open image: ${item.alt}`} onPress={onPress} style={{ flex: 1 }}>
-        <Picture item={item} style={{ width: "100%", height: "100%" }} />
-      </Pressable>
+      {fault !== null ? (
+        <ImageFaultView fault={fault} />
+      ) : (
+        <Pressable accessibilityRole="button" accessibilityLabel={`Open image: ${item.alt}`} onPress={onPress} style={{ flex: 1 }}>
+          <Picture item={item} style={{ width: "100%", height: "100%" }} onError={onError} />
+        </Pressable>
+      )}
       {item.moderation ? <OwnImageLabel state={item.moderation} /> : null}
     </View>
   );
@@ -66,7 +76,7 @@ function Grid({ media, postId, own }: { media: (MediaView | HiddenMedia)[]; post
   const [described, setDescribed] = useState(false);
   const cell = (index: number) => {
     const item = media[index]!;
-    return isHiddenMedia(item) ? <HiddenImage key={item.id} item={item} /> : <Cell key={item.id} item={item} onPress={() => setOpen(index)} />;
+    return isHiddenMedia(item) ? <HiddenImage key={item.id} item={item} /> : <Cell key={item.id} item={item} onPress={() => setOpen(index)} own={own === true} />;
   };
   const first = media[0]!;
   // Descriptions exist only for the images this reader is shown.
@@ -110,7 +120,7 @@ function Grid({ media, postId, own }: { media: (MediaView | HiddenMedia)[]; post
             </Text>
           ))
         : null}
-      {open === null ? null : <MediaViewer media={media} index={open} onIndex={setOpen} onClose={() => setOpen(null)} postId={own ? undefined : postId} />}
+      {open === null ? null : <MediaViewer media={media} index={open} onIndex={setOpen} onClose={() => setOpen(null)} postId={own ? undefined : postId} own={own === true} />}
     </View>
   );
 }

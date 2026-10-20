@@ -48,7 +48,15 @@ export async function serve(deps: MediaDeps, request: ServeRequest): Promise<Ser
 
   const file = await deps.files.openImage(request.id, request.size);
   if (!file) {
-    deps.log.error({ id: request.id, size: request.size }, "media: a ready image has no usable file in the store");
+    // 3d (design, sections 6.1 and 7.1): a visible image whose seal was lifted has its files in the quarantine until they
+    // are returned, or korbat recorded them as lost: the same 404, and an info line, since nothing is broken. Only an
+    // image that is neither has lost its file unexpectedly.
+    const custody = access.mediaState === "visible" ? await deps.repo.custody(request.id) : { quarantined: false, lost: false };
+    if (custody.quarantined || custody.lost) {
+      deps.log.info({ id: request.id, size: request.size, custody: custody.lost ? "lost" : "quarantine" }, "media: a visible image's files are not in the store: being restored, or lost");
+    } else {
+      deps.log.error({ id: request.id, size: request.size }, "media: a ready image has no usable file in the store");
+    }
     return { kind: "not_found" };
   }
   return { kind: "file", file, cacheControl, etag };

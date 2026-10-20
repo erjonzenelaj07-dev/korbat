@@ -16,6 +16,7 @@ import {
   ModerationErrorCode,
   NOTIFY_ERRORS,
   ORDER_RULES,
+  QUARANTINE_RULES,
   StaffOverview,
   alertPlaceholders,
   alertTime,
@@ -144,7 +145,7 @@ describe("the contact point's requests and answers", () => {
 });
 
 describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priority, scope, legs, mail and facts", () => {
-  test("the 22 kinds, 3f's sixteen and then 3c's and 3e's six, in the order of the CHECK", () => {
+  test("the 24 kinds, 3f's sixteen, then 3c's and 3e's six, then 3d's, in the order of the CHECK", () => {
     expect([...ALERT_KIND_LIST]).toEqual([
       "contact_mail",
       "contact_mail_escalated",
@@ -168,6 +169,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       "moderation_reads",
       "moderation_reveal",
       "moderation_csam_lifted",
+      "quarantine_due",
+      "quarantine_lost",
     ]);
     expect(Object.keys(ALERT_KINDS).sort()).toEqual([...ALERT_KIND_LIST].sort());
     expect(Object.keys(ALERT_TEXTS).sort()).toEqual([...ALERT_KIND_LIST].sort());
@@ -201,6 +204,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       moderation_reads: [3, "all", "push+mail", "own"],
       moderation_reveal: [3, "all", "push+mail", "own"],
       moderation_csam_lifted: [3, "all", "push+mail", "own"],
+      quarantine_due: [3, "all", "push+mail", "sentence"],
+      quarantine_lost: [3, "all", "push+mail", "sentence"],
     };
     for (const kind of ALERT_KIND_LIST) expect(row(kind), kind).toEqual(table[kind]);
   });
@@ -230,6 +235,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       moderation_reads: ["limit"],
       moderation_reveal: ["at"],
       moderation_csam_lifted: ["at"],
+      quarantine_due: ["count", "oldestAt"],
+      quarantine_lost: ["count", "at"],
     });
     for (const kind of ALERT_KIND_LIST) expect(ALERT_KINDS[kind].facts.length, kind).toBeLessThanOrEqual(6);
     expect(["receivedAt", "dueAt", "oldestAt", "at", "since"].every(isTimeFact)).toBe(true);
@@ -278,14 +285,14 @@ describe("ALERT_TEXTS (W.4): one text serves both legs, and it carries counts an
     }
   });
 
-  test("no entry holds an @, a link or a placeholder that is neither a fact of its kind nor a number of ORDER_RULES", () => {
+  test("no entry holds an @, a link or a placeholder that is neither a fact of its kind nor a number of ORDER_RULES or QUARANTINE_RULES", () => {
     for (const kind of ALERT_KIND_LIST) {
       const text = ALERT_TEXTS[kind];
       const words = [text.title, ...text.sentence.map((part) => part.text), text.todo ?? ""].join(" ");
       expect(words, kind).not.toContain("@");
       expect(words.toLowerCase(), kind).not.toContain("http");
       for (const name of alertPlaceholders(kind)) {
-        expect([...ALERT_KINDS[kind].facts, ...Object.keys(ORDER_RULES)], `${kind}: {${name}}`).toContain(name);
+        expect([...ALERT_KINDS[kind].facts, ...Object.keys(ORDER_RULES), ...Object.keys(QUARANTINE_RULES)], `${kind}: {${name}}`).toContain(name);
       }
       // Every number a sentence of 3f prints comes from the facts or from ORDER_RULES: no digit is typed. 3c's burst
       // window is 3c's own number, which its push names as its mail does.

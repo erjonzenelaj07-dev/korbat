@@ -1,0 +1,47 @@
+== D2 the release
+t
+level=visible images=[sealed(erased),sealed(erased)] frozen=f in_force=[final:seal_media]
+release: basis=answer answer=illegal reference=AZ 1/26 posts=1; marks=1
+-- a second release of the same seal
+ERROR:  release_not_open
+== D3 gate K after the release: the API role deletes the image rows of b02 (rows deleted, rows left)
+2
+0
+== D4 a new suspect item about the released post freezes it again through the first arm (b02), and a write of marks by the API role
+t
+level=visible images=[] frozen=t in_force=[final:seal_media]
+ERROR:  permission denied for table seal_releases
+ERROR:  permission denied for table post_media
+== D5 the record aunterminated quoted string
+
+== D6 the cost of the clause: 20000 calls each, ms a call (old body, new body)
+NOTICE:  a post nobody reported (b10): old 0.1216 ms, new 0.1383 ms, answer f
+NOTICE:  a sealed post, seal while deciding (b07): old 0.1149 ms, new 0.1364 ms, answer t
+Nested Loop Anti Join
+  ->  Nested Loop Anti Join
+        ->  Hash Join
+              Hash Cond: (a.decision_id = d.id)
+              Join Filter: ((d.kind <> 'interim'::decision_kind) OR CASE WHEN (a.kind = 'seal_media'::action_kind) THEN EXISTS(SubPlan 1) ELSE (ANY (d.case_id = (hashed SubPlan 3).col1)) END)
+              ->  Hash Join
+                    Hash Cond: (a.id = s.action_id)
+                    ->  Seq Scan on decision_actions a
+                          Filter: (kind = ANY ('{withhold,remove,seal_media,withhold_media,remove_media,reset_display_name,reset_bio}'::action_kind[]))
+                    ->  Hash
+                          ->  Bitmap Heap Scan on seal_posts s
+                                Recheck Cond: (post_id = '00000000-0000-4000-8000-000000000b07'::uuid)
+                                ->  Bitmap Index Scan on seal_posts_post_idx
+                                      Index Cond: (post_id = '00000000-0000-4000-8000-000000000b07'::uuid)
+              ->  Hash
+                    ->  Seq Scan on decisions d
+              SubPlan 1
+                ->  Index Scan using intake_items_suspect_open_idx on intake_items i
+                      Index Cond: (case_id = d.case_id)
+                      Filter: (created_at <= d.decided_at)
+              SubPlan 3
+                ->  Bitmap Heap Scan on cases c
+                      Recheck Cond: (closed_at IS NULL)
+                      ->  Bitmap Index Scan on cases_queue_idx
+        ->  Index Only Scan using decision_actions_reversed_once on decision_actions r_1
+              Index Cond: (reverses_action_id = a.id)
+  ->  Index Only Scan using seal_releases_pkey on seal_releases r
+        Index Cond: ((action_id = s.action_id) AND (post_id = '00000000-0000-4000-8000-000000000b07'::uuid))
