@@ -101,6 +101,8 @@ export type TemplateName =
   | "head_unwitnessed"
   | "head_missed"
   | "head_published"
+  // 3d review M13: a day's value whose keeper's mail never went out, a staff alert whose mail is its push's sentence.
+  | "head_unmailed"
   // Task 6: the automated decision's three alerts, each a staff alert whose mail is its push's sentence: an author asked
   // for a person, a cap or a limit refused a program's measure, a request for a person waited longer than its target.
   | "automated_objection"

@@ -5,14 +5,14 @@ import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { loadConfig } from "../../src/config";
 import { RULE_DEFAULT_CATEGORY } from "@korbat/contracts";
 import pino from "pino";
-import { automatedStep, measureIn, sweepRound } from "../../src/moderation/automated";
+import { automatedStep, matchSignal, measureIn, sweepRound } from "../../src/moderation/automated";
 import { retentionRound } from "../../src/moderation/retention";
 import { insertMatchSignal, joinSignal } from "../../src/moderation/automated-repo";
 import { recordIntakeIn, type IntakeGround } from "../../src/moderation/intake";
 import { decisionStatement } from "../../src/moderation/statement";
 import { automationDeps, matchForTest, removeAutomation, signalForTest, signalRow, systemRowOf } from "./automation-fixtures";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { MINORS, act, decisionRow, imagePost, imageStates, inForce, itemsOf, postFrozen, refusal, refusalDetail, removeFixtures } from "./moderation-fixtures";
+import { MINORS, act, decisionRow, imagePost, imageStates, inForce, itemsOf, postFrozen, refusal, refusalDetail, removeFixtures, rowCounts } from "./moderation-fixtures";
 import { ageCase, ageIntake, releaseItems } from "./retention-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
@@ -56,6 +56,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automatic seal on a 
   let moderator: RealStaff;
   let admin: RealStaff;
   let startedAt: string;
+  let before: Record<string, number>;
   const authors: string[] = [];
   const media: string[] = [];
 
@@ -64,6 +65,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automatic seal on a 
     apiDb = createDb(config.DATABASE_URL_API, { max: 6 });
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
     world = deciderWorld(apiDb);
+    // One retention round first, so a row another file left for the disposal (a post its author deleted keeps its image
+    // row until the disposal takes it) is not counted against this file: the 6.7 test runs the whole job, which takes it.
+    await retentionRound({ apiDb, media: world.moderation.deps.media, log: pino({ level: "silent" }) });
+    // Counted before the staff accounts' profiles exist: the last test removes them with the file's posts.
+    before = await rowCounts(apiDb);
     moderator = await world.staff("moderator");
     admin = await world.staff("admin");
     const [row] = await apiDb.execute<{ now: string }>(sql`select now()::text as now`);
@@ -77,6 +83,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automatic seal on a 
     await world.close();
     await Promise.all([closeDb(apiDb), closeDb(migrateDb)]);
   });
+
+  /** A match record as the sweep reads it: whether the program is done with it, and the case it names. */
+  const recordRow = async (matchId: string) =>
+    ({ ...(await apiDb.execute<{ handled: boolean; case_id: string | null }>(sql`select handled_at is not null as handled, case_id from media_matches where id = ${matchId}::uuid`))[0]! });
 
   /** A post with images by a new author, committed, whose first image the comparison matched: the step's outcome on it. */
   async function matched(images = 2, kind: "acting" | "near" | "other" = "acting", config: Parameters<typeof automationDeps>[2] = {}) {
@@ -259,6 +269,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automatic seal on a 
 
   test("6.7's case: an automatic seal answered without a seal, its intake made due and erased by 3c's retention job, then the sweep: the match opens no new intake", async () => {
     const p = await matched(1);
+    // Review ruling L6: the step marked the record itself, before any sweep ran, so the mark is the step's memory and not
+    // something the sweep's own read wrote afterwards.
+    expect(await recordRow(p.matchId!)).toEqual({ handled: true, case_id: p.caseId });
     const answered = await world.decideAs(admin, p.caseId!, { kind: "final", outcome: "no_violation", ground: null, ruleId: null, matchAnswerReason: "source_withdrew" });
     if (typeof answered === "string") throw new Error(answered);
     const items = async () => (await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from intake_items where target_id = ${p.postId}::uuid`))[0]!.n;
@@ -274,5 +287,143 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automatic seal on a 
     expect(await items()).toBe(before);
     const [record] = await apiDb.execute<{ handled: boolean }>(sql`select handled_at is not null as handled from media_matches where media_id = ${p.mediaIds[0]!}::uuid`);
     expect(record!.handled).toBe(true);
+  });
+
+  /** A post of `images` images by a new author, committed and kept for the file's cleanup. */
+  async function posted(images = 1) {
+    const p = await imagePost(apiDb, images);
+    authors.push(p.authorId);
+    media.push(...p.mediaIds);
+    return p;
+  }
+  /** What the program's step must have left on a post whose acting match it took: the finding, the seal and the record naming the case. */
+  async function sealedByTheProgram(p: { postId: string; mediaIds: string[] }, matchId: string, caseId: string | null) {
+    expect(caseId).not.toBeNull();
+    expect(await imageStates(apiDb, p.mediaIds)).toEqual(p.mediaIds.map(() => "sealed"));
+    expect(await inForce(apiDb, { caseId: caseId! })).toEqual(["seal_media"]);
+    expect(await postFrozen(apiDb, p.postId)).toBe(true);
+    expect(await recordRow(matchId)).toEqual({ handled: true, case_id: caseId });
+  }
+
+  test("review H1, first interleaving: a second entry's whole matchSignal between the first's signal and its step leaves the record unmarked, and the first's step takes the finding and the seal, the record naming its case", async () => {
+    const p = await posted();
+    const deps = automationDeps(apiDb, {}, { MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on" });
+    const mediaId = p.mediaIds[0]!;
+    const matchId = await matchForTest(apiDb, mediaId, "acting");
+    // Entry A (match-retry's late answer, or imagesPublished) has written its signal; its step has not run yet.
+    const signalA = (await insertMatchSignal(apiDb, { mediaId, matchId }))!;
+    // Entry B (the sweep, with the record it read before A's signal existed): its signal meets A's, and the record a
+    // signal names is not B's to mark.
+    expect(await matchSignal(deps, { mediaId, matchId })).toBeNull();
+    expect(await recordRow(matchId)).toEqual({ handled: false, case_id: null });
+    const step = await automatedStep(deps, signalA);
+    expect(step.handled).toBe("measure");
+    expect((await signalRow(apiDb, signalA)).handled).toBe("measure");
+    await sealedByTheProgram(p, matchId, step.caseId);
+  });
+
+  test("review H1, second interleaving: the second entry's matchSignal right after the first's step read the record: the step still names its case on the record", async () => {
+    const p = await posted();
+    const base = automationDeps(apiDb, {}, { MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on" });
+    const mediaId = p.mediaIds[0]!;
+    const matchId = await matchForTest(apiDb, mediaId, "acting");
+    const signalA = (await insertMatchSignal(apiDb, { mediaId, matchId }))!;
+    // Entry B runs whole, on connections of its own, the moment A's step has read the record inside its transaction.
+    let entered = false;
+    const media = {
+      ...base.media,
+      async matchRecord(q: Parameters<typeof base.media.matchRecord>[0], id: string) {
+        const record = await base.media.matchRecord(q, id);
+        if (!entered) {
+          entered = true;
+          await matchSignal(base, { mediaId, matchId });
+        }
+        return record;
+      },
+    };
+    const step = await automatedStep({ ...base, media }, signalA);
+    expect(entered).toBe(true);
+    expect(step.handled).toBe("measure");
+    await sealedByTheProgram(p, matchId, step.caseId);
+  });
+
+  test("review H1: a record marked handled with no case while its signal waits, as the conflicting branch left one before this fix: the signal's step runs, and the record gains the case", async () => {
+    const p = await posted();
+    const deps = automationDeps(apiDb, {}, { MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on" });
+    const mediaId = p.mediaIds[0]!;
+    const matchId = await matchForTest(apiDb, mediaId, "acting");
+    const signalId = (await insertMatchSignal(apiDb, { mediaId, matchId }))!;
+    await apiDb.execute(sql`update media_matches set handled_at = now() where id = ${matchId}::uuid`);
+    expect(await recordRow(matchId)).toEqual({ handled: true, case_id: null });
+    const step = await automatedStep(deps, signalId);
+    expect(step.handled).toBe("measure");
+    await sealedByTheProgram(p, matchId, step.caseId);
+    // A second record of the same image, which no signal names, is still marked by the conflicting branch alone.
+    const second = await matchForTest(apiDb, mediaId, "acting");
+    expect(await matchSignal(deps, { mediaId, matchId: second })).toBeNull();
+    expect(await recordRow(second)).toEqual({ handled: true, case_id: null });
+  });
+
+  test("review H1, the sweep's round whose retry fails: the signal's step throws, the round's second read leaves its record alone, and the next round takes the finding and the seal", async () => {
+    const p = await posted();
+    const mediaId = p.mediaIds[0]!;
+    const matchId = await matchForTest(apiDb, mediaId, "acting");
+    const signalId = (await insertMatchSignal(apiDb, { mediaId, matchId }))!;
+    // As the migrator: the signal two minutes old, so the sweep's first read holds it (a step that crashed or failed).
+    await migrateDb.execute(sql`update automated_signals set created_at = created_at - interval '2 minutes' where id = ${signalId}::uuid`);
+    const base = automationDeps(apiDb, {}, { MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on" });
+    // The step's first run fails on the author's lock, as a step fails on a lost connection: not a retried error.
+    let failures = 0;
+    const social = {
+      ...base.social,
+      async lockAccounts(...args: Parameters<typeof base.social.lockAccounts>) {
+        if (failures === 0 && args[1].includes(p.authorId)) {
+          failures++;
+          throw new Error("a failure of the test's own");
+        }
+        return base.social.lockAccounts(...args);
+      },
+    };
+    const first = await sweepRound({ ...base, social });
+    expect(failures).toBe(1);
+    expect(first.failed).toBeGreaterThanOrEqual(1);
+    // The round's second read did not mark the record its own signal names.
+    expect(await recordRow(matchId)).toEqual({ handled: false, case_id: null });
+    expect((await signalRow(apiDb, signalId)).handled).toBeNull();
+    await sweepRound(base);
+    expect((await signalRow(apiDb, signalId)).handled).toBe("measure");
+    const [item] = await apiDb.execute<{ case_id: string }>(sql`select case_id from intake_items where target_id = ${p.postId}::uuid`);
+    await sealedByTheProgram(p, matchId, item?.case_id ?? null);
+  });
+
+  test("review H1: twenty signals whose step ends with nothing written fill the sweep's first read, and its second read still takes a record that no signal names", async () => {
+    const dead: string[] = [];
+    for (let post = 0; post < 5; post++) {
+      const q = await posted(4);
+      for (const mediaId of q.mediaIds) {
+        const matchId = await matchForTest(apiDb, mediaId, "acting");
+        dead.push((await insertMatchSignal(apiDb, { mediaId, matchId }))!);
+        // As the migrator: the record erased as its retention erases one, so its signal's step ends with nothing written.
+        await migrateDb.execute(sql`update media_matches set erased_at = now(), hash = null, classification = null where id = ${matchId}::uuid`);
+      }
+    }
+    // As the migrator: the twenty signals two minutes old, so the first read holds them, the oldest first.
+    await migrateDb.execute(sql`update automated_signals set created_at = created_at - interval '2 minutes' where id = any(${`{${dead.join(",")}}`}::uuid[])`);
+    const p = await posted();
+    const matchId = await matchForTest(apiDb, p.mediaIds[0]!, "acting");
+    const round = await sweepRound(automationDeps(apiDb, {}, { MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on" }));
+    expect(round.signalled).toBeGreaterThanOrEqual(1);
+    const [item] = await apiDb.execute<{ case_id: string }>(sql`select case_id from intake_items where target_id = ${p.postId}::uuid`);
+    await sealedByTheProgram(p, matchId, item?.case_id ?? null);
+  });
+
+  test("this file left no row behind", async () => {
+    await world.moderation.settle();
+    await removeFixtures(migrateDb, authors);
+    await removeAutomation(migrateDb, startedAt, media);
+    await migrateDb.execute(sql`delete from profiles where id = any(${`{${[moderator.id, admin.id].join(",")}}`}::uuid[])`);
+    authors.length = 0;
+    media.length = 0;
+    expect(await rowCounts(apiDb)).toEqual(before);
   });
 });

@@ -145,7 +145,7 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
   // admin's (the database refuses anyone else, admin_required): the path's refusal is the action's target, and the body the
   // params of upload_hold_ended or upload_released with the assertion as `stepUp`. Each commits with its audit row or not
   // at all; an ended confirmation and a late one answer as a decision's do. The answer is the refusal as it now shows.
-  routes.get("/uploads", auth.requireStaff, validate("query", UploadsQuery), async (c) => c.json(await moderation.uploads(c.req.valid("query").cursor)));
+  routes.get("/uploads", auth.requireStaff, validate("query", UploadsQuery), async (c) => c.json(await moderation.uploads(staffSession(c), c.req.valid("query").cursor)));
   routes.post(
     "/uploads/:refusal/end",
     auth.requireStaff,

@@ -196,6 +196,32 @@ export async function matchStatus(q: Db | DbTx): Promise<{ unchecked: number; ol
   return { unchecked: row!.unchecked, oldestUnchecked: row!.oldest, refusalsHour: row!.refusals_hour };
 }
 
+/**
+ * 3d review L3: automation-status's count of the uploads of the last 24 hours that are ready without a score: while the R1
+ * check is on, the worker scores every ready image, so each is one it did not score. Through the caller's transaction.
+ */
+export async function unscoredCount(q: Db | DbTx): Promise<number> {
+  const [row] = (await q.execute(sql`
+    select count(*)::int as n from public.post_media m
+     where m.status = 'ready' and m.nsfw_score is null and m.created_at > now() - make_interval(hours => 24)`)) as unknown as { n: number }[];
+  return row!.n;
+}
+
+/**
+ * 3d review M6: a held upload's image by its refusal, and the release of the refusal that names an image, as the command
+ * line reads them through the caller's transaction and without a lock (release-show reads in a read-only transaction):
+ * release-show's files of a held upload's release, and the release a destroyed line's record names for a file on no
+ * post. Null when no refusal answers.
+ */
+export async function refusalImage(q: Db | DbTx, refusalId: string): Promise<string | null> {
+  const [row] = (await q.execute(sql`select u.media_id from public.upload_refusals u where u.id = ${refusalId}::uuid`)) as unknown as { media_id: string }[];
+  return row?.media_id ?? null;
+}
+export async function refusalReleaseOfImage(q: Db | DbTx, mediaId: string): Promise<string | null> {
+  const [row] = (await q.execute(sql`select u.release_id from public.upload_refusals u where u.media_id = ${mediaId}::uuid and u.release_id is not null`)) as unknown as { release_id: string }[];
+  return row?.release_id ?? null;
+}
+
 /** 3d Task 7: a held upload as the command line reads it, through the caller's transaction (staff.js upload-report and release-leave). */
 export interface CliRefusal {
   id: string;

@@ -221,7 +221,10 @@ export type StaffAlertKind =
   // 3d Task 7: the comparison of uploads needs the operator (alert_steps() daily, and staffAlert at once over the limit on
   // refusals), and a held upload's hold ended without a report (staffAlert after the end's commit).
   | "matcher_down"
-  | "hold_ended_unreported";
+  | "hold_ended_unreported"
+  // 3d review M13: a day's value whose keeper's mail never went out, the transparency job's own row in the next day's
+  // first round.
+  | "head_unmailed";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -260,6 +263,7 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "automated_waiting":
     case "matcher_down":
     case "hold_ended_unreported":
+    case "head_unmailed":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off", ...(message.heldUploads ? { heldUploads: String(message.heldUploads) } : {}) };
@@ -538,7 +542,8 @@ export type KeeperMailResult = "sent" | "off" | "refused" | "failed";
 /**
  * Sends the keeper's daily mail to HEAD_KEEPER_MAIL and to nobody else: the caller names no address, and none is read from
  * an account or a staff list. While the setting is empty it sends nothing ("off"). A failure is logged, without the
- * address, and answered, never thrown: the day's value stands published either way, and nothing retries the mail.
+ * address, and answered, never thrown: the day's value stands published either way. 3d review M13: the transparency job
+ * records a mail the relay accepted and sends one that failed again in the day's later rounds.
  */
 export async function mailKeeper(deps: AuthDeps, message: KeeperMessage): Promise<KeeperMailResult> {
   const to = deps.config.keeperMail;

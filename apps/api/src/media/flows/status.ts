@@ -24,6 +24,9 @@ export async function finalize(deps: MediaDeps, id: string): Promise<boolean> {
   const r1 = result.v === 2 && result.status === "ready" ? result.r1 : undefined;
   if (r1 !== undefined && r1.model !== deps.r1Model) deps.log.error({ id, model: r1.model }, "media store: dropped a score from a model this server does not run");
   const score = r1 !== undefined && r1.model === deps.r1Model ? r1.score : null;
+  // 3d review L3: a ready result without a score while this server's check is on: the worker does not score (it was left
+  // behind, or set otherwise). The image is ready, unscored, and the operator is told here and by automation-status.
+  if (deps.r1Model !== null && result.status === "ready" && r1 === undefined) deps.log.warn({ id }, "media store: a ready result carries no score while the R1 check is on; the worker does not score");
   const hashed = deps.match.mode !== "off" && result.status === "ready" ? await deps.matches.hashed(deps.matches.db, id) : null;
   if (hashed !== null && hashed.status === "processing") {
     const answer = await askSource(deps, hashed);

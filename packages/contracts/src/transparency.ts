@@ -222,6 +222,11 @@ export const PublicFacts = z.strictObject({
   witness: z.strictObject({ on: z.boolean(), test: z.boolean() }),
   /** Whether signed-out readers are counted (RECIPIENTS_SIGNED_OUT). */
   recipientsSignedOut: z.boolean(),
+  /**
+   * 3d review M13: whether a keeper's address is set (HEAD_KEEPER_MAIL): only then does the daily value go each day to a
+   * person who does not run the server, and only then do the pages say so. Never the address itself.
+   */
+  keeper: z.boolean(),
 });
 export type PublicFacts = z.infer<typeof PublicFacts>;
 

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { MEDIA_SIZES } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { STAFF_USAGE, runStaffCommand } from "../../src/cli/staff";
@@ -254,9 +255,27 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the quarantine's command
     const stored = (await quarantineRows(migrateDb, [id])).find((row) => row.file === fNames[0])!;
     const forged = await cli(["quarantine-record"], lines(`have ${id} ${fNames[0]} 77 ${"f".repeat(64)}`));
     expect(forged.code).toBe(1);
-    expect(forged.err).toEqual([`quarantine-record: line 1: ${fNames[0]} has another digest than the one recorded when it was moved; the recorded digest stays`]);
-    expect((await lastAudit()).metadata).toMatchObject({ mismatched: 1, reported: 1 });
+    // A receipt of have lines alone is an inventory (review M9): every other file recorded in the quarantine is reported
+    // as not listed; this test reads the one line about the file it names.
+    expect(forged.err.filter((line) => !line.includes("the inventory did not list it"))).toEqual([`quarantine-record: line 1: ${fNames[0]} has another digest than the one recorded when it was moved; the recorded digest stays`]);
+    expect((await lastAudit()).metadata).toMatchObject({ mismatched: 1 });
+    expect((await lastAudit()).metadata.reported).toBe(forged.err.length);
     expect((await quarantineRows(migrateDb, [id])).find((row) => row.file === fNames[0])!.sha256).toBe(stored.sha256);
+  });
+
+  test("review M9: a receipt made of have lines alone, an inventory, reports every file recorded in the quarantine that it did not list; a receipt of moves reports none", async () => {
+    const g = await sealedForGood(1, false);
+    const id = g.mediaIds[0]!;
+    const [listedName, omitted] = MEDIA_SIZES.map((size) => storedImageName(id, size));
+    // Both files are in the quarantine by record, as a move recorded before a restore leaves them.
+    for (const name of [listedName!, omitted!]) await migrateDb.execute(sql`insert into public.quarantine_files (media_id, file, size, sha256) values (${id}::uuid, ${name}, 1234, ${"b".repeat(64)})`);
+    const inventory = await cli(["quarantine-record"], lines(`have ${id} ${listedName} 1234 ${"b".repeat(64)}`));
+    expect(inventory.code).toBe(1);
+    const about = inventory.err.filter((line) => line.includes(id));
+    expect(about).toEqual([`quarantine-record: ${omitted} of image ${id} is recorded in the quarantine and the inventory did not list it: find it, or record it lost with the quarantine service's --lost run (the README, Quarantine, step 5)`]);
+    // A receipt that holds a move is no inventory: it names no file it did not list.
+    const moved = await cli(["quarantine-record"], lines(`destroy ${randomUUID()} x refused`, `destroy ${id} ${omitted} refused`));
+    expect(moved.err.filter((line) => line.includes("the inventory did not list it"))).toEqual([]);
   });
 
   test("quarantine-list leaves out a post whose image rows do not match its seal, names it, prints every other post's lines, and exits 1", async () => {

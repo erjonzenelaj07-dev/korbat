@@ -93,6 +93,12 @@ const schema = z.object({
   DATABASE_URL_API: databaseUrl,
   DATABASE_URL_AUTH: databaseUrl,
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
+  /**
+   * 3d review H3: the counts store, a Valkey of its own that writes nothing to disk (Compose's `counts`), which holds the
+   * recipients' count alone: the day's salt and the month's and the days' sketches. Never the shared Valkey of REDIS_URL,
+   * whose append-only file keeps every write.
+   */
+  COUNTS_URL: z.url({ protocol: /^rediss?$/ }),
   TRUSTED_ORIGINS: z
     .string()
     .default("")

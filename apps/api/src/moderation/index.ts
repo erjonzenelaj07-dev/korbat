@@ -172,8 +172,11 @@ export interface ModerationForStaff {
    * alerted and the author's notice goes out unless it was born held.
    */
   release(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<ReleaseOutcome>;
-  /** 3d Task 7 (sections 7.12 and 8.6): a page of Held uploads, never an image, a hash or a handle. */
-  uploads(cursor?: string): Promise<UploadsPage>;
+  /**
+   * 3d Task 7 (sections 7.12 and 8.6): a page of Held uploads, never an image, a hash or a handle. 3d review M1: for a
+   * session that is not an admin's, without the authority's reference and assessment, the leave and the uploader's count.
+   */
+  uploads(session: ActiveStaffSession, cursor?: string): Promise<UploadsPage>;
   /**
    * 3d Task 7: an admin's end of a held upload's hold a step-up confirmed, through upload_hold_end and the confirmed audit
    * row upload_hold_ended; the refusal as Held uploads now shows it. "ended" and "late" as for a decision. After an end as
@@ -283,7 +286,7 @@ export function createModeration(options: CreateModerationOptions) {
     restore: () => restoreView(deps),
     closeGap: (session, confirmed, ctx) => closeGapNotNeeded(deps, session, confirmed, ctx),
     release: (session, confirmed, ctx) => releaseSeal(deps, session, confirmed, ctx),
-    uploads: (cursor) => heldUploads(deps, cursor),
+    uploads: (session, cursor) => heldUploads(deps, session, cursor),
     endHold: (session, confirmed, ctx) => endHold(deps, session, confirmed, ctx),
     releaseUpload: (session, confirmed, ctx) => releaseUpload(deps, session, confirmed, ctx),
     copyTaken: async (facts) => {

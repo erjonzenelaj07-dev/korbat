@@ -8,7 +8,7 @@ import { runStaffCommand } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
 import { automationDeps, signalForTest } from "./automation-fixtures";
 import { ageCustodyForTest } from "./custody-fixtures";
-import { imagePost } from "./moderation-fixtures";
+import { imagePost, rowCounts } from "./moderation-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
 vi.setConfig({ testTimeout: 120_000 });
@@ -58,8 +58,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
     ...over,
   });
 
-  beforeAll(() => {
+  let before: Record<string, number>;
+  beforeAll(async () => {
     apiDb = createDb(loadConfig().DATABASE_URL_API, { max: 2 });
+    before = await rowCounts(apiDb, ["head_publications"]);
   });
   afterAll(async () => {
     await closeDb(apiDb);
@@ -97,8 +99,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
 
   test("the settings as the server reads them: a test adapter on a closed site, its two days, signed-out readers off, a keeper's mail set; a setting the API refuses is refused with its sentence", async () => {
     const lines = await automationStatus(apiDb, settings({ R1_CLASSIFIER: "test", AUTOMATION_R1_ACTS: "on", AUTOMATION_DPIA_R1: "2026-09-01", AUTOMATION_DPIA_R1_ACTS: "2026-09-02", RECIPIENTS_SIGNED_OUT: "off", HEAD_KEEPER_MAIL: "keeper@korbat.local" }));
-    expect(lines[1]).toBe(`automation-status: R1 check: test, acts on; model ${R1_TEST_MODEL}, threshold version 0; impact assessment 2026-09-01, for its measure 2026-09-02.`);
-    expect(lines[3]).toMatch(/keeper's mail set[.]$/);
+    // 3d review L3: with the check on, the line ends with the count of ready uploads without a score.
+    expect(lines[1]!.startsWith(`automation-status: R1 check: test, acts on; model ${R1_TEST_MODEL}, threshold version 0; impact assessment 2026-09-01, for its measure 2026-09-02; `)).toBe(true);
+    expect(lines[1]).toMatch(/; [0-9]+ ready uploads of the last 24 hours have no score[.]$/);
+    // 3d review M13: with an address set, the outcome of the last value's mail.
+    expect(lines[3]).toMatch(/keeper's mail set; the last value's mail (was accepted [0-9T:.Z-]+|was not sent|none yet)[.]$/);
     expect(lines.join(" ")).not.toContain("keeper@korbat.local");
     expect(lines[4]).toBe("automation-status: signed-out readers: not counted.");
     // The API refuses a test adapter while the site is open; so does the command, which prints nothing else.
@@ -135,6 +140,37 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
     });
   });
 
+  test("review M13: the last value's keeper's mail, not sent and then accepted, as the head row records it", async () => {
+    const migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
+    const head = (over: Partial<AutomationSettings> = {}) => automationStatus(apiDb, settings({ HEAD_KEEPER_MAIL: "keeper@korbat.local", ...over })).then((lines) => lines[3]!);
+    try {
+      // A published value of a day after every other, as the job publishes one, whose mail the relay never accepted.
+      await migrateDb.execute(sql`insert into public.head_publications (day, kind, chain_seq, value, witness, published_at) values ('2099-01-01'::date, 'head', 0, ${"a".repeat(64)}, 'none', now())`);
+      expect(await head()).toMatch(/last value 2099-01-01, witnessed no; keeper's mail set; the last value's mail was not sent[.]$/);
+      await migrateDb.execute(sql`update public.head_publications set keeper_mailed_at = now() where day = '2099-01-01'::date`);
+      expect(await head()).toMatch(/keeper's mail set; the last value's mail was accepted [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z[.]$/);
+      expect(await head({ HEAD_KEEPER_MAIL: undefined })).toMatch(/keeper's mail not set: no daily mail is sent[.]$/);
+    } finally {
+      await migrateDb.execute(sql`delete from public.head_publications where day = '2099-01-01'::date`);
+      await closeDb(migrateDb);
+    }
+  });
+
+  test("review L3: with the R1 check on, the uploads of the last 24 hours that are ready without a score are counted: the worker does not score", async () => {
+    await rolledBack(apiDb, async (tx) => {
+      const p = await imagePost(tx, 2);
+      await tx.execute(sql`update post_media set nsfw_score = 0.1 where id = ${p.mediaIds[0]!}::uuid`);
+      const on = await automationStatus(tx, settings({ R1_CLASSIFIER: "test", APP_SITE: "closed" } as Partial<AutomationSettings>));
+      const unscored = Number(/; ([0-9]+) ready uploads of the last 24 hours have no score[.]$/.exec(on[1]!)?.[1]);
+      expect(unscored).toBeGreaterThanOrEqual(1);
+      await tx.execute(sql`update post_media set nsfw_score = 0.1 where id = ${p.mediaIds[1]!}::uuid`);
+      const fewer = Number(/; ([0-9]+) ready uploads of the last 24 hours have no score[.]$/.exec((await automationStatus(tx, settings({ R1_CLASSIFIER: "test" })))[1]!)?.[1]);
+      expect(fewer).toBe(unscored - 1);
+      // While the check is off, no score is due and nothing is counted.
+      expect((await automationStatus(tx, settings()))[1]).not.toMatch(/no score/);
+    });
+  });
+
   test("a signal older than the sweep's hours, still unhandled, is counted as given up", async () => {
     const migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     try {
@@ -150,5 +186,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
     } finally {
       await closeDb(migrateDb);
     }
+  });
+
+  test("this file left no row behind", async () => {
+    expect(await rowCounts(apiDb, ["head_publications"])).toEqual(before);
   });
 });

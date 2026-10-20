@@ -8,14 +8,18 @@ import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { STAFF_USAGE, runStaffCommand } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
 import { storedImageName } from "../../src/media";
+import { createMediaRepo } from "../../src/media/repo";
+import { getPost } from "../../src/social/flows/posts";
 import { ModerationError } from "../../src/moderation";
 import { appealsList } from "../../src/moderation/appeals";
 import { overview } from "../../src/moderation/cases";
-import { authorNotices, authorRelease, releaseNotices } from "../../src/moderation/release";
-import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { aPost, appealOf, imagePost, removeDecided, removeFixtures, report } from "./moderation-fixtures";
+import { authorNotices, authorRelease, releaseNotices, releaseSeal } from "../../src/moderation/release";
+import { deciderWorld, linkedAdmin, type DeciderWorld, type RealStaff } from "./moderation-decide";
+import { aPost, appealOf, imagePost, postFrozen, refusal, removeDecided, removeFixtures, report } from "./moderation-fixtures";
 import { SEAL_FOR_GOOD, removeRecords, sealActionOf } from "./records-fixtures";
 import { moveForTest, releaseCounts, releasesOf, removeReleases, reportForTest, sealRecord } from "./release-fixtures";
+import { socialHarness } from "./social-harness";
+import { rolledBack } from "./staff-fixtures";
 
 vi.setConfig({ testTimeout: 180_000 });
 
@@ -90,7 +94,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
   };
   /** The release, under the member's real key, with the params the block shows, through the module's own function. */
   async function release(member: RealStaff, seal: Sealed, params?: SealReleasedParams) {
-    const block = (await blockOf(member, seal)).release!;
+    // The params as an admin's block shows them: a moderator's block has no leave (review ruling M1).
+    const block = (await blockOf(admin, seal)).release!;
     const signed: SealReleasedParams = params ?? { postIds: block.postIds, basis: "leave", leaveId: block.leave!.id, theirReference: block.leave!.reference };
     const confirmed = await world.confirmAction(member, { action: "seal_released", target: { type: "seal", id: seal.sealActionId }, params: signed });
     try {
@@ -103,6 +108,23 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
     }
   }
   const dispatchDeps = () => ({ ...world.moderation.deps, auth });
+  /** The post's images as a reader's PostView carries them, through the social module's own read and the media module's. */
+  async function mediaOf(viewer: string | null, seal: Sealed) {
+    const repo = createMediaRepo(apiDb);
+    const social = socialHarness(apiDb, { media: { attach: (tx, input) => repo.attach(tx, input), detachAll: (tx, postId) => repo.detachAll(tx, postId), requestDeletion: async () => undefined, forPosts: (ids) => repo.forPosts(ids) } });
+    return (await getPost(social.deps, viewer, seal.postId)).media;
+  }
+  /** How many of the post's image rows the API's role can delete, in a transaction that is rolled back: none while the post is frozen. */
+  async function deletable(seal: Sealed): Promise<number> {
+    let deleted = 0;
+    await apiDb
+      .transaction(async (tx) => {
+        deleted = (await tx.execute(sql`delete from post_media where post_id = ${seal.postId}::uuid returning id`)).length;
+        throw new Error("rolled back");
+      })
+      .catch(() => undefined);
+    return deleted;
+  }
 
   beforeAll(async () => {
     const config = loadConfig();
@@ -169,8 +191,29 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
     expect(decision.release).toMatchObject({ reported: true, answer: "illegal", quarantined: true, preserved: false, tellHeld: false, postIds: [atOnce.postId], remaining: 0, silenceDays: null, releasedAt: null });
     expect(decision.release!.leave).toMatchObject({ from: "court", reference: "4 O 1/26", receivedOn: "2026-10-01", untold: false, untoldUntil: null });
     expect((await blockOf(admin, held)).release).toMatchObject({ tellHeld: true, leave: { untold: true, untoldUntil: null } });
+    // Review ruling M1: a moderator's case view carries neither the authority's reference and assessment nor the leave.
+    const seen = (await blockOf(moderator, atOnce)).release!;
+    expect(Object.keys(seen).filter((key) => ["theirReference", "answer", "answeredAt", "leave"].includes(key))).toEqual([]);
+    expect(seen).toMatchObject({ reported: true, quarantined: true, postIds: [atOnce.postId] });
+    expect(JSON.stringify(seen)).not.toContain("4 O 1/26");
     expect(await release(moderator, atOnce)).toBe("admin_required");
     expect(RELEASE_POSTS_MAX).toBe(1000);
+  });
+
+  test("review M2: an admin linked to the seal's subject is refused the release, staff_recused, before and inside seal_release, and nothing is written", async () => {
+    const link = await linkedAdmin(world, apiDb, migrateDb, atOnce.authorId);
+    const linked = link.staff;
+    try {
+      expect(await release(linked, atOnce)).toBe("staff_recused");
+      expect(await releasesOf(migrateDb, atOnce.sealActionId)).toEqual([]);
+      // The database refuses it too, whatever the API asks first.
+      const leaveId = (await blockOf(admin, atOnce)).release!.leave!.id;
+      await rolledBack(apiDb, async (tx) => {
+        expect(await refusal(tx.transaction((sp) => sp.execute(sql`select public.seal_release(${atOnce.sealActionId}::uuid, 'leave', ${leaveId}::uuid, ${linked.id}::uuid)`)))).toBe("staff_recused");
+      });
+    } finally {
+      await link.unlink();
+    }
   });
 
   test("a release under an admin's key: the record, its confirmed audit row, the alert to every staff account, and the notice at once", async () => {
@@ -219,6 +262,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
 
   test("a release on a leave not to be told is born held: no mail, no list, no read; the dispatch round after the hold ends sends it once", async () => {
     const before = accountMails.length;
+    // Review ruling H2: what the post shows under the seal, to its author and to another reader, and that its image rows
+    // cannot be deleted; a held release keeps all three until the round that tells its notice.
+    const sealedForAuthor = held.mediaIds.map((id) => ({ id, hidden: true, sealed: true }));
+    const sealedForOthers = held.mediaIds.map((id) => ({ id, hidden: true }));
+    const underTheSeal = async () => {
+      expect(await mediaOf(held.authorId, held)).toEqual(sealedForAuthor);
+      expect(await mediaOf(atOnce.authorId, held)).toEqual(sealedForOthers);
+      expect(await postFrozen(apiDb, held.postId)).toBe(true);
+      expect(await deletable(held)).toBe(0);
+    };
+    await underTheSeal();
     const outcome = await release(admin, held);
     const releaseId = (outcome as { releaseId: string }).releaseId;
     expect((await releasesOf(migrateDb, held.sealActionId))[0]).toMatchObject({ id: releaseId, author_notice: "held" });
@@ -228,15 +282,40 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
     const due = new Date(Date.now() + 60_000);
     expect(await releaseNotices(dispatchDeps(), new Date(), due, () => undefined)).toBe(0);
     expect((await releasesOf(migrateDb, held.sealActionId))[0]!.author_notice).toBe("held");
+    await underTheSeal();
     // The operator ends the hold on telling with the command; the next round moves the notice and sends it, once.
     const leaveId = (await blockOf(admin, held)).release!.leave!.id;
     const ended = await cli(["release-leave", "--end-untold", leaveId, "--until", new Date(Date.now() - 60_000).toISOString()]);
     expect(ended.text).toMatch(new RegExp(`^out release-leave: leave ${leaveId}: the person may be told from [0-9T:.Z-]+[.]$`));
+    // Until that round the post still reads as it did under the seal.
+    await underTheSeal();
     expect(await releaseNotices(dispatchDeps(), new Date(), due, () => undefined)).toBe(1);
     expect((await releasesOf(migrateDb, held.sealActionId))[0]!.author_notice).toBe("sent");
+    // From the round that told it, the release shows everywhere at once: the images are gone and the post is not frozen.
+    expect(await mediaOf(held.authorId, held)).toEqual([]);
+    expect(await mediaOf(atOnce.authorId, held)).toEqual([]);
+    expect(await postFrozen(apiDb, held.postId)).toBe(false);
     expect(accountMails.slice(before)).toEqual([{ userId: held.authorId, template: "release_notice" }]);
     expect(await releaseNotices(dispatchDeps(), new Date(), due, () => undefined)).toBe(0);
     expect((await authorNotices(world.moderation.deps, held.authorId)).notices.map((notice) => notice.id)).toEqual([releaseId]);
+  });
+
+  test("review L1: seal_released's alert is written in the release's own transaction: with nothing run after the commit, its row stands", async () => {
+    const quiet = await sealed();
+    await reportForTest(migrateDb, quiet.sealActionId, { answer: "illegal" });
+    await moveForTest(migrateDb, quiet.mediaIds);
+    const recorded = await cli(["release-leave", quiet.sealActionId, "--by", "court", "--reference", "5 Q 5/26", "--day", "2026-10-02", "--operator", "op"]);
+    const leaveId = /leave ([0-9a-f-]{36}) recorded/.exec(recorded.text)![1]!;
+    const rows = async () => (await migrateDb.execute<{ n: number }>(sql`select count(*)::int as n from public.alert_outbox where kind = 'seal_released' and created_at >= ${startedAt}::timestamptz`))[0]!.n;
+    const before = await rows();
+    const params = { postIds: [quiet.postId], basis: "leave" as const, leaveId, theirReference: "5 Q 5/26" };
+    const confirmed = await world.confirmAction(admin, { action: "seal_released", target: { type: "seal", id: quiet.sealActionId }, params });
+    // The process stops right after the commit: no task started after it ever runs.
+    const halted = { ...world.moderation.deps, auth, background: { start: () => undefined, settle: async () => undefined } };
+    const outcome = await releaseSeal(halted, admin.session, confirmed, { requestId: `req-${randomUUID()}` });
+    expect(outcome).toMatchObject({ caseId: quiet.caseId });
+    expect(await rows()).toBe(before + 1);
+    await removeReleases(migrateDb, [quiet.postId], [quiet.sealActionId], quiet.mediaIds);
   });
 
   test("release-show prints the record; a destroy line's record takes the release's id, and release-show counts it", async () => {

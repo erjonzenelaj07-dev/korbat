@@ -12,7 +12,7 @@ import { restoreView } from "../../src/moderation/gaps";
 import { releaseNotices } from "../../src/moderation/release";
 import { exportLines } from "../../src/staff";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
-import { aPost, imagePost, postFrozen, report, restoreForTest, snapshotForTest } from "./moderation-fixtures";
+import { aPost, imagePost, postFrozen, report, restoreForTest, rowCounts, snapshotForTest } from "./moderation-fixtures";
 import { SEAL_FOR_GOOD, sealActionOf } from "./records-fixtures";
 import { moveForTest, reportForTest } from "./release-fixtures";
 
@@ -47,6 +47,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore and the replay
   let world: DeciderWorld;
   let admin: RealStaff;
   let found: string;
+  let before: Record<string, number>;
   let appOrigin: string;
   let head: { seq: number; hash: string };
   let backup: string;
@@ -108,6 +109,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore and the replay
     appOrigin = config.APP_ORIGIN;
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
+    before = await rowCounts(migrateDb);
     found = await snapshotForTest(migrateDb);
     world = deciderWorld(apiDb, { auth });
     admin = await world.staff("admin");
@@ -164,12 +166,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore and the replay
   test("release-replay: the posts marked, the rows erased, the gaps closed; a seal that stands freezes nothing; a second run finds them present; a line no gap names is refused", async () => {
     const replayed = await cli(["release-replay"], tail.join(LF));
     expect(replayed.lines[0]).toBe("out release-replay: 2 releases and 0 ends of a hold in the copy; 0 already present.");
-    expect(replayed.lines).toContain(`out release-replay: release ${firstRelease} of ${(JSON.parse(tail.find((line) => line.includes(firstRelease) && line.includes("seal_released"))!) as { at: string }).at}: 1 posts marked released, 2 image rows erased.`);
-    expect(replayed.lines.at(-1)).toMatch(/^out release-replay: run the Quarantine steps now, with an inventory first/);
+    const at = (JSON.parse(tail.find((line) => line.includes(firstRelease) && line.includes("seal_released"))!) as { at: string }).at;
+    // 3d review M16: the line names the replay's own id, which release-show takes from now on.
+    const done = replayed.lines.find((line) => line.startsWith(`out release-replay: release ${firstRelease} of ${at}: 1 posts marked released, 2 image rows erased; release-show `))!;
+    expect(done).toMatch(/; release-show [0-9a-f-]{36} prints its record[.]$/);
+    // 3d review M9: the Quarantine steps 1 to 3 first, then the inventory, then 1 to 3 again.
+    expect(replayed.lines.at(-1)).toMatch(/^out release-replay: run the Quarantine steps 1 to 3 now, then the inventory [(]step 6[)], then steps 1 to 3 again/);
     expect(await erased(first.postId)).toEqual([true, true]);
     expect(await postFrozen(apiDb, first.postId)).toBe(false);
     const [replay] = await releases(first.postId);
     expect(replay).toMatchObject({ replay_of: firstRelease, author_notice: "none" });
+    expect(done).toContain(`release-show ${replay!.id} prints its record`);
+    expect((await cli(["release-show", replay!.id])).code).toBe(0);
     // The second release rests on a leave the restore lost: its replay is held until the leave is recorded again.
     const [heldReplay] = await releases(second.postId);
     expect(heldReplay).toMatchObject({ replay_of: secondRelease, author_notice: "held", leave_id: lostLeave });
@@ -217,5 +225,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore and the replay
     const [replay] = await releases(first.postId);
     const named = await migrateDb.execute<{ release_id: string }>(sql`select release_id from public.quarantine_files where media_id = any(${`{${first.mediaIds.join(",")}}`}::uuid[])`);
     expect(named.map((row) => row.release_id)).toEqual([replay!.id, replay!.id, replay!.id, replay!.id]);
+  });
+
+  test("this file left no row behind", async () => {
+    await restoreForTest(migrateDb, found);
+    found = await snapshotForTest(migrateDb);
+    expect(await rowCounts(migrateDb)).toEqual(before);
   });
 });

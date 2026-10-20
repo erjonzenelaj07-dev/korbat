@@ -72,10 +72,14 @@ describe("the public figures' contracts (3d Task 4)", () => {
     edge: { on: false, test: false },
     witness: { on: false, test: false },
     recipientsSignedOut: true,
+    keeper: false,
   };
 
   test("PublicFacts reads every tool off, and refuses a member it does not name", () => {
     expect(PublicFacts.parse(off)).toEqual(off);
+    // 3d review M13: whether a keeper's address is set is a member of its own, which the pages need.
+    const { keeper: _keeper, ...noKeeper } = off;
+    expect(PublicFacts.safeParse(noKeeper).success).toBe(false);
     expect(PublicFacts.safeParse({ ...off, edge: { on: true, test: true, host: "korbat.example" } }).success).toBe(false);
     expect(PublicFacts.safeParse({ ...off, token: "x" }).success).toBe(false);
     expect(PublicFacts.safeParse({ ...off, r1: { ...off.r1, dpia: "2026-10-01" } }).success).toBe(true);

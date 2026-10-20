@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { RULE_DEFAULT_CATEGORY, type OrderView } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { matchForTest } from "./automation-fixtures";
-import { hex64, imagePost, newImageRow, newRef, openCase, type TestStaff } from "./moderation-fixtures";
+import { hex64, imagePost, newImageRow, newRef, openCase, type Runner, type TestStaff } from "./moderation-fixtures";
 import { ageOrderForTest, effectParams, effectWith, orderForTest } from "./orders-fixtures";
 
 /**
@@ -75,6 +75,17 @@ export interface YearCells {
   uploads?: Partial<Record<"report" | "no_report" | "open", number>>;
 }
 
+/**
+ * 3d review M3: an account created on 1 January of `year`, so edition_publish counts the year as one korbat ran (it
+ * stores nothing for a year that ended before the oldest account's creation). Answers its id; the caller removes it.
+ */
+export async function accountSince(db: Runner, year: number): Promise<string> {
+  const [row] = await db.execute<{ id: string }>(
+    sql`insert into public.profiles (id, handle, display_name, created_at) values (gen_random_uuid(), ${`y_${randomBytes(5).toString("hex")}`}, 'Since', make_timestamptz(${year}::int, 1, 1, 0, 0, 0, 'UTC')) returning id`,
+  );
+  return row!.id;
+}
+
 /** What the fixture made that a test reads again. */
 export interface YearMade {
   caseId: string;
@@ -93,6 +104,9 @@ export async function yearForTest(tx: DbTx, year: number, cells: YearCells, staf
   // One post and its case, which every bulk decision names: the ledger needs a case, a snapshot and a decider.
   // 3d Task 6: with an image when a program's measures withhold one.
   const { authorId, postId, mediaIds } = await imagePost(tx, cells.automated?.measures ? 1 : 0);
+  // 3d review M3: the post's author is an account created on 1 January of the year, so the year is one korbat ran and
+  // edition_publish stores its edition.
+  await tx.execute(sql`update public.profiles set created_at = make_timestamptz(${year}::int, 1, 1, 0, 0, 0, 'UTC') where id = ${authorId}::uuid`);
   const caseId = await openCase(tx, "post", postId);
   const [snapshot] = await tx.execute<{ id: string }>(sql`
     insert into public.evidence_snapshots (case_id, target_type, target_id, author_handle, digest)

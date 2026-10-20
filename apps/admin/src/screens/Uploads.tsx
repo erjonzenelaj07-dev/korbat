@@ -40,7 +40,8 @@ export function holdEndParams(endAs: UploadEnd | null, reason: UploadEndReason |
 /** The params the key signs for the release of a held upload: only on a recorded leave, with its reference. */
 export function uploadReleaseParams(upload: HeldUpload): UploadReleasedParams | null {
   const release = upload.release;
-  if (release === null || release.releasedAt !== null || release.leave === null) return null;
+  // 3d review M1: a moderator's answer has no leave at all; neither answer signs anything without one.
+  if (release === null || release.releasedAt !== null || release.leave === null || release.leave === undefined) return null;
   return { basis: "leave", leaveId: release.leave.id, theirReference: release.leave.reference };
 }
 
@@ -118,19 +119,23 @@ function EndControl({ upload, actions }: { upload: HeldUpload; actions: UploadsA
 /**
  * 8.5's block for a held upload ended as "Report" (8.6): the facts read from the record upload-report opened and the
  * leave recorded for the refusal, the words, and "Release and destroy" while a leave is recorded, for an admin alone.
- * An authority's reference and a leave's are framed. No image is requested or drawn here.
+ * An authority's reference and a leave's are framed. No image is requested or drawn here. 3d review M1: the block is an
+ * admin's (11.4): a moderator, whose answer holds neither the authority's reference and assessment nor the leave, is shown
+ * none of it.
  */
 function UploadReleaseBlock({ upload, actions }: { upload: HeldUpload; actions: UploadsActions }) {
-  const facts = upload.release;
-  if (facts === null) return null;
+  const whole = upload.release;
+  const admin = actions.role === "admin";
+  if (whole === null || !admin) return null;
+  // An admin's answer holds every member; the four of the admin's block read as none should one be missing.
+  const facts = { ...whole, theirReference: whole.theirReference ?? null, answer: whole.answer ?? null, answeredAt: whole.answeredAt ?? null, leave: whole.leave ?? null };
   const R = RELEASE_WORDS;
   const F = R.facts;
-  const admin = actions.role === "admin";
   const params = uploadReleaseParams(upload);
   const busy = actions.busy === upload.id;
   const day = (at: string | null, none: string) => (at === null ? none : bothTimes(at));
   return (
-    <section className={`block release${admin ? "" : " greyed"}`} aria-labelledby={`release-${upload.id}`}>
+    <section className="block release" aria-labelledby={`release-${upload.id}`}>
       <h4 id={`release-${upload.id}`}>{R.title}</h4>
       <dl>
         <dt>{F.reported.label}</dt>
@@ -168,8 +173,7 @@ function UploadReleaseBlock({ upload, actions }: { upload: HeldUpload; actions: 
       {params === null ? null : (
         <div className="actions">
           <p className="hint">{W.releaseSign}</p>
-          {admin ? null : <p className="hint">{R.adminOnly}</p>}
-          <button type="button" disabled={!admin || busy} aria-busy={busy} onClick={() => actions.onRelease(upload, params)}>
+          <button type="button" disabled={busy} aria-busy={busy} onClick={() => actions.onRelease(upload, params)}>
             {R.button}
           </button>
         </div>
@@ -184,7 +188,8 @@ export function UploadBlock({ upload, actions }: { upload: HeldUpload; actions: 
     <article className="panel upload" aria-labelledby={`upload-${upload.id}`}>
       <h3 id={`upload-${upload.id}`}>{W.refusedAt(bothTimes(upload.refusedAt))}</h3>
       <MatchRecordView match={upload.match} />
-      <p>{W.others(upload.otherRefusals)}</p>
+      {/* 3d review M1: the uploader's count is the admin's; a moderator's answer has none. */}
+      {upload.otherRefusals === undefined ? null : <p>{W.others(upload.otherRefusals)}</p>}
       {upload.uploaderGone ? <p className="notice">{W.gone}</p> : null}
       <p className="notice">{stateLine(upload)}</p>
       {upload.objection !== null && upload.objectedAt !== null ? (

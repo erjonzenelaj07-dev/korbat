@@ -120,7 +120,14 @@ describe("a seal for good's custody on its case (3d design, section 8.4)", () =>
     // Two moved and two lost: every file is accounted for, so nothing is said of the store.
     expect(keptLost).not.toContain(CUSTODY_WORDS.custodyInRest);
     const liftedLost = page(sealedCase({ files: 2, moved: 0, movedAt: null, toReturn: 0, filesLeft: 0, lost: 2 }, false));
-    expect(liftedLost).toContain("Files lost: 2. Their images cannot be shown again; their author was told so.");
-    for (const out of [back, keptLost, liftedLost]) expect(out).not.toMatch(/[.]webp|files[/]/);
+    // Review M12: korbat tells the author once the seal is lifted, unless the post is gone; it says no more than that.
+    expect(liftedLost).toContain("Files lost: 2. Their images cannot be shown again. korbat tells their author so by mail, unless the post was deleted or erased.");
+    expect(liftedLost).not.toContain("was told so");
+    // Review M12: files to return beside a lost one: only the images whose files are all kept are shown again.
+    const both = page(sealedCase({ files: 4, moved: 2, movedAt, toReturn: 2, filesLeft: 0, lost: 1 }, false));
+    expect(both).toContain(
+      "Files to return: the seal was lifted and 2 files of its images are still in the quarantine. The images whose files are all kept are shown again once whoever has the server has returned them (the README, Quarantine); an image with a lost file is not.",
+    );
+    for (const out of [back, keptLost, liftedLost, both]) expect(out).not.toMatch(/[.]webp|files[/]/);
   });
 });

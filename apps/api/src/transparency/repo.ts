@@ -91,8 +91,9 @@ export function createTransparencyRepo(apiDb: Db) {
       return apiDb.transaction(async (tx) => {
         await tx.execute(LOCK_TIMEOUT);
         const inserted = await tx.execute(sql`insert into public.head_publications (witness) values (${witness}) on conflict (day, kind) do nothing returning 1`);
-        const [row] = await tx.execute<{ day: string; value: string; witness: HeadWitness; witnessed: boolean; published: boolean }>(sql`
-          select to_char(h.day, 'YYYY-MM-DD') as day, h.value, h.witness, h.token is not null as witnessed, h.published_at is not null as published
+        const [row] = await tx.execute<{ day: string; value: string; witness: HeadWitness; witnessed: boolean; published: boolean; mailed: boolean }>(sql`
+          select to_char(h.day, 'YYYY-MM-DD') as day, h.value, h.witness, h.token is not null as witnessed, h.published_at is not null as published,
+                 h.keeper_mailed_at is not null as mailed
             from public.head_publications h where h.day = ${TODAY} and h.kind = 'head'`);
         return { inserted: inserted.length > 0, ...row! };
       });
@@ -132,6 +133,19 @@ export function createTransparencyRepo(apiDb: Db) {
       return row?.fits ? { seq: row.seq, hash: row.hash } : null;
     },
 
+    /** 3d review M13: the relay accepted the keeper's mail of the day's value: keeper_mailed_at, from null alone (the guard forces the time). */
+    async headMailed(day: string): Promise<void> {
+      await apiDb.execute(sql`update public.head_publications set keeper_mailed_at = now() where day = ${day}::date and kind = 'head' and keeper_mailed_at is null`);
+    },
+
+    /** 3d review M13: the day before the database's today, when its value was published and its keeper's mail never accepted; null otherwise. */
+    async headUnmailed(): Promise<string | null> {
+      const [row] = await apiDb.execute<{ day: string }>(sql`
+        select to_char(h.day, 'YYYY-MM-DD') as day from public.head_publications h
+         where h.kind = 'head' and h.day = ${TODAY} - 1 and h.published_at is not null and h.keeper_mailed_at is null`);
+      return row?.day ?? null;
+    },
+
     /**
      * 7.7 step 6: the day before the database's today, when it has no published head value while an earlier day has a
      * row; null otherwise. On the head's first day nothing is missed: no earlier day ever had a value.
@@ -149,7 +163,7 @@ export function createTransparencyRepo(apiDb: Db) {
      * kind's priority and scope and its one fact, the day's first instant, under F's daily rule: none while a row of the
      * kind was written in the last 24 hours. F's two legs push and mail it. Answers whether it wrote one.
      */
-    async headAlert(kind: "head_unwitnessed" | "head_missed", day: string): Promise<boolean> {
+    async headAlert(kind: "head_unwitnessed" | "head_missed" | "head_unmailed", day: string): Promise<boolean> {
       const entry = ALERT_KINDS[kind];
       const written = await apiDb.execute(sql`
         insert into public.alert_outbox (kind, priority, scope, facts)

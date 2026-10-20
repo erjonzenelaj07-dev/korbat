@@ -62,6 +62,7 @@ function build() {
     DATABASE_URL_API: "postgres://a:b@localhost:55432/k",
     DATABASE_URL_AUTH: "postgres://a:b@localhost:55432/k",
     REDIS_URL: "redis://localhost:56379",
+    COUNTS_URL: "redis://localhost:56380",
     APP_ORIGIN: "http://localhost:8081",
     AUTH_HMAC_KEY: key,
     IP_HASH_KEY: key,

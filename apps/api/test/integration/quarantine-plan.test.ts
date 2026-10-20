@@ -52,7 +52,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the quarantine's plan an
   let lifted: Sealed;
   const authors: string[] = [];
   const posts: string[] = [];
-  const media = () => [...forGood.mediaIds, ...deciding.mediaIds, ...lifted.mediaIds];
+  /** 3d review M12: the images of the seals a test makes of its own. */
+  const more: string[] = [];
+  const media = () => [...forGood.mediaIds, ...deciding.mediaIds, ...lifted.mediaIds, ...more];
 
   /** A post with images, reported on the path for child sexual abuse material, and sealed by the admin's real key. */
   async function sealed(images: number, how: "final" | "deciding"): Promise<Sealed> {
@@ -345,6 +347,28 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the quarantine's plan an
       await tx.execute(sql`select public.alert_steps()`);
       expect((await dueRows()).length).toBe(after.due_in + after.due_out === 0 ? 2 : 3);
     });
+  });
+
+  test("review M12: a file lost while its image is sealed for good is owed no notice; once the seal is lifted, lost_untold lists the image and its author is mailed image_lost once", async () => {
+    const s = await sealed(1, "final");
+    const id = s.mediaIds[0]!;
+    more.push(id);
+    await moved(migrateDb, id, "large");
+    await migrateDb.execute(sql`insert into public.quarantine_files (media_id, file, lost_at) values (${id}::uuid, ${storedImageName(id, "small")}, now())`);
+    const toldOf = async () => (await quarantineRows(migrateDb, [id])).filter((row) => row.lost_at !== null).map((row) => row.lost_told);
+    const untold = async () => (await apiDb.execute<{ media_id: string }>(sql`select media_id from public.lost_untold(1000)`)).some((row) => row.media_id === id);
+    expect(await toldOf()).toEqual(["none"]);
+    expect(await untold()).toBe(false);
+    // The authority answers "not illegal" and an admin lifts the seal by a correction.
+    const unseal = await world.decideAs(admin, s.caseId, { kind: "correction", reviewsDecisionId: s.decisionId, actions: [act("unseal_media")] });
+    if (typeof unseal === "string") throw new Error(`the seal was not lifted (${unseal})`);
+    expect(await toldOf()).toEqual(["pending"]);
+    expect(await untold()).toBe(true);
+    const sent: { userId: string; message: unknown }[] = [];
+    const auth = { mailAccount: async (userId: string, message: unknown) => (sent.push({ userId, message }), "sent") } as unknown as AuthForModeration;
+    await lostImageNotices(moderationDeps(apiDb, { auth }), new Date());
+    expect(sent.filter((mail) => mail.userId === s.authorId)).toEqual([{ userId: s.authorId, message: expect.objectContaining({ template: "image_lost" }) }]);
+    expect(await toldOf()).toEqual(["sent"]);
   });
 
   test("this file left nothing behind: its seals, cases, records and quarantine rows are removed, and the tables hold what they held before", async () => {

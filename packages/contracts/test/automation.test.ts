@@ -196,7 +196,7 @@ describe("the three alerts of a program (W.7)", () => {
 
   test("they follow head_missed at the end of the list, each a push and a sentence to every staff account", () => {
     // 3d Task 7's two kinds follow them (known-material.test.ts).
-    expect(ALERT_KIND_LIST.slice(-5, -2)).toEqual(["automated_objection", "automation_capped", "automated_waiting"]);
+    expect(ALERT_KIND_LIST.slice(-6, -3)).toEqual(["automated_objection", "automation_capped", "automated_waiting"]);
     for (const kind of ["automated_objection", "automation_capped", "automated_waiting"] as const) {
       expect(ALERT_KINDS[kind].priority, kind).toBe(3);
       expect(ALERT_KINDS[kind].scope, kind).toBe("all");

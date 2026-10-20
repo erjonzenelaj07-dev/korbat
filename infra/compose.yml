@@ -66,6 +66,28 @@ services:
       timeout: 3s
       retries: 20
 
+  counts:
+    # 3d review H3: the recipients' count alone (the day's salt and the month's and the days' sketches), in a Valkey of
+    # its own that writes nothing to disk: no append-only file, no snapshot, no volume. The redis service keeps an
+    # append-only file of every write, which would hold the salt and each value added to a sketch long after 26 hours.
+    # A restart of this service loses the running month's count, which then reads as not recorded (README, The yearly
+    # edition). The redis service's pinned image, its password, and the data network alone; no port.
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    restart: unless-stopped
+    logging: *logging
+    mem_limit: 96m
+    memswap_limit: 96m
+    pids_limit: 64
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in infra/.env}
+    command: ["sh", "-c", "exec valkey-server --appendonly no --save '' --maxmemory 48mb --maxmemory-policy noeviction --requirepass $$REDIS_PASSWORD"]
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "VALKEYCLI_AUTH=$$REDIS_PASSWORD valkey-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   migrate:
     <<: *node-common
     restart: "no"
@@ -111,6 +133,8 @@ services:
       DATABASE_URL_API: postgres://korbat_api:${KORBAT_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DATABASE_URL_AUTH: postgres://korbat_auth:${KORBAT_AUTH_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      # 3d review H3: the recipients' count, in the counts service, which writes nothing to disk.
+      COUNTS_URL: redis://:${REDIS_PASSWORD}@counts:6379
       TRUSTED_ORIGINS: ${API_TRUSTED_ORIGINS:-}
       # Which header names the client: the stack refuses to start without a choice.
       TRUST_PROXY: ${API_TRUST_PROXY:?set API_TRUST_PROXY in infra/.env}
@@ -202,6 +226,7 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
+      counts: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s

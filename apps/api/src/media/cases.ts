@@ -107,6 +107,11 @@ export interface MediaForCases {
    * names it once. The media module owns the table.
    */
   matchJoined(tx: Runner, matchId: string, caseId: string | null): Promise<void>;
+  /**
+   * 3d review H1: an entry whose signal met the image's existing one: the record is marked handled with no case, unless a
+   * signal names it, whose step alone marks it.
+   */
+  matchPassed(tx: Runner, matchId: string): Promise<void>;
   /** Which of these images an unerased match record names: the case page's [case.image.matched]. */
   matchedImages(mediaIds: readonly string[]): Promise<Set<string>>;
   /** 3d Task 7 (7.12 step 1): one of the uploader's refusals, as its notice reads it; null for anyone else's. */
@@ -263,6 +268,7 @@ export function mediaForCases(input: Pick<MediaDeps, "repo" | "files" | "log"> &
     matchRecord: (q, matchId) => deps.matches.record(q, matchId),
     matchRecords: (matchIds) => deps.matches.records(matchIds),
     matchJoined: (tx, matchId, caseId) => deps.matches.joined(tx, matchId, caseId),
+    matchPassed: (tx, matchId) => deps.matches.passed(tx, matchId),
     matchedImages: (mediaIds) => deps.matches.matched(deps.matches.db, mediaIds),
     refusalOf: (ownerId, refusalId) => deps.matches.ownRefusal(ownerId, refusalId),
     refusalsOf: (ownerId, after, limit) => deps.matches.refusalsOf(ownerId, after, limit),

@@ -40,7 +40,7 @@ describe("head_unwitnessed and head_missed (W.7): the transparency job's two ale
 
   test("they follow edge_purge_failed in the list, a push and a sentence to every staff account, with the one fact day", () => {
     // 3d Task 6's three kinds follow them (automation.test.ts).
-    expect(ALERT_KIND_LIST.slice(-8, -5)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
+    expect(ALERT_KIND_LIST.slice(-9, -6)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
     for (const kind of ["head_unwitnessed", "head_missed"] as const) {
       expect(ALERT_KINDS[kind], kind).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["day"] });
       expect(SENTENCE_MAIL_KINDS, kind).toContain(kind);
@@ -66,6 +66,18 @@ describe("head_unwitnessed and head_missed (W.7): the transparency job's two ale
     const b = renderAlert("head_missed", { day: "2025-01-02T00:00:00.000Z" }, now).sentence;
     expect(a).not.toBe(b);
     expect(a.replace(/[0-9]/g, "")).toBe(b.replace(/[0-9]/g, ""));
+  });
+
+  test("review M13: head_unmailed, the last kind of the list, a day's value whose keeper's mail never went: a push and a sentence to every staff account with the one fact day", () => {
+    expect(ALERT_KIND_LIST.at(-1)).toBe("head_unmailed");
+    expect(ALERT_KINDS.head_unmailed).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["day"] });
+    expect(SENTENCE_MAIL_KINDS).toContain("head_unmailed");
+    expect(alertPlaceholders("head_unmailed")).toEqual(["day"]);
+    expect(renderAlert("head_unmailed", { day: "2026-10-17T00:00:00.000Z" }, now)).toEqual({
+      title: "The keeper did not get a daily value",
+      sentence: "The audit log's value of 2026-10-17 was published, and its mail to the keeper never went out.",
+      todo: "The operator checks the mail relay and HEAD_KEEPER_MAIL (staff.js automation-status prints the last mail's outcome). The keeper copies that day's value from /transparency and notes that its mail did not come.",
+    });
   });
 
   test("a day that is no instant, or a count in its place, is refused: an alert never goes out with a hole", () => {

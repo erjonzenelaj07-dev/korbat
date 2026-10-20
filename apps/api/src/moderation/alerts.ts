@@ -74,6 +74,8 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   // once, and hold_ended_unreported, which staffAlert writes after an end of a hold without a report.
   "matcher_down",
   "hold_ended_unreported",
+  // 3d review M13: head_unmailed, which the transparency job writes as its own row, at most once in 24 hours.
+  "head_unmailed",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */
@@ -126,6 +128,25 @@ async function mailClaimed(deps: Pick<ModerationDeps, "apiDb" | "auth">, id: num
     if (accepted > 0) await tx.execute(sql`update public.alert_outbox set mailed_at = now() where id = ${id}`);
     return accepted;
   });
+}
+
+/**
+ * 3d review L1: the row of the alert of a destructive act (an end of a hold without a report, a release), written inside
+ * the act's own confirmed transaction before its audit row, as quarantine-record writes quarantine_lost: a restart after
+ * the commit never loses it, since the watcher pushes the row and the alert tick mails a row left without its mail.
+ * Without a throttle: each act is an alert of its own. Answers the row's id, for mailAlertRow after the commit.
+ */
+export function confirmedAlertRow(tx: Pick<ModerationDeps["apiDb"], "execute">, message: StaffMessage): Promise<number> {
+  return insertAlert(tx, message.template, alertFacts(message));
+}
+
+/** 3d review L1: after the act's commit, the row's mail now, once; a failure is logged, and the alert tick mails the row. */
+export async function mailAlertRow(deps: Pick<ModerationDeps, "apiDb" | "auth" | "log">, rowId: number, message: StaffMessage): Promise<void> {
+  try {
+    await mailClaimed(deps, rowId, message);
+  } catch (err) {
+    deps.log.warn({ err, alert: rowId }, "moderation alert: its mail could not be sent now; the alert tick sends it");
+  }
 }
 
 /**

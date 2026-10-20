@@ -28,7 +28,7 @@ import type { TransparencyRepo } from "./repo";
  */
 export function publicFacts(
   config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "HEAD_WITNESS" | "R1_CLASSIFIER" | "AUTOMATION_R1_ACTS" | "AUTOMATION_DPIA_R1" | "AUTOMATION_DPIA_R1_ACTS"> &
-    Partial<Pick<Config, "MEDIA_MATCH" | "AUTOMATION_R2_ACTS" | "AUTOMATION_DPIA_MATCH" | "AUTOMATION_DPIA_MATCH_ACTS">>,
+    Partial<Pick<Config, "MEDIA_MATCH" | "AUTOMATION_R2_ACTS" | "AUTOMATION_DPIA_MATCH" | "AUTOMATION_DPIA_MATCH_ACTS" | "HEAD_KEEPER_MAIL">>,
 ): PublicFacts {
   // 3d Task 7 (sections 2 rows 27 and 49, 10.6): the comparison prints its state (off; on and only alerting, the finding
   // and the urgent alert; on and sealing, AUTOMATION_R2_ACTS), whether it is the test matcher, the source's name and its
@@ -59,6 +59,8 @@ export function publicFacts(
     edge: { on: config.EDGE_PURGE !== "off", test: config.EDGE_PURGE === "test" },
     witness: { on: config.HEAD_WITNESS !== "off", test: config.HEAD_WITNESS === "test" },
     recipientsSignedOut: config.RECIPIENTS_SIGNED_OUT === "on",
+    // 3d review M13: whether the daily value goes to a keeper at all; never the address.
+    keeper: config.HEAD_KEEPER_MAIL !== undefined && config.HEAD_KEEPER_MAIL !== "",
   };
 }
 

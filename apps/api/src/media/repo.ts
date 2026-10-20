@@ -350,20 +350,26 @@ export function createMediaRepo(db: Db) {
      * nobody is given its size, its blurhash, its alt text or a path. An image of a deleted post, and one whose content
      * or whose post's was erased, is given to nobody, its owner included, so no view and no export names a row that a
      * case or a freeze kept. A state this reader has not been taught is left out.
+     *
+     * 3d review H2: but a release whose author's notice is still held (3d design 9.6) shows nothing yet: the image rows it
+     * erased are given as they were under the seal, sealed, until the dispatch round that tells the notice.
      */
     async forPosts(postIds: readonly string[]): Promise<Map<string, PostImage[]>> {
       const byPost = new Map<string, PostImage[]>();
       if (postIds.length === 0) return byPost;
+      const heldRelease = sql`exists (select 1 from public.release_posts r join public.releases x on x.id = r.release_id
+        where r.post_id = ${postMedia.postId} and x.author_notice = 'held')`;
       const rows = await db
-        .select({ id: postMedia.id, postId: postMedia.postId, width: postMedia.width, height: postMedia.height, blurhash: postMedia.blurhash, altText: postMedia.altText, state: postMedia.moderationState })
+        .select({ id: postMedia.id, postId: postMedia.postId, width: postMedia.width, height: postMedia.height, blurhash: postMedia.blurhash, altText: postMedia.altText, state: postMedia.moderationState, erased: sql<boolean>`${postMedia.erasedAt} is not null` })
         .from(postMedia)
         .innerJoin(posts, eq(posts.id, postMedia.postId))
-        .where(and(inArray(postMedia.postId, [...postIds]), eq(postMedia.status, "ready"), ne(posts.state, "deleted_by_author"), isNull(postMedia.erasedAt), isNull(posts.erasedAt)))
+        .where(and(inArray(postMedia.postId, [...postIds]), eq(postMedia.status, "ready"), ne(posts.state, "deleted_by_author"), or(isNull(postMedia.erasedAt), heldRelease), isNull(posts.erasedAt)))
         .orderBy(postMedia.postId, postMedia.position);
       for (const row of rows) {
         if (!row.postId) continue;
         let image: PostImage;
-        if (row.state === "sealed") image = { id: row.id, state: "sealed" };
+        // An erased row reaches here only under a held release: it reads as the seal it was released from.
+        if (row.erased || row.state === "sealed") image = { id: row.id, state: "sealed" };
         else if (row.state === "visible" || row.state === "withheld" || row.state === "removed") {
           if (row.width === null || row.height === null || row.blurhash === null) continue;
           image = { id: row.id, state: row.state, width: row.width, height: row.height, blurhash: row.blurhash, alt: row.altText ?? "", small: mediaPath(row.id, "small"), large: mediaPath(row.id, "large") };
@@ -680,7 +686,8 @@ export function createMediaRepo(db: Db) {
     /**
      * 3d Task 2 (sections 5 and 8.10): text-verify's first read of the release. The images of the quarantine whose file
      * still lies there (a row without an end), not marked unknown, whose image row is gone and whose post is not released:
-     * a file korbat holds of an image it no longer has, which no release accounts for. Through the caller's transaction,
+     * a file korbat holds of an image it no longer has, which no release accounts for. 3d review M6: nor a held upload's
+     * whose refusal is released, which is on no post: its release accounts for it. Through the caller's transaction,
      * which reads as the migrator: quarantine_files is closed to the API's role.
      */
     async quarantineOrphans(q: Pick<Db, "execute"> | Pick<DbTx, "execute">): Promise<{ mediaId: string; postId: string | null }[]> {
@@ -689,6 +696,7 @@ export function createMediaRepo(db: Db) {
          where f.returned_at is null and f.destroyed_at is null and f.lost_at is null and not f.unknown and f.release_id is null
            and not exists (select 1 from post_media m where m.id = f.media_id)
            and not exists (select 1 from public.release_posts r where r.post_id = f.post_id)
+           and not exists (select 1 from public.upload_refusals u where u.media_id = f.media_id and u.release_id is not null)
          group by f.media_id order by f.media_id`)) as unknown as { media_id: string; post_id: string | null }[];
       return found.map((row) => ({ mediaId: row.media_id, postId: row.post_id }));
     },

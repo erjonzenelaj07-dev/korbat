@@ -790,14 +790,22 @@ export const CUSTODY_WORDS = {
   /** [case.custody.in], on a seal for good in force. */
   custodyIn: (moved: number, files: number, movedAt: string | null) => (moved > 0 && movedAt !== null ? `Files: ${moved} of ${files} are in the quarantine, since ${movedAt}.` : "Files: not moved to the quarantine yet."),
   custodyInRest: "The others are still in the image store until whoever has the server moves them (the README, Quarantine).",
-  /** [case.custody.return], while files of a lifted seal are still in the quarantine. */
-  custodyReturn: (toReturn: number) =>
-    `Files to return: the seal was lifted and ${toReturn} files of its images are still in the quarantine. The images are shown again once whoever has the server has returned them (the README, Quarantine).`,
-  /** [case.custody.lost], under a seal for good in force, and after a lifted seal. */
+  /**
+   * [case.custody.return], while files of a lifted seal are still in the quarantine. 3d review M12: beside a lost file, only
+   * the images whose files are all kept are shown again.
+   */
+  custodyReturn: (toReturn: number, lost = 0) =>
+    lost > 0
+      ? `Files to return: the seal was lifted and ${toReturn} files of its images are still in the quarantine. The images whose files are all kept are shown again once whoever has the server has returned them (the README, Quarantine); an image with a lost file is not.`
+      : `Files to return: the seal was lifted and ${toReturn} files of its images are still in the quarantine. The images are shown again once whoever has the server has returned them (the README, Quarantine).`,
+  /**
+   * [case.custody.lost], under a seal for good in force, and after a lifted seal. 3d review M12: after the lift korbat's
+   * daily round mails the author (image_lost), unless the post was deleted or erased; the console says no more than that.
+   */
   custodyLost: (lost: number, inForce: boolean) =>
     inForce
       ? `Files lost: ${lost}. They were found in neither the image store nor the quarantine and are recorded as lost; there is nothing to move, hand over or destroy for them.`
-      : `Files lost: ${lost}. Their images cannot be shown again; their author was told so.`,
+      : `Files lost: ${lost}. Their images cannot be shown again. korbat tells their author so by mail, unless the post was deleted or erased.`,
   /**
    * 3d Task 7 (design, sections 8.2 and 8.6): Held uploads. No sentence names a handle, an image, a hash or a file's name;
    * the two ends are worded as what each does, neither is preselected and no sentence says which to take (rule 4 of

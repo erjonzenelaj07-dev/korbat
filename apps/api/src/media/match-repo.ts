@@ -289,17 +289,32 @@ export function createMatchRepo(db: Db) {
 
     /**
      * The automated step's write (7.9 step 2.2), in its transaction: the record is marked handled and, with a case, names
-     * it once (review ruling 8). Its guard lets each column change only from null.
+     * it once (review ruling 8). Its guard lets each column change only from null. 3d review H1: a record marked handled
+     * with no case (a mark an older build's conflicting entry wrote while this step ran) still gains the step's case.
      */
     async joined(tx: Runner, matchId: string, caseId: string | null): Promise<void> {
       await tx.execute(sql`
-        update public.media_matches set case_id = coalesce(case_id, ${caseId}::uuid), handled_at = now()
-         where id = ${matchId}::uuid and handled_at is null`);
+        update public.media_matches set case_id = coalesce(case_id, ${caseId}::uuid), handled_at = coalesce(handled_at, now())
+         where id = ${matchId}::uuid and (handled_at is null or (case_id is null and ${caseId}::uuid is not null))`);
+    },
+
+    /**
+     * 3d review H1: an entry whose signal met the image's existing one marks the record handled with no case, so the
+     * sweep does not read it again, but only while no signal names the record. A record a signal names is that signal's
+     * step's to mark: marking it here, while the step was in flight or had failed, ended the step as "already" for good.
+     */
+    async passed(tx: Runner, matchId: string): Promise<void> {
+      await tx.execute(sql`
+        update public.media_matches x set handled_at = now()
+         where x.id = ${matchId}::uuid and x.handled_at is null
+           and not exists (select 1 from public.automated_signals s where s.match_id = x.id)`);
     },
 
     /**
      * The sweep's read of matches (7.9): images on a post whose post is not deleted by its author, ready and not erased,
      * with an unerased match record the program is not done with, acting or a flag; at most `limit`, the oldest first.
+     * 3d review H1: not a record a signal names, which the sweep's read of signals retries: a step in flight or one that
+     * failed is never raced by this read, and such records never fill its batch.
      */
     async unhandledOnPosts(limit: number): Promise<{ mediaId: string; postId: string; matchId: string }[]> {
       if (limit <= 0) return [];
@@ -307,6 +322,7 @@ export function createMatchRepo(db: Db) {
         select x.media_id, m.post_id, x.id from public.media_matches x
           join public.post_media m on m.id = x.media_id join public.posts p on p.id = m.post_id
          where x.handled_at is null and x.erased_at is null and m.status = 'ready' and m.erased_at is null and p.state <> 'deleted_by_author'
+           and not exists (select 1 from public.automated_signals s where s.match_id = x.id)
          order by x.queried_at, x.id limit ${limit}::int`)) as unknown as { media_id: string; post_id: string; id: string }[];
       return rows.map((row) => ({ mediaId: row.media_id, postId: row.post_id, matchId: row.id }));
     },

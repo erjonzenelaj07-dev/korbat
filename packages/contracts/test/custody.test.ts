@@ -64,7 +64,8 @@ describe("the quarantine's contracts (3d Task 1)", () => {
     expect(renderAlert("quarantine_lost", { count: 2, at: "2026-10-18T11:40:00.000Z" }, now)).toEqual({
       title: "Sealed files are lost",
       sentence: "2 files that were to be kept apart are recorded as lost at 11:40 UTC: they are in neither the image store nor the quarantine.",
-      todo: "Whoever has the server reads the README's section Quarantine, on a file in neither place. An image whose seal was lifted cannot be shown again, and its author is told; a file kept for an authority cannot be handed over, and the operator tells the authority.",
+      // Review M12: true whether the seal stands now or is lifted later.
+      todo: "Whoever has the server reads the README's section Quarantine, on a file in neither place. An image whose seal is lifted, now or later, cannot be shown again, and its author is then told by mail; a file kept for an authority cannot be handed over, and the operator tells the authority.",
     });
   });
 });

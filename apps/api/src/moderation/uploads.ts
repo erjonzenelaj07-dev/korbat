@@ -11,14 +11,14 @@ import {
   type UploadsPage,
 } from "@korbat/contracts";
 import { REDRESS_VERSION, RULES_VERSION, getRedress, getRule, uploadNoticeParagraphs } from "@korbat/rules";
-import type { AccountMailResult, ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
+import type { AccountMailResult, ActiveStaffSession, StaffMessage, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isBoundReached, isDeadlock } from "../lib/lock-bounds";
 import type { MatchEvent, RefusalRow } from "../media";
-import { alertUrgentLane, staffAlert } from "./alerts";
+import { alertUrgentLane, confirmedAlertRow, mailAlertRow, staffAlert } from "./alerts";
 import { matchSignal } from "./automated";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
 import { RETRY_MARGIN_MS } from "./decide";
-import { sendReleaseNotice } from "./release";
+import { adminFacts, sendReleaseNotice } from "./release";
 import { appendConfirmedAudit, iso, raisedMessage, rows } from "./repo";
 
 /**
@@ -246,7 +246,7 @@ type FactsRow = {
 };
 
 /** The release block of a hold ended as report (8.6, 10.3), read through upload_release_facts and the refusal's release. */
-async function releaseBlock(deps: Pick<ModerationDeps, "apiDb">, refusal: RefusalRow): Promise<UploadRelease | null> {
+async function releaseBlock(deps: Pick<ModerationDeps, "apiDb">, refusal: RefusalRow, admin: boolean): Promise<UploadRelease | null> {
   if (refusal.endAs !== "report") return null;
   const [f] = await rows<FactsRow>(
     deps.apiDb,
@@ -265,15 +265,10 @@ async function releaseBlock(deps: Pick<ModerationDeps, "apiDb">, refusal: Refusa
         );
   return {
     reported: f!.reported,
-    theirReference: f!.their_reference,
-    answer: f!.answer,
-    answeredAt: f!.answered_at,
+    // 3d review M1: the authority's reference and assessment and the leave are an admin's alone.
+    ...adminFacts(admin, f!),
     handedOverAt: f!.handed_over_at,
     quarantined: f!.quarantined,
-    leave:
-      f!.leave_id === null
-        ? null
-        : { id: f!.leave_id, from: f!.leave_from!, reference: f!.leave_reference!, receivedOn: f!.leave_received_on!, untold: f!.leave_untold === true, untoldUntil: f!.leave_untold_until },
     tellHeld: f!.tell_held,
     silenceDays: rules!.silence_days,
     releasedAt: release?.released_at ?? null,
@@ -283,12 +278,13 @@ async function releaseBlock(deps: Pick<ModerationDeps, "apiDb">, refusal: Refusa
   };
 }
 
-async function heldUpload(deps: Pick<ModerationDeps, "apiDb">, refusal: RefusalRow): Promise<HeldUpload> {
+async function heldUpload(deps: Pick<ModerationDeps, "apiDb">, refusal: RefusalRow, admin: boolean): Promise<HeldUpload> {
   return {
     id: refusal.id,
     refusedAt: refusal.refusedAt,
     match: refusal.match,
-    otherRefusals: refusal.otherRefusals,
+    // 3d review M1: the one thing given about the uploader is the admin's (11.4); absent for any other session.
+    ...(admin ? { otherRefusals: refusal.otherRefusals } : {}),
     uploaderGone: refusal.uploaderGone,
     objection: refusal.objection,
     objectedAt: refusal.objectedAt,
@@ -298,7 +294,7 @@ async function heldUpload(deps: Pick<ModerationDeps, "apiDb">, refusal: RefusalR
     deletesAt: refusal.deletesAt,
     reported: refusal.reported,
     quarantined: refusal.quarantined,
-    release: await releaseBlock(deps, refusal),
+    release: await releaseBlock(deps, refusal, admin),
   };
 }
 
@@ -306,19 +302,20 @@ async function heldUpload(deps: Pick<ModerationDeps, "apiDb">, refusal: RefusalR
 const UPLOADS_CURSOR = /^(0|[1-9][0-9]{0,6})$/;
 
 /** GET /api/staff/uploads (7.12 step 3, 10.3): a page of Held uploads in its sections' order. */
-export async function heldUploads(deps: Pick<ModerationDeps, "apiDb" | "media">, cursor?: string): Promise<UploadsPage> {
+export async function heldUploads(deps: Pick<ModerationDeps, "apiDb" | "media">, session: ActiveStaffSession, cursor?: string): Promise<UploadsPage> {
   if (cursor !== undefined && !UPLOADS_CURSOR.test(cursor)) throw new ModerationError("invalid_request");
   const offset = cursor === undefined ? 0 : Number(cursor);
   const found = await deps.media.heldList(offset);
   const page = found.slice(0, UPLOADS_PAGE_SIZE);
-  return { uploads: await Promise.all(page.map((refusal) => heldUpload(deps, refusal))), nextCursor: found.length > UPLOADS_PAGE_SIZE ? String(offset + UPLOADS_PAGE_SIZE) : null };
+  const admin = session.role === "admin";
+  return { uploads: await Promise.all(page.map((refusal) => heldUpload(deps, refusal, admin))), nextCursor: found.length > UPLOADS_PAGE_SIZE ? String(offset + UPLOADS_PAGE_SIZE) : null };
 }
 
 /** One held upload as the list shows it, the answer of the hold's end and of a release; not_found when there is none. */
-export async function heldUploadOf(deps: Pick<ModerationDeps, "apiDb" | "media">, refusalId: string): Promise<HeldUpload> {
+export async function heldUploadOf(deps: Pick<ModerationDeps, "apiDb" | "media">, refusalId: string, admin: boolean): Promise<HeldUpload> {
   const refusal = await deps.media.held(refusalId);
   if (refusal === null) throw new ModerationError("not_found");
-  return heldUpload(deps, refusal);
+  return heldUpload(deps, refusal, admin);
 }
 
 /** The locks an end or a release may wait for: the uploader's profile, the refusal, the image row, the admin's auth row, the leave and the audit head. */
@@ -369,6 +366,14 @@ export async function endHold(deps: ModerationDeps, session: ActiveStaffSession,
   const refusalId = confirmed.target.id;
   const outcome = await confirmedHold(deps, confirmed, refusalId, async (tx, mediaId) => {
     await tx.execute(sql`select public.upload_hold_end(${refusalId}::uuid, ${params.endAs}, ${params.reason}, ${session.userId}::uuid)`);
+    // 3d review L1: an end as no_report writes its alert's row here, before the audit row, so a restart after the commit
+    // never deletes the upload unannounced; its time of deletion is the one upload_hold_end set (now() and no_report_hours).
+    let alert: { rowId: number; message: StaffMessage } | null = null;
+    if (params.endAs === "no_report") {
+      const [due] = await rows<{ at: string }>(tx, sql`select ${iso("(now() + make_interval(hours => r.no_report_hours))")} as at from public.automation_rules() r`);
+      const message: StaffMessage = { template: "hold_ended_unreported", facts: { at: deps.now().toISOString(), deletesAt: due!.at } };
+      alert = { rowId: await confirmedAlertRow(tx, message), message };
+    }
     await appendConfirmedAudit(tx, {
       actorId: session.userId,
       keyId: confirmed.keyId,
@@ -382,14 +387,13 @@ export async function endHold(deps: ModerationDeps, session: ActiveStaffSession,
       requestId: ctx.requestId,
       expiresAt: confirmed.expiresAt,
     });
-    return "done" as const;
+    return alert;
   });
   if (outcome === "ended" || outcome === "late") return outcome;
-  const held = await heldUploadOf(deps, refusalId);
-  if (params.endAs === "no_report") {
-    deps.background.start(async () => {
-      await staffAlert(deps, null, 0, { template: "hold_ended_unreported", facts: { at: deps.now().toISOString(), deletesAt: held.deletesAt ?? deps.now().toISOString() } });
-    });
+  const held = await heldUploadOf(deps, refusalId, session.role === "admin");
+  if (outcome !== null) {
+    const alert = outcome;
+    deps.background.start(() => mailAlertRow(deps, alert.rowId, alert.message));
   }
   return held;
 }
@@ -404,8 +408,11 @@ export async function releaseUpload(deps: ModerationDeps, session: ActiveStaffSe
   if (confirmed.action !== "upload_released" || confirmed.target.type !== "upload_refusal" || confirmed.keyId !== session.keyId) throw new Error("a held upload is released only with the step-up that confirmed it");
   const params = UploadReleasedParams.parse(confirmed.params);
   const refusalId = confirmed.target.id;
+  const message: StaffMessage = { template: "seal_released", facts: { at: deps.now().toISOString(), posts: 0, uploads: 1 } };
   const outcome = await confirmedHold(deps, confirmed, refusalId, async (tx, mediaId) => {
     const [row] = await rows<{ id: string }>(tx, sql`select public.upload_release(${refusalId}::uuid, ${params.basis}, ${params.leaveId}::uuid, ${session.userId}::uuid) as id`);
+    // 3d review L1: the alert's row in the release's own transaction, before its audit row.
+    const rowId = await confirmedAlertRow(tx, message);
     await appendConfirmedAudit(tx, {
       actorId: session.userId,
       keyId: confirmed.keyId,
@@ -419,21 +426,17 @@ export async function releaseUpload(deps: ModerationDeps, session: ActiveStaffSe
       requestId: ctx.requestId,
       expiresAt: confirmed.expiresAt,
     });
-    return row!.id;
+    return { releaseId: row!.id, rowId };
   });
   if (outcome === "ended" || outcome === "late") return outcome;
-  const releaseId = outcome;
+  const { releaseId, rowId } = outcome;
   deps.background.start(async () => {
-    try {
-      await staffAlert(deps, null, 0, { template: "seal_released", facts: { at: deps.now().toISOString(), posts: 0, uploads: 1 } });
-    } catch (err) {
-      deps.log.error({ err, releaseId }, "moderation: the staff accounts were not alerted to a held upload's release");
-    }
+    await mailAlertRow(deps, rowId, message);
     try {
       await sendReleaseNotice(deps, releaseId);
     } catch (err) {
       deps.log.error({ err, releaseId }, "moderation: a held upload's release notice was not sent; the dispatch round sends it");
     }
   });
-  return heldUploadOf(deps, refusalId);
+  return heldUploadOf(deps, refusalId, session.role === "admin");
 }

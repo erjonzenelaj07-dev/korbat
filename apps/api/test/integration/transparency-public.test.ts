@@ -15,6 +15,9 @@ import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { createSocial } from "../../src/social";
 import { createTransparency, sketchKeys, type Transparency } from "../../src/transparency";
+import { markMonth } from "../../src/transparency/recipients";
+import { rowCounts } from "./moderation-fixtures";
+import { accountSince } from "./transparency-fixtures";
 
 /**
  * The public routes, the recipients' count on the real Valkey and the transparency job (3d design, sections 7.5, 7.6,
@@ -34,6 +37,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
   /** The modules' clock: a May morning of 2009, which a test moves. */
   let clock = new Date("2009-05-17T10:00:00.000Z");
   const YEAR = 2008;
+  let before: Record<string, number>;
+  let since: string;
   const logger = pino({ level: "silent" });
 
   function build(overrides: Partial<Config> = {}) {
@@ -48,7 +53,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
       turnstile: { verify: async () => true },
       breachChecker: { isBreached: async () => false },
     });
-    const module = createTransparency({ apiDb, redis, auth: auth.forTransparency, config: settings, logger, now: () => clock });
+    const module = createTransparency({ apiDb, counts: redis, auth: auth.forTransparency, config: settings, logger, now: () => clock });
     auth.onSeen(module.forAuth);
     // The session's resolution, counted: the public routes must never reach it.
     const resolveSession: MiddlewareHandler<AppEnv> = (c, next) => {
@@ -62,7 +67,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
   /** Every key of the three patterns the count writes. */
   const countKeys = async () => (await Promise.all(["mau:in:*", "mau:out:*", "mau:salt:*"].map((pattern) => redis.keys(pattern)))).flat().sort();
   const removeKeys = async () => {
-    const keys = await countKeys();
+    // 3d review M10: and the job's markers of the months it saw.
+    const keys = [...(await countKeys()), ...(await redis.keys("mau:since:*"))];
     if (keys.length > 0) await redis.del(...keys);
   };
   const removeYear = (year: number) => migrateDb.execute(sql`delete from public.transparency_editions where year = ${year}`);
@@ -70,7 +76,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
   // 3d Task 5: a round after the dispatch hour publishes the database's own today's head value, which the test deletes.
   const removeHead = async () => {
     await migrateDb.execute(sql`delete from public.head_publications`);
-    await migrateDb.execute(sql`delete from public.alert_outbox where kind in ('head_unwitnessed', 'head_missed')`);
+    await migrateDb.execute(sql`delete from public.alert_outbox where kind in ('head_unwitnessed', 'head_missed', 'head_unmailed')`);
   };
   const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -79,16 +85,21 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     apiDb = createDb(config.DATABASE_URL_API, { max: 2 });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 2 });
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
-    redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
+    // 3d review H3: the counts store, as the API is given it; the test environment points it at the test Valkey.
+    redis = new Redis(config.COUNTS_URL, { maxRetriesPerRequest: 2 });
     ({ app, module: transparency } = build());
     await removeKeys();
     await removeHead();
+    before = await rowCounts(migrateDb);
+    // 3d review M3: an account of 2008, so the year the job publishes is one korbat ran.
+    since = await accountSince(migrateDb, YEAR);
   });
   afterAll(async () => {
     await removeKeys();
     await removeYear(YEAR);
     await removeMonths();
     await removeHead();
+    await migrateDb.execute(sql`delete from public.profiles where id = ${since}::uuid`);
     redis.disconnect();
     await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
   });
@@ -109,6 +120,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     // 3d Task 5: the head's witness prints its adapter, a test one on a closed site as such.
     const witnessed = build({ HEAD_WITNESS: "test", APP_SITE: "closed" }).app;
     expect(PublicFacts.parse(await (await witnessed.request("/api/public/facts")).json())).toMatchObject({ witness: { on: true, test: true }, edge: { on: false, test: false } });
+    // 3d review M13: whether a keeper's address is set, which alone lets the pages say the value goes to an outside keeper.
+    expect(PublicFacts.parse(await (await build({ HEAD_KEEPER_MAIL: undefined }).app.request("/api/public/facts")).json()).keeper).toBe(false);
+    expect(PublicFacts.parse(await (await build({ HEAD_KEEPER_MAIL: "keeper@korbat.example" }).app.request("/api/public/facts")).json()).keeper).toBe(true);
     // The head's route is mounted before the session's resolution too, and reads none.
     resolved = 0;
     const head = await app.request("/api/public/head", { headers: carried });
@@ -128,7 +142,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
       const res = await app.request("/api/public/transparency", { headers: carried });
       expect(res.status).toBe(200);
       expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
-      const answer = PublicTransparency.parse(await res.json());
+      const raw = await res.json();
+      // Review M4: each version's list of the orders it counted is the database's alone, never in the public answer.
+      expect(JSON.stringify(raw)).not.toMatch(/counted/i);
+      const answer = PublicTransparency.parse(raw);
       const edition = answer.editions.find((entry) => entry.year === YEAR)!;
       const today = new Date().toISOString().slice(0, 10);
       expect({ version: edition.version, reason: edition.reason, publishedOn: edition.publishedOn, older: edition.older.map((older) => [older.version, older.reason, older.replacedOn]) }).toEqual({
@@ -184,7 +201,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     const broken = new Redis("redis://127.0.0.1:1/0", { maxRetriesPerRequest: 0, lazyConnect: true, enableOfflineQueue: false, retryStrategy: () => null });
     broken.on("error", () => undefined);
     const auth = createAuth({ config, logger, authDb, kv: new MemoryKv(), mailer: new MemoryMailer(), profiles: createProfileStore(apiDb) });
-    const failing = createTransparency({ apiDb, redis: broken, auth: auth.forTransparency, config, logger, now: () => clock });
+    const failing = createTransparency({ apiDb, counts: broken, auth: auth.forTransparency, config, logger, now: () => clock });
     auth.onSeen(failing.forAuth);
     const failingApp = createApp({ config, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, social: createSocial({ apiDb, rateLimitStore: new MemoryStore(), logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth() }), transparency: failing });
     const res = await failingApp.request("/api/timeline/latest");
@@ -198,6 +215,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
     await removeMonths();
     // April 2009: two accounts seen, one reader on two days.
     const accounts = ["a1b2c3d4-0000-4000-8000-0000000000a1", "a1b2c3d4-0000-4000-8000-0000000000a2"];
+    // 3d review M10: the job's first round of April marked the month, so its count is whole.
+    await markMonth(redis, new Date("2009-04-01T00:05:00.000Z"));
     clock = new Date("2009-04-03T09:00:00.000Z");
     for (const account of accounts) transparency.forAuth.seen(account);
     transparency.forAuth.seenSignedOut("203.0.113.9", "Mozilla/5.0 Firefox/140.0", "/api/timeline/latest");
@@ -237,5 +256,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public routes, the r
       await removeKeys();
       await removeHead();
     }
+  });
+
+  test("this file left no row behind", async () => {
+    await removeYear(YEAR);
+    await removeMonths();
+    await removeHead();
+    await migrateDb.execute(sql`delete from public.profiles where id = ${since}::uuid`);
+    expect(await rowCounts(migrateDb)).toEqual(before);
   });
 });

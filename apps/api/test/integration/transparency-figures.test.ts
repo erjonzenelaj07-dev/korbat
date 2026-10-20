@@ -5,11 +5,11 @@ import { EDITION_REASONS, TRANSPARENCY_RULES, TransparencyFigures, band, type Or
 import type { DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { tcoCounts, type TcoCounts } from "../../src/cli/counts";
-import { aPost, act, decideIn, imagePost, newTestStaff, refusal, removeFixtures, report, staffProfile, type TestStaff } from "./moderation-fixtures";
+import { aPost, act, decideIn, imagePost, newTestStaff, refusal, removeFixtures, report, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
 import { closeNotifyFixtures } from "./notify-fixtures";
 import { rolledBack } from "./staff-fixtures";
-import { yearForTest, type YearCells } from "./transparency-fixtures";
+import { accountSince, yearForTest, type YearCells } from "./transparency-fixtures";
 
 vi.setConfig({ testTimeout: 180_000 });
 
@@ -25,11 +25,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
   let w: NoticesWorld;
   let moderator: TestStaff;
   let admin: TestStaff;
+  let before: Record<string, number>;
   const NOW = new Date().getUTCFullYear();
   const YEAR = NOW - 12;
 
   beforeAll(async () => {
     w = noticesWorld();
+    // Counted before the staff accounts' profiles exist: the last test removes them.
+    before = await rowCounts(w.apiDb);
     moderator = await newTestStaff(w.authDb, w.migrateDb, w.repo, "moderator");
     admin = await newTestStaff(w.authDb, w.migrateDb, w.repo, "admin");
     await staffProfile(w.apiDb, moderator);
@@ -154,6 +157,28 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
     await rolledBack(w.migrateDb, async (tx) => {
       await yearForTest(tx, YEAR, { restrictions: { R1: 1 } }, moderator);
       expect((await figuresOf(tx, YEAR)).uploads).toEqual([]);
+    });
+  });
+
+  test("review L5: a later version prints the uploads' fate as it stood on the due day: an end recorded before it as Report counts as Report, though an admin changed it after", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      await yearForTest(tx, YEAR, { restrictions: { R1: 1 }, uploads: { report: 12 } }, moderator);
+      const refused = await tx.execute<{ id: string; media_id: string }>(
+        sql`select id, media_id from public.upload_refusals where refused_at >= make_timestamptz(${YEAR}::int, 1, 1, 0, 0, 0, 'UTC') and refused_at < make_timestamptz(${YEAR + 1}::int, 1, 1, 0, 0, 0, 'UTC')`,
+      );
+      expect(refused).toHaveLength(12);
+      // Each end's audit row as the route writes it, dated in the year (the chain's trigger is off for the backdating alone).
+      for (const r of refused) {
+        await tx.execute(sql`insert into public.audit_log (actor_id, action, target_type, target_id, metadata) values (${moderator.id}::uuid, 'upload_hold_ended', 'upload_refusal', ${r.id}, ${JSON.stringify({ params: { endAs: "report", reason: null }, mediaId: r.media_id })}::jsonb)`);
+      }
+      await tx.execute(sql.raw("alter table public.audit_log disable trigger user"));
+      await tx.execute(sql`update public.audit_log set created_at = make_timestamptz(${YEAR}::int, 12, 1, 12, 0, 0, 'UTC') where action = 'upload_hold_ended' and target_id = any(${`{${refused.map((r) => r.id).join(",")}}`}::text[])`);
+      await tx.execute(sql.raw("alter table public.audit_log enable trigger user"));
+      const first = (await figuresOf(tx, YEAR)).uploads;
+      expect(first).toEqual([{ label: "report", count: "about 10" }]);
+      // In May after the due day another admin turns every end into No report.
+      await tx.execute(sql`update public.upload_refusals set end_as = 'no_report', end_reason = 'other', ended_at = make_timestamptz(${YEAR + 1}::int, 5, 2, 12, 0, 0, 'UTC') where id = any(${`{${refused.map((r) => r.id).join(",")}}`}::uuid[])`);
+      expect((await figuresOf(tx, YEAR)).uploads).toEqual(first);
     });
   });
 
@@ -348,8 +373,54 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
     });
   });
 
+  test("review M3: a year that ended before korbat's first account is no year korbat ran: edition_publish stores nothing for it, and from a year with an account it publishes as before", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      // As if korbat's first account dated from the running year: no account was created before 1 January of it.
+      const start = sql`make_timestamptz(${NOW}::int, 1, 1, 0, 0, 1, 'UTC')`;
+      await tx.execute(sql`update public.profiles set created_at = ${start} where created_at < ${start}`);
+      const audits = (await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.audit_log`))[0]!.n;
+      expect(await publish(tx, NOW - 1, "first")).toBeNull();
+      expect(await publish(tx, 1999, "first")).toBeNull();
+      expect(await editions(tx, NOW - 1)).toEqual([]);
+      expect(await editions(tx, 1999)).toEqual([]);
+      expect((await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.audit_log`))[0]!.n).toBe(audits);
+      // A year in which an account was created is one korbat ran: its first version is stored.
+      await yearForTest(tx, YEAR, { restrictions: { R1: 12 } }, moderator);
+      expect(await publish(tx, YEAR, "first")).toBe(1);
+    });
+  });
+
+  test("review M4: a held order whose end is recorded later, with an instant before version 1, is counted by a version hold_ended: each version keeps the orders it counted, which the public read never returns", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      const future = new Date(Date.now() + 30 * 86_400_000);
+      const { orders } = await yearForTest(tx, YEAR, { restrictions: { R1: 12 }, orders: [{ posts: 1, receivedBefore: 10 }, { posts: 1, receivedBefore: 20, heldUntil: future }] }, moderator);
+      const held = orders[1]!.id;
+      expect(await publish(tx, YEAR, "first")).toBe(1);
+      const [first] = await editions(tx, YEAR);
+      expect(first!.figures.orders?.received?.total).toBe(1);
+      // Later the authority's letter says the hold ended an hour before version 1 (staff.js order-hold-until <instant>
+      // --release), and the notice is told: read again at version 1's instant, the order would now count there.
+      await tx.execute(sql`update public.legal_orders set hold_ended_at = null, hold_end_reason = null, authority_hold_until = ${first!.computed_at}::timestamptz - interval '1 hour' where id = ${held}::uuid`);
+      await tx.execute(sql`select public.order_notices_release()`);
+      expect(await publish(tx, YEAR, "first")).toBe(2);
+      const [, second] = await editions(tx, YEAR);
+      expect(second!.reason).toBe("hold_ended");
+      expect(second!.figures.orders?.received).toEqual({ total: 2, crossBorder: 0 });
+      const counted = await tx.execute<{ version: number; held: boolean; n: number }>(
+        sql`select version, ${held}::uuid = any(counted_orders) as held, cardinality(counted_orders) as n from public.transparency_editions where year = ${YEAR} order by version`,
+      );
+      expect(counted.map((row) => ({ ...row }))).toEqual([
+        { version: 1, held: false, n: 1 },
+        { version: 2, held: true, n: 2 },
+      ]);
+      expect(await publish(tx, YEAR, "first")).toBeNull();
+    });
+  });
+
   test("the API's role publishes a first version but may not correct one, and may not compute figures itself", async () => {
     await rolledBack(w.apiDb, async (tx) => {
+      // 3d review M3: an account of the year, so it is a year korbat ran.
+      await accountSince(tx, YEAR - 7);
       expect(await publish(tx, YEAR - 7, "correction")).toBe("invalid_edition");
       expect(await publish(tx, YEAR - 7, "hold_ended")).toBe("invalid_edition");
       expect(await publish(tx, YEAR - 7, "first")).toBe(1);
@@ -372,6 +443,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
       }
       // Five months: not recorded.
       expect((await figuresOf(tx, YEAR)).recipients).toBe("not recorded");
+      // 3d review M3: an account of the year, so it is a year korbat ran.
+      await accountSince(tx, YEAR);
       await insert(YEAR + 1, 2, 150, 250);
       // Months after the due day count for nothing in this edition.
       for (let m = 3; m <= 12; m++) await insert(YEAR + 1, m, 9000, 9000);
@@ -462,6 +535,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
       held: false,
       fold: false,
     });
+  });
+
+  test("this file left no row behind", async () => {
+    await removeFixtures(w.migrateDb, [moderator.id, admin.id]);
+    expect(await rowCounts(w.apiDb)).toEqual(before);
   });
 });
 

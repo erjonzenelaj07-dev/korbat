@@ -203,6 +203,9 @@ export const ALERT_KIND_LIST = [
   // without a report (staffAlert after the end's commit, to every staff account, the admin included, no throttle).
   "matcher_down",
   "hold_ended_unreported",
+  // 3d review M13: a day's value whose keeper's mail never went out (the transparency job's own row in the next day's first
+  // round, under F's daily rule, while HEAD_KEEPER_MAIL is set).
+  "head_unmailed",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -271,6 +274,7 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   matcher_down: sentenceKind(3, "all", ["since", "count", "refusalsCapped"]),
   // The time after which the upload is deleted is a time fact, so it ends in At (W.7's `until`).
   hold_ended_unreported: sentenceKind(3, "all", ["at", "deletesAt"]),
+  head_unmailed: sentenceKind(3, "all", ["day"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -432,7 +436,8 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
   quarantine_lost: {
     title: "Sealed files are lost",
     sentence: one("{count} files that were to be kept apart are recorded as lost at {at}: they are in neither the image store nor the quarantine."),
-    todo: "Whoever has the server reads the README's section Quarantine, on a file in neither place. An image whose seal was lifted cannot be shown again, and its author is told; a file kept for an authority cannot be handed over, and the operator tells the authority.",
+    // 3d review M12: true whether the seal stands now or is lifted later; the author is told once it is lifted.
+    todo: "Whoever has the server reads the README's section Quarantine, on a file in neither place. An image whose seal is lifted, now or later, cannot be shown again, and its author is then told by mail; a file kept for an authority cannot be handed over, and the operator tells the authority.",
   },
   // Task 2. release_undestroyed is mailed alone, so its line names the README's steps where W.7 says "the same steps";
   // seal_released's line names the case or Held uploads (Task 7), where a release is taken.
@@ -501,6 +506,12 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     title: "A hold ended without a report",
     sentence: one("An admin ended the hold on a matched upload without a report at {at}. The upload is deleted after {deletesAt}."),
     todo: 'Every staff account gets this mail, the admin who did it too. Until the upload is deleted another admin can still end the hold as "Report" on Held uploads; after that nothing can.',
+  },
+  // 3d review M13: the day is printed as a date (isDayFact).
+  head_unmailed: {
+    title: "The keeper did not get a daily value",
+    sentence: one("The audit log's value of {day} was published, and its mail to the keeper never went out."),
+    todo: "The operator checks the mail relay and HEAD_KEEPER_MAIL (staff.js automation-status prints the last mail's outcome). The keeper copies that day's value from /transparency and notes that its mail did not come.",
   },
 };
 

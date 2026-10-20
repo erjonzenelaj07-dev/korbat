@@ -489,6 +489,7 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "automated_waiting":
     case "matcher_down":
     case "hold_ended_unreported":
+    case "head_unmailed":
       return alertMail(template, data);
     case "upload_refused":
       // 3d Task 7 (design, sections 7.12 step 1 and 7.15; W.8): UPLOAD_NOTICE's paragraphs as they stand at sending, one per

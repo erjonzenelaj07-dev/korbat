@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, date, integer, jsonb, pgTable, primaryKey, smallint, text } from "drizzle-orm/pg-core";
+import { bigint, check, date, integer, jsonb, pgTable, primaryKey, smallint, text, uuid } from "drizzle-orm/pg-core";
 import { apiRole, bytea, fullAccess, ts } from "./helpers";
 
 // The public figures (3d design, sections 2 rows 1 to 3 and 8, 6.4, 7.5 and 7.6; Task 4) and the audit head's daily value
@@ -27,6 +27,12 @@ export const transparencyEditions = pgTable(
     reason: text("reason").notNull(),
     /** What transparency_figures() computed, or (hold_ended) the newest version's figures with the order section alone replaced. */
     figures: jsonb("figures").notNull(),
+    /**
+     * 3d review M4: the ids of the orders this version counted, which edition_publish compares a later call's list with
+     * (6.4 step 2), so an order whose hold is later recorded as ended before this version is still published. Never
+     * returned by the public read. Null on a version stored before the migration review, read as the list at its instant.
+     */
+    countedOrders: uuid("counted_orders").array(),
   },
   (t) => [
     primaryKey({ columns: [t.year, t.version] }),
@@ -98,6 +104,11 @@ export const headPublications = pgTable(
     retiredAt: ts("retired_at"),
     /** On a restore's row: the day of the newest published value that still fits the restored log, or null when none does. */
     lastDay: date("last_day"),
+    /**
+     * 3d review M13: when the keeper's mail of this value was accepted by the relay; null until then. The API's role sets
+     * it once, from null; later rounds of the day retry while it is null and HEAD_KEEPER_MAIL is set.
+     */
+    keeperMailedAt: ts("keeper_mailed_at"),
   },
   (t) => [
     primaryKey({ columns: [t.day, t.kind] }),

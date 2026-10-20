@@ -988,7 +988,23 @@ export function createFixtureApi() {
    * oldest first, each with its salt, so that the page can hold it to its digest. The forged draft, where a step asked for
    * one, carries this server's words under the saved digest.
    */
-  function caseAnswer(view: CaseView): CaseView {
+  /**
+   * 3d review M1: as the API answers a session that is not an admin's, without the members of a release block that are an
+   * admin's (the authority's reference, its assessment with its day, the leave) and without a held upload's count.
+   */
+  function forRole<T extends { theirReference?: unknown; answer?: unknown; answeredAt?: unknown; leave?: unknown }>(block: T): T {
+    if (state.role === "admin") return block;
+    const { theirReference: _reference, answer: _answer, answeredAt: _answered, leave: _leave, ...rest } = block;
+    return rest as T;
+  }
+  function uploadForRole(upload: HeldUpload): HeldUpload {
+    if (state.role === "admin") return upload;
+    const { otherRefusals: _count, ...rest } = upload;
+    return { ...rest, release: upload.release === null ? null : forRole(upload.release) };
+  }
+
+  function caseAnswer(whole: CaseView): CaseView {
+    const view = { ...whole, decisions: whole.decisions.map((decided) => (decided.release === undefined ? decided : { ...decided, release: forRole(decided.release) })) };
     const drafts = state.texts
       .filter((text) => text.caseId === view.id && DRAFT_KINDS.includes(text.kind) && !text.used)
       .map((text): StaffTextDraft => ({ id: text.id, kind: text.kind as StaffTextDraft["kind"], text: text.text, salt: text.salt, digest: text.digest, createdAt: text.createdAt }));
@@ -1686,7 +1702,7 @@ export function createFixtureApi() {
     if (key === "GET /api/staff/restore") return { status: 200, body: state.restore };
     // 3d Task 7: Held uploads, one page; an end of a hold or a release, an admin's, under a key that confirmed exactly
     // this refusal and these params, as the API answers them: the refusal as it now shows.
-    if (key === "GET /api/staff/uploads") return { status: 200, body: { uploads: state.uploads, nextCursor: null } };
+    if (key === "GET /api/staff/uploads") return { status: 200, body: { uploads: state.uploads.map(uploadForRole), nextCursor: null } };
     if (ofUpload) {
       if (state.role !== "admin") throw new Refusal(403, "admin_required");
       const refusalId = ofUpload[1]!;
@@ -1707,7 +1723,7 @@ export function createFixtureApi() {
         const { stepUp, ...params } = parse(UploadReleaseRequest, body, "POST /api/staff/uploads/:refusal/release");
         await confirmedOrder(stepUp, { action: "upload_released", target: { type: "upload_refusal", id: refusalId }, params } as StaffStepUpActionInput, session);
         const block = upload.release;
-        if (block === null || block.leave === null || block.leave.id !== params.leaveId || block.leave.reference !== params.theirReference) throw new Refusal(409, "release_mismatch");
+        if (block === null || !block.leave || block.leave.id !== params.leaveId || block.leave.reference !== params.theirReference) throw new Refusal(409, "release_mismatch");
         state.uploadReleases.push({ refusalId, params });
         after = { ...upload, release: { ...block, releasedAt: at, basis: "leave", backupsClearAt: iso(Date.now() + 30 * 24 * HOUR), noticeHeld: block.tellHeld } };
       }
@@ -1727,7 +1743,7 @@ export function createFixtureApi() {
       const [caseId, view] = found;
       const sealing = view.decisions.find((decided) => decided.actions.some((one) => one.id === actionId))!;
       const block = sealing.release;
-      if (block === undefined || block.leave === null || block.leave.id !== params.leaveId || block.leave.reference !== params.theirReference || block.postIds.join(",") !== params.postIds.join(",")) {
+      if (block === undefined || !block.leave || block.leave.id !== params.leaveId || block.leave.reference !== params.theirReference || block.postIds.join(",") !== params.postIds.join(",")) {
         throw new Refusal(409, "release_mismatch");
       }
       const released = {

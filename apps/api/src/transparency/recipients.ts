@@ -7,7 +7,9 @@ import type { TransparencyRepo } from "./repo";
 
 /**
  * The recipients' count (3d design, section 2 row 8 and section 7.5), method 1. It counts in sketches that hold no
- * member: a HyperLogLog in Valkey answers "about how many different values were added" and cannot give one back.
+ * member: a HyperLogLog in Valkey answers "about how many different values were added" and cannot give one back. 3d review
+ * H3: the Valkey is the counts store of its own (COUNTS_URL), which writes nothing to disk, so the salt is written nowhere
+ * else indeed, and no file keeps a value that was added to a sketch.
  *
  *   A, signed in: every request whose session resolved adds the account's id to `mau:in:<yyyy-mm>`, the UTC month's sketch.
  *   B, signed out (only while RECIPIENTS_SIGNED_OUT is on): a GET of one of the seven public reads of the social module
@@ -38,11 +40,15 @@ const monthOf = (at: Date) => at.toISOString().slice(0, 7);
 /** The UTC day of an instant, yyyy-mm-dd. */
 const dayOf = (at: Date) => at.toISOString().slice(0, 10);
 
-/** The three kinds of key the count writes, and no other (invariant 23). */
+/**
+ * The three kinds of key the count writes, and no other (invariant 23); 3d review M10: and the job's mark of a month,
+ * which holds the time the job first saw it and nothing of a person.
+ */
 export const sketchKeys = {
   month: (month: string) => `mau:in:${month}`,
   day: (day: string) => `mau:out:${day}`,
   salt: (day: string) => `mau:salt:${day}`,
+  since: (month: string) => `mau:since:${month}`,
 };
 
 /**
@@ -127,6 +133,30 @@ export function createRecipientCounter(deps: RecipientsDeps): RecipientCounter {
 /** The months before the current one that a close looks at: two, since a sketch lives 70 days. */
 const CLOSE_MONTHS = 2;
 
+/**
+ * 3d review M10: one round of the transparency job, the most a month's mark may lag its first instant: a round starts ten
+ * minutes after the last one ended, and a round's lock lives twenty, which bounds when the month's first round must have
+ * marked it. A mark later than this means the store lost the month's first part.
+ */
+export const MARK_WITHIN_MS = 20 * 60_000;
+
+/**
+ * 3d review M10: the job's mark of the running month, set once (SET NX) with a sketch's time to live: the instant the job
+ * first saw the month. A store lost in the middle of the month loses the mark with the sketch, and the job's next round
+ * marks the month again at a later instant, which tells the month's close that the sketch holds only the month's last part.
+ */
+export async function markMonth(store: SketchStore, at: Date): Promise<void> {
+  await store.set(sketchKeys.since(monthOf(at)), at.toISOString(), "EX", SKETCH_SECONDS, "NX");
+}
+
+/** Whether the month's mark says the job saw the month from its start: set, and within one round of its first instant. */
+async function wholeMonth(store: SketchStore, month: string): Promise<boolean> {
+  const mark = await store.getBuffer(sketchKeys.since(month));
+  if (mark === null) return false;
+  const since = Date.parse(Buffer.isBuffer(mark) ? mark.toString("utf8") : String(mark));
+  return Number.isFinite(since) && since <= Date.parse(`${month}-01T00:00:00.000Z`) + MARK_WITHIN_MS;
+}
+
 /** The first day of the month `back` months before the instant's own, as yyyy-mm. */
 function monthBefore(at: Date, back: number): string {
   return monthOf(new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() - back, 1)));
@@ -143,7 +173,8 @@ function daysOf(month: string): string[] {
  * The month's close (7.5 step 3): for each of the two months before the current one whose signed-in sketch exists and
  * that recipient_months does not hold yet, the sketch's count and, while the setting is on, the sum of its days' counts
  * are stored, and then the month's keys are deleted. A month without a sketch gets no row: it reads as not recorded.
- * Answers the months it stored.
+ * 3d review M10: so does a month whose mark is missing or later than one round after its first instant, since its
+ * sketch then counts only what came after the store was lost; its keys go all the same. Answers the months it stored.
  */
 export async function closeMonths(deps: { store: SketchStore; repo: Pick<TransparencyRepo, "monthStored" | "storeMonth">; signedOut: boolean }, at: Date): Promise<string[]> {
   const closed: string[] = [];
@@ -153,7 +184,7 @@ export async function closeMonths(deps: { store: SketchStore; repo: Pick<Transpa
     if ((await deps.store.exists(monthKey)) === 0) continue;
     const dayKeys = daysOf(month).map(sketchKeys.day);
     // A row stored by an earlier round that stopped before its delete: the keys go now, and the row stays as it was.
-    if (!(await deps.repo.monthStored(month))) {
+    if (!(await deps.repo.monthStored(month)) && (await wholeMonth(deps.store, month))) {
       const signedIn = await deps.store.pfcount(monthKey);
       let signedOutDays: number | null = null;
       if (deps.signedOut) {
@@ -163,7 +194,7 @@ export async function closeMonths(deps: { store: SketchStore; repo: Pick<Transpa
       if (await deps.repo.storeMonth({ month, signedIn, signedOutDays, method: RECIPIENT_RULES.method })) closed.push(month);
     }
     // The row is stored: the sketches are no longer needed, and the days' salts died after their 26 hours.
-    await deps.store.del(monthKey, ...dayKeys);
+    await deps.store.del(monthKey, ...dayKeys, sketchKeys.since(month));
   }
   return closed;
 }

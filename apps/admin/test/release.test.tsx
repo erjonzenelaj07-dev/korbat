@@ -17,7 +17,7 @@ import { decision, frozenCase, NO_STANDING, overview } from "./case-fixtures";
  * "Release" under a seal for good in force, in each state of 8.9's Task 2 row (a recorded leave with the control; the
  * answer illegal without a leave, with [release.assessed] and no control; not_illegal, no_assessment and no answer
  * without it; a leave beside not_illegal with [release.conflict]; more posts than one release names, with [release.more];
- * greyed for a moderator; "The author may be told" in each of its three values; [release.done] once released), the params
+ * shown to an admin alone (review M1); "The author may be told" in each of its three values; [release.done] once released), the params
  * the key signs, Appeals' [appeals.released], Home's two lines, After a restore's class release without a control, and
  * the words of each code. Every number is printed from the answer or a constant.
  */
@@ -153,10 +153,19 @@ describe("the release block (3d design, section 8.5)", () => {
     expect(W.more(RELEASE_POSTS_MAX, 3)).toContain(`the first ${RELEASE_POSTS_MAX} of them`);
   });
 
-  test("greyed for a moderator, with admin_required's words, and the control disabled", () => {
-    const shown = page(sealedCase(block()), as("moderator"));
-    expect(shown).toContain(W.adminOnly);
-    expect(markup(sealedCase(block()), as("moderator"))).toMatch(/<button type="button" disabled=""[^>]*>Release and destroy/);
+  test("review M1: the block is an admin's alone; a moderator, whose answer holds neither the authority's reference and assessment nor the leave, is shown none of it", () => {
+    // The API leaves the four members out of a moderator's answer; the console prints no block for a moderator at all.
+    const { theirReference: _reference, answer: _answer, answeredAt: _answered, leave: _leave, ...forModerator } = block();
+    for (const facts of [forModerator, block()]) {
+      const out = markup(sealedCase(facts), as("moderator"));
+      expect(out).not.toContain(`release-${SEAL_DECISION}`);
+      expect(out).not.toMatch(/class="block release/);
+      expect(text(out)).not.toContain(W.adminOnly);
+      expect(out).not.toMatch(/Release and destroy/);
+      expect(text(out)).not.toContain("4 O 1/26");
+      expect(text(out)).not.toContain("ST 12/34");
+    }
+    expect(markup(sealedCase(block()))).toMatch(/class="block release"/);
   });
 
   test('"The author may be told" in each of its three values', () => {

@@ -200,10 +200,12 @@ async function stepIn(deps: ModerationDeps, tx: DbTx, signal: SignalRow, postId:
   const locked = authorId === null ? [] : await deps.social.lockAccounts(tx, [authorId], "no key update");
   const current = await signalOf(tx, signal.id);
   if (current === null || current.handledAt !== null) throw new AlreadyHandled();
-  // 3d Task 7: a match's record, read in a statement of its own after the profile's lock, as the signal is: a record the
-  // program is done with (another entry's step, or a refusal) ends the step with nothing written.
+  // 3d Task 7: a match's record, read in a statement of its own after the profile's lock, as the signal is: a record
+  // erased (or gone) ends the step with nothing written. 3d review H1: a record already marked handled does not, since
+  // only a handled signal means a step ran: the record's mark alone may be a conflicting entry's, and the step then
+  // writes its case on the marked record.
   const record = signal.kind === "known_match" && signal.matchId !== null ? await deps.media.matchRecord(tx, signal.matchId) : null;
-  if (signal.kind === "known_match" && (record === null || record.handled || record.erased)) throw new AlreadyHandled();
+  if (signal.kind === "known_match" && (record === null || record.erased)) throw new AlreadyHandled();
 
   // Gone: read after the profile's lock, which the author's deletion and the purge take too, so neither can commit meanwhile.
   const post = postId === null ? null : await deps.social.postRef(postId);
@@ -362,12 +364,14 @@ export function imagesPublished(deps: ModerationDeps, postId: string): void {
 /**
  * 3d Task 7 (7.9 step 1, then step 2): a match record of an image on a post becomes its signal and its step. An image that
  * has its match signal already (handled, or a second record of the same image) starts nothing; its record is marked
- * handled in a statement of its own, so the sweep does not find it again.
+ * handled in a statement of its own, so the sweep does not find it again. 3d review H1: only a record that no signal
+ * names: when the existing signal names this very record, its step (in flight, failed, or another entry's) is the one
+ * that marks it, with its case, and a mark here ended that step as "already" for good.
  */
 export async function matchSignal(deps: ModerationDeps, image: { mediaId: string; matchId: string }): Promise<StepOutcome | null> {
   const signalId = await insertMatchSignal(deps.apiDb, image);
   if (signalId === null) {
-    await deps.apiDb.transaction((tx) => deps.media.matchJoined(tx, image.matchId, null));
+    await deps.apiDb.transaction((tx) => deps.media.matchPassed(tx, image.matchId));
     return null;
   }
   return automatedStep(deps, signalId);
@@ -386,7 +390,8 @@ export interface SweepReport {
 }
 
 /**
- * One round of the job automated-sweep (7.9, 7.14): at most SWEEP_BATCH signals and images, each read only while its tool's
+ * One round of the job automated-sweep (7.9, 7.14): at most SWEEP_BATCH signals, then at most SWEEP_BATCH images (3d review
+ * H1: each read its own batch), each read only while its tool's
  * adapter is not off, so no program opens a finding on a day on which /rules prints its tool as off. First the signals
  * between one minute and SWEEP_HOURS old that no step handled (the module's own read of automated_signals); then, through
  * MediaForCases.unsignalled, the images of posts of the last SWEEP_HOURS whose score is at or over the threshold and that
@@ -410,7 +415,9 @@ export async function sweepRound(deps: ModerationDeps): Promise<SweepReport> {
         deps.log.error({ err, signalId }, "automated-sweep: a step failed again; the next round tries it");
       }
     }
-    const images = await deps.media.unsignalled(SWEEP_BATCH - pending.length, { hours: SWEEP_HOURS, r1: threshold === null ? null : { threshold: threshold.threshold }, match: matching });
+    // 3d review H1: the second read has a batch of its own, so signals whose step ends with nothing written, or fails,
+    // round after round, never starve the read of images and records that no signal names.
+    const images = await deps.media.unsignalled(SWEEP_BATCH, { hours: SWEEP_HOURS, r1: threshold === null ? null : { threshold: threshold.threshold }, match: matching });
     for (const image of images) {
       try {
         const outcome = image.kind === "known_match" ? await matchSignal(deps, image) : await scoreSignal(deps, image);

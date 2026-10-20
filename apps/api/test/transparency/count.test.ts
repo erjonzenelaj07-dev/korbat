@@ -10,7 +10,7 @@ import type { AuthDeps } from "../../src/auth/context";
 import { resolveSession } from "../../src/auth/middleware";
 import type { AppEnv } from "../../src/env";
 import { publicTransparency, type TransparencyForAuth } from "../../src/transparency";
-import { closeMonths, createRecipientCounter, isReadRoute, sketchKeys, type SketchStore } from "../../src/transparency/recipients";
+import { MARK_WITHIN_MS, closeMonths, createRecipientCounter, isReadRoute, markMonth, sketchKeys, type SketchStore } from "../../src/transparency/recipients";
 import type { EditionRow } from "../../src/transparency/repo";
 import { publicFacts } from "../../src/transparency/routes";
 
@@ -232,6 +232,8 @@ describe("the month's close (3d Task 4)", () => {
 
   test("the month before stores the month's sketch's count and the sum of its days' counts, then its keys go", async () => {
     const m = memoryStore();
+    // The job's first round of April marked the month (3d review M10).
+    await markMonth(m.store, new Date("2014-04-01T00:05:00.000Z"));
     const april = new Date("2014-04-10T08:00:00.000Z");
     const count = createRecipientCounter({ store: m.store, signedOut: true, log, now: () => april });
     count.seen("a");
@@ -250,6 +252,7 @@ describe("the month's close (3d Task 4)", () => {
     const m = memoryStore();
     await m.store.pfadd(sketchKeys.month("2014-03"), "a");
     await m.store.pfadd(sketchKeys.month("2014-04"), "b");
+    await markMonth(m.store, new Date("2014-04-01T00:05:00.000Z"));
     const { repo, rows } = repoOf(["2014-03"]);
     expect(await closeMonths({ store: m.store, repo, signedOut: false }, AT)).toEqual(["2014-04"]);
     expect(rows).toEqual([{ month: "2014-04", signedIn: 1, signedOutDays: null, method: RECIPIENT_RULES.method }]);
@@ -258,6 +261,39 @@ describe("the month's close (3d Task 4)", () => {
     await m.store.pfadd(sketchKeys.month("2014-05"), "c");
     expect(await closeMonths({ store: m.store, repo, signedOut: false }, AT)).toEqual([]);
     expect(m.sketches.has(sketchKeys.month("2014-05"))).toBe(true);
+  });
+
+  test("review M10: a store cleared in the middle of the month, or never marked by the job's first round, stores no row: the month reads not recorded, and its keys go", async () => {
+    const m = memoryStore();
+    const counter = (at: string) => createRecipientCounter({ store: m.store, signedOut: true, log, now: () => new Date(at) });
+    // The job marks the month in its first round; a thousand accounts are seen before the 20th.
+    await markMonth(m.store, new Date("2014-04-01T00:05:00.000Z"));
+    for (let n = 0; n < 1000; n++) counter("2014-04-10T08:00:00.000Z").seen(`before-${n}`);
+    await settle();
+    // On the 20th the store loses everything; forty accounts are seen after, and the job's next round marks the month again.
+    m.sketches.clear();
+    m.values.clear();
+    m.expiries.clear();
+    for (let n = 0; n < 40; n++) counter("2014-04-20T08:00:00.000Z").seen(`after-${n}`);
+    await settle();
+    await markMonth(m.store, new Date("2014-04-20T08:10:00.000Z"));
+    const { repo, rows } = repoOf([]);
+    expect(await closeMonths({ store: m.store, repo, signedOut: true }, AT)).toEqual([]);
+    expect(rows).toEqual([]);
+    expect([...m.sketches.keys(), ...m.values.keys()].filter((key) => key.includes("2014-04"))).toEqual([]);
+    // A month whose marker is missing altogether stores nothing either; one marked within one round of its start does.
+    const n = memoryStore();
+    await n.store.pfadd(sketchKeys.month("2014-04"), "a");
+    expect(await closeMonths({ store: n.store, repo, signedOut: false }, AT)).toEqual([]);
+    const o = memoryStore();
+    await o.store.pfadd(sketchKeys.month("2014-04"), "a");
+    await markMonth(o.store, new Date(Date.parse("2014-04-01T00:00:00.000Z") + MARK_WITHIN_MS));
+    expect(await closeMonths({ store: o.store, repo, signedOut: false }, AT)).toEqual(["2014-04"]);
+    // The marker is set once a month and lives as long as a sketch.
+    await markMonth(o.store, new Date("2014-05-01T00:05:00.000Z"));
+    await markMonth(o.store, new Date("2014-05-02T00:05:00.000Z"));
+    expect(String(await o.store.getBuffer(sketchKeys.since("2014-05")))).toBe("2014-05-01T00:05:00.000Z");
+    expect(o.expiries.get(sketchKeys.since("2014-05"))).toBe(RECIPIENT_RULES.sketchDays * 86_400);
   });
 });
 

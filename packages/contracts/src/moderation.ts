@@ -1657,17 +1657,19 @@ export type ReleaseLeave = z.infer<typeof ReleaseLeave>;
  * posts of the seal not yet released, which the params the key signs name, and `remaining`, how many more; `silenceDays`;
  * and, once a part was released, the newest release's `releasedAt`, `basis`, `backupsClearAt` and `noticeHeld` with the
  * seal's released posts and their image rows (`releasedPosts`, `releasedImages`, counted from seal_posts.images, which
- * the disposal never changes), which [release.done] prints. No member is a file's name or digest.
+ * the disposal never changes), which [release.done] prints. No member is a file's name or digest. 3d review M1: the
+ * authority's reference, its assessment with its day and the leave are an admin's block (11.4): absent for a session that
+ * is not an admin's.
  */
 export const SealRelease = z.object({
   reported: z.boolean(),
-  theirReference: z.string().max(400).nullable(),
-  answer: z.enum(["not_illegal", "illegal", "no_assessment", "other"]).nullable(),
-  answeredAt: z.iso.datetime().nullable(),
+  theirReference: z.string().max(400).nullable().optional(),
+  answer: z.enum(["not_illegal", "illegal", "no_assessment", "other"]).nullable().optional(),
+  answeredAt: z.iso.datetime().nullable().optional(),
   handedOverAt: z.iso.datetime().nullable(),
   quarantined: z.boolean(),
   preserved: z.boolean(),
-  leave: ReleaseLeave.nullable(),
+  leave: ReleaseLeave.nullable().optional(),
   tellHeld: z.boolean(),
   postIds: z.array(z.uuid()).max(RELEASE_POSTS_MAX),
   remaining: Count,
@@ -2670,15 +2672,17 @@ export type StaffOverview = z.infer<typeof StaffOverview>;
  * files were handed over), whether both of the image's files are in the quarantine by record, the leave that stands, and
  * whether the uploader's notice of a release taken now would be held; silence_days; and, once released, the release's
  * time, ground, the day after which no backup that is deleted on time holds the file, and whether its notice is held.
+ * 3d review M1: as on a seal, the authority's reference, its assessment and the leave are absent for a session that is not
+ * an admin's.
  */
 export const UploadRelease = z.object({
   reported: z.boolean(),
-  theirReference: z.string().max(400).nullable(),
-  answer: z.enum(["not_illegal", "illegal", "no_assessment", "other"]).nullable(),
-  answeredAt: z.iso.datetime().nullable(),
+  theirReference: z.string().max(400).nullable().optional(),
+  answer: z.enum(["not_illegal", "illegal", "no_assessment", "other"]).nullable().optional(),
+  answeredAt: z.iso.datetime().nullable().optional(),
   handedOverAt: z.iso.datetime().nullable(),
   quarantined: z.boolean(),
-  leave: ReleaseLeave.nullable(),
+  leave: ReleaseLeave.nullable().optional(),
   tellHeld: z.boolean(),
   silenceDays: z.number().int().positive().nullable(),
   releasedAt: z.iso.datetime().nullable(),
@@ -2697,13 +2701,13 @@ export const UPLOADS_PAGE_SIZE = 50;
  * uploader, the count of the same uploader's other refusals whose hold has not ended or ended as report, never one ended
  * as no_report; whether the uploader's account still exists; the objection; its end, with `deletesAt` for an end as
  * no_report (the image row's hold_until, after which the sweeper deletes it); whether the record of a report is set; and
- * for an end as report the release block.
+ * for an end as report the release block. 3d review M1: `otherRefusals` is the admin's and absent for any other session.
  */
 export const HeldUpload = z.object({
   id: z.uuid(),
   refusedAt: z.iso.datetime(),
   match: MatchRecord,
-  otherRefusals: Count,
+  otherRefusals: Count.optional(),
   uploaderGone: z.boolean(),
   objection: z.string().nullable(),
   objectedAt: z.iso.datetime().nullable(),

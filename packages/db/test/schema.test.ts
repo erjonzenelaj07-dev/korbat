@@ -172,6 +172,8 @@ describe("trust and safety schema", () => {
       ["published_at", "timestamp with time zone", false],
       ["retired_at", "timestamp with time zone", false],
       ["last_day", "date", false],
+      // 3d review M13: when the relay accepted the keeper's mail of the value.
+      ["keeper_mailed_at", "timestamp with time zone", false],
     ]);
     expect(head.primaryKeys.map((key) => key.columns.map((c) => c.name))).toEqual([["day", "kind"]]);
     expect(head.checks.map((c) => c.name).sort()).toEqual(["head_publications_kind", "head_publications_last_day", "head_publications_place", "head_publications_token", "head_publications_value", "head_publications_witness"]);
@@ -203,6 +205,8 @@ describe("trust and safety schema", () => {
       ["method", "smallint", true],
       ["reason", "text", true],
       ["figures", "jsonb", true],
+      // 3d review M4: the orders the version counted, which the public read never returns.
+      ["counted_orders", "uuid[]", false],
     ]);
     expect(editions.primaryKeys.map((key) => key.columns.map((c) => c.name))).toEqual([["year", "version"]]);
     expect(checkSql(editions, "transparency_editions_reason")).toBe(`"transparency_editions"."reason" in ('first', 'hold_ended', 'correction')`);
@@ -1440,9 +1444,9 @@ describe("the contact point and the alert channel 3f", () => {
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
     // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two,
-    // then Task 3's one, then Task 5's two, then Task 6's three, then Task 7's two.
+    // then Task 3's one, then Task 5's two, then Task 6's three, then Task 7's two, then the review's one (M13).
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain(
-      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed', 'automated_objection', 'automation_capped', 'automated_waiting', 'matcher_down', 'hold_ended_unreported')",
+      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed', 'automated_objection', 'automation_capped', 'automated_waiting', 'matcher_down', 'hold_ended_unreported', 'head_unmailed')",
     );
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);

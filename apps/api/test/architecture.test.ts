@@ -975,3 +975,55 @@ describe("module boundaries", () => {
     ]);
   });
 });
+
+/**
+ * 3d review H3: the recipients' count (the day's salt and the sketches of accounts and readers) lives in a Valkey of its
+ * own that writes nothing to disk, never in the shared one, whose append-only file keeps every write. In the API the
+ * transparency module is given one store, `counts`, which index.ts builds from COUNTS_URL alone, and no file of the
+ * module names the shared client or REDIS_URL. In compose.yml the service `counts` runs the redis service's own pinned
+ * image with persistence off, on the data network alone, with no volume and no published port, and the API's COUNTS_URL
+ * names it.
+ */
+function findCountsViolations(files: SourceFile[], compose: string): string[] {
+  const violations: string[] = [];
+  const index = files.find((file) => file.path === "index.ts")?.source ?? "";
+  if (!/const counts = new Redis[(]config[.]COUNTS_URL,/.test(index)) violations.push("index.ts: builds no counts client from COUNTS_URL");
+  const call = /createTransparency[(][{]([^}]*)[}][)]/.exec(index)?.[1] ?? "";
+  if (!/(^|[ ,])counts([ ,]|$)/.test(call) || /(^|[ ,])redis([ ,:]|$)/.test(call)) violations.push(`index.ts: createTransparency is given ${call.trim()}`);
+  for (const { path, source } of files) {
+    if (!path.startsWith("transparency/")) continue;
+    if (/REDIS_URL|[^a-zA-Z]redis[^a-zA-Z]/.test(source.replace(/import type Redis from "ioredis";/, ""))) violations.push(`${path}: names the shared Valkey`);
+  }
+  const services = composeServices(compose);
+  const counts = services.get("counts");
+  const image = (block: string | undefined) => /^ {4}image: (.+)$/m.exec(block ?? "")?.[1];
+  if (!counts) violations.push("compose.yml: no service counts");
+  else {
+    if (image(counts) === undefined || image(counts) !== image(services.get("redis"))) violations.push("compose.yml: counts runs another image than redis");
+    for (const flag of ["--appendonly no", "--save ''", "--requirepass $$REDIS_PASSWORD"]) if (!counts.includes(flag)) violations.push(`compose.yml: counts lacks ${flag}`);
+    for (const key of ["volumes:", "ports:", "env_file:"]) if (counts.includes(key)) violations.push(`compose.yml: counts has ${key}`);
+    if (!counts.includes("networks: [data]")) violations.push("compose.yml: counts is not on the data network alone");
+  }
+  if (!services.get("api")?.includes("COUNTS_URL: redis://:${REDIS_PASSWORD}@counts:6379")) violations.push("compose.yml: the api's COUNTS_URL does not name counts");
+  return violations;
+}
+
+describe("the recipients' count keeps nothing on disk (3d review H3)", () => {
+  test("the transparency module is given the counts store alone, built from COUNTS_URL; compose's counts writes nothing to disk", () => {
+    const compose = readFileSync(join(REPO_ROOT, "infra", "compose.yml"), "utf8");
+    expect(findCountsViolations(loadSources(), compose)).toEqual([]);
+  });
+
+  test("catches the shared client handed to the module, a volume, persistence and another image", () => {
+    const compose = readFileSync(join(REPO_ROOT, "infra", "compose.yml"), "utf8");
+    const files = loadSources().map((file) => (file.path === "index.ts" ? { ...file, source: file.source.replace(/createTransparency[(][{]([^}]*)[}][)]/, "createTransparency({ apiDb, redis, auth: auth.forTransparency, config, logger })") } : file));
+    const counts = composeServices(compose).get("counts") ?? "";
+    // A function as the replacement, so the dollar signs of the block stay as they are.
+    const broken = compose.replace(counts, () => counts.replace("--appendonly no", "--appendonly yes").replace("    networks: [data]", `    volumes:${LF}      - valkeydata:/data${LF}    networks: [data]`));
+    expect(findCountsViolations(files, broken)).toEqual([
+      "index.ts: createTransparency is given apiDb, redis, auth: auth.forTransparency, config, logger",
+      "compose.yml: counts lacks --appendonly no",
+      "compose.yml: counts has volumes:",
+    ]);
+  });
+});

@@ -11,9 +11,11 @@ import { MemoryMailer } from "../../src/mail/memory";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createProfileStore } from "../../src/profiles/store";
 import { createTransparency, witnessFrom, type SketchStore } from "../../src/transparency";
+import { createTransparencyRepo } from "../../src/transparency/repo";
 import { headValue } from "../../src/transparency/head";
 import { TEST_TOKEN } from "../../src/transparency/witness";
 import { fakeWitness, grantedAnswer } from "../transparency/fake-witness";
+import { rowCounts } from "./moderation-fixtures";
 import { pgError, rolledBack } from "./staff-fixtures";
 
 /**
@@ -32,6 +34,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the audit head's daily v
   let authDb: Db;
   let migrateDb: Db;
   const logger = pino({ level: "silent" });
+  let before: Record<string, number>;
   const KEEPER = "keeper@korbat.example";
   /** No sketch exists: the job's month close finds nothing to close. */
   const noSketches = { exists: async () => 0 } as unknown as SketchStore;
@@ -41,7 +44,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the audit head's daily v
 
   const cleanUp = async () => {
     await migrateDb.execute(sql`delete from public.head_publications`);
-    await migrateDb.execute(sql`delete from public.alert_outbox where kind in ('head_unwitnessed', 'head_missed')`);
+    await migrateDb.execute(sql`delete from public.alert_outbox where kind in ('head_unwitnessed', 'head_missed', 'head_unmailed')`);
   };
   /** The database's today and the audit head as they stand. */
   const today = async () => (await migrateDb.execute<{ day: string }>(sql`select to_char((now() at time zone 'UTC')::date, 'YYYY-MM-DD') as day`))[0]!.day;
@@ -53,7 +56,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the audit head's daily v
     const settings = { ...config, ...overrides };
     const mailer = new MemoryMailer();
     const auth = createAuth({ config: settings, logger, authDb, kv: new MemoryKv(), mailer, profiles: createProfileStore(apiDb), turnstile: { verify: async () => true }, breachChecker: { isBreached: async () => false } });
-    const module = createTransparency({ apiDb, redis: noSketches, auth: auth.forTransparency, config: settings, logger, now: clock, ...(witness ? { witness } : {}) });
+    const module = createTransparency({ apiDb, counts: noSketches, auth: auth.forTransparency, config: settings, logger, now: clock, ...(witness ? { witness } : {}) });
     const app = createApp({ config: settings, logger, rateLimitStore: new MemoryStore(), healthChecks: {}, auth, transparency: module });
     return { module, app, mailer, kept: () => mailer.sent.filter((m) => m.template === "head_published") };
   }
@@ -61,7 +64,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the audit head's daily v
     migrateDb.execute<{ day: string; kind: string; chain_seq: number | null; value: string; witness: string; token: Buffer | null; published: boolean; retired: boolean }>(sql`
       select to_char(day, 'YYYY-MM-DD') as day, kind, chain_seq::int as chain_seq, value, witness, token, published_at is not null as published, retired_at is not null as retired
         from public.head_publications order by day desc, kind`);
-  const alerts = () => migrateDb.execute<{ kind: string; facts: Record<string, unknown> }>(sql`select kind, facts from public.alert_outbox where kind in ('head_unwitnessed', 'head_missed') order by id`);
+  const alerts = () => migrateDb.execute<{ kind: string; facts: Record<string, unknown> }>(sql`select kind, facts from public.alert_outbox where kind in ('head_unwitnessed', 'head_missed', 'head_unmailed') order by id`);
+  /** 3d review M13: whether the day's head row records the keeper's mail as accepted by the relay. */
+  const keeperMailed = async () => (await migrateDb.execute<{ mailed: boolean }>(sql`select keeper_mailed_at is not null as mailed from public.head_publications where kind = 'head' and day = (now() at time zone 'UTC')::date`))[0]?.mailed ?? null;
 
   beforeAll(async () => {
     config = loadConfig();
@@ -69,6 +74,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the audit head's daily v
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 2 });
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     await cleanUp();
+    before = await rowCounts(migrateDb, ["head_publications"]);
   });
   afterEach(async () => {
     await cleanUp();
@@ -262,6 +268,67 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the audit head's daily v
     expect((await alerts()).map((a) => [a.kind, a.facts])).toEqual([["head_missed", { day: `${dayBefore(d, 1)}T00:00:00.000Z` }]]);
   });
 
+  test("review M13: a keeper's mail that fails is owed: the head row records no mail, the day's next round sends it and records it, and the round after has nothing to do", async () => {
+    const { module, mailer, kept } = build({ HEAD_KEEPER_MAIL: KEEPER });
+    mailer.failing = true;
+    const first = await module.round();
+    expect(first.head).toMatchObject({ published: true, mailed: "failed", done: false });
+    expect(await keeperMailed()).toBe(false);
+    expect(kept()).toEqual([]);
+    mailer.failing = false;
+    const second = await module.round();
+    expect(second.head).toMatchObject({ published: false, mailed: "sent", done: true });
+    expect(kept()).toHaveLength(1);
+    expect(await keeperMailed()).toBe(true);
+    expect((await module.round()).head).toBeNull();
+    expect(kept()).toHaveLength(1);
+  });
+
+  test("review M13: a value whose keeper's mail never went raises head_unmailed in the next day's first round; with no address set nothing is owed and nothing is raised", async () => {
+    const d = await today();
+    const yesterday = dayBefore(d, 1);
+    // Yesterday's value, published and never mailed.
+    const unmailed = () =>
+      migrateDb.execute(sql`insert into public.head_publications (day, kind, chain_seq, value, witness, published_at) values (${yesterday}::date, 'head', 0, ${headValue(yesterday, 0, "0".repeat(64))}, 'none', now())`);
+    await unmailed();
+    const round = await build({ HEAD_KEEPER_MAIL: KEEPER }).module.round();
+    expect(round.head!.alerts).toContain("head_unmailed");
+    expect((await alerts()).filter((a) => a.kind === "head_unmailed").map((a) => a.facts)).toEqual([{ day: `${yesterday}T00:00:00.000Z` }]);
+    await cleanUp();
+    await unmailed();
+    const none = await build({ HEAD_KEEPER_MAIL: undefined }).module.round();
+    expect(none.head!.alerts).not.toContain("head_unmailed");
+    expect(await alerts()).toEqual([]);
+  });
+
+  test("review M11: a round whose edition publish throws and whose counts store rejects still publishes the head, mails the keeper and raises its alerts; the editions are asked again next round", async () => {
+    const d = await today();
+    // Three days ago a value was published; the day before today has none, so the day's first round alerts head_missed.
+    const earlier = dayBefore(d, 3);
+    await migrateDb.execute(sql`insert into public.head_publications (day, kind, chain_seq, value, witness, published_at, keeper_mailed_at) values (${earlier}::date, 'head', 0, ${headValue(earlier, 0, "0".repeat(64))}, 'none', now(), now())`);
+    const settings = { ...config, HEAD_KEEPER_MAIL: KEEPER };
+    const mailer = new MemoryMailer();
+    const auth = createAuth({ config: settings, logger, authDb, kv: new MemoryKv(), mailer, profiles: createProfileStore(apiDb), turnstile: { verify: async () => true }, breachChecker: { isBreached: async () => false } });
+    const rejecting = new Proxy({}, { get: () => async () => Promise.reject(new Error("the counts store is down")) }) as unknown as SketchStore;
+    let asked = 0;
+    const repo = {
+      ...createTransparencyRepo(apiDb),
+      publish: async () => {
+        asked++;
+        throw new Error("edition_publish failed");
+      },
+    };
+    const module = createTransparency({ apiDb, counts: rejecting, auth: auth.forTransparency, config: settings, logger, now: clock, repo });
+    const first = await module.round();
+    expect(first).toMatchObject({ months: [], editions: null, head: { inserted: true, published: true, mailed: "sent", alerts: ["head_missed"], done: true } });
+    expect(mailer.sent.filter((m) => m.template === "head_published")).toHaveLength(1);
+    expect(asked).toBe(1);
+    // The editions failed, so the next round asks again; the head has nothing left to do.
+    const second = await module.round();
+    expect(second.head).toBeNull();
+    expect(asked).toBe(2);
+  });
+
   test("GET /api/public/head: the published rows of the last 30 days, newest first, a restore with its last day and a retired value with its day; nothing unpublished, nothing older", async () => {
     const d = await today();
     const value = (n: number) => headValue(dayBefore(d, n), n, "0".repeat(64));
@@ -282,5 +349,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the audit head's daily v
       { day: dayBefore(d, 3), kind: "head", value: value(3), witness: "none", token: null, retiredOn: d, lastDay: null },
       { day: dayBefore(d, HEAD_RULES.shownDays - 1), kind: "head", value: value(HEAD_RULES.shownDays - 1), witness: "none", token: null, retiredOn: null, lastDay: null },
     ]);
+  });
+
+  test("this file left no row behind", async () => {
+    await cleanUp();
+    expect(await rowCounts(migrateDb, ["head_publications"])).toEqual(before);
   });
 });

@@ -466,7 +466,8 @@ describe("the README's release (3d design, W.11)", () => {
     const text = sectionLines("## Restoring").join(" ");
     expect(text).toContain("**Restoring the releases** (sub-project 3d)");
     expect(text).toContain("cat <the keeper's files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-replay");
-    expect(text).toContain("beginning with step 6 (the inventory)");
+    // 3d review M9: the Quarantine steps 1 to 3 come first and again after the inventory (the README after the review).
+    expect(text).toContain("the Quarantine steps 1 to 3 (list, move, record), then step 6 (the inventory)");
     expect(text).toContain("`release-leave <seal> ... --gap <gap>`");
     expect(text).toContain("`release-leave --withdraw <leave> --operator <name> --gap <gap>`");
     expect(text).toContain('the class "Releases and held uploads to replay" included');
@@ -725,5 +726,65 @@ describe("the README whole (3d design, W.11; Task 8)", () => {
     expect(text).toContain("Counsel's advice on a held upload");
     expect(text).toContain(`must equal the ${RETENTION.backupDays} days of Backups`);
     expect(text).toContain("A4 of the 3d owner's list above, and the questions of part E of section 17");
+  });
+});
+
+/**
+ * The README after the one adversarial review of 3d as built (Task 9): the counts' Valkey and what its loss costs (H3);
+ * opening the app's site recreates the API and the worker with Caddy, since only they read APP_SITE's refusal of a test
+ * adapter (M8); Restoring keeps the pre-restore media-store and runs the Quarantine steps 1 to 3 before the inventory and
+ * after it (M9); the command forms of automation-status, an empty inventory's receipt and release-show after a replay
+ * (M16); and head-restore-mark before the API starts again (L2).
+ */
+describe("the README after the review of 3d (Task 9)", () => {
+  /** The README's sentences, split where a sentence ends and the next begins with a capital, a code mark or a bracket. */
+  const sentences = () => readmeLines().flatMap((line) => line.split(/(?<=[.;]) +(?=[A-Z`(])/));
+
+  test("review H3: the recipients' count lives in the counts service, which writes nothing to disk; a lost counts store loses the running month, which reads not recorded", () => {
+    const text = readmeLines().join(" ");
+    expect(text).toContain(
+      "The recipients' count (the day's key and the counting sketches of the transparency page) lives in a Valkey of its own, the service `counts`, which writes nothing to disk: no append-only file, no snapshot, no volume.",
+    );
+    expect(text).toContain("A restart of `counts` loses the running month's count, which then reads " + '"not recorded"' + "; nothing else is kept there.");
+    expect(sectionLines("## Restoring").join(" ")).toContain("`counts` holds nothing to restore");
+    expect(text).toContain("up -d postgres redis counts mailpit");
+  });
+
+  test("review M8: every sentence that opens the app's site recreates Caddy, the API and the worker; closing it may recreate Caddy alone", () => {
+    const open = sentences().filter((sentence) => sentence.includes("APP_SITE=open"));
+    expect(open.length).toBeGreaterThanOrEqual(3);
+    for (const sentence of open) expect(sentence, sentence).toContain("up -d --no-deps caddy api worker");
+    const closed = sentences().filter((sentence) => sentence.includes("APP_SITE=closed"));
+    expect(closed.length).toBeGreaterThanOrEqual(2);
+    for (const sentence of closed) expect(sentence, sentence).toContain("up -d --no-deps caddy");
+  });
+
+  test("review M9: Restoring keeps the pre-restore media-store until the Quarantine steps have run, and runs steps 1 to 3 before the inventory and again after it", () => {
+    const text = sectionLines("## Restoring").join(" ");
+    expect(text).toContain("Keep the `media-store` volume as it was before the restore");
+    const first = text.indexOf("the Quarantine steps 1 to 3 (list, move, record)");
+    const inventory = text.indexOf("then step 6 (the inventory)", first);
+    const again = text.indexOf("then steps 1 to 3 again", inventory);
+    expect([first > 0, inventory > first, again > inventory]).toEqual([true, true, true]);
+    expect(text).not.toContain("beginning with step 6 (the inventory)");
+  });
+
+  test("review M16: automation-status runs in the api service, an empty inventory's receipt is not recorded, and release-show takes a replay's own id", () => {
+    const all = readmeLines().join(" ");
+    expect(all).toContain("docker compose -f infra/compose.yml run --rm api node dist/staff.js automation-status");
+    expect(sectionLines("## Automated tools").join(" ")).not.toMatch(/read `staff[.]js automation-status`/);
+    const restoring = sectionLines("## Restoring").join(" ");
+    expect(restoring).toContain("When the inventory's receipt is empty, skip its step 3");
+    expect(restoring).toContain("`release-show` takes the replay's own id, which `release-replay` prints");
+    expect(restoring).toContain("prints a note and exits 1 only for what is still owed");
+  });
+
+  test("review L2: head-restore-mark runs before the API starts again, in the keeper's-copy steps", () => {
+    const lines = sectionLines("## Restoring");
+    const mark = lines.findIndex((line) => line.includes("dist/staff.js head-restore-mark <day>:<value> ..."));
+    const start = lines.findIndex((line) => line.startsWith("5. Start the API with `docker compose -f infra/compose.yml up -d api`"));
+    expect(mark).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(-1);
+    expect(mark).toBeLessThan(start);
   });
 });

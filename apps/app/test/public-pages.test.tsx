@@ -46,6 +46,8 @@ const OFF: PublicFacts = {
   edge: { on: false, test: false },
   witness: { on: false, test: false },
   recipientsSignedOut: true,
+  // 3d review M13: a keeper's address is set, as on a server ready to go public; the test of the keeper says otherwise.
+  keeper: true,
 };
 const LIMITS: AutomationLimits = { decisionsPerHour: 20, decisionsPerDay: 100, r2DecisionsPerHour: 21, r2DecisionsPerDay: 101, unansweredMax: 22, unansweredHours: 72, refusalsPerHour: 23, objectionTargetHours: 24 };
 
@@ -126,6 +128,13 @@ describe("TOOL_TEXTS in each state (3d Task 4, W.1)", () => {
       ["edge", false, [TOOL_TEXTS.edge.off]],
       ["witness", false, [TOOL_TEXTS.witness.off]],
     ]);
+  });
+
+  test("review M13: with no keeper's address the witness's block off says the value stands on the Transparency page alone, and names no person", () => {
+    expect(blockOf({ ...OFF, keeper: false }, "witness").paragraphs).toEqual([TOOL_TEXTS.witness.offAlone]);
+    expect(TOOL_TEXTS.witness.offAlone).toBe("Outside timestamp for the audit log's daily value: off. The value stands on korbat's Transparency page alone.");
+    expect(TOOL_TEXTS.witness.offAlone).not.toMatch(/person|mail/);
+    expect(blockOf(OFF, "witness").paragraphs).toEqual([TOOL_TEXTS.witness.off]);
   });
 
   test("the R1 check flagging, withholding and on a test adapter; its model's facts; its own dates, the measure's only while it acts", () => {
@@ -380,10 +389,27 @@ describe("the transparency page's daily value (3d Task 5, 9.3 item 6, W.2)", () 
     expect(loading).not.toContain(T.headNone);
   });
 
+  test("review M13: the keeper's sentence follows [tr.head] only while a keeper's address is set; without one the page names no person; until the facts answer, neither", () => {
+    const withKeeper = textOf(html(<TransparencyView answer={{ editions: [] }} head={head} keeper={true} />));
+    expect(withKeeper).toContain(`${T.head} ${T.headKeeper}`);
+    const without = textOf(html(<TransparencyView answer={{ editions: [] }} head={head} keeper={false} />));
+    expect(without).toContain(`${T.head} ${T.headNoKeeper}`);
+    expect(without).not.toContain("a person who does not run the server");
+    const unknown = textOf(html(<TransparencyView answer={{ editions: [] }} head={head} />));
+    expect(unknown).not.toContain(T.headKeeper);
+    expect(unknown).not.toContain(T.headNoKeeper);
+    // The page asks the facts route too, for the keeper's member alone.
+    const source = readFileSync(path.resolve(import.meta.dirname, "../src/app/transparency.tsx"), "utf8");
+    expect(source).toContain('api("/api/public/facts", { schema: PublicFacts })');
+  });
+
   test("its words are W.2's: [tr.head], [tr.headMissing], [tr.restore] and [tr.retired]", () => {
     expect(T.head).toBe(
-      "Each day korbat publishes one value computed from the day and the newest entry of its staff audit log, the record of everything korbat's staff confirm with their keys. If an earlier entry were changed or removed later, the log would no longer lead to the values published since. A value shows neither how many entries the log has nor any entry, and it differs from one day to the next also when nothing was added to the log. A value on korbat's own page proves nothing against korbat's operator, who could change this page too: so the same value goes each day to a person who does not run the server, and, when the outside timestamp is on, to a timestamp authority.",
+      "Each day korbat publishes one value computed from the day and the newest entry of its staff audit log, the record of everything korbat's staff confirm with their keys. If an earlier entry were changed or removed later, the log would no longer lead to the values published since. A value shows neither how many entries the log has nor any entry, and it differs from one day to the next also when nothing was added to the log. A value on korbat's own page proves nothing against korbat's operator, who could change this page too.",
     );
+    // 3d review M13: the sentence that names the keeper, and the one printed in its place while no address is set.
+    expect(T.headKeeper).toBe("So the same value goes each day to a person who does not run the server, and, when the outside timestamp is on, to a timestamp authority.");
+    expect(T.headNoKeeper).toBe("When the outside timestamp is on, the same value goes each day to a timestamp authority.");
     expect(T.headMissingRow("2026-10-16")).toBe("2026-10-16: no value was published");
     expect(T.restore("2026-10-18", "2026-10-15")).toBe("2026-10-18: korbat restored its database from a backup. The newest value above that still fits the restored log is of 2026-10-15.");
     expect(T.retired("2026-10-18")).toBe("retired by the restore of 2026-10-18: true when published, and fits no log now");

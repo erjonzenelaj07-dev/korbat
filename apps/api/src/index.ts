@@ -72,7 +72,12 @@ const stopJanitor = auth.startJanitor(jobLock);
 // RECIPIENTS_SIGNED_OUT is on, each day's signed-out readers. Its job closes a month's count and, once a day after the
 // dispatch hour, publishes what edition is due. 3d Task 5: and the audit head's daily value, witnessed while HEAD_WITNESS
 // is on and mailed to the keeper through the auth module's one sender to HEAD_KEEPER_MAIL.
-const transparency = createTransparency({ apiDb, redis, auth: auth.forTransparency, config, logger });
+// 3d review H3: the recipients' count (the day's salt and the sketches) lives in a Valkey of its own, Compose's `counts`,
+// which writes nothing to disk; the shared Valkey keeps an append-only file of every write, so the count never reaches it.
+// A lost store loses the running month, which then reads as not recorded; counting never fails a request.
+const counts = new Redis(config.COUNTS_URL, { maxRetriesPerRequest: 2 });
+counts.on("error", (err) => logger.error({ err }, "counts store error"));
+const transparency = createTransparency({ apiDb, counts, auth: auth.forTransparency, config, logger });
 auth.onSeen(transparency.forAuth);
 const stopTransparency = transparency.startJobs(jobLock);
 
@@ -172,7 +177,7 @@ async function shutdown(signal: string) {
   ]);
   clearTimeout(waited);
   if (!settled) logger.warn({ signal }, "shutting down with moderation mails still in flight; what is pending is sent after the next start");
-  await Promise.allSettled([closeDb(apiDb), closeDb(authDb), redis.quit()]);
+  await Promise.allSettled([closeDb(apiDb), closeDb(authDb), redis.quit(), counts.quit()]);
   process.exit(0);
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

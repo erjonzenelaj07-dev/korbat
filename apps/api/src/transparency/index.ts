@@ -22,8 +22,8 @@ import type { Config } from "../config";
 import { createJob, type JobLock } from "../lib/jobs";
 import { publishEditions } from "./editions";
 import { publishHead, type HeadPass } from "./head";
-import { closeMonths, createRecipientCounter, type RecipientCounter, type SketchStore } from "./recipients";
-import { createTransparencyRepo } from "./repo";
+import { closeMonths, createRecipientCounter, markMonth, type RecipientCounter, type SketchStore } from "./recipients";
+import { createTransparencyRepo, type TransparencyRepo } from "./repo";
 import { publicFacts, transparencyRoutes } from "./routes";
 import { witnessFrom, type WitnessAdapter } from "./witness";
 
@@ -49,19 +49,26 @@ export const TRANSPARENCY_ROUND_MS = 10 * 60_000;
 
 export interface CreateTransparencyOptions {
   apiDb: Db;
-  /** Valkey, for the sketches and the salt. */
-  redis: SketchStore;
+  /**
+   * The counts store (3d review H3): a Valkey of its own that writes nothing to disk (COUNTS_URL, Compose's `counts`),
+   * for the sketches and the salt alone. Never the shared one, whose append-only file would keep the salt and every
+   * value added to a sketch.
+   */
+  counts: SketchStore;
   /** The auth module's one sender this module needs: the keeper's daily mail to HEAD_KEEPER_MAIL (section 5). */
   auth: AuthForTransparency;
   config: Pick<
     Config,
     "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "MODERATION_DISPATCH_HOUR" | "HEAD_WITNESS" | "HEAD_WITNESS_URL" | "APP_SITE" | "R1_CLASSIFIER" | "AUTOMATION_R1_ACTS" | "AUTOMATION_DPIA_R1" | "AUTOMATION_DPIA_R1_ACTS"
-  >;
+  > &
+    Partial<Pick<Config, "HEAD_KEEPER_MAIL">>;
   logger: Logger;
   /** The clock of the counts and of the job's rounds; tests move it. The head's day is the database's own. */
   now?: () => Date;
   /** The head's witness in place of the one HEAD_WITNESS names; for tests (fakeWitness() is no https address). */
   witness?: WitnessAdapter;
+  /** The repository in place of the one over apiDb; for tests (3d review M11: an edition that fails). */
+  repo?: TransparencyRepo;
 }
 
 /**
@@ -77,12 +84,14 @@ export interface TransparencyRound {
 export function createTransparency(options: CreateTransparencyOptions) {
   const now = options.now ?? (() => new Date());
   const log = options.logger;
-  const repo = createTransparencyRepo(options.apiDb);
+  const repo = options.repo ?? createTransparencyRepo(options.apiDb);
   const signedOut = options.config.RECIPIENTS_SIGNED_OUT === "on";
-  const forAuth: TransparencyForAuth = createRecipientCounter({ store: options.redis, signedOut, log, now });
+  const forAuth: TransparencyForAuth = createRecipientCounter({ store: options.counts, signedOut, log, now });
   // HEAD_WITNESS's adapter; the configuration refused a test adapter on an open site, and the builder refuses it again.
   const witness = options.witness ?? witnessFrom(options.config);
-  const head = { repo, witness, mailKeeper: options.auth.mailKeeper, log };
+  // 3d review M13: whether a keeper's address is set, so a mail that did not go is owed and retried, and alerted after the day.
+  const keeper = options.config.HEAD_KEEPER_MAIL !== undefined && options.config.HEAD_KEEPER_MAIL !== "";
+  const head = { repo, witness, mailKeeper: options.auth.mailKeeper, log, keeper };
   // The UTC day of this process's last daily pass of the editions: one a day, after the dispatch hour. A restart runs it
   // again, which the editions' key makes harmless.
   let lastDaily: string | null = null;
@@ -94,21 +103,39 @@ export function createTransparency(options: CreateTransparencyOptions) {
 
   async function round(): Promise<TransparencyRound> {
     const at = now();
-    const months = await closeMonths({ store: options.redis, repo, signedOut }, at);
-    if (months.length > 0) log.info({ job: TRANSPARENCY_JOB, months }, "transparency: the recipients' months were stored");
+    // 3d review M11: each part of the round in a try of its own, with its own log line, so a counts store that is down or
+    // an edition that keeps failing never keeps the day's head value from being published, mailed and alerted on.
+    let months: string[] = [];
+    try {
+      // 3d review M10: the running month's mark, set once, before the close of the months before.
+      await markMonth(options.counts, at);
+      months = await closeMonths({ store: options.counts, repo, signedOut }, at);
+      if (months.length > 0) log.info({ job: TRANSPARENCY_JOB, months }, "transparency: the recipients' months were stored");
+    } catch (err) {
+      log.error({ err, job: TRANSPARENCY_JOB }, "transparency: the recipients' months were not closed; the next round tries again");
+    }
     const day = at.toISOString().slice(0, 10);
     if (at.getUTCHours() < options.config.MODERATION_DISPATCH_HOUR) return { months, editions: null, head: null };
     let editions: TransparencyRound["editions"] = null;
     if (lastDaily !== day) {
-      editions = (await publishEditions({ repo, log }, at)).published;
-      lastDaily = day;
+      try {
+        editions = (await publishEditions({ repo, log }, at)).published;
+        lastDaily = day;
+      } catch (err) {
+        // lastDaily stays as it was: the next round asks again, as every round does until the editions pass once.
+        log.error({ err, job: TRANSPARENCY_JOB }, "transparency: the editions were not published; the next round asks again");
+      }
     }
     // After the editions, so the day's value covers an edition's audit row written in the same round.
     let pass: HeadPass | null = null;
     if (headDone !== day) {
-      pass = await publishHead(head, { firstOfDay: headFirst !== day });
-      headFirst = day;
-      if (pass.done) headDone = day;
+      try {
+        pass = await publishHead(head, { firstOfDay: headFirst !== day });
+        headFirst = day;
+        if (pass.done) headDone = day;
+      } catch (err) {
+        log.error({ err, job: TRANSPARENCY_JOB }, "transparency: the head's daily pass failed; the next round passes again");
+      }
     }
     return { months, editions, head: pass };
   }

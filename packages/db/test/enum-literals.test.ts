@@ -292,4 +292,13 @@ describe("the enum-literal rule of 3d's automated decisions migration", () => {
     expect(flat(withoutComments(text))).not.toMatch(/[.](kind|channel)::(intake_kind|intake_channel)/);
     expect(flat(withoutComments(text))).toContain("CREATE FUNCTION");
   });
+
+  test("3d review: 0041_review is read under the stricter form: neither label as a literal, in its bodies either; kinds are compared as text", () => {
+    const entry = files.find((candidate) => candidate.tag.endsWith("_review") && candidate.tag.startsWith("0041"));
+    expect(entry?.tag).toBe("0041_review");
+    const text = readFileSync(path.join(MIGRATIONS, `${entry!.tag}.sql`), "utf8");
+    expect(enumLiteralViolations(bodiesToo(text), VALUES_3D)).toEqual([]);
+    // Its replaced transparency_figures still compares the intake's kind as text.
+    expect(flat(withoutComments(text))).toContain("i.kind::text = 'automated'");
+  });
 });

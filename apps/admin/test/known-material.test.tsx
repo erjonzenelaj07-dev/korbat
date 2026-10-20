@@ -332,6 +332,21 @@ describe("Held uploads (8.6)", () => {
     expect(endsOffered(done)).toEqual([]);
   });
 
+  test("review M1: a moderator's page, which holds neither the uploader's count nor the release's authority facts and leave, prints no count and no release block; the ends stay greyed", () => {
+    const release = { reported: true, handedOverAt: null, quarantined: true, tellHeld: false, silenceDays: null, releasedAt: null, basis: null, backupsClearAt: null, noticeHeld: null };
+    const { otherRefusals: _count, ...noCount } = upload({ endAs: "report", endedAt: AT, reported: true, quarantined: true, release });
+    const out = html(<UploadBlock upload={noCount} actions={actions(MODERATOR)} />);
+    expect(text(out)).not.toContain(W.others(0));
+    expect(text(out)).not.toMatch(/other refusal|undefined|NaN/);
+    expect(out).not.toMatch(/class="block release/);
+    expect(text(out)).not.toContain(W.releaseSign);
+    // Given the whole answer all the same, the console still prints the release block to an admin alone.
+    const whole = upload({ endAs: "report", endedAt: AT, reported: true, quarantined: true, release: { ...release, theirReference: "ST 1", answer: null, answeredAt: null, leave: null } });
+    expect(html(<UploadBlock upload={whole} actions={actions(MODERATOR)} />)).not.toMatch(/class="block release/);
+    expect(html(<UploadBlock upload={whole} actions={actions(ADMIN)} />)).toMatch(/class="block release"/);
+    expect(text(block({}, MODERATOR))).toContain(W.adminOnly);
+  });
+
   test("the list: [uploads.what], one block a refusal, no image anywhere; empty, its own sentence", () => {
     const out = html(<UploadsView rows={{ state: "ready", value: [upload(), upload({ id: "4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f", uploaderGone: true })] }} more={false} loadingMore={false} onLoadMore={noop} actions={actions(ADMIN)} />);
     expect(text(out)).toContain(W.what);

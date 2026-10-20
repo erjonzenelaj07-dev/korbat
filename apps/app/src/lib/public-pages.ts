@@ -86,6 +86,8 @@ export const TOOL_TEXTS = {
   },
   witness: {
     off: "Outside timestamp for the audit log's daily value: off. The value stands on korbat's Transparency page and in a mail to a person who does not run the server.",
+    // 3d review M13: in the place of `off` while no keeper's address is set (the facts' `keeper`): no mail goes to anyone.
+    offAlone: "Outside timestamp for the audit log's daily value: off. The value stands on korbat's Transparency page alone.",
     on: "Outside timestamp for the audit log's daily value: on. The Transparency page offers each day's proof and says how to check it.",
   },
 } as const;
@@ -130,7 +132,8 @@ export function toolBlocks(facts: PublicFacts): ToolBlock[] {
       paragraphs: matchOn ? [marked(match.state === "seals" ? TOOL_TEXTS.match.seals(source) : TOOL_TEXTS.match.alerts(source), match.test), ...dates(match, match.state === "seals")] : [TOOL_TEXTS.match.off],
     },
     { tool: "edge", on: edge.on, paragraphs: [edge.on ? marked(TOOL_TEXTS.edge.on, edge.test) : TOOL_TEXTS.edge.off] },
-    { tool: "witness", on: witness.on, paragraphs: [witness.on ? marked(TOOL_TEXTS.witness.on, witness.test) : TOOL_TEXTS.witness.off] },
+    // 3d review M13: the off text names the keeper's mail only while a keeper's address is set.
+    { tool: "witness", on: witness.on, paragraphs: [witness.on ? marked(TOOL_TEXTS.witness.on, witness.test) : facts.keeper ? TOOL_TEXTS.witness.off : TOOL_TEXTS.witness.offAlone] },
   ];
 }
 
@@ -260,7 +263,11 @@ export const TRANSPARENCY_PAGE = {
     `How korbat counts (method ${method}). An account that was used while signed in during a month is counted once for that month. A reader without an account is counted once for each day they read korbat: korbat cannot tell whether Tuesday's reader is Monday's, because it keeps nothing that could tell. So the true number lies between the first figure, accounts alone, and the second, accounts plus the sum of each day's readers. To count, korbat feeds a counting sketch: a small summary that cannot list who was counted. For a reader without an account it is fed with a keyed digest of the network address and the browser's name, under a random key that exists for ${RECIPIENT_RULES.saltHours} hours in korbat's short-lived store and is written nowhere else. Until a month's sketch is deleted at the month's end, whoever runs korbat's server could still ask it whether one given account was probably counted in that month; after that korbat keeps two numbers and nothing else. A crawler is left out only when it names itself. korbat does not record where a reader is, so readers outside the European Union are counted too.`,
   // The audit log's daily value (3d Task 5; 9.3 item 6, W.2).
   headHeading: "The audit log's daily value",
-  head: "Each day korbat publishes one value computed from the day and the newest entry of its staff audit log, the record of everything korbat's staff confirm with their keys. If an earlier entry were changed or removed later, the log would no longer lead to the values published since. A value shows neither how many entries the log has nor any entry, and it differs from one day to the next also when nothing was added to the log. A value on korbat's own page proves nothing against korbat's operator, who could change this page too: so the same value goes each day to a person who does not run the server, and, when the outside timestamp is on, to a timestamp authority.",
+  head: "Each day korbat publishes one value computed from the day and the newest entry of its staff audit log, the record of everything korbat's staff confirm with their keys. If an earlier entry were changed or removed later, the log would no longer lead to the values published since. A value shows neither how many entries the log has nor any entry, and it differs from one day to the next also when nothing was added to the log. A value on korbat's own page proves nothing against korbat's operator, who could change this page too.",
+  // 3d review M13: [tr.head]'s last sentence, printed after it only while a keeper's address is set (the facts' `keeper`),
+  // and the one printed in its place while none is: the page never says that a mail goes where none does.
+  headKeeper: "So the same value goes each day to a person who does not run the server, and, when the outside timestamp is on, to a timestamp authority.",
+  headNoKeeper: "When the outside timestamp is on, the same value goes each day to a timestamp authority.",
   /** A day's row: its value, and who witnessed it ("witness" reads none for a row without a token). */
   headRow: (day: string, value: string, witness: HeadWitness) => `${day}: ${value}, ${HEAD_WITNESS_WORDS[witness]}`,
   /** [tr.headMissing], in the row of a day between two shown days that has no value. */

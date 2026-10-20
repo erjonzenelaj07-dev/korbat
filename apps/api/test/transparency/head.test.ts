@@ -52,19 +52,19 @@ describe("publicHead: GET /api/public/head's answer", () => {
 });
 
 /** A stand-in of the job's statements over one day's rows, as the database would answer them. */
-function fakeRepo(options: { missed?: string | null; place?: { seq: number; hash: string } | null } = {}) {
+function fakeRepo(options: { missed?: string | null; place?: { seq: number; hash: string } | null; unmailed?: string | null } = {}) {
   const state = {
-    row: null as null | { value: string; witness: HeadWitness; token: Uint8Array | null; published: boolean },
+    row: null as null | { value: string; witness: HeadWitness; token: Uint8Array | null; published: boolean; mailed: boolean },
     alerts: [] as { kind: string; day: string }[],
     calls: [] as string[],
   };
   const DAY = "2026-10-18";
-  const today = (inserted: boolean): HeadToday => ({ inserted, day: DAY, value: state.row!.value, witness: state.row!.witness, witnessed: state.row!.token !== null, published: state.row!.published });
+  const today = (inserted: boolean): HeadToday => ({ inserted, day: DAY, value: state.row!.value, witness: state.row!.witness, witnessed: state.row!.token !== null, published: state.row!.published, mailed: state.row!.mailed });
   const repo: HeadRepo = {
     async headInsert(witness) {
       state.calls.push("insert");
       if (state.row) return today(false);
-      state.row = { value: VALUE, witness, token: null, published: false };
+      state.row = { value: VALUE, witness, token: null, published: false, mailed: false };
       return today(true);
     },
     async headWitnessed(day, token) {
@@ -88,6 +88,16 @@ function fakeRepo(options: { missed?: string | null; place?: { seq: number; hash
     async headMissed() {
       state.calls.push("missed");
       return options.missed ?? null;
+    },
+    // 3d review M13: the relay's acceptance of the keeper's mail, and the day before's value never mailed.
+    async headMailed(day) {
+      state.calls.push("mailed");
+      expect(day).toBe(DAY);
+      state.row!.mailed = true;
+    },
+    async headUnmailed() {
+      state.calls.push("unmailed");
+      return options.unmailed ?? null;
     },
     async headAlert(kind, day) {
       // F's daily rule: one row of a kind in 24 hours.
@@ -126,11 +136,11 @@ describe("one day's pass of the head (7.7)", () => {
     const { repo, state } = fakeRepo();
     const mail = keeper();
     const witness = witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" });
-    const first = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log }, { firstOfDay: true });
+    const first = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: true });
     expect(first).toEqual({ day: "2026-10-18", inserted: true, witnessed: null, published: true, mailed: "sent", alerts: [], done: true });
     expect(state.row).toMatchObject({ witness: "none", token: null, published: true });
     expect(mail.sent).toEqual([{ template: "head_published", day: "2026-10-18", value: VALUE, seq: 42, hash: "24cc975360df565521f1acca5b67f924d33ca0a0999355f667c4c289b1632fe1", witnessed: false }]);
-    const again = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log }, { firstOfDay: false });
+    const again = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: false });
     expect(again).toEqual({ day: "2026-10-18", inserted: false, witnessed: null, published: false, mailed: null, alerts: [], done: true });
     expect(mail.sent).toHaveLength(1);
   });
@@ -139,10 +149,10 @@ describe("one day's pass of the head (7.7)", () => {
     const { repo, state } = fakeRepo();
     const mail = keeper();
     const witness = witnessFrom({ HEAD_WITNESS: "test", APP_SITE: "closed" });
-    const pass = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log }, { firstOfDay: true });
+    const pass = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: true });
     expect(pass).toMatchObject({ inserted: true, witnessed: "stored", published: true, mailed: "sent", alerts: [], done: true });
     expect(Buffer.from(state.row!.token!).equals(Buffer.from(TEST_TOKEN))).toBe(true);
-    expect(state.calls).toEqual(["insert", "missed", "witnessed", "publish", "place"]);
+    expect(state.calls).toEqual(["insert", "missed", "unmailed", "witnessed", "publish", "place", "mailed"]);
     expect(mail.sent[0]).toMatchObject({ witnessed: true });
   });
 
@@ -150,27 +160,27 @@ describe("one day's pass of the head (7.7)", () => {
     const { repo, state } = fakeRepo();
     const mail = keeper();
     const witness = scripted([null, null, Buffer.from("300a3003020100300302010a", "hex")]);
-    const first = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log }, { firstOfDay: true });
+    const first = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: true });
     expect(first).toMatchObject({ witnessed: "unanswered", published: true, mailed: "sent", alerts: ["head_unwitnessed"], done: false });
     expect(state.alerts).toEqual([{ kind: "head_unwitnessed", day: "2026-10-18" }]);
     expect(mail.sent).toEqual([expect.objectContaining({ witnessed: false })]);
-    const second = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log }, { firstOfDay: false });
+    const second = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: false });
     expect(second).toMatchObject({ witnessed: "unanswered", published: false, mailed: null, alerts: [], done: false });
-    const third = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log }, { firstOfDay: false });
+    const third = await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: false });
     expect(third).toMatchObject({ witnessed: "stored", published: false, mailed: null, alerts: [], done: true });
     expect(witness.calls).toEqual([VALUE, VALUE, VALUE]);
     expect(state.row!.token).not.toBeNull();
     expect(mail.sent).toHaveLength(1);
     // Once the token is stored nothing is asked again.
-    await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log }, { firstOfDay: false });
+    await publishHead({ repo, witness, mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: false });
     expect(witness.calls).toHaveLength(3);
   });
 
   test("a row born while the witness was off is never witnessed later the same day: its name says nobody was asked", async () => {
     const { repo, state } = fakeRepo();
-    await publishHead({ repo, witness: witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" }), mailKeeper: keeper().mailKeeper, log }, { firstOfDay: true });
+    await publishHead({ repo, witness: witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" }), mailKeeper: keeper().mailKeeper, log, keeper: true }, { firstOfDay: true });
     const witness = scripted([Buffer.from("300a3003020100300302010a", "hex")]);
-    const pass = await publishHead({ repo, witness, mailKeeper: keeper().mailKeeper, log }, { firstOfDay: false });
+    const pass = await publishHead({ repo, witness, mailKeeper: keeper().mailKeeper, log, keeper: true }, { firstOfDay: false });
     expect(pass).toMatchObject({ witnessed: null, done: true });
     expect(witness.calls).toEqual([]);
     expect(state.row!.token).toBeNull();
@@ -179,23 +189,55 @@ describe("one day's pass of the head (7.7)", () => {
   test("a day's first round alerts head_missed when the day before has no published value; later rounds do not look", async () => {
     const { repo, state } = fakeRepo({ missed: "2026-10-17" });
     const witness = witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" });
-    const first = await publishHead({ repo, witness, mailKeeper: keeper().mailKeeper, log }, { firstOfDay: true });
+    const first = await publishHead({ repo, witness, mailKeeper: keeper().mailKeeper, log, keeper: true }, { firstOfDay: true });
     expect(first.alerts).toEqual(["head_missed"]);
     expect(state.alerts).toEqual([{ kind: "head_missed", day: "2026-10-17" }]);
     state.calls.length = 0;
-    await publishHead({ repo, witness, mailKeeper: keeper().mailKeeper, log }, { firstOfDay: false });
+    await publishHead({ repo, witness, mailKeeper: keeper().mailKeeper, log, keeper: true }, { firstOfDay: false });
     expect(state.calls).not.toContain("missed");
   });
 
   test("no keeper's address: published all the same, and the pass says no mail went; a place whose hash does not give the value: no mail at all", async () => {
     const off = fakeRepo();
     const none = keeper("off");
-    const pass = await publishHead({ repo: off.repo, witness: witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" }), mailKeeper: none.mailKeeper, log }, { firstOfDay: true });
+    const pass = await publishHead({ repo: off.repo, witness: witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" }), mailKeeper: none.mailKeeper, log, keeper: false }, { firstOfDay: true });
     expect(pass).toMatchObject({ published: true, mailed: "off", done: true });
     const wrong = fakeRepo({ place: null });
     const mail = keeper();
-    const unverified = await publishHead({ repo: wrong.repo, witness: witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" }), mailKeeper: mail.mailKeeper, log }, { firstOfDay: true });
+    const unverified = await publishHead({ repo: wrong.repo, witness: witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" }), mailKeeper: mail.mailKeeper, log, keeper: true }, { firstOfDay: true });
     expect(unverified).toMatchObject({ published: true, mailed: "unverified" });
     expect(mail.sent).toEqual([]);
+  });
+
+  test("review M13: a keeper's mail that fails is owed: the pass is not done, the next round mails again and records the relay's acceptance; a refused address is not tried again", async () => {
+    const { repo, state } = fakeRepo();
+    const witness = witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" });
+    let answer: KeeperMailResult = "failed";
+    const sent: KeeperMessage[] = [];
+    const mailKeeper = async (message: KeeperMessage) => (sent.push(message), answer);
+    const first = await publishHead({ repo, witness, mailKeeper, log, keeper: true }, { firstOfDay: true });
+    expect(first).toMatchObject({ published: true, mailed: "failed", done: false });
+    expect(state.row!.mailed).toBe(false);
+    answer = "sent";
+    const second = await publishHead({ repo, witness, mailKeeper, log, keeper: true }, { firstOfDay: false });
+    expect(second).toMatchObject({ published: false, mailed: "sent", done: true });
+    expect(state.row!.mailed).toBe(true);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    const refused = fakeRepo();
+    const once = await publishHead({ repo: refused.repo, witness, mailKeeper: keeper("refused").mailKeeper, log, keeper: true }, { firstOfDay: true });
+    expect(once).toMatchObject({ mailed: "refused", done: true });
+  });
+
+  test("review M13: a day's first round alerts head_unmailed for the day before's value whose mail never went, while an address is set", async () => {
+    const { repo, state } = fakeRepo({ unmailed: "2026-10-17" });
+    const witness = witnessFrom({ HEAD_WITNESS: "off", APP_SITE: "open" });
+    const first = await publishHead({ repo, witness, mailKeeper: keeper().mailKeeper, log, keeper: true }, { firstOfDay: true });
+    expect(first.alerts).toEqual(["head_unmailed"]);
+    expect(state.alerts).toEqual([{ kind: "head_unmailed", day: "2026-10-17" }]);
+    const none = fakeRepo({ unmailed: "2026-10-17" });
+    const off = await publishHead({ repo: none.repo, witness, mailKeeper: keeper("off").mailKeeper, log, keeper: false }, { firstOfDay: true });
+    expect(off.alerts).toEqual([]);
+    expect(none.state.calls).not.toContain("unmailed");
   });
 });

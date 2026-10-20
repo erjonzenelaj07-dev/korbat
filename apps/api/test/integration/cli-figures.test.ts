@@ -9,7 +9,9 @@ import { runStaffCommand } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
 import { exportLines } from "../../src/staff";
 import { headValue } from "../../src/transparency/head";
+import { rowCounts } from "./moderation-fixtures";
 import { rolledBack } from "./staff-fixtures";
+import { accountSince } from "./transparency-fixtures";
 
 /**
  * staff.js recipients and edition (3d design, sections 7.5, 7.6 and 8.10, "The public figures and the head"; Task 4), as
@@ -31,12 +33,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js recipients and 
     await migrateDb.execute(sql`delete from public.recipient_months where month between '2006-01-01'::date and '2007-12-01'::date`);
   };
 
+  let since: string;
   beforeAll(async () => {
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     await cleanUp();
+    // 3d review M3: an account of 2005, so the years these tests publish are years korbat ran.
+    since = await accountSince(migrateDb, 2005);
   });
   afterAll(async () => {
     await cleanUp();
+    await migrateDb.execute(sql`delete from public.profiles where id = ${since}::uuid`);
     await closeDb(migrateDb);
   });
 
@@ -199,10 +205,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js head-restore-ma
   };
   const cleanUp = () => migrateDb.execute(sql`delete from public.head_publications`);
   const ZEROS = "0".repeat(64);
+  let before: Record<string, number>;
 
   beforeAll(async () => {
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     await cleanUp();
+    before = await rowCounts(migrateDb);
   });
   afterAll(async () => {
     await cleanUp();
@@ -293,6 +301,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js head-restore-ma
 
   test("3d Task 8 (W.11, Restoring): restore-import prints one line for each published version of an edition that the restored database lacks, writes nothing for it and opens no gap; one it holds gets no line", async () => {
     await rolledBack(migrateDb, async (tx) => {
+      // 3d review M3: an account of 2005, so both years are years korbat ran.
+      await accountSince(tx, 2005);
       // Before the backup: 2005's first version is published, and stays.
       await tx.execute(sql`select public.edition_publish(2005, 'first')`);
       const [head] = await tx.execute<{ seq: string; hash: string }>(sql`select seq::text as seq, hash from public.audit_head where id = 1`);
@@ -321,5 +331,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js head-restore-ma
       const [held] = await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.transparency_editions where year in (2005, 2007)`);
       expect(held!.n).toBe(1);
     });
+  });
+
+  test("this file left no row behind", async () => {
+    await cleanUp();
+    expect(await rowCounts(migrateDb)).toEqual(before);
   });
 });

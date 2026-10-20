@@ -6,6 +6,9 @@ services:
     ports: ["127.0.0.1:${DEV_PG_PORT:-55432}:5432"]
   redis:
     ports: ["127.0.0.1:${DEV_REDIS_PORT:-56379}:6379"]
+  # 3d review H3: the counts store, for the API on the host (COUNTS_URL in apps/api/.env).
+  counts:
+    ports: ["127.0.0.1:${DEV_COUNTS_PORT:-56380}:6379"]
   api:
     ports: ["127.0.0.1:${DEV_API_PORT:-3000}:3000"]
   caddy:

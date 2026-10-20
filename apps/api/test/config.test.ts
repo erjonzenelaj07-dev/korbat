@@ -8,6 +8,7 @@ const good = {
   DATABASE_URL_API: "postgres://korbat_api:x@localhost:5432/korbat",
   DATABASE_URL_AUTH: "postgres://korbat_auth:x@localhost:5432/korbat",
   REDIS_URL: "redis://localhost:6379",
+  COUNTS_URL: "redis://localhost:56380",
   APP_ORIGIN: "http://localhost:8081",
   AUTH_HMAC_KEY: key,
   IP_HASH_KEY: key,

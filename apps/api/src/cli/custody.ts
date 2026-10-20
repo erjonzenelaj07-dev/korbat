@@ -27,7 +27,7 @@ import { sql } from "drizzle-orm";
 import { AuditExportLine, MEDIA_SIZES, NOTIFICATION_DUTIES, QUARANTINE_DIRECTIONS, QUARANTINE_WORDS, RELEASE_LEAVE_FROM, type QuarantineDirection, type ReleaseLeaveFrom } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
-import { quarantineNames, quarantineOrphans, refusalForCli, refusalReported, storedImageName } from "../media";
+import { quarantineNames, quarantineOrphans, refusalForCli, refusalImage, refusalReleaseOfImage, refusalReported, storedImageName } from "../media";
 import { appendAuditRow } from "../staff";
 import { Refusal, UUID, authorityText, flag, freeText, instant, isoOf, refuse, rows } from "./orders";
 
@@ -309,10 +309,12 @@ async function quarantineRecord(tx: DbTx, receipt: Buffer): Promise<{ lines: str
               report(n, `${file} is recorded as lost; nothing recorded`);
               return;
             }
-            // Task 2 (section 6.2): a released file's row takes the release's id, from its post's mark.
+            // Task 2 (section 6.2): a released file's row takes the release's id, from its post's mark; 3d review M6: or,
+            // for a held upload, which is on no post, from its refusal (read through the media module, which owns it).
+            const uploadRelease = await refusalReleaseOfImage(sp, mediaId);
             await sp.execute(sql`
               update public.quarantine_files q set returned_at = null, destroyed_at = now(),
-                     release_id = (select r.release_id from public.release_posts r where r.post_id = q.post_id)
+                     release_id = coalesce((select r.release_id from public.release_posts r where r.post_id = q.post_id), ${uploadRelease}::uuid)
                where ${where(mediaId, file)}`);
             checkDigest(n, row, file, parsed.sha256);
             counts.destroyed++;
@@ -346,6 +348,25 @@ async function quarantineRecord(tx: DbTx, receipt: Buffer): Promise<{ lines: str
     } catch (err) {
       if (err instanceof Refusal) throw err;
       report(n, `the database refused it (${(err as Error).message}); nothing recorded`);
+    }
+  }
+
+  // 3d review M9: a receipt made of have lines alone is an inventory, which lists every file the quarantine holds: every
+  // file recorded in the quarantine (no end) that it did not list is reported, so a file that a restore, or a return after
+  // the backup, left in neither place is found, and not recorded as destroyed by a later destroy line's "already".
+  const parsedLines = lines.filter((line) => line.trim() !== "").map(parseReceiptLine);
+  if (parsedLines.length > 0 && parsedLines.every((line) => line !== null && line.kind === "have")) {
+    const listed = new Set(parsedLines.map((line) => `${line!.mediaId} ${line!.file}`));
+    const open = await rows<{ media_id: string; file: string }>(
+      tx,
+      sql`select q.media_id, q.file from public.quarantine_files q where q.returned_at is null and q.destroyed_at is null and q.lost_at is null order by q.media_id, q.file`,
+    );
+    for (const row of open) {
+      if (listed.has(`${row.media_id} ${row.file}`)) continue;
+      counts.reported++;
+      notes.push(
+        `quarantine-record: ${row.file} of image ${row.media_id} is recorded in the quarantine and the inventory did not list it: find it, or record it lost with the quarantine service's --lost run (the README, Quarantine, step 5)`,
+      );
     }
   }
 
@@ -631,12 +652,15 @@ async function releaseShow(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
     leave_from: string | null;
     received_on: string | null;
     images: number;
+    upload_refusal_id: string | null;
   }>(
     tx,
     sql`select r.basis, r.leave_id, r.their_reference, ${isoOf("r.released_at")} as released_at, ${isoOf("r.imported_at")} as imported_at, r.replay_of,
                ${isoOf("r.backups_clear_at")} as backups_clear_at, r.author_notice, ${isoOf("r.author_notice_at")} as author_notice_at, r.post_ids::text[] as post_ids,
                l.leave_from, to_char(l.received_on, 'YYYY-MM-DD') as received_on,
-               coalesce((select sum(x.images) from (select max(s.images) as images from public.seal_posts s where s.post_id = any(r.post_ids) group by s.post_id) x), 0)::int as images
+               coalesce((select sum(x.images) from (select max(s.images) as images from public.seal_posts s where s.post_id = any(r.post_ids) group by s.post_id) x), 0)::int
+                 + (case when r.upload_refusal_id is null then 0 else 1 end) as images,
+               r.upload_refusal_id
           from public.releases r left join public.release_leaves l on l.id = r.leave_id
          where r.id = ${id}::uuid`,
   );
@@ -648,10 +672,14 @@ async function releaseShow(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
         : `ground leave, leave or instruction from ${r.leave_from}, reference ${r.their_reference}, of ${r.received_on}`
       : "ground period";
   const when = r.replay_of === null ? `released ${r.released_at}` : `replayed ${r.imported_at}, first released ${r.released_at}`;
+  // The files of the release's posts; 3d review M6: and a held upload's, which is on no post: its image's (through the
+  // refusal, which the media module reads) and every file whose record names this release.
+  const uploadMedia = r.upload_refusal_id === null ? null : await refusalImage(tx, r.upload_refusal_id);
   const files = await rows<{ file: string; size: number | null; sha256: string | null; destroyed_at: string | null; lost: boolean }>(
     tx,
     sql`select q.file, q.size::int as size, q.sha256, ${isoOf("q.destroyed_at")} as destroyed_at, q.lost_at is not null as lost
-          from public.quarantine_files q where q.post_id = any(${`{${r.post_ids.join(",")}}`}::uuid[]) and not q.unknown
+          from public.quarantine_files q
+         where (q.post_id = any(${`{${r.post_ids.join(",")}}`}::uuid[]) or q.media_id = ${uploadMedia}::uuid or q.release_id = ${id}::uuid) and not q.unknown
          order by q.destroyed_at nulls last, q.media_id, q.file`,
   );
   const destroyed = files.filter((file) => file.destroyed_at !== null);
@@ -677,20 +705,31 @@ async function releaseShow(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
 }
 
 /**
- * release-replay < <the keeper's files> (sections 6.2, 7.3 and 8.10), as the migrator, after restore-import: for each
- * seal_released line of the files, release_replay with the release's id, the params' posts, ground, leave and reference,
- * and the line's time, in a transaction of its own that ends with the audit row release_replayed. The function answers
- * present for a release the restored database holds (a line below the restored head, or one replayed already) and refuses
- * a line that no open gap of the class release names (replay_no_gap): only what restore-import checked against the chain
- * is replayed, so the files need not be checked a second time. A refused line is reported, the others go on, and the run
- * exits 1. Idempotent.
+ * release-replay < <the keeper's files> (sections 6.2, 7.3 and 8.10), as the migrator, after restore-import: each line of
+ * the files that a replay takes, in a transaction of its own that ends with its audit row, in the order of the lines'
+ * places (3d review M5), so an end of a hold and the release after it are replayed in the order they happened:
+ *   - seal_released: release_replay with the release's id, the params' posts, ground, leave and reference, and the time;
+ *   - upload_released: upload_release_replay, which erases the image row also when the restore lost the refusal;
+ *   - upload_hold_ended: upload_hold_replay, which keeps a held upload's image row from every post (or erases it, for an
+ *     end as no_report) when the restored database lacks the refusal;
+ *   - upload_refused (3d review M7): upload_refused_replay, which holds again an upload whose refusal the restore lost.
+ * Only the lines above the restored head are taken (3d review M15): the head is the place before the newest
+ * restore_imported row, which restore-import writes as the first row after it; a line at or below it is one the restored
+ * database holds, and is passed over in silence. Without an import every line is taken. A function answers present for
+ * what the restored database holds (or what a replay wrote already) and refuses a release or an end that no open gap of the
+ * class release names (replay_no_gap): only what restore-import checked against the chain is replayed. A refused line is
+ * reported, the others go on, and the run exits 1 only when something is owed: a refusal, or a lost end of a hold whose
+ * refusal the restored database holds while an open gap still names it, which an admin ends again. Idempotent.
  */
-async function releaseReplay(migrateDb: Db, input: Buffer): Promise<{ lines: string[]; notes: string[]; failed: boolean }> {
-  const c = "release-replay";
-  const releases: { id: string; at: string; params: { postIds: string[]; basis: string; leaveId: string | null; theirReference: string | null } }[] = [];
-  // 3d Task 7 (sections 7.3 and 8.10): a held upload's release, and a lost end of a hold, each with its refusal and image.
-  const uploadReleases: { id: string; at: string; refusalId: string; mediaId: string; params: { basis: string; leaveId: string | null; theirReference: string | null } }[] = [];
-  const holdEnds: { at: string; refusalId: string; mediaId: string; endAs: string }[] = [];
+type ReplayLine =
+  | { kind: "seal"; place: number; at: string; id: string; params: { postIds: string[]; basis: string; leaveId: string | null; theirReference: string | null } }
+  | { kind: "upload"; place: number; at: string; id: string; refusalId: string; mediaId: string; params: { basis: string; leaveId: string | null; theirReference: string | null } }
+  | { kind: "end"; place: number; at: string; refusalId: string; mediaId: string; endAs: string }
+  | { kind: "refused"; place: number; at: string; refusalId: string; mediaId: string };
+
+/** Reads the keeper's files into the lines a replay takes, in place order; a refusal for a line that is not one. */
+function replayLines(c: string, input: Buffer): ReplayLine[] {
+  const taken: ReplayLine[] = [];
   for (const text of input.toString("utf8").split(LF)) {
     const line = text.endsWith(CR) ? text.slice(0, -1) : text;
     if (line.trim() === "") continue;
@@ -700,7 +739,7 @@ async function releaseReplay(migrateDb: Db, input: Buffer): Promise<{ lines: str
     } catch {
       return refuse(c, "standard input holds a line that is not a line of the keeper's files");
     }
-    if (parsed.action !== "seal_released" && parsed.action !== "upload_released" && parsed.action !== "upload_hold_ended") continue;
+    if (parsed.action !== "seal_released" && parsed.action !== "upload_released" && parsed.action !== "upload_hold_ended" && parsed.action !== "upload_refused") continue;
     // A line carries its metadata as the canonical JSON text the chain hashed.
     let metadata: { params?: Record<string, unknown>; releaseId?: unknown; mediaId?: unknown } | null;
     try {
@@ -708,135 +747,196 @@ async function releaseReplay(migrateDb: Db, input: Buffer): Promise<{ lines: str
     } catch {
       return refuse(c, `the ${parsed.action} line at place ${parsed.place} holds no release`);
     }
-    if (parsed.action !== "seal_released") {
+    const place = Number(parsed.place);
+    const at = parsed.at as string;
+    if (parsed.action === "seal_released") {
       const params = metadata?.params;
-      const target = typeof parsed.targetId === "string" ? parsed.targetId : null;
-      if (target === null || typeof metadata?.mediaId !== "string" || !params) return refuse(c, `the ${parsed.action} line at place ${parsed.place} names no held upload`);
-      if (parsed.action === "upload_hold_ended") {
-        holdEnds.push({ at: parsed.at as string, refusalId: target, mediaId: metadata.mediaId, endAs: String(params.endAs) });
-        continue;
-      }
-      if (typeof metadata.releaseId !== "string") return refuse(c, `the upload_released line at place ${parsed.place} holds no release`);
-      uploadReleases.push({
+      if (typeof metadata?.releaseId !== "string" || !params || !Array.isArray(params.postIds)) return refuse(c, `the seal_released line at place ${parsed.place} holds no release`);
+      taken.push({
+        kind: "seal",
+        place,
+        at,
         id: metadata.releaseId,
-        at: parsed.at as string,
-        refusalId: target,
-        mediaId: metadata.mediaId,
-        params: { basis: String(params.basis), leaveId: (params.leaveId as string | null) ?? null, theirReference: (params.theirReference as string | null) ?? null },
+        params: { postIds: params.postIds as string[], basis: String(params.basis), leaveId: (params.leaveId as string | null) ?? null, theirReference: (params.theirReference as string | null) ?? null },
       });
       continue;
     }
-    const params = metadata?.params;
-    if (typeof metadata?.releaseId !== "string" || !params || !Array.isArray(params.postIds)) return refuse(c, `the seal_released line at place ${parsed.place} holds no release`);
-    releases.push({
+    const target = typeof parsed.targetId === "string" ? parsed.targetId : null;
+    if (target === null || typeof metadata?.mediaId !== "string") return refuse(c, `the ${parsed.action} line at place ${parsed.place} names no held upload`);
+    if (parsed.action === "upload_refused") {
+      taken.push({ kind: "refused", place, at, refusalId: target, mediaId: metadata.mediaId });
+      continue;
+    }
+    const params = metadata.params;
+    if (!params) return refuse(c, `the ${parsed.action} line at place ${parsed.place} names no held upload`);
+    if (parsed.action === "upload_hold_ended") {
+      taken.push({ kind: "end", place, at, refusalId: target, mediaId: metadata.mediaId, endAs: String(params.endAs) });
+      continue;
+    }
+    if (typeof metadata.releaseId !== "string") return refuse(c, `the upload_released line at place ${parsed.place} holds no release`);
+    taken.push({
+      kind: "upload",
+      place,
+      at,
       id: metadata.releaseId,
-      at: parsed.at as string,
-      params: { postIds: params.postIds as string[], basis: String(params.basis), leaveId: (params.leaveId as string | null) ?? null, theirReference: (params.theirReference as string | null) ?? null },
+      refusalId: target,
+      mediaId: metadata.mediaId,
+      params: { basis: String(params.basis), leaveId: (params.leaveId as string | null) ?? null, theirReference: (params.theirReference as string | null) ?? null },
     });
   }
-  const lines = [`${c}: ${releases.length} releases and 0 ends of a hold in the copy; ${0} already present.`];
+  // Files arrive oldest first; sorting by place keeps the order also when two are given out of turn.
+  return taken.sort((a, b) => a.place - b.place);
+}
+
+/** Whether a database refusal is replay_no_gap, the one refusal a replay reports and goes on after. */
+const noGap = (err: unknown) => /replay_no_gap/.test(String((err as { cause?: { message?: string } }).cause?.message ?? (err as Error).message));
+
+async function releaseReplay(migrateDb: Db, input: Buffer): Promise<{ lines: string[]; notes: string[]; failed: boolean }> {
+  const c = "release-replay";
+  const taken = replayLines(c, input);
+  // 3d review M15: the restored head, the place before the newest import's own audit row (restore-import writes it first
+  // after the head); without an import, 0, and every line is taken.
+  const [imported] = await rows<{ head: string }>(migrateDb, sql`select (a.chain_seq - 1)::text as head from public.audit_log a where a.action = 'restore_imported' order by a.chain_seq desc limit 1`);
+  const head = imported === undefined ? 0 : Number(imported.head);
+  const releases = taken.filter((line) => line.kind === "seal" || line.kind === "upload").length;
+  const holdEnds = taken.filter((line) => line.kind === "end").length;
+  const lines: string[] = [""];
   const notes: string[] = [];
   let present = 0;
-  for (const release of releases) {
-    try {
-      const outcome = await migrateDb.transaction(async (tx) => {
-        await tx.execute(sql`set local lock_timeout = '10s'`);
-        const [row] = await rows<{ result: string }>(
-          tx,
-          sql`select public.release_replay(${release.id}::uuid, ${`{${release.params.postIds.join(",")}}`}::uuid[], ${release.params.basis}, ${release.params.leaveId}::uuid,
-                                           ${release.params.theirReference}, ${release.at}::timestamptz) as result`,
-        );
-        if (row!.result === "present") return null;
-        const [, posts, images] = row!.result.split(" ");
-        const [replay] = await rows<{ id: string }>(tx, sql`select id from public.releases where replay_of = ${release.id}::uuid`);
-        await appendAuditRow(tx, {
-          actorId: SYSTEM_ACTOR_ID,
-          action: "release_replayed",
-          targetType: "release",
-          targetId: replay!.id,
-          requestId: null,
-          metadata: { replayOf: release.id, posts: Number(posts), images: Number(images), upload: false },
-        });
-        return { posts: Number(posts), images: Number(images) };
-      });
-      if (outcome === null) present++;
-      else lines.push(`${c}: release ${release.id} of ${release.at}: ${outcome.posts} posts marked released, ${outcome.images} image rows erased.`);
-    } catch (err) {
-      const message = String((err as { cause?: { message?: string } }).cause?.message ?? (err as Error).message);
-      if (!/replay_no_gap/.test(message)) throw err;
-      notes.push(`${c}: release ${release.id}: replay_no_gap: no open gap of the class release names it with these facts; nothing changed for it`);
+  /** One line in a transaction of its own with the command line's lock timeout; its audit row last. */
+  const inTransaction = <T>(run: (tx: DbTx) => Promise<T>) =>
+    migrateDb.transaction(async (tx) => {
+      await tx.execute(sql`set local lock_timeout = '10s'`);
+      return run(tx);
+    });
+  for (const line of taken) {
+    // A line the restored database holds: passed over in silence, as present.
+    if (line.place <= head) {
+      if (line.kind !== "refused") present++;
+      continue;
     }
-  }
-  // 3d Task 7: a held upload's release (upload_release_replay), which erases its image row also when the restore lost the
-  // refusal; and a lost end of a hold whose refusal the restored database lacks (upload_hold_replay), which keeps the image
-  // row from every post. A refusal the database holds answers present: its gap waits for an admin's new end.
-  for (const release of uploadReleases) {
     try {
-      const outcome = await migrateDb.transaction(async (tx) => {
-        await tx.execute(sql`set local lock_timeout = '10s'`);
-        const [row] = await rows<{ result: string }>(
-          tx,
-          sql`select public.upload_release_replay(${release.id}::uuid, ${release.refusalId}::uuid, ${release.mediaId}::uuid, ${release.params.basis}, ${release.params.leaveId}::uuid,
-                                                  ${release.params.theirReference}, ${release.at}::timestamptz) as result`,
-        );
-        if (row!.result === "present") return null;
-        const [, , images] = row!.result.split(" ");
-        const [replay] = await rows<{ id: string }>(tx, sql`select id from public.releases where replay_of = ${release.id}::uuid`);
-        await appendAuditRow(tx, {
-          actorId: SYSTEM_ACTOR_ID,
-          action: "release_replayed",
-          targetType: "release",
-          targetId: replay!.id,
-          requestId: null,
-          metadata: { replayOf: release.id, posts: 0, images: Number(images), upload: true },
+      if (line.kind === "seal") {
+        const outcome = await inTransaction(async (tx) => {
+          const [row] = await rows<{ result: string }>(
+            tx,
+            sql`select public.release_replay(${line.id}::uuid, ${`{${line.params.postIds.join(",")}}`}::uuid[], ${line.params.basis}, ${line.params.leaveId}::uuid,
+                                             ${line.params.theirReference}, ${line.at}::timestamptz) as result`,
+          );
+          if (row!.result === "present") return null;
+          const [, posts, images] = row!.result.split(" ");
+          const [replay] = await rows<{ id: string }>(tx, sql`select id from public.releases where replay_of = ${line.id}::uuid`);
+          await appendAuditRow(tx, {
+            actorId: SYSTEM_ACTOR_ID,
+            action: "release_replayed",
+            targetType: "release",
+            targetId: replay!.id,
+            requestId: null,
+            metadata: { replayOf: line.id, posts: Number(posts), images: Number(images), upload: false },
+          });
+          return { posts: Number(posts), images: Number(images), replayId: replay!.id };
         });
-        return { images: Number(images) };
-      });
-      if (outcome === null) present++;
-      else lines.push(`${c}: release ${release.id} of ${release.at}: a held upload, ${outcome.images} image rows erased.`);
-    } catch (err) {
-      const message = String((err as { cause?: { message?: string } }).cause?.message ?? (err as Error).message);
-      if (!/replay_no_gap/.test(message)) throw err;
-      notes.push(`${c}: release ${release.id}: replay_no_gap: no open gap of the class release names it with these facts; nothing changed for it`);
-    }
-  }
-  let ends = 0;
-  for (const end of holdEnds) {
-    try {
-      const outcome = await migrateDb.transaction(async (tx) => {
-        await tx.execute(sql`set local lock_timeout = '10s'`);
-        const [row] = await rows<{ result: string }>(
-          tx,
-          sql`select public.upload_hold_replay(${end.refusalId}::uuid, ${end.mediaId}::uuid, ${end.endAs}, ${end.at}::timestamptz) as result`,
-        );
-        if (row!.result === "present") return null;
-        await appendAuditRow(tx, {
-          actorId: SYSTEM_ACTOR_ID,
-          action: "release_replayed",
-          targetType: "upload_refusal",
-          targetId: end.refusalId,
-          requestId: null,
-          metadata: { replayOf: null, posts: 0, images: Number(row!.result.split(" ")[1]), upload: true, endAs: end.endAs, mediaId: end.mediaId },
+        if (outcome === null) present++;
+        // 3d review M16: the replay's own id, which release-show takes from now on.
+        else lines.push(`${c}: release ${line.id} of ${line.at}: ${outcome.posts} posts marked released, ${outcome.images} image rows erased; release-show ${outcome.replayId} prints its record.`);
+      } else if (line.kind === "upload") {
+        // 3d Task 7: a held upload's release, which erases its image row also when the restore lost the refusal.
+        const outcome = await inTransaction(async (tx) => {
+          const [row] = await rows<{ result: string }>(
+            tx,
+            sql`select public.upload_release_replay(${line.id}::uuid, ${line.refusalId}::uuid, ${line.mediaId}::uuid, ${line.params.basis}, ${line.params.leaveId}::uuid,
+                                                    ${line.params.theirReference}, ${line.at}::timestamptz) as result`,
+          );
+          if (row!.result === "present") return null;
+          const [, , images] = row!.result.split(" ");
+          const [replay] = await rows<{ id: string }>(tx, sql`select id from public.releases where replay_of = ${line.id}::uuid`);
+          await appendAuditRow(tx, {
+            actorId: SYSTEM_ACTOR_ID,
+            action: "release_replayed",
+            targetType: "release",
+            targetId: replay!.id,
+            requestId: null,
+            metadata: { replayOf: line.id, posts: 0, images: Number(images), upload: true },
+          });
+          return { images: Number(images), replayId: replay!.id };
         });
-        return true;
-      });
-      if (outcome === null) {
-        present++;
-        notes.push(`${c}: held upload ${end.refusalId}: the restored database holds its refusal; an admin ends its hold again on Held uploads, which closes the gap`);
+        if (outcome === null) present++;
+        else lines.push(`${c}: release ${line.id} of ${line.at}: a held upload, ${outcome.images} image rows erased; release-show ${outcome.replayId} prints its record.`);
+      } else if (line.kind === "end") {
+        // A lost end of a hold whose refusal the restored database lacks keeps the image row from every post; one whose
+        // refusal is there answers present, and its gap waits for an admin's new end while it is open. An end whose gap
+        // a run closed already is present: nothing records the replay of an end but its gap.
+        const [closed] = await rows<{ id: string }>(
+          migrateDb,
+          sql`select g.id from public.restore_gaps g
+               where g.class = 'release' and g.closed_at is not null and g.action = 'upload_hold_ended' and g.target_id = ${line.refusalId} and g.place = ${line.place}::bigint`,
+        );
+        if (closed !== undefined) {
+          present++;
+          continue;
+        }
+        const outcome = await inTransaction(async (tx) => {
+          const [row] = await rows<{ result: string }>(tx, sql`select public.upload_hold_replay(${line.refusalId}::uuid, ${line.mediaId}::uuid, ${line.endAs}, ${line.at}::timestamptz) as result`);
+          if (row!.result === "present") return null;
+          await appendAuditRow(tx, {
+            actorId: SYSTEM_ACTOR_ID,
+            action: "release_replayed",
+            targetType: "upload_refusal",
+            targetId: line.refusalId,
+            requestId: null,
+            metadata: { replayOf: null, posts: 0, images: Number(row!.result.split(" ")[1]), upload: true, endAs: line.endAs, mediaId: line.mediaId },
+          });
+          return true;
+        });
+        if (outcome === null) {
+          present++;
+          const [owed] = await rows<{ id: string }>(
+            migrateDb,
+            sql`select g.id from public.restore_gaps g
+                 where g.class = 'release' and g.closed_at is null and g.action = 'upload_hold_ended' and g.target_id = ${line.refusalId} and g.place = ${line.place}::bigint`,
+          );
+          if (owed !== undefined) notes.push(`${c}: held upload ${line.refusalId}: the restored database holds its refusal; an admin ends its hold again on Held uploads, which closes the gap`);
+        } else {
+          lines.push(`${c}: held upload ${line.refusalId}: the hold's end of ${line.at} as ${line.endAs}; the image is kept from every post.`);
+        }
       } else {
-        ends++;
-        lines.push(`${c}: held upload ${end.refusalId}: the hold's end of ${end.at} as ${end.endAs}; the image is kept from every post.`);
+        // 3d review M7: a refusal the restore lost; its upload is held again from every post.
+        const outcome = await inTransaction(async (tx) => {
+          const [row] = await rows<{ result: string }>(tx, sql`select public.upload_refused_replay(${line.refusalId}::uuid, ${line.mediaId}::uuid) as result`);
+          if (row!.result === "present") return null;
+          const held = Number(row!.result.split(" ")[1]);
+          if (held === 0) return 0;
+          await appendAuditRow(tx, {
+            actorId: SYSTEM_ACTOR_ID,
+            action: "upload_refused_replayed",
+            targetType: "upload_refusal",
+            targetId: line.refusalId,
+            requestId: null,
+            metadata: { mediaId: line.mediaId, held },
+          });
+          return held;
+        });
+        if (outcome !== null) {
+          lines.push(
+            outcome > 0
+              ? `${c}: held upload ${line.refusalId}: its refusal of ${line.at} is not in the restored database; its image is held from every post again.`
+              : `${c}: held upload ${line.refusalId}: its refusal of ${line.at} is not in the restored database, and no image row of it is left to hold.`,
+          );
+        }
       }
     } catch (err) {
-      const message = String((err as { cause?: { message?: string } }).cause?.message ?? (err as Error).message);
-      if (!/replay_no_gap/.test(message)) throw err;
-      notes.push(`${c}: held upload ${end.refusalId}: replay_no_gap: no open gap of the class release names this end; nothing changed for it`);
+      if (!noGap(err)) throw err;
+      notes.push(
+        line.kind === "end"
+          ? `${c}: held upload ${line.refusalId}: replay_no_gap: no open gap of the class release names this end; nothing changed for it`
+          : `${c}: release ${line.kind === "refused" ? line.refusalId : line.id}: replay_no_gap: no open gap of the class release names it with these facts; nothing changed for it`,
+      );
     }
   }
-  void ends;
-  lines[0] = `${c}: ${releases.length + uploadReleases.length} releases and ${holdEnds.length} ends of a hold in the copy; ${present} already present.`;
+  lines[0] = `${c}: ${releases} releases and ${holdEnds} ends of a hold in the copy; ${present} already present.`;
+  // 3d review M9: the Quarantine steps 1 to 3 first, then the inventory, then 1 to 3 again (the README, Restoring).
   lines.push(
-    `${c}: run the Quarantine steps now, with an inventory first: the list's destroy lines name every released file that the restored store or the quarantine still holds, and its operator lines every file it cannot place.`,
+    `${c}: run the Quarantine steps 1 to 3 now, then the inventory (step 6), then steps 1 to 3 again: the list's destroy lines name every released file that the restored store or the quarantine still holds, and its operator lines every file it cannot place.`,
   );
   return { lines, notes, failed: notes.length > 0 };
 }

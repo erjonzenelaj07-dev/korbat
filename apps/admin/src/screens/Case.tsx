@@ -695,7 +695,7 @@ function CustodyLines({ decision }: { decision: CaseDecision }) {
           {custody.moved > 0 && custody.moved + custody.lost < custody.files ? ` ${W.custodyInRest}` : ""}
         </p>
       ) : null}
-      {custody.toReturn > 0 ? <p className="notice">{W.custodyReturn(custody.toReturn)}</p> : null}
+      {custody.toReturn > 0 ? <p className="notice">{W.custodyReturn(custody.toReturn, custody.lost)}</p> : null}
       {custody.lost > 0 ? <p className="error">{W.custodyLost(custody.lost, inForce)}</p> : null}
     </div>
   );
@@ -711,7 +711,8 @@ export interface ReleaseProps {
 
 /** The params the key signs for the next release of this seal: the posts as the page shows them, the ground leave, and the recorded leave with its reference. */
 export function releaseParams(release: SealRelease): SealReleasedParams | null {
-  if (release.leave === null || release.postIds.length === 0) return null;
+  // 3d review M1: a moderator's answer has no leave at all; neither answer signs anything without one.
+  if (release.leave === null || release.leave === undefined || release.postIds.length === 0) return null;
   return { postIds: [...release.postIds], basis: "leave", leaveId: release.leave.id, theirReference: release.leave.reference };
 }
 
@@ -719,7 +720,7 @@ export function releaseParams(release: SealRelease): SealReleasedParams | null {
 function tellWords(release: SealRelease): string {
   const W = RELEASE_WORDS.facts.tell;
   if (!release.tellHeld) return W.atOnce;
-  const leave = release.leave;
+  const leave = release.leave ?? null;
   if (leave !== null && leave.untold && (leave.untoldUntil === null || Date.parse(leave.untoldUntil) > Date.now())) return W.untold(leave.untoldUntil === null ? null : bothTimes(leave.untoldUntil));
   return W.record;
 }
@@ -727,20 +728,23 @@ function tellWords(release: SealRelease): string {
 /**
  * 3d Task 2 (design, sections 7.2 and 8.5): the block "Release" under a seal for good in force: the facts of
  * release_facts, each a label and a value, then the words. An authority's assessment is shown as what it is and offers no
- * control; the one control, "Release and destroy", is offered only while a leave or an instruction to destroy is recorded,
- * and only to an admin: a moderator sees the block greyed with admin_required's words. The reference of the authority and
- * the leave's are drawn framed. No image is requested or drawn here.
+ * control; the one control, "Release and destroy", is offered only while a leave or an instruction to destroy is recorded.
+ * The reference of the authority and the leave's are drawn framed. No image is requested or drawn here. 3d review M1: the
+ * block is an admin's (11.4): a moderator, whose answer holds neither the authority's reference and assessment nor the
+ * leave, is shown none of it.
  */
 function ReleaseBlock({ decision, release }: { decision: CaseDecision; release: ReleaseProps | undefined }) {
-  const facts = decision.release;
-  if (facts === undefined) return null;
+  const whole = decision.release;
+  const admin = release?.role === "admin";
+  if (whole === undefined || !admin) return null;
+  // An admin's answer holds every member; the four of the admin's block read as none should one be missing.
+  const facts = { ...whole, theirReference: whole.theirReference ?? null, answer: whole.answer ?? null, answeredAt: whole.answeredAt ?? null, leave: whole.leave ?? null };
   const W = RELEASE_WORDS;
   const F = W.facts;
-  const admin = release?.role === "admin";
   const params = releaseParams(facts);
   const day = (at: string | null, none: string) => (at === null ? none : bothTimes(at));
   return (
-    <section className={`block release${admin ? "" : " greyed"}`} aria-labelledby={`release-${decision.id}`}>
+    <section className="block release" aria-labelledby={`release-${decision.id}`}>
       <h4 id={`release-${decision.id}`}>{W.title}</h4>
       <dl>
         <dt>{F.reported.label}</dt>
@@ -787,13 +791,12 @@ function ReleaseBlock({ decision, release }: { decision: CaseDecision; release: 
       {params === null ? null : (
         <div className="actions">
           <p className="hint">{W.sign(params.postIds.length)}</p>
-          {admin ? null : <p className="hint">{W.adminOnly}</p>}
           {release?.error ? (
             <p role="alert" className="error">
               {release.error}
             </p>
           ) : null}
-          <button type="button" disabled={!admin || release === undefined || release.busy} aria-busy={release?.busy === true} onClick={() => release?.onRelease(decision)}>
+          <button type="button" disabled={release === undefined || release.busy} aria-busy={release?.busy === true} onClick={() => release?.onRelease(decision)}>
             {W.button}
           </button>
         </div>

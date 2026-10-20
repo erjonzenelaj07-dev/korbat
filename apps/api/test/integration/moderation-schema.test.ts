@@ -697,6 +697,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         post_media_guard: 'BEFORE UPDATE OF post_id, owner_id, alt_text, "position", width, height, blurhash ON public.post_media FOR EACH ROW',
         post_media_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
         post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
+        // 3d review M12 (0041_review): an image that stops being sealed weighs its lost files' notices again.
+        post_media_lost_told: "AFTER UPDATE OF moderation_state ON public.post_media FOR EACH ROW",
         // 3d Task 7 (0039_known_material): a refused upload is attached to no post, whatever the API sends.
         post_media_refused: "BEFORE UPDATE OF post_id ON public.post_media FOR EACH ROW",
         // 3d Task 3 (0035_edge_purges): the edge's outbox row of an image that stops being public, after the statement.
@@ -897,13 +899,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(erase).toMatch(/match_keep_days/);
       expect(erase).not.toMatch(/interval '/i);
       expect(erase).not.toMatch(/(INSERT INTO|UPDATE|DELETE FROM) public[.](releases|release_posts|release_leaves|release_notices|quarantine_files)[ (]/i);
-      // Every function the migrations of 3d create (0033 to 0040), as distinct from the ones they replace, reads its numbers
-      // from its rule function: none holds an interval literal.
+      // Every function the migrations of 3d create (0033 to 0040, and the review's 0041), as distinct from the ones they
+      // replace, reads its numbers from its rule function: none holds an interval literal.
       const migrations = path.resolve(__dirname, "../../../../packages/db/migrations");
-      const created = ["0033_quarantine", "0034_release", "0035_edge_purges", "0036_transparency", "0037_head_publications", "0038_automated_decisions", "0039_known_material", "0040_signals_and_retention"].flatMap((tag) =>
+      const created = ["0033_quarantine", "0034_release", "0035_edge_purges", "0036_transparency", "0037_head_publications", "0038_automated_decisions", "0039_known_material", "0040_signals_and_retention", "0041_review"].flatMap((tag) =>
         [...readFileSync(path.join(migrations, `${tag}.sql`), "utf8").matchAll(/CREATE FUNCTION "public"."([a-z_0-9]+)"/g)].map((m) => `public.${m[1]}`),
       );
-      expect(created).toEqual(expect.arrayContaining(["public.case_flag", "public.erase_automation_records", "public.automation_rules"]));
+      expect(created).toEqual(expect.arrayContaining(["public.case_flag", "public.erase_automation_records", "public.automation_rules", "public.upload_refused_replay", "public.upload_refusals_logged", "public.post_media_lost_told"]));
+      // 3d review: every function 0041_review replaces keeps holding none either.
+      const replaced = [...readFileSync(path.join(migrations, "0041_review.sql"), "utf8").matchAll(/CREATE OR REPLACE FUNCTION "public"."([a-z_0-9]+)"/g)].map((m) => `public.${m[1]}`);
+      expect(replaced.length).toBeGreaterThanOrEqual(10);
+      for (const name of replaced) expect(all.find((f) => f.name === name)?.definition, name).not.toMatch(/interval '/i);
       for (const name of created) expect(all.find((f) => f.name === name)?.definition, name).not.toMatch(/interval '/i);
     });
 

@@ -52,11 +52,13 @@ describe("the closed union of templates", () => {
       "automated_objection", "automation_capped", "automated_waiting",
       // 3d Task 7: the uploader's two notices of a refused upload, and the two staff alerts of known material.
       "upload_refused", "upload_hold_lifted", "matcher_down", "hold_ended_unreported",
+      // 3d review M13: a day's value whose keeper's mail never went out.
+      "head_unmailed",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(76);
+    expect(new Set(names).size).toBe(77);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(76);
+    expect(Object.keys(all)).toHaveLength(77);
   });
 });
 
@@ -675,6 +677,18 @@ describe("3d Task 5: the transparency job's two alerts and the keeper's mail (W.
     for (const r of [unwitnessed, missed]) linkless(r);
     expect(TICK_MAILED_KINDS).toEqual(expect.arrayContaining(["head_unwitnessed", "head_missed"]));
     expect(() => renderTemplate("head_missed", { day: "yesterday", now: NOW })).toThrow(/day/);
+  });
+
+  test("review M13: head_unmailed, its push's sentence with the line of what to do, the day printed as a date, mailed by the tick from its row", () => {
+    const unmailed = renderTemplate("head_unmailed", { day: "2026-10-18T00:00:00.000Z", now: NOW });
+    expect(unmailed.subject).toBe("korbat: The keeper did not get a daily value");
+    expect(paragraphs(unmailed.text)).toEqual([
+      "The audit log's value of 2026-10-18 was published, and its mail to the keeper never went out.",
+      "The operator checks the mail relay and HEAD_KEEPER_MAIL (staff.js automation-status prints the last mail's outcome). The keeper copies that day's value from /transparency and notes that its mail did not come.",
+      LAST_STAFF,
+    ]);
+    linkless(unmailed);
+    expect(TICK_MAILED_KINDS).toContain("head_unmailed");
   });
 
   test("head_published: to the keeper alone, the day in the subject, the value, the place, the hash and whether a timestamp is stored, pinned", () => {

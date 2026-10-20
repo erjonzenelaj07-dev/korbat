@@ -527,7 +527,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   const custody = await sealCustody(q, sealsForGood.map((action) => action.id));
   // 3d Task 2 (sections 7.2, 8.5 and 10.3): the release block of each seal for good that is in force, with the facts of
   // release_facts and the posts the next release would name; a seal that is lifted has none.
-  const releases = await releaseBlocks(q, sealsForGood.filter((action) => action.inForce).map((action) => action.id));
+  // 3d review M1: the authority's reference and assessment and the leave reach an admin's session alone.
+  const releases = await releaseBlocks(q, sealsForGood.filter((action) => action.inForce).map((action) => action.id), session.role === "admin");
   const custodyOf = (actionId: string | undefined) =>
     actionId === undefined ? {} : { ...(custody.has(actionId) ? { custody: custody.get(actionId)! } : {}), ...(releases.has(actionId) ? { release: releases.get(actionId)! } : {}) };
   const decisions: CaseDecision[] = [];

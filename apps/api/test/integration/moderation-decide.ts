@@ -14,6 +14,7 @@ import { decide, type DecideOptions } from "../../src/moderation/decide";
 import { recordIntake } from "../../src/moderation/intake";
 import { socialForModeration } from "../../src/social";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
+import { newUserWithDevice } from "./auth-fixtures";
 import { flowHarness } from "./flow-harness";
 import { act, ageStandingForTest, casesMedia, decisionParams, ground, moderationCounts, newPostRow, noAuthForModeration, removeDecided, reviewParams, timed, uuids, type DecisionInput, type ReviewInput, type TestStaff } from "./moderation-fixtures";
 import { enrolKey } from "./staff-enrolment";
@@ -163,6 +164,26 @@ export function deciderWorld(apiDb: Db, options: DeciderOptions = {}): DeciderWo
   }
 
   return { authDb, migrateDb, moderation, staff, confirm, decideAs, confirmReview, reviewAs, confirmOrder, confirmAction, close };
+}
+
+/**
+ * 3d review M2: a new admin of the world whose linked personal account (auth.staff_personal_accounts, which only the
+ * migrator writes) follows `subject`, so staff_party_conflict holds the admin too close to the subject. `unlink` removes
+ * the link and the personal account's profile, and with it the follow.
+ */
+export async function linkedAdmin(world: DeciderWorld, apiDb: Db, migrateDb: Db, subject: string): Promise<{ staff: RealStaff; unlink(): Promise<void> }> {
+  const staff = await world.staff("admin");
+  const personal = (await newUserWithDevice(createAuthRepo(world.authDb))).user.id;
+  await apiDb.insert(profiles).values({ id: personal, handle: `pa_${randomBytes(5).toString("hex")}`, displayName: "Personal" });
+  await apiDb.execute(sql`insert into public.follows (follower_id, followee_id) values (${personal}::uuid, ${subject}::uuid)`);
+  await migrateDb.execute(sql`insert into auth.staff_personal_accounts (staff_user_id, personal_user_id) values (${staff.id}::uuid, ${personal}::uuid)`);
+  return {
+    staff,
+    unlink: async () => {
+      await migrateDb.execute(sql`delete from auth.staff_personal_accounts where staff_user_id = ${staff.id}::uuid`);
+      await migrateDb.execute(sql`delete from public.profiles where id = ${personal}::uuid`);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- decideForTest

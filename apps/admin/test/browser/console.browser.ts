@@ -2353,16 +2353,18 @@ describe("the staff console in Chromium, under the console site's policy", () =>
     }
   });
 
-  test("3d Task 2: at 360 by 740 px, the block greyed for a moderator, with admin_required's words and the control disabled", async () => {
+  test("3d review M1: at 360 by 740 px, a moderator's case shows no release block: neither the authority's reference nor the leave, and no control", async () => {
     await page.setViewportSize({ width: 360, height: 740 });
     fixtures.state.role = "moderator";
     const view = fixtures.state.cases.get(CASE_FROZEN)!;
     fixtures.state.cases.set(CASE_FROZEN, withRelease(view, releaseBlock()));
     try {
       await page.goto(`${origin}/cases/${CASE_FROZEN}`);
-      await shown(releaseRegion());
-      expect(await releaseRegion().textContent()).toContain(RELEASE_WORDS.adminOnly);
-      expect(await releaseRegion().getByRole("button", { name: RELEASE_WORDS.button }).isDisabled()).toBe(true);
+      // The seal's custody is every staff member's; the release block is an admin's alone.
+      await shown(page.locator(".custody").first());
+      expect(await releaseRegion().count()).toBe(0);
+      expect(await page.getByRole("button", { name: RELEASE_WORDS.button }).count()).toBe(0);
+      expect((await page.locator("main").textContent()) ?? "").not.toContain("4 O 1/26");
       await texts();
       await cleanOnPhone();
     } finally {
@@ -2916,6 +2918,9 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       await shown(uploadBlock(REFUSAL_OPEN).getByText(W.adminOnly, { exact: true }));
       expect(await uploadBlock(REFUSAL_OPEN).getByRole("radio").first().isDisabled()).toBe(true);
       expect(await uploadBlock(REFUSAL_OPEN).getByRole("button", { name: W.confirm }).isDisabled()).toBe(true);
+      // Review M1: the uploader's count and the release block are an admin's; a moderator's page has neither.
+      expect(await page.getByText(/^Other held uploads of the same uploader/).count()).toBe(0);
+      expect(await page.locator("section.release").count()).toBe(0);
       expect(fixtures.state.imageRequests).toHaveLength(asked);
       await texts();
       await cleanOnPhone();

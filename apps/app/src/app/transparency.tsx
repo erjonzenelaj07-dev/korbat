@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { ANNEX3_GROUNDS, ORDER_GROUNDS, PublicHead, PublicTransparency, type OrderFigures, type TransparencyFigures } from "@korbat/contracts";
+import { ANNEX3_GROUNDS, ORDER_GROUNDS, PublicFacts, PublicHead, PublicTransparency, type OrderFigures, type TransparencyFigures } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { TextLink } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -192,13 +192,15 @@ function saveProof(day: string, token: string) {
  * such day's value and file, and each day's proof to download on the web. When the route did not answer, this part alone
  * reads [page.down]. The place is in no answer and on no row.
  */
-function HeadSection({ head }: { head: PublicHead | "loading" | "down" }) {
+function HeadSection({ head, keeper }: { head: PublicHead | "loading" | "down"; keeper: boolean | null }) {
   const T = TRANSPARENCY_PAGE;
   const witnessed = head === "loading" || head === "down" ? undefined : head.days.find((row) => row.token !== null);
+  // 3d review M13: the keeper's sentence only while the facts say a keeper's address is set; neither until they answer.
+  const keeperSentence = keeper === null ? "" : ` ${keeper ? T.headKeeper : T.headNoKeeper}`;
   return (
     <View>
       <Heading level={2}>{T.headHeading}</Heading>
-      <Paragraph>{T.head}</Paragraph>
+      <Paragraph>{`${T.head}${keeperSentence}`}</Paragraph>
       {head === "loading" ? null : head === "down" ? (
         <Paragraph>{PAGE_DOWN}</Paragraph>
       ) : head.days.length === 0 ? (
@@ -240,7 +242,7 @@ function HeadSection({ head }: { head: PublicHead | "loading" | "down" }) {
  * while no edition exists. When a route did not answer, the fixed texts stand and that route's part alone reads
  * [page.down].
  */
-export function TransparencyView({ answer, head = "loading" }: { answer: PublicTransparency | "loading" | "down"; head?: PublicHead | "loading" | "down" }) {
+export function TransparencyView({ answer, head = "loading", keeper = null }: { answer: PublicTransparency | "loading" | "down"; head?: PublicHead | "loading" | "down"; keeper?: boolean | null }) {
   return (
     <View>
       <Text accessibilityRole="header" className="text-3xl font-bold tracking-tight text-zinc-50">
@@ -255,7 +257,7 @@ export function TransparencyView({ answer, head = "loading" }: { answer: PublicT
       ) : (
         answer.editions.map((edition, index) => <EditionView key={edition.year} edition={edition} newest={index === 0} />)
       )}
-      <HeadSection head={head} />
+      <HeadSection head={head} keeper={keeper} />
       <Heading level={2}>{T.tdbHeading}</Heading>
       <Paragraph>{T.tdb}</Paragraph>
       <TextLink label={T.rulesLink} href="/rules" />
@@ -267,13 +269,23 @@ export function TransparencyView({ answer, head = "loading" }: { answer: PublicT
 /**
  * /transparency (3d design, sections 9.1 and 9.3), public, signed in or out: it reads no session for its content and
  * sends two GETs, /api/public/transparency and (Task 5) /api/public/head, each of which may be an hour old: nothing in
- * them changes within a day. Each fails alone: the other part still shows.
+ * them changes within a day. Each fails alone: the other part still shows. 3d review M13: and a third, /api/public/facts,
+ * for whether a keeper's address is set, which alone lets [tr.head] say the value goes to a keeper.
  */
 export default function TransparencyPage() {
   const [answer, setAnswer] = useState<PublicTransparency | "loading" | "down">("loading");
   const [head, setHead] = useState<PublicHead | "loading" | "down">("loading");
+  const [keeper, setKeeper] = useState<boolean | null>(null);
   useEffect(() => {
     let live = true;
+    api("/api/public/facts", { schema: PublicFacts })
+      .then((read) => {
+        if (live) setKeeper(read.keeper);
+      })
+      .catch(() => {
+        // Without the facts the page says neither sentence about the keeper.
+        if (live) setKeeper(null);
+      });
     api("/api/public/transparency", { schema: PublicTransparency })
       .then((read) => {
         if (live) setAnswer(read);
@@ -296,7 +308,7 @@ export default function TransparencyPage() {
     <AppShell>
       <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 pb-16 pt-6">
         <View className="w-full max-w-xl">
-          <TransparencyView answer={answer} head={head} />
+          <TransparencyView answer={answer} head={head} keeper={keeper} />
         </View>
       </ScrollView>
     </AppShell>

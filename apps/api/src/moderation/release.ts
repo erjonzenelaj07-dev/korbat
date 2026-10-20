@@ -9,13 +9,13 @@ import {
   type SealRelease,
 } from "@korbat/contracts";
 import { sql } from "drizzle-orm";
-import type { AccountMailResult, ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
+import type { AccountMailResult, ActiveStaffSession, StaffMessage, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isBoundReached, isDeadlock } from "../lib/lock-bounds";
-import { staffAlert } from "./alerts";
+import { confirmedAlertRow, mailAlertRow } from "./alerts";
 import { decodeListCursor, encodeListCursor } from "./author";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
 import { RETRY_MARGIN_MS } from "./decide";
-import { appendConfirmedAudit, iso, raisedMessage, rows, type Runner } from "./repo";
+import { appendConfirmedAudit, iso, raisedMessage, rows, staffCaseConflict, type Runner } from "./repo";
 
 /**
  * The release (3d design, sections 6.2, 7.2, 7.14 and 9.6): the one-way end of korbat's keeping of the images of a seal
@@ -46,13 +46,44 @@ interface FactsRow {
   tell_held: boolean;
 }
 
+/** The columns of release_facts and upload_release_facts that are an admin's alone. */
+export interface AdminFactsRow {
+  their_reference: string | null;
+  answer: SealRelease["answer"];
+  answered_at: string | null;
+  leave_id: string | null;
+  leave_from: "authority" | "court" | null;
+  leave_reference: string | null;
+  leave_received_on: string | null;
+  leave_untold: boolean | null;
+  leave_untold_until: string | null;
+}
+
+/**
+ * 3d review M1 (design 11.4): the members of a release block that only an admin is given, the authority's reference, its
+ * assessment with its day and the standing leave; for any other session none of them, not even as null, so a moderator
+ * never learns them. The other facts (reported, in the quarantine, preserved, whether the notice would be held) stand.
+ */
+export function adminFacts(admin: boolean, f: AdminFactsRow): Pick<SealRelease, "theirReference" | "answer" | "answeredAt" | "leave"> {
+  if (!admin) return {};
+  return {
+    theirReference: f.their_reference,
+    answer: f.answer,
+    answeredAt: f.answered_at,
+    leave:
+      f.leave_id === null
+        ? null
+        : { id: f.leave_id, from: f.leave_from!, reference: f.leave_reference!, receivedOn: f.leave_received_on!, untold: f.leave_untold === true, untoldUntil: f.leave_untold_until },
+  };
+}
+
 /**
  * CaseDecision.release (sections 7.2, 8.5 and 10.3) for each of these seals for good in force, keyed by the seal's
  * ledger row: the facts of release_facts, the lowest RELEASE_POSTS_MAX posts of the seal not yet released (which the
  * params the key signs must name), how many more remain, silence_days, and the seal's newest release with its posts and
  * their image rows as the seal counted them.
  */
-export async function releaseBlocks(q: Runner, actionIds: readonly string[]): Promise<Map<string, SealRelease>> {
+export async function releaseBlocks(q: Runner, actionIds: readonly string[], admin: boolean): Promise<Map<string, SealRelease>> {
   const blocks = new Map<string, SealRelease>();
   if (actionIds.length === 0) return blocks;
   const [rules] = await rows<{ silence_days: number | null }>(q, sql`select r.silence_days from public.release_rules() r`);
@@ -83,16 +114,10 @@ export async function releaseBlocks(q: Runner, actionIds: readonly string[]): Pr
     const postIds = open.slice(0, RELEASE_POSTS_MAX).map((row) => row.post_id);
     blocks.set(actionId, {
       reported: f!.reported,
-      theirReference: f!.their_reference,
-      answer: f!.answer,
-      answeredAt: f!.answered_at,
+      ...adminFacts(admin, f!),
       handedOverAt: f!.handed_over_at,
       quarantined: f!.quarantined,
       preserved: f!.preserved,
-      leave:
-        f!.leave_id === null
-          ? null
-          : { id: f!.leave_id, from: f!.leave_from!, reference: f!.leave_reference!, receivedOn: f!.leave_received_on!, untold: f!.leave_untold === true, untoldUntil: f!.leave_untold_until },
       tellHeld: f!.tell_held,
       postIds,
       remaining: open.length - postIds.length,
@@ -135,12 +160,19 @@ export async function releaseSeal(deps: ModerationDeps, session: ActiveStaffSess
          where a.id = ${actionId}::uuid and a.kind::text = 'seal_media'`,
   );
   if (seal === undefined) throw new ModerationError("not_found");
+  // 3d review M2: an admin too close to the seal's subject is refused before anything is written, as every route that
+  // names a case refuses (refuseRecused); seal_release refuses it again inside, whatever the API asks first.
+  if (await staffCaseConflict(deps.apiDb, session.userId, seal.case_id)) throw new ModerationError("staff_recused");
   for (let attempt = 1; ; attempt++) {
     try {
-      const outcome = await deps.apiDb.transaction(async (tx): Promise<{ releaseId: string } | "late"> => {
+      const message: StaffMessage = { template: "seal_released", facts: { at: deps.now().toISOString(), posts: params.postIds.length, uploads: 0 } };
+      const outcome = await deps.apiDb.transaction(async (tx): Promise<{ releaseId: string; rowId: number } | "late"> => {
         if (!(await boundLockWaits(tx, confirmed.expiresAt, RELEASE_WAITS))) return "late";
         await deps.social.lockAccounts(tx, [seal.subject], "no key update");
         const [row] = await rows<{ id: string }>(tx, sql`select public.seal_release(${actionId}::uuid, ${params.basis}, ${params.leaveId}::uuid, ${session.userId}::uuid) as id`);
+        // 3d review L1: the alert's row in the release's own transaction, before its audit row: a restart after the commit
+        // never loses it.
+        const rowId = await confirmedAlertRow(tx, message);
         await appendConfirmedAudit(tx, {
           actorId: session.userId,
           keyId: confirmed.keyId,
@@ -154,10 +186,10 @@ export async function releaseSeal(deps: ModerationDeps, session: ActiveStaffSess
           requestId: ctx.requestId,
           expiresAt: confirmed.expiresAt,
         });
-        return { releaseId: row!.id };
+        return { releaseId: row!.id, rowId };
       });
       if (outcome === "late") return "late";
-      deps.background.start(() => afterRelease(deps, outcome.releaseId, params.postIds.length));
+      deps.background.start(() => afterRelease(deps, outcome.releaseId, outcome.rowId, message));
       return { caseId: seal.case_id, releaseId: outcome.releaseId };
     } catch (err) {
       const refusal = raisedMessage(err);
@@ -171,16 +203,13 @@ export async function releaseSeal(deps: ModerationDeps, session: ActiveStaffSess
 }
 
 /**
- * What follows a release's commit, each part in a try of its own (section 7.2, after the commit): the alert seal_released
- * to every staff account, the admin who released included, without a throttle (3c gives the milder lifting of a seal
- * the same); then the author's notice, when it was not born held. Never throws.
+ * What follows a release's commit, each part in a try of its own (section 7.2, after the commit): the mail of the alert
+ * seal_released to every staff account, the admin who released included, without a throttle (3c gives the milder lifting
+ * of a seal the same), from the row the release's transaction wrote (3d review L1); then the author's notice, when it was
+ * not born held. Never throws.
  */
-async function afterRelease(deps: ModerationDeps, releaseId: string, posts: number): Promise<void> {
-  try {
-    await staffAlert(deps, null, 0, { template: "seal_released", facts: { at: deps.now().toISOString(), posts, uploads: 0 } });
-  } catch (err) {
-    deps.log.error({ err, releaseId }, "moderation: the staff accounts were not alerted to a release");
-  }
+async function afterRelease(deps: ModerationDeps, releaseId: string, rowId: number, message: StaffMessage): Promise<void> {
+  await mailAlertRow(deps, rowId, message);
   try {
     await sendReleaseNotice(deps, releaseId);
   } catch (err) {

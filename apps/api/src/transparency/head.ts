@@ -13,6 +13,9 @@ import type { WitnessAdapter } from "./witness";
  * the day, the value, the place and the hash, from which the keeper computes the value again. A later round of the same
  * day asks the witness again while the token is null. The day's first round alerts head_missed when the day before has
  * no published value. The publication writes no audit row: it would move the head it publishes (section 15, 3a).
+ * 3d review M13: the row records when the relay accepted the keeper's mail (keeper_mailed_at); while a keeper's address
+ * is set and none was accepted, each later round of the day mails again, and the next day's first round alerts
+ * head_unmailed for a value whose mail never went.
  */
 
 /** The line feed between the digest's four parts. */
@@ -35,6 +38,8 @@ export interface HeadToday {
   witness: HeadWitness;
   witnessed: boolean;
   published: boolean;
+  /** 3d review M13: whether the relay accepted the keeper's mail of this value (keeper_mailed_at is set). */
+  mailed: boolean;
 }
 
 /** One published row as the public route reads it: never its place. */
@@ -49,7 +54,7 @@ export interface HeadDayRow {
 }
 
 /** The statements of the head's day, which repo.ts writes. */
-export type HeadRepo = Pick<TransparencyRepo, "headInsert" | "headWitnessed" | "headPublish" | "headPlace" | "headMissed" | "headAlert">;
+export type HeadRepo = Pick<TransparencyRepo, "headInsert" | "headWitnessed" | "headPublish" | "headPlace" | "headMissed" | "headAlert" | "headMailed" | "headUnmailed">;
 
 /** What one round's pass did with the day's value. */
 export interface HeadPass {
@@ -60,11 +65,14 @@ export interface HeadPass {
   witnessed: "stored" | "unanswered" | null;
   /** Whether this round's update published the value. */
   published: boolean;
-  /** The keeper's mail, from the round that published: as mailKeeper answered, or unverified when no hash gave the value. */
+  /**
+   * The keeper's mail, from the round that published or (3d review M13) a later round of the day while it is owed: as
+   * mailKeeper answered, or unverified when no hash gave the value.
+   */
   mailed: KeeperMailResult | "unverified" | null;
   /** The alerts this round wrote (each under F's daily rule, so a second in 24 hours is not written). */
-  alerts: ("head_unwitnessed" | "head_missed")[];
-  /** Nothing more to do today: published, and witnessed or never to be. */
+  alerts: ("head_unwitnessed" | "head_missed" | "head_unmailed")[];
+  /** Nothing more to do today: published, witnessed or never to be, and the keeper's mail accepted or never to be. */
   done: boolean;
 }
 
@@ -74,6 +82,8 @@ export interface HeadDeps {
   /** The auth module's mail to HEAD_KEEPER_MAIL, which answers "off" while the setting is empty. */
   mailKeeper: (message: KeeperMessage) => Promise<KeeperMailResult>;
   log: Logger;
+  /** 3d review M13: whether HEAD_KEEPER_MAIL is set, so a mail that did not go is owed. */
+  keeper: boolean;
 }
 
 /** One round's pass over the day's value (7.7 steps 2 to 6). */
@@ -87,6 +97,11 @@ export async function publishHead(deps: HeadDeps, options: { firstOfDay: boolean
   if (options.firstOfDay) {
     const missed = await repo.headMissed();
     if (missed !== null && (await repo.headAlert("head_missed", missed))) alerts.push("head_missed");
+    // 3d review M13: the day before's value whose keeper's mail never went out, while an address is set.
+    if (deps.keeper) {
+      const unmailed = await repo.headUnmailed();
+      if (unmailed !== null && (await repo.headAlert("head_unmailed", unmailed))) alerts.push("head_unmailed");
+    }
   }
   // 3. The witness, while one is on and the row was born under it: a row named none was asked of nobody, and the CHECK
   // keeps a token off it. Asked again in each round while the token is null; a later token proves the value from then on.
@@ -107,25 +122,30 @@ export async function publishHead(deps: HeadDeps, options: { firstOfDay: boolean
   }
   // 4. Published, from null, once.
   let published = false;
-  let mailed: HeadPass["mailed"] = null;
   if (!today.published) {
     const set = await repo.headPublish(today.day);
-    if (set !== null) {
-      published = true;
-      // 5. The keeper's mail, from this round alone. The place's hash is read again and must give the stored value, so the
-      // keeper is never sent a place and a hash that do not check.
-      const place = await repo.headPlace(today.day);
-      if (place === null) {
-        mailed = "unverified";
-        log.error({ job: "transparency", day: today.day }, "transparency: no hash of the audit log gives the head's stored value; the keeper is not mailed");
-      } else {
-        mailed = await deps.mailKeeper({ template: "head_published", day: today.day, value: today.value, seq: place.seq, hash: place.hash, witnessed: set.witnessed });
-      }
-      log.info({ job: "transparency", day: today.day, mailed }, "transparency: the head's daily value was published");
+    if (set !== null) published = true;
+  }
+  // 5. The keeper's mail: from the round that published, and (3d review M13) from each later round of the day while an
+  // address is set and the relay accepted none. The place's hash is read again and must give the stored value, so the
+  // keeper is never sent a place and a hash that do not check.
+  let mailed: HeadPass["mailed"] = null;
+  if ((today.published || published) && !today.mailed && (published || deps.keeper)) {
+    const place = await repo.headPlace(today.day);
+    if (place === null) {
+      mailed = "unverified";
+      log.error({ job: "transparency", day: today.day }, "transparency: no hash of the audit log gives the head's stored value; the keeper is not mailed");
+    } else {
+      mailed = await deps.mailKeeper({ template: "head_published", day: today.day, value: today.value, seq: place.seq, hash: place.hash, witnessed: hasToken });
+      if (mailed === "sent") await repo.headMailed(today.day);
     }
   }
+  if (published) log.info({ job: "transparency", day: today.day, mailed }, "transparency: the head's daily value was published");
   const unwitnessable = witness.mode === "off" || today.witness !== witness.name;
-  return { day: today.day, inserted: today.inserted, witnessed, published, mailed, alerts, done: (today.published || published) && (unwitnessable || hasToken) };
+  // A refused address and a value no hash gives are not retried: no later try changes either, and the next day's alert
+  // head_unmailed says so. A failure is retried in the day's later rounds.
+  const mailDone = !deps.keeper || today.mailed || mailed === "sent" || mailed === "refused" || mailed === "unverified";
+  return { day: today.day, inserted: today.inserted, witnessed, published, mailed, alerts, done: (today.published || published) && (unwitnessable || hasToken) && mailDone };
 }
 
 /** A token as the public answer carries it. */
