@@ -115,6 +115,15 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   sealedForGoodCounts: { is: "neither", why: "answers how many image rows each post sealed for good holds, for quarantine-list, and nothing of an image" },
   quarantineOrphans: { is: "neither", why: "answers the ids of quarantined files' images whose rows are gone and that no release accounts for, for text-verify; never a file" },
   releasedUnerased: { is: "neither", why: "answers the released posts that still hold an unerased image row, with a count, for text-verify; never a file" },
+  // 3d Task 3: the edge's outbox, which only the database's triggers write; the job and the purge lines read image ids and
+  // times from it and never a file, a row of post_media's content or anything of an image.
+  edgeOff: { is: "neither", why: "closes the edge's outbox rows as off, and reads nothing of an image" },
+  edgeDue: { is: "neither", why: "answers outbox rows and their image ids for one round of the edge's job; never a file" },
+  edgeAccepted: { is: "neither", why: "closes outbox rows the round read as accepted" },
+  edgeFailed: { is: "neither", why: "moves outbox rows the round read to their next attempt or gives them up, answering a count and a time" },
+  edgeAlert: { is: "neither", why: "writes the job's own alert row, counts and a time" },
+  purges: { is: "neither", why: "answers each image's newest outbox outcome and time for the case's purge lines; never a file" },
+  postPurges: { is: "neither", why: "answers the newest outbox outcome and time of each image of a post for an order's purge lines; never a file" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 
@@ -709,7 +718,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         // Twelve lists: nine for every reader, likes and bookmarks for the two accounts, Following for the one who follows.
         expect(read).toBe(9 * 3 + 2 * 2 + 1);
         for (const id of f.top.mediaIds) {
-          for (const viewer of [f.author.id, f.other.id, null]) expect(await ask(w, id, viewer), String(viewer)).toEqual({ kind: "file", cacheControl: "public, max-age=300" });
+          for (const viewer of [f.author.id, f.other.id, null]) expect(await ask(w, id, viewer), String(viewer)).toEqual({ kind: "file", cacheControl: "public, max-age=60, s-maxage=300, must-revalidate, stale-if-error=0" });
           expect(await status(w.h.deps, f.author.id, id)).toMatchObject({ status: "ready", blurhash: "L2Eo_P_3jb_3~qoL" });
           expect(await w.repo.isExportable(f.author.id, id)).toBe(true);
         }
@@ -814,7 +823,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         for (const viewer of [bob.id, null]) expect(await media(viewer), String(viewer)).toEqual([{ id: first, hidden: true }, whole(second), whole(third)]);
         expect(await ask(w, first, ada.id)).toEqual({ kind: "file", cacheControl: "private, no-store" });
         for (const viewer of [bob.id, null]) expect((await ask(w, first, viewer)).kind).toBe("not_found");
-        expect(await ask(w, second, null)).toEqual({ kind: "file", cacheControl: "public, max-age=300" });
+        expect(await ask(w, second, null)).toEqual({ kind: "file", cacheControl: "public, max-age=60, s-maxage=300, must-revalidate, stale-if-error=0" });
 
         // The final decision removes another image and closes the case, which ends the withhold taken while deciding.
         await decideIn(w.tx, mod, caseId, { kind: "final", actions: [act("remove_media", second)] });

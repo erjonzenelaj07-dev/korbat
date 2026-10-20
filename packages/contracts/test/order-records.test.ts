@@ -407,6 +407,7 @@ describe("the answers (10.2)", () => {
           closedAt: null,
           closedReason: null,
           gap: false,
+          purges: [],
         },
       ],
       events: [{ id: uuid(22), kind: "opened", ground: null, at: "2026-10-10T00:00:00.000Z", effectiveAt: null, itemId: null, by: "staffer", via: "console" }],

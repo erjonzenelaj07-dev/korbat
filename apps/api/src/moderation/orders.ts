@@ -590,11 +590,14 @@ function owedOf(row: OrderRow, now: number): OrderView["owed"] {
 }
 
 /** GET /api/staff/orders/:order (section 7.5), as the given account may act on it; null for an unknown order. */
-export async function orderView(deps: Pick<ModerationDeps, "apiDb" | "config">, orderId: string, viewer: Pick<ActiveStaffSession, "role">): Promise<OrderView | null> {
+export async function orderView(deps: Pick<ModerationDeps, "apiDb" | "config" | "media">, orderId: string, viewer: Pick<ActiveStaffSession, "role">): Promise<OrderView | null> {
   const row = await orderRow(deps.apiDb, orderId);
   if (row === null) return null;
   const [items, events, gapped] = await Promise.all([orderItems(deps.apiDb, orderId), orderEvents(deps.apiDb, orderId), itemsWithOpenGaps(deps.apiDb, orderId)]);
   const images = await imageCounts(deps.apiDb, items.flatMap((item) => (item.postId === null ? [] : [item.postId])));
+  // 3d Task 3 (sections 7.4 and 8.4): the purge lines of each disabled item's images, through the media module, which alone
+  // names the edge's outbox; an item never disabled has none.
+  const purges = await deps.media.postPurges(items.flatMap((item) => (item.postId !== null && item.disabledAt !== null ? [item.postId] : [])));
   const now = Date.parse(row.now);
   const admin = viewer.role === "admin";
   const summary = summaryOf(row);
@@ -648,6 +651,7 @@ export async function orderView(deps: Pick<ModerationDeps, "apiDb" | "config">, 
       closedReason: item.closedReason,
       // Task 6: an open restore gap names the item, whose disabling the restore lost: "Disable for an order" takes it again.
       gap: gapped.has(item.id),
+      purges: item.postId !== null && item.disabledAt !== null ? (purges.get(item.postId) ?? []) : [],
     })),
     events: events.map((event) => ({ ...event })),
     owed: owedOf(row, now),

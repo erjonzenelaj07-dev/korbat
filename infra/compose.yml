@@ -156,6 +156,15 @@ services:
       # 3f Task 5: whether a deletion keeps an account's address, at most seven days, while a report of its sealed images
       # to the authorities is owed. Empty means on; off restores the purge that overwrites the address at once.
       REPORT_HOLD: ${API_REPORT_HOLD:-}
+      # 3d: the app's site switch, Caddy's (3f), handed to the API too, which refuses a test adapter while the site is open.
+      APP_SITE: ${APP_SITE:-open}
+      # 3d Task 3: the purge of an image's copies at the edge once it stops being public: off (empty, the default), test
+      # (refused while APP_SITE is open) or cloudflare, which needs the zone's id, the API token with the one permission
+      # Zone, Cache Purge, and the public hostname images are served under (README, The edge).
+      EDGE_PURGE: ${API_EDGE_PURGE:-}
+      EDGE_ZONE_ID: ${API_EDGE_ZONE_ID:-}
+      EDGE_API_TOKEN: ${API_EDGE_API_TOKEN:-}
+      EDGE_HOST: ${API_EDGE_HOST:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

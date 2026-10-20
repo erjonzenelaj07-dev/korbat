@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, pgEnum, pgTable, primaryKey, real, smallint, text, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, pgEnum, pgTable, primaryKey, real, smallint, text, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { apiRole, fullAccess, ts } from "./helpers";
 import { profiles } from "./identity";
 
@@ -156,6 +156,45 @@ export const postMedia = pgTable(
     check("post_media_attached_is_complete", sql`${t.postId} is null or (${t.status} = 'ready' and ${t.position} between 0 and 3 and ${t.altText} is not null)`),
     check("post_media_alt_len", sql`char_length(${t.altText}) <= 1000`),
     fullAccess("post_media_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * The edge's outbox (3d design, sections 2 row 11, 6.3 and 7.4; Task 3): one row each time an image stops being public,
+ * which the job edge-purge drains to the purge adapter. No role inserts a row: the two definer triggers post_media_purge
+ * and posts_purge write it in the transaction that hides the image, whoever the writer is, and the API's role holds no
+ * INSERT, so no route can forget one and none can invent one. The insert trigger edge_purges_insert forces `created_at`
+ * (clock_timestamp()) and `next_at` (now(): due at once). The API's job reads it, moves the four columns of a purge's
+ * progress and (Task 8) deletes a row 30 days after it was done. No foreign key: an image's row may go, by a deletion or
+ * the disposal, while its purge is still owed. The closed lists are the contracts' EDGE_PURGE_CAUSES and
+ * EDGE_PURGE_OUTCOMES, written out here; a database test holds each migrated CHECK to its constant.
+ */
+export const edgePurges = pgTable(
+  "edge_purges",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    mediaId: uuid("media_id").notNull(),
+    /** state, deleted or released. */
+    cause: text("cause").notNull(),
+    /** Forced: clock_timestamp(). */
+    createdAt: ts("created_at").notNull(),
+    /** Forced at insert: now(). The job moves it back off after a failed purge. */
+    nextAt: ts("next_at").notNull(),
+    attempts: smallint("attempts").notNull().default(0),
+    /** accepted, failed or off; set with done_at, once. */
+    outcome: text("outcome"),
+    doneAt: ts("done_at"),
+  },
+  (t) => [
+    check("edge_purges_cause", sql`${t.cause} in ('state', 'deleted', 'released')`),
+    check("edge_purges_outcome", sql`${t.outcome} in ('accepted', 'failed', 'off')`),
+    check("edge_purges_done", sql`(${t.outcome} is null) = (${t.doneAt} is null)`),
+    check("edge_purges_attempts", sql`${t.attempts} >= 0`),
+    /** The job's round: the rows still owed a purge, by when they are due. */
+    index("edge_purges_due_idx").on(t.nextAt).where(sql`done_at is null`),
+    /** The case's and the order's purge line: the newest row of an image. */
+    index("edge_purges_media_idx").on(t.mediaId, t.id),
+    fullAccess("edge_purges_api_all", apiRole),
   ],
 ).enableRLS();
 

@@ -468,6 +468,7 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "quarantine_lost":
     case "release_undestroyed":
     case "seal_released":
+    case "edge_purge_failed":
       return alertMail(template, data);
     case "release_notice": {
       // 3d Task 2 (design, sections 7.2 and 7.15; W.6 and W.8): RELEASE_NOTICE's paragraphs, rendered by the one function

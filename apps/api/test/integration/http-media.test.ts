@@ -81,6 +81,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
   });
   afterAll(async () => {
     rmSync(root, { recursive: true, force: true });
+    // 3d Task 3: the edge's outbox rows of this file's images, which hiding and deleting them wrote; the API's role may delete them.
+    await apiDb.execute(sql`delete from public.edge_purges where media_id = any(${`{${uploaded.join(",")}}`}::uuid[])`);
     await closeDecisions();
     await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
   });
@@ -100,11 +102,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
   const errorCode = async (res: Response) => ErrorEnvelope.parse(await res.json()).error.code;
   const jpeg = { type: "image/jpeg", body: BYTES.jpeg };
 
+  /** Every image readyImage made, whose outbox rows the file removes at its end. */
+  const uploaded: string[] = [];
   /** Uploads an image and lets the stand-in worker accept it. */
   async function readyImage(b: Browser): Promise<string> {
     const res = await b.fetch("/api/media", { raw: jpeg });
     expect(res.status).toBe(202);
     const { id } = UploadResponse.parse(await res.json());
+    uploaded.push(id);
     worker.ready(id, { width: 1200, height: 800 });
     expect(MediaStatusResponse.parse(await (await b.fetch(`/api/media/${id}`)).json()).status).toBe("ready");
     return id;
@@ -132,11 +137,18 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
     const image = await app.request(first.large);
     expect(image.status).toBe(200);
     expect(image.headers.get("content-type")).toBe("image/webp");
-    expect(image.headers.get("cache-control")).toBe("public, max-age=300");
+    expect(image.headers.get("cache-control")).toBe("public, max-age=60, s-maxage=300, must-revalidate, stale-if-error=0");
     expect(image.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await image.text()).toBe(`large-webp-of-${id}`);
     const again = await app.request(first.large, { headers: { "if-none-match": image.headers.get("etag")! } });
     expect(again.status).toBe(304);
+    // 3d Task 3 (design, section 7.4): the 304 carries the 200's header, and every other answer of the API stays no-store,
+    // a 404 of the image route included, so no edge keeps a refusal that would outlive a restored image.
+    expect(again.headers.get("cache-control")).toBe("public, max-age=60, s-maxage=300, must-revalidate, stale-if-error=0");
+    const missing = await app.request(`/api/media/${randomUUID()}/large.webp`);
+    expect([missing.status, missing.headers.get("cache-control")]).toEqual([404, "no-store"]);
+    const status = await ada.b.fetch(`/api/media/${id}`);
+    expect([status.status, status.headers.get("cache-control")]).toEqual([200, "no-store"]);
 
     const latest = TimelinePage.parse(await (await app.request("/api/timeline/latest?limit=50")).json());
     expect(latest.items.find((item) => item.post.id === post.id)?.post.media[0]).toMatchObject({ alt: "a harbour at dawn" });
@@ -216,7 +228,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images over HTTP", () =>
 
     const own = await ada.b.fetch(`/api/media/${id}/small.webp`);
     expect([own.status, own.headers.get("cache-control")]).toEqual([200, "private, no-store"]);
-    expect((await bob.b.fetch(`/api/media/${id}/small.webp`)).status).toBe(404);
+    const notShown = await bob.b.fetch(`/api/media/${id}/small.webp`);
+    expect([notShown.status, notShown.headers.get("cache-control")]).toEqual([404, "no-store"]);
     expect((await app.request(`/api/media/${id}/small.webp`)).status).toBe(404);
 
     // The author deletes the post: the held image's row stays, the image is served to nobody, its status answers as

@@ -155,9 +155,10 @@ async function withTurnstile(path, json) {
 }
 
 /** Any request, with a raw body; answers with the status, the headers and the body's bytes. */
-async function send(path, { method = "GET", token, body, type } = {}) {
+async function send(path, { method = "GET", token, body, type, ifNoneMatch } = {}) {
   const headers = {};
   if (type) headers["content-type"] = type;
+  if (ifNoneMatch) headers["if-none-match"] = ifNoneMatch;
   if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(`${base}${path}`, { method, headers, body });
   return { status: res.status, headers: res.headers, bytes: Buffer.from(await res.arrayBuffer()) };
@@ -237,6 +238,12 @@ function hasLatitude(bytes) {
   return bytes.includes(little) || bytes.includes(big);
 }
 
+/**
+ * 3d Task 3 (design, sections 2 row 12 and 7.4): the header of a public image, which the API builds from the contracts'
+ * EDGE_CACHE: a browser's minute, an edge's five minutes, revalidated and never stale.
+ */
+const PUBLIC_IMAGE_CACHE = "public, max-age=60, s-maxage=300, must-revalidate, stale-if-error=0";
+
 async function images(token) {
   const jpeg = await sharp({ create: { width: 1200, height: 900, channels: 3, background: "#2f6f4f" } })
     .jpeg()
@@ -256,7 +263,10 @@ async function images(token) {
   const large = created.body.media[0].large;
   const file = await send(large);
   const served = `HTTP ${file.status}, ${file.headers.get("content-type")}, ${file.headers.get("cache-control")}`;
-  check("large.webp is served to anyone and may be cached publicly", file.status === 200 && file.headers.get("content-type") === "image/webp" && file.headers.get("cache-control") === "public, max-age=300", served);
+  check("large.webp is served to anyone and may be cached publicly", file.status === 200 && file.headers.get("content-type") === "image/webp" && file.headers.get("cache-control") === PUBLIC_IMAGE_CACHE, served);
+  // 3d Task 3 (design, section 7.4): the 304 of a public image carries the same header through Caddy.
+  const revalidated = await send(large, { ifNoneMatch: file.headers.get("etag") ?? "" });
+  check("3d: its 304 carries the same header", revalidated.status === 304 && revalidated.headers.get("cache-control") === PUBLIC_IMAGE_CACHE, `HTTP ${revalidated.status}, ${revalidated.headers.get("cache-control")}`);
   const meta = await sharp(file.bytes).metadata();
   const clean = meta.format === "webp" && meta.exif === undefined && meta.xmp === undefined && meta.icc === undefined;
   check("large.webp is a fresh WebP without EXIF, XMP, ICC, the GPS position or the planted text", clean && !hasLatitude(file.bytes) && !file.bytes.includes(PLANTED), `${meta.format} ${meta.width}x${meta.height}`);
@@ -280,7 +290,9 @@ async function images(token) {
   const status = await send(`/api/posts/${created.body.id}/status`);
   check("3f: the API's status route answers 404 with no body for the deleted post", status.status === 404 && status.bytes.length === 0, `HTTP ${status.status}, ${status.bytes.length} bytes`);
   const after = await send(large);
-  check("its image is no longer served", after.status === 404, `HTTP ${after.status}`);
+  check("its image is no longer served, and its 404 may be cached by nobody", after.status === 404 && after.headers.get("cache-control") === "no-store", `HTTP ${after.status}, ${after.headers.get("cache-control")}`);
+  const unknown = await send(`/api/media/${randomUUID()}/large.webp`);
+  check("3d: an image that does not exist answers 404 with no-store", unknown.status === 404 && unknown.headers.get("cache-control") === "no-store", `HTTP ${unknown.status}, ${unknown.headers.get("cache-control")}`);
   let folder = "present";
   for (let attempt = 0; attempt < 60 && folder !== "gone"; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 500));

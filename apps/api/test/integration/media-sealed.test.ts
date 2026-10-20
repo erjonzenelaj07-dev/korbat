@@ -67,7 +67,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a sealed image reaches n
       for (const viewer of [ada.id, bob.id, null]) expect((await ask(h.deps, mediaIds[0]!, viewer)).kind, String(viewer)).toBe("not_found");
       // A browser that holds the file's tag gets no "not modified" either.
       expect((await ask(h.deps, mediaIds[0]!, ada.id, `"${mediaIds[0]}-large"`)).kind).toBe("not_found");
-      expect(await ask(h.deps, mediaIds[1]!, null)).toEqual({ kind: "file", cacheControl: "public, max-age=300" });
+      expect(await ask(h.deps, mediaIds[1]!, null)).toEqual({ kind: "file", cacheControl: "public, max-age=60, s-maxage=300, must-revalidate, stale-if-error=0" });
     });
   });
 
@@ -128,7 +128,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a sealed image reaches n
       expect(await ask(h.deps, mediaIds[0]!, ada.id)).toEqual({ kind: "file", cacheControl: "private, no-store" });
       for (const viewer of [bob.id, null]) expect((await ask(h.deps, mediaIds[0]!, viewer)).kind, String(viewer)).toBe("not_found");
       // The post's other image stays public.
-      expect(await ask(h.deps, mediaIds[1]!, null)).toEqual({ kind: "file", cacheControl: "public, max-age=300" });
+      expect(await ask(h.deps, mediaIds[1]!, null)).toEqual({ kind: "file", cacheControl: "public, max-age=60, s-maxage=300, must-revalidate, stale-if-error=0" });
     });
   });
 

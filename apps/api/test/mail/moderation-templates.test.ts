@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, ALREADY_NOT_SHOWN, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, SENTENCE_MAIL_KINDS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, isTimeFact, outcomeWords, renderAlert, type AlertKind } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, ALREADY_NOT_SHOWN, EDGE_CACHE, EDGE_RULES, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, SENTENCE_MAIL_KINDS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, isTimeFact, outcomeWords, renderAlert, type AlertKind } from "@korbat/contracts";
 import { noticeTime } from "../../src/auth/flows/notify";
 import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } from "../../src/mail/mailer";
 import { MemoryMailer } from "../../src/mail/memory";
@@ -44,11 +44,13 @@ describe("the closed union of templates", () => {
       "quarantine_due", "quarantine_lost", "image_lost",
       // 3d Task 2.
       "release_undestroyed", "seal_released", "release_notice",
+      // 3d Task 3.
+      "edge_purge_failed",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(65);
+    expect(new Set(names).size).toBe(66);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(65);
+    expect(Object.keys(all)).toHaveLength(66);
   });
 });
 
@@ -617,5 +619,25 @@ describe("3d Task 2: the release's two staff mails and the author's notice (W.6,
     // Several posts take the other lead; a basis the template does not have is refused.
     expect(paragraphs(renderTemplate("release_notice", { ...data, postCount: "3", images: "5" }).text)[0]).toBe("korbat has released the sealed images of 3 of your posts (5 in all): it will not show them again or give them back.");
     expect(() => renderTemplate("release_notice", { ...data, basis: "answer" })).toThrow(/basis/);
+  });
+});
+
+describe("3d Task 3: the edge's staff alert (W.7)", () => {
+  const NOW = "2026-10-19T12:00:00.000Z";
+
+  test("edge_purge_failed: its push and its mail are one sentence, with the line of what to do, every number from a constant, counts and times only", () => {
+    const facts = { count: 3, oldestAt: "2026-10-18T08:05:00.000Z" };
+    const push = renderAlert("edge_purge_failed", facts, new Date(NOW));
+    const mail = renderTemplate("edge_purge_failed", { count: "3", oldestAt: facts.oldestAt, now: NOW });
+    expect(mail.subject).toBe(`korbat: ${push.title}`);
+    expect(mail.subject).toBe("korbat: A cached copy could not be dropped");
+    expect(paragraphs(mail.text).slice(0, 2)).toEqual([push.sentence, push.todo]);
+    expect(push.sentence).toBe(`3 purges at the network provider failed for ${EDGE_RULES.giveUpHours} hours, the first of 2026-10-18 08:05 UTC.`);
+    expect(push.todo).toBe(`The measures themselves stand. A copy may have been served for up to ${EDGE_CACHE.edgeSeconds / 60} minutes after each. The operator checks the provider's token and zone.`);
+    linkless(mail);
+    expect(mail.text).not.toMatch(/token [a-z0-9_-]{20,}|zones[/]/i);
+    // The alert tick mails a row the job wrote, as it mails every kind whose mail is its sentence.
+    expect(TICK_MAILED_KINDS).toContain("edge_purge_failed");
+    expect(ALERT_KINDS.edge_purge_failed.mail).toBe("sentence");
   });
 });

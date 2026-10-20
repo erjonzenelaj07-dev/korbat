@@ -87,7 +87,9 @@ export type TemplateName =
   // sentence; and the author's notice of a release of sealed images of their posts.
   | "release_undestroyed"
   | "seal_released"
-  | "release_notice";
+  | "release_notice"
+  // Task 3: the edge's job gave up on purges at the network provider, a staff alert whose mail is its push's sentence.
+  | "edge_purge_failed";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
-import { mediaPath } from "@korbat/contracts";
+import { ALERT_KINDS, EDGE_RULES, mediaPath, type EdgePurgeView } from "@korbat/contracts";
 import { postMedia, posts, profiles, type Db, type DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
 import { WRITE_CLOCK, closingJudgment, liveNotSuspended } from "../lib/standing";
@@ -569,6 +569,111 @@ export function createMediaRepo(db: Db) {
         select r.post_id, count(*)::int as images from public.release_posts r join post_media m on m.post_id = r.post_id
          where m.erased_at is null group by r.post_id order by r.post_id`)) as unknown as { post_id: string; images: number }[];
       return found.map((row) => ({ postId: row.post_id, images: row.images }));
+    },
+
+    // ------------------------------------------------------------ the edge's outbox (3d design, sections 6.3 and 7.4)
+    // Only the two triggers of 0035_edge_purges write a row of edge_purges; the API's role reads them, moves the four
+    // columns of a purge's progress, and (Task 8) deletes a row done 30 days ago. Every time is the database's.
+
+    /** The adapter is off: every row still owed a purge closes as off at once, and nothing is sent. Answers how many. */
+    async edgeOff(): Promise<number> {
+      const closed = await db.execute(sql`update public.edge_purges set outcome = 'off', done_at = now() where done_at is null returning id`);
+      return closed.length;
+    },
+
+    /**
+     * The rows one round reads: up to `limit` images whose oldest open row is due now, the oldest first, and every open row
+     * of those images, in the order of their images and then of their ids. A row written after this read is not among
+     * them, whatever its id, so a round closes no row it did not read.
+     */
+    async edgeDue(limit: number): Promise<{ id: string; mediaId: string }[]> {
+      const rows = await db.execute<{ id: string; media_id: string }>(sql`
+        with images as (
+          select e.media_id, min(e.id) as first from public.edge_purges e
+           where e.done_at is null and e.next_at <= now()
+           group by e.media_id
+           order by min(e.id)
+           limit ${limit})
+        select e.id::text as id, e.media_id from public.edge_purges e join images i on i.media_id = e.media_id
+         where e.done_at is null
+         order by i.first, e.id`);
+      return rows.map((row) => ({ id: row.id, mediaId: row.media_id }));
+    },
+
+    /** The provider took the purge: these rows, the ones a round read, close as accepted. Answers how many. */
+    async edgeAccepted(ids: readonly string[]): Promise<number> {
+      const closed = await db.execute(sql`update public.edge_purges set outcome = 'accepted', done_at = now() where id = any(${`{${ids.join(",")}}`}::bigint[]) and done_at is null returning id`);
+      return closed.length;
+    },
+
+    /**
+     * The purge was not taken: each of these rows counts an attempt and is due again EDGE_RULES.backoffSeconds later,
+     * doubled for each attempt before, at most EDGE_RULES.backoffMaxSeconds; a row written EDGE_RULES.giveUpHours ago or
+     * earlier is given up, as failed. Answers how many were given up and the oldest time among them.
+     */
+    async edgeFailed(ids: readonly string[]): Promise<{ gaveUp: number; oldestAt: string | null }> {
+      const giveUp = sql`e.created_at <= now() - make_interval(hours => ${EDGE_RULES.giveUpHours}::int)`;
+      const [row] = await db.execute<{ gave_up: number; oldest_at: string | null }>(sql`
+        with failed as (
+          update public.edge_purges e
+             set attempts = e.attempts + 1,
+                 next_at = now() + make_interval(secs => least(${EDGE_RULES.backoffSeconds}::int * power(2, e.attempts), ${EDGE_RULES.backoffMaxSeconds}::int)),
+                 outcome = case when ${giveUp} then 'failed' end,
+                 done_at = case when ${giveUp} then now() end
+           where e.id = any(${`{${ids.join(",")}}`}::bigint[]) and e.done_at is null
+          returning e.outcome, e.created_at)
+        select (count(*) filter (where outcome = 'failed'))::int as gave_up,
+               to_char(min(created_at) filter (where outcome = 'failed') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as oldest_at
+          from failed`);
+      return { gaveUp: row!.gave_up, oldestAt: row!.oldest_at };
+    },
+
+    /**
+     * The job's own alert edge_purge_failed (3d design, section 7.14, "Alerts a job writes"): one row of the outbox of
+     * alerts with its kind's priority and scope and its facts, counts and times only, under F's daily rule: none while a
+     * row of the kind was written in the last 24 hours. F's two legs push and mail it. Answers whether it wrote one.
+     */
+    async edgeAlert(facts: { count: number; oldestAt: string }): Promise<boolean> {
+      const entry = ALERT_KINDS.edge_purge_failed;
+      const written = await db.execute(sql`
+        insert into public.alert_outbox (kind, priority, scope, facts)
+        select 'edge_purge_failed', ${entry.priority}, ${entry.scope}, ${JSON.stringify(facts)}::jsonb
+         where not exists (select 1 from public.alert_outbox o where o.kind = 'edge_purge_failed' and o.created_at > now() - make_interval(hours => 24))
+        returning id`);
+      return written.length > 0;
+    },
+
+    /**
+     * For each of these images that has an outbox row, in the order given, its newest row as staff read it (3d design,
+     * section 10.3): its outcome, or pending while it has none, and when it was done, or written while it is pending. An
+     * image with no row never stopped being public and gets no entry.
+     */
+    async purges(mediaIds: readonly string[]): Promise<EdgePurgeView[]> {
+      if (mediaIds.length === 0) return [];
+      const rows = await db.execute<{ media_id: string; outcome: EdgePurgeView["outcome"] | null; at: string }>(sql`
+        select distinct on (e.media_id) e.media_id, e.outcome, to_char(coalesce(e.done_at, e.created_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at
+          from public.edge_purges e
+         where e.media_id = any(${uuidArray(mediaIds)})
+         order by e.media_id, e.id desc`);
+      const newest = new Map(rows.map((row) => [row.media_id, row]));
+      return mediaIds.flatMap((id) => {
+        const row = newest.get(id);
+        return row ? [{ mediaId: id, outcome: row.outcome ?? "pending", at: row.at }] : [];
+      });
+    },
+
+    /** The same for every image row of these posts, erased or not, by post, in their order on the post: an order's items. */
+    async postPurges(postIds: readonly string[]): Promise<Map<string, EdgePurgeView[]>> {
+      const byPost = new Map<string, EdgePurgeView[]>();
+      if (postIds.length === 0) return byPost;
+      const rows = await db.execute<{ post_id: string; media_id: string; outcome: EdgePurgeView["outcome"] | null; at: string }>(sql`
+        select m.post_id, m.id as media_id, e.outcome, to_char(coalesce(e.done_at, e.created_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at
+          from post_media m
+          join lateral (select x.outcome, x.done_at, x.created_at from public.edge_purges x where x.media_id = m.id order by x.id desc limit 1) e on true
+         where m.post_id = any(${uuidArray(postIds)})
+         order by m.post_id, m.position, m.id`);
+      for (const row of rows) byPost.set(row.post_id, [...(byPost.get(row.post_id) ?? []), { mediaId: row.media_id, outcome: row.outcome ?? "pending", at: row.at }]);
+      return byPost;
     },
 
     async moderationStates(afterId: string | null, limit: number): Promise<{ id: string; postId: string; moderationState: MediaRow["moderationState"]; erasedAt: Date | null }[]> {

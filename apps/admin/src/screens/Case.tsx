@@ -44,7 +44,7 @@ import {
 } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { APPEAL_WORDS, CASE_WORDS, CUSTODY_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, AUTOMATION_WORDS, CASE_WORDS, CUSTODY_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
 import { releaseWithKey, revealWithKey } from "../step-up";
@@ -288,6 +288,8 @@ function Images({
           {media.map((image, index) => {
             const id = parseImageId(image.id);
             const shown = openable && id !== null && shownImage?.id === id ? shownImage : null;
+            // 3d Task 3 (section 8.4): the edge's purge line of an image that stopped being public; none for one that never did.
+            const purge = view.purges.find((entry) => entry.mediaId === image.id);
             return (
               <li key={image.id}>
                 {openable ? (
@@ -305,6 +307,9 @@ function Images({
                   <p>{`Image ${index + 1}`}</p>
                 )}
                 <p>{`${image.width} by ${image.height} pixels`}</p>
+                {purge === undefined ? null : (
+                  <p className={purge.outcome === "failed" ? "purge notice" : "purge hint"}>{AUTOMATION_WORDS.purge(purge.outcome, bothTimes(purge.at))}</p>
+                )}
                 {image.alt === null ? (
                   <p className="quiet">Its alt text was erased.</p>
                 ) : image.alt === "" ? (

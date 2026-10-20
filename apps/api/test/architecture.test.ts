@@ -575,6 +575,44 @@ describe("the quarantine's boundary (3d Task 1)", () => {
   });
 });
 
+/**
+ * The adapters' files (3d design, section 5 "The adapters"): each adapter is a file of its own that imports nothing of its
+ * module, so it is given what its interface names and nothing more: no media file, no repository and no database. Task
+ * 3 builds the first, the edge's purge (media/edge-adapter.ts); the matcher's (media/match-adapter.ts) and the witness's
+ * (transparency/witness.ts) join this list with the tasks that build them. A package import that is no database stays
+ * allowed: the adapter reads its numbers from the contracts.
+ */
+const ADAPTER_FILES = ["media/edge-adapter.ts"];
+function findAdapterViolations(files: SourceFile[]): string[] {
+  const violations: string[] = [];
+  for (const { path, source } of files) {
+    if (!ADAPTER_FILES.includes(path)) continue;
+    for (const spec of specifiers(source)) {
+      if (spec.startsWith(".")) violations.push(`${path}: imports ${spec}, a file of the API`);
+      else if (spec.startsWith("@korbat/db")) violations.push(`${path}: imports ${spec}, the database`);
+    }
+  }
+  return violations;
+}
+
+describe("the adapters' files (3d Task 3)", () => {
+  test("each adapter's file exists and imports nothing of its module, no repository and no database", () => {
+    const files = loadSources();
+    for (const path of ADAPTER_FILES) expect(files.map((file) => file.path), path).toContain(path);
+    expect(findAdapterViolations(files)).toEqual([]);
+  });
+
+  test("catches an adapter that imports the media repository, a module's file, its index or the database", () => {
+    expect(
+      findAdapterViolations([
+        { path: "media/edge-adapter.ts", source: 'import { createMediaRepo } from "./repo"; import type { MediaDeps } from "./context"; import { postMedia } from "@korbat/db"; import { EDGE_RULES } from "@korbat/contracts";' },
+        { path: "media/edge.ts", source: 'import { createMediaRepo } from "./repo";' },
+      ]),
+    ).toEqual(["media/edge-adapter.ts: imports ./repo, a file of the API", "media/edge-adapter.ts: imports ./context, a file of the API", "media/edge-adapter.ts: imports @korbat/db, the database"]);
+    expect(findAdapterViolations([{ path: "media/edge-adapter.ts", source: 'import { media } from "../media";' }])).toEqual(["media/edge-adapter.ts: imports ../media, a file of the API"]);
+  });
+});
+
 describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);

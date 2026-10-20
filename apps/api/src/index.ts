@@ -8,7 +8,7 @@ import { loadConfig } from "./config";
 import { redisJobLock } from "./lib/jobs";
 import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
-import { createMedia } from "./media";
+import { createMedia, edgeAdapterFrom } from "./media";
 import { RedisStore } from "./middleware/rate-limit";
 import { createModeration } from "./moderation";
 import { createProfileStore } from "./profiles/store";
@@ -47,11 +47,15 @@ const media = createMedia({
   resolveSession: auth.resolveSession,
   rateLimitStore,
   enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(rateLimitStore, userId, "upload", accountCreatedAt, now),
+  // 3d Task 3: the edge's purge adapter (EDGE_PURGE, off by default); the configuration refused a test adapter on an open site.
+  edge: edgeAdapterFrom(config),
 });
 await media.prepare();
 // Background work runs on one API instance at a time, under locks in Redis that are refreshed while a round runs.
 const jobLock = redisJobLock(redis);
 const stopSweeper = media.startSweeper(jobLock);
+// 3d Task 3: the edge's outbox, drained every fifteen seconds: closed as off while the adapter is off, else one purge a round.
+const stopEdge = media.startEdge(jobLock);
 const stopJanitor = auth.startJanitor(jobLock);
 
 // Moderation cases: the module owns its tables on the API's role and reaches the social module through an interface of
@@ -126,6 +130,7 @@ const SETTLE_MS = 5_000;
 async function shutdown(signal: string) {
   logger.info({ signal }, "shutting down");
   stopSweeper();
+  stopEdge();
   stopJanitor();
   stopExplore();
   stopPurge();

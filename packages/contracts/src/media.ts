@@ -108,3 +108,58 @@ export type HiddenMedia = z.infer<typeof HiddenMedia>;
 export function isHiddenMedia(item: MediaView | HiddenMedia): item is HiddenMedia {
   return "hidden" in item;
 }
+
+// ---------------------------------------------------------------- the edge (3d design, sections 2 rows 11 to 13, 7.4 and 10.1)
+
+/**
+ * The two numbers of a public image's Cache-Control header (3d Task 3), which the API builds the header from: a browser
+ * keeps a copy at most `browserSeconds`, an edge at most `edgeSeconds`, and neither serves a stale one. They are the
+ * bound korbat states for a hidden image's copy without an accepted purge, and every sentence that states it prints them
+ * from here.
+ */
+export const EDGE_CACHE = {
+  browserSeconds: 60,
+  edgeSeconds: 300,
+} as const;
+
+/**
+ * The outbox's job (7.4): at most `prefixes` images a request and one request a round, a round `roundSeconds` after the
+ * last ended (so at most four a minute), each request bounded at `timeoutMs`; a failed row waits `backoffSeconds`, doubled
+ * at each failure up to `backoffMaxSeconds`, and is given up `giveUpHours` after it was written; the retention job (Task 8)
+ * deletes a row `keepDays` after it was done.
+ */
+export const EDGE_RULES = {
+  prefixes: 30,
+  roundSeconds: 15,
+  timeoutMs: 5000,
+  backoffSeconds: 30,
+  backoffMaxSeconds: 3600,
+  giveUpHours: 24,
+  keepDays: 30,
+} as const;
+
+/** The numbers the words about the edge print, in the units they print them: the edge's bound in minutes and the hours of the give-up. */
+export const EDGE_WORDS = {
+  edgeMinutes: EDGE_CACHE.edgeSeconds / 60,
+  giveUpHours: EDGE_RULES.giveUpHours,
+} as const;
+
+/** Why an image stopped being public: a state, the image's or its post's; a deletion or an erasure; a release (the CHECK of edge_purges.cause). */
+export const EDGE_PURGE_CAUSES = ["state", "deleted", "released"] as const;
+export type EdgePurgeCause = (typeof EDGE_PURGE_CAUSES)[number];
+
+/** How an outbox row ended: the provider took the purge, it gave up, or no adapter was on (the CHECK of edge_purges.outcome). */
+export const EDGE_PURGE_OUTCOMES = ["accepted", "failed", "off"] as const;
+export type EdgePurgeOutcome = (typeof EDGE_PURGE_OUTCOMES)[number];
+
+/**
+ * One image's newest outbox row as staff read it (10.3), on a case and on an order's item: its outcome, or `pending` while
+ * it has none, and its time (when it ended, or when it was written while it is pending). An image that never stopped
+ * being public has no row and no entry.
+ */
+export const EdgePurgeView = z.strictObject({
+  mediaId: z.uuid(),
+  outcome: z.enum([...EDGE_PURGE_OUTCOMES, "pending"]),
+  at: z.iso.datetime(),
+});
+export type EdgePurgeView = z.infer<typeof EdgePurgeView>;

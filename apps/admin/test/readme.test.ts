@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { ALERT_RULES, ORDER_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES } from "@korbat/contracts";
+import { ALERT_RULES, ALERT_TEXTS, EDGE_CACHE, EDGE_RULES, ORDER_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES } from "@korbat/contracts";
+import { AUTOMATION_WORDS } from "../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK, RELEASE_OVERDUE_RUNBOOK } from "../src/screens/Home";
 
 /**
@@ -475,5 +476,59 @@ describe("the README's release (3d design, W.11)", () => {
     expect(all).not.toContain("but nothing releases or erases them before 3d");
     expect(all).not.toContain("its software has no function yet to hand them over or to erase them");
     expect(all).not.toContain("before sub-project 3d, the operator copies out or destroys the files");
+  });
+});
+
+/**
+ * 3d Task 3 (design, sections 7.4 and W.11): the README's section The edge, after Images. It states the header as the API
+ * builds it from EDGE_CACHE, the outbox and its job with EDGE_RULES' numbers, the settings as the operator sets them in
+ * infra/.env (with the API's prefix), the zone's settings and the check of W.11, whose line is the console's own words.
+ * Every number in it is a constant's or an HTTP status.
+ */
+describe("the README's edge (3d design, W.11)", () => {
+  test("The edge stands after Images and before Explore, and Images no longer promises a five-minute public cache", () => {
+    const lines = readmeLines();
+    expect(lines.indexOf("## The edge")).toBeGreaterThan(lines.indexOf("## Images"));
+    expect(lines.indexOf("## The edge")).toBeLessThan(lines.indexOf("## Explore"));
+    expect(readmeLines().join(" ")).not.toContain("with a public five-minute cache");
+    expect(sectionLines("## Images").join(" ")).toContain("set the zone as The edge says");
+  });
+
+  test("the header, the job and its numbers, each from its constant, and the alert by its title", () => {
+    const text = sectionLines("## The edge").join(" ");
+    expect(text).toContain(`public, max-age=${EDGE_CACHE.browserSeconds}, s-maxage=${EDGE_CACHE.edgeSeconds}, must-revalidate, stale-if-error=0`);
+    expect(text).toContain(`a browser keeps a copy for at most ${EDGE_CACHE.browserSeconds} seconds and an edge for at most ${EDGE_CACHE.edgeSeconds}`);
+    expect(text).toContain(`up to ${EDGE_RULES.prefixes} images a request and one request a round, ${EDGE_RULES.roundSeconds} seconds after the last round ended`);
+    expect(text).toContain(`after ${EDGE_RULES.giveUpHours} hours it is recorded as failed`);
+    expect(text).toContain(`("${ALERT_TEXTS.edge_purge_failed.title}")`);
+    expect(text).toContain("`edge_purges`");
+    expect(text).toContain("`edge-purge`");
+    // The header's own stale-if-error=0, held above as the whole header, and the three statuses the section names.
+    const values = new Set([EDGE_CACHE.browserSeconds, EDGE_CACHE.edgeSeconds, EDGE_RULES.prefixes, EDGE_RULES.roundSeconds, EDGE_RULES.giveUpHours, 0, 200, 304, 404].map(String));
+    expect((text.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual([]);
+  });
+
+  test("the settings as the operator sets them in infra/.env, the start that reads them, and the two refusals", () => {
+    const text = sectionLines("## The edge").join(" ");
+    for (const words of ["`API_EDGE_PURGE=off`", "`API_EDGE_PURGE=cloudflare`", "`API_EDGE_ZONE_ID`", "`API_EDGE_API_TOKEN`", "`API_EDGE_HOST`", "docker compose -f infra/compose.yml up -d api"]) {
+      expect(text, words).toContain(words);
+    }
+    expect(text).toContain("The API refuses to start with `cloudflare` and one of the three missing, and with `test` while `APP_SITE` is open.");
+  });
+
+  test("the zone's settings and the check of W.11, whose line is the console's own", () => {
+    const text = sectionLines("## The edge").join(" ");
+    for (const words of [
+      'Browser Cache TTL "Respect Existing Headers"',
+      "no Edge Cache TTL rule on `/api/media`",
+      "Always Online off",
+      "a token with the one permission Zone, Cache Purge",
+      "read the image through the public hostname until its header shows a cache hit",
+      "Note the seconds.",
+    ]) {
+      expect(text, words).toContain(words);
+    }
+    expect(text).toContain(`read the case's line "Edge copy: purge accepted"`);
+    expect(AUTOMATION_WORDS.purge("accepted", "a time").startsWith("Edge copy: purge accepted")).toBe(true);
   });
 });

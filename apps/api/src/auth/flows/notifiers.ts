@@ -191,7 +191,9 @@ export type StaffAlertKind =
   // 3d Task 2: a released file still recorded in the quarantine, which alert_steps() writes daily, and an admin's release
   // of sealed images, which staffAlert writes after the release's commit.
   | "release_undestroyed"
-  | "seal_released";
+  | "seal_released"
+  // 3d Task 3: the edge's job gave up on purges, which it writes as its own row of the outbox.
+  | "edge_purge_failed";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -222,6 +224,7 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "quarantine_lost":
     case "release_undestroyed":
     case "seal_released":
+    case "edge_purge_failed":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off" };

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ACTION_KINDS, CSAM_KEYWORDS, DECISION_KEYWORDS, MEASURES, NOTICE_LIMITS, ORDER_ACTION_KINDS, RULE_IDS, TDB_CATEGORIES, appealDeadline, textDigest } from "@korbat/contracts";
+import { ACTION_KINDS, CSAM_KEYWORDS, DECISION_KEYWORDS, EDGE_PURGE_CAUSES, EDGE_PURGE_OUTCOMES, MEASURES, NOTICE_LIMITS, ORDER_ACTION_KINDS, RULE_IDS, TDB_CATEGORIES, appealDeadline, textDigest } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { TEXT_DIGEST_VECTORS } from "../../../../packages/contracts/test/digest-vectors";
 import { createAuthRepo } from "../../src/auth/repo";
@@ -643,6 +643,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         post_media_guard: 'BEFORE UPDATE OF post_id, owner_id, alt_text, "position", width, height, blurhash ON public.post_media FOR EACH ROW',
         post_media_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
         post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
+        // 3d Task 3 (0035_edge_purges): the edge's outbox row of an image that stops being public, after the statement.
+        post_media_purge: "AFTER DELETE OR UPDATE OF moderation_state, erased_at ON public.post_media FOR EACH ROW",
         // 3e's reporting counts (0022_reporting_counts) add the tally of each report after it is stored, on the same table.
         report_tallies_count: "AFTER INSERT ON public.intakes FOR EACH ROW",
         staff_texts_insert: "BEFORE INSERT ON public.staff_texts FOR EACH ROW",
@@ -671,6 +673,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         posts_guard_insert: "BEFORE INSERT ON public.posts FOR EACH ROW",
         // Only a statement that names one of the three columns and changes one meets the guard: a counter's update never does.
         posts_guard_update: expect.stringMatching(/^BEFORE UPDATE OF state, moderation_level, erased_at ON public\.posts FOR EACH ROW WHEN \(.*IS DISTINCT FROM.*IS DISTINCT FROM.*IS DISTINCT FROM.*\)$/),
+        // 3d Task 3 (0035_edge_purges): one outbox row for each image of a post whose level or state leaves visible.
+        posts_purge: "AFTER UPDATE OF moderation_level, state ON public.posts FOR EACH ROW",
       });
     });
 
@@ -716,6 +720,34 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       }
       const views = (await otherDefinitions()).filter((d) => d.kind === "view" && d.name === "legal_order_clock");
       expect(views.map((v) => /interval '/i.test(v.definition))).toEqual([false]);
+    });
+
+    test("3d Task 3 (0035_edge_purges; design, sections 6.3 and 6.9): only the two trigger functions insert into edge_purges, each a definer that compares through text; the API's role reads, moves four columns and deletes, and inserts nothing; both CHECKs are their constants", async () => {
+      const all = await functions();
+      // As pg_get_functiondef prints a statement: one space between words, the name schema-qualified or bare.
+      const inserting = all.filter((f) => /insert into (only )?(public[.])?"?edge_purges"?[ (]/i.test(f.definition)).map((f) => f.name);
+      expect(inserting).toEqual(["public.post_media_purge", "public.posts_purge"]);
+      for (const name of ["public.post_media_purge", "public.posts_purge", "public.edge_purges_insert"]) {
+        const f = all.find((found) => found.name === name)!;
+        expect({ owner: f.owner, definer: f.definer, config: f.config, api: f.api, pub: f.pub }, name).toEqual({
+          owner: "korbat_migrate",
+          definer: name !== "public.edge_purges_insert",
+          config: ["search_path=public, pg_temp"],
+          api: false,
+          pub: false,
+        });
+        // Through text, never an enum literal: a level or a state added later is covered without being named.
+        expect(f.definition, name).not.toMatch(/'[a-z_]+'::(public[.])?(post_state|moderation_level|media_moderation_state|media_status)/);
+      }
+      // Neither function takes a lock: no FOR UPDATE, FOR SHARE or LOCK statement.
+      for (const name of ["public.post_media_purge", "public.posts_purge"]) expect(all.find((f) => f.name === name)!.definition, name).not.toMatch(/ for (no key )?(update|share)| lock table /i);
+      expect(await tablePrivileges("korbat_api", "public.edge_purges")).toEqual(["SELECT", "DELETE"]);
+      expect(await updatableColumns("korbat_api", "public.edge_purges")).toEqual(["next_at", "attempts", "outcome", "done_at"]);
+      const listed = (definition: string) => [...definition.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+      expect(listed(await checkDefinition("edge_purges", "edge_purges_cause"))).toEqual([...EDGE_PURGE_CAUSES]);
+      expect(listed(await checkDefinition("edge_purges", "edge_purges_outcome"))).toEqual([...EDGE_PURGE_OUTCOMES]);
+      const [seq] = await apiDb.execute<{ usage: boolean }>(sql`select has_sequence_privilege('korbat_api', 'public.edge_purges_id_seq', 'USAGE') as usage`);
+      expect(seq!.usage).toBe(false);
     });
 
     test("3f Task 5's writers (0030_authority_records; design, section 6.7): only report_open and report_close_unsealed write a hold and a notification record, erase_authority_records deletes them, and none holds a number of order_rules()", async () => {

@@ -1,4 +1,4 @@
-import type { MediaSize } from "@korbat/contracts";
+import type { EdgePurgeView, MediaSize } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { VARIANTS } from "@korbat/media-protocol";
 import type { MediaDeps } from "./context";
@@ -77,6 +77,14 @@ export interface MediaForCases {
   lostUntold(limit: number): Promise<LostImage[]>;
   /** 3d: the outcome of a lost image's notice, which changes only a notice still pending. */
   lostTold(mediaId: string, outcome: "sent" | "suppressed" | "no_address" | "none" | "failed"): Promise<void>;
+  /**
+   * 3d Task 3 (design, sections 7.4 and 10.3): for each of these images that stopped being public, in the order given, its
+   * newest outbox row of the edge: the purge's outcome, or pending, and its time. The moderation module never names the
+   * outbox: a case's purge lines are read through this member.
+   */
+  purges(mediaIds: readonly string[]): Promise<EdgePurgeView[]>;
+  /** 3d Task 3: the same for every image of these posts, by post, in their order on the post: the purge lines of an order's items. */
+  postPurges(postIds: readonly string[]): Promise<Map<string, EdgePurgeView[]>>;
 }
 
 /** 3d: an image whose files are lost, as the dispatch job tells its author of it. */
@@ -150,5 +158,7 @@ export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log"> & 
     requestOwed: async () => (await requestOwed(deps, nowMs())).owed,
     lostUntold: (limit) => deps.repo.lostUntold(limit),
     lostTold: (mediaId, outcome) => deps.repo.lostTold(mediaId, outcome),
+    purges: (mediaIds) => deps.repo.purges(mediaIds),
+    postPurges: (postIds) => deps.repo.postPurges(postIds),
   };
 }

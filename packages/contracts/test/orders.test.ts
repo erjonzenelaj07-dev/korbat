@@ -13,6 +13,7 @@ import {
   ContactPage,
   ContactQuery,
   DISPOSITION_LABELS,
+  EDGE_WORDS,
   ModerationErrorCode,
   NOTIFY_ERRORS,
   ORDER_RULES,
@@ -173,6 +174,7 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       "quarantine_lost",
       "release_undestroyed",
       "seal_released",
+      "edge_purge_failed",
     ]);
     expect(Object.keys(ALERT_KINDS).sort()).toEqual([...ALERT_KIND_LIST].sort());
     expect(Object.keys(ALERT_TEXTS).sort()).toEqual([...ALERT_KIND_LIST].sort());
@@ -210,6 +212,7 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       quarantine_lost: [3, "all", "push+mail", "sentence"],
       release_undestroyed: [3, "all", "push+mail", "sentence"],
       seal_released: [3, "all", "push+mail", "sentence"],
+      edge_purge_failed: [3, "all", "push+mail", "sentence"],
     };
     for (const kind of ALERT_KIND_LIST) expect(row(kind), kind).toEqual(table[kind]);
   });
@@ -243,6 +246,7 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       quarantine_lost: ["count", "at"],
       release_undestroyed: ["count", "oldestAt"],
       seal_released: ["at", "posts", "uploads"],
+      edge_purge_failed: ["count", "oldestAt"],
     });
     for (const kind of ALERT_KIND_LIST) expect(ALERT_KINDS[kind].facts.length, kind).toBeLessThanOrEqual(6);
     expect(["receivedAt", "dueAt", "oldestAt", "at", "since"].every(isTimeFact)).toBe(true);
@@ -291,14 +295,14 @@ describe("ALERT_TEXTS (W.4): one text serves both legs, and it carries counts an
     }
   });
 
-  test("no entry holds an @, a link or a placeholder that is neither a fact of its kind nor a number of ORDER_RULES or QUARANTINE_RULES", () => {
+  test("no entry holds an @, a link or a placeholder that is neither a fact of its kind nor a number of ORDER_RULES, QUARANTINE_RULES or EDGE_WORDS", () => {
     for (const kind of ALERT_KIND_LIST) {
       const text = ALERT_TEXTS[kind];
       const words = [text.title, ...text.sentence.map((part) => part.text), text.todo ?? ""].join(" ");
       expect(words, kind).not.toContain("@");
       expect(words.toLowerCase(), kind).not.toContain("http");
       for (const name of alertPlaceholders(kind)) {
-        expect([...ALERT_KINDS[kind].facts, ...Object.keys(ORDER_RULES), ...Object.keys(QUARANTINE_RULES)], `${kind}: {${name}}`).toContain(name);
+        expect([...ALERT_KINDS[kind].facts, ...Object.keys(ORDER_RULES), ...Object.keys(QUARANTINE_RULES), ...Object.keys(EDGE_WORDS)], `${kind}: {${name}}`).toContain(name);
       }
       // Every number a sentence of 3f prints comes from the facts or from ORDER_RULES: no digit is typed. 3c's burst
       // window is 3c's own number, which its push names as its mail does.

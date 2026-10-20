@@ -11,6 +11,8 @@ import type { AppEnv } from "../env";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import { mediaForCases } from "./cases";
 import type { MediaDeps, MediaForPosts } from "./context";
+import { createEdgeJob } from "./edge";
+import { edgeAdapterFrom, type EdgeAdapter } from "./edge-adapter";
 import { createMediaFiles, storedImageName, type StoredFile } from "./files";
 import { createMediaRepo } from "./repo";
 import { mediaFileRoutes, mediaRoutes } from "./routes";
@@ -24,6 +26,10 @@ export type { MediaDeps, MediaForPosts, PostImage } from "./context";
 export type { StoredFile } from "./files";
 export type { CaseReach, HeldImage, HoldPair } from "./repo";
 export type { SweepReport } from "./sweeper";
+// 3d Task 3: the edge's purge adapter, which the wiring builds from the configuration (EDGE_PURGE and its settings).
+export { edgeAdapterFrom } from "./edge-adapter";
+export type { EdgeAdapter, EdgeSettings } from "./edge-adapter";
+export type { EdgeRoundReport } from "./edge";
 
 /** One attached image row as text-verify reads it: its id, its post, its stored moderation state and when its content was erased. */
 export interface ImageModerationState {
@@ -228,6 +234,8 @@ export interface CreateMediaOptions {
   /** Built from the social module's write limits, so every per-account limit lives in one table. */
   enforceUploadLimit: MediaDeps["enforceUploadLimit"];
   now?: () => Date;
+  /** 3d Task 3: the edge's purge adapter, built from EDGE_PURGE; off when none is given. */
+  edge?: EdgeAdapter;
 }
 
 export function createMedia(options: CreateMediaOptions) {
@@ -249,6 +257,7 @@ export function createMedia(options: CreateMediaOptions) {
   };
   const forAccount = mediaForAccount(deps);
   const forCases = mediaForCases(deps);
+  const edge = options.edge ?? edgeAdapterFrom({ EDGE_PURGE: "off", APP_SITE: "open" });
   return {
     deps,
     /** The interface the social module uses to put images on posts and read them back. */
@@ -266,6 +275,12 @@ export function createMedia(options: CreateMediaOptions) {
     sweep: (now: Date, options: { reconcile: boolean }) => sweep(deps, now, options),
     /** Starts sweeping every thirty seconds under the shared job lock, and returns the function that stops it. */
     startSweeper: (lock: JobLock) => createSweeper(deps, lock).start(),
+    /**
+     * 3d Task 3 (design, sections 7.4 and 7.14): starts the edge's job, edge-purge, under the shared job lock, a round
+     * fifteen seconds after the last ended, and returns the function that stops it. With the adapter off it closes every
+     * outbox row as off.
+     */
+    startEdge: (lock: JobLock) => createEdgeJob({ repo: deps.repo, adapter: edge, log: deps.log }, lock).start(),
     /** An advisory health check: the worker's heartbeat is fresh and the volumes have room. */
     async healthCheck(): Promise<void> {
       const age = await deps.files.heartbeatAge(deps.now().getTime());

@@ -29,7 +29,7 @@ import {
 } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { describeError, ORDER_WORDS, RECOVERY_WORDS } from "../messages";
+import { AUTOMATION_WORDS, describeError, ORDER_WORDS, RECOVERY_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId, type OrderId } from "../router";
 import { correctOrderWithKey, effectOrderWithKey, recordOrderEventWithKey } from "../step-up";
@@ -109,6 +109,16 @@ function ItemFacts({ item }: { item: OrderItemView }) {
             : W.notDisabled}
       </p>
       {item.inForce && item.noEffect !== null ? <p className="hint">{item.noEffect === "already" ? W.alreadyNow : W.deletedNow}</p> : null}
+      {/* 3d Task 3 (section 8.4): the same purge line as on a case, for each image of a disabled item that left the public. */}
+      {item.disabledAt !== null && item.purges.length > 0 ? (
+        <ul className="purges">
+          {item.purges.map((purge) => (
+            <li key={purge.mediaId} className={purge.outcome === "failed" ? "notice" : "hint"}>
+              {AUTOMATION_WORDS.purge(purge.outcome, bothTimes(purge.at))}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {item.inForce && item.preserveUntil !== null && item.preserveEndedAt === null ? <p>{W.preservedUntil(bothTimes(item.preserveUntil))}</p> : null}
       {/* Task 4: the preservation's end erased the post's content; its UTC day, which the notice names too. */}
       {item.erasedAt !== null ? <p>{W.erased(item.erasedAt.slice(0, 10))}</p> : null}

@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { hex, sha256, sortedJson } from "./canonical";
+import { EDGE_WORDS, EdgePurgeView } from "./media";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Authorities' orders and the alert channel (3f design, sections 6.1, 6.2, 10.1, 10.2 and 18, W.1 and W.4). This module
-// imports nothing from the other modules of the contracts but text.ts, which imports nothing: moderation.ts reads its
+// imports nothing from the other modules of the contracts but text.ts, which imports nothing, and (3d Task 3) media.ts,
+// which imports only text.ts, for the edge's numbers and the purge line of an order's item: moderation.ts reads its
 // constants for the staff overview, staff.ts its step-up params, and the watcher (apps/api/src/notify), which imports the
 // contracts and nothing of the API, renders its pushes from it.
 
@@ -18,7 +20,7 @@ import { FORBIDDEN_FORMAT } from "./text";
 export const ORDER_RULES = {
   /** A removal order's hour (TCO Art. 3(3)); a restart of its clock is a fresh one; a message's deadline as an order. */
   hourMinutes: 60,
-  /** The console's target until sub-project 3d purges edge copies. */
+  /** The console's target. It stays with 3d's purge at the edge, which is unconfirmed and can fail (3d design, row 13). */
   targetMinutes: 55,
   /** The most items one "Disable for an order" confirms, and the most links one request names. */
   itemsPerAction: 10,
@@ -183,6 +185,8 @@ export const ALERT_KIND_LIST = [
   // images (after the release's commit, to every staff account, the admin who released included).
   "release_undestroyed",
   "seal_released",
+  // Task 3: the outbox's job gave up on purges at the edge (its own row, under F's daily rule).
+  "edge_purge_failed",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -240,6 +244,7 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   quarantine_lost: sentenceKind(3, "all", ["count", "at"]),
   release_undestroyed: sentenceKind(3, "all", ["count", "oldestAt"]),
   seal_released: sentenceKind(3, "all", ["at", "posts", "uploads"]),
+  edge_purge_failed: sentenceKind(3, "all", ["count", "oldestAt"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -409,9 +414,15 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     sentence: one("An admin released sealed images at {at}: {posts} posts, {uploads} held uploads. The files are to be destroyed."),
     todo: "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
   },
+  // Task 3: the 24 hours and the edge's minutes are EDGE_WORDS', so the words follow the constants.
+  edge_purge_failed: {
+    title: "A cached copy could not be dropped",
+    sentence: one("{count} purges at the network provider failed for {giveUpHours} hours, the first of {oldestAt}."),
+    todo: "The measures themselves stand. A copy may have been served for up to {edgeMinutes} minutes after each. The operator checks the provider's token and zone.",
+  },
 };
 
-/** A placeholder in braces: a fact's name, or a member of ORDER_RULES or of QUARANTINE_RULES. */
+/** A placeholder in braces: a fact's name, or a member of ORDER_RULES, of QUARANTINE_RULES or (3d Task 3) of EDGE_WORDS. */
 const PLACEHOLDER = /[{]([a-zA-Z]+)[}]/g;
 
 /** Every placeholder a kind's words name, each once. */
@@ -467,13 +478,13 @@ function checkFacts(kind: AlertKind, facts: AlertFacts): void {
 }
 
 /**
- * A kind's title, sentence and line of what to do, filled from the facts, ORDER_RULES and QUARANTINE_RULES. A time
+ * A kind's title, sentence and line of what to do, filled from the facts, ORDER_RULES, QUARANTINE_RULES and EDGE_WORDS. A time
  * prints as alertTime does at `now`. A placeholder with nothing to fill it, a fact of another kind and a fact of the
  * wrong form throw: an alert never goes out with a hole or with anything but counts and times in it.
  */
 export function renderAlert(kind: AlertKind, facts: AlertFacts, now: Date): { title: string; sentence: string; todo: string | null } {
   checkFacts(kind, facts);
-  const rules = { ...ORDER_RULES, ...QUARANTINE_RULES } as Record<string, number | null>;
+  const rules = { ...ORDER_RULES, ...QUARANTINE_RULES, ...EDGE_WORDS } as Record<string, number | null>;
   const fill = (text: string) =>
     text.replace(PLACEHOLDER, (_match, name: string) => {
       const value = facts[name];
@@ -1086,6 +1097,11 @@ export const OrderItemView = z.strictObject({
   closedReason: z.enum(ORDER_ITEM_CLOSE_REASONS).nullable(),
   /** True when an open restore gap names the item (Task 6 builds the gaps); false until then. */
   gap: z.boolean(),
+  /**
+   * 3d Task 3 (design, sections 7.4 and 8.4): for an item that was disabled, the newest outbox row of each image of its
+   * post that stopped being public, as a case carries them (CaseView.purges); empty for an item never disabled.
+   */
+  purges: z.array(EdgePurgeView),
 });
 export type OrderItemView = z.infer<typeof OrderItemView>;
 

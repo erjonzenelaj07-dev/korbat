@@ -46,15 +46,45 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 60 tables in total", () => {
+  test("there are 61 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
     // legal_order_events; then the four of the records to authorities: authority_notifications,
     // authority_notification_events, productions and auth.report_holds; then the two of recovery: restore_gaps and
     // copy_marks; then 3d's first, quarantine_files; then the release's four (Task 2): release_leaves, releases,
-    // release_posts and release_notices.
-    expect(tables.length).toBe(60);
+    // release_posts and release_notices; then the edge's outbox (Task 3), edge_purges.
+    expect(tables.length).toBe(61);
+  });
+  test("3d's edge_purges (section 6.3): one row an image that stopped being public, its cause and its outcome under closed lists, both ends or neither, the job's index and the newest row's", () => {
+    const purges = byName.get("edge_purges")!;
+    const checkSql = (_table: string, name: string) => new PgDialect().sqlToQuery(purges.checks.find((c) => c.name === name)!.value).sql;
+    expect(purges.schema ?? "public").toBe("public");
+    expect(purges.columns.map((c) => [c.name, c.getSQLType(), c.notNull])).toEqual([
+      ["id", "bigint", true],
+      ["media_id", "uuid", true],
+      ["cause", "text", true],
+      ["created_at", "timestamp with time zone", true],
+      ["next_at", "timestamp with time zone", true],
+      ["attempts", "smallint", true],
+      ["outcome", "text", false],
+      ["done_at", "timestamp with time zone", false],
+    ]);
+    expect(purges.columns.find((c) => c.name === "id")?.primary).toBe(true);
+    expect(purges.columns.find((c) => c.name === "id")?.generatedIdentity?.type).toBe("always");
+    expect(purges.columns.find((c) => c.name === "attempts")?.default).toBe(0);
+    // No foreign key: an image's row may be gone, by a deletion or the disposal, while its purge is still owed.
+    expect(purges.foreignKeys).toEqual([]);
+    expect(purges.checks.map((c) => c.name).sort()).toEqual(["edge_purges_attempts", "edge_purges_cause", "edge_purges_done", "edge_purges_outcome"]);
+    expect(checkSql("edge_purges", "edge_purges_cause")).toBe(`"edge_purges"."cause" in ('state', 'deleted', 'released')`);
+    expect(checkSql("edge_purges", "edge_purges_outcome")).toBe(`"edge_purges"."outcome" in ('accepted', 'failed', 'off')`);
+    expect(checkSql("edge_purges", "edge_purges_done")).toBe(`("edge_purges"."outcome" is null) = ("edge_purges"."done_at" is null)`);
+    expect(purges.indexes.map((i) => [i.config.name, i.config.columns.map((c) => (c as { name: string }).name)]).sort()).toEqual([
+      ["edge_purges_due_idx", ["next_at"]],
+      ["edge_purges_media_idx", ["media_id", "id"]],
+    ]);
+    expect(purges.enableRLS).toBe(true);
+    expect(purges.policies.map((p) => [p.name, p.for, p.to])).toEqual([["edge_purges_api_all", "all", apiRole]]);
   });
   test("3d's release (section 6.2): the leave, the release with its notice's state, its mark keyed on the post, and the day's notice; the API's role is granted nothing on the leave", () => {
     const leaves = byName.get("release_leaves")!;
@@ -1219,8 +1249,9 @@ describe("the contact point and the alert channel 3f", () => {
     expect(byName.get("alert_outbox")!.foreignKeys).toEqual([]);
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
-    // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two.
-    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released')");
+    // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two,
+    // then Task 3's one.
+    expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed')");
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);
     // Counts and times only: an object of at most six members, each a number or an instant in UTC.

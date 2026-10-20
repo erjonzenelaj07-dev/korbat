@@ -8,7 +8,7 @@ import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
 import { COMPOSER } from "../../src/compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, CUSTODY_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
+import { APPEAL_WORDS, AUTOMATION_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, CUSTODY_WORDS, FINDING_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVIEW_OUTCOMES, STAFF_MESSAGES, STANDING_WORDS } from "../../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK } from "../../src/screens/Home";
 import { ART_18_BANNER, IMAGES_NOT_SHOWN, SUSPECT_BANNER } from "../../src/screens/Case";
 import { UNAVAILABLE_TEXT } from "../../src/screens/Unavailable";
@@ -2435,6 +2435,37 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       fixtures.state.restore = restore;
       fixtures.state.restoreOverview = restoreOverview;
       fixtures.state.role = "moderator";
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  // ---------------------------------------------------------------- 3d Task 3: the edge's purge lines, at a phone's width
+
+  test("3d Task 3: at 360 by 740 px, a case with each of the four purge lines, each beside its own image and none beside an image that stayed public", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const view = fixtures.state.cases.get(CASE_POST)!;
+    const newest = view.snapshots[0]!;
+    if (newest.withheld) throw new Error("the fixture's newest snapshot is withheld");
+    const [third, fourth, fifth] = ["2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", "3d4e5f6a-7b8c-4d9e-8f0a-2b3c4d5e6f7a", "4e5f6a7b-8c9d-4eaf-901b-3c4d5e6f7a8b"];
+    const media = [IMAGE_ONE, IMAGE_TWO, third, fourth, fifth].map((id, n) => ({ id, alt: `image ${n + 1}`, width: 1000 - n * 100, height: 600 }));
+    const at = new Date(Date.now() - 4 * 60_000).toISOString();
+    const outcomes = ["accepted", "failed", "off", "pending"] as const;
+    const purges = outcomes.map((outcome, n) => ({ mediaId: media[n]!.id, outcome, at }));
+    fixtures.state.cases.set(CASE_POST, { ...view, snapshots: [{ ...newest, media }, ...view.snapshots.slice(1)], purges });
+    try {
+      await page.goto(`${origin}/cases/${CASE_POST}`);
+      const images = page.locator("ul.images > li");
+      await shown(images.first());
+      for (const [n, outcome] of outcomes.entries()) {
+        await shown(images.nth(n).getByText(AUTOMATION_WORDS.purge(outcome, bothTimes(at)), { exact: true }));
+      }
+      // The fifth image never stopped being public: it has no line.
+      expect(await images.nth(4).locator(".purge").count()).toBe(0);
+      expect(await page.locator(".purge").count()).toBe(4);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.cases.set(CASE_POST, view);
       await page.setViewportSize({ width: 1280, height: 900 });
     }
   });

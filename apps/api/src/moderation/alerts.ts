@@ -60,6 +60,8 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   // 3d Task 2: release_undestroyed, which alert_steps() writes daily, and seal_released, which staffAlert writes after a release.
   "release_undestroyed",
   "seal_released",
+  // 3d Task 3: edge_purge_failed, which the media module's job edge-purge writes as its own row, at most once in 24 hours.
+  "edge_purge_failed",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */

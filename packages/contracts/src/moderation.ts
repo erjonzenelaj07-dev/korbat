@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
-import { MediaId } from "./media";
+import { EdgePurgeView, MediaId } from "./media";
 import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, ORDER_RULES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
 import { FORBIDDEN_FORMAT } from "./text";
 
@@ -1824,6 +1824,12 @@ export const CaseView = z.object({
    * null when none is. The console learns nothing else of a notification record.
    */
   reportOwed: z.object({ since: z.iso.datetime() }).nullable(),
+  /**
+   * 3d Task 3 (design, sections 7.4, 8.4 and 10.3): for each image the case's newest snapshot lists that stopped being
+   * public, its newest outbox row of the edge: the purge's outcome, or pending, and its time. Empty on an account case,
+   * while the newest snapshot is withheld, and for images that were never hidden.
+   */
+  purges: z.array(EdgePurgeView),
 });
 export type CaseView = z.infer<typeof CaseView>;
 

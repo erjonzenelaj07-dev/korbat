@@ -193,6 +193,8 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     orderErasedOn: null,
     // 3f Task 5: no report to the authorities is owed for this case.
     reportOwed: null,
+    // 3d Task 3: no image of the newest snapshot stopped being public.
+    purges: [],
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },

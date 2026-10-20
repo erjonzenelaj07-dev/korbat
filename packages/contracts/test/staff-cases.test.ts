@@ -293,6 +293,8 @@ describe("the case answer", () => {
     orderErasedOn: null,
     // 3f Task 5: since when a report to the authorities is owed for the case; none here.
     reportOwed: null,
+    // 3d Task 3: no image of the newest snapshot stopped being public.
+    purges: [],
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {

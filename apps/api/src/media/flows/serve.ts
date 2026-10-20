@@ -1,9 +1,15 @@
-import type { MediaSize } from "@korbat/contracts";
+import { EDGE_CACHE, type MediaSize } from "@korbat/contracts";
 import type { MediaDeps } from "../context";
 import type { StoredFile } from "../files";
 
-/** Visible images of visible posts are cacheable by anyone for five minutes. Everything else depends on who asks and is never cached. */
-export const PUBLIC_CACHE = "public, max-age=300";
+/**
+ * Visible images of visible posts are cacheable by anyone, on the 200 and on the 304 (3d design, section 2 row 12 and
+ * 7.4): a browser keeps a copy at most EDGE_CACHE.browserSeconds and an edge at most EDGE_CACHE.edgeSeconds, both
+ * revalidate once it is stale, and an edge serves no stale copy when the API errs, so a hidden image's copy is bounded
+ * by these two numbers even without an accepted purge. Everything else depends on who asks and is never cached: an
+ * author's own hidden image is PRIVATE_CACHE, and every other answer of the API is no-store (security-headers.ts).
+ */
+export const PUBLIC_CACHE = `public, max-age=${EDGE_CACHE.browserSeconds}, s-maxage=${EDGE_CACHE.edgeSeconds}, must-revalidate, stale-if-error=0`;
 export const PRIVATE_CACHE = "private, no-store";
 
 export type Served =

@@ -556,6 +556,11 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
 
   const texts = await caseStaffTexts(q, row.id);
   const staffText = (text: (typeof texts)[number]) => ({ id: text.id, staffHandle: text.staffHandle, createdAt: text.createdAt, text: text.text });
+  const snapshots = await caseSnapshots(q, row.id);
+  // 3d Task 3 (sections 7.4, 8.4 and 10.3): the purge line of each image the newest snapshot lists, read through the media
+  // module, which alone names the edge's outbox. A withheld snapshot shows no image, so it gets no line either.
+  const newest = snapshots[0];
+  const purges = newest !== undefined && !newest.withheld && newest.media !== null ? await deps.media.purges(newest.media.map((image) => image.id)) : [];
   return {
     id: row.id,
     lane: row.lane,
@@ -567,7 +572,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     target,
     suspicion,
     imagesAllowed,
-    snapshots: (await caseSnapshots(q, row.id)).map(snapshotView),
+    snapshots: snapshots.map(snapshotView),
     items,
     decisions,
     appeals: await withReleases(q, await caseAppeals(q, row.id, reviewerOf(session))),
@@ -587,6 +592,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     orderErasedOn: row.targetType === "post" ? await orderErasedOn(q, row.targetId) : null,
     // Task 5 (sections 7.13 and 10.2): since when a report to the authorities is owed for this case, from reports_owed().
     reportOwed: await reportOwedOn(q, row.id),
+    purges,
   };
 }
 

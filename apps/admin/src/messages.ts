@@ -1,4 +1,5 @@
 import {
+  EDGE_WORDS,
   ORDER_RULES,
   QUARANTINE_RULES,
   REPLY_AIM_HOURS,
@@ -8,6 +9,7 @@ import {
   type AuthorStanding,
   type CaseDecision,
   type ContactDisposition,
+  type EdgePurgeView,
   type ItemOutcome,
   type ModerationErrorCode,
   type ReviewerState,
@@ -782,6 +784,30 @@ export const CUSTODY_WORDS = {
     inForce
       ? `Files lost: ${lost}. They were found in neither the image store nor the quarantine and are recorded as lost; there is nothing to move, hand over or destroy for them.`
       : `Files lost: ${lost}. Their images cannot be shown again; their author was told so.`,
+} as const;
+
+/**
+ * 3d (design, sections 8 and 8.4): the console's words of what a program does and of the edge's purge, each under the
+ * design's key. Task 3 brings the four lines of the edge's purge; every number is EDGE_WORDS', never typed, and the time
+ * is the answer's, printed by the screen with bothTimes.
+ */
+export const AUTOMATION_WORDS = {
+  /**
+   * [case.purge.accepted], [case.purge.failed], [case.purge.off] and [case.purge.pending]: beside each image of a case
+   * that stopped being public, and for each image of an order's disabled item, from the newest outbox row's outcome.
+   */
+  purge: (outcome: EdgePurgeView["outcome"], at: string): string => {
+    switch (outcome) {
+      case "accepted":
+        return `Edge copy: purge accepted at ${at}.`;
+      case "failed":
+        return `Edge copy: purge failed. A copy may have been served for up to ${EDGE_WORDS.edgeMinutes} minutes after the measure; the operator is alerted.`;
+      case "off":
+        return `Edge copy: no purge (off): a copy may be served for up to ${EDGE_WORDS.edgeMinutes} minutes.`;
+      case "pending":
+        return "Edge copy: purge not sent yet.";
+    }
+  },
 } as const;
 
 /**

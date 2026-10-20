@@ -212,6 +212,53 @@ describe("loadConfig", () => {
       });
     });
   });
+  describe("3d Task 3: the app's site and the edge's purge adapter (design, sections 5 and 10.8; 12.1 row 27)", () => {
+    const zone = "0123456789abcdef0123456789abcdef";
+    const token = "edge_token_that_must_never_be_seen_0123";
+    const cloudflare = { ...good, EDGE_PURGE: "cloudflare", EDGE_ZONE_ID: zone, EDGE_API_TOKEN: token, EDGE_HOST: "korbat.example" };
+    test("APP_SITE is open unless set to closed; a blank value is the default, and nothing but open and closed is taken", () => {
+      expect(loadConfig(good).APP_SITE).toBe("open");
+      expect(loadConfig({ ...good, APP_SITE: " " }).APP_SITE).toBe("open");
+      expect(loadConfig({ ...good, APP_SITE: "closed" }).APP_SITE).toBe("closed");
+      for (const refused of ["shut", "CLOSED", "0"]) expect(() => loadConfig({ ...good, APP_SITE: refused }), refused).toThrow(/APP_SITE/);
+    });
+    test("EDGE_PURGE is off unless set; a blank value is off, and nothing but off, test and cloudflare is taken", () => {
+      const c = loadConfig(good);
+      expect([c.EDGE_PURGE, c.EDGE_ZONE_ID, c.EDGE_API_TOKEN, c.EDGE_HOST]).toEqual(["off", undefined, undefined, undefined]);
+      expect(loadConfig({ ...good, EDGE_PURGE: "", EDGE_ZONE_ID: "", EDGE_API_TOKEN: "", EDGE_HOST: "" }).EDGE_PURGE).toBe("off");
+      expect(() => loadConfig({ ...good, EDGE_PURGE: "fastly" })).toThrow(/EDGE_PURGE/);
+    });
+    test("the test adapter is refused while the app's site is open, in every environment, and taken on a site that is closed", () => {
+      expect(() => loadConfig({ ...good, EDGE_PURGE: "test" })).toThrow(/EDGE_PURGE=test is refused while APP_SITE is open/);
+      expect(() => loadConfig({ ...good, EDGE_PURGE: "test", APP_SITE: "" })).toThrow(/EDGE_PURGE=test/);
+      expect(loadConfig({ ...good, EDGE_PURGE: "test", APP_SITE: "closed" }).EDGE_PURGE).toBe("test");
+    });
+    test("cloudflare is refused without its zone, its token or its host, each named; with the three it is taken, the site open", () => {
+      for (const missing of ["EDGE_ZONE_ID", "EDGE_API_TOKEN", "EDGE_HOST"]) {
+        expect(() => loadConfig({ ...cloudflare, [missing]: "" }), missing).toThrow(new RegExp(`${missing}[^]*is required when EDGE_PURGE is cloudflare`));
+      }
+      expect(loadConfig(cloudflare)).toMatchObject({ EDGE_PURGE: "cloudflare", EDGE_ZONE_ID: zone, EDGE_API_TOKEN: token, EDGE_HOST: "korbat.example", APP_SITE: "open" });
+    });
+    test("the zone is an id of 32 hexadecimal characters, the host a bare domain name, and the token one word of the provider's characters", () => {
+      expect(() => loadConfig({ ...cloudflare, EDGE_ZONE_ID: "my-zone" })).toThrow(/EDGE_ZONE_ID/);
+      for (const host of ["https://korbat.example", "korbat.example/", "korbat.example:443"]) expect(() => loadConfig({ ...cloudflare, EDGE_HOST: host }), host).toThrow(/EDGE_HOST/);
+      expect(loadConfig({ ...cloudflare, EDGE_HOST: "Korbat.Example" }).EDGE_HOST).toBe("korbat.example");
+      // A line break would let the token's value carry a header of its own: built from its code, as no file holds one.
+      for (const bad of ["short", `${token} more`, `${token}${String.fromCharCode(10)}Injected: 1`]) expect(() => loadConfig({ ...cloudflare, EDGE_API_TOKEN: bad }), bad).toThrow(/EDGE_API_TOKEN/);
+    });
+    test("a refusal never prints the token", () => {
+      for (const env of [{ ...cloudflare, EDGE_ZONE_ID: "" }, { ...cloudflare, EDGE_API_TOKEN: `${token} more` }, { ...cloudflare, EDGE_HOST: "" }]) {
+        let message = "";
+        try {
+          loadConfig(env);
+        } catch (err) {
+          message = (err as Error).message;
+        }
+        expect(message).not.toBe("");
+        expect(message).not.toContain(token);
+      }
+    });
+  });
   describe("the WebAuthn relying party", () => {
     test("defaults to the host of APP_ORIGIN and the name korbat; an empty value, as compose passes it, counts as unset", () => {
       expect(loadConfig(good)).toMatchObject({ WEBAUTHN_RP_ID: "localhost", WEBAUTHN_RP_NAME: "korbat" });

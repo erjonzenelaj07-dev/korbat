@@ -602,6 +602,7 @@ function orderItem(link: string, position: number, addedAt: string): OrderItemVi
     closedAt: null,
     closedReason: null,
     gap: false,
+    purges: [],
   };
 }
 

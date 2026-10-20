@@ -2,7 +2,7 @@ import { ANNEX3_GROUND_LABELS, ORDER_GROUND_LABELS, ORDER_RULES, OrderEffectedPa
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
-import { ORDER_WORDS } from "../src/messages";
+import { AUTOMATION_WORDS, ORDER_WORDS } from "../src/messages";
 import { parseOrderId, type OrderId } from "../src/router";
 import { changedFacts, CheckBlock, CorrectBlock, effectable, EffectBlock, effectParamsOf, EventsBlock, EventsList, FormsBlock, isTicked, NoticeBlock, OrderPage, OwedBlock, utcWithOffset } from "../src/screens/Order";
 import { clockLine, emptyOrderForm, OrderForm, orderRequest, OrdersList, type OrderFormState } from "../src/screens/Orders";
@@ -81,6 +81,7 @@ const item = (over: Partial<OrderView["items"][number]> = {}): OrderView["items"
   closedAt: null,
   closedReason: null,
   gap: false,
+  purges: [],
   ...over,
 });
 
@@ -542,5 +543,44 @@ describe("block 4, Disable for an order (8.5, Task 3)", () => {
     const later = { ...hold, until: t((ORDER_RULES.holdWarningDays + 1) * 24 * 60) };
     expect(text(html(<NoticeBlock order={view({ sectionC: true, hold: later })} now={START} />))).not.toContain("is released on");
     expect(text(html(<NoticeBlock order={view({ sectionC: true, hold: { ...hold, releasedAt: t(10) } })} now={START} />))).not.toContain("is released on");
+  });
+});
+
+describe("3d Task 3: a disabled item prints the edge's purge line of each image of its post, as a case does (8.4)", () => {
+  const me = { homeState: "DE", contactPoint: "orders@korbat.example", role: "moderator" } as const;
+  const page = (order: OrderView) =>
+    html(
+      <OrderPage
+        order={order}
+        me={me}
+        now={START}
+        messages={[message()]}
+        busy={false}
+        notice={null}
+        error={null}
+        reasons={{}}
+        links=""
+        onReason={noop}
+        onCloseItem={noop}
+        onLinks={noop}
+        onAddLinks={noop}
+        onRecord={noop}
+        onCorrect={noop}
+      />,
+    );
+  const IMAGE_A = "6a000000-0000-4000-8000-00000000000a";
+  const IMAGE_B = "6b000000-0000-4000-8000-00000000000b";
+  const purges = [
+    { mediaId: IMAGE_A, outcome: "accepted" as const, at: t(3) },
+    { mediaId: IMAGE_B, outcome: "failed" as const, at: t(4) },
+  ];
+
+  test("one line an image of a disabled item, each the case's words; none for an item that was never disabled", () => {
+    const disabled = text(page(view({ items: [item({ disabledAt: t(1), inForce: true, caseId: CASE, purges })] })));
+    expect(disabled).toContain(AUTOMATION_WORDS.purge("accepted", bothTimes(t(3))));
+    expect(disabled).toContain(AUTOMATION_WORDS.purge("failed", bothTimes(t(4))));
+    expect(disabled.split("Edge copy:").length - 1).toBe(2);
+    expect(text(page(view({ items: [item({ purges })] })))).not.toContain("Edge copy:");
+    expect(text(page(view({ items: [item({ disabledAt: t(1), inForce: true, caseId: CASE, purges: [] })] })))).not.toContain("Edge copy:");
   });
 });

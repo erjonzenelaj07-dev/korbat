@@ -233,8 +233,36 @@ const schema = z.object({
   ),
   /** 3f: the published contact point for authorities, an address; empty until the owner's list is done. */
   CONTACT_POINT: blankAsUnset.pipe(z.email().optional()),
+  /**
+   * 3d (design, sections 2 row 49, 5 and 10.8): Caddy's switch of the app's site (3f), which Compose hands the API too: the
+   * API reads it only to refuse a `test` adapter while the site is `open`, so a stand-in never answers for a third party
+   * on a site people can reach. Blank means the default.
+   */
+  APP_SITE: blankAsUnset.pipe(z.enum(["open", "closed"]).default("open")),
+  /**
+   * 3d Task 3 (design, sections 5 "The adapters" and 7.4): who drops an image's copies at the edge once it stops being
+   * public. `off` (the default) closes every outbox row as off and the header is the only bound; `test` keeps the
+   * prefixes in memory (refused while APP_SITE is open); `cloudflare` sends one purge by prefix with the three settings
+   * below, which it requires.
+   */
+  EDGE_PURGE: blankAsUnset.pipe(z.enum(["off", "test", "cloudflare"]).default("off")),
+  /** The zone's id, as the provider shows it: 32 hexadecimal characters. */
+  EDGE_ZONE_ID: blankAsUnset.pipe(z.string().regex(/^[0-9a-f]{32}$/, "must be the zone's id: 32 hexadecimal characters").optional()),
+  /**
+   * The provider's API token with the one permission Zone, Cache Purge: a secret, in no log line, audit row or answer.
+   * One word of the provider's characters, so its value can never carry a line of its own into the request's headers.
+   */
+  EDGE_API_TOKEN: optionalSecret.pipe(z.string().regex(/^[A-Za-z0-9_-]{20,200}$/, "must be the provider's API token: one word of letters, digits, dashes and underscores").optional()),
+  /** The public hostname images are served under at the edge, bare: a prefix is <EDGE_HOST>/api/media/<id>/. */
+  EDGE_HOST: blankAsUnset.pipe(z.string().toLowerCase().regex(RP_ID, "must be a bare domain name such as korbat.example: no scheme, port or path").optional()),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+  // 3d (design, section 5, review ruling 11): in every environment, a test adapter never runs on a site people can reach.
+  if (c.EDGE_PURGE === "test" && c.APP_SITE === "open") refuse("EDGE_PURGE", "EDGE_PURGE=test is refused while APP_SITE is open: a test adapter answers only on a site that is closed");
+  // An adapter named without its settings stops the process at start, as every missing setting does.
+  if (c.EDGE_PURGE === "cloudflare") {
+    for (const name of ["EDGE_ZONE_ID", "EDGE_API_TOKEN", "EDGE_HOST"] as const) if (c[name] === undefined) refuse(name, `${name} is required when EDGE_PURGE is cloudflare`);
+  }
   // 3f: a contact point is published for one Member State, whose facts the console then reads.
   if (c.CONTACT_POINT !== undefined && c.HOME_STATE === undefined) refuse("HOME_STATE", "HOME_STATE is required once CONTACT_POINT is set");
   // In every environment: an origin the app trusts is an allowed Origin for the app's cookie writes, a credentialed CORS
