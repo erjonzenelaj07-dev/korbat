@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import sharp from "sharp";
-import { MEDIA_FORMATS } from "@korbat/media-protocol";
+import { MEDIA_FORMATS, R1_MARKER, R1_TEST_MODEL } from "@korbat/media-protocol";
 import { configureDecoder, processImage, type Processed } from "../src/pipeline";
+import { testScorer } from "../src/score";
 import * as make from "./fixtures";
 
 const ws = make.workspace();
@@ -73,6 +74,39 @@ describe("accepted images", () => {
     const result = ready(await run("polyglot.jpg", Buffer.concat([await make.jpeg(), Buffer.from(marker, "latin1")])));
     expect(result.large.includes("hidden-archive-payload")).toBe(false);
     expect(result.small.includes("hidden-archive-payload")).toBe(false);
+  });
+});
+
+describe("3d Task 6: the R1 scorer through the real pipeline (design, sections 5 and 12)", () => {
+  /** An image of the given format, of one colour, with or without the marker's block in its top left corner. */
+  async function withMarker(format: "png" | "jpeg" | "webp", width: number, height: number, marked: boolean): Promise<Buffer> {
+    const base = sharp({ create: { width, height, channels: 3, background: { r: 30, g: 120, b: 60 } } });
+    const block = await sharp({ create: { width: R1_MARKER.side, height: R1_MARKER.side, channels: 3, background: { r: R1_MARKER.red, g: R1_MARKER.green, b: R1_MARKER.blue } } }).png().toBuffer();
+    const image = marked ? base.composite([{ input: block, left: 0, top: 0 }]) : base;
+    return format === "png" ? image.png().toBuffer() : format === "jpeg" ? image.jpeg({ quality: 90 }).toBuffer() : image.webp({ quality: 90 }).toBuffer();
+  }
+
+  test("the marker survives the decode, the resize to the small size and the conversion to sRGB, as PNG, JPEG and WebP", async () => {
+    for (const format of ["png", "jpeg", "webp"] as const) {
+      // 1600 pixels wide: the small size halves it, so the marker's block reaches the scorer at half its side.
+      const marked = ready(await processImage(ws.file(`marked.${format}`, await withMarker(format, 1600, 900, true)), MEDIA_FORMATS, testScorer));
+      expect(marked.r1, format).toEqual({ model: R1_TEST_MODEL, score: 1 });
+      const plain = ready(await processImage(ws.file(`plain.${format}`, await withMarker(format, 1600, 900, false)), MEDIA_FORMATS, testScorer));
+      expect(plain.r1, format).toEqual({ model: R1_TEST_MODEL, score: 0 });
+    }
+  });
+
+  test("without a scorer nothing is scored: the result carries no r1", async () => {
+    const result = ready(await processImage(ws.file("unscored.png", await withMarker("png", 400, 300, true)), MEDIA_FORMATS));
+    expect(result.r1).toBeUndefined();
+  });
+
+  test("a scorer is handed the small size's raw pixels and their shape, and nothing else", async () => {
+    const seen: { length: number; width: number; height: number; channels: number }[] = [];
+    const recording = { model: "recording", score: async (pixels: Uint8Array, width: number, height: number, channels: number) => (seen.push({ length: pixels.length, width, height, channels }), 0.25) };
+    const result = ready(await processImage(ws.file("seen.png", await withMarker("png", 1600, 900, false)), MEDIA_FORMATS, recording));
+    expect(result.r1).toEqual({ model: "recording", score: 0.25 });
+    expect(seen).toEqual([{ length: 1024 * 576 * 3, width: 1024, height: 576, channels: 3 }]);
   });
 });
 

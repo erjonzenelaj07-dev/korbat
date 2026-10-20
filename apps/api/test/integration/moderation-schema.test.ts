@@ -1,7 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ACTION_KINDS, CSAM_KEYWORDS, DECISION_KEYWORDS, EDGE_PURGE_CAUSES, EDGE_PURGE_OUTCOMES, MEASURES, NOTICE_LIMITS, ORDER_ACTION_KINDS, RULE_IDS, TDB_CATEGORIES, appealDeadline, textDigest } from "@korbat/contracts";
+import {
+  ACTION_KINDS,
+  AUTOMATION_RULES,
+  CSAM_KEYWORDS,
+  DECISION_KEYWORDS,
+  EDGE_PURGE_CAUSES,
+  EDGE_PURGE_OUTCOMES,
+  MEASURES,
+  NOTICE_LIMITS,
+  ORDER_ACTION_KINDS,
+  RULE_IDS,
+  SIGNAL_HANDLED,
+  SIGNAL_KINDS,
+  TDB_CATEGORIES,
+  appealDeadline,
+  textDigest,
+} from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { TEXT_DIGEST_VECTORS } from "../../../../packages/contracts/test/digest-vectors";
 import { createAuthRepo } from "../../src/auth/repo";
@@ -445,6 +461,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.appeal_informed_at",
         "public.appeal_reviewer_state",
         "public.append_confirmed_audit",
+        // 3d Task 6 (0038_automated_decisions): the program's numbers, which the step and automation-status read.
+        "public.automation_rules",
         // 3d Task 4 (0036_transparency): the one place a count becomes public text, the public figures' constants, and the
         // daily call that stores a due edition; the figures themselves are computed by the migrator's functions alone.
         "public.band",
@@ -755,6 +773,30 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(listed(await checkDefinition("edge_purges", "edge_purges_outcome"))).toEqual([...EDGE_PURGE_OUTCOMES]);
       const [seq] = await apiDb.execute<{ usage: boolean }>(sql`select has_sequence_privilege('korbat_api', 'public.edge_purges_id_seq', 'USAGE') as usage`);
       expect(seq!.usage).toBe(false);
+    });
+
+    test("3d Task 6 (0038_automated_decisions; design, section 6.6): automation_rules() is AUTOMATION_RULES; the API's role reads and inserts a signal and sets four columns of it, reads and inserts a request for a person, and calls none of the three trigger functions; both CHECKs of a signal are their constants", async () => {
+      const [row] = await apiDb.execute<Record<string, unknown>>(sql`select * from public.automation_rules()`);
+      const camel = (name: string) => name.replace(/_([a-z])/g, (_m, letter: string) => letter.toUpperCase());
+      expect(Object.fromEntries(Object.entries(row!).map(([name, value]) => [camel(name), value === null ? null : Number(value)]))).toEqual({ ...AUTOMATION_RULES });
+      expect(await tablePrivileges("korbat_api", "public.automated_signals")).toEqual(["SELECT", "INSERT"]);
+      expect(await updatableColumns("korbat_api", "public.automated_signals")).toEqual(["intake_item_id", "decision_id", "handled_at", "handled"]);
+      expect(await tablePrivileges("korbat_api", "public.automated_objections")).toEqual(["SELECT", "INSERT"]);
+      expect(await updatableColumns("korbat_api", "public.automated_objections")).toEqual([]);
+      const all = await functions();
+      // The request's trigger is a definer: it reads the measures in force, which the API's role reads too, and refuses as
+      // objection_not_open, so no caller learns more than that.
+      for (const [name, definer] of [
+        ["public.automated_signals_insert", false],
+        ["public.automated_signals_guard", false],
+        ["public.automated_objections_insert", true],
+      ] as const) {
+        const f = all.find((found) => found.name === name)!;
+        expect({ owner: f.owner, definer: f.definer, config: f.config, api: f.api, pub: f.pub }, name).toEqual({ owner: "korbat_migrate", definer, config: ["search_path=public, pg_temp"], api: false, pub: false });
+      }
+      const listed = (definition: string) => [...definition.matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]);
+      expect(listed(await checkDefinition("automated_signals", "automated_signals_kind"))).toEqual([...SIGNAL_KINDS]);
+      expect(listed(await checkDefinition("automated_signals", "automated_signals_handled"))).toEqual([...SIGNAL_HANDLED]);
     });
 
     test("3f Task 5's writers (0030_authority_records; design, section 6.7): only report_open and report_close_unsealed write a hold and a notification record, erase_authority_records deletes them, and none holds a number of order_rules()", async () => {

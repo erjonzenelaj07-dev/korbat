@@ -197,7 +197,12 @@ export type StaffAlertKind =
   // 3d Task 5: the transparency job published a day's value without an outside timestamp, or found the day before
   // without a published value, each written as the job's own row of the outbox.
   | "head_unwitnessed"
-  | "head_missed";
+  | "head_missed"
+  // 3d Task 6: an author asked for a person, and a cap or a limit refused a program's measure, each written by staffAlert
+  // after its commit; a request for a person waited longer than its target, the automated sweep's own row.
+  | "automated_objection"
+  | "automation_capped"
+  | "automated_waiting";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -231,6 +236,9 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "edge_purge_failed":
     case "head_unwitnessed":
     case "head_missed":
+    case "automated_objection":
+    case "automation_capped":
+    case "automated_waiting":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off" };

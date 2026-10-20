@@ -38,8 +38,9 @@ describe("the head's contracts (3d Task 5)", () => {
 describe("head_unwitnessed and head_missed (W.7): the transparency job's two alerts, a day each", () => {
   const now = new Date("2026-10-18T09:00:00.000Z");
 
-  test("they follow edge_purge_failed at the end of the list, a push and a sentence to every staff account, with the one fact day", () => {
-    expect(ALERT_KIND_LIST.slice(-3)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
+  test("they follow edge_purge_failed in the list, a push and a sentence to every staff account, with the one fact day", () => {
+    // 3d Task 6's three kinds follow them (automation.test.ts).
+    expect(ALERT_KIND_LIST.slice(-6, -3)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
     for (const kind of ["head_unwitnessed", "head_missed"] as const) {
       expect(ALERT_KINDS[kind], kind).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["day"] });
       expect(SENTENCE_MAIL_KINDS, kind).toContain(kind);

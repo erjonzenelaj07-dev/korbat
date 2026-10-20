@@ -2,14 +2,15 @@ import { Image } from "expo-image";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Link } from "expo-router";
-import { STATEMENT_MAX, type DecisionAppeal, type DecisionContent, type DecisionStatement, type DecisionView } from "@korbat/contracts";
+import { OBJECTION_TEXT_MAX, STATEMENT_MAX, type DecisionAppeal, type DecisionContent, type DecisionStatement, type DecisionView } from "@korbat/contracts";
 import { ORDER_NOTICE, statementParagraphs } from "@korbat/rules";
 import { Button, ErrorText, Field, Section } from "@/components/ui";
 import { SEALED_IMAGE } from "@/components/social/HiddenImage";
 import { clampRatio } from "@/components/social/MediaGrid";
 import { API_BASE } from "@/lib/api";
+import { errorMessage } from "@/lib/api";
 import { appealWaitWords, CONTACT_EMAIL, dailyLimitFailure, utcMinute } from "@/lib/moderation";
-import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
+import { AUTO_WORDS, CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
 import { ORDER_TEXTS } from "@/lib/orders";
 import { nowSentence, replyStandsLine, reportingNowLine, restsOnLine, STANDING_TEXTS, standingMeasureOf, strikeLine } from "@/lib/standing";
 
@@ -215,6 +216,65 @@ function Appeal({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement:
   return <Line>{DECISION_WORDS.reversed(view.reversedOn ?? "")}</Line>;
 }
 
+/**
+ * 3d Task 6 (design, sections 7.10 and 9.4): "Ask for a person" on a program's decision, from DecisionView.askPerson read
+ * fresh: the button while the measure is in force and no request exists, which opens one field under [auto.askLead]; the
+ * request as sent with korbat's published target ([auto.asked]); and once a person has decided, [auto.decided] with a
+ * link to that decision. A refusal is worded under the button and what was written stays; objection_not_open reads as
+ * [auto.decided] without the day. A suspended account can ask: nothing here reads its standing.
+ */
+function AskPerson({ view, onAsk }: { view: DecisionView; onAsk?: (text: string) => Promise<void> }) {
+  const ask = view.askPerson ?? null;
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (ask === null) return null;
+
+  async function send() {
+    if (busy || onAsk === undefined) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onAsk(text);
+    } catch (err) {
+      // objection_not_open and rate_limited in the app's own words (9.7), anything else as elsewhere.
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section title={AUTO_WORDS.ask}>
+      {ask.state === "asked" ? (
+        <View>
+          <Line strong>{AUTO_WORDS.asked(utcMinute(ask.createdAt))}</Line>
+          <Line>{ask.text}</Line>
+        </View>
+      ) : null}
+      {ask.state === "decided" ? (
+        <View>
+          <Line strong>{AUTO_WORDS.decided(utcMinute(ask.decidedAt))}</Line>
+          <DecisionLink id={ask.decisionId} label={AUTO_WORDS.decidedLink} />
+        </View>
+      ) : null}
+      {ask.state === "open" && onAsk !== undefined ? (
+        open ? (
+          <View>
+            <Note>{AUTO_WORDS.askLead}</Note>
+            <Field label={AUTO_WORDS.askField} value={text} onChangeText={setText} multiline maxLength={OBJECTION_TEXT_MAX} />
+            <Button label={AUTO_WORDS.ask} onPress={() => void send()} busy={busy} />
+            <ErrorText message={error} />
+          </View>
+        ) : (
+          <Button label={AUTO_WORDS.ask} onPress={() => setOpen(true)} />
+        )
+      ) : null}
+    </Section>
+  );
+}
+
 /** A link to another decision's screen, as a line of its own. */
 function DecisionLink({ id, label }: { id: string; label: string }) {
   return (
@@ -321,7 +381,7 @@ function StandingAppealNotes({ view }: { view: DecisionView }) {
  * appeal stands. A decision that ends or lifts a field reset links the decision that reset the field while korbat still
  * keeps the old value there. With `onAppeal` a decision that can still be appealed carries the appeal's form.
  */
-export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void> }) {
+export function DecisionDetail({ view, onAppeal, onAsk }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void>; onAsk?: (text: string) => Promise<void> }) {
   // 3f: an order's notice, and the reinstatement after one, render as a notice and offer no appeal.
   if (view.order) return <OrderNotice view={view} />;
   const paragraphs = paragraphsOf(view);
@@ -334,6 +394,8 @@ export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppea
         {DECISION_WORDS.title}
       </Text>
       <Text className="mt-1 text-base text-zinc-300">{view.post ? DECISION_WORDS.post(utcMinute(view.post.createdAt)) : CASES_WORDS.profile}</Text>
+      {/* 3d Task 6 (section 9.4): [auto.chip] beside the day of a decision a program took; nothing on a post says "program". */}
+      {view.automatedDecision === "fully" ? <Text className="mt-1 self-start rounded border border-zinc-600 px-2 py-0.5 text-sm text-zinc-200">{`${AUTO_WORDS.chip}, ${view.decidedAt.slice(0, 10)}`}</Text> : null}
 
       <Section title={DECISION_WORDS.statement}>
         {paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}
@@ -356,6 +418,7 @@ export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppea
         ))}
       </Section>
 
+      <AskPerson view={view} onAsk={onAsk} />
       <StandingNow view={view} />
       <ReportingNow view={view} />
 

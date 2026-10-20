@@ -260,6 +260,7 @@ describe("the case answer", () => {
         source: "notice",
         decidedAt: TIME,
         staffHandle: "mod_anna",
+        byProgram: false,
         throughSeq: 0,
         answersFromSeq: null,
         reviewsDecisionId: null,
@@ -295,6 +296,8 @@ describe("the case answer", () => {
     reportOwed: null,
     // 3d Task 3: no image of the newest snapshot stopped being public.
     purges: [],
+    signals: [],
+    objection: null,
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {
@@ -423,7 +426,7 @@ describe("the case answer", () => {
 });
 
 describe("the queue and the overview", () => {
-  const row = { id: CASE, lane: 0, targetType: "post", openedAt: TIME, oldestOpenAt: TIME, openItems: 2, rules: ["R5"], categories: ["STATEMENT_CATEGORY_VIOLENCE"], allegesIllegal: true, suspect: false, reexamination: false, deferred: false };
+  const row = { id: CASE, lane: 0, targetType: "post", openedAt: TIME, oldestOpenAt: TIME, openItems: 2, rules: ["R5"], categories: ["STATEMENT_CATEGORY_VIOLENCE"], allegesIllegal: true, suspect: false, reexamination: false, deferred: false, foundByProgram: false, takenByProgram: false, objected: false };
 
   test("a page of the queue holds at most 50 cases and the cursor of the next", () => {
     expect(QUEUE_PAGE_SIZE).toBe(50);
@@ -474,6 +477,7 @@ describe("the queue and the overview", () => {
       restore: { open: 3, measures: 2, importedAt: TIME },
       quarantine: { dueIn: 1, dueOut: 2, undestroyed: 0, oldest: TIME },
       destructive: [],
+      automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
     expect(StaffOverview.safeParse({ ...overview, copy: { newestAt: null } }).success).toBe(false);

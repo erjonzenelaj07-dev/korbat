@@ -98,8 +98,9 @@ function KeyFilterBlock({ filter }: { filter: KeyFilterProps }) {
 
 /**
  * The audit log (3a design, sections 2 and 9): a table, newest first, "Load older", and "Go to place", which opens the
- * page whose newest row is at a place the keeper kept. Until 3d publishes the head, the keeper copies the newest place and
- * hash from here each day and opens the place kept the visit before to check that it still shows the same hash.
+ * page whose newest row is at a place the keeper kept. Since 3d Task 5 the head's daily value is published on the
+ * transparency page and mailed to the keeper with its place and hash; this page is where a staff member opens that place
+ * to check that it still shows the same hash, and where the keeper copies a place by hand while no keeper's mail is set.
  */
 export interface AuditViewProps {
   /** Every row read so far, newest first. */

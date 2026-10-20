@@ -4,6 +4,7 @@ import { HEARTBEAT_INTERVAL_MS, storeLayout, uploadsLayout } from "@korbat/media
 import { loadConfig } from "./config";
 import { WATCHDOG_MS, prepareStore, tick, writeHeartbeat, type LoopDeps } from "./loop";
 import { configureDecoder, processImage } from "./pipeline";
+import { scorerFrom } from "./score";
 
 /**
  * The image worker. It reads uploads from one volume and writes WebP files, results and a
@@ -14,13 +15,16 @@ const config = loadConfig();
 const log = pino({ level: config.logLevel, base: undefined });
 configureDecoder(config.formats);
 
+// 3d Task 6: the R1 scorer of R1_CLASSIFIER, none while it is off; the configuration refused a test scorer on an open site.
+const scorer = scorerFrom(config.r1Classifier);
+
 const deps: LoopDeps = {
   uploads: uploadsLayout(config.uploadsDir),
   store: storeLayout(config.storeDir),
   formats: config.formats,
   log,
   now: Date.now,
-  process: processImage,
+  process: (path, formats) => processImage(path, formats, scorer),
   abort: (reason) => {
     log.fatal({ reason }, "watchdog: exiting so the container restarts");
     process.exit(1);
@@ -41,7 +45,7 @@ const stop = (signal: string) => {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
-log.info({ formats: config.formats }, "worker started");
+log.info({ formats: config.formats, r1Classifier: config.r1Classifier }, "worker started");
 while (running) {
   const worked = await tick(deps).catch((err: unknown) => {
     log.error({ err }, "tick failed");

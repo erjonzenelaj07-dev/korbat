@@ -36,6 +36,10 @@ function build(subject: string, paragraphs: string[]): RenderedMail {
  * module names one of these keys; the words are written here only, so no caller passes a subject of its own.
  */
 export const DECISION_MAIL_SUBJECTS = {
+  // 3d Task 6 (W.8): a decision without a decider, chosen before 3c's: a program's withhold of an image, and (Task 7) its
+  // seal of a post's images.
+  program_withhold: "korbat hid an image of yours until a person decides",
+  program_seal: "korbat sealed images of yours until a person decides",
   seal_deciding: "korbat sealed images of yours while it decides",
   seal_final: "korbat sealed images of yours",
   post_deciding: "A post of yours is under review on korbat",
@@ -471,6 +475,9 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "edge_purge_failed":
     case "head_unwitnessed":
     case "head_missed":
+    case "automated_objection":
+    case "automation_capped":
+    case "automated_waiting":
       return alertMail(template, data);
     case "head_published": {
       // 3d Task 5 (design, sections 7.7 and 18, W.8): the audit head's daily value, to HEAD_KEEPER_MAIL and to nobody else,

@@ -20,13 +20,26 @@ import type { TransparencyRepo } from "./repo";
 
 /**
  * The facts of the running server (10.6): booleans, names, days and numbers, never a token, a zone, a host or an address.
- * The R1 check and the comparison with known material are built by later tasks and print off until then; the edge
- * prints its adapter (Task 3), and the head's witness its own (Task 5), never its authority's address. A test adapter
- * prints "on" and says it is one.
+ * The comparison with known material is built by a later task and prints off until then; the edge prints its adapter
+ * (Task 3), and the head's witness its own (Task 5), never its authority's address. A test adapter prints "on" and says it
+ * is one. 3d Task 6: the R1 check prints its state (off; on and flagging; on and withholding, AUTOMATION_R1_ACTS), whether
+ * it is the test scorer, and its two impact assessments' days, each in its own block; the model, its digest, its
+ * threshold, its version and the publisher's claim stay null while no classifier is built in, which no build of 3d does.
  */
-export function publicFacts(config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "HEAD_WITNESS">): PublicFacts {
+export function publicFacts(config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "HEAD_WITNESS" | "R1_CLASSIFIER" | "AUTOMATION_R1_ACTS" | "AUTOMATION_DPIA_R1" | "AUTOMATION_DPIA_R1_ACTS">): PublicFacts {
+  const r1On = config.R1_CLASSIFIER !== "off";
   return {
-    r1: { state: "off", test: false, model: null, digest: null, threshold: null, thresholdVersion: null, publisherClaim: null, dpia: null, dpiaActs: null },
+    r1: {
+      state: !r1On ? "off" : config.AUTOMATION_R1_ACTS === "on" ? "withholds" : "flags",
+      test: config.R1_CLASSIFIER === "test",
+      model: null,
+      digest: null,
+      threshold: null,
+      thresholdVersion: null,
+      publisherClaim: null,
+      dpia: config.AUTOMATION_DPIA_R1 ?? null,
+      dpiaActs: config.AUTOMATION_DPIA_R1_ACTS ?? null,
+    },
     match: { state: "off", test: false, source: null, dpia: null, dpiaActs: null },
     edge: { on: config.EDGE_PURGE !== "off", test: config.EDGE_PURGE === "test" },
     witness: { on: config.HEAD_WITNESS !== "off", test: config.HEAD_WITNESS === "test" },

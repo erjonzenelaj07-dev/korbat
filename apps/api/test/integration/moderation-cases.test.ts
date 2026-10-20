@@ -1214,7 +1214,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         expect(rows[1]).toMatchObject({ lane: 1, openItems: 2, rules: ["R4"], categories: ["STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH", TC], allegesIllegal: true, suspect: false });
         expect(rows[4]).toMatchObject({ lane: 2, targetType: "account", rules: ["R6"], allegesIllegal: false, suspect: false });
         // No row names a reporter, a count of reports per person or a weight.
-        expect(Object.keys(rows[0]!).sort()).toEqual(["allegesIllegal", "categories", "deferred", "id", "lane", "oldestOpenAt", "openItems", "openedAt", "reexamination", "rules", "suspect", "targetType"]);
+        // 3d Task 6: and three booleans of what a program found and took and whether the author asked for a person.
+        expect(Object.keys(rows[0]!).sort()).toEqual([
+          "allegesIllegal",
+          "categories",
+          "deferred",
+          "foundByProgram",
+          "id",
+          "lane",
+          "objected",
+          "oldestOpenAt",
+          "openItems",
+          "openedAt",
+          "reexamination",
+          "rules",
+          "suspect",
+          "takenByProgram",
+          "targetType",
+        ]);
+        expect(rows.every((row) => !row.foundByProgram && !row.takenByProgram && !row.objected)).toBe(true);
       }, migrateDb);
     });
 
@@ -1232,7 +1250,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
           paged.push(...page.map((row) => row.id));
           const last = page.at(-1);
           if (page.length < 2 || !last) break;
-          after = { lane: last.lane, deferred: last.deferred, sortAt: last.sortAt, id: last.id };
+          after = { lane: last.lane, objected: last.objected, deferred: last.deferred, sortAt: last.sortAt, id: last.id };
         }
         const whole = (await queueRows(tx, { deferUnproven: false, after: null, limit: 1000 })).map((row) => row.id);
         expect(paged).toEqual(whole);

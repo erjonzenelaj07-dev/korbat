@@ -3,7 +3,7 @@ import { getRule } from "@korbat/rules";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { StaffApi } from "../api";
 import { systemClock, type Clock } from "../idle";
-import { describeError, FINDING_WORDS, STANDING_WORDS } from "../messages";
+import { AUTOMATION_WORDS, describeError, FINDING_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink } from "../nav";
 import { parseCaseId, type CaseId } from "../router";
 import { dateTime, Loaded, type Loadable } from "../ui";
@@ -47,6 +47,11 @@ export function marksOf(row: QueueRow): string[] {
   if (row.suspect) marks.push("CSAM: no images");
   if (row.reexamination) marks.push("re-examination");
   if (row.deferred) marks.push("deferred");
+  // 3d Task 6 (section 8.3): what a program found and took on the case, and whether its author asked for a person. The
+  // last is why such a case stands first in its lane; the API's order says so, and the page keeps that order.
+  if (row.foundByProgram) marks.push(AUTOMATION_WORDS.queue.found);
+  if (row.takenByProgram) marks.push(AUTOMATION_WORDS.queue.taken);
+  if (row.objected) marks.push(AUTOMATION_WORDS.queue.objected);
   return marks;
 }
 

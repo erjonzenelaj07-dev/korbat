@@ -7,3 +7,6 @@ export * from "./limits";
 export * from "./layout";
 export * from "./result";
 export * from "./sniff";
+// 3d Task 6: the R1 classifier's identity, and the test adapters' fixtures (the scorer's marker).
+export * from "./classifier";
+export * from "./fixtures";

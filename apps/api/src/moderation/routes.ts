@@ -1,4 +1,4 @@
-import { AppealRequest, AuthorCasesQuery, NoticeContactRequest, NoticeReexamineRequest, NoticeRequest, NoticeStatusRequest, ReexamineRequest, ReplyRequest, ReportsQuery } from "@korbat/contracts";
+import { AppealRequest, AuthorCasesQuery, NoticeContactRequest, NoticeReexamineRequest, NoticeRequest, NoticeStatusRequest, ObjectionRequest, ReexamineRequest, ReplyRequest, ReportsQuery } from "@korbat/contracts";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -6,6 +6,7 @@ import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
 import { fileAppeal } from "./appeals";
 import { authorCases, authorDecisionView } from "./author";
+import { objectToDecision } from "./automated";
 import type { ModerationDeps } from "./context";
 import { noticeContact, noticeStatus, reexamineNotice, reexamineOwnItem, submitNotice, type NoticeSender } from "./intake";
 import { authorNotices, authorRelease } from "./release";
@@ -38,7 +39,7 @@ export const noSession: MiddlewareHandler<AppEnv> = async (c) => c.json(errorBod
  * browser, it carries the token as every cookie request does. The status page's tokens travel in the body of a POST, so
  * no address, and no server log, ever holds one.
  *
- * The nine routes under `/api/moderation` are the signed-in account's own (sections 7.6 and 7.7, and 3e's 7.6 step 9). `guard` is the auth
+ * The routes under `/api/moderation` are the signed-in account's own (sections 7.6 and 7.7, 3e's 7.6 step 9, and 3d's 7.10). `guard` is the auth
  * module's requireSession: an onboarded account, with CSRF and Origin already checked for cookie sessions. Each answers
  * only for the session's account: the decisions about it and its appeal of one, and the reports it sent and its request
  * to have one of their items examined again.
@@ -75,6 +76,11 @@ export function moderationRoutes(deps: ModerationDeps, guard: MiddlewareHandler<
   // the measure's subject.
   r.post("/moderation/decisions/:id/reply", guard, validate("param", DecisionParam), validate("json", ReplyRequest), async (c) =>
     c.json(await fileReply(deps, me(c), c.req.valid("param").id, c.req.valid("json")), 201),
+  );
+  // 3d Task 6 (design, sections 7.10 and 9.4): "Ask for a person" about a program's measure, once, while the measure is in
+  // force; not_found for anyone but its subject; never suspended, as the reply and the appeal are not (E 7.3).
+  r.post("/moderation/decisions/:id/objection", guard, validate("param", DecisionParam), validate("json", ObjectionRequest), async (c) =>
+    c.json(await objectToDecision(deps, me(c), c.req.valid("param").id, c.req.valid("json")), 201),
   );
   // The reports and notices the account sent, each item as its status page would give it.
   r.get("/moderation/reports", guard, validate("query", ReportsQuery), async (c) => c.json(await reporterList(deps, me(c), c.req.valid("query").cursor)));

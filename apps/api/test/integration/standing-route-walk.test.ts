@@ -102,6 +102,8 @@ export const SUSPENDED_WRITES: Record<string, "refused" | "allowed"> = {
   "POST /api/moderation/decisions/:id/appeal": "allowed",
   // 3e Task 4: the reply is the hearing, and is never suspended.
   "POST /api/moderation/decisions/:id/reply": "allowed",
+  // 3d Task 6 (section 7.10): asking for a person to look at a program's decision is redress, never suspended.
+  "POST /api/moderation/decisions/:id/objection": "allowed",
   "POST /api/moderation/items/:item/reexamine": "allowed",
   "POST /api/moderation/report-mail/resume": "allowed",
 };
@@ -274,6 +276,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       ],
       "POST /api/moderation/decisions/:id/appeal": [{ method: "POST", path: `/api/moderation/decisions/${decisionId}/appeal`, json: {} }],
       "POST /api/moderation/decisions/:id/reply": [{ method: "POST", path: `/api/moderation/decisions/${decisionId}/reply`, json: { statement: "I did not mean it." } }],
+      // A person's decision: the request is refused as objection_not_open, never as account_suspended.
+      "POST /api/moderation/decisions/:id/objection": [{ method: "POST", path: `/api/moderation/decisions/${decisionId}/objection`, json: { text: "Please have a person look at this." } }],
       "POST /api/moderation/items/:item/reexamine": [{ method: "POST", path: `/api/moderation/items/${item!.id}/reexamine`, json: {} }],
     };
     const callsOf = (route: string): Call[] => {

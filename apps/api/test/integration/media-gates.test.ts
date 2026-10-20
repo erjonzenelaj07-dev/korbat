@@ -124,6 +124,9 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   edgeAlert: { is: "neither", why: "writes the job's own alert row, counts and a time" },
   purges: { is: "neither", why: "answers each image's newest outbox outcome and time for the case's purge lines; never a file" },
   postPurges: { is: "neither", why: "answers the newest outbox outcome and time of each image of a post for an order's purge lines; never a file" },
+  // 3d Task 6: the automated step's two reads of scores, ids and numbers only.
+  signals: { is: "neither", why: "answers the ids and scores of a post's ready images for the automated step; never a file and nothing of a sealed image's content" },
+  unsignalledScores: { is: "neither", why: "answers ids and scores of recent posts' images without a signal for the automated sweep; never a file" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 

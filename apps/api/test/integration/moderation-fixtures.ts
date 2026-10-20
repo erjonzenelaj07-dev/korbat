@@ -790,7 +790,8 @@ export interface DecisionRow {
   needs_admin: boolean;
   ended_interim: boolean;
   author_mail: string;
-  decided_by: string;
+  /** 3d Task 6: null for a program's decision. */
+  decided_by: string | null;
   automated_detection: boolean;
   automated_decision: string;
   territorial_scope: string;
@@ -847,6 +848,10 @@ export async function inForce(db: Runner, where: { caseId?: string; postId?: str
  * trigger and the foreign keys ask for (removeFixtures says why). Both ids are uuid[] parameters.
  */
 async function removeCasesIn(tx: DbTx, caseIds: SQL, intakeIds: SQL): Promise<void> {
+  // 3d Task 6: the requests for a person and the signals of these cases' decisions and items, before both (foreign keys).
+  await tx.execute(sql`delete from automated_objections where decision_id in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
+  await tx.execute(sql`delete from automated_signals where decision_id in (select d.id from decisions d where d.case_id = any(${caseIds}))
+                         or intake_item_id in (select i.id from intake_items i where i.case_id = any(${caseIds}))`);
   // 3e: the marks and the replies go first; a mark names an item, a reply its measure and its answering decision.
   await tx.execute(sql`delete from unfounded_marks where intake_id = any(${intakeIds}) or item_id in (select i.id from intake_items i where i.case_id = any(${caseIds}))
                          or decision_id in (select d.id from decisions d where d.case_id = any(${caseIds})) or withdrawn_by in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
@@ -953,6 +958,10 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
     await tx.execute(sql`delete from report_tallies where account_id = any(${profiles})`);
     await tx.execute(sql`delete from suspension_replies where account_id = any(${profiles})`);
     await removeCasesIn(tx, caseIds, intakeIds);
+    // 3d Task 6: a signal names its image by id alone (no foreign key), and an image that stopped being public left an
+    // outbox row of the edge: both go with the image rows.
+    await tx.execute(sql`delete from automated_signals where media_id in (select m.id from post_media m where m.owner_id = any(${profiles}))`);
+    await tx.execute(sql`delete from edge_purges where media_id in (select m.id from post_media m where m.owner_id = any(${profiles}))`);
     await tx.execute(sql`delete from post_media where owner_id = any(${profiles})`);
     await tx.execute(sql`delete from posts where author_id = any(${profiles})`);
     await tx.execute(sql`delete from profiles where id = any(${profiles})`);

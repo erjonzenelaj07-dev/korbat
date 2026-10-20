@@ -378,11 +378,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
         const dispatched = until("job:moderation-dispatch");
         const retained = setting === "on" ? until("job:moderation-retention") : Promise.resolve();
         // Nothing of these two runs before the ten minutes are over. 3f's alert tick and (since 3f's review) its mail
-        // leg, which startJobs also starts in both branches, run every 30 seconds meanwhile.
+        // leg, which startJobs also starts in both branches, run every 30 seconds meanwhile, and 3d Task 6's sweep of the
+        // automated step every minute (it reads no signal and no image while R1_CLASSIFIER is off).
         await vi.advanceTimersByTimeAsync(RETENTION_INTERVAL_MS - 1);
-        expect(asked.filter((key) => key !== "job:alert-tick" && key !== "job:alert-mail")).toEqual([]);
+        expect(asked.filter((key) => key !== "job:alert-tick" && key !== "job:alert-mail" && key !== "job:automated-sweep")).toEqual([]);
         expect(asked).toContain("job:alert-tick");
         expect(asked).toContain("job:alert-mail");
+        expect(asked).toContain("job:automated-sweep");
         await vi.advanceTimersByTimeAsync(2);
         await Promise.all([dispatched, retained]);
       } finally {

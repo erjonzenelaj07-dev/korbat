@@ -10,6 +10,7 @@ import { exportLines } from "../../src/staff";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import { RECOVERY_TABLES, aPost, act, imagePost, moderationDeps, refusal, report, restoreForTest, rowCounts, snapshotForTest } from "./moderation-fixtures";
 import { ORDER_TABLES, effectForTest, effectParams, orderConfig, orderForTest } from "./orders-fixtures";
+import { automationDeps, signalForTest } from "./automation-fixtures";
 
 vi.setConfig({ testTimeout: 180_000 });
 
@@ -48,6 +49,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
   let orderPost: string;
   let removalCase: string;
   let clearedCase: string;
+  // 3d Task 6: a program's case, reported before the backup, and its measure, taken after it and lost.
+  let programCase: string;
+  let programPost: { postId: string; mediaIds: string[] };
   let recordId: string;
   let lostDecision: { decision: Record<string, unknown>; actions: unknown[] };
   let lostEffectAt: string;
@@ -80,6 +84,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
     const removed = await imagePost(apiDb, 0);
     removalCase = (await report(apiDb, aPost(removed.postId))).caseId;
     clearedCase = (await report(apiDb, aPost((await imagePost(apiDb, 0)).postId))).caseId;
+    programPost = await imagePost(apiDb, 1);
+    programCase = (await report(apiDb, aPost(programPost.postId))).caseId;
     await migrateDb.execute(sql`insert into public.audit_log (actor_id, action, metadata) select '00000000-0000-0000-0000-000000000000'::uuid, 'filler', jsonb_build_object('n', n) from generate_series(1, 320) n`);
     head = await readHead();
     backups = [await snapshotForTest(migrateDb), await snapshotForTest(migrateDb)];
@@ -103,6 +109,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
     if (!answered.ok) throw new Error(answered.problem);
     const verified = await orderCommand(migrateDb, parseOrderArgs("order-verify", [orderId, "--how", "compared with the register"]), { homeState: "DE", appOrigin }, async () => Buffer.alloc(0));
     if (!verified.ok) throw new Error(verified.problem);
+    // 3d Task 6 (8.7, "A program's lost measure"): a program withholds the reported image; its finding joins the case.
+    const programDeps = automationDeps(apiDb);
+    const withheld = await signalForTest(programDeps, programPost.mediaIds[0]!);
+    if (withheld.handled !== "measure" || withheld.caseId !== programCase) throw new Error(`the program took no measure on its case: ${withheld.handled}`);
+    await programDeps.background.settle();
     // Last, a report answered with no breach (3f's review, proofs7): a final decision with no measure and no texts, whose
     // copy nothing refuses at insert, so that decision_holds alone refuses it at commit.
     const cleared = await world.decideAs(mod, clearedCase, { kind: "final", outcome: "no_violation" });
@@ -129,7 +140,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
   test("the keeper's file holds the 300 places before the head and every lost row, oldest first", () => {
     expect(placeOf(tail[0]!)).toBe(head.seq - 299);
     const actions = tail.filter((line) => placeOf(line) > head.seq).map((line) => (JSON.parse(line) as { action: string }).action);
-    expect(actions).toEqual(expect.arrayContaining(["order_opened", "order_effected", "case_decided", "notification_recorded", "order_recorded"]));
+    expect(actions).toEqual(expect.arrayContaining(["order_opened", "order_effected", "case_decided", "notification_recorded", "order_recorded", "automated_decided"]));
   });
 
   test("after the restore the lost work is gone: no order, the post public, the head the backup's", async () => {
@@ -212,13 +223,19 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
       ["order_effect", "order_effected"],
       ["restriction", "case_decided"],
       ["record", "notification_recorded"],
+      // 3d Task 6: a program's lost withhold is a restriction a person takes again, on the case its row names.
+      ["restriction", "automated_decided"],
       ["no_measure", "case_decided"],
     ]);
+    const [program] = await migrateDb.execute<{ target_type: string; target_id: string }>(
+      sql`select target_type, target_id from public.restore_gaps where action = 'automated_decided' and place > ${head.seq}`,
+    );
+    expect({ ...program! }).toEqual({ target_type: "case", target_id: programCase });
     expect(gaps.filter((g) => !g.open).map((g) => g.action).sort()).toEqual(["notification_recorded", "order_opened", "order_recorded"]);
     const [imported] = await migrateDb.execute<{ action: string; counts: Record<string, number> }>(
       sql`select action, metadata -> 'counts' as counts from public.audit_log where chain_seq = (select seq from public.audit_head where id = 1)`,
     );
-    expect(imported).toEqual({ action: "restore_imported", counts: { order_effect: 1, restriction: 1, record: 4, no_measure: 1 } });
+    expect(imported).toEqual({ action: "restore_imported", counts: { order_effect: 1, restriction: 2, record: 4, no_measure: 1 } });
   });
 
   test("the migrator's own copy of the lost decision and its measure never commits: decision_holds refuses it without a confirmed audit row", async () => {
@@ -255,7 +272,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore, and the impor
     expect(held).toEqual({ informed: null, level: "disabled" });
     const [effectGap] = await migrateDb.execute<{ disposition: string; closed_by: string }>(sql`select disposition, closed_by from public.restore_gaps where class = 'order_effect' and target_id = ${itemId}`);
     expect(effectGap).toEqual({ disposition: "reapplied", closed_by: item!.decision });
-    const [removal] = await migrateDb.execute<{ id: string }>(sql`select id from public.restore_gaps where class = 'restriction' and closed_at is null and place > ${head.seq}`);
+    const [removal] = await migrateDb.execute<{ id: string }>(
+      sql`select id from public.restore_gaps where class = 'restriction' and action = 'case_decided' and closed_at is null and place > ${head.seq}`,
+    );
     const decided = await world.decideAs(admin, removalCase, { kind: "final", actions: [act("remove")] }, { gap: removal!.id });
     if (typeof decided === "string") throw new Error(`the removal was not taken again: ${decided}`);
     const [closed] = await migrateDb.execute<{ disposition: string; closed_by: string }>(sql`select disposition, closed_by from public.restore_gaps where id = ${removal!.id}::uuid`);

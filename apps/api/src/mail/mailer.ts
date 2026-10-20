@@ -95,7 +95,12 @@ export type TemplateName =
   // address HEAD_KEEPER_MAIL.
   | "head_unwitnessed"
   | "head_missed"
-  | "head_published";
+  | "head_published"
+  // Task 6: the automated decision's three alerts, each a staff alert whose mail is its push's sentence: an author asked
+  // for a person, a cap or a limit refused a program's measure, a request for a person waited longer than its target.
+  | "automated_objection"
+  | "automation_capped"
+  | "automated_waiting";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

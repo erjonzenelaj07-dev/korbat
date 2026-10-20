@@ -69,6 +69,11 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   release_period_unset: 422,
   release_period_running: 422,
   release_mismatch: 409,
+  // 3d Task 6 (section 10.7): "Ask for a person" that is not open; and the two refusals of a program's measure, which the
+  // automated step records on its signal and no route answers (their statuses are never sent).
+  objection_not_open: 422,
+  already_protected: 409,
+  automation_capped: 429,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -137,6 +142,9 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   release_period_unset: "korbat has set no period after which sealed images are released.",
   release_period_running: "The period has not ended, the author was not told the day in time, or an objection is unanswered.",
   release_mismatch: "The seal, the record of the report or the recorded leave is no longer what was confirmed.",
+  objection_not_open: "A person has decided since, or you already asked for a person about this decision.",
+  already_protected: "Another measure already protects this.",
+  automation_capped: "A program has reached one of its limits.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.

@@ -46,7 +46,7 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 64 tables in total", () => {
+  test("there are 66 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
@@ -54,8 +54,63 @@ describe("trust and safety schema", () => {
     // authority_notification_events, productions and auth.report_holds; then the two of recovery: restore_gaps and
     // copy_marks; then 3d's first, quarantine_files; then the release's four (Task 2): release_leaves, releases,
     // release_posts and release_notices; then the edge's outbox (Task 3), edge_purges; then the public figures' two (Task
-    // 4), transparency_editions and recipient_months; then the head's (Task 5), head_publications.
-    expect(tables.length).toBe(64);
+    // 4), transparency_editions and recipient_months; then the head's (Task 5), head_publications; then the automated
+    // decision's two (Task 6), automated_signals and automated_objections.
+    expect(tables.length).toBe(66);
+  });
+  test("3d's automated decision (section 6.6): a signal under closed lists, its score or its match, its four once-set columns and its indexes; the request for a person, one a decision; each read and allowed for the API's role alone", () => {
+    const signals = byName.get("automated_signals")!;
+    const objections = byName.get("automated_objections")!;
+    const checkSql = (table: typeof signals, name: string) => new PgDialect().sqlToQuery(table.checks.find((c) => c.name === name)!.value).sql;
+    expect(signals.columns.map((c) => [c.name, c.getSQLType(), c.notNull])).toEqual([
+      ["id", "uuid", true],
+      ["kind", "text", true],
+      ["media_id", "uuid", true],
+      ["score", "real", false],
+      ["threshold_version", "smallint", false],
+      ["match_id", "uuid", false],
+      ["created_at", "timestamp with time zone", true],
+      ["intake_item_id", "uuid", false],
+      ["decision_id", "uuid", false],
+      ["handled_at", "timestamp with time zone", false],
+      ["handled", "text", false],
+    ]);
+    expect(signals.checks.map((c) => c.name).sort()).toEqual([
+      "automated_signals_handled",
+      "automated_signals_handled_at",
+      "automated_signals_kind",
+      "automated_signals_score",
+      "automated_signals_score_range",
+    ]);
+    expect(checkSql(signals, "automated_signals_kind")).toBe(`"automated_signals"."kind" in ('r1_score', 'known_match')`);
+    expect(checkSql(signals, "automated_signals_handled")).toBe(`"automated_signals"."handled" in ('finding', 'measure', 'capped', 'covered', 'gone')`);
+    expect(checkSql(signals, "automated_signals_handled_at")).toBe(`("automated_signals"."handled_at" is null) = ("automated_signals"."handled" is null)`);
+    // The image has no foreign key, so a deletion never waits for a signal; the match record's comes with its table (Task 7).
+    expect(signals.foreignKeys.map((k) => [k.reference().columns.map((c) => c.name), getTableConfig(k.reference().foreignTable).name, k.onDelete])).toEqual([
+      [["decision_id"], "decisions", "restrict"],
+    ]);
+    const where = (config: { where?: SQL }) => (config.where ? new PgDialect().sqlToQuery(config.where).sql : null);
+    expect(signals.indexes.map((i) => [i.config.name, i.config.unique, i.config.columns.map((c) => (c as { name: string }).name), where(i.config)]).sort()).toEqual([
+      ["automated_signals_decision", true, ["decision_id"], "decision_id is not null"],
+      ["automated_signals_item", true, ["intake_item_id"], "intake_item_id is not null"],
+      ["automated_signals_one", true, ["media_id", "kind"], null],
+      ["automated_signals_open", false, ["media_id", "kind"], "handled_at is null"],
+    ]);
+    expect(objections.columns.map((c) => [c.name, c.getSQLType(), c.notNull])).toEqual([
+      ["decision_id", "uuid", true],
+      ["text", "text", false],
+      ["created_at", "timestamp with time zone", true],
+      ["erased_at", "timestamp with time zone", false],
+    ]);
+    expect(objections.columns.find((c) => c.name === "decision_id")?.primary).toBe(true);
+    expect(checkSql(objections, "automated_objections_text")).toBe(
+      `("automated_objections"."text" is null) = ("automated_objections"."erased_at" is not null) and char_length("automated_objections"."text") between 1 and 2000`,
+    );
+    for (const table of [signals, objections]) {
+      expect(table.schema ?? "public").toBe("public");
+      expect(table.enableRLS).toBe(true);
+      expect(table.policies.map((p) => [p.name, p.for, p.to])).toEqual([[`${table.name}_api_all`, "all", apiRole]]);
+    }
   });
   test("3d's head_publications (section 6.5): a day's value or a restore's mark under closed lists, the place, the witness and its token, published and retired, read and allowed for the API's role alone", () => {
     const head = byName.get("head_publications")!;
@@ -824,6 +879,8 @@ describe("moderation cases 3c", () => {
 
   test("every check of intakes, by name", () => {
     expect(checks("intakes")).toEqual([
+      // 3d (6.6): a program's finding.
+      "intakes_automated",
       "intakes_category",
       "intakes_category_keyword",
       "intakes_cited_law_len",
@@ -854,6 +911,15 @@ describe("moderation cases 3c", () => {
     // The notifier's contact lives in the auth schema; the public row holds only its id, with no foreign key.
     expect(column("intakes", "contact_id")?.getSQLType()).toBe("uuid");
     expect(predicate(index("intakes", "intakes_unerased_idx"))).toBe("erased_at is null");
+    // 3d (6.6): the new kind and channel compared as text, which parses before the migration's transaction commits.
+    expect(checkSql("intakes", "intakes_has_ground")).toBe(
+      `"intakes"."rule_id" is not null or "intakes"."alleges_illegal" or "intakes"."csam" or "intakes"."kind"::text = 'automated'`,
+    );
+    expect(checkSql("intakes", "intakes_finding")).toContain(`("intakes"."kind"::text = 'automated') = ("intakes"."channel"::text = 'system')`);
+    expect(checkSql("intakes", "intakes_r2_finding_only")).toBe(`"intakes"."rule_id" is distinct from 'R2' or "intakes"."kind"::text in ('finding', 'automated')`);
+    expect(checkSql("intakes", "intakes_automated")).toBe(
+      `"intakes"."kind"::text <> 'automated' or ("intakes"."automated_processing" and ("intakes"."rule_id" is null or "intakes"."rule_id" in ('R1', 'R2')) and not "intakes"."alleges_illegal" and not "intakes"."csam" and "intakes"."reporter_id" is null and "intakes"."contact_id" is null and "intakes"."finding_by" is null)`,
+    );
   });
 
   test("every check of decisions, by name, and one review an appeal", () => {
@@ -861,6 +927,8 @@ describe("moderation cases 3c", () => {
       "decisions_automated_decision",
       "decisions_category",
       "decisions_category_keyword",
+      // 3d (6.6): no decider, and only then, means fully automated and interim.
+      "decisions_decider",
       "decisions_digests",
       "decisions_ground_law",
       "decisions_ground_rule",
@@ -887,6 +955,14 @@ describe("moderation cases 3c", () => {
       // 3f: an order's record outlives nothing of the ledger; its erasure leaves the decision without its item.
       order_item_id: { table: "legal_order_items", columns: ["id"], onDelete: "set null" },
     });
+    // 3d (section 2 row 14, 6.6): a program's decision has no decider; no profile stands for the system.
+    expect(column("decisions", "decided_by")?.notNull).toBe(false);
+    expect(checkSql("decisions", "decisions_decider")).toBe(
+      `("decisions"."decided_by" is null) = ("decisions"."automated_decision" = 'fully') and ("decisions"."decided_by" is not null or "decisions"."kind"::text = 'interim')`,
+    );
+    expect(checkSql("decisions", "decisions_restricted")).toBe(
+      `"decisions"."outcome" <> 'restricted' or ("decisions"."ground" is not null and (("decisions"."facts_digest" is not null and "decisions"."reason_digest" is not null) or "decisions"."decided_by" is null)) or "decisions"."kind"::text = 'order'`,
+    );
   });
 
   test("the columns of decisions that the database forces: their types, and which carry a default", () => {
@@ -1317,9 +1393,9 @@ describe("the contact point and the alert channel 3f", () => {
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
     // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two,
-    // then Task 3's one, then Task 5's two.
+    // then Task 3's one, then Task 5's two, then Task 6's three.
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain(
-      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed')",
+      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed', 'automated_objection', 'automation_capped', 'automated_waiting')",
     );
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);
@@ -1391,8 +1467,9 @@ describe("order records 3f", () => {
     expect(schema.actionKind.enumValues.slice(-2)).toEqual(["disable_by_order", "reinstate_by_order"]);
     expect(schema.decisionKind.enumValues).toEqual(["interim", "final", "review", "correction", "order"]);
     expect(schema.decisionSource.enumValues).toEqual(["notice", "report", "own_initiative", "order"]);
-    expect(schema.intakeKind.enumValues).toEqual(["user", "finding", "order"]);
-    expect(schema.intakeChannel.enumValues).toEqual(["signed_in", "signed_out", "staff", "authority"]);
+    // 3d (6.6) adds one value after 3f's to each of these two: a program's finding and its channel.
+    expect(schema.intakeKind.enumValues).toEqual(["user", "finding", "order", "automated"]);
+    expect(schema.intakeChannel.enumValues).toEqual(["signed_in", "signed_out", "staff", "authority", "system"]);
     expect(schema.moderationLevel.enumValues.at(-1)).toBe("disabled");
     expect(schema.postState.enumValues.at(-1)).toBe("disabled");
     // An image follows its post's state in every reader: media_moderation_state gains nothing.

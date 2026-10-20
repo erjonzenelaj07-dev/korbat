@@ -58,6 +58,7 @@ import {
   offeredDraft,
   outcomesListed,
   previewOf,
+  programFinding,
   previewable,
   reinstatable,
   reinstateGroundOf,
@@ -80,7 +81,7 @@ import {
   type DraftTextKind,
   type StaffRole,
 } from "../compose";
-import { APPEAL_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, messageFor, ORDER_WORDS, REVIEW_OUTCOMES, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, AUTOMATION_WORDS, COMPOSER_KINDS, COMPOSER_OUTCOMES, COMPOSER_WORDS, messageFor, ORDER_WORDS, REVIEW_OUTCOMES, STANDING_WORDS } from "../messages";
 import { dateTime, UserText } from "../ui";
 import { categoryLabel } from "../words";
 
@@ -105,6 +106,11 @@ export interface ComposerViewProps {
   draft: CaseDraft;
   /** The time the preview is rendered for: the decision's time, were it confirmed now. */
   now: Date;
+  /**
+   * 3d Task 6 (section 8.4, [case.r1]): the images this person opened on this case, so the preview says whether the
+   * decision is taken after looking at the image a program rated, as the statement will. None unless the page says so.
+   */
+  viewedImages?: readonly string[];
   busy: boolean;
   error: string | null;
   /** The refusal of a text's save, worded in place under its field. */
@@ -128,7 +134,7 @@ export interface ComposerViewProps {
  * page says so when there is nothing to show yet (a restriction without a measure), nothing it can show (a post whose
  * snapshot cannot be shown: no creation time is made up), or nothing that is sent.
  */
-function Preview({ view, draft, now }: Pick<ComposerViewProps, "view" | "draft" | "now">) {
+function Preview({ view, draft, now, viewedImages = [] }: Pick<ComposerViewProps, "view" | "draft" | "now" | "viewedImages">) {
   // A restriction without a measure has no statement yet: the page says so rather than show one that restricts nothing.
   if (draft.kind !== "correction" && draft.kind !== "review" && draft.outcome === "restricted" && !draft.actions.some((action) => MEASURES[action.kind].lifts === null)) {
     return <p className="hint">{COMPOSER.previewNeedsMeasure}</p>;
@@ -137,7 +143,7 @@ function Preview({ view, draft, now }: Pick<ComposerViewProps, "view" | "draft" 
   let input: StatementInput;
   let paragraphs: string[];
   try {
-    input = previewOf(view, draft, now);
+    input = previewOf(view, draft, now, viewedImages);
     paragraphs = statementParagraphs(input);
   } catch {
     return null;
@@ -270,7 +276,7 @@ function CorrectionView(props: ComposerViewProps) {
       <StrikeNotes decision={decision} />
       <StandingNotes decision={decision} />
       <TextField id="compose-review-reason" label="Reason of the correction" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
-      <Preview view={view} draft={draft} now={props.now} />
+      <Preview view={view} draft={draft} now={props.now} viewedImages={props.viewedImages} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
     </section>
   );
@@ -344,7 +350,7 @@ function ReviewView(props: ComposerViewProps) {
       {replyOf(decision)?.reply.answeredAt === null ? <p className="notice">{STANDING_WORDS.reviewReply}</p> : null}
       {decision.needsAdmin ? <p className="hint">{STANDING_WORDS.reviewAdmin}</p> : null}
       <TextField id="compose-review-reason" label="Reason of the review" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
-      <Preview view={view} draft={draft} now={props.now} />
+      <Preview view={view} draft={draft} now={props.now} viewedImages={props.viewedImages} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
     </section>
   );
@@ -573,7 +579,7 @@ function AnswerView(props: ComposerViewProps) {
       <p className="hint">{STANDING_WORDS.reply.same}</p>
       {decision.needsAdmin ? <p className="hint">{STANDING_WORDS.reply.admin}</p> : null}
       <TextField id="compose-review-reason" label="Reason of the answer" kind="review_reason" rows={3} props={props} under={[STANDING_WORDS.reply.reason, COMPOSER.personalData]} />
-      <Preview view={view} draft={draft} now={props.now} />
+      <Preview view={view} draft={draft} now={props.now} viewedImages={props.viewedImages} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
     </section>
   );
@@ -608,7 +614,7 @@ function WithdrawView(props: ComposerViewProps) {
       <p className="notice">{STANDING_WORDS.replace.what}</p>
       {measure.reply !== null && measure.reply.answeredAt === null ? <p className="hint">{STANDING_WORDS.replace.reply}</p> : null}
       <TextField id="compose-review-reason" label="Reason of the withdrawal" kind="review_reason" rows={3} props={props} under={[COMPOSER.personalData]} />
-      <Preview view={view} draft={draft} now={props.now} />
+      <Preview view={view} draft={draft} now={props.now} viewedImages={props.viewedImages} />
       <Confirm props={props} onCancel={props.onCancelCorrection} />
     </section>
   );
@@ -944,6 +950,8 @@ export function ComposerView(shown: ComposerViewProps) {
   return (
     <section className="panel composer" aria-labelledby="composer-title">
       <h3 id="composer-title">Decide</h3>
+      {/* 3d Task 6 (section 8.4): [case.autoRecord] while an unanswered item of the case is a program's finding. */}
+      {programFinding(view) === null ? null : <p className="hint">{AUTOMATION_WORDS.caseAutoRecord}</p>}
 
       <fieldset>
         <legend>Outcome</legend>
@@ -1146,7 +1154,7 @@ export function ComposerView(shown: ComposerViewProps) {
       ) : null}
       {kind === "final" && suspect.length > 0 && left.length > 0 ? <p className="notice">{COMPOSER.staysOpen(throughSeqOf(view), left.length)}</p> : null}
 
-      <Preview view={view} draft={draft} now={props.now} />
+      <Preview view={view} draft={draft} now={props.now} viewedImages={props.viewedImages} />
       <Confirm props={props} />
     </section>
   );

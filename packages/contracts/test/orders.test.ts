@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  AUTOMATION_RULES,
   ALERT_CHANNEL_STATES,
   ALERT_KINDS,
   ALERT_KIND_LIST,
@@ -177,6 +178,9 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       "edge_purge_failed",
       "head_unwitnessed",
       "head_missed",
+      "automated_objection",
+      "automation_capped",
+      "automated_waiting",
     ]);
     expect(Object.keys(ALERT_KINDS).sort()).toEqual([...ALERT_KIND_LIST].sort());
     expect(Object.keys(ALERT_TEXTS).sort()).toEqual([...ALERT_KIND_LIST].sort());
@@ -217,6 +221,9 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       edge_purge_failed: [3, "all", "push+mail", "sentence"],
       head_unwitnessed: [3, "all", "push+mail", "sentence"],
       head_missed: [3, "all", "push+mail", "sentence"],
+      automated_objection: [3, "all", "push+mail", "sentence"],
+      automation_capped: [3, "all", "push+mail", "sentence"],
+      automated_waiting: [3, "all", "push+mail", "sentence"],
     };
     for (const kind of ALERT_KIND_LIST) expect(row(kind), kind).toEqual(table[kind]);
   });
@@ -253,6 +260,9 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       edge_purge_failed: ["count", "oldestAt"],
       head_unwitnessed: ["day"],
       head_missed: ["day"],
+      automated_objection: ["at", "count"],
+      automation_capped: ["at", "count", "limitHour", "limitDay", "limitUnanswered", "limitWaiting"],
+      automated_waiting: ["count", "oldestAt"],
     });
     for (const kind of ALERT_KIND_LIST) expect(ALERT_KINDS[kind].facts.length, kind).toBeLessThanOrEqual(6);
     expect(["receivedAt", "dueAt", "oldestAt", "at", "since", "day"].every(isTimeFact)).toBe(true);
@@ -302,14 +312,14 @@ describe("ALERT_TEXTS (W.4): one text serves both legs, and it carries counts an
     }
   });
 
-  test("no entry holds an @, a link or a placeholder that is neither a fact of its kind nor a number of ORDER_RULES, QUARANTINE_RULES or EDGE_WORDS", () => {
+  test("no entry holds an @, a link or a placeholder that is neither a fact of its kind nor a number of ORDER_RULES, QUARANTINE_RULES, EDGE_WORDS or AUTOMATION_RULES", () => {
     for (const kind of ALERT_KIND_LIST) {
       const text = ALERT_TEXTS[kind];
       const words = [text.title, ...text.sentence.map((part) => part.text), text.todo ?? ""].join(" ");
       expect(words, kind).not.toContain("@");
       expect(words.toLowerCase(), kind).not.toContain("http");
       for (const name of alertPlaceholders(kind)) {
-        expect([...ALERT_KINDS[kind].facts, ...Object.keys(ORDER_RULES), ...Object.keys(QUARANTINE_RULES), ...Object.keys(EDGE_WORDS)], `${kind}: {${name}}`).toContain(name);
+        expect([...ALERT_KINDS[kind].facts, ...Object.keys(ORDER_RULES), ...Object.keys(QUARANTINE_RULES), ...Object.keys(EDGE_WORDS), ...Object.keys(AUTOMATION_RULES)], `${kind}: {${name}}`).toContain(name);
       }
       // Every number a sentence of 3f prints comes from the facts or from ORDER_RULES: no digit is typed. 3c's burst
       // window is 3c's own number, which its push names as its mail does.

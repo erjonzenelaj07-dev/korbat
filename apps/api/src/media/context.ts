@@ -77,4 +77,10 @@ export interface MediaDeps {
   enforceUploadLimit: (userId: string, accountCreatedAt: Date, now: Date) => Promise<void>;
   log: Logger;
   now: () => Date;
+  /**
+   * 3d Task 6 (design, sections 5 and 10.2): the scorer's model this server keeps a score from, as R1_CLASSIFIER names it:
+   * the test scorer's name under `test`, null while it is off (no classifier is built in). finalize keeps a result's
+   * score only from this model, so a score of another build, or one written while the setting differed, is never stored.
+   */
+  r1Model: string | null;
 }

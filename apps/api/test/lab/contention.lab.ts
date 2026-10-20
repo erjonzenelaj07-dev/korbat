@@ -8,7 +8,10 @@ import type { CaseDecidedParams } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
+import { automatedStep } from "../../src/moderation/automated";
+import { insertScoreSignal } from "../../src/moderation/automated-repo";
 import { insertAction, insertDecision } from "../../src/moderation/repo";
+import { automationDeps } from "../integration/automation-fixtures";
 import { deciderWorld, type DeciderWorld } from "../integration/moderation-decide";
 import {
   aPost,
@@ -511,6 +514,96 @@ describe.skipIf(!process.env.INTEGRATION)("lab: the contention of moderation dec
     } finally {
       await removeDecided(migrateDb, posts, []);
       await removeOrderAlerts(migrateDb, started);
+    }
+  });
+
+  test("3d Task 6 (12.1 row 28): the automated step against a moderator's decision on the same case, the author's deletion of the post and a seal on the author: forty rounds each, both orders", async () => {
+    // The step (design, section 5, the lock order, and 7.9 step 2): its signal, then in one transaction the author's
+    // profile (no key update), the signal read again, the finding as recordIntake writes it (the case, its items), and in
+    // a savepoint the snapshot, the decision without a decider and its one ledger row, whose triggers take the post and
+    // its image; a deadlock, a lock timeout or a serialization failure runs it again, three tries in all. Here each round
+    // writes its signal and runs the whole step inside a transaction that is rolled back (the step's own transaction is
+    // then a savepoint of it, as in the integration tests), so every round finds the post as it was. Against it: a
+    // moderator's interim withhold of the post on the post's case, which the finding joins; the author's deletion of the
+    // post as the social repository issues it; and an interim seal of the author's images on the account's case.
+    const [author, reporter] = [await newProfile(apiDb), await newProfile(apiDb)];
+    committed.push(author.id, reporter.id);
+    const postId = await newPostRow(apiDb, author.id);
+    const images: string[] = [];
+    for (const position of [0, 1]) images.push(await newImageRow(apiDb, author.id, postId, position));
+    const [hasProfile] = await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from profiles where id = ${mod.id}::uuid`);
+    if (hasProfile!.n === 0) {
+      await staffProfile(apiDb, mod);
+      committed.push(mod.id);
+    }
+    const postCase = (await intake(apiDb, ground.rule(reporter.id), aPost(postId))).items[0]!.caseId!;
+    const accountCase = (await report(apiDb, anAccount(author.id, author.handle), "csam")).caseId;
+    const withhold = await decisionParams(apiDb, mod, postCase, { kind: "interim", actions: [act("withhold")] });
+    const seal = await decisionParams(apiDb, mod, accountCase, { kind: "interim", ruleId: "R2", actions: [act("seal_media")] });
+    const pause = (tx: DbTx) => tx.execute(sql`select pg_sleep(0.015)`);
+    /** The step's own time in each round, from its signal's insert to its answer. */
+    const latencies: number[] = [];
+    const handled: Record<string, number> = {};
+    const step = async (tx: DbTx) => {
+      const start = performance.now();
+      const signalId = await insertScoreSignal(tx, { mediaId: images[0]!, score: 1, thresholdVersion: 0 });
+      const outcome = await automatedStep(automationDeps(tx), signalId!);
+      latencies.push(performance.now() - start);
+      handled[outcome.handled] = (handled[outcome.handled] ?? 0) + 1;
+    };
+    const others: Record<string, (tx: DbTx) => Promise<unknown>> = {
+      "a moderator's interim withhold of the post on its case": (tx) => decisionWith(tx, mod, author.id, postCase, withhold),
+      "the author's deletion of the post": async (tx) => {
+        await tx.execute(sql`select 1 from profiles where id = ${author.id}::uuid for no key update`);
+        await tx.execute(sql`update posts set state = 'deleted_by_author', deleted_at = now(), body = '' where id = ${postId}::uuid and author_id = ${author.id}::uuid`);
+        await tx.execute(sql`update profiles set post_count = greatest(0, post_count - 1) where id = ${author.id}::uuid`);
+      },
+      "an interim seal of the author's images": (tx) => decisionWith(tx, mod, author.id, accountCase, seal),
+    };
+
+    const ROUNDS = 40;
+    const load = await busy();
+    line("automated step alone (3d Task 6)", { busyPercent: load, ms: await timed(() => rolledBack(apiDb, step)) });
+    for (const [otherName, other] of Object.entries(others)) {
+      const counts: Record<string, number> = {};
+      let longest = 0;
+      latencies.length = 0;
+      for (const key of Object.keys(handled)) delete handled[key];
+      for (let round = 0; round < ROUNDS; round++) {
+        const side = (fn: (tx: DbTx) => Promise<unknown>, delay: number) => async () => {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          const start = performance.now();
+          const outcome = await rolledBack(apiDb, async (tx) => {
+            await fn(tx);
+            await pause(tx);
+          }).then(
+            () => "ok",
+            (err: unknown) => {
+              const fromDatabase = raised(err);
+              return fromDatabase ? `${fromDatabase.code} ${fromDatabase.message}` : ((err as { code?: string }).code ?? String(err));
+            },
+          );
+          longest = Math.max(longest, performance.now() - start);
+          return outcome;
+        };
+        // Each side starts first in half the rounds, a few milliseconds ahead.
+        const ahead = Math.floor(Math.random() * 8);
+        const [a, b] = await Promise.all(round % 2 === 0 ? [side(step, 0)(), side(other, ahead)()] : [side(step, ahead)(), side(other, 0)()]);
+        for (const [who, outcome] of [["step", a], ["other", b]] as const) counts[`${who}: ${outcome}`] = (counts[`${who}: ${outcome}`] ?? 0) + 1;
+      }
+      const sorted = [...latencies].sort((x, y) => x - y);
+      const at = (share: number) => Math.round(sorted[Math.min(sorted.length - 1, Math.floor(share * sorted.length))] ?? 0);
+      line("automated step contention", {
+        against: otherName,
+        rounds: ROUNDS,
+        busyPercent: load,
+        outcomes: counts,
+        handled: { ...handled },
+        stepMedianMs: at(0.5),
+        stepP95Ms: at(0.95),
+        stepLongestMs: Math.round(sorted.at(-1) ?? 0),
+        longestMs: Math.round(longest),
+      });
     }
   });
 });

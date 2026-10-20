@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { ActionKind, DecisionStrike, PostModeration, RuleId } from "@korbat/contracts";
+import type { ActionKind, AskPerson, DecisionStrike, PostModeration, RuleId } from "@korbat/contracts";
 import { iso, rows, type Runner } from "./repo";
 
 /**
@@ -109,6 +109,8 @@ export interface AuthorDecisionRow {
   liftedStanding: { kind: "suspend" | "terminate"; replaced: boolean } | null;
   /** 3f: an order decision, disabled or removed by its measure, or the correction that reinstates after one (lifted): its row names no rule; null otherwise. */
   order: "disabled" | "removed" | "lifted" | null;
+  /** 3d Task 6: the decision has no decider, a program took it ([auto.chip]). */
+  byProgram: boolean;
 }
 
 /**
@@ -140,7 +142,8 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
                             and not exists (select 1 from decision_actions x where x.reverses_action_id = m.id and x.created_at < d.decided_at)), '{}') as ended_standing,
                case when d.kind::text = 'order'
                     then case when coalesce((select a.withhold_author from decision_actions a where a.decision_id = d.id and a.kind::text = 'disable_by_order' limit 1), true) then 'disabled' else 'removed' end
-                    when exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind::text = 'reinstate_by_order') then 'lifted' end as about_order
+                    when exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind::text = 'reinstate_by_order') then 'lifted' end as about_order,
+               d.decided_by is null as by_program
           from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
          where ${toldToAuthor("d")}
            ${after === null ? sql`` : sql`and (${listedAt}, d.id) < (${after.at}::timestamptz, ${after.id}::uuid)`}
@@ -167,7 +170,37 @@ export async function authorDecisions(q: Runner, accountId: string, after: { at:
     standingMeasure: row.standing_measure as AuthorDecisionRow["standingMeasure"],
     liftedStanding: row.lifted_standing as AuthorDecisionRow["liftedStanding"],
     order: (row.about_order as AuthorDecisionRow["order"]) ?? null,
+    byProgram: row.by_program as boolean,
   }));
+}
+
+/**
+ * 3d Task 6 (design, sections 7.10 and 10.2): where "Ask for a person" stands on a decision, read fresh: null for a decision
+ * with a decider; for a program's, `open` while a measure of it is in force and no request exists, `asked` with the text
+ * and its time while the measure stays in force, and `decided` once no measure of it is in force, naming the person's
+ * decision that ended it: the correction or review whose row lifted its measure, else the case's first final decision
+ * after it, which ended it by 3c's derivation. Only decisions the author was told of are named. Nothing stores "answered".
+ */
+export async function askPersonOf(q: Runner, decisionId: string): Promise<AskPerson | null> {
+  const [row] = await rows<{ program: boolean; in_force: boolean; text: string | null; created_at: string | null; ender_id: string | null; ender_at: string | null }>(
+    q,
+    sql`select d.decided_by is null as program,
+               exists (select 1 from measures_in_force m where m.decision_id = d.id) as in_force,
+               o.text, ${iso("o.created_at")} as created_at, e.id as ender_id, ${iso("e.decided_at")} as ender_at
+          from decisions d
+          left join automated_objections o on o.decision_id = d.id
+          left join lateral (
+            select x.id, x.decided_at from decisions x
+             where ${toldToAuthor("x")}
+               and (x.id in (select r.decision_id from decision_actions a join decision_actions r on r.reverses_action_id = a.id where a.decision_id = d.id)
+                    or (x.case_id = d.case_id and x.kind = 'final' and x.decided_at >= d.decided_at))
+             order by x.decided_at, x.id limit 1) e on true
+         where d.id = ${decisionId}::uuid`,
+  );
+  if (!row || !row.program) return null;
+  if (row.in_force) return row.created_at === null ? { state: "open" } : { state: "asked", text: row.text ?? "", createdAt: row.created_at };
+  if (row.ender_id === null || row.ender_at === null) return null;
+  return { state: "decided", decisionId: row.ender_id, decidedAt: row.ender_at };
 }
 
 /**

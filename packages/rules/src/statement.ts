@@ -98,8 +98,39 @@ export const STATEMENT_WORDS = {
     notice: "following a notice under Article 16 of the Digital Services Act",
     report: "following a report by another user",
     own_initiative: "found by a moderator",
+    // 3d Task 6 (W.3, source.automated): in place of "found by a moderator", which would be false, when automated means
+    // found what the decision is about.
+    automated: "found by an automated check of korbat's own",
   },
   automation: "No automated means were used to find this or to decide it.",
+  /**
+   * 3d Task 6 (design, section 7.10; W.3): the automation paragraph and the sentences of a decision that rests on a score.
+   * A program's measure is never worded as a finding: its statement names the rule it was taken under (`ground`), never
+   * "It breaks". "Looked at the image" is said only where the record shows the moderator's view (`viewed`). A match's
+   * words (the comparison, notAssessed, partly) are the known material's (Task 7).
+   */
+  automated: {
+    found: {
+      r1: {
+        viewed:
+          "Automated means were used to find this: a program rated an image of your post as likely within rule R1. They were not used to decide it: a moderator looked at the image and took this decision.",
+        unviewed:
+          "Automated means were used to find this: a program rated an image of your post as likely within rule R1. They were not used to decide it: a moderator took this decision without opening the image.",
+      },
+    },
+    fully: {
+      r1: "Automated means were used to find this and to take this measure: a program rated an image of your post as likely within rule R1, and korbat hid that image at once. No person took part in this measure, and no moderator has decided yet.",
+    },
+    until: {
+      r1: "This lasts until a moderator has decided. A program does nothing else: it removes nothing, hides no text, and does not suspend, limit or end your account.",
+    },
+    ground: (id: string, title: string, text: string) => `The rule this was done under: korbat rule ${id}, "${title}": ${text}`,
+    /**
+     * A person's decision after a score that also gives a strike: the second sentence of 3e's automationStrike, whose first
+     * ("No automated means were used to find this") the found paragraph replaces, since a program found it.
+     */
+    strikeRule: "That the decision gives a strike follows from korbat's published rule, which its software applies.",
+  },
   // 3e (design, section 18, W.2): the strike, the overruling of one, and what the software did for a decision that gives one.
   /** A strike: until when it counts, and how many of the account's strikes counted with it when it was decided. */
   strike: (endsAt: string, activeThen: number) =>
@@ -287,12 +318,53 @@ export function retireEnd(measures: readonly StatementInput["measures"][number][
   return "at_once";
 }
 
-/** The sentence that names the source: a notice or a report was followed, a moderator's finding was found. */
-const sourceSentence = (source: StatementInput["source"]): string => {
+/**
+ * The sentence that names the source: a notice or a report was followed, a moderator's finding was found; 3d Task 6: or
+ * an automated check found it, for a decision of korbat's own initiative whose detection was automated.
+ */
+const sourceSentence = (source: StatementInput["source"], automated = false): string => {
   // 3f: an order decision is a notice and never reaches this sentence (statementParagraphs returns its notice first).
   if (source === "order") throw new Error("an order's decision is a notice, not a statement of reasons");
-  return source === "own_initiative" ? `What this decision is about was ${W.source.own_initiative}.` : `korbat decided this ${W.source[source]}.`;
+  if (source === "own_initiative") return `What this decision is about was ${automated ? W.source.automated : W.source.own_initiative}.`;
+  return `korbat decided this ${W.source[source]}.`;
 };
+
+/**
+ * 3d Task 6 (design, section 7.10's table): the automation paragraph of a person's decision whose detection was
+ * automated, read from the decision's own columns and its signal, so it reads as sent. A score's paragraph ends by
+ * whether the record shows that the person opened the image (`viewed`); a match's and a partly automated decision's are
+ * the known material's sentences, which this version does not hold yet.
+ */
+function automatedFoundParagraph(input: StatementInput): string {
+  if (input.automatedDecision === "partially" || input.signal?.kind !== "r1_score") {
+    throw new Error("a statement's automated match is not worded in this version of @korbat/rules");
+  }
+  const found = input.signal.viewed === true ? W.automated.found.r1.viewed : W.automated.found.r1.unviewed;
+  return input.measures.some((measure) => measure.kind === "strike") ? `${found} ${W.automated.strikeRule}` : found;
+}
+
+/**
+ * 3d Task 6 (design, sections 7.10 and W.3): the statement of a decision without a decider, a program's, in its own order:
+ * what was done; where and for how long; how long it lasts and what a program does not do; the source; the automation
+ * paragraph that says that automated means found this and took the measure; the rule it was taken under; and "Ask for a
+ * person" in the place of the interim redress. It has no facts and no reason: no person wrote one, and the automation
+ * paragraph states the facts the measure rests on (DSA Art. 17(3)(b), (c)). A match's words are Task 7's.
+ */
+function programParagraphs(input: StatementInput, redress: RedressTexts): string[] {
+  if (input.signal?.kind !== "r1_score" || input.ruleId === null) throw new Error("a program's measure on a match is not worded in this version of @korbat/rules");
+  const rule = getRule(input.ruleId, input.rulesVersion);
+  if (!rule) throw new Error(`a statement cites ${input.ruleId} of rulebook version ${input.rulesVersion}, which this package does not hold`);
+  if (redress.askPerson === undefined) throw new Error(`a program's statement needs "Ask for a person", which redress version ${input.redressVersion} does not hold`);
+  return [
+    ...input.measures.map((measure) => measureParagraph(input, measure, redress)),
+    W.scope.interim,
+    W.automated.until.r1,
+    sourceSentence(input.source, true),
+    W.automated.fully.r1,
+    W.automated.ground(rule.id, rule.title, rule.text),
+    redress.askPerson,
+  ];
+}
 
 /** What a reset's end or lifting says of the field: korbat does not put the old value back, and where it can still be read. */
 function fieldSentence(field: Field, reset: { oldValueKept: boolean; resetRuleId: string | null }): string {
@@ -647,6 +719,8 @@ export function statementParagraphs(input: StatementInput, extras: OrderNoticeEx
   // 3f: an order decision and the correction of one are a notice, not a statement of reasons: none of the paragraphs
   // below (no rule, no facts, no reason of korbat's, no appeal) applies to it.
   if (input.order !== null && input.order !== undefined) return orderNoticeParagraphs(input, extras);
+  // 3d Task 6: a program's decision has its own order and words.
+  if (input.automatedDecision === "fully") return programParagraphs(input, redress);
   // Task 4: an order decision, or the correction of one, whose order's records were deleted: no order's facts are left,
   // and the notice says only that an order was given effect, and when.
   if (input.kind === "order" || (input.kind === "correction" && input.reviewed?.kind === "order")) return orderGoneParagraphs(input);
@@ -696,14 +770,26 @@ export function statementParagraphs(input: StatementInput, extras: OrderNoticeEx
     if (input.ground === "illegal") paragraphs.push(W.scope.law);
   }
 
-  // How it came to korbat, for a decision of its own; a review or a correction is korbat's own second look.
-  if (!about) paragraphs.push(sourceSentence(input.source));
+  // How it came to korbat, for a decision of its own; a review or a correction is korbat's own second look. 3d Task 6: a
+  // decision of korbat's own initiative whose detection was automated says that an automated check found it.
+  if (!about) paragraphs.push(sourceSentence(input.source, input.automatedDetection === true));
   // A decision that gives a strike says what the software did: it applied korbat's published rule of when one is given.
   // A suspension on a flood rests on a count the software made, and a measure of the ladder on the strikes it counted and
   // the list it put the account on; one on a decision, a threat or a seal rests on nothing the software did, and keeps
   // 3c's sentence. A reporting measure rests on the reports the software counted and the list of reporting records.
   const counted = standing?.basis === "strikes" || standing?.basis === "ladder_end" || reporting !== undefined;
-  paragraphs.push(input.measures.some((measure) => measure.kind === "strike") ? W.automationStrike : standing?.basis === "flood" ? W.automationFlood : counted ? W.automationCounted : W.automation);
+  // 3d Task 6: a decision whose detection was automated has the paragraph of what found it in the place of all four.
+  paragraphs.push(
+    input.automatedDetection === true
+      ? automatedFoundParagraph(input)
+      : input.measures.some((measure) => measure.kind === "strike")
+        ? W.automationStrike
+        : standing?.basis === "flood"
+          ? W.automationFlood
+          : counted
+            ? W.automationCounted
+            : W.automation,
+  );
 
   // The rule or the law: the decision's own, or for a review or a correction the reviewed decision's, from that decision's
   // row and in the wording of the rulebook that decision was made under. A decision that holds a standing measure names

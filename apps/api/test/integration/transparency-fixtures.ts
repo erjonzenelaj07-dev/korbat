@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
-import type { OrderView } from "@korbat/contracts";
+import { RULE_DEFAULT_CATEGORY, type OrderView } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { hex64, imagePost, newRef, openCase, type TestStaff } from "./moderation-fixtures";
 import { ageOrderForTest, effectParams, effectWith, orderForTest } from "./orders-fixtures";
@@ -58,6 +58,14 @@ export interface YearCells {
   orders?: OrderCell[];
   /** Restrictions under R3 dated in the year before, which a test may move into the year later: what a correction counts again. */
   spare?: number;
+  /**
+   * 3d Task 6: a program's rows. `findings`: intakes of the kind automated on the channel system, by the rule each cites;
+   * of the R1 ones, `restrictedR1` have an item on the year's case, so a person's final restriction of the year
+   * (`restrictions`, which the test sets) restricted them. `measures`: decisions without a decider, interim, restricting and
+   * fully automated, by rule, each with its one ledger row: a withhold of the year's post's image under R1, a seal of its
+   * images under R2.
+   */
+  automated?: { findings?: Partial<Record<"R1" | "R2", number>>; restrictedR1?: number; measures?: Partial<Record<"R1" | "R2", number>> };
 }
 
 /** What the fixture made that a test reads again. */
@@ -68,15 +76,16 @@ export interface YearMade {
   spareIds: string[];
 }
 
-/** The tables the fixture fills with its triggers off. */
-const BULK_TABLES = ["decisions", "decision_actions", "intakes", "appeals"] as const;
+/** The tables the fixture fills with its triggers off; 3d Task 6 adds the items of a program's findings. */
+const BULK_TABLES = ["decisions", "decision_actions", "intakes", "intake_items", "appeals"] as const;
 
 /** A row's time in the year: its number picks the month and the day, at noon UTC. */
 const spread = (year: number) => sql`make_timestamptz(${year}::int, 1 + (g::int % 12), 1 + (g::int % 28), 12, 0, 0, 'UTC')`;
 
 export async function yearForTest(tx: DbTx, year: number, cells: YearCells, staff: TestStaff): Promise<YearMade> {
   // One post and its case, which every bulk decision names: the ledger needs a case, a snapshot and a decider.
-  const { authorId, postId } = await imagePost(tx, 0);
+  // 3d Task 6: with an image when a program's measures withhold one.
+  const { authorId, postId, mediaIds } = await imagePost(tx, cells.automated?.measures ? 1 : 0);
   const caseId = await openCase(tx, "post", postId);
   const [snapshot] = await tx.execute<{ id: string }>(sql`
     insert into public.evidence_snapshots (case_id, target_type, target_id, author_handle, digest)
@@ -129,6 +138,36 @@ export async function yearForTest(tx: DbTx, year: number, cells: YearCells, staf
                ${illegal}, ${illegal ? "STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH" : "STATEMENT_CATEGORY_OTHER_VIOLATION_TC"}, ${illegal ? "it is illegal" : null}, ${illegal},
                ${spread(year)}
           from unnest(${`{${Array.from({ length: n }, () => newRef()).join(",")}}`}::text[]) with ordinality as r(ref, g)`);
+    }
+
+    // 3d Task 6: a program's findings and measures. The new label and channel are cast at run time, on a database that has
+    // them; the figures function compares them as text.
+    for (const [rule, n] of Object.entries(cells.automated?.findings ?? {}) as ["R1" | "R2", number][]) {
+      const restricted = rule === "R1" ? Math.min(n, cells.automated?.restrictedR1 ?? 0) : 0;
+      const made = await tx.execute<{ id: string; g: number }>(sql`
+        insert into public.intakes (kind, ref, channel, rule_id, alleges_illegal, category, bona_fide, automated_processing, received_at)
+        select ${"automated"}::public.intake_kind, r.ref, ${"system"}::public.intake_channel, ${rule}, false, ${RULE_DEFAULT_CATEGORY[rule]}, false, true, ${spread(year)}
+          from unnest(${`{${Array.from({ length: n }, () => newRef()).join(",")}}`}::text[]) with ordinality as r(ref, g)
+        returning id`);
+      // An item on a case has its number in the case; these come after any the year's case holds.
+      for (const [at, intake] of made.slice(0, restricted).entries()) {
+        await tx.execute(sql`insert into public.intake_items (intake_id, position, target_type, target_id, case_id, seq, lane, created_at)
+                             values (${intake.id}::uuid, 1, 'post', ${postId}::uuid, ${caseId}::uuid, ${100_000 + at}, 2, make_timestamptz(${year}::int, 1, 1, 12, 0, 0, 'UTC'))`);
+      }
+    }
+    for (const [rule, n] of Object.entries(cells.automated?.measures ?? {}) as ["R1" | "R2", number][]) {
+      const rows = await tx.execute<{ id: string }>(sql`
+        insert into public.decisions (case_id, kind, seen_state_version, outcome, ground, rule_id, rules_version, redress_version, category, source,
+                                      snapshot_id, snapshot_digest, decided_by, decided_at, xact, puid, informed_at, suspect, needs_admin, ended_interim,
+                                      automated_detection, automated_decision)
+        select ${caseId}::uuid, 'interim', 0, 'restricted', 'incompatible', ${rule}, 3, 4, ${RULE_DEFAULT_CATEGORY[rule]}, 'own_initiative',
+               ${snapshot!.id}::uuid, ${hex64()}, null, ${spread(year)}, '1'::xid8, md5(random()::text || g::text), ${spread(year)}, false, false, false, true, 'fully'
+          from generate_series(1, ${n}::int) g
+        returning id`);
+      await tx.execute(sql`
+        insert into public.decision_actions (decision_id, kind, media_id, subject_account_id, post_id, created_at)
+        select d.id, ${rule === "R1" ? "withhold_media" : "seal_media"}::public.action_kind, ${rule === "R1" ? mediaIds[0]! : null}::uuid, ${authorId}::uuid, ${postId}::uuid, d.decided_at
+          from public.decisions d where d.id = any(${`{${rows.map((row) => row.id).join(",")}}`}::uuid[])`);
     }
 
     // An appeal answered in the year: the decision it appeals is of the year before (so no restriction of the year is

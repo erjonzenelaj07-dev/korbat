@@ -22,6 +22,7 @@ import {
   type CaseDecision,
   type CaseDecisionAction,
   type CaseItem,
+  type CaseSignal,
   type CaseSnapshot,
   type CaseView,
   type DecisionActionParams,
@@ -1199,6 +1200,73 @@ function postOf(view: CaseView): StatementInput["post"] {
   return { id: view.target.id, createdAt: shown.postCreatedAt };
 }
 
+/**
+ * 3d Task 6 (section 8.4): the program's finding among the case's unanswered items, with the image it names, or null: a
+ * person's decision taken now considers it, so the composer says that the decision is recorded as found by automated
+ * means ([case.autoRecord]) and the preview prints the found paragraph.
+ */
+export function programFinding(view: CaseView): { signal: CaseSignal; mediaId: string | null } | null {
+  for (const signal of view.signals) {
+    const item = view.items.find((candidate) => candidate.id === signal.itemId);
+    if (item !== undefined && item.answeredBy === null) return { signal, mediaId: item.mediaId };
+  }
+  return null;
+}
+
+/**
+ * The automation members of a person's statement (W.3), as the API's statement data carries them: what found the items the
+ * decision is about, and whether its moderator opened the image on this case before deciding, which the page knows from
+ * the images it showed this person. A correction or a review speaks of the decision it is about: a program's, or one whose
+ * answered items a program found. Nothing when no program found anything here.
+ */
+function automationOf(view: CaseView, draft: CaseDraft, viewedImages: readonly string[]): Partial<StatementInput> {
+  let found: { signal: CaseSignal; mediaId: string | null } | null = null;
+  if (draft.kind === "correction" || draft.kind === "review") {
+    const corrected = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
+    for (const signal of view.signals) {
+      const item = view.items.find((candidate) => candidate.id === signal.itemId);
+      if (item !== undefined && (corrected?.byProgram === true || item.answeredBy === corrected?.id)) {
+        found = { signal, mediaId: item.mediaId };
+        break;
+      }
+    }
+  } else {
+    found = programFinding(view);
+  }
+  if (found === null) return {};
+  const viewed = found.mediaId !== null && viewedImages.includes(found.mediaId);
+  return { automatedDetection: true, automatedDecision: "not_automated", signal: { kind: found.signal.kind, source: null, matchKind: null, listedAs: null, viewed } };
+}
+
+/**
+ * 3d Task 6 (section 8.4, [case.auto]): the statement a program's decision sent its author, drawn again from the decision as
+ * the case answer holds it: its one measure, no text, and the automation members of a decision without a decider.
+ */
+export function programStatementOf(view: CaseView, decision: CaseDecision): StatementInput {
+  const signal = view.signals[0];
+  return {
+    kind: decision.kind,
+    outcome: decision.outcome,
+    ground: decision.ground,
+    ruleId: decision.ruleId,
+    rulesVersion: decision.rulesVersion,
+    redressVersion: decision.redressVersion,
+    legalReference: null,
+    facts: null,
+    reason: null,
+    source: decision.source,
+    decidedAt: decision.decidedAt,
+    post: postOf(view),
+    measures: decision.actions.filter((action) => MEASURES[action.kind].lifts === null).map((action) => ({ kind: action.kind as MeasureKind, mediaId: action.mediaId, noEffect: action.noEffect, sealed: null })),
+    reversals: [],
+    endedMeasures: [],
+    reviewed: null,
+    automatedDetection: true,
+    automatedDecision: "fully",
+    signal: { kind: signal?.kind ?? "r1_score", source: null, matchKind: null, listedAs: null, viewed: null },
+  };
+}
+
 /** Whether the decision a statement was drawn for sends its author anything: one that restricts nothing, lifts nothing and ends nothing is recorded without a mail. */
 export const statementSent = (input: StatementInput): boolean => input.kind === "review" || input.kind === "correction" || input.measures.length + input.reversals.length + input.endedMeasures.length > 0;
 
@@ -1215,9 +1283,10 @@ function reversesAll(view: CaseView, draft: CaseDraft): boolean {
  * page's reading of the case as it showed it. It throws for a post case without a snapshot the page can show
  * (previewable says so first).
  */
-export function previewOf(view: CaseView, draft: CaseDraft, now: Date): StatementInput {
+export function previewOf(view: CaseView, draft: CaseDraft, now: Date, viewedImages: readonly string[] = []): StatementInput {
   const text = (kind: DraftTextKind): string | null => (normalised(draft.written[kind]) === "" ? null : normalised(draft.written[kind]));
-  const base = { redressVersion: REDRESS_VERSION, decidedAt: now.toISOString(), post: postOf(view) };
+  // 3d Task 6: what found the items, and whether this person opened the image, as the statement will say (W.3).
+  const base = { redressVersion: REDRESS_VERSION, decidedAt: now.toISOString(), post: postOf(view), ...automationOf(view, draft, viewedImages) };
   if (draft.kind === "correction" || draft.kind === "review") {
     const corrected = view.decisions.find((decided) => decided.id === draft.reviewsDecisionId);
     if (!corrected || (corrected.kind !== "interim" && corrected.kind !== "final")) throw new Error("a correction's or a review's draft names a decision of the case that restricts");

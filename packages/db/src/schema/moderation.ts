@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, date, index, integer, jsonb, pgEnum, pgPolicy, pgTable, primaryKey, smallint, text, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, index, integer, jsonb, pgEnum, pgPolicy, pgTable, primaryKey, real, smallint, text, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { postMedia, postState } from "./content";
 import { apiRole, fullAccess, ts, xid8 } from "./helpers";
 import { profiles } from "./identity";
@@ -11,8 +11,10 @@ import { contactMessages } from "./safety";
 
 export const moderationTarget = pgEnum("moderation_target", ["post", "account"]);
 /** Who an intake comes from: a user's report or notice, or a moderator's own finding; 3f: an authority's order. */
-export const intakeKind = pgEnum("intake_kind", ["user", "finding", "order"]);
-export const intakeChannel = pgEnum("intake_channel", ["signed_in", "signed_out", "staff", "authority"]);
+// 3d (design, section 6.6): `automated`, a program's finding, and the channel `system` it arrives on. The migration that adds
+// them names each as an enum literal only inside PL/pgSQL bodies; every CHECK compares the kind and the channel as text.
+export const intakeKind = pgEnum("intake_kind", ["user", "finding", "order", "automated"]);
+export const intakeChannel = pgEnum("intake_channel", ["signed_in", "signed_out", "staff", "authority", "system"]);
 /** The state of one mail korbat owes. `failed` is final: the relay refused the address for good, or five days passed. */
 export const deliveryState = pgEnum("delivery_state", ["pending", "sent", "folded", "suppressed", "no_address", "none", "failed"]);
 export const itemOutcome = pgEnum("item_outcome", ["restricted_rule", "restricted_legal", "no_violation", "not_evident", "not_available", "partly_reversed", "reversed"]);
@@ -181,7 +183,9 @@ export const intakes = pgTable(
     check("intakes_category_keyword", sql`${t.categoryKeyword} in (${listOf(CSAM_KEYWORDS)})`),
     check("intakes_cited_law_len", sql`char_length(${t.citedLaw}) <= 300`),
     check("intakes_explanation_len", sql`char_length(${t.explanation}) <= 2000`),
-    check("intakes_has_ground", sql`${t.ruleId} is not null or ${t.allegesIllegal} or ${t.csam}`),
+    // 3d (6.6): an automated intake alone may cite no rule: the flag of a match whose class its source does not name child
+    // sexual abuse material (review ruling 3).
+    check("intakes_has_ground", sql`${t.ruleId} is not null or ${t.allegesIllegal} or ${t.csam} or ${t.kind}::text = 'automated'`),
     // A user's notice of illegality carries its explanation (until the record is erased) and its good-faith statement; the
     // CSAM path is exempt (Article 16(2)(c)).
     check("intakes_illegal_elements", sql`${t.kind} <> 'user' or not ${t.allegesIllegal} or ${t.csam} or (${t.bonaFide} and (${t.explanation} is not null or ${t.erasedAt} is not null))`),
@@ -191,11 +195,19 @@ export const intakes = pgTable(
     check("intakes_csam", sql`not ${t.csam} or (${t.category} = 'STATEMENT_CATEGORY_PROTECTION_OF_MINORS' and ${t.reporterId} is null and ${t.contactId} is null)`),
     check("intakes_contact_signed_out", sql`${t.contactId} is null or ${t.channel} = 'signed_out'`),
     check("intakes_reporter_signed_in", sql`${t.reporterId} is null or ${t.channel} = 'signed_in'`),
-    check("intakes_finding", sql`(${t.kind} = 'finding') = (${t.findingBy} is not null) and (${t.kind} = 'finding') = (${t.channel} = 'staff')`),
+    // 3d (6.6): a program's finding, and only one, arrives on the channel system.
+    check("intakes_finding", sql`(${t.kind} = 'finding') = (${t.findingBy} is not null) and (${t.kind} = 'finding') = (${t.channel} = 'staff') and (${t.kind}::text = 'automated') = (${t.channel}::text = 'system')`),
     check("intakes_lookup", sql`(${t.lookupHash} is not null) = (${t.channel} = 'signed_out' or ${t.csam})`),
     check("intakes_erased", sql`${t.erasedAt} is null or (${t.explanation} is null and ${t.citedLaw} is null)`),
     // No user reports under R2: only a moderator's finding cites it, so no report of such material carries an account.
-    check("intakes_r2_finding_only", sql`${t.ruleId} is distinct from 'R2' or ${t.kind} = 'finding'`),
+    // 3d (6.6): or a program's finding on a match the source lists as child sexual abuse material.
+    check("intakes_r2_finding_only", sql`${t.ruleId} is distinct from 'R2' or ${t.kind}::text in ('finding', 'automated')`),
+    // 3d (6.6): a program's finding is automated processing, cites R1, R2 or no rule, alleges no illegality, is on no path
+    // for child sexual abuse material, and has no reporter, no contact and no staff account behind it.
+    check(
+      "intakes_automated",
+      sql`${t.kind}::text <> 'automated' or (${t.automatedProcessing} and (${t.ruleId} is null or ${t.ruleId} in ('R1', 'R2')) and not ${t.allegesIllegal} and not ${t.csam} and ${t.reporterId} is null and ${t.contactId} is null and ${t.findingBy} is null)`,
+    ),
     index("intakes_reporter_idx").on(t.reporterId, t.receivedAt),
     /** The findings limit and the home screen's count. */
     index("intakes_finding_idx").on(t.findingBy, t.receivedAt),
@@ -317,9 +329,9 @@ export const decisions = pgTable(
     categoryKeyword: text("category_keyword"),
     /** Forced. */
     source: decisionSource("source").notNull(),
-    /** Forced to false in 3c. */
+    /** Forced (3d, 6.6): true without a decider, and for a person's decision that considers a program's finding. */
     automatedDetection: boolean("automated_detection").notNull().default(false),
-    /** Forced to not_automated in 3c. */
+    /** Forced (3d, 6.6): fully without a decider; partially for a restriction on a suspect program's finding under R2; else not_automated. */
     automatedDecision: text("automated_decision").notNull().default("not_automated"),
     /** korbat cannot restrict by country. */
     territorialScope: text("territorial_scope").notNull().default("worldwide"),
@@ -330,8 +342,11 @@ export const decisions = pgTable(
     factsDigest: text("facts_digest"),
     reasonDigest: text("reason_digest"),
     legalReferenceDigest: text("legal_reference_digest"),
-    /** The staff account. */
-    decidedBy: uuid("decided_by").notNull().references(() => profiles.id, { onDelete: "restrict" }),
+    /**
+     * The staff account; 3d (design, section 2 row 14, 6.6): null for a program's decision, which is always interim and
+     * fully automated (decisions_decider). No profile stands for the system.
+     */
+    decidedBy: uuid("decided_by").references(() => profiles.id, { onDelete: "restrict" }),
     /** Forced. */
     decidedAt: ts("decided_at").notNull(),
     /** Forced: pg_current_xact_id(). Compared together with decided_at, since a restore restarts the counter. */
@@ -372,7 +387,13 @@ export const decisions = pgTable(
     // 3f: an order decision restricts on the law with no text of korbat's (its kind compared as text: the migration that
     // adds the value cannot name it as a literal of the enum).
     check("decisions_ground_law", sql`${t.ground} is distinct from 'illegal' or ${t.legalReferenceDigest} is not null or ${t.kind}::text = 'order'`),
-    check("decisions_restricted", sql`${t.outcome} <> 'restricted' or (${t.ground} is not null and ${t.factsDigest} is not null and ${t.reasonDigest} is not null) or ${t.kind}::text = 'order'`),
+    // 3d (6.6): a program's decision has a ground and no text, so its two digests are asked of a decision with a decider alone.
+    check(
+      "decisions_restricted",
+      sql`${t.outcome} <> 'restricted' or (${t.ground} is not null and ((${t.factsDigest} is not null and ${t.reasonDigest} is not null) or ${t.decidedBy} is null)) or ${t.kind}::text = 'order'`,
+    ),
+    // 3d (6.6): a decision without a decider is fully automated, and the only fully automated one; and it is interim.
+    check("decisions_decider", sql`(${t.decidedBy} is null) = (${t.automatedDecision} = 'fully') and (${t.decidedBy} is not null or ${t.kind}::text = 'interim')`),
     // 3f: an untold decision has no mail pending, whatever its kind.
     check("decisions_informed", sql`${t.informedAt} is not null or ${t.authorMail}::text = 'none'`),
     check(
@@ -1176,5 +1197,79 @@ export const releaseNotices = pgTable(
   (t) => [
     check("release_notices_objection", sql`(${t.objection} is null) = (${t.objectedAt} is null) and char_length(${t.objection}) between 1 and 2000`),
     fullAccess("release_notices_api_all", apiRole),
+  ],
+).enableRLS();
+
+// ---------------------------------------------------------------- the automated decision (3d design, section 6.6; Task 6)
+// The closed lists are the contracts' SIGNAL_KINDS and SIGNAL_HANDLED, written out here as the release's are; a database
+// test holds each migrated CHECK to its constant.
+
+/**
+ * One signal: the fact a program's finding and its one measure rest on (3d design, sections 6.6 and 7.9), a score at or
+ * over the threshold of an image on a post (`r1_score`) or, from Task 7, a match record (`known_match`). The API's role
+ * inserts it and sets the last four columns, each once: the BEFORE INSERT trigger automated_signals_insert forces
+ * created_at and nulls the four, and the guard automated_signals_guard lets each of them change only from null, for every
+ * role but the migrator, so a signal is never pointed at a second decision. An image has one signal a kind for as long
+ * as the row exists, handled or not (automated_signals_one). The image has no foreign key: it may leave first.
+ */
+export const automatedSignals = pgTable(
+  "automated_signals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: text("kind").notNull(),
+    mediaId: uuid("media_id").notNull(),
+    /** For an r1_score and for no other kind: the score the worker wrote and the threshold's version it was over. */
+    score: real("score"),
+    thresholdVersion: smallint("threshold_version"),
+    /** For a known_match and for no other kind; its foreign key to media_matches comes with that table (Task 7). */
+    matchId: uuid("match_id"),
+    /** Forced: now(). */
+    createdAt: ts("created_at").notNull(),
+    /** The finding's item; set once, in the step's transaction. */
+    intakeItemId: uuid("intake_item_id"),
+    /** The program's decision, when the step took a measure; set once. */
+    decisionId: uuid("decision_id").references(() => decisions.id, { onDelete: "restrict" }),
+    /** What the step did with the signal, and when: both or neither. */
+    handledAt: ts("handled_at"),
+    handled: text("handled"),
+  },
+  (t) => [
+    check("automated_signals_kind", sql`${t.kind} in ('r1_score', 'known_match')`),
+    check("automated_signals_handled", sql`${t.handled} in ('finding', 'measure', 'capped', 'covered', 'gone')`),
+    check("automated_signals_handled_at", sql`(${t.handledAt} is null) = (${t.handled} is null)`),
+    // A score and its threshold's version for a score alone; a match record for a match alone.
+    check("automated_signals_score", sql`((${t.score} is not null and ${t.thresholdVersion} is not null) = (${t.kind} = 'r1_score')) and ((${t.matchId} is not null) = (${t.kind} = 'known_match'))`),
+    check("automated_signals_score_range", sql`${t.score} is null or (${t.score} >= 0 and ${t.score} <= 1)`),
+    // An image has one signal a kind for as long as the row exists: a handled one is never written again beside it.
+    uniqueIndex("automated_signals_one").on(t.mediaId, t.kind),
+    /** The sweep's read of the signals a crash or a failed step left unhandled. */
+    index("automated_signals_open").on(t.mediaId, t.kind).where(sql`handled_at is null`),
+    uniqueIndex("automated_signals_item").on(t.intakeItemId).where(sql`intake_item_id is not null`),
+    uniqueIndex("automated_signals_decision").on(t.decisionId).where(sql`decision_id is not null`),
+    fullAccess("automated_signals_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * "Ask for a person" (3d design, sections 2 row 25, 6.6 and 7.10): the one text the subject of a program's decision may
+ * send while a measure of it is in force. The insert's definer trigger automated_objections_insert refuses
+ * objection_not_open unless the decision has no decider and a measure of it is in force, and forces created_at and
+ * erased_at. Nothing stores "answered": a person's correction or final decision ends the measure, and with it the
+ * objection. The API's role reads and inserts; the text is set null once erased (Task 8).
+ */
+export const automatedObjections = pgTable(
+  "automated_objections",
+  {
+    decisionId: uuid("decision_id")
+      .primaryKey()
+      .references(() => decisions.id, { onDelete: "restrict" }),
+    text: text("text"),
+    /** Forced: now(). */
+    createdAt: ts("created_at").notNull(),
+    erasedAt: ts("erased_at"),
+  },
+  (t) => [
+    check("automated_objections_text", sql`(${t.text} is null) = (${t.erasedAt} is not null) and char_length(${t.text}) between 1 and 2000`),
+    fullAccess("automated_objections_api_all", apiRole),
   ],
 ).enableRLS();

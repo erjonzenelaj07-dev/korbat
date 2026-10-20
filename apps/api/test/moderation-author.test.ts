@@ -75,6 +75,9 @@ describe("what the author's reads may name", () => {
     expect(read("moderation/statement-repo.ts")).not.toMatch(/from "\.\/(reports|intake)"/);
     expect(importedFrom("moderation/statement.ts", "./repo")).toEqual(["MailState", "beginMailRecord", "lockPendingAuthorMail", "recordAuthorMail", "standingWithdrawn"]);
     expect(importedFrom("moderation/statement-repo.ts", "./repo")).toEqual(["Runner", "TargetType", "iso", "rows"]);
+    // 3d Task 6: what found a decision's items, and whether its decider opened the image, is read in the program's own
+    // queries, which answer a signal's kind and a yes or no, never a report's word, sender or count.
+    expect(importedFrom("moderation/statement.ts", "./automated-repo")).toEqual(["statementSignal"]);
   });
 });
 
@@ -103,9 +106,11 @@ describe("the module's signed-in routes", () => {
     // 3d Task 2: the notices that are not decisions, and a release's notice.
     ["GET", "/api/moderation/notices"],
     ["GET", "/api/moderation/releases/00000000-0000-4000-8000-000000000001"],
+    // 3d Task 6: the request for a person to look at a program's decision.
+    ["POST", "/api/moderation/decisions/00000000-0000-4000-8000-000000000001/objection"],
   ];
 
-  test("are the nine of the design (3e adds the reply, 3d the notices and a release's), beside the four public ones", () => {
+  test("are the ten of the design (3e adds the reply, 3d the notices, a release's and the request for a person), beside the four public ones", () => {
     const routes = createModeration(options()).routes.routes.filter((route) => route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
     expect([...new Set(routes)].sort()).toEqual(
       [
@@ -115,6 +120,7 @@ describe("the module's signed-in routes", () => {
         "GET /moderation/releases/:release",
         "GET /moderation/reports",
         "POST /moderation/decisions/:id/appeal",
+        "POST /moderation/decisions/:id/objection",
         "POST /moderation/decisions/:id/reply",
         "POST /moderation/items/:item/reexamine",
         "POST /moderation/report-mail/resume",
@@ -195,6 +201,10 @@ describe("a post's chip in its view", () => {
       authorFacts: async (viewer, postIds) => {
         asked.push({ viewer, postIds: [...postIds] });
         return new Map(Object.entries(facts));
+      },
+      // 3d Task 6: the views never start the automated step; only createPost does, after its commit.
+      imagesPublished: () => {
+        throw new Error("a view started the automated step");
       },
     };
     const repo = {

@@ -10,6 +10,7 @@ import { accessRequest, alertTest, changeLink, setLimits, textVerify, type TextP
 import { loadConfig } from "../../src/config";
 import { ACCESS_WORDS, uuidBefore, type AccountAccessDraft, type ContactsAccessDraft } from "../../src/moderation";
 import { newUserWithDevice } from "./auth-fixtures";
+import { automationDeps, signalForTest } from "./automation-fixtures";
 import { SPEECH, aPost, act, anAccount, appealOf, authCaseCounts, decideIn, ground, hex64, imagePost, insertIntake, insertItem, intake, newTestStaff, openCase, report, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
 import { ageCase, authAccount, one } from "./retention-fixtures";
 import { newProfile } from "./social-fixtures";
@@ -237,6 +238,22 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js link, unlink, l
         await tx.execute(sql`select public.erase_case_evidence(${third.caseId}::uuid)`);
         await tx.execute(sql`update staff_texts set text = null, salt = null, erased_at = now() where case_id = ${first.caseId}::uuid and confirmed_at is not null`);
         expect(about((await textVerify(tx, Number.MAX_SAFE_INTEGER)).problems, mine)).toEqual([]);
+      });
+    });
+
+    test("3d Task 6: a program's decision is held to the system's automated_decided row, which names its snapshot and no text; a change to it is reported", async () => {
+      await inWorld(async (tx) => {
+        const p = await imagePost(tx, 1);
+        const step = await signalForTest(automationDeps(tx), p.mediaIds[0]!);
+        expect(step.handled).toBe("measure");
+        const decision = step.decisionId!;
+        const [place] = await placesOf(tx, [decision]);
+        const mine = [decision, place!, p.postId, ...p.mediaIds];
+        const found = async () => about((await textVerify(tx, Number.MAX_SAFE_INTEGER)).problems, mine).sort();
+        expect(await found()).toEqual([]);
+        // The decision's category rewritten as the migrator: what the system's row records is no longer what is stored.
+        await tx.execute(sql`update decisions set category = 'STATEMENT_CATEGORY_VIOLENCE' where id = ${decision}::uuid`);
+        expect(await found()).toEqual([`decision: it differs from the audit row at place ${place} that names it: category`]);
       });
     });
 

@@ -37,7 +37,8 @@ export const ACCESS_WORDS = {
   authorityHold: (day: string | null) =>
     `${day === null ? "An authority asked that this person is not told of its request (no end given yet)." : `An authority asked that this person is not told of its request (until ${day}).`} Do not send this case's part of the draft, and do not say that an authority is the reason, before counsel has read it.`,
   /** The source of an item, as a category: never a count, a name or a report's words. */
-  sources: { report: "a report by another user", notice: "a notice under Article 16", finding: "found by a moderator" },
+  // 3d Task 6: a program's finding is "found by an automated check of korbat's own", as the statement says (W.3).
+  sources: { report: "a report by another user", notice: "a notice under Article 16", finding: "found by a moderator", automated: "found by an automated check of korbat's own" },
 } as const;
 
 /** A part of the draft, printed as JSON for the operator: nothing reads it back. */
@@ -231,7 +232,14 @@ export async function accessDraftForAccount(
       items: items
         .filter((item) => item.case_id === c.id)
         .map((item) => ({
-          source: item.kind === "finding" ? ACCESS_WORDS.sources.finding : item.alleges_illegal ? ACCESS_WORDS.sources.notice : ACCESS_WORDS.sources.report,
+          source:
+            item.kind === "finding"
+              ? ACCESS_WORDS.sources.finding
+              : item.kind === "automated"
+                ? ACCESS_WORDS.sources.automated
+                : item.alleges_illegal
+                  ? ACCESS_WORDS.sources.notice
+                  : ACCESS_WORDS.sources.report,
           ground: groundOf(item),
           rule: item.rule_id,
           category: item.category,

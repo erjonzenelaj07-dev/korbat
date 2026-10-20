@@ -57,6 +57,16 @@ export async function createPost(deps: SocialDeps, viewer: string, input: Create
       within: (tx, postId) => deps.media.attach(tx, { postId, ownerId: viewer, items: input.media }),
     });
   const id = await onceMoreOnDeadlock(write);
+  // 3d Task 6 (design, sections 5 and 7.9): after the commit, never inside its transaction, a post with images is handed
+  // to the moderation module's automated step, which starts its task unwaited for and returns at once; a failure to start
+  // it is logged, and the sweep finds the images' scores within a minute. The post's answer never waits for it.
+  if (input.media.length > 0) {
+    try {
+      deps.moderation?.imagesPublished(id);
+    } catch (err) {
+      deps.log.error({ err, postId: id }, "posts: the automated step of a new post's images was not started; the sweep takes them");
+    }
+  }
   return (await postView(deps, viewer, id))!;
 }
 

@@ -109,6 +109,36 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
     });
   });
 
+  test("3d Task 6, row 21: the programs' table: findings and measures without a decider by rule, banded and folded, and R1's rate as two bands on a base of ten or more", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      // Twenty-four R1 findings, fourteen of them on the year's case, which a person's final removal under R1 restricted;
+      // three R2 findings; twelve R1 measures without a decider and three R2 seals.
+      await yearForTest(tx, YEAR, { restrictions: { R1: 1 }, automated: { findings: { R1: 24, R2: 3 }, restrictedR1: 14, measures: { R1: 12, R2: 3 } } }, moderator);
+      const f = await figuresOf(tx, YEAR);
+      // R2's three fold into other, printed with its own band; the rows are the rules, never a person.
+      expect(f.automated).toEqual({
+        findings: [
+          { label: "R1", count: "about 20" },
+          { label: "other", count: "1 to 9" },
+        ],
+        measures: [
+          { label: "R1", count: "about 10" },
+          { label: "other", count: "1 to 9" },
+        ],
+        r1: { base: "about 20", restricted: "about 10" },
+      });
+      // The programs' measures are restrictions of the year as well, counted by ground and by measure with the person's.
+      expect(f.restrictions.total).toBe("about 20");
+      expect(TransparencyFigures.parse(f)).toEqual(f);
+    });
+    // Under ten R1 findings no rate is printed: the base alone would point at a few people.
+    await rolledBack(w.migrateDb, async (tx) => {
+      await yearForTest(tx, YEAR, { restrictions: { R1: 1 }, automated: { findings: { R1: 9 }, restrictedR1: 9 } }, moderator);
+      const f = await figuresOf(tx, YEAR);
+      expect(f.automated).toEqual({ findings: [{ label: "other", count: "1 to 9" }], measures: [] });
+    });
+  });
+
   test("LAB E3: edition_not_due before 1 March of the next year in UTC and for the running year, whatever instant is passed; nothing is written", async () => {
     await rolledBack(w.migrateDb, async (tx) => {
       await yearForTest(tx, YEAR, { restrictions: { R1: 12 } }, moderator);

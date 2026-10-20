@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { PublicFacts } from "@korbat/contracts";
+import { AUTOMATION_RULES, PublicFacts } from "@korbat/contracts";
 import { RULES, RULES_CHANGES, RULES_VERSION } from "@korbat/rules";
 import { AppShell } from "@/components/AppShell";
 import { TextLink } from "@/components/ui";
@@ -141,7 +141,8 @@ export default function RulesPage() {
     <AppShell>
       <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 pb-16 pt-6">
         <View className="w-full max-w-xl">
-          <RulesView facts={facts} />
+          {/* 3d Task 6: the program's caps and the target of an answer are the contracts' constants, which the database mirrors. */}
+          <RulesView facts={facts} limits={AUTOMATION_RULES} />
         </View>
       </ScrollView>
     </AppShell>

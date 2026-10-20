@@ -44,8 +44,17 @@ export async function planOf(q: Db | DbTx, mediaIds: readonly string[]): Promise
   return found.map((row) => `${row.direction} ${row.media_id}`).sort();
 }
 
-/** What ageCustodyForTest moves back: a decision (when a move in became due) with its ledger rows; an image's quarantine rows; or an alert kind's rows. */
-export type CustodyAgeTarget = { decision: string } | { media: string } | { alerts: "quarantine_due" | "quarantine_lost" };
+/**
+ * What ageCustodyForTest moves back: a decision (when a move in became due) with its ledger rows; an image's quarantine
+ * rows; an alert kind's rows; (3d Task 6) a signal, by its id, or the request for a person about a decision, by the
+ * decision's id.
+ */
+export type CustodyAgeTarget =
+  | { decision: string }
+  | { media: string }
+  | { alerts: "quarantine_due" | "quarantine_lost" | "automated_waiting" | "automated_objection" | "automation_capped" }
+  | { signal: string }
+  | { objection: string };
 
 /**
  * The fixture of 3d's section 12, `ageCustodyForTest(target, interval)` (Task 1; Tasks 2, 6 and 7 grow it): as the
@@ -53,7 +62,9 @@ export type CustodyAgeTarget = { decision: string } | { media: string } | { aler
  * a test meets a day's alert: every time is forced when it is first written, and no setting shortens a number. For a
  * decision: its decided_at, and the created_at of its ledger rows and of every ledger row that reversed one of them (when
  * a return became due). For an image: every time its quarantine rows hold. For an alert kind: when each of its outbox
- * rows was created. Run it inside a transaction that ends in a rollback, or undo it.
+ * rows was created. 3d Task 6: for a signal, when it was written and when it was handled, so the sweep's window and its
+ * minute are met; for a request for a person, when it was sent, so its target and the limit on waiting are met. Run it
+ * inside a transaction that ends in a rollback, or undo it.
  */
 export async function ageCustodyForTest(q: Db | DbTx, target: CustodyAgeTarget, interval: string): Promise<void> {
   if ("decision" in target) {
@@ -68,6 +79,10 @@ export async function ageCustodyForTest(q: Db | DbTx, target: CustodyAgeTarget, 
          set moved_at = moved_at - ${interval}::interval, returned_at = returned_at - ${interval}::interval,
              destroyed_at = destroyed_at - ${interval}::interval, lost_at = lost_at - ${interval}::interval
        where media_id = ${target.media}::uuid`);
+  } else if ("signal" in target) {
+    await q.execute(sql`update public.automated_signals set created_at = created_at - ${interval}::interval, handled_at = handled_at - ${interval}::interval where id = ${target.signal}::uuid`);
+  } else if ("objection" in target) {
+    await q.execute(sql`update public.automated_objections set created_at = created_at - ${interval}::interval where decision_id = ${target.objection}::uuid`);
   } else {
     await q.execute(sql`update public.alert_outbox set created_at = created_at - ${interval}::interval where kind = ${target.alerts}`);
   }

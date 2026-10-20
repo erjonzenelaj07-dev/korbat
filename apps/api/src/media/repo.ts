@@ -161,11 +161,47 @@ export function createMediaRepo(db: Db) {
       return row.moderationState === "sealed" ? { ...row, blurhash: null } : row;
     },
 
-    /** Records the worker's verdict, once. A row that is no longer processing is left as it is. */
-    async finalize(id: string, result: ResultFile): Promise<boolean> {
-      const values = result.status === "ready" ? { status: "ready" as const, width: result.width, height: result.height, blurhash: result.blurhash } : { status: "failed" as const, error: result.reason };
+    /**
+     * Records the worker's verdict, once. A row that is no longer processing is left as it is. 3d Task 6: with the score
+     * the caller kept (from this server's own scorer), in nsfw_score; null leaves the column as it is, null.
+     */
+    async finalize(id: string, result: ResultFile, score: number | null = null): Promise<boolean> {
+      const values =
+        result.status === "ready"
+          ? { status: "ready" as const, width: result.width, height: result.height, blurhash: result.blurhash, ...(score !== null ? { nsfwScore: score } : {}) }
+          : { status: "failed" as const, error: result.reason };
       const rows = await db.update(postMedia).set(values).where(and(eq(postMedia.id, id), eq(postMedia.status, "processing"))).returning({ id: postMedia.id });
       return rows.length === 1;
+    },
+
+    /**
+     * 3d Task 6 (design, section 5, MediaForCases.signals): the ready, unerased images of the post, in position order, each
+     * with its score (null when none was stored). It locks nothing. Task 7 adds each one's match record.
+     */
+    async signals(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, postId: string): Promise<{ mediaId: string; score: number | null }[]> {
+      const rows = (await q.execute(sql`
+        select m.id, m.nsfw_score from public.post_media m
+         where m.post_id = ${postId}::uuid and m.status = 'ready' and m.erased_at is null
+         order by m.position, m.id`)) as unknown as { id: string; nsfw_score: number | null }[];
+      return rows.map((row) => ({ mediaId: row.id, score: row.nsfw_score === null ? null : Number(row.nsfw_score) }));
+    },
+
+    /**
+     * 3d Task 6 (design, sections 5 and 7.9, MediaForCases.unsignalled): the sweep's read of images that should have a
+     * signal and have none: every ready, unerased image of a post created in the last `hours` hours, the post not deleted
+     * by its author, whose score is at or over `threshold` and that no r1_score signal names. The media repository names
+     * automated_signals for this one read. At most `limit`, the oldest posts first. Task 7 adds the posted images with a
+     * match record not marked handled.
+     */
+    async unsignalledScores(limit: number, hours: number, threshold: number): Promise<{ mediaId: string; postId: string; score: number }[]> {
+      const rows = (await db.execute(sql`
+        select m.id, m.post_id, m.nsfw_score from public.post_media m join public.posts p on p.id = m.post_id
+         where p.created_at > now() - make_interval(hours => ${hours}::int) and p.state <> 'deleted_by_author'
+           and m.status = 'ready' and m.erased_at is null and m.nsfw_score >= ${threshold}::real
+           and not exists (select 1 from public.automated_signals s where s.media_id = m.id and s.kind = 'r1_score')
+         order by p.created_at, m.id
+         limit ${limit}::int`)) as unknown as { id: string; post_id: string; nsfw_score: number }[];
+      return rows.map((row) => ({ mediaId: row.id, postId: row.post_id, score: Number(row.nsfw_score) }));
     },
 
     /** Removes an upload of this account that is not on a post. */

@@ -8,7 +8,13 @@ import {
   MAX_SIDE,
   MEDIA_FORMATS,
   PIXEL_CAP,
+  R1_MARKER,
+  R1_MODEL,
+  R1_MODEL_NAME,
+  R1_TEST_MODEL,
+  RESULT_VERSION,
   ResultFile,
+  carriesR1Marker,
   VARIANTS,
   isMediaId,
   parseFormats,
@@ -103,10 +109,62 @@ describe("result and heartbeat files", () => {
   });
 
   test("results are parsed strictly: no other version, no extra keys, no other id shape", () => {
-    expect(ResultFile.safeParse({ ...ready, v: 2 }).success).toBe(false);
+    expect(ResultFile.safeParse({ ...ready, v: 3 }).success).toBe(false);
+    expect(ResultFile.safeParse({ ...ready, v: 0 }).success).toBe(false);
     expect(ResultFile.safeParse({ ...ready, path: "/etc/passwd" }).success).toBe(false);
     expect(ResultFile.safeParse({ ...ready, id: "../x" }).success).toBe(false);
     expect(ResultFile.safeParse("ready").success).toBe(false);
+  });
+
+  test("3d Task 6: version 2 is version 1 with v 2 and, on a ready result, the scorer's model and score and the PDQ hash", () => {
+    const v2 = { ...ready, v: 2 };
+    expect(RESULT_VERSION).toBe(2);
+    expect(ResultFile.parse(v2)).toEqual(v2);
+    const scored = { ...v2, r1: { model: R1_TEST_MODEL, score: 1 }, pdq: { impl: 1, hash: "ab".repeat(32), quality: 100 } };
+    expect(ResultFile.parse(scored)).toEqual(scored);
+    expect(ResultFile.parse({ ...v2, r1: { model: R1_MODEL.name, score: 0 } }).v).toBe(2);
+    expect(ResultFile.safeParse({ v: 2, id: ID, status: "failed", reason: "corrupt_image" }).success).toBe(true);
+    // Version 1 as it stood takes neither member; a failed result of either version takes none.
+    expect(ResultFile.safeParse({ ...ready, r1: { model: R1_TEST_MODEL, score: 1 } }).success).toBe(false);
+    expect(ResultFile.safeParse({ v: 2, id: ID, status: "failed", reason: "corrupt_image", r1: { model: R1_TEST_MODEL, score: 1 } }).success).toBe(false);
+    // Every range and member is held: a score outside 0 to 1, a model's name of other characters or too long, a hash that is
+    // not 64 lower-case hex characters, a quality outside 0 to 100, a member more.
+    for (const r1 of [{ model: R1_TEST_MODEL, score: 1.5 }, { model: R1_TEST_MODEL, score: -0.1 }, { model: "Model", score: 0 }, { model: "m".repeat(65), score: 0 }, { model: "a b", score: 0 }, { model: R1_TEST_MODEL, score: 0, extra: 1 }]) {
+      expect(ResultFile.safeParse({ ...v2, r1 }).success, JSON.stringify(r1)).toBe(false);
+    }
+    for (const pdq of [{ impl: 0, hash: "ab".repeat(32), quality: 50 }, { impl: 1, hash: "AB".repeat(32), quality: 50 }, { impl: 1, hash: "ab".repeat(31), quality: 50 }, { impl: 1, hash: "ab".repeat(32), quality: 101 }]) {
+      expect(ResultFile.safeParse({ ...v2, pdq }).success, JSON.stringify(pdq)).toBe(false);
+    }
+    expect(ResultFile.safeParse({ ...v2, score: 0.9 }).success).toBe(false);
+  });
+
+  test("3d Task 6: the classifier's identity is the research's model, whose weights no build of 3d carries", () => {
+    expect(R1_MODEL).toEqual({ name: "marqo/nsfw-image-detection-384", bytes: 22_450_955, sha256: null });
+    expect(R1_MODEL_NAME.test(R1_MODEL.name)).toBe(true);
+    expect(R1_MODEL_NAME.test(R1_TEST_MODEL)).toBe(true);
+    expect(R1_TEST_MODEL).not.toBe(R1_MODEL.name);
+  });
+
+  test("3d Task 6: the test scorer's marker is a block of one colour in the top left corner, read within its tolerance", () => {
+    expect(R1_MARKER.side).toBeGreaterThanOrEqual(64);
+    const image = (width: number, height: number, corner: [number, number, number], channels = 3) => {
+      const pixels = new Uint8Array(width * height * channels).fill(40);
+      for (let y = 0; y < R1_MARKER.side && y < height; y++) {
+        for (let x = 0; x < R1_MARKER.side && x < width; x++) pixels.set(corner, (y * width + x) * channels);
+      }
+      return pixels;
+    };
+    const magenta: [number, number, number] = [R1_MARKER.red, R1_MARKER.green, R1_MARKER.blue];
+    expect(carriesR1Marker(image(200, 100, magenta), 200, 100, 3)).toBe(true);
+    expect(carriesR1Marker(image(200, 100, magenta, 4), 200, 100, 4)).toBe(true);
+    // A lossy source's few levels of noise pass; another colour, or a corner without the block, does not.
+    expect(carriesR1Marker(image(200, 100, [250, 6, 249]), 200, 100, 3)).toBe(true);
+    expect(carriesR1Marker(image(200, 100, [200, 30, 30]), 200, 100, 3)).toBe(false);
+    expect(carriesR1Marker(new Uint8Array(200 * 100 * 3).fill(40), 200, 100, 3)).toBe(false);
+    // An image smaller than the probe, a grey image and a buffer too short carry none.
+    expect(carriesR1Marker(image(8, 8, magenta), 8, 8, 3)).toBe(false);
+    expect(carriesR1Marker(image(200, 100, magenta, 1), 200, 100, 1)).toBe(false);
+    expect(carriesR1Marker(new Uint8Array(10), 200, 100, 3)).toBe(false);
   });
 
   test("the heartbeat is a version and a time", () => {

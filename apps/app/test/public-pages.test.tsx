@@ -3,7 +3,7 @@ import path from "node:path";
 import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
-import { EDGE_CACHE, EDGE_WORDS, RECIPIENT_RULES, TRANSPARENCY_RULES, type PublicFacts, type PublicHead, type PublicTransparency, type TransparencyFigures } from "@korbat/contracts";
+import { AUTOMATION_RULES, EDGE_CACHE, EDGE_WORDS, RECIPIENT_RULES, TRANSPARENCY_RULES, type PublicFacts, type PublicHead, type PublicTransparency, type TransparencyFigures } from "@korbat/contracts";
 import { RULES, RULES_CHANGES, RULES_VERSION } from "@korbat/rules";
 
 vi.mock("expo-router", () => ({
@@ -103,6 +103,16 @@ describe("the rules page (3d Task 4)", () => {
     expect(RULES_PAGE.autoCap(LIMITS)).toContain("at most 20 measures an hour and 100 a day under rule R1, and at most 21 an hour and 101 a day under rule R2");
     expect(RULES_PAGE.autoCap(LIMITS)).toContain("while 22 of its measures");
     expect(RULES_PAGE.autoCap(LIMITS)).toContain("refuses at most 23 uploads an hour");
+  });
+
+  test("3d Task 6: the page passes the contracts' AUTOMATION_RULES as its limits, so the caps it prints are the database's", () => {
+    const source = readFileSync(path.resolve(import.meta.dirname, "../src/app/rules.tsx"), "utf8");
+    expect(source).toContain("<RulesView facts={facts} limits={AUTOMATION_RULES} />");
+    const on = { ...OFF, r1: { ...OFF.r1, state: "withholds", test: true } } as PublicFacts;
+    const text = textOf(html(<RulesView facts={on} limits={AUTOMATION_RULES} />));
+    expect(text).toContain(RULES_PAGE.autoCap(AUTOMATION_RULES));
+    expect(text).toContain(RULES_PAGE.autoTarget(AUTOMATION_RULES.objectionTargetHours));
+    expect(RULES_PAGE.autoCap(AUTOMATION_RULES)).toContain(`at most ${AUTOMATION_RULES.decisionsPerHour} measures an hour and ${AUTOMATION_RULES.decisionsPerDay} a day under rule R1`);
   });
 });
 

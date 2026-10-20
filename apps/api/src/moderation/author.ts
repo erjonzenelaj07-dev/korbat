@@ -11,7 +11,7 @@ import {
   type PostModeration,
   type RuleId,
 } from "@korbat/contracts";
-import { authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
+import { askPersonOf, authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
 import { orderNoticeOf } from "./statement-repo";
@@ -88,6 +88,8 @@ export async function authorCases(deps: Pick<ModerationDeps, "apiDb">, viewer: s
       ...(row.order !== null ? { order: row.order } : {}),
       // 3f's review (people9): an order decision's row shows the day its author was told.
       ...(row.toldOn !== null ? { toldOn: row.toldOn } : {}),
+      // 3d Task 6 (section 9.4): a program's decision, whose screen shows [auto.chip].
+      byProgram: row.byProgram,
     })),
     // One row more than the page was read: only then is there a next page.
     nextCursor: found.length > AUTHOR_CASES_PAGE_SIZE && last ? encodeListCursor({ at: last.sortAt, id: last.id }) : null,
@@ -164,6 +166,8 @@ export async function authorDecisionView(deps: Pick<ModerationDeps, "apiDb"> & P
     standing: await decisionStandingView(deps.apiDb, decisionId),
     // 3e Task 5: and where its restriction of reporting stands now.
     reportingStanding: await reportingStandingView(deps.apiDb, decisionId),
+    // 3d Task 6 (sections 7.10, 9.4 and 10.2): "Ask for a person" on a program's decision, read fresh; null otherwise.
+    askPerson: await askPersonOf(deps.apiDb, decisionId),
   };
 }
 

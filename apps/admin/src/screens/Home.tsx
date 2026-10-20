@@ -1,7 +1,7 @@
 import { ORDER_RULES, OVERVIEW_LIST_MAX, QUARANTINE_RULES, type AuditEntry, type StaffKey, type StaffMe, type StaffOverview, type StaffSession } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { APPEAL_WORDS, CUSTODY_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, RELEASE_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, AUTOMATION_WORDS, CUSTODY_WORDS, describeError, ORDER_WORDS, PROTECTION_LIFTED_WORDS, RECOVERY_WORDS, RELEASE_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, NavLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type ConsolePath, type OrderId } from "../router";
 import { readSignInsAtOpening } from "../signins";
@@ -16,7 +16,7 @@ import { counted, LANE_NAMES, waited } from "../words";
  * as text, a link to its case built from a checked id, and the console's own words for what the row is. A list holds at
  * most OVERVIEW_LIST_MAX rows, and says how many there are when there are more.
  */
-function StaffList<T extends { at: string; handle: string; caseId: string }>({ title, hint, empty, list, words, onOpenCase }: { title: string; hint: string; empty: string; list: { total: number; items: T[] }; words(item: T): ReactNode; onOpenCase(id: CaseId): void }) {
+function StaffList<T extends { at: string; handle: string | null; caseId: string }>({ title, hint, empty, list, words, onOpenCase }: { title: string; hint: string; empty: string; list: { total: number; items: T[] }; words(item: T): ReactNode; onOpenCase(id: CaseId): void }) {
   return (
     <>
       <h3>{title}</h3>
@@ -29,7 +29,8 @@ function StaffList<T extends { at: string; handle: string; caseId: string }>({ t
             const id = parseCaseId(item.caseId);
             return (
               <li key={`${item.at} ${item.caseId} ${index}`}>
-                <time dateTime={item.at}>{dateTime(item.at)}</time> <UserText>{item.handle}</UserText>{" "}
+                {/* 3d Task 6: a row without a handle is a program's, which the console names by its chip. */}
+                <time dateTime={item.at}>{dateTime(item.at)}</time> {item.handle === null ? AUTOMATION_WORDS.byProgram : <UserText>{item.handle}</UserText>}{" "}
                 {id ? (
                   <CaseLink id={id} onOpen={onOpenCase}>
                     the case
@@ -286,6 +287,39 @@ export function CustodyLines({ overview, now = Date.now(), onOpenCase }: { overv
         ) : (
           words
         )}
+      </p>,
+    );
+  }
+  // 3d Task 6 (8.2): [home.automated] while a program's measures wait for a person, and [home.objected] while an author's
+  // request for a person waits, each with a link to each of its cases.
+  const { automated } = overview;
+  const caseLinks = (ids: readonly string[]) =>
+    onOpenCase === undefined
+      ? null
+      : ids.map((raw, index) => {
+          const id = parseCaseId(raw);
+          return id === null ? null : (
+            <span key={raw}>
+              {index === 0 ? " " : ", "}
+              <CaseLink id={id} onOpen={onOpenCase}>
+                {`case ${index + 1}`}
+              </CaseLink>
+            </span>
+          );
+        });
+  if (automated.waiting > 0 && automated.oldestAt !== null) {
+    lines.push(
+      <p key="automated" className="notice">
+        {AUTOMATION_WORDS.homeAutomated(automated.waiting, bothTimes(automated.oldestAt))}
+        {caseLinks(automated.cases)}
+      </p>,
+    );
+  }
+  if (automated.objected > 0 && automated.oldestObjectionAt !== null) {
+    lines.push(
+      <p key="objected" className="notice">
+        {AUTOMATION_WORDS.homeObjected(automated.objected, bothTimes(automated.oldestObjectionAt))}
+        {caseLinks(automated.objectedCases)}
       </p>,
     );
   }

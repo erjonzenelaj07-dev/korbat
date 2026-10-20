@@ -1,0 +1,82 @@
+/**
+ * What a program may do (3d design, sections 2 rows 14 to 25, 6.6, 7.9 and 10.1; Task 6): the numbers of the automated
+ * decision, mirrored from the database's automation_rules(), which a database test holds member for column; the closed
+ * lists of a signal and of a cap's limit, each the CHECK of its column or the detail its refusal carries; and the sweep's
+ * batch. It imports nothing, so every other module of the contracts can read it while it loads.
+ */
+
+/**
+ * The mirror of automation_rules() (section 6.6's table). The caps are counted by rule: R1's decisions an hour and a day,
+ * and R2's apart, so a burst of scores never uses up the seals of known matches (row 18). `unansweredMax` measures of a
+ * program under one rule in force stop new ones under that rule, and a request for a person older than
+ * `unansweredHours` stops new ones under either. `r1Threshold` is null until the owner's build task measures one (row
+ * 23): while it is null no score opens anything. `objectionTargetHours` is the published target of an answer to "Ask for
+ * a person" (row 25), never a time after which a measure ends. The rest are the numbers of known material (rows 33 to 37),
+ * which its task reads.
+ */
+export const AUTOMATION_RULES: {
+  readonly decisionsPerHour: number;
+  readonly decisionsPerDay: number;
+  readonly r2DecisionsPerHour: number;
+  readonly r2DecisionsPerDay: number;
+  readonly unansweredMax: number;
+  readonly unansweredHours: number;
+  readonly refusalsPerHour: number;
+  readonly noReportHours: number;
+  readonly r1Threshold: number | null;
+  readonly r1ThresholdVersion: number;
+  readonly objectionTargetHours: number;
+  readonly matchTimeoutMs: number;
+  readonly matchRetryHours: number;
+  readonly matcherDownMinutes: number;
+  readonly pdqMinQuality: number;
+  readonly matchKeepDays: number;
+} = {
+  decisionsPerHour: 20,
+  decisionsPerDay: 100,
+  r2DecisionsPerHour: 20,
+  r2DecisionsPerDay: 100,
+  unansweredMax: 20,
+  unansweredHours: 72,
+  refusalsPerHour: 20,
+  noReportHours: 24,
+  r1Threshold: null,
+  r1ThresholdVersion: 1,
+  objectionTargetHours: 24,
+  matchTimeoutMs: 3000,
+  matchRetryHours: 24,
+  matcherDownMinutes: 15,
+  pdqMinQuality: 50,
+  matchKeepDays: 180,
+};
+
+/**
+ * The test scorer's own threshold and its version (section 5, "The threshold while only the test adapter exists"): under
+ * R1_CLASSIFIER=test the API compares a score with 0.5 and records the threshold version 0, so the suite exercises the
+ * whole path and no stored signal can be mistaken for one of a real model, whose versions start at 1.
+ */
+export const R1_TEST_THRESHOLD = { threshold: 0.5, thresholdVersion: 0 } as const;
+
+/** The kinds of a signal (automated_signals.kind): a score at or over the threshold, or a match record (Task 7). */
+export const SIGNAL_KINDS = ["r1_score", "known_match"] as const;
+export type SignalKind = (typeof SIGNAL_KINDS)[number];
+
+/**
+ * What the step did with a signal (automated_signals.handled): a finding without a measure; a finding and its measure;
+ * a finding whose measure a cap or a limit refused; a finding whose measure another measure already stood for; or
+ * nothing, since the image, its post or its author left first.
+ */
+export const SIGNAL_HANDLED = ["finding", "measure", "capped", "covered", "gone"] as const;
+export type SignalHandled = (typeof SIGNAL_HANDLED)[number];
+
+/**
+ * The limit a refusal automation_capped met, its detail and the fact of the alert automation_capped: the hour's or the
+ * day's decisions of a program under one rule, its measures under one rule left unanswered, or a request for a person
+ * that has waited too long.
+ */
+export const CAP_LIMITS = ["hour", "day", "unanswered", "waiting"] as const;
+export type CapLimit = (typeof CAP_LIMITS)[number];
+
+/** How many signals one round of the sweep takes at most, and how far back it looks (section 7.9). */
+export const SWEEP_BATCH = 20;
+export const SWEEP_HOURS = 24;

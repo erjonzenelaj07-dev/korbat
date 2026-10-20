@@ -3,7 +3,7 @@ import { Link } from "expo-router";
 import { MEASURES, type AccountStanding, type AuthorCaseRow, type AuthorNoticesPage, type ReportItem, type ReportsPage } from "@korbat/contracts";
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
-import { CASES_WORDS, RELEASE_TEXTS } from "@/lib/moderation-words";
+import { AUTO_WORDS, CASES_WORDS, RELEASE_TEXTS } from "@/lib/moderation-words";
 import { ORDER_TEXTS } from "@/lib/orders";
 import { CASE_ROW_WORDS, bannerSentences, reportingLine, rowStrike, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
@@ -90,7 +90,8 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
                 {row.toldOn !== undefined ? ORDER_TEXTS.row.toldOn(row.toldOn) : CASES_WORDS.decidedOn(row.decidedOn)}
                 {kind ? ` (${kind})` : ""}
               </Text>
-              <Text className="mt-1 text-sm leading-5 text-zinc-200">{done(row, now)}</Text>
+              {/* 3d Task 6 (section 9.6): a decision a program took says so; a person's later decision is its own row. */}
+              <Text className="mt-1 text-sm leading-5 text-zinc-200">{row.byProgram === true ? AUTO_WORDS.row(done(row, now)) : done(row, now)}</Text>
               {/* 3f: an order's row names no rule and no law of korbat's judgement. */}
               {row.order === undefined && (row.ruleId || row.legal) ? <Text className="mt-1 text-sm text-zinc-300">{row.ruleId ? CASES_WORDS.rule(row.ruleId) : CASES_WORDS.law}</Text> : null}
               {row.appealUntil ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.appealOpen(utcMinute(row.appealUntil))}</Text> : null}

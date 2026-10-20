@@ -48,12 +48,18 @@ import {
   LONGEST_EXPLANATION,
   LONGEST_NOTE,
   LOOKALIKE,
+  NO_STANDING,
   ORDER_HELD_UNTIL,
   ORDER_OF_CASE,
   orderCase,
   POST_ID,
   REPLY_TEXT,
+  SOURCES,
   atOnceCase,
+  decision as decisionFixture,
+  item as itemFixture,
+  postCase,
+  queueRow,
   ladderCase,
   markCase,
   repliedCase,
@@ -2518,6 +2524,150 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       fixtures.state.restore = NO_RESTORE;
       fixtures.state.restoreOverview = { open: 0, measures: 0, importedAt: null };
       fixtures.state.authorities = { contact: { open: 0, oldestAt: null, dueAt: null }, alerts: { channel: "ok", since: null } };
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  // ---------------------------------------------------------------- 3d Task 6: a program's finding and measure, at a phone's width
+
+  const CASE_PROGRAM = "9d0e1f2a-3b4c-4d5e-8f6a-0b1c2d3e4f5a";
+  const ITEM_PROGRAM = "ae1f2a3b-4c5d-4e6f-9a7b-1c2d3e4f5a6b";
+  const DECISION_PROGRAM = "bf2a3b4c-5d6e-4f7a-8b8c-2d3e4f5a6b7c";
+  /** What a hostile author could ask a person: a bidirectional override, a look-alike console label and a link (8.9). */
+  const OBJECTION = `${HOSTILE.bidi} ${LOOKALIKE.label} ${HOSTILE.url}`;
+  const LIFT_REASON = `The image is a painting in a museum ${HOSTILE.quote}`;
+
+  /** A post's case a program's score opened, its withhold of the first image in force since `decidedAt`, and the author's request. */
+  function programView(decidedAt: string, askedAt: string): CaseView {
+    return postCase({
+      id: CASE_PROGRAM,
+      stateVersion: 2,
+      intakeSeq: 1,
+      items: [itemFixture({ id: ITEM_PROGRAM, source: SOURCES.program, explanation: null, mediaId: IMAGE_ONE, ruleId: "R1" })],
+      decisions: [
+        decisionFixture({
+          id: DECISION_PROGRAM,
+          byProgram: true,
+          staffHandle: null,
+          source: "own_initiative",
+          rulesVersion: 3,
+          redressVersion: 4,
+          decidedAt,
+          facts: null,
+          reason: null,
+          actions: [{ id: "c03a4b5c-6d7e-4f8a-9b9c-3e4f5a6b7c8d", kind: "withhold_media", mediaId: IMAGE_ONE, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: null, ...NO_STANDING }],
+        }),
+      ],
+      notes: [],
+      history: [],
+      signals: [{ itemId: ITEM_PROGRAM, kind: "r1_score", thresholdVersion: 0 }],
+      objection: { text: OBJECTION, createdAt: askedAt },
+    });
+  }
+
+  test("3d Task 6: at 360 by 740 px, the queue with the three chips and the objected case first in its lane; Home with [home.automated] and [home.objected]; After a restore with [restore.program]", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const decidedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const askedAt = new Date(Date.now() - 3_600_000).toISOString();
+    fixtures.state.cases.set(CASE_PROGRAM, programView(decidedAt, askedAt));
+    // The API's order: inside lane 2 the case whose author asked for a person comes first, before an older case.
+    fixtures.state.queueRows = [
+      queueRow({ id: CASE_PROGRAM, oldestOpenAt: decidedAt, openItems: 1, rules: ["R1"], categories: ["STATEMENT_CATEGORY_OTHER_VIOLATION_TC"], allegesIllegal: false, foundByProgram: true, takenByProgram: true, objected: true }),
+      queueRow({ id: CASE_POST, oldestOpenAt: new Date(Date.now() - 30 * 3_600_000).toISOString() }),
+    ];
+    fixtures.state.automated = { waiting: 1, oldestAt: decidedAt, objected: 1, oldestObjectionAt: askedAt, cases: [CASE_PROGRAM], objectedCases: [CASE_PROGRAM] };
+    const at = new Date(Date.now() - 26 * 3_600_000).toISOString();
+    const gap: RestoreGap = {
+      id: "0000000b-7a1b-4c2d-8e3f-4a5b6c7d8e9f",
+      class: "restriction",
+      actedAt: at,
+      action: "automated_decided",
+      caseId: CASE_PROGRAM,
+      orderId: null,
+      itemId: null,
+      kinds: ["withhold_media"],
+      closedAt: null,
+      disposition: null,
+      closedByDecisionId: null,
+    };
+    try {
+      await page.goto(`${origin}/queue`);
+      const rows = page.locator("table.queue tbody tr");
+      await shown(rows.first());
+      const first = (await rows.nth(0).textContent()) ?? "";
+      for (const chip of [AUTOMATION_WORDS.queue.found, AUTOMATION_WORDS.queue.taken, AUTOMATION_WORDS.queue.objected]) expect(first).toContain(chip);
+      expect((await rows.nth(1).textContent()) ?? "").not.toContain(AUTOMATION_WORDS.queue.objected);
+      await texts();
+      await cleanOnPhone();
+
+      await page.goto(`${origin}/`);
+      await shown(page.getByRole("heading", { name: CUSTODY_WORDS.homeTitle }));
+      const automated = page.locator(".authorities p", { hasText: "Measures a program took" });
+      expect(await automated.textContent()).toBe(`${AUTOMATION_WORDS.homeAutomated(1, bothTimes(decidedAt))} case 1`);
+      const objected = page.locator(".authorities p", { hasText: "The author asked for a person" });
+      expect(await objected.textContent()).toBe(`${AUTOMATION_WORDS.homeObjected(1, bothTimes(askedAt))} case 1`);
+      expect(await objected.getByRole("link", { name: "case 1" }).getAttribute("href")).toBe(`/cases/${CASE_PROGRAM}`);
+      await texts();
+      await cleanOnPhone();
+
+      fixtures.state.restore = { importedAt: at, mayOpen: false, retentionMay: false, gaps: [gap], holds: [] };
+      fixtures.state.restoreOverview = { open: 1, measures: 1, importedAt: at };
+      await page.goto(`${origin}/restore`);
+      await shown(page.getByText(AUTOMATION_WORDS.restoreProgram, { exact: true }));
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.queueRows = null;
+      fixtures.state.automated = { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] };
+      fixtures.state.restore = NO_RESTORE;
+      fixtures.state.restoreOverview = { open: 0, measures: 0, importedAt: null };
+      fixtures.state.cases.delete(CASE_PROGRAM);
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 6: at 360 by 740 px, a case a program found and took: [case.r1] and no score, the chip and [case.auto] with the statement sent, the author's request as text; lifted by a moderator with the key, [case.autoR1] and the request gone", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const decidedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const askedAt = new Date(Date.now() - 3_600_000).toISOString();
+    fixtures.state.cases.set(CASE_PROGRAM, programView(decidedAt, askedAt));
+    try {
+      await page.goto(`${origin}/cases/${CASE_PROGRAM}`);
+      await shown(page.getByText(AUTOMATION_WORDS.caseR1(0), { exact: true }));
+      await shown(page.getByText(AUTOMATION_WORDS.objection.lead(bothTimes(askedAt)), { exact: true }));
+      await shown(page.getByText(AUTOMATION_WORDS.caseAuto(bothTimes(decidedAt), MEASURES.withhold_media.label), { exact: true }));
+      await shown(page.getByText(AUTOMATION_WORDS.caseAutoR1, { exact: true }));
+      await shown(page.getByText(STATEMENT_WORDS.automated.fully.r1, { exact: true }));
+      expect(await page.locator(".chip", { hasText: AUTOMATION_WORDS.byProgram }).count()).toBe(1);
+      // The author's text stands in its frame as text, and no number beside the image reads as a verdict.
+      expect(await texts()).toContain(OBJECTION);
+      expect((await page.locator("body").textContent()) ?? "").not.toMatch(/score/i);
+      await cleanOnPhone();
+
+      const before = await signatures();
+      await page.getByRole("button", { name: COMPOSER.liftLabel }).click();
+      const correction = page.getByRole("region", { name: COMPOSER.liftLabel });
+      await shown(correction);
+      await correction.getByLabel(MEASURES.restore_media.label).check();
+      await correction.getByLabel("Reason of the correction").fill(LIFT_REASON);
+      await correction.getByLabel("Reason of the correction").press("Tab");
+      expect(await inspect(page)).toEqual([]);
+      await correction.getByRole("button", { name: "Confirm with your staff key" }).click();
+      await shown(page.getByText(COMPOSER.recorded));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.decisions.at(-1)).toMatchObject({
+        caseId: CASE_PROGRAM,
+        params: { kind: "correction", reviewsDecisionId: DECISION_PROGRAM, outcome: "reversed", actions: [{ kind: "restore_media", mediaId: IMAGE_ONE }] },
+      });
+      // The ledger row names its image by id between the label and its state.
+      await shown(page.locator("li", { hasText: MEASURES.withhold_media.label }).filter({ hasText: ": lifted by the decision of" }));
+      await shown(page.getByText(AUTOMATION_WORDS.caseAuto(bothTimes(decidedAt), MEASURES.withhold_media.label), { exact: true }));
+      expect(await page.getByText(AUTOMATION_WORDS.caseAutoR1, { exact: true }).count()).toBe(0);
+      expect(await page.getByText(AUTOMATION_WORDS.objection.lead(bothTimes(askedAt)), { exact: true }).count()).toBe(0);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.cases.delete(CASE_PROGRAM);
       await page.setViewportSize({ width: 1280, height: 900 });
     }
   });

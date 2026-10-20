@@ -20,7 +20,7 @@ import type { JobLock } from "../lib/jobs";
 import { createSweeper, sweep } from "./sweeper";
 
 export { DISPOSAL_BATCH, mediaForCases } from "./cases";
-export type { LostImage, MediaForCases, StaffImage } from "./cases";
+export type { ImageSignals, LostImage, MediaForCases, StaffImage, UnsignalledImage } from "./cases";
 export { MediaError } from "./context";
 export type { MediaDeps, MediaForPosts, PostImage } from "./context";
 export type { StoredFile } from "./files";
@@ -236,6 +236,8 @@ export interface CreateMediaOptions {
   now?: () => Date;
   /** 3d Task 3: the edge's purge adapter, built from EDGE_PURGE; off when none is given. */
   edge?: EdgeAdapter;
+  /** 3d Task 6: the scorer's model whose scores finalize keeps (the test scorer's under R1_CLASSIFIER=test); none when absent. */
+  r1Model?: string | null;
 }
 
 export function createMedia(options: CreateMediaOptions) {
@@ -248,6 +250,7 @@ export function createMedia(options: CreateMediaOptions) {
     enforceUploadLimit: options.enforceUploadLimit,
     log: options.logger,
     now: options.now ?? (() => new Date()),
+    r1Model: options.r1Model ?? null,
   };
   const forPosts: MediaForPosts = {
     attach: (tx, input) => deps.repo.attach(tx, input),

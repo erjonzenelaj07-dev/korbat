@@ -53,7 +53,10 @@ export interface CreateTransparencyOptions {
   redis: SketchStore;
   /** The auth module's one sender this module needs: the keeper's daily mail to HEAD_KEEPER_MAIL (section 5). */
   auth: AuthForTransparency;
-  config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "MODERATION_DISPATCH_HOUR" | "HEAD_WITNESS" | "HEAD_WITNESS_URL" | "APP_SITE">;
+  config: Pick<
+    Config,
+    "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "MODERATION_DISPATCH_HOUR" | "HEAD_WITNESS" | "HEAD_WITNESS_URL" | "APP_SITE" | "R1_CLASSIFIER" | "AUTOMATION_R1_ACTS" | "AUTOMATION_DPIA_R1" | "AUTOMATION_DPIA_R1_ACTS"
+  >;
   logger: Logger;
   /** The clock of the counts and of the job's rounds; tests move it. The head's day is the database's own. */
   now?: () => Date;

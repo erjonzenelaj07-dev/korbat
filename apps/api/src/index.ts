@@ -8,6 +8,7 @@ import { loadConfig } from "./config";
 import { redisJobLock } from "./lib/jobs";
 import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
+import { R1_TEST_MODEL } from "@korbat/media-protocol";
 import { createMedia, edgeAdapterFrom } from "./media";
 import { RedisStore } from "./middleware/rate-limit";
 import { createModeration } from "./moderation";
@@ -50,6 +51,9 @@ const media = createMedia({
   enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(rateLimitStore, userId, "upload", accountCreatedAt, now),
   // 3d Task 3: the edge's purge adapter (EDGE_PURGE, off by default); the configuration refused a test adapter on an open site.
   edge: edgeAdapterFrom(config),
+  // 3d Task 6: the scorer's model whose scores finalize keeps: the test scorer's under R1_CLASSIFIER=test (refused on an open
+  // site), none while it is off; no classifier is built in, and onnx stopped the configuration.
+  r1Model: config.R1_CLASSIFIER === "test" ? R1_TEST_MODEL : null,
 });
 await media.prepare();
 // Background work runs on one API instance at a time, under locks in Redis that are refreshed while a round runs.

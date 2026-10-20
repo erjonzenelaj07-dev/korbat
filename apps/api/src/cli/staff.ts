@@ -66,6 +66,7 @@ import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCo
 import { RECORD_COMMANDS, RECORD_USAGE, authorityHoldsFor, parseRecordArgs, recordCommand, type RecordCommand, type RecordCommandName } from "./records";
 import { RESTORE_COMMANDS, RESTORE_USAGE, auditExport, parseRestoreArgs, restoreImport, type RestoreCommand, type RestoreCommandName } from "./restore";
 import { accessRequest, alertTest, changeLink, describeTextReport, setLimits, textVerifyOn, type Changed, type StaffLimits } from "./staff-cases";
+import { AUTOMATION_USAGE, automationStatusOn } from "./automation";
 
 export const STAFF_USAGE = [
   "usage: node dist/staff.js <command>",
@@ -102,6 +103,8 @@ export const STAFF_USAGE = [
   // 3d Task 4 (design, section 8.10): the recipients' figure and the yearly edition, and (Task 5) the head's restore mark,
   // as the migrator in the migrate service.
   ...FIGURE_USAGE,
+  // 3d Task 6 (design, section 8.10): what a program does and may do, read-only, as the API's role in the api service.
+  ...AUTOMATION_USAGE,
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -133,7 +136,9 @@ export type StaffCommand =
   // 3d Task 1: quarantine-list and quarantine-record, whose words cli/custody.ts reads.
   | { command: "custody"; custody: CustodyCommand }
   // 3d Task 4: recipients and edition, and Task 5's head-restore-mark, whose words cli/figures.ts reads.
-  | { command: "figures"; figures: FigureCommand };
+  | { command: "figures"; figures: FigureCommand }
+  // 3d Task 6: automation-status, whose lines cli/automation.ts writes.
+  | { command: "automation-status" };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
 const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
@@ -210,6 +215,9 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
     case "alert-test":
       if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--on-call")) throw new Error(STAFF_USAGE);
       return { command, onCall: rest[0] === "--on-call" };
+    case "automation-status":
+      if (rest.length > 0) throw new Error(STAFF_USAGE);
+      return { command };
     case undefined:
       throw new Error(STAFF_USAGE);
     default:
@@ -382,6 +390,8 @@ export interface AuditReport {
   keysChecked: number;
   /** Keys whose staff_key_added row was written after the head this run read: the next run checks them. */
   keysLeftToNextRun: number;
+  /** 3d Task 6: the decisions without a decider (a program's) the run read, each held to its automated_decided row. */
+  systemDecisions: number;
   /** The first problems, in chain order, then the head's, the kept places' and the keys'. */
   problems: AuditProblem[];
   problemCount: number;
@@ -530,6 +540,8 @@ interface Walk {
   keys: string[];
   /** The places of the staff_key_added rows read, by the key their key_id names. */
   keyRows: Map<string, number[]>;
+  /** 3d Task 6: the decisions without a decider in the same view. */
+  systemDecisions: number;
   problems: AuditProblem[];
   problemCount: number;
 }
@@ -565,6 +577,10 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
   for (const place of kept) keptAt.set(place.seq, [...(keptAt.get(place.seq) ?? []), place.hash]);
   const keptSeen = new Set<number>();
   const keyRows = new Map<string, number[]>();
+  // 3d Task 6 (design, sections 2 row 16 and 10.5): for each decision a row names in metadata.decisionId, the places of the
+  // system's keyless automated_decided rows that name it, and of every other row that does.
+  const systemRowsOf = new Map<string, number[]>();
+  const otherRowsOf = new Map<string, number[]>();
   let rows = 0;
   let previous: KeptPlace | null = null;
   // Without a head the whole table is read, so the other problems are still named.
@@ -596,6 +612,17 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
         if (hash !== row.hash) problem(row.chainSeq, `the kept place ${row.chainSeq}:${hash} no longer matches: the row there has the hash ${row.hash}`);
       }
       if (row.action === "staff_key_added" && row.keyId !== null) keyRows.set(row.keyId, [...(keyRows.get(row.keyId) ?? []), row.chainSeq]);
+      // A program's decision is tied to the chain by the system's own row, which carries no key: a row of that action that
+      // does, or that another actor wrote, is a fault of its own; every row's decisionId is noted for the check below.
+      const named = metadataDecisionId(row.metadataText);
+      if (row.action === "automated_decided") {
+        const keyless = row.stepUpText === null && row.keyId === null && row.actionHash === null && row.staffSession === null;
+        if (!keyless) problem(row.chainSeq, "its action, automated_decided, is the system's and carries no key, and it carries one");
+        else if (row.actorId !== SYSTEM_ACTOR_ID) problem(row.chainSeq, "its action, automated_decided, is the system's, and another actor wrote it");
+        else if (named !== null) systemRowsOf.set(named, [...(systemRowsOf.get(named) ?? []), row.chainSeq]);
+      } else if (named !== null) {
+        otherRowsOf.set(named, [...(otherRowsOf.get(named) ?? []), row.chainSeq]);
+      }
       const stepUp = await checkStepUp(row, keysById);
       if (stepUp.problem !== null) problem(row.chainSeq, stepUp.problem);
       if (stepUp.challenge !== null) {
@@ -649,6 +676,15 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
   for (const place of kept) {
     if (!keptSeen.has(place.seq)) problem(place.seq, `the kept place ${place.seq}:${place.hash} no longer matches: no row is at that place`);
   }
+  // 3d Task 6 (10.5): every decision without a decider, in the same view, has exactly one system's automated_decided row in
+  // the chain that names it, and no other row names it as its decisionId. Its commit made the row the transaction's last.
+  const system = (await q.execute(sql`select id from public.decisions where decided_by is null order by decided_at, id`)) as unknown as { id: string }[];
+  for (const { id } of system) {
+    const own = systemRowsOf.get(id) ?? [];
+    if (own.length === 0) problem(null, `decision ${id} has no decider and no automated_decided row in the chain`);
+    else if (own.length > 1) problem(own[1]!, `decision ${id} has no decider and ${own.length} automated_decided rows (places ${own.join(", ")})`);
+    for (const place of otherRowsOf.get(id) ?? []) problem(place, `it names decision ${id}, which has no decider, as its decisionId, and is not its automated_decided row`);
+  }
   const newestSeq = previous?.seq ?? 0;
   const newestKept = kept.length > 0 ? Math.max(...kept.map((place) => place.seq)) : 0;
   return {
@@ -659,9 +695,16 @@ async function walkRecord(q: Reader, kept: readonly KeptPlace[], keysFrom: Pick<
     unanchored: Math.max(0, newestSeq - newestKept),
     keys,
     keyRows,
+    systemDecisions: system.length,
     problems,
     problemCount,
   };
+}
+
+/** The decision a row names in metadata.decisionId, or null: PostgreSQL's print of a jsonb value, which always parses. */
+function metadataDecisionId(metadataText: string): string | null {
+  const id = objectOf(JSON.parse(metadataText) as unknown)?.decisionId;
+  return typeof id === "string" ? id : null;
 }
 
 /**
@@ -703,6 +746,7 @@ async function finishReport(walk: Walk, fresh: Pick<Db, "select">): Promise<Audi
     unanchored: walk.unanchored,
     keysChecked: walk.keys.length,
     keysLeftToNextRun,
+    systemDecisions: walk.systemDecisions,
     problems,
     problemCount,
   };
@@ -752,6 +796,8 @@ export function describeReport(report: AuditReport): string[] {
     `${plural(report.keysChecked, "staff key", "staff keys")} checked` +
       (report.keysLeftToNextRun > 0 ? `; ${plural(report.keysLeftToNextRun, "key was", "keys were")} added after this run's head and are left to the next run` : ""),
   );
+  // 3d Task 6 (8.10): the programs' decisions, each tied to its row; a decision that is not is among the problems above.
+  if (report.ok) lines.push(`audit-verify: ${plural(report.systemDecisions, "decision", "decisions")} without a decider, each with its automated_decided row.`);
   return lines;
 }
 
@@ -1007,6 +1053,7 @@ export async function runStaffCommand(
   if (command.command === "counts") return runCountCommand(command.counts, env, out);
   if (command.command === "custody") return runCustodyCommand(command.custody, env, out, input);
   if (command.command === "figures") return runFigureCommand(command.figures, env, out);
+  if (command.command === "automation-status") return runAutomationStatus(env, out);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -1149,6 +1196,30 @@ async function runAccessRequest(who: { handle: string } | { email: string }, env
     return 1;
   } finally {
     await Promise.allSettled([closeDb(apiDb), closeDb(authDb)]);
+  }
+}
+
+/**
+ * automation-status (3d Task 6; design, section 8.10), in the api service: the API's settings as loadConfig reads them,
+ * so a setting the server would refuse is refused here with the same sentence, and the database on the API's role alone.
+ */
+async function runAutomationStatus(env: Record<string, string | undefined>, out: Output): Promise<number> {
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig(env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const apiDb = createDb(config.DATABASE_URL_API, { max: 1 });
+  try {
+    for (const line of await automationStatusOn(apiDb, config)) out.log(line);
+    return 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `automation-status: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(apiDb);
   }
 }
 

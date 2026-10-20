@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
-import { MAX_ATTEMPTS, isMediaId, resultFileId, type Heartbeat, type MediaFormat, type ResultFile, type StoreLayout, type UploadsLayout } from "@korbat/media-protocol";
+import { MAX_ATTEMPTS, RESULT_VERSION, isMediaId, resultFileId, type Heartbeat, type MediaFormat, type ResultFile, type StoreLayout, type UploadsLayout } from "@korbat/media-protocol";
 import type { Processed } from "./pipeline";
 
 export interface LoopDeps {
@@ -87,7 +87,7 @@ async function processOne(deps: LoopDeps, id: string): Promise<void> {
   const { store, uploads, log } = deps;
   const attempts = await readAttempts(store, id);
   if (attempts >= MAX_ATTEMPTS) {
-    await writeResult(store, { v: 1, id, status: "failed", reason: "processing_failed" });
+    await writeResult(store, { v: RESULT_VERSION, id, status: "failed", reason: "processing_failed" });
     log.warn({ id, attempts }, "upload failed: too many attempts");
     return;
   }
@@ -107,15 +107,24 @@ async function processOne(deps: LoopDeps, id: string): Promise<void> {
   }
 
   if (!processed.ok) {
-    await writeResult(store, { v: 1, id, status: "failed", reason: processed.reason });
+    await writeResult(store, { v: RESULT_VERSION, id, status: "failed", reason: processed.reason });
     log.info({ id, reason: processed.reason, ms: deps.now() - started }, "upload refused");
     return;
   }
   await mkdir(store.imageDir(id), { recursive: true });
   await writeAtomic(store, store.image(id, "large"), processed.large);
   await writeAtomic(store, store.image(id, "small"), processed.small);
-  // The result is the commit point: it is written last, when both files are in place.
-  await writeResult(store, { v: 1, id, status: "ready", width: processed.width, height: processed.height, blurhash: processed.blurhash });
+  // The result is the commit point: it is written last, when both files are in place. 3d Task 6: version 2, with the
+  // scorer's model and score while one runs. The score is not logged: it is a fact about an image the API alone keeps.
+  await writeResult(store, {
+    v: RESULT_VERSION,
+    id,
+    status: "ready",
+    width: processed.width,
+    height: processed.height,
+    blurhash: processed.blurhash,
+    ...(processed.r1 !== undefined ? { r1: processed.r1 } : {}),
+  });
   log.info({ id, width: processed.width, height: processed.height, ms: deps.now() - started }, "upload processed");
 }
 

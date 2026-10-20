@@ -271,6 +271,7 @@ describe("the home screen's three lists of the path for child sexual abuse mater
     restore: { open: 0, measures: 0, importedAt: null },
     quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null },
     destructive: [],
+    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
   };
 
   test("StaffOverview carries the decisions that lifted the protection of reported images, the choices not to seal and the seals taken while deciding that are in force", () => {

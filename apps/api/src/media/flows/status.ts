@@ -10,7 +10,12 @@ import type { MediaRow } from "../repo";
 export async function finalize(deps: MediaDeps, id: string): Promise<boolean> {
   const result = await deps.files.readResult(id);
   if (!result) return false;
-  await deps.repo.finalize(id, result);
+  // 3d Task 6: a ready result of version 2 may carry the scorer's model and score. The score is kept only from this
+  // server's own model; another model's is dropped, with the image, which is ready all the same, left unscored. The score
+  // itself is never logged.
+  const r1 = result.v === 2 && result.status === "ready" ? result.r1 : undefined;
+  if (r1 !== undefined && r1.model !== deps.r1Model) deps.log.error({ id, model: r1.model }, "media store: dropped a score from a model this server does not run");
+  await deps.repo.finalize(id, result, r1 !== undefined && r1.model === deps.r1Model ? r1.score : null);
   await deps.files.discardUpload(id);
   return true;
 }

@@ -90,6 +90,8 @@ const QUIET: StaffOverview = {
   destructive: [],
   repliesWaiting: { count: 0, oldestAt: null },
   strikeAccounts: 0,
+  // 3d Task 6: no measure of a program waits and nobody asked for a person.
+  automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
 };
 
 describe("sign-in", () => {

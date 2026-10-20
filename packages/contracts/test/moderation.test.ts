@@ -414,6 +414,9 @@ describe("moderation error codes", () => {
       "release_period_unset",
       "release_period_running",
       "release_mismatch",
+      "objection_not_open",
+      "already_protected",
+      "automation_capped",
     ]);
     // The codes the database keeps to itself are no route's answer.
     for (const code of ["moderation_column", "quote_item_missing", "read_committed_only", "staff_confirmation_ended", "staff_confirmation_late"]) {

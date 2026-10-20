@@ -381,6 +381,42 @@ export const SealReleasedParams = z
 export type SealReleasedParams = z.infer<typeof SealReleasedParams>;
 
 /**
+ * 3d Task 6 (design, sections 6.6, 7.9 and 10.4): the params of the system's audit row automated_decided, no step-up's:
+ * a program's decision as decision_holds compares it with the decision's row, member for member as CaseDecidedParams, with
+ * these values fixed: kind interim, throughSeq 0, no reviewed decision, outcome restricted, ground incompatible, rule R1
+ * or R2, no keyword and no text, no mark and no withdrawal, and exactly one measure: a withhold_media of one image under
+ * R1, or (Task 7) a seal_media under R2. The case's version, the snapshot, the texts' versions and the category are the
+ * transaction's own.
+ */
+export const AutomatedDecidedParams = z
+  .strictObject({
+    kind: z.literal("interim"),
+    stateVersion: Counter,
+    throughSeq: z.literal(0),
+    reviewsDecisionId: z.null(),
+    snapshotId: LowerCaseUuid,
+    snapshotDigest: Sha256Hex,
+    outcome: z.literal("restricted"),
+    ground: z.literal("incompatible"),
+    ruleId: z.enum(["R1", "R2"]),
+    rulesVersion: TextVersion,
+    redressVersion: TextVersion,
+    category: z.enum(TDB_CATEGORIES),
+    categoryKeyword: z.null(),
+    actions: z.tuple([z.union([z.strictObject({ kind: z.literal("withhold_media"), mediaId: LowerCaseUuid }), z.strictObject({ kind: z.literal("seal_media"), mediaId: z.null() })])]),
+    factsDigest: z.null(),
+    reasonDigest: z.null(),
+    legalReferenceDigest: z.null(),
+    unfounded: z.tuple([]),
+    replaced: z.literal(false),
+  })
+  .refine((params) => (params.ruleId === "R1") === (params.actions[0].kind === "withhold_media"), {
+    message: "a program withholds one image under R1 and seals a post's images under R2",
+    path: ["actions"],
+  });
+export type AutomatedDecidedParams = z.infer<typeof AutomatedDecidedParams>;
+
+/**
  * Every action a staff key confirms, one at a time (3a design, section 7): the type of its target, the schema of the
  * target's id and the schema of its params. The step-up options, requireStaffStepUp, audit-verify and the console read it.
  * The params are hashed exactly as sent, so their schemas are strict: a member they do not know is refused, never dropped.

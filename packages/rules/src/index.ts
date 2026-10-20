@@ -202,10 +202,21 @@ export interface RedressTexts {
   appealNow?: string;
   /** Version 3 (3f design, W.2 and W.3): the notice of an authority's order, ORDER_NOTICE. */
   order?: typeof ORDER_NOTICE;
+  /**
+   * Version 4 (3d design, W.4): "Ask for a person" in the place of `interim`, on a decision without a decider: `askPerson`
+   * for a program's withhold of an image, `askAdmin` for its seal of a post's images; and `uploadObject`, the objection to
+   * a refused upload (Task 7's notice).
+   */
+  askPerson?: string;
+  askAdmin?: string;
+  uploadObject?: string;
 }
 
-/** The version of the redress texts a decision made now records. */
-export const REDRESS_VERSION = 3;
+/**
+ * The version of the redress texts a decision made now records. 3d Task 6 (design, section 10.8; W.4): 4, since a
+ * program's decision records the version whose askPerson it prints, so the version cannot wait for the rulebook's.
+ */
+export const REDRESS_VERSION = 4;
 
 const OUTSIDE_KORBAT = "complain to the Digital Services Coordinator of the EU country where you live (Article 53 of the Digital Services Act).";
 
@@ -226,6 +237,17 @@ const REDRESS_V2 = {
   appealNow: "You can appeal from now; you do not have to wait for the start. An appeal does not hold the start: only a reply sent before the start does.",
 } as const;
 
+/**
+ * 3d (design, W.4): version 3's texts word for word, and three that join. Each number in them is a literal of this
+ * version, held to AUTOMATION_RULES.objectionTargetHours by the package's table test: a changed target is a new version,
+ * so an old statement keeps its own.
+ */
+const REDRESS_V4 = {
+  askPerson: `You can ask for a person now: choose "Ask for a person" on this decision's screen under Settings, Cases, and write anything a person should know. You can send one message. korbat's target is that a moderator answers within 24 hours; the measure does not end by itself before a person has decided. A measure a program takes cannot be appealed as such: ask for a person instead. The moderator's decision can be appealed, if it restricts your post. You can also go to court, or ${OUTSIDE_KORBAT}`,
+  askAdmin: `You can ask for a person now: choose "Ask for a person" on this decision's screen under Settings, Cases, and write anything a person should know. You can send one message. korbat's target is that an admin answers within 24 hours; the measure does not end by itself before a person has decided. A measure a program takes cannot be appealed as such: ask for a person instead. The admin's decision can be appealed, if it seals the images for good; an appeal of a seal waits until the authorities have assessed the images. You can also go to court, or ${OUTSIDE_KORBAT}`,
+  uploadObject: `You can object, free of charge: choose "Object" on this screen and write anything the admin should know. You can send one message, at any time before the hold is lifted or korbat has released the file, also after an admin has decided to report it. An admin, not a program, decides what happens to the file. Nobody at korbat can accept the image, since nobody opens it. You can also go to court, or ${OUTSIDE_KORBAT}`,
+} as const;
+
 /** Every version of the redress texts, by its number, kept as the rulebooks are. */
 export const REDRESS_TEXTS = {
   1: REDRESS_V1,
@@ -235,6 +257,8 @@ export const REDRESS_TEXTS = {
    * authority's order (ORDER_NOTICE of the statement's module), so a notice reads under its own version.
    */
   3: { ...REDRESS_V1, ...REDRESS_V2, order: ORDER_NOTICE },
+  /** 3d Task 6 (W.4): version 3's texts word for word, and the three of "Ask for a person" and the upload's objection. */
+  4: { ...REDRESS_V1, ...REDRESS_V2, order: ORDER_NOTICE, ...REDRESS_V4 },
 } as const satisfies Record<number, RedressTexts>;
 
 /** The redress texts of one version. Undefined for a version that does not exist. */

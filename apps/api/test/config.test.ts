@@ -287,6 +287,25 @@ describe("loadConfig", () => {
       expect(loadConfig({ ...good, HEAD_KEEPER_MAIL: "keeper@korbat.example" }).HEAD_KEEPER_MAIL).toBe("keeper@korbat.example");
       expect(() => loadConfig({ ...good, HEAD_KEEPER_MAIL: "the keeper" })).toThrow(/HEAD_KEEPER_MAIL/);
     });
+    // 3d Task 6 (design, section 5, the R1 adapter's row, and row 49; 12.1 row 27): the R1 check's switches fail closed.
+    test("R1_CLASSIFIER and AUTOMATION_R1_ACTS are off unless set; a blank value is off; the two days are dates or empty", () => {
+      const c = loadConfig(good);
+      expect([c.R1_CLASSIFIER, c.AUTOMATION_R1_ACTS, c.AUTOMATION_DPIA_R1, c.AUTOMATION_DPIA_R1_ACTS]).toEqual(["off", "off", undefined, undefined]);
+      expect(loadConfig({ ...good, R1_CLASSIFIER: "", AUTOMATION_R1_ACTS: "", AUTOMATION_DPIA_R1: "", AUTOMATION_DPIA_R1_ACTS: "" })).toMatchObject({ R1_CLASSIFIER: "off", AUTOMATION_R1_ACTS: "off", AUTOMATION_DPIA_R1: undefined, AUTOMATION_DPIA_R1_ACTS: undefined });
+      for (const refused of ["on", "nsfw", "TEST"]) expect(() => loadConfig({ ...good, R1_CLASSIFIER: refused }), refused).toThrow(/R1_CLASSIFIER/);
+      expect(() => loadConfig({ ...good, AUTOMATION_R1_ACTS: "yes" })).toThrow(/AUTOMATION_R1_ACTS/);
+      for (const day of ["2026-13-01", "1 October 2026", "2026-10-01T00:00:00Z"]) expect(() => loadConfig({ ...good, AUTOMATION_DPIA_R1: day }), day).toThrow(/AUTOMATION_DPIA_R1/);
+      expect(loadConfig({ ...good, AUTOMATION_DPIA_R1: "2026-10-01", AUTOMATION_DPIA_R1_ACTS: "2026-10-02" })).toMatchObject({ AUTOMATION_DPIA_R1: "2026-10-01", AUTOMATION_DPIA_R1_ACTS: "2026-10-02" });
+    });
+    test("R1_CLASSIFIER=test is refused while APP_SITE is open, as every test adapter; onnx is no adapter of this build", () => {
+      expect(() => loadConfig({ ...good, R1_CLASSIFIER: "test" })).toThrow(/R1_CLASSIFIER=test is refused while APP_SITE is open/);
+      expect(() => loadConfig({ ...good, R1_CLASSIFIER: "test", APP_SITE: "" })).toThrow(/R1_CLASSIFIER=test/);
+      expect(loadConfig({ ...good, R1_CLASSIFIER: "test", APP_SITE: "closed", AUTOMATION_R1_ACTS: "on" })).toMatchObject({ R1_CLASSIFIER: "test", AUTOMATION_R1_ACTS: "on" });
+      // A real classifier needs the owner's build task; even with both days it stops the process at start.
+      expect(() => loadConfig({ ...good, R1_CLASSIFIER: "onnx", AUTOMATION_DPIA_R1: "2026-10-01", AUTOMATION_DPIA_R1_ACTS: "2026-10-02" })).toThrow(/R1_CLASSIFIER=onnx: no such adapter in this build/);
+      // The R1 days never stand for the other tool's, and a day alone switches nothing on.
+      expect(loadConfig({ ...good, AUTOMATION_DPIA_R1: "2026-10-01", AUTOMATION_R1_ACTS: "on" })).toMatchObject({ R1_CLASSIFIER: "off", AUTOMATION_R1_ACTS: "on" });
+    });
   });
   describe("the WebAuthn relying party", () => {
     test("defaults to the host of APP_ORIGIN and the name korbat; an empty value, as compose passes it, counts as unset", () => {

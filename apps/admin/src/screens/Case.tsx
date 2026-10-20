@@ -15,6 +15,7 @@ import {
   type SealRelease,
   type SealReleasedParams,
 } from "@korbat/contracts";
+import { statementParagraphs } from "@korbat/rules";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
 import {
@@ -28,6 +29,7 @@ import {
   newDraft,
   offeredDraft,
   openCorrection,
+  programStatementOf,
   openReview,
   reinstateDraft,
   replyOf,
@@ -475,6 +477,11 @@ function Item({ item, props }: { item: CaseItem; props: CaseScreenViewProps }) {
       {item.citedLaw === null ? null : <Frame by={`Cited law. ${by}`} text={item.citedLaw} />}
       {item.explanation === null ? null : <Frame by={`Explanation. ${by}`} text={item.explanation} collapsedLabel={collapsed} />}
       {item.statement === null ? null : <Frame by={`Statement for the re-examination. ${by}`} text={item.statement} collapsedLabel={collapsed} />}
+      {/* 3d Task 6 (section 8.4): [case.r1] on an item a program's score opened; the threshold's version, never the score. */}
+      {(() => {
+        const signal = props.view.signals.find((found) => found.itemId === item.id && found.kind === "r1_score");
+        return signal === undefined ? null : <p className="hint">{AUTOMATION_WORDS.caseR1(signal.thresholdVersion ?? 0)}</p>;
+      })()}
       <p>{item.outcome === null ? "Unanswered." : `Answered: ${OUTCOME_WORDS[item.outcome]}.`}</p>
       {/* 3e Task 5 (design, section 8.4): the mark "manifestly unfounded" the answering decision set, or its withdrawal. */}
       {item.unfounded ? <p className="notice">{STANDING_WORDS.mark.marked}</p> : item.markWithdrawn ? <p className="hint">{STANDING_WORDS.mark.withdrawn}</p> : null}
@@ -747,6 +754,36 @@ function ReleaseBlock({ decision, release }: { decision: CaseDecision; release: 
   );
 }
 
+/**
+ * 3d Task 6 (section 8.4): what a program's decision was, in the console's words: [case.auto] with its one measure and the
+ * statement its author was sent, drawn again from the decision, and while a withhold of an image is in force [case.autoR1].
+ * The statement of a measure this version cannot word (a seal on a match, Task 7's) is left out rather than guessed.
+ */
+function ProgramDecision({ decision, view }: { decision: CaseDecision; view: CaseView }) {
+  const measure = decision.actions.find((action) => MEASURES[action.kind].lifts === null);
+  let paragraphs: string[] = [];
+  try {
+    paragraphs = statementParagraphs(programStatementOf(view, decision));
+  } catch {
+    paragraphs = [];
+  }
+  return (
+    <>
+      <p className="notice">{AUTOMATION_WORDS.caseAuto(bothTimes(decision.decidedAt), measure === undefined ? "" : MEASURES[measure.kind].label)}</p>
+      {paragraphs.length === 0 ? null : (
+        <div className="frame preview">
+          {paragraphs.map((paragraph, index) => (
+            <p key={index} className="frame-text">
+              <UserText>{paragraph}</UserText>
+            </p>
+          ))}
+        </div>
+      )}
+      {measure?.kind === "withhold_media" && measure.inForce ? <p className="hint">{AUTOMATION_WORDS.caseAutoR1}</p> : null}
+    </>
+  );
+}
+
 function Decision({ decision, view, compose, release }: { decision: CaseDecision; view: CaseView; compose: CaseScreenViewProps["compose"]; release?: ReleaseProps }) {
   const lifted = (id: string | null) => {
     const by = id === null ? undefined : view.decisions.find((other) => other.id === id);
@@ -756,11 +793,20 @@ function Decision({ decision, view, compose, release }: { decision: CaseDecision
     <li className="panel decision">
       <p>
         <strong>{DECISION_KINDS[decision.kind]}</strong>
-        {`: ${DECISION_OUTCOMES[decision.outcome]}, ${dateTime(decision.decidedAt)}, by `}
-        <UserText>{decision.staffHandle}</UserText>
+        {`: ${DECISION_OUTCOMES[decision.outcome]}, ${dateTime(decision.decidedAt)}, `}
+        {decision.byProgram || decision.staffHandle === null ? (
+          // 3d Task 6 (section 8.4): a decision without a decider, listed with the chip in the place of a staff handle.
+          <span className="chip">{AUTOMATION_WORDS.byProgram}</span>
+        ) : (
+          <>
+            {"by "}
+            <UserText>{decision.staffHandle}</UserText>
+          </>
+        )}
         {decision.ground === null ? "" : decision.ground === "illegal" ? "; on the law" : `; under ${decision.ruleId ?? "a rule"}`}
         {`; ${categoryLabel(decision.category)}.`}
       </p>
+      {decision.byProgram ? <ProgramDecision decision={decision} view={view} /> : null}
       {decision.suspect ? <p className="hint">Taken on a report or finding of child sexual abuse material.</p> : null}
       {decision.unseen ? <p className="notice">Taken while nobody could open the post's images: what it answered about an image was answered unseen.</p> : null}
       {decision.needsAdmin ? <p className="hint">An admin's decision.</p> : null}
@@ -815,7 +861,7 @@ function Decision({ decision, view, compose, release }: { decision: CaseDecision
 function historyWords(entry: CaseHistoryEntry): string {
   switch (entry.event) {
     case "item":
-      return `Item ${entry.seq ?? ""} arrived${entry.reexamination ? " (a re-examination)" : ""}: ${entry.intakeKind === "order" ? "an authority's order" : entry.intakeKind === "finding" ? "a moderator's finding" : entry.csam ? "a notice of child sexual abuse material" : entry.allegesIllegal ? "a notice under Art. 16" : "a report"}${entry.ruleId === null ? "" : `, ${entry.ruleId}`}`;
+      return `Item ${entry.seq ?? ""} arrived${entry.reexamination ? " (a re-examination)" : ""}: ${entry.intakeKind === "order" ? "an authority's order" : entry.intakeKind === "finding" ? "a moderator's finding" : entry.intakeKind === "automated" ? AUTOMATION_WORDS.historyItem : entry.csam ? "a notice of child sexual abuse material" : entry.allegesIllegal ? "a notice under Art. 16" : "a report"}${entry.ruleId === null ? "" : `, ${entry.ruleId}`}`;
     case "snapshot":
       return "A snapshot was taken";
     case "decision":
@@ -879,6 +925,14 @@ export function CaseScreenView(props: CaseScreenViewProps) {
       {view.lane === 0 ? <p className="banner art18">{ART_18_BANNER}</p> : null}
       <SuspectBanner view={view} onOpenCase={props.onOpenCase} />
       <AuthorStandingBands view={view} />
+      {/* 3d Task 6 (section 8.4): [case.objection], while the measure the author asked about is in force; the text is theirs. */}
+      {view.objection === null ? null : (
+        <section className="panel objection" aria-label={AUTOMATION_WORDS.queue.objected}>
+          <p className="notice">{AUTOMATION_WORDS.objection.lead(bothTimes(view.objection.createdAt))}</p>
+          <Frame by={AUTOMATION_WORDS.objection.by} text={view.objection.text} />
+          <p className="hint">{AUTOMATION_WORDS.objection.tail}</p>
+        </section>
+      )}
 
       <h3>Evidence</h3>
       {/* 3f (design, section 8.6): a post preserved under an order shows no text and no image; korbat's rules are its own. */}
@@ -1013,6 +1067,9 @@ export function CaseScreen({
 }) {
   const [view, setView] = useState<Loadable<CaseView>>({ state: "loading" });
   const [shownImage, setShownImage] = useState<ShownImage | null>(null);
+  // 3d Task 6 (section 8.4, [case.r1]): every image this person opened on this case, which the API logged as viewed: the
+  // composer's preview says from it whether the decision follows a look at the image a program rated.
+  const [viewedImages, setViewedImages] = useState<string[]>([]);
   const [busy, setBusy] = useState<"snapshot" | "note" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1275,6 +1332,7 @@ export function CaseScreen({
           role,
           draft,
           now: new Date(),
+          viewedImages,
           busy: composing,
           error: composeError,
           textErrors,
@@ -1351,7 +1409,10 @@ export function CaseScreen({
           again={gap === null ? null : RECOVERY_WORDS.again(bothTimes(gap.actedAt))}
           release={{ role, busy: releasing, error: releaseError, onRelease: (decision) => void release(decision) }}
           // One image at a time: showing another puts the first back behind its placeholder.
-          onShowImage={(image) => setShownImage({ id: image, clear: false, failed: false })}
+          onShowImage={(image) => {
+            setShownImage({ id: image, clear: false, failed: false });
+            setViewedImages((seen) => (seen.includes(image) ? seen : [...seen, image]));
+          }}
           onShowClearly={() => setShownImage((current) => (current === null ? null : { ...current, clear: true }))}
           onHideImage={() => setShownImage(null)}
           // The image did not load: its place says so, and the case is read again, since what may be opened has

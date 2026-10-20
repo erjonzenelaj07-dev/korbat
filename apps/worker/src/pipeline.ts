@@ -3,6 +3,7 @@ import { encode } from "blurhash";
 import sharp from "sharp";
 import type { MediaFailure } from "@korbat/contracts";
 import { MAX_SIDE, PIXEL_CAP, SNIFF_BYTES, VARIANTS, isAnimatedPng, sniffImage, type ByteReader, type MediaFormat } from "@korbat/media-protocol";
+import type { Scorer } from "./score";
 
 /**
  * Everything that touches the image decoder lives in this file. The decoder is the most
@@ -35,8 +36,12 @@ export function configureDecoder(formats: readonly MediaFormat[]): void {
   sharp.concurrency(1);
 }
 
+/**
+ * What processing made of an upload. 3d Task 6: `r1`, the scorer's model and score, while a scorer runs and it answered
+ * one; absent otherwise, and then the result file carries no score.
+ */
 export type Processed =
-  | { ok: true; width: number; height: number; blurhash: string; small: Buffer; large: Buffer }
+  | { ok: true; width: number; height: number; blurhash: string; small: Buffer; large: Buffer; r1?: { model: string; score: number } }
   | { ok: false; reason: MediaFailure };
 
 const refuse = (reason: MediaFailure): Processed => ({ ok: false, reason });
@@ -78,8 +83,11 @@ function failureOf(err: unknown): MediaFailure {
  * fresh encode: rotated by EXIF, in sRGB, without EXIF, GPS, ICC, XMP, IPTC, thumbnails or gain
  * maps, and without anything that was appended to the file. `failOn: "error"` refuses truncated
  * and broken files but not the harmless libjpeg warnings many phone cameras trigger.
+ *
+ * 3d Task 6 (design, sections 5 "The adapters" and 10.2): with a scorer, the small size's raw pixels, which are rendered
+ * here once for the WebP and the blurhash, are also handed to it, with their width, height and channels; nothing else is.
  */
-export async function processImage(path: string, formats: readonly MediaFormat[]): Promise<Processed> {
+export async function processImage(path: string, formats: readonly MediaFormat[], scorer: Scorer | null = null): Promise<Processed> {
   const sniffed = sniffFile(path, formats);
   if ("reason" in sniffed) return refuse(sniffed.reason);
   const { format } = sniffed;
@@ -103,8 +111,9 @@ export async function processImage(path: string, formats: readonly MediaFormat[]
     const small = await sharp(pixels.data, { raw }).webp({ quality: VARIANTS.small.quality, effort: 4 }).timeout({ seconds: 30 }).toBuffer();
     const thumb = await sharp(pixels.data, { raw }).resize(32, 32, { fit: "inside" }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const blurhash = encode(new Uint8ClampedArray(thumb.data), thumb.info.width, thumb.info.height, 4, 3);
+    const score = scorer === null ? null : await scorer.score(pixels.data, raw.width, raw.height, raw.channels);
 
-    return { ok: true, width: large.info.width, height: large.info.height, blurhash, small, large: large.data };
+    return { ok: true, width: large.info.width, height: large.info.height, blurhash, small, large: large.data, ...(scorer !== null && score !== null ? { r1: { model: scorer.model, score } } : {}) };
   } catch (err) {
     return refuse(failureOf(err));
   }

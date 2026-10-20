@@ -62,12 +62,15 @@ export type TargetType = "post" | "account";
 
 /** One report, notice or finding as the intake's transaction stores it; the trigger sets when it was received and its receipt's state. */
 export interface IntakeRow {
-  /** 3f: an authority's order, whose intake the effect of an order inserts (channel authority, no sender). */
-  kind: "user" | "finding" | "order";
+  /**
+   * 3f: an authority's order, whose intake the effect of an order inserts (channel authority, no sender). 3d Task 6: a
+   * program's finding (channel system, no sender), which alone is automated processing.
+   */
+  kind: "user" | "finding" | "order" | "automated";
   ref: string;
   /** The sha256 hex of the notice's token, for a signed-out notice and for every notice on the CSAM path. */
   lookupHash: string | null;
-  channel: "signed_in" | "signed_out" | "staff" | "authority";
+  channel: "signed_in" | "signed_out" | "staff" | "authority" | "system";
   reporterId: string | null;
   findingBy: string | null;
   contactId: string | null;
@@ -79,14 +82,17 @@ export interface IntakeRow {
   citedLaw: string | null;
   explanation: string | null;
   bonaFide: boolean;
+  /** 3d Task 6: true for a program's finding, which the CHECK intakes_automated requires; false for every other intake. */
+  automatedProcessing?: boolean;
 }
 
 export async function insertIntake(tx: DbTx, row: IntakeRow): Promise<string> {
   const [inserted] = await rows<{ id: string }>(
     tx,
-    sql`insert into intakes (kind, ref, lookup_hash, channel, reporter_id, finding_by, contact_id, rule_id, alleges_illegal, csam, category, category_keyword, cited_law, explanation, bona_fide)
+    sql`insert into intakes (kind, ref, lookup_hash, channel, reporter_id, finding_by, contact_id, rule_id, alleges_illegal, csam, category, category_keyword, cited_law, explanation, bona_fide, automated_processing)
         values (${row.kind}::intake_kind, ${row.ref}, ${row.lookupHash}, ${row.channel}::intake_channel, ${row.reporterId}::uuid, ${row.findingBy}::uuid, ${row.contactId}::uuid,
-                ${row.ruleId}, ${row.allegesIllegal}::boolean, ${row.csam}::boolean, ${row.category}, ${row.categoryKeyword}, ${row.citedLaw}, ${row.explanation}, ${row.bonaFide}::boolean)
+                ${row.ruleId}, ${row.allegesIllegal}::boolean, ${row.csam}::boolean, ${row.category}, ${row.categoryKeyword}, ${row.citedLaw}, ${row.explanation}, ${row.bonaFide}::boolean,
+                ${row.automatedProcessing ?? false}::boolean)
         returning id`,
   );
   return inserted!.id;
@@ -1010,8 +1016,8 @@ export interface CaseItemRow {
   outcome: string | null;
   answeredBy: string | null;
   statement: string | null;
-  intakeKind: "user" | "finding" | "order";
-  channel: "signed_in" | "signed_out" | "staff" | "authority";
+  intakeKind: "user" | "finding" | "order" | "automated";
+  channel: "signed_in" | "signed_out" | "staff" | "authority" | "system";
   contactId: string | null;
   ruleId: string | null;
   allegesIllegal: boolean;
@@ -1173,7 +1179,8 @@ export interface CaseDecisionRow {
   categoryKeyword: string | null;
   source: string;
   decidedAt: string;
-  staffHandle: string;
+  /** 3d Task 6: null for a program's decision, which has no decider. */
+  staffHandle: string | null;
   throughSeq: number;
   answersFromSeq: number | null;
   reviewsDecisionId: string | null;
@@ -1196,7 +1203,7 @@ export async function caseDecisions(q: Runner, caseId: string): Promise<CaseDeci
                (select t.text from staff_texts t where t.digest = d.facts_digest) as facts,
                (select t.text from staff_texts t where t.digest = d.reason_digest) as reason,
                (select t.text from staff_texts t where t.digest = d.legal_reference_digest) as legal_reference
-          from decisions d join profiles s on s.id = d.decided_by
+          from decisions d left join profiles s on s.id = d.decided_by
          where d.case_id = ${caseId}::uuid order by d.decided_at, d.id`,
   );
   return found.map((row) => ({
@@ -1211,7 +1218,8 @@ export async function caseDecisions(q: Runner, caseId: string): Promise<CaseDeci
     categoryKeyword: row.category_keyword as string | null,
     source: row.source as string,
     decidedAt: row.decided_at as string,
-    staffHandle: row.staff_handle as string,
+    // 3d Task 6: a program's decision has no decider, so no handle; the left join keeps the decision itself.
+    staffHandle: row.staff_handle as string | null,
     throughSeq: row.through_seq as number,
     answersFromSeq: row.answers_from_seq as number | null,
     reviewsDecisionId: row.reviews_decision_id as string | null,
@@ -1524,8 +1532,8 @@ export async function ownDraftByDigest(q: Runner, row: { caseId: string; authorI
 /** An item with what decides whether its source can be revealed: its case, its intake's path and what links it to a person. */
 export interface RevealItemRow {
   caseId: string | null;
-  intakeKind: "user" | "finding" | "order";
-  channel: "signed_in" | "signed_out" | "staff" | "authority";
+  intakeKind: "user" | "finding" | "order" | "automated";
+  channel: "signed_in" | "signed_out" | "staff" | "authority" | "system";
   csam: boolean;
   reporterAccountId: string | null;
   contactId: string | null;
@@ -1575,11 +1583,19 @@ export interface QueueRead {
   suspect: boolean;
   reexamination: boolean;
   deferred: boolean;
+  /** 3d Task 6: an unanswered program's finding citing R1 or R2; a program's measure in force; a request for a person about one. */
+  foundByProgram: boolean;
+  takenByProgram: boolean;
+  objected: boolean;
 }
 
-/** The place after which a page of the queue begins: the last row's sort key. */
+/**
+ * The place after which a page of the queue begins: the last row's sort key. 3d Task 6: with whether the case was
+ * objected, which sorts first inside its lane.
+ */
 export interface QueueCursor {
   lane: number;
+  objected: boolean;
   deferred: boolean;
   sortAt: string;
   id: string;
@@ -1591,6 +1607,10 @@ export interface QueueCursor {
  * unproven source: in lanes 1 and 2 a signed-out intake or an account under 48 hours old, in lane 0 a signed-out intake
  * only, so a new account reporting a threat against itself is never deferred. Nothing else orders the queue: no count of
  * reports and no standing of a reporter. `limit` rows after `after`.
+ *
+ * 3d Task 6 (design, sections 7.10 and 8.3): a case whose author asked for a person about a program's measure in force
+ * sorts first inside its lane, before the switch's deferral and before age, so MODERATION_DEFER_UNPROVEN never moves it
+ * down; the two other marks of a program move nothing.
  */
 export async function queueRows(q: Runner, options: { deferUnproven: boolean; after: QueueCursor | null; limit: number }): Promise<QueueRead[]> {
   const after = options.after;
@@ -1608,11 +1628,17 @@ export async function queueRows(q: Runner, options: { deferUnproven: boolean; af
     suspect: boolean;
     reexamination: boolean;
     deferred: boolean;
+    found_by_program: boolean;
+    taken_by_program: boolean;
+    objected: boolean;
   }>(
     q,
     sql`with open_cases as (
           select c.id, c.lane, c.target_type, c.opened_at, coalesce(c.oldest_open_at, c.opened_at) as oldest_open_at, u.open_items, u.rules, u.categories, u.alleges_illegal, u.suspect, u.reexamination,
-                 (${options.deferUnproven}::boolean and u.unproven) as deferred
+                 (${options.deferUnproven}::boolean and u.unproven) as deferred, u.found_by_program,
+                 exists (select 1 from measures_in_force m join decisions d on d.id = m.decision_id where m.case_id = c.id and d.decided_by is null) as taken_by_program,
+                 exists (select 1 from automated_objections o join decisions d on d.id = o.decision_id
+                          where d.case_id = c.id and exists (select 1 from measures_in_force m where m.decision_id = o.decision_id)) as objected
             from cases c
            cross join lateral (
              select count(*)::int as open_items,
@@ -1621,6 +1647,7 @@ export async function queueRows(q: Runner, options: { deferUnproven: boolean; af
                     coalesce(bool_or(i.alleges_illegal), false) as alleges_illegal,
                     coalesce(bool_or(i.suspect), false) as suspect,
                     coalesce(bool_or(i.reexamines_item_id is not null), false) as reexamination,
+                    coalesce(bool_or(n.kind::text = 'automated' and n.rule_id in ('R1', 'R2')), false) as found_by_program,
                     coalesce(bool_and(n.channel = 'signed_out'
                                       or (c.lane > 0 and exists (select 1 from profiles r where r.id = i.reporter_account_id and r.created_at > now() - interval '48 hours'))), false) as unproven
                from intake_items i join intakes n on n.id = i.intake_id
@@ -1628,10 +1655,10 @@ export async function queueRows(q: Runner, options: { deferUnproven: boolean; af
            where c.closed_at is null)
         select o.id, o.lane, o.target_type, ${iso("o.opened_at")} as opened_at, ${iso("o.oldest_open_at")} as oldest_open_at,
                to_char(o.oldest_open_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as sort_at,
-               o.open_items, o.rules, o.categories, o.alleges_illegal, o.suspect, o.reexamination, o.deferred
+               o.open_items, o.rules, o.categories, o.alleges_illegal, o.suspect, o.reexamination, o.deferred, o.found_by_program, o.taken_by_program, o.objected
           from open_cases o
-         where ${after === null ? sql`true` : sql`(o.lane, o.deferred, o.oldest_open_at, o.id) > (${after.lane}::smallint, ${after.deferred}::boolean, ${after.sortAt}::timestamptz, ${after.id}::uuid)`}
-         order by o.lane, o.deferred, o.oldest_open_at, o.id
+         where ${after === null ? sql`true` : sql`(o.lane, not o.objected, o.deferred, o.oldest_open_at, o.id) > (${after.lane}::smallint, ${!after.objected}::boolean, ${after.deferred}::boolean, ${after.sortAt}::timestamptz, ${after.id}::uuid)`}
+         order by o.lane, not o.objected, o.deferred, o.oldest_open_at, o.id
          limit ${options.limit}::int`,
   );
   const list = (joined: string) => (joined === "" ? [] : joined.split(","));
@@ -1649,6 +1676,9 @@ export async function queueRows(q: Runner, options: { deferUnproven: boolean; af
     suspect: row.suspect,
     reexamination: row.reexamination,
     deferred: row.deferred,
+    foundByProgram: row.found_by_program,
+    takenByProgram: row.taken_by_program,
+    objected: row.objected,
   }));
 }
 
@@ -1765,13 +1795,14 @@ export async function recentSealsDeclined(q: Runner, max: number): Promise<{ tot
 }
 
 /** The seals taken while deciding that are in force, by the view's one definition, newest first: who took each, on which case, and what its list covers. */
-export async function interimSealsInForce(q: Runner, max: number): Promise<{ total: number; items: { at: string; handle: string; caseId: string; posts: number; images: number }[] }> {
-  const found = await rows<{ at: string; handle: string; case_id: string; posts: number; images: number; total: number }>(
+export async function interimSealsInForce(q: Runner, max: number): Promise<{ total: number; items: { at: string; handle: string | null; caseId: string; posts: number; images: number }[] }> {
+  // 3d Task 6: a seal a program took (Task 7's automatic seal) has no decider: the left join keeps it, with no handle.
+  const found = await rows<{ at: string; handle: string | null; case_id: string; posts: number; images: number; total: number }>(
     q,
     sql`select ${iso("d.decided_at")} as at, p.handle, m.case_id, (count(*) over ())::int as total,
                (select count(*)::int from seal_posts s where s.action_id = m.id) as posts,
                (select coalesce(sum(s.images), 0)::int from seal_posts s where s.action_id = m.id) as images
-          from measures_in_force m join decisions d on d.id = m.decision_id join profiles p on p.id = d.decided_by
+          from measures_in_force m join decisions d on d.id = m.decision_id left join profiles p on p.id = d.decided_by
          where m.kind = 'seal_media' and m.decision_kind = 'interim'
          order by d.decided_at desc, m.id desc limit ${max}::int`,
   );

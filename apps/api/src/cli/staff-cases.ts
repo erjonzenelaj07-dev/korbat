@@ -191,6 +191,12 @@ const PAGE = TEXT_VERIFY_PAGE_SIZE;
 
 /** The actions whose params name saved texts and snapshots by their digests. */
 const CONFIRMED_ACTIONS = ["case_decided", "appeals_reviewed", "identity_revealed", "order_effected"];
+/**
+ * 3d Task 6 (design, sections 2 row 16 and 6.6): the system's row that names a program's decision, without a key: read
+ * with the confirmed rows, since it is the one row of the record that explains a decision without a decider, and held to
+ * that decision as a confirmed row is; it names a snapshot and no text. It is not counted among the confirmed rows.
+ */
+const SYSTEM_DECISION_ACTION = "automated_decided";
 /** The params members that name a saved text. */
 const TEXT_MEMBERS = ["factsDigest", "reasonDigest", "legalReferenceDigest"];
 
@@ -248,12 +254,12 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
     const page = await rowsOf<{ id: number; place: number; action: string; actor_id: string; target_type: string | null; target_id: string | null; metadata: unknown }>(
       q,
       sql`select id::int as id, chain_seq::int as place, action, actor_id, target_type, target_id, metadata from audit_log
-           where action = any(${textArray(CONFIRMED_ACTIONS)}) and id > ${after} order by id limit ${PAGE}`,
+           where action = any(${textArray([...CONFIRMED_ACTIONS, SYSTEM_DECISION_ACTION])}) and id > ${after} order by id limit ${PAGE}`,
     );
     const wanted: { place: number; member: string; digest: string }[] = [];
     const wantedSnapshots: { place: number; id: string; digest: string }[] = [];
     for (const row of page) {
-      auditRows++;
+      if (row.action !== SYSTEM_DECISION_ACTION) auditRows++;
       const metadata = isObject(row.metadata) ? row.metadata : {};
       const params = isObject(metadata.params) ? metadata.params : null;
       if (params === null) {
@@ -364,8 +370,11 @@ export async function textVerify(q: Runner, keep = 100): Promise<TextReport> {
             factsDigest: d.facts_digest, reasonDigest: d.reason_digest, legalReferenceDigest: d.legal_reference_digest,
           };
       const differing: string[] = [];
-      if (row.actorId !== d.decided_by) differing.push("actor");
-      if (row.action !== (review ? "appeals_reviewed" : "case_decided") || row.targetType !== (review ? "decision" : "case") || row.targetId !== (review ? d.reviews_decision_id : d.case_id)) differing.push("target");
+      // 3d Task 6: a decision without a decider is a program's, named by the system's own row on its case.
+      const program = d.decided_by === null;
+      if (row.actorId !== (program ? SYSTEM_ACTOR_ID : d.decided_by)) differing.push("actor");
+      const action = program ? SYSTEM_DECISION_ACTION : review ? "appeals_reviewed" : "case_decided";
+      if (row.action !== action || row.targetType !== (review ? "decision" : "case") || row.targetId !== (review ? d.reviews_decision_id : d.case_id)) differing.push("target");
       for (const key of new Set([...Object.keys(expected), ...Object.keys(row.params)])) {
         if (key === "actions" || key === "unfounded" || key === "replaced") continue;
         if ((expected[key] ?? null) !== (row.params[key] ?? null)) differing.push(key);

@@ -31,7 +31,11 @@ export interface StatementDecisionRow {
   authorMail: string;
   /** 3f: when the statement's first mail was recorded; an order's notice mailed again after the authority's words is a mail of its own. */
   authorMailAt: string | null;
-  decidedBy: string;
+  /** 3d Task 6: null for a program's decision, which has no decider. */
+  decidedBy: string | null;
+  /** 3d Task 6: the decision's two automation columns, which decisions_record forced. */
+  automatedDetection: boolean;
+  automatedDecision: "not_automated" | "partially" | "fully";
   facts: string | null;
   reason: string | null;
   legalReference: string | null;
@@ -49,6 +53,7 @@ export async function statementDecision(q: Runner, decisionId: string): Promise<
   const [row] = await rows<Record<string, unknown>>(
     q,
     sql`select d.id, d.case_id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.source, ${iso("d.decided_at")} as decided_at, ${iso("d.informed_at")} as informed_at, d.suspect, d.author_mail, ${iso("d.author_mail_at")} as author_mail_at, d.decided_by,
+               d.automated_detection, d.automated_decision,
                (select t.text from staff_texts t where t.digest = d.facts_digest) as facts,
                (select t.text from staff_texts t where t.digest = d.reason_digest) as reason,
                (select t.text from staff_texts t where t.digest = d.legal_reference_digest) as legal_reference,
@@ -77,7 +82,9 @@ export async function statementDecision(q: Runner, decisionId: string): Promise<
     suspect: row.suspect as boolean,
     authorMail: row.author_mail as string,
     authorMailAt: row.author_mail_at as string | null,
-    decidedBy: row.decided_by as string,
+    decidedBy: row.decided_by as string | null,
+    automatedDetection: row.automated_detection as boolean,
+    automatedDecision: row.automated_decision as StatementDecisionRow["automatedDecision"],
     facts: row.facts as string | null,
     reason: row.reason as string | null,
     legalReference: row.legal_reference as string | null,

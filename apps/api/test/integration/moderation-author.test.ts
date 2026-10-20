@@ -149,7 +149,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
 
   // ---------------------------------------------------------------- the routes
 
-  test("the nine signed-in routes (3e adds the reply, 3d Task 2 the notices and a release's notice) are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
+  test("the ten signed-in routes (3e adds the reply, 3d Task 2 the notices and a release's notice, Task 6 the request for a person) are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
     const routes = app.routes.filter((route) => route.path.startsWith("/api/moderation") && route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
     expect([...new Set(routes)].sort()).toEqual([
       "GET /api/moderation/cases",
@@ -158,6 +158,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
       "GET /api/moderation/releases/:release",
       "GET /api/moderation/reports",
       "POST /api/moderation/decisions/:id/appeal",
+      "POST /api/moderation/decisions/:id/objection",
       "POST /api/moderation/decisions/:id/reply",
       "POST /api/moderation/items/:item/reexamine",
       "POST /api/moderation/report-mail/resume",
@@ -173,6 +174,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
       ["/api/moderation/report-mail/resume", "POST"],
       [`/api/moderation/decisions/${randomUUID()}/appeal`, "POST"],
       [`/api/moderation/decisions/${randomUUID()}/reply`, "POST"],
+      [`/api/moderation/decisions/${randomUUID()}/objection`, "POST"],
       [`/api/moderation/items/${randomUUID()}/reexamine`, "POST"],
     ];
     const half = await signUp(false);
@@ -224,8 +226,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
     expect(page.nextCursor).toBeNull();
     expect(page.decisions).toEqual([
       // 3e: the removal under R3 gives the post its strike, listed with the day it stops counting.
-      { id: final, kind: "final", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["remove", "strike"], endedInterim: true, ruleId: "R3", legal: false, appealUntil: expect.any(String), appeal: null, reversedOn: null, strike: { countsUntil: expect.any(String), overruledAt: null } },
-      { id: interim, kind: "interim", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["withhold"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, appeal: null, reversedOn: null, strike: null },
+      { id: final, kind: "final", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["remove", "strike"], endedInterim: true, ruleId: "R3", legal: false, appealUntil: expect.any(String), appeal: null, reversedOn: null, strike: { countsUntil: expect.any(String), overruledAt: null }, byProgram: false },
+      { id: interim, kind: "interim", outcome: "restricted", decidedOn: today(), post: { id: postId, createdAt: created }, actions: ["withhold"], endedInterim: false, ruleId: "R3", legal: false, appealUntil: null, appeal: null, reversedOn: null, strike: null, byProgram: false },
     ]);
     expect(page.decisions.map((row) => row.id)).not.toContain(silent);
     expect((await casesOf(stranger.b)).decisions).toEqual([]);

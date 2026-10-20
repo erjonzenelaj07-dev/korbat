@@ -1,5 +1,5 @@
 import type { EdgePurgeView, MediaSize } from "@korbat/contracts";
-import type { DbTx } from "@korbat/db";
+import type { Db, DbTx } from "@korbat/db";
 import { VARIANTS } from "@korbat/media-protocol";
 import type { MediaDeps } from "./context";
 import type { StoredFile } from "./files";
@@ -85,6 +85,33 @@ export interface MediaForCases {
   purges(mediaIds: readonly string[]): Promise<EdgePurgeView[]>;
   /** 3d Task 3: the same for every image of these posts, by post, in their order on the post: the purge lines of an order's items. */
   postPurges(postIds: readonly string[]): Promise<Map<string, EdgePurgeView[]>>;
+  /**
+   * 3d Task 6 (design, section 5): for each ready, unerased image of the post, in position order, its id and its score
+   * (null when none was stored), through the caller's connection or transaction. It locks nothing. Task 7 adds each
+   * image's unerased match record.
+   */
+  signals(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, postId: string): Promise<ImageSignals[]>;
+  /**
+   * 3d Task 6 (design, sections 5 and 7.9): the automated sweep's read of images without a signal: with `r1` (its
+   * threshold, read only while the scorer is not off), every image of a post created in the last `hours` hours whose
+   * score is at or over it and that no score's signal names; at most `limit`. Task 7 adds the match records not marked
+   * handled, read only while the matcher is not off.
+   */
+  unsignalled(limit: number, options: { hours: number; r1: { threshold: number } | null }): Promise<UnsignalledImage[]>;
+}
+
+/** 3d Task 6: an image of a post as the automated step reads it: its id and its score. */
+export interface ImageSignals {
+  mediaId: string;
+  score: number | null;
+}
+
+/** 3d Task 6: an image the sweep found without its signal: a score at or over the threshold. */
+export interface UnsignalledImage {
+  kind: "r1_score";
+  mediaId: string;
+  postId: string;
+  score: number;
 }
 
 /** 3d: an image whose files are lost, as the dispatch job tells its author of it. */
@@ -160,5 +187,10 @@ export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log"> & 
     lostTold: (mediaId, outcome) => deps.repo.lostTold(mediaId, outcome),
     purges: (mediaIds) => deps.repo.purges(mediaIds),
     postPurges: (postIds) => deps.repo.postPurges(postIds),
+    signals: (q, postId) => deps.repo.signals(q, postId),
+    async unsignalled(limit, options) {
+      if (options.r1 === null) return [];
+      return (await deps.repo.unsignalledScores(limit, options.hours, options.r1.threshold)).map((image) => ({ kind: "r1_score" as const, ...image }));
+    },
   };
 }

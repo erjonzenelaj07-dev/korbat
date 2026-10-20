@@ -236,3 +236,36 @@ describe("the stricter enum-literal rule of 3d's transparency migration", () => 
     expect(enumLiteralViolations(bodiesToo(`CREATE FUNCTION f() RETURNS jsonb LANGUAGE plpgsql AS $$ BEGIN RETURN jsonb_build_object('automated'::text, 1); END $$;`), VALUES_3D)).toEqual([]);
   });
 });
+
+/**
+ * 3d Task 6 (design, section 6, "The rule for the two new enum values"): the migration automated_decisions adds the two
+ * labels, and from it on, as 3e's and 3f's rule says, a label appears as a literal of its enum only inside a PL/pgSQL
+ * body, and everywhere else compared or cast as text.
+ */
+describe("the enum-literal rule of 3d's automated decisions migration", () => {
+  const files = (() => {
+    const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
+    const first = journal.entries.find((candidate) => candidate.tag.endsWith("_automated_decisions"));
+    return first === undefined ? [] : journal.entries.filter((candidate) => candidate.idx >= first.idx);
+  })();
+
+  test("the migration automated_decisions is there, and it adds the two labels", () => {
+    // The design numbers it 0035; Tasks 1 to 5 took 0033 to 0037 before it.
+    expect(files[0]?.tag).toBe("0038_automated_decisions");
+    const text = readFileSync(path.join(MIGRATIONS, `${files[0]!.tag}.sql`), "utf8");
+    const added = [...flat(text).matchAll(/ALTER TYPE "public"."([a-z_]+)" ADD VALUE '([a-z_]+)'/g)].map((m) => `${m[1]}.${m[2]}`).sort();
+    expect(added).toEqual(["intake_channel.system", "intake_kind.automated"]);
+  });
+
+  test("no file from it on names either label as a literal outside a PL/pgSQL body", () => {
+    for (const entry of files) {
+      const text = readFileSync(path.join(MIGRATIONS, `${entry.tag}.sql`), "utf8");
+      expect(enumLiteralViolations(text, VALUES_3D), entry.tag).toEqual([]);
+    }
+  });
+
+  test("the file does name the label automated inside decisions_record's body, so the test reads what it should", () => {
+    const text = readFileSync(path.join(MIGRATIONS, `${files[0]!.tag}.sql`), "utf8");
+    expect(enumLiteralViolations(bodiesToo(text), VALUES_3D).length).toBeGreaterThanOrEqual(4);
+  });
+});

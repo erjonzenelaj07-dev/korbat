@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { hex, sha256, sortedJson } from "./canonical";
+import { AUTOMATION_RULES } from "./automation";
 import { EDGE_WORDS, EdgePurgeView } from "./media";
 import { FORBIDDEN_FORMAT } from "./text";
 
@@ -191,6 +192,12 @@ export const ALERT_KIND_LIST = [
   // a published value (each its own row, under F's daily rule).
   "head_unwitnessed",
   "head_missed",
+  // Task 6: an author asked for a person about a program's measure (staffAlert after the objection's commit, at most once
+  // in 15 minutes); a cap or a limit refused a program's measure (staffAlert after the step's commit, at most once an
+  // hour); a request for a person waited longer than the published target (the sweep's own row, under F's daily rule).
+  "automated_objection",
+  "automation_capped",
+  "automated_waiting",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -251,6 +258,11 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   edge_purge_failed: sentenceKind(3, "all", ["count", "oldestAt"]),
   head_unwitnessed: sentenceKind(3, "all", ["day"]),
   head_missed: sentenceKind(3, "all", ["day"]),
+  automated_objection: sentenceKind(3, "all", ["at", "count"]),
+  // The limit met is one of four facts, each 1 when present (CAP_LIMITS): a row's facts are counts and instants only, so
+  // the limit's word cannot be a fact of its own.
+  automation_capped: sentenceKind(3, "all", ["at", "count", "limitHour", "limitDay", "limitUnanswered", "limitWaiting"]),
+  automated_waiting: sentenceKind(3, "all", ["count", "oldestAt"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -443,9 +455,34 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     sentence: one("No value of the audit log was published for {day}."),
     todo: "The operator checks that the API ran at the dispatch hour. The keeper notes the gap; the page shows it.",
   },
+  // Task 6 (W.7): the numbers are AUTOMATION_RULES', never typed here.
+  automated_objection: {
+    title: "An author asked for a person",
+    sentence: one("An author asked for a person about a measure a program took, at {at}. {count} such requests are open."),
+    todo: "A moderator opens the queue: the case stands first in its lane. Sealed images are an admin's.",
+  },
+  automation_capped: {
+    title: "A program stopped taking measures",
+    sentence: [
+      { text: "A program reached its limit of measures an hour under one rule at {at}.", when: { fact: "limitHour", is: "present" } },
+      { text: "A program reached its limit of measures a day under one rule at {at}.", when: { fact: "limitDay", is: "present" } },
+      { text: "At {at} {unansweredMax} measures of a program under one rule were waiting for a person, so it takes no new one under that rule.", when: { fact: "limitUnanswered", is: "present" } },
+      { text: "At {at} a request for a person had waited longer than {unansweredHours} hours, so a program takes no new measure.", when: { fact: "limitWaiting", is: "present" } },
+      { text: "{count} findings since then stand without a measure." },
+    ],
+    todo: "Open the queue: these findings wait for a person like any report, and answering what waits lets the program act again. If nothing explains so many, tell the operator: the check or the server may be faulty, or in someone else's hands.",
+  },
+  automated_waiting: {
+    title: "A request for a person is waiting",
+    sentence: one("{count} requests for a person have waited longer than {objectionTargetHours} hours, the oldest since {oldestAt}."),
+    todo: "korbat publishes that target. Lift the measure or decide the case today. This repeats daily.",
+  },
 };
 
-/** A placeholder in braces: a fact's name, or a member of ORDER_RULES, of QUARANTINE_RULES or (3d Task 3) of EDGE_WORDS. */
+/**
+ * A placeholder in braces: a fact's name, or a member of ORDER_RULES, of QUARANTINE_RULES, (3d Task 3) of EDGE_WORDS or (3d
+ * Task 6) of AUTOMATION_RULES.
+ */
 const PLACEHOLDER = /[{]([a-zA-Z]+)[}]/g;
 
 /** Every placeholder a kind's words name, each once. */
@@ -508,7 +545,7 @@ function checkFacts(kind: AlertKind, facts: AlertFacts): void {
  */
 export function renderAlert(kind: AlertKind, facts: AlertFacts, now: Date): { title: string; sentence: string; todo: string | null } {
   checkFacts(kind, facts);
-  const rules = { ...ORDER_RULES, ...QUARANTINE_RULES, ...EDGE_WORDS } as Record<string, number | null>;
+  const rules = { ...ORDER_RULES, ...QUARANTINE_RULES, ...EDGE_WORDS, ...AUTOMATION_RULES } as Record<string, number | null>;
   const fill = (text: string) =>
     text.replace(PLACEHOLDER, (_match, name: string) => {
       const value = facts[name];

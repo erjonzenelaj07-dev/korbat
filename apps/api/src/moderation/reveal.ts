@@ -54,7 +54,8 @@ export async function reveal(deps: ModerationDeps, session: ActiveStaffSession, 
   if (!item || item.caseId === null) throw new ModerationError("not_found");
   const caseId = item.caseId;
   if (await staffCaseConflict(deps.apiDb, session.userId, caseId)) throw new ModerationError("staff_recused");
-  if (item.csam || item.intakeKind === "finding") throw new ModerationError("reveal_refused");
+  // 3d Task 6: a program's finding has no sender either, so nobody can be revealed for it.
+  if (item.csam || item.intakeKind === "finding" || item.intakeKind === "automated") throw new ModerationError("reveal_refused");
   const signedOut = item.channel === "signed_out";
   if (signedOut) {
     const facts = item.contactId === null ? undefined : (await deps.auth.notifierFacts([item.contactId])).get(item.contactId);

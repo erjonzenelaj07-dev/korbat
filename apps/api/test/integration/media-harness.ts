@@ -43,8 +43,18 @@ export function fakeWorker(store: StoreLayout | string) {
   const layout = typeof store === "string" ? storeLayout(store) : store;
   for (const dir of [layout.files, layout.results, layout.attempts, layout.tmp]) mkdirSync(dir, { recursive: true });
   return {
-    /** What the worker leaves behind for an image it accepted. */
-    ready(id: string, size: { width: number; height: number } = { width: 2048, height: 1536 }) {
+    /**
+     * What the worker leaves behind for an image it accepted: 3d Task 6, a result of version 2, which the worker writes,
+     * with the scorer's model and score when one is given (R1_CLASSIFIER not off).
+     */
+    ready(id: string, size: { width: number; height: number } = { width: 2048, height: 1536 }, r1?: { model: string; score: number }) {
+      mkdirSync(layout.imageDir(id), { recursive: true });
+      writeFileSync(layout.image(id, "large"), `large-webp-of-${id}`);
+      writeFileSync(layout.image(id, "small"), `small-webp-of-${id}`);
+      writeFileSync(layout.result(id), JSON.stringify({ v: 2, id, status: "ready", ...size, blurhash: "L2Eo_P_3jb_3~qoL", ...(r1 ? { r1 } : {}) }));
+    },
+    /** The same as version 1 wrote it, which the API still reads (a worker of the build before). */
+    readyV1(id: string, size: { width: number; height: number } = { width: 2048, height: 1536 }) {
       mkdirSync(layout.imageDir(id), { recursive: true });
       writeFileSync(layout.image(id, "large"), `large-webp-of-${id}`);
       writeFileSync(layout.image(id, "small"), `small-webp-of-${id}`);
@@ -52,7 +62,7 @@ export function fakeWorker(store: StoreLayout | string) {
     },
     /** What it leaves behind for one it refused. */
     failed(id: string, reason: MediaFailure) {
-      writeFileSync(layout.result(id), JSON.stringify({ v: 1, id, status: "failed", reason }));
+      writeFileSync(layout.result(id), JSON.stringify({ v: 2, id, status: "failed", reason }));
     },
     /** A heartbeat written at the given time. */
     beat(at: number) {
@@ -65,7 +75,7 @@ export function fakeWorker(store: StoreLayout | string) {
  * The media module on real Postgres, with both volumes in a temporary directory and a stand-in for
  * the worker that writes files and results exactly as the protocol says. Nothing here decodes an image.
  */
-export async function mediaHarness(db: Db, options: { formats?: readonly MediaFormat[]; minFreeBytes?: number; storeDevice?: number; clockStart?: number } = {}) {
+export async function mediaHarness(db: Db, options: { formats?: readonly MediaFormat[]; minFreeBytes?: number; storeDevice?: number; clockStart?: number; r1Model?: string | null } = {}) {
   const clock = ticker(options.clockStart);
   const root = mkdtempSync(path.join(tmpdir(), "korbat-media-"));
   const files = createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log: pino({ level: "silent" }), storeDevice: options.storeDevice });
@@ -81,14 +91,16 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
     enforceUploadLimit: (userId, accountCreatedAt, now) => enforceWriteLimit(limits, userId, "upload", accountCreatedAt, now),
     log: pino({ level: "silent" }),
     now: clock.next,
+    // 3d Task 6: the scorer's model whose scores finalize keeps; none, as with R1_CLASSIFIER=off, unless a test sets one.
+    r1Model: options.r1Model ?? null,
   };
 
   const worker = fakeWorker(files.store);
 
-  /** An image of this account that the worker accepted and the API recorded: ready, on no post yet. */
-  async function readyImage(ownerId: string, size?: { width: number; height: number }): Promise<string> {
+  /** An image of this account that the worker accepted and the API recorded: ready, on no post yet; scored when r1 is given. */
+  async function readyImage(ownerId: string, size?: { width: number; height: number }, r1?: { model: string; score: number }): Promise<string> {
     const sent = await upload(deps, ownerId, { contentType: "image/jpeg", contentLength: undefined, body: bodyOf(BYTES.jpeg) });
-    worker.ready(sent.id, size);
+    worker.ready(sent.id, size, r1);
     await status(deps, ownerId, sent.id);
     return sent.id;
   }

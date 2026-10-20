@@ -49,18 +49,26 @@ describe("processing uploads", () => {
     const h = await harness();
     const id = h.upload();
     expect(await tick(h.deps)).toBe(true);
-    expect(h.result(id)).toEqual({ v: 1, id, status: "ready", width: 800, height: 600, blurhash: "L2Eo_P_3jb_3" });
+    // 3d Task 6: the worker writes result version 2; without a scorer it carries no score.
+    expect(h.result(id)).toEqual({ v: 2, id, status: "ready", width: 800, height: 600, blurhash: "L2Eo_P_3jb_3" });
     expect(readFileSync(h.store.image(id, "large"), "utf8")).toBe("large-bytes");
     expect(readFileSync(h.store.image(id, "small"), "utf8")).toBe("small-bytes");
     expect(readFileSync(h.store.attempt(id), "utf8")).toBe("1");
     expect(readdirSync(h.store.tmp)).toEqual([]);
   });
 
+  test("3d Task 6: with a scorer's answer, the ready result carries its model and score, and the log line holds neither", async () => {
+    const h = await harness(async () => ({ ...READY, r1: { model: "korbat-test-marker", score: 1 } }));
+    const id = h.upload();
+    await tick(h.deps);
+    expect(h.result(id)).toEqual({ v: 2, id, status: "ready", width: 800, height: 600, blurhash: "L2Eo_P_3jb_3", r1: { model: "korbat-test-marker", score: 1 } });
+  });
+
   test("a refused upload gets a failed result with the reason and no files", async () => {
     const h = await harness(async () => ({ ok: false, reason: "animated_not_supported" }));
     const id = h.upload();
     await tick(h.deps);
-    expect(h.result(id)).toEqual({ v: 1, id, status: "failed", reason: "animated_not_supported" });
+    expect(h.result(id)).toEqual({ v: 2, id, status: "failed", reason: "animated_not_supported" });
     expect(existsSync(h.store.imageDir(id))).toBe(false);
   });
 
@@ -95,7 +103,7 @@ describe("processing uploads", () => {
     }
     expect(readFileSync(h.store.attempt(id), "utf8")).toBe("3");
     await tick(h.deps);
-    expect(h.result(id)).toEqual({ v: 1, id, status: "failed", reason: "processing_failed" });
+    expect(h.result(id)).toEqual({ v: 2, id, status: "failed", reason: "processing_failed" });
     expect(h.calls).toHaveLength(3);
   });
 

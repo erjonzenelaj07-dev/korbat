@@ -4,11 +4,13 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { stepUpActionHash } from "@korbat/contracts";
 import { auditHead, auditLog, closeDb, createDb, staffKeys, users, type Db, type DbTx } from "@korbat/db";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
-import { AUDIT_VERIFY_PAGE_SIZE, auditVerify, checkAuditRecord, runStaffCommand, type AuditReport } from "../../src/cli/staff";
+import { AUDIT_VERIFY_PAGE_SIZE, auditVerify, checkAuditRecord, describeReport, runStaffCommand, type AuditReport } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
 import { SoftAuthenticator } from "../auth/soft-authenticator";
 import { CHAIN_VECTORS } from "../staff/chain-vectors";
+import { automationDeps, signalForTest } from "./automation-fixtures";
 import { flowHarness } from "./flow-harness";
+import { aPost, imagePost, report as reportOn } from "./moderation-fixtures";
 import { enrolKey } from "./staff-enrolment";
 import { TEST_CONSOLE, TEST_CONSOLE_ORIGIN, issueEnrolment, newStaffAccount, newStaffKey, rolledBack, withLockTimeout } from "./staff-fixtures";
 import { revokeConfirmed, signedIn } from "./staff-step-up";
@@ -359,6 +361,53 @@ describe.skipIf(!process.env.INTEGRATION)("integration: audit-verify", () => {
         expect(report.problems.filter((problem) => problem.place !== null && problem.place > before)).toEqual([
           { place: before + 3, message: "its action, order_corrected, needs a step-up, and it carries none" },
         ]);
+      });
+    });
+
+    test("3d Task 6: a program's decision passes with the system's keyless automated_decided row, and its line is printed", { timeout: 60_000 }, async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const p = await imagePost(tx, 1);
+        const step = await signalForTest(automationDeps(tx), p.mediaIds[0]!);
+        expect(step.handled).toBe("measure");
+        const report = await checkAuditRecord(tx, []);
+        expect(report.problems.filter((problem) => problem.message.includes(step.decisionId!))).toEqual([]);
+        expect(report.ok).toBe(true);
+        expect(report.systemDecisions).toBeGreaterThanOrEqual(1);
+        expect(describeReport(report)).toContain(`audit-verify: ${report.systemDecisions} ${report.systemDecisions === 1 ? "decision" : "decisions"} without a decider, each with its automated_decided row.`);
+      });
+    });
+
+    test("3d Task 6: a decision without a decider fails without its row, and a row of the action with a key, or another row that names it, is a problem of its own", { timeout: 60_000 }, async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        const p = await imagePost(tx, 1);
+        const { caseId } = await reportOn(tx, aPost(p.postId));
+        const [snapshot] = await tx.execute<{ id: string; digest: string }>(sql`select id, digest from public.evidence_snapshots where case_id = ${caseId}::uuid limit 1`);
+        // The decision's row as the owner could write it, with the decision triggers off: no step and no audit row.
+        await tx.execute(sql`alter table public.decisions disable trigger user`);
+        const [made] = await tx.execute<{ id: string }>(sql`
+          insert into public.decisions (case_id, kind, seen_state_version, outcome, ground, rule_id, rules_version, redress_version, category, source,
+                                        snapshot_id, snapshot_digest, decided_by, decided_at, xact, puid, informed_at, suspect, needs_admin, ended_interim,
+                                        automated_detection, automated_decision)
+          values (${caseId}::uuid, 'interim', 0, 'restricted', 'incompatible', 'R1', 3, 4, 'STATEMENT_CATEGORY_OTHER_VIOLATION_TC', 'own_initiative',
+                  ${snapshot!.id}::uuid, ${snapshot!.digest}, null, now(), '1'::xid8, md5(random()::text), now(), false, false, false, true, 'fully')
+          returning id`);
+        await tx.execute(sql`alter table public.decisions enable trigger user`);
+        const id = made!.id;
+        const missing = await checkAuditRecord(tx, []);
+        expect(missing.ok).toBe(false);
+        expect(missing.problems).toContainEqual({ place: null, message: `decision ${id} has no decider and no automated_decided row in the chain` });
+        expect(describeReport(missing).join(" ")).not.toContain("without a decider, each with its automated_decided row");
+        // A row of the action that carries a key is the system's no longer, and does not tie the decision.
+        const before = (await readHead(tx)).seq;
+        await tx.execute(sql`insert into public.audit_log (actor_id, action, target_type, target_id, metadata, key_id)
+                             values (${actorId}::uuid, 'automated_decided', 'case', ${caseId}, ${JSON.stringify({ decisionId: id })}::jsonb, ${randomUUID()})`);
+        // Another action that names the decision as its decisionId.
+        await tx.execute(sql`insert into public.audit_log (actor_id, action, target_type, target_id, metadata)
+                             values (${actorId}::uuid, 'case_decided', 'case', ${caseId}, ${JSON.stringify({ decisionId: id })}::jsonb)`);
+        const keyed = await checkAuditRecord(tx, []);
+        expect(keyed.problems).toContainEqual({ place: before + 1, message: "its action, automated_decided, is the system's and carries no key, and it carries one" });
+        expect(keyed.problems).toContainEqual({ place: null, message: `decision ${id} has no decider and no automated_decided row in the chain` });
+        expect(keyed.problems).toContainEqual({ place: before + 2, message: `it names decision ${id}, which has no decider, as its decisionId, and is not its automated_decided row` });
       });
     });
 

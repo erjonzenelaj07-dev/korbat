@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import { ErrorEnvelope, HealthResponse, type AuthErrorCode, type ModerationErrorCode } from "@korbat/contracts";
+import { AUTO_WORDS } from "./moderation-words";
 import { NOT_APPEALABLE } from "./orders";
 import type { z } from "zod";
 
@@ -104,6 +105,8 @@ const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | "account_su
   reexamination_exists: "A re-examination of this item has already been asked for.",
   // 3e Task 4 (design, section 9.8): one answer for every reason a reply is not open.
   reply_not_open: "You cannot reply to this decision: you already replied, or it has ended or was lifted.",
+  // 3d Task 6 (design, section 9.7): [auto.decided] without the day, for every reason "Ask for a person" is not open.
+  objection_not_open: AUTO_WORDS.notOpen,
   // 3f (design, section 9.4): an appeal sent against an order's notice by hand; the screen offers none.
   not_appealable: NOT_APPEALABLE,
   // 3e (design, section 9.8): the fallback when /me cannot be read; with it the screens say until when (9.4).
@@ -140,7 +143,7 @@ export function messageFor(code: string, fallback?: string, details?: unknown): 
  * restriction of reporting and a reply that is not open, whose screens print the app's own sentences of the design.
  */
 function localWording(code: string): boolean {
-  return code === "invalid_request" || code === "internal" || code === "passkey_limit" || code === "reporting_restricted" || code === "reply_not_open";
+  return code === "invalid_request" || code === "internal" || code === "passkey_limit" || code === "reporting_restricted" || code === "reply_not_open" || code === "objection_not_open";
 }
 
 /** The message to show for any thrown value. */

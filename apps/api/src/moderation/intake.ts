@@ -72,8 +72,9 @@ import {
 
 /** What an intake alleges and who sent it: the ground's columns of the intake's row. */
 export interface IntakeGround {
-  kind: "user" | "finding";
-  channel: "signed_in" | "signed_out" | "staff";
+  /** 3d Task 6: `automated`, a program's finding, on the channel `system` and with automated processing, from the automated step alone. */
+  kind: "user" | "finding" | "automated";
+  channel: "signed_in" | "signed_out" | "staff" | "system";
   /** The signed-in reporter; never set on the path for child sexual abuse material, which records no sender. */
   reporterId: string | null;
   /** The staff account behind a finding. */
@@ -88,6 +89,8 @@ export interface IntakeGround {
   citedLaw: string | null;
   explanation: string | null;
   bonaFide: boolean;
+  /** 3d Task 6: true for a program's finding; left out, false. */
+  automatedProcessing?: boolean;
 }
 
 /** For a target of a re-examination: the item that is examined again, and what its sender added to the request. */
@@ -181,6 +184,9 @@ export async function withAddedTargets(deps: Pick<ModerationDeps, "social">, liv
 /** Thrown inside the transaction to roll it back and run it again: the case a target was read into closed before the read found one. */
 class StartOver extends Error {}
 
+/** 3d Task 6: whether a run of an intake's transaction gave way because a case closed under it, which a caller runs again. */
+export const isStartOver = (err: unknown): boolean => err instanceof StartOver;
+
 /** A case's targets in one order for every intake: by kind (posts before accounts, as the database orders the two) and then by id. */
 const byTarget = (a: LiveTarget, b: LiveTarget) => (a.type !== b.type ? (a.type === "post" ? -1 : 1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
@@ -220,6 +226,12 @@ export async function recordIntake(deps: ModerationDeps, request: IntakeRequest)
     }
   }
 }
+
+/**
+ * One run of an intake's transaction inside the caller's (3d Task 6): the automated step writes its finding exactly as a
+ * moderator's finding is written (7.9 step 2.2), after its own first lock, the author's profile, and before its measure.
+ */
+export const recordIntakeIn = (deps: ModerationDeps, tx: DbTx, request: IntakeRequest): Promise<IntakeRecorded> => recordIn(deps, tx, request, isSuspect(request.ground));
 
 async function recordIn(deps: ModerationDeps, tx: DbTx, request: IntakeRequest, suspect: boolean): Promise<IntakeRecorded> {
   const { ground } = request;

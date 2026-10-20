@@ -1,4 +1,5 @@
 import {
+  AUTOMATION_RULES,
   EDGE_WORDS,
   ORDER_RULES,
   QUARANTINE_RULES,
@@ -808,6 +809,39 @@ export const AUTOMATION_WORDS = {
         return "Edge copy: purge not sent yet.";
     }
   },
+  /**
+   * Task 6 (8.3): the queue's three chips, [queue.found], [queue.taken] and [queue.objected]. Only the last moves a case:
+   * the API sorts it first inside its lane.
+   */
+  queue: { found: "Found by a program", taken: "Taken by a program", objected: "The author asked for a person" },
+  /** Task 6 (8.4): the chip in the place of a staff handle, on a decision without a decider and on Home's lists. */
+  byProgram: "Taken by a program",
+  /** Task 6: a program's finding as the case's history names its item. */
+  historyItem: "a program's finding",
+  /** [home.automated] (8.2): the measures of a program in force, which wait for a person; `oldestAt` printed by the screen. */
+  homeAutomated: (waiting: number, oldestAt: string) =>
+    `Measures a program took, waiting for a person: ${waiting}, the oldest since ${oldestAt}. A moderator decides a hidden image; an admin answers sealed images.`,
+  /** [home.objected] (8.2): the cases whose author asked for a person; the target is the contracts' constant. */
+  homeObjected: (objected: number, oldestObjectionAt: string) =>
+    `The author asked for a person: ${objected} ${objected === 1 ? "case" : "cases"}, the oldest request of ${oldestObjectionAt}. korbat's published target is an answer within ${AUTOMATION_RULES.objectionTargetHours} hours.`,
+  /** [case.r1] (8.4), on an item a score opened: the threshold's version and never the score, which would read as a verdict. */
+  caseR1: (thresholdVersion: number) =>
+    `A program rated this image as likely within rule R1: over the threshold (version ${thresholdVersion}). That is a reason to look, not a finding. Look at the image and decide as for any report. The statement will say that a moderator looked at the image only if you opened it on this case before you decided; otherwise it says that you decided without opening it.`,
+  /** [case.auto] (8.4), on a decision without a decider, before the statement's preview its author was sent. */
+  caseAuto: (decidedAt: string, measure: string) =>
+    `A program took this measure at ${decidedAt}, with no person involved: ${measure}. It lasts until a person decides this case. Its author was told at once, with these words:`,
+  /** [case.autoR1] (8.4), for a program's withhold of an image. */
+  caseAutoR1: 'Any moderator may lift it now ("Lift what was done while deciding", with your reason), or decide the case. A final decision ends it either way.',
+  /** [case.autoRecord] (8.4), beside "Decide the case" while an unanswered item of the case is a program's finding. */
+  caseAutoRecord: "Your decision is recorded as found by automated means.",
+  /** [case.objection] (8.4), at the top of the case while its measure is in force: the lead, the frame's label, the end. */
+  objection: {
+    lead: (createdAt: string) => `The author asked for a person on ${createdAt}:`,
+    by: "Written by the author",
+    tail: `korbat's published target is an answer within ${AUTOMATION_RULES.objectionTargetHours} hours. Lift the measure or decide the case; either way the author gets that decision's statement, and nothing else answers this.`,
+  },
+  /** [restore.program] (8.7), beside a gap whose lost row is a program's decision. */
+  restoreProgram: "A program took this measure, not a person. Take it again as your own decision while you decide; the author is sent your decision's statement.",
 } as const;
 
 /**

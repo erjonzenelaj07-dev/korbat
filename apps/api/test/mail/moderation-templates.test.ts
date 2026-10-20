@@ -48,11 +48,13 @@ describe("the closed union of templates", () => {
       "edge_purge_failed",
       // 3d Task 5: the transparency job's two alerts, and the keeper's daily mail of the head.
       "head_unwitnessed", "head_missed", "head_published",
+      // 3d Task 6: the automated decision's three alerts.
+      "automated_objection", "automation_capped", "automated_waiting",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(69);
+    expect(new Set(names).size).toBe(72);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(69);
+    expect(Object.keys(all)).toHaveLength(72);
   });
 });
 
@@ -70,6 +72,9 @@ describe("moderation_decision: the statement of reasons, to its author", () => {
       lifted_deciding: "korbat lifted a restriction it placed while deciding",
       reversed: "korbat reversed a decision about your account",
       appeal_kept: "korbat answered your appeal",
+      // 3d Task 6 (W.8): a decision without a decider, a program's withhold of an image and (Task 7) its seal.
+      program_withhold: "korbat hid an image of yours until a person decides",
+      program_seal: "korbat sealed images of yours until a person decides",
     });
     for (const [key, subject] of Object.entries(DECISION_MAIL_SUBJECTS)) expect(renderTemplate("moderation_decision", { subject: key, statement }).subject, key).toBe(subject);
     // A subject that is no key of the table is a programming error, never printed as given.

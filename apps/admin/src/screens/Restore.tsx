@@ -1,7 +1,7 @@
 import { GAP_CLASSES, MEASURES, type GapClass, type RestoreGap, type RestoreView, type StaffRole } from "@korbat/contracts";
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
-import { describeError, RECOVERY_WORDS } from "../messages";
+import { AUTOMATION_WORDS, describeError, RECOVERY_WORDS } from "../messages";
 import { CaseLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
 import { closeGapWithKey } from "../step-up";
@@ -84,6 +84,8 @@ function ClassBlock({ cls, gaps, props }: { cls: GapClass; gaps: RestoreGap[]; p
               <p>{lineOf(gap, n)}</p>
               {/* 3d Task 2: [restore.sealAgain] beside a lost seal for good whose post is released. */}
               {gap.released === true ? <p className="hint">{W.sealAgain}</p> : null}
+              {/* 3d Task 6 (8.7): [restore.program] beside a lost measure a program took, which a person takes again as theirs. */}
+              {gap.action === "automated_decided" ? <p className="hint">{AUTOMATION_WORDS.restoreProgram}</p> : null}
               {/* 3d Task 2 (8.7): no key closes a gap of the class release: the line says who does, and nothing else is offered. */}
               {cls === "release" ? <p className="hint">{W.classes.release.control(gap.action)}</p> : null}
               {cls === "record" || cls === "release" ? null : cls === "order_effect" ? (

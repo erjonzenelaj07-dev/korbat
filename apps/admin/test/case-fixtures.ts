@@ -65,6 +65,8 @@ export const SOURCES = {
   anonymous: { kind: "anonymous", label: "Anonymous", ...NO_BANDS, ...NO_CONTACT },
   staff: { kind: "staff", label: "Found by a moderator", ...NO_BANDS, ...NO_CONTACT },
   unlinked: { kind: "unlinked", label: "A signed-in reporter no longer linked", ...NO_BANDS, ...NO_CONTACT },
+  // 3d Task 6: a program's finding, which names nobody.
+  program: { kind: "program", label: "Found by a program", ...NO_BANDS, ...NO_CONTACT },
 } as const satisfies Record<string, SourceSummary>;
 
 export function item(overrides: Partial<CaseItem> = {}): CaseItem {
@@ -144,6 +146,8 @@ export function decision(overrides: Partial<CaseDecision> = {}): CaseDecision {
     source: "report",
     decidedAt: "2026-10-01T09:00:00.000Z",
     staffHandle: HOSTILE.url,
+    // 3d Task 6: a person's decision, unless a test says it is a program's.
+    byProgram: false,
     throughSeq: 0,
     answersFromSeq: null,
     reviewsDecisionId: null,
@@ -195,6 +199,9 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     reportOwed: null,
     // 3d Task 3: no image of the newest snapshot stopped being public.
     purges: [],
+    // 3d Task 6: no program found anything here, and nobody asked for a person.
+    signals: [],
+    objection: null,
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },
@@ -419,6 +426,10 @@ export function queueRow(overrides: Partial<QueueRow> = {}): QueueRow {
     suspect: false,
     reexamination: false,
     deferred: false,
+    // 3d Task 6: nothing a program found or took, and no request for a person.
+    foundByProgram: false,
+    takenByProgram: false,
+    objected: false,
     ...overrides,
   };
 }
@@ -465,6 +476,8 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     restore: { open: 0, measures: 0, importedAt: null },
     quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null },
     destructive: [],
+    // 3d Task 6: no measure of a program waits and nobody asked for a person.
+    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
     ...overrides,
   };
 }

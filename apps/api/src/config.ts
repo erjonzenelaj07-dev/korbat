@@ -274,11 +274,37 @@ const schema = z.object({
    * value, the place and the hash. Empty, no such mail is sent. No account and no staff list receives that mail.
    */
   HEAD_KEEPER_MAIL: blankAsUnset.pipe(z.email().optional()),
+  /**
+   * 3d Task 6 (design, sections 2 rows 19, 23 and 49, 5 "The adapters" and 10.8): the R1 scorer, which the worker reads
+   * too and which the API reads for the threshold a score is compared with. `off` (the default): no score, and R1 stays
+   * report-driven; `test`: the test scorer's own threshold 0.5 under version 0 (refused while APP_SITE is open); `onnx`:
+   * the real classifier, which this build does not carry, so it stops the process at start.
+   */
+  R1_CLASSIFIER: blankAsUnset.pipe(z.enum(["off", "test", "onnx"]).default("off")),
+  /** Whether a score at or over the threshold also withholds its image until a moderator decides (row 19); off by default. */
+  AUTOMATION_R1_ACTS: blankAsUnset.pipe(z.enum(["on", "off"]).default("off")),
+  /**
+   * The day of the owner's impact assessment for the R1 check, and the day on which it covered the check's measure (row
+   * 49), each a date or empty. A real classifier needs the first, and with AUTOMATION_R1_ACTS=on the second; the facts
+   * route prints both in the R1 block, and neither stands over the other tool.
+   */
+  AUTOMATION_DPIA_R1: blankAsUnset.pipe(z.iso.date().optional()),
+  AUTOMATION_DPIA_R1_ACTS: blankAsUnset.pipe(z.iso.date().optional()),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // 3d (design, section 5, review ruling 11): in every environment, a test adapter never runs on a site people can reach.
   if (c.EDGE_PURGE === "test" && c.APP_SITE === "open") refuse("EDGE_PURGE", "EDGE_PURGE=test is refused while APP_SITE is open: a test adapter answers only on a site that is closed");
   if (c.HEAD_WITNESS === "test" && c.APP_SITE === "open") refuse("HEAD_WITNESS", "HEAD_WITNESS=test is refused while APP_SITE is open: a test adapter answers only on a site that is closed");
+  if (c.R1_CLASSIFIER === "test" && c.APP_SITE === "open") refuse("R1_CLASSIFIER", "R1_CLASSIFIER=test is refused while APP_SITE is open: a test adapter answers only on a site that is closed");
+  // 3d Task 6 (row 49): no classifier is built in, so onnx stops the process; and the guards a real one meets once the
+  // owner's task adds it, one tool's date never passing the other or the step from flagging to acting.
+  if (c.R1_CLASSIFIER === "onnx") refuse("R1_CLASSIFIER", "R1_CLASSIFIER=onnx: no such adapter in this build");
+  if (c.R1_CLASSIFIER !== "off" && c.R1_CLASSIFIER !== "test" && c.AUTOMATION_DPIA_R1 === undefined) {
+    refuse("AUTOMATION_DPIA_R1", "AUTOMATION_DPIA_R1 is required when R1_CLASSIFIER names a classifier: the day of the impact assessment for the R1 check");
+  }
+  if (c.R1_CLASSIFIER !== "off" && c.R1_CLASSIFIER !== "test" && c.AUTOMATION_R1_ACTS === "on" && c.AUTOMATION_DPIA_R1_ACTS === undefined) {
+    refuse("AUTOMATION_DPIA_R1_ACTS", "AUTOMATION_DPIA_R1_ACTS is required when a classifier withholds (AUTOMATION_R1_ACTS=on): the day the assessment covered the measure");
+  }
   // An adapter named without its settings stops the process at start, as every missing setting does.
   if (c.EDGE_PURGE === "cloudflare") {
     for (const name of ["EDGE_ZONE_ID", "EDGE_API_TOKEN", "EDGE_HOST"] as const) if (c[name] === undefined) refuse(name, `${name} is required when EDGE_PURGE is cloudflare`);

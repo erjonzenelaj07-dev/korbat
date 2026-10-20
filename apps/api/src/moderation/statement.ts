@@ -3,6 +3,7 @@ import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
 import type { ModerationDeps } from "./context";
 import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, standingWithdrawn, type MailState } from "./repo";
+import { statementSignal } from "./automated-repo";
 import { endedMeasures, endedStanding, orderNoticeOf, reappliedOn, repliedTo, statementActions, statementDecision, type StatementDecisionRow } from "./statement-repo";
 
 /**
@@ -49,6 +50,9 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
   // most that what korbat did while deciding has ended, so the statement's data holds neither, and no mail, screen or
   // export that is rendered from it can carry them.
   const told = decision.kind === "correction" || decision.kind === "review" || actions.some((action) => MEASURES[action.kind].lifts === null);
+  // 3d Task 6 (sections 7.10 and 10.2): the program's finding the decision rests on or considered, read only when its
+  // detection was automated; a decision made before 3d reads false, not_automated and null.
+  const signal = decision.automatedDetection ? await statementSignal(q, decisionId) : null;
   const statement: DecisionStatement = {
     kind: decision.kind,
     outcome: decision.outcome as DecisionStatement["outcome"],
@@ -109,6 +113,9 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
     ...(replied !== null ? { repliedTo: replied } : {}),
     order: notice?.facts ?? null,
     ...(lostOn !== null ? { reapplied: { lostOn } } : {}),
+    automatedDetection: decision.automatedDetection,
+    automatedDecision: decision.automatedDecision,
+    signal,
     reviewed:
       decision.reviewed === null
         ? null
@@ -135,6 +142,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
  */
 export function mailSubjectOf(statement: DecisionStatement): Extract<DecisionMessage, { template: "moderation_decision" }>["subject"] {
   const seals = statement.measures.some((measure) => measure.kind === "seal_media");
+  // 3d Task 6 (W.8): a program's decision first, by its one measure.
+  if (statement.automatedDecision === "fully") return seals ? "program_seal" : "program_withhold";
   const post = statement.post !== null;
   if (statement.kind === "interim") return seals ? "seal_deciding" : post ? "post_deciding" : "profile_deciding";
   if (statement.kind === "final") {

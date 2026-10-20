@@ -45,6 +45,7 @@ import type { SocialForModeration } from "../social";
 import { createAlertMailJob, createAlertTick, staffAlert } from "./alerts";
 import { appealsList, review, reviewedCase } from "./appeals";
 import { authorFacts } from "./author";
+import { createAutomatedSweepJob, imagesPublished } from "./automated";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideContext, type DecideOutcome } from "./decide";
@@ -177,6 +178,12 @@ export interface ModerationForStaff {
  */
 export interface ModerationForSocial {
   authorFacts(viewer: string, postIds: readonly string[]): Promise<Map<string, PostModeration>>;
+  /**
+   * 3d Task 6 (design, sections 5 and 7.9): createPost calls this after its commit when the post has images. It starts the
+   * automated step of each image whose score is at or over the threshold on the module's background and returns at once,
+   * so a post never waits for a deciding transaction; with the scorer off it starts nothing.
+   */
+  imagesPublished(postId: string): void;
 }
 
 /** What the account module needs from this one (3c design, sections 5, 7.10 and 7.11): the purge's forgetting, and the export's member; 3e adds the take-down of terminated accounts. */
@@ -276,6 +283,7 @@ export function createModeration(options: CreateModerationOptions) {
   };
   const forSocial: ModerationForSocial = {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),
+    imagesPublished: (postId) => imagesPublished(deps, postId),
   };
   const forAccount: ModerationForAccount = {
     forgetAccount: async (userId) => {
@@ -309,8 +317,9 @@ export function createModeration(options: CreateModerationOptions) {
     settle: () => deps.background.settle(),
     /**
      * Starts the module's background work under the jobs' shared lock, on one API instance at a time: the dispatch job
-     * and 3f's alert tick and its mail leg (two jobs since 3f's review, so a slow relay never holds the tick) always, and
-     * the retention job only while MODERATION_RETENTION is on. The dispatch and retention
+     * and 3f's alert tick and its mail leg (two jobs since 3f's review, so a slow relay never holds the tick) always, (3d
+     * Task 6) the automated sweep always, whose reads of signals each run only while their tool is on, and the retention
+     * job only while MODERATION_RETENTION is on. The dispatch and retention
      * jobs' first rounds come ten minutes after the start, the tick's 30 seconds after it. While the switch is off nothing
      * is erased, released or deleted, and the warning is logged at every start, so a switch left off after a restore is
      * seen; the tick runs all the same, since an alert is never about retention. Answers the function that stops them
@@ -320,12 +329,14 @@ export function createModeration(options: CreateModerationOptions) {
       const stopDispatch = createDispatchJob(deps, lock).start();
       const stopTick = createAlertTick(deps, lock).start();
       const stopMail = createAlertMailJob(deps, lock).start();
+      const stopSweep = createAutomatedSweepJob(deps, lock).start();
       if (deps.config.MODERATION_RETENTION !== "on") {
         deps.log.warn(RETENTION_OFF_WARNING);
         return () => {
           stopDispatch();
           stopTick();
           stopMail();
+          stopSweep();
         };
       }
       const stopRetention = createRetentionJob(deps, lock).start();
@@ -333,6 +344,7 @@ export function createModeration(options: CreateModerationOptions) {
         stopDispatch();
         stopTick();
         stopMail();
+        stopSweep();
         stopRetention();
       };
     },

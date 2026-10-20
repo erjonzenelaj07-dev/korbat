@@ -174,6 +174,13 @@ services:
       HEAD_WITNESS: ${API_HEAD_WITNESS:-}
       HEAD_WITNESS_URL: ${API_HEAD_WITNESS_URL:-}
       HEAD_KEEPER_MAIL: ${API_HEAD_KEEPER_MAIL:-}
+      # 3d Task 6: the R1 check, which the worker reads too (unprefixed): off (empty, the default), test (refused while
+      # APP_SITE is open) or onnx, not in this build; whether a score over the threshold withholds its image (off unless
+      # on); and the two days of the owner's impact assessment, empty for none.
+      R1_CLASSIFIER: ${R1_CLASSIFIER:-}
+      AUTOMATION_R1_ACTS: ${API_AUTOMATION_R1_ACTS:-}
+      AUTOMATION_DPIA_R1: ${API_AUTOMATION_DPIA_R1:-}
+      AUTOMATION_DPIA_R1_ACTS: ${API_AUTOMATION_DPIA_R1_ACTS:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store
@@ -214,6 +221,10 @@ services:
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store
       MEDIA_FORMATS: ${MEDIA_FORMATS:-jpeg,png,webp,gif,avif}
+      # 3d Task 6: the R1 check's scorer, the API's setting (off when empty), and the site's switch, which the worker reads
+      # only to refuse a test scorer while the site is open.
+      R1_CLASSIFIER: ${R1_CLASSIFIER:-}
+      APP_SITE: ${APP_SITE:-open}
     volumes:
       - media-uploads:/media/uploads:ro
       - media-store:/media/store

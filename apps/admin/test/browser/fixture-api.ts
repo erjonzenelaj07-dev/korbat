@@ -49,6 +49,7 @@ import {
   type OrderSummary,
   type OrderView,
   type QueuePage,
+  type QueueRow,
   type RestoreView,
   type StaffOverview,
   type QueueReply,
@@ -450,6 +451,8 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
     view.items = view.items.map((item) => (item.answeredBy === corrected.id && item.unfounded ? { ...item, unfounded: false, markWithdrawn: true } : item));
   }
   const suspect = view.items.some((item) => item.outcome === null && item.suspect);
+  // 3d Task 6: the author's request for a person stands while a program's measure is in force, as the API reads it.
+  if (view.objection !== null && !view.decisions.some((decided) => decided.byProgram && decided.actions.some((action) => action.inForce))) view.objection = null;
   view.decisions = [
     ...view.decisions,
     {
@@ -465,6 +468,8 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
       source: "report",
       decidedAt: at,
       staffHandle,
+      // 3d Task 6: a decision the console confirms is a person's.
+      byProgram: false,
       throughSeq: params.throughSeq,
       answersFromSeq: params.kind === "final" ? view.answeredSeq + 1 : null,
       reviewsDecisionId: params.reviewsDecisionId,
@@ -531,6 +536,7 @@ function applyReview(view: CaseView, reviewed: CaseDecision, params: AppealsRevi
       source: reviewed.source,
       decidedAt: at,
       staffHandle,
+      byProgram: false,
       throughSeq: 0,
       answersFromSeq: null,
       reviewsDecisionId: reviewed.id,
@@ -801,6 +807,10 @@ export function createFixtureApi() {
     quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null } as StaffOverview["quarantine"],
     /** 3d Task 2: the releases of the last 30 days that Home lists ([home.released]). */
     destructive: [] as StaffOverview["destructive"],
+    /** 3d Task 6: a program's measures and the authors' requests for a person, as the overview answers them ([home.automated], [home.objected]). */
+    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] } as StaffOverview["automated"],
+    /** 3d Task 6: the queue's one page when a step sets it, in the API's order; the fixtures' two pages otherwise. */
+    queueRows: null as QueueRow[] | null,
     restore: NO_RESTORE,
     gapsClosed: [] as string[],
     /** 3f, Task 2: the orders the walk opened, as their pages stand, and every write the page sent for them, with whether a key confirmed it. */
@@ -1192,6 +1202,7 @@ export function createFixtureApi() {
           restore: state.restoreOverview,
           quarantine: state.quarantine,
           destructive: state.destructive,
+          automated: state.automated,
         }),
       };
     }
@@ -1390,6 +1401,7 @@ export function createFixtureApi() {
       // Two pages: the two urgent cases, then the rest behind a cursor.
       const cursor = url.searchParams.get("cursor");
       if (cursor !== null && cursor !== "second-page") throw new Refusal(400, "invalid_request");
+      if (state.queueRows !== null && cursor === null) return { status: 200, body: { cases: state.queueRows, nextCursor: null, replies: queueReplies() } satisfies QueuePage };
       const page: QueuePage = cursor === null ? { cases: QUEUE_ROWS.slice(0, 2), nextCursor: "second-page", replies: queueReplies() } : { cases: QUEUE_ROWS.slice(2), nextCursor: null, replies: [] };
       return { status: 200, body: page };
     }

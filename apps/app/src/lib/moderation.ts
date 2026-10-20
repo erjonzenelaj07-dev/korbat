@@ -71,6 +71,11 @@ export const moderation = {
    * anything. The answer says when korbat received it and whether that was before the start.
    */
   reply: (id: string, statement: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}/reply`, { json: statementOf(statement), schema: ReplyResponse }),
+  /**
+   * 3d Task 6 (design, sections 7.10 and 9.4): "Ask for a person" about a program's decision, with the one message its
+   * subject writes. The answer is the decision as it now reads, with the request sent.
+   */
+  objection: (id: string, text: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}/objection`, { json: { text }, schema: DecisionView }),
   /** A re-examination of an item of a notice, asked with the status page's token, which travels in the body of a POST. */
   reexamineNotice: (ref: string, token: string, position: number, statement: string) => api("/api/notices/reexamine", { json: { ref, token, position, ...statementOf(statement) }, schema: ReexamineResponse }),
   /** A re-examination of an item of a report the signed-in account sent, named by the id its list carries. */

@@ -29,6 +29,8 @@ export type Pagination = z.infer<typeof Pagination>;
 
 export * from "./account";
 export * from "./auth";
+// 3d Task 6: the automated decision's numbers and closed lists. It imports nothing, so every module below can read it.
+export * from "./automation";
 export * from "./explore";
 export * from "./media";
 // Evaluated before ./staff, and importing nothing from it: staff.ts can read this module's constants while it loads.

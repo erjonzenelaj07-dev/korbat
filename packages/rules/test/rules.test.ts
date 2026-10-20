@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { STANDING_RULES } from "@korbat/contracts";
+import { AUTOMATION_RULES, STANDING_RULES } from "@korbat/contracts";
 import { REDRESS_TEXTS, REDRESS_VERSION, RULEBOOKS, RULES, RULES_CHANGES, RULES_VERSION, getRedress, getRule, isRuleId, ORDER_NOTICE } from "../src/index";
 
 const VERSIONS = [1, 2, 3] as const;
@@ -120,9 +120,9 @@ describe("rulebook", () => {
 describe("redress", () => {
   const LAST = "You can also go to court, or complain to the Digital Services Coordinator of the EU country where you live (Article 53 of the Digital Services Act).";
 
-  test("the current redress version is 3: version 2's nine texts word for word and the order's notice; versions 1 and 2 are kept as they were", () => {
-    expect(REDRESS_VERSION).toBe(3);
-    expect(Object.keys(REDRESS_TEXTS).map(Number)).toEqual([1, 2, 3]);
+  test("the current redress version is 4 (3d Task 6); version 3 is version 2's nine texts word for word and the order's notice; versions 1 to 3 are kept as they were", () => {
+    expect(REDRESS_VERSION).toBe(4);
+    expect(Object.keys(REDRESS_TEXTS).map(Number)).toEqual([1, 2, 3, 4]);
     expect(Object.keys(REDRESS_TEXTS[1])).toEqual(["appeal", "interim", "notAppealable"]);
     expect(Object.keys(REDRESS_TEXTS[2])).toEqual(["appeal", "interim", "notAppealable", "strikeNext", "reply", "replyAtOnce", "replyAnswered", "warnNext", "appealNow"]);
     for (const key of ["appeal", "interim", "notAppealable"] as const) expect(REDRESS_TEXTS[2][key], key).toBe(REDRESS_TEXTS[1][key]);
@@ -130,10 +130,32 @@ describe("redress", () => {
     expect(Object.keys(REDRESS_TEXTS[3])).toEqual([...Object.keys(REDRESS_TEXTS[2]), "order"]);
     for (const key of Object.keys(REDRESS_TEXTS[2]) as (keyof (typeof REDRESS_TEXTS)[2])[]) expect(REDRESS_TEXTS[3][key], key).toBe(REDRESS_TEXTS[2][key]);
     expect(REDRESS_TEXTS[3].order).toBe(ORDER_NOTICE);
-    expect(getRedress(REDRESS_VERSION)).toBe(REDRESS_TEXTS[3]);
+    expect(getRedress(REDRESS_VERSION)).toBe(REDRESS_TEXTS[4]);
+    expect(getRedress(3)).toBe(REDRESS_TEXTS[3]);
     expect(getRedress(2)).toBe(REDRESS_TEXTS[2]);
     expect(getRedress(1)).toBe(REDRESS_TEXTS[1]);
-    expect(getRedress(4)).toBeUndefined();
+    expect(getRedress(5)).toBeUndefined();
+  });
+
+  test("version 4 (3d design, W.4): version 3's texts word for word, and the three of a program's measure and of a refused upload", () => {
+    expect(Object.keys(REDRESS_TEXTS[4])).toEqual([...Object.keys(REDRESS_TEXTS[3]), "askPerson", "askAdmin", "uploadObject"]);
+    for (const key of Object.keys(REDRESS_TEXTS[3]) as (keyof (typeof REDRESS_TEXTS)[3])[]) expect(REDRESS_TEXTS[4][key], key).toBe(REDRESS_TEXTS[3][key]);
+    const v4 = REDRESS_TEXTS[4];
+    expect(v4.askPerson).toBe(
+      `You can ask for a person now: choose "Ask for a person" on this decision's screen under Settings, Cases, and write anything a person should know. You can send one message. korbat's target is that a moderator answers within 24 hours; the measure does not end by itself before a person has decided. A measure a program takes cannot be appealed as such: ask for a person instead. The moderator's decision can be appealed, if it restricts your post. ${LAST}`,
+    );
+    expect(v4.askAdmin).toBe(
+      `You can ask for a person now: choose "Ask for a person" on this decision's screen under Settings, Cases, and write anything a person should know. You can send one message. korbat's target is that an admin answers within 24 hours; the measure does not end by itself before a person has decided. A measure a program takes cannot be appealed as such: ask for a person instead. The admin's decision can be appealed, if it seals the images for good; an appeal of a seal waits until the authorities have assessed the images. ${LAST}`,
+    );
+    expect(v4.uploadObject).toBe(
+      `You can object, free of charge: choose "Object" on this screen and write anything the admin should know. You can send one message, at any time before the hold is lifted or korbat has released the file, also after an admin has decided to report it. An admin, not a program, decides what happens to the file. Nobody at korbat can accept the image, since nobody opens it. ${LAST}`,
+    );
+  });
+
+  test("the one number of version 4's texts is held to AUTOMATION_RULES: a changed target is a new version", () => {
+    const numbers = (text: string) => [...text.matchAll(/[0-9]+/g)].map((match) => Number(match[0]));
+    for (const key of ["askPerson", "askAdmin"] as const) expect(numbers(REDRESS_TEXTS[4][key]), key).toEqual([AUTOMATION_RULES.objectionTargetHours, 53]);
+    expect(numbers(REDRESS_TEXTS[4].uploadObject)).toEqual([53]);
   });
 
   test("version 2's six new texts, word for word (3e design, section 18, W.3)", () => {

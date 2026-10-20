@@ -65,6 +65,11 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   // 3d Task 5: head_unwitnessed and head_missed, which the transparency job writes as its own rows, each at most once in 24 hours.
   "head_unwitnessed",
   "head_missed",
+  // 3d Task 6: automated_objection and automation_capped, which staffAlert writes after their commits, and
+  // automated_waiting, which the automated sweep writes as its own row, at most once in 24 hours.
+  "automated_objection",
+  "automation_capped",
+  "automated_waiting",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */

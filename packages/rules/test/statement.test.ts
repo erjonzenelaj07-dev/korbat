@@ -103,11 +103,12 @@ describe("statementParagraphs", () => {
     expect(out.join("\n")).not.toMatch(/korbat rule R[1-6]/);
   });
 
-  test("the source is one of three phrases", () => {
+  test("the source is one of three phrases, and (3d Task 6, source.automated) a fourth for what an automated check found", () => {
     expect(W.source).toEqual({
       notice: "following a notice under Article 16 of the Digital Services Act",
       report: "following a report by another user",
       own_initiative: "found by a moderator",
+      automated: "found by an automated check of korbat's own",
     });
     expect(text(statement({ source: "own_initiative" }))).toContain("What this decision is about was found by a moderator.");
     for (const source of ["notice", "report", "own_initiative"] as const) expect(text(statement({ source })), source).toContain(W.source[source]);
@@ -1392,5 +1393,94 @@ describe("IMAGE_LOST_NOTICE (3d design, sections 7.1 and 9.6; W.8): an image kor
     for (const text of [IMAGE_LOST_NOTICE.mail("2026-10-01"), IMAGE_LOST_NOTICE.onImage]) {
       expect(text).not.toMatch(/wait|restored|seal|file name|@/i);
     }
+  });
+});
+
+describe("3d Task 6: a program's measure and a person's decision after a score (design, sections 7.10 and 10.8; W.3, W.4)", () => {
+  const R1 = getRule("R1", 3)!;
+  const SCORE = { kind: "r1_score", source: null, matchKind: null, listedAs: null, viewed: null } as const;
+  /** A program's withhold of one image under R1, as the step records it: no decider, interim, fully automated. */
+  const program = (more: Partial<StatementInput> = {}) =>
+    statement({
+      kind: "interim",
+      rulesVersion: 3,
+      redressVersion: 4,
+      facts: null,
+      reason: null,
+      source: "own_initiative",
+      measures: [measure("withhold_media")],
+      automatedDetection: true,
+      automatedDecision: "fully",
+      signal: SCORE,
+      ...more,
+    });
+  /** A moderator's final removal of the image after the program's finding, with the record of whether they opened it. */
+  const person = (viewed: boolean, more: Partial<StatementInput> = {}) =>
+    statement({ rulesVersion: 3, redressVersion: 4, source: "own_initiative", measures: [measure("remove_media")], automatedDetection: true, automatedDecision: "not_automated", signal: { ...SCORE, viewed }, ...more });
+
+  test("a program's statement, paragraph by paragraph, in its own order, with Ask for a person in the place of the interim redress", () => {
+    expect(statementParagraphs(program())).toEqual([
+      `korbat hid one image of your post of ${POST_TIME} from other people while it decides.`,
+      "This applies everywhere korbat is available, for as long as korbat decides the case.",
+      "This lasts until a moderator has decided. A program does nothing else: it removes nothing, hides no text, and does not suspend, limit or end your account.",
+      "What this decision is about was found by an automated check of korbat's own.",
+      "Automated means were used to find this and to take this measure: a program rated an image of your post as likely within rule R1, and korbat hid that image at once. No person took part in this measure, and no moderator has decided yet.",
+      `The rule this was done under: korbat rule R1, "${R1.title}": ${R1.text}`,
+      REDRESS_TEXTS[4].askPerson,
+    ]);
+  });
+
+  test("a program's measure is never worded as a finding, and says how to reach a person, with no score, no staff text and no word that a person looked", () => {
+    const words = text(program());
+    expect(words).not.toMatch(/It breaks|korbat's reasons|The facts|looked at the image|confirmed|posted such|is child sexual abuse material/);
+    expect(words).toContain("Automated means were used");
+    expect(words).toContain("Ask for a person");
+    // No number but the post's time, the target of version 4's redress and the Digital Services Act's article.
+    expect([...words.replace(POST_TIME, "").matchAll(/[0-9]+/g)].map((match) => Number(match[0]))).toEqual([1, 1, 24, 53]);
+    // Even a stated fact or reason of a program's decision is not printed: it has none, and the paragraph states what it rests on.
+    expect(text(program({ facts: "x", reason: "y" }))).not.toMatch(/The facts|korbat's reasons/);
+  });
+
+  test("a person's decision after a score says that a program found it, and that the moderator looked only where the record shows it", () => {
+    const seen = statementParagraphs(person(true));
+    expect(seen).toContain(STATEMENT_WORDS.automated.found.r1.viewed);
+    expect(seen).toContain("What this decision is about was found by an automated check of korbat's own.");
+    expect(seen).not.toContain(STATEMENT_WORDS.automation);
+    expect(STATEMENT_WORDS.automated.found.r1.viewed).toBe(
+      "Automated means were used to find this: a program rated an image of your post as likely within rule R1. They were not used to decide it: a moderator looked at the image and took this decision.",
+    );
+    const unseen = text(person(false));
+    expect(unseen).toContain(
+      "Automated means were used to find this: a program rated an image of your post as likely within rule R1. They were not used to decide it: a moderator took this decision without opening the image.",
+    );
+    expect(unseen).not.toContain("looked at the image");
+    // Without a record of the view (null), it is never said that the moderator looked.
+    expect(text(person(false, { signal: SCORE }))).not.toContain("looked at the image");
+    // The rest is 3c's: the finding, the facts, the reason and the appeal.
+    expect(unseen).toContain(`It breaks korbat rule R1, "${R1.title}"`);
+    expect(unseen).toContain("You can appeal this decision once");
+  });
+
+  test("a person's decision that gives a strike keeps the strike's sentence on the software beside the program's finding", () => {
+    const words = text(person(true, { measures: [measure("remove_media"), measure("strike", { endsAt: "2027-10-04T09:30:15.250Z", activeThen: 1 })] }));
+    expect(words).toContain(`${STATEMENT_WORDS.automated.found.r1.viewed} ${STATEMENT_WORDS.automated.strikeRule}`);
+    expect(words).not.toContain("No automated means were used");
+  });
+
+  test("a decision made before 3d reads as it was sent: no automated member, 3c's sentence and the moderator as the source", () => {
+    expect(statementParagraphs(statement({ source: "own_initiative" }))).toContain("What this decision is about was found by a moderator.");
+    expect(statementParagraphs(statement())).toContain("No automated means were used to find this or to decide it.");
+    expect(statementParagraphs(statement({ automatedDetection: false, automatedDecision: "not_automated", signal: null }))).toEqual(statementParagraphs(statement()));
+  });
+
+  test("a match's words are the known material's: this version refuses to render one rather than say more than it holds", () => {
+    const match = { kind: "known_match", source: "Source", matchKind: "exact", listedAs: "csam", viewed: null } as const;
+    expect(() => statementParagraphs(program({ ruleId: "R2", measures: [measure("seal_media")], signal: match }))).toThrow(/not worded/);
+    expect(() => statementParagraphs(person(false, { signal: match }))).toThrow(/not worded/);
+    expect(() => statementParagraphs(person(false, { automatedDecision: "partially" }))).toThrow(/not worded/);
+  });
+
+  test("a program's statement needs a redress version that holds Ask for a person", () => {
+    expect(() => statementParagraphs(program({ redressVersion: 3 }))).toThrow(/Ask for a person/);
   });
 });

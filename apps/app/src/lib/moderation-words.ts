@@ -1,4 +1,4 @@
-import { CSAM_NOTICE_MAX_ACCOUNTS, DAILY_LIMITS, NOTICE_LIMITS, type CsamKeywordChoice, type TdbFormCategory } from "@korbat/contracts";
+import { AUTOMATION_RULES, CSAM_NOTICE_MAX_ACCOUNTS, DAILY_LIMITS, NOTICE_LIMITS, type CsamKeywordChoice, type TdbFormCategory } from "@korbat/contracts";
 import { IMAGE_LOST_NOTICE } from "@korbat/rules";
 
 /**
@@ -163,6 +163,26 @@ export const DAILY_LIMIT_WORDS = {
   appeals: (wait: string) => `korbat takes at most ${DAILY_LIMITS.appeals} appeals a day from one account. Try again in about ${wait}.`,
   reexaminations: (wait: string) => `korbat takes at most ${DAILY_LIMITS.reexaminations} requests for a re-examination a day from one account, or without an account from one network. Try again in about ${wait}.`,
 };
+
+/**
+ * 3d Task 6 (design, sections 9.4, 9.6 and 9.7): a measure a program took, as its author sees it: the chip [auto.chip]
+ * beside the day, "Ask for a person" [auto.ask] under its lead [auto.askLead], the request as sent [auto.asked] with the
+ * published target, and once a person has decided [auto.decided] with a link to that decision; the row of "About you";
+ * and objection_not_open's words, which are [auto.decided] without the day. The target is the contracts' constant, a
+ * published target and never an end: the measure lapses by no timer.
+ */
+export const AUTO_WORDS = {
+  chip: "Taken by a program",
+  row: (what: string) => `Taken by a program: ${what}`,
+  ask: "Ask for a person",
+  askLead:
+    "Write anything a person should know. You can send one message. A moderator reads it and lifts the measure or decides the case; for sealed images an admin does. You get that decision's statement either way. You do not need to cite rules or law.",
+  askField: "Your message to a person",
+  asked: (createdAt: string) => `You asked for a person on ${createdAt}. korbat's target is an answer within ${AUTOMATION_RULES.objectionTargetHours} hours.`,
+  decided: (decidedAt: string) => `A person has decided since: the decision of ${decidedAt}, listed under Settings, Cases.`,
+  decidedLink: "Open that decision",
+  notOpen: "A person has decided since: the decision is listed under Settings, Cases.",
+} as const;
 
 export const CASES_WORDS = {
   nav: "Cases",

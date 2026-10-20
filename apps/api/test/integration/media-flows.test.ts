@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { MEDIA_MAX_BYTES, MediaStatusResponse, UploadResponse } from "@korbat/contracts";
 import { closeDb, createDb, postMedia, type Db } from "@korbat/db";
+import { R1_TEST_MODEL } from "@korbat/media-protocol";
 import { loadConfig } from "../../src/config";
 import { remove } from "../../src/media/flows/remove";
 import { status } from "../../src/media/flows/status";
@@ -53,6 +54,35 @@ describe.skipIf(!process.env.INTEGRATION)("integration: media upload, status and
 
     h.worker.failed(sent.id, "corrupt_image");
     expect(await status(h.deps, ada.id, sent.id)).toEqual(ready);
+  });
+
+  test("3d Task 6 (12.1 row 12): results of version 2 and 1 are read; a score is kept only from the model this server runs; an unknown version is ignored", async () => {
+    const scored = await mediaHarness(db, { r1Model: R1_TEST_MODEL });
+    try {
+      const ada = await scored.established();
+      const scoreOf = async (id: string) => (await db.select({ score: postMedia.nsfwScore }).from(postMedia).where(eq(postMedia.id, id)))[0]!.score;
+      // The server's own model: kept. Another model's score: dropped, the image ready all the same.
+      const own = await scored.readyImage(ada.id, undefined, { model: R1_TEST_MODEL, score: 1 });
+      const other = await scored.readyImage(ada.id, undefined, { model: "another/model", score: 0.75 });
+      expect([await scoreOf(own), await scoreOf(other)]).toEqual([1, null]);
+      expect((await status(scored.deps, ada.id, other)).status).toBe("ready");
+      // A worker of the build before writes version 1, which the API still reads.
+      const old = UploadResponse.parse(await upload(scored.deps, ada.id, scored.jpeg()));
+      scored.worker.readyV1(old.id, { width: 1600, height: 1200 });
+      expect(await status(scored.deps, ada.id, old.id)).toEqual({ id: old.id, status: "ready", width: 1600, height: 1200, blurhash: "L2Eo_P_3jb_3~qoL" });
+      expect(await scoreOf(old.id)).toBeNull();
+      // A version the protocol does not know is not a result: the upload stays processing and its file stays.
+      const later = UploadResponse.parse(await upload(scored.deps, ada.id, scored.jpeg()));
+      writeFileSync(scored.files.store.result(later.id), JSON.stringify({ v: 3, id: later.id, status: "ready", width: 10, height: 10, blurhash: "L2Eo_P_3jb_3~qoL" }));
+      expect(await status(scored.deps, ada.id, later.id)).toEqual({ id: later.id, status: "processing" });
+      expect(existsSync(scored.files.uploads.upload(later.id))).toBe(true);
+    } finally {
+      scored.cleanup();
+    }
+    // With R1_CLASSIFIER off (no model), a score the worker sent is not kept.
+    const bea = await h.established();
+    const unscored = await h.readyImage(bea.id, undefined, { model: R1_TEST_MODEL, score: 1 });
+    expect((await db.select({ score: postMedia.nsfwScore }).from(postMedia).where(eq(postMedia.id, unscored)))[0]!.score).toBeNull();
   });
 
   test("a refused image reports the worker's reason", async () => {

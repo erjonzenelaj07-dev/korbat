@@ -3,6 +3,7 @@ import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 import { EdgePurgeView, MediaId } from "./media";
 import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, ORDER_RULES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
+import { SIGNAL_KINDS } from "./automation";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -541,6 +542,12 @@ export const ModerationErrorCode = z.enum([
   "release_period_unset",
   "release_period_running",
   "release_mismatch",
+  // 3d Task 6 (design, section 10.7): "Ask for a person" on a decision that is not a program's or whose measure has ended,
+  // or a second time; and the two refusals of a program's measure, which the automated step records on its signal and
+  // no route answers.
+  "objection_not_open",
+  "already_protected",
+  "automation_capped",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -730,6 +737,16 @@ export type AppealRequest = z.infer<typeof AppealRequest>;
  */
 export const ReplyRequest = z.strictObject({ statement: noticeText(REPLY_TEXT_MAX).optional() });
 export type ReplyRequest = z.infer<typeof ReplyRequest>;
+
+/**
+ * 3d Task 6 (design, sections 2 row 25, 7.10 and 10.2): "Ask for a person", the one text the subject of a program's
+ * decision may send while its measure is in force: 1 to OBJECTION_TEXT_MAX characters, under the rules of every free
+ * text of a notice, with no transform, which the CHECK of automated_objections holds too. It is the body of both
+ * objection routes (the refused upload's is Task 7's).
+ */
+export const OBJECTION_TEXT_MAX = 2000;
+export const ObjectionRequest = z.strictObject({ text: noticeText(OBJECTION_TEXT_MAX) });
+export type ObjectionRequest = z.infer<typeof ObjectionRequest>;
 
 /** The answer to a reply (201): when the database filed it, and whether it came before the start, which it then holds. */
 export const ReplyResponse = z.object({ filedAt: z.iso.datetime(), onTime: z.boolean() });
@@ -1288,6 +1305,15 @@ export const QueueRow = z.object({
   suspect: z.boolean(),
   reexamination: z.boolean(),
   deferred: z.boolean(),
+  /**
+   * 3d Task 6 (design, sections 8.3 and 10.3): an unanswered item of the case is a program's finding citing R1 or R2
+   * ([queue.found]); a measure of a decision without a decider is in force on the case ([queue.taken]); the author asked
+   * for a person about a measure in force ([queue.objected]), which alone of the three moves a case: it sorts first inside
+   * its lane, before age, and the queue's cursor carries it.
+   */
+  foundByProgram: z.boolean(),
+  takenByProgram: z.boolean(),
+  objected: z.boolean(),
 });
 export type QueueRow = z.infer<typeof QueueRow>;
 
@@ -1327,6 +1353,8 @@ export const SOURCE_LABELS = {
   unlinked: "A signed-in reporter no longer linked",
   // 3f (design, section 8.6): an order's intake item, listed with its order and never with a reporter's summary.
   authority: "An authority's order",
+  // 3d Task 6 (design, sections 8.4 and 10.3): a program's finding, also one that cites no rule; never a reporter's summary.
+  program: "Found by a program",
 } as const;
 
 /**
@@ -1350,7 +1378,7 @@ export function reporterLabel(index: number): string {
  */
 export const SourceSummary = z
   .object({
-    kind: z.enum(["reporter", "notifier", "anonymous", "staff", "unlinked", "authority"]),
+    kind: z.enum(["reporter", "notifier", "anonymous", "staff", "unlinked", "authority", "program"]),
     label: z.string().max(40),
     accountAge: z.enum(["under_1_month", "1_to_12_months", "over_12_months"]).nullable(),
     itemsFiled: z.enum(["1", "2_to_9", "10_or_more"]).nullable(),
@@ -1620,7 +1648,10 @@ export const CaseDecision = z.object({
   categoryKeyword: z.string().nullable(),
   source: z.enum(DECISION_SOURCE_VALUES),
   decidedAt: z.iso.datetime(),
-  staffHandle: z.string(),
+  /** Who decided; 3d Task 6: null exactly for a program's decision (`byProgram`), which names no staff member. */
+  staffHandle: z.string().nullable(),
+  /** 3d Task 6 (design, sections 8.4 and 10.3): the decision has no decider: a program took it ([case.auto]). */
+  byProgram: z.boolean(),
   throughSeq: Count,
   answersFromSeq: Count.nullable(),
   reviewsDecisionId: z.uuid().nullable(),
@@ -1736,7 +1767,8 @@ export const CaseHistoryEntry = z.object({
   event: z.enum(["item", "snapshot", "decision", "appeal_filed", "appeal_answered", "note", "seal_declined", "reveal", "evidence_erased", "redaction"]),
   refId: z.uuid().nullable(),
   seq: z.number().int().nullable(),
-  intakeKind: z.enum(["user", "finding", "order"]).nullable(),
+  // 3d Task 6: a program's finding, which the history names as such (Case.tsx's history line).
+  intakeKind: z.enum(["user", "finding", "order", "automated"]).nullable(),
   ruleId: z.enum(RULE_IDS).nullable(),
   allegesIllegal: z.boolean().nullable(),
   csam: z.boolean().nullable(),
@@ -1781,6 +1813,15 @@ export type CaseSuspicion = z.infer<typeof CaseSuspicion>;
  * seal, and its history. `suspicion` is set for a case that holds a suspect item or a seal. `imagesAllowed` is false
  * while the post is frozen, and for every account case: an account case shows no image.
  */
+/** 3d Task 6: an item a program opened, as the case page reads it (CaseView.signals). */
+export const CaseSignal = z.object({
+  itemId: z.uuid(),
+  kind: z.enum(SIGNAL_KINDS),
+  /** The version of the threshold a score was over; 0 under the test scorer; null for a match. */
+  thresholdVersion: z.number().int().min(0).nullable(),
+});
+export type CaseSignal = z.infer<typeof CaseSignal>;
+
 export const CaseView = z.object({
   id: z.uuid(),
   lane: LaneNumber,
@@ -1830,6 +1871,17 @@ export const CaseView = z.object({
    * while the newest snapshot is withheld, and for images that were never hidden.
    */
   purges: z.array(EdgePurgeView),
+  /**
+   * 3d Task 6 (design, sections 7.11, 8.4 and 10.3): one entry for each item of the case that a program opened: the item,
+   * its signal's kind and, for a score, the version of the threshold it was over ([case.r1]); never the score, which beside
+   * an image would read as a verdict. Task 7 adds a match's record.
+   */
+  signals: z.array(CaseSignal),
+  /**
+   * The author's request for a person about a program's measure that is in force on the case, with its time
+   * ([case.objection]); null when none stands. The text is the author's, drawn framed.
+   */
+  objection: z.object({ text: z.string(), createdAt: z.iso.datetime() }).nullable(),
 });
 export type CaseView = z.infer<typeof CaseView>;
 
@@ -1968,6 +2020,26 @@ export type StatementEndedMeasure = z.infer<typeof StatementEndedMeasure>;
  *   - `reviewed`: for a review or a correction, the decision it reviews, whose rule or law the statement renders
  *     under the rulebook version that decision was made under (`reviewed.rulesVersion`), never under its own.
  */
+/** 3d Task 6: the three values of decisions.automated_decision, which its CHECK holds. */
+export const AUTOMATED_DECISIONS = ["not_automated", "partially", "fully"] as const;
+export type AutomatedDecision = (typeof AUTOMATED_DECISIONS)[number];
+
+/**
+ * 3d Task 6 (design, sections 7.10 and 10.2; W.3): the automated finding a statement speaks of. For a score: its kind,
+ * and `viewed`, true when the person who decided opened the signal's image on this case before the decision and the
+ * decision is not stored as unseen, false otherwise, null on a program's decision. For a match (Task 7): the source's
+ * declared name, `matchKind` (exact only for a cryptographic hash's exact match, near for every perceptual match) and
+ * `listedAs` (csam when the source itself lists the entry so). Null members are those its kind does not have.
+ */
+export const StatementSignal = z.object({
+  kind: z.enum(SIGNAL_KINDS),
+  source: z.string().max(100).nullable(),
+  matchKind: z.enum(["exact", "near"]).nullable(),
+  listedAs: z.enum(["csam", "other"]).nullable(),
+  viewed: z.boolean().nullable(),
+});
+export type StatementSignal = z.infer<typeof StatementSignal>;
+
 export const DecisionStatement = z.object({
   kind: z.enum(DECISION_KIND_VALUES),
   outcome: z.enum(["restricted", "no_violation", "not_evident", "kept", "partly_reversed", "reversed"]),
@@ -2021,6 +2093,18 @@ export const DecisionStatement = z.object({
    * review. The appeal's six months count from it, as appeal_deadline counts them in the database.
    */
   informedAt: z.iso.datetime().nullable().optional(),
+  /**
+   * 3d Task 6 (design, sections 7.10 and 10.2; W.3): what the decision's own columns say of automated means, and the
+   * automated finding it rests on or considered. `automatedDetection` is true when a program's finding is among what the
+   * decision considers (its reviewed decision's for a review or a correction); `automatedDecision` is fully for a
+   * program's decision, partially for a restriction an admin took on a suspect program's finding under R2, and
+   * not_automated otherwise. `signal` is that finding: its kind, and for a score whether the person who decided opened
+   * the image on the case before deciding (`viewed`; null on a program's own decision). Absent, as on a decision made
+   * before 3d, they read false, not_automated and null. No score, hash or list version is ever here.
+   */
+  automatedDetection: z.boolean().optional(),
+  automatedDecision: z.enum(AUTOMATED_DECISIONS).optional(),
+  signal: StatementSignal.nullable().optional(),
 });
 export type DecisionStatement = z.infer<typeof DecisionStatement>;
 
@@ -2083,6 +2167,11 @@ export const AuthorCaseRow = z.object({
    * the disabling. Absent on every other row.
    */
   toldOn: UtcDay.optional(),
+  /**
+   * 3d Task 6 (design, sections 9.4 and 10.2): the decision has no decider, so its screen shows [auto.chip] "Taken by a
+   * program". Absent, as before 3d, it reads false.
+   */
+  byProgram: z.boolean().optional(),
 });
 export type AuthorCaseRow = z.infer<typeof AuthorCaseRow>;
 
@@ -2244,6 +2333,19 @@ export const ReportingStanding = z.object({
 });
 export type ReportingStanding = z.infer<typeof ReportingStanding>;
 
+/**
+ * 3d Task 6 (design, sections 7.10 and 10.2): where "Ask for a person" stands on a program's decision. `open` while a
+ * measure of it is in force and no objection exists; `asked` with the text and its time while the measure stays in force;
+ * `decided` once no measure of it is in force, naming the person's decision that ended it and its time. No lapse by time
+ * moves it: only a person's decision does.
+ */
+export const AskPerson = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("open") }),
+  z.object({ state: z.literal("asked"), text: z.string(), createdAt: z.iso.datetime() }),
+  z.object({ state: z.literal("decided"), decisionId: z.uuid(), decidedAt: z.iso.datetime() }),
+]);
+export type AskPerson = z.infer<typeof AskPerson>;
+
 export const DecisionView = DecisionStatement.extend({
   id: z.uuid(),
   appealUntil: z.iso.datetime().nullable(),
@@ -2264,6 +2366,11 @@ export const DecisionView = DecisionStatement.extend({
    */
   orderTexts: OrderTexts.nullable().optional(),
   erasedOn: UtcDay.nullable().optional(),
+  /**
+   * 3d Task 6 (design, sections 7.10, 9.4 and 10.2): "Ask for a person" on a program's decision, read fresh; null for a
+   * decision with a decider (and absent before 3d).
+   */
+  askPerson: AskPerson.nullable().optional(),
 });
 export type DecisionView = z.infer<typeof DecisionView>;
 
@@ -2361,6 +2468,9 @@ export const QUARANTINE_WORDS = {
   have: "have",
 } as const;
 
+/** 3d Task 6: how many cases each of Home's two lists of a program's measures names at most. */
+export const AUTOMATED_CASES_MAX = 20;
+
 export const StaffOverview = z.object({
   lanes: z.array(z.object({ lane: LaneNumber, open: Count, oldestAt: z.iso.datetime().nullable() })).length(3),
   appealsWaiting: Count,
@@ -2376,7 +2486,8 @@ export const StaffOverview = z.object({
   deferUnproven: z.boolean(),
   protectionLifted: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid(), kind: z.enum(["unsealed", "dismissed"]) })).max(OVERVIEW_LIST_MAX) }),
   sealsDeclined: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid() })).max(OVERVIEW_LIST_MAX) }),
-  interimSeals: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string(), caseId: z.uuid(), posts: Count, images: Count })).max(OVERVIEW_LIST_MAX) }),
+  /** 3d Task 6: a seal a program took while deciding (Task 7's automatic seal) names no staff member: its handle is null. */
+  interimSeals: z.object({ total: Count, items: z.array(z.object({ at: z.iso.datetime(), handle: z.string().nullable(), caseId: z.uuid(), posts: Count, images: Count })).max(OVERVIEW_LIST_MAX) }),
   /**
    * 3e (design, sections 7.12 and 8.8): the replies to a suspension or a termination that no decision has answered, with
    * the oldest one's time (null when none waits), and the accounts at the ladder's number of strikes (StandingLists'
@@ -2415,6 +2526,20 @@ export const StaffOverview = z.object({
   destructive: z
     .array(z.object({ kind: z.enum(DESTRUCTIVE_KINDS), at: z.iso.datetime(), caseId: z.uuid().nullable(), refusalId: z.uuid().nullable() }))
     .max(DESTRUCTIVE_MAX),
+  /**
+   * 3d Task 6 (design, sections 8.1, 8.2 and 10.3): the measures of programs in force, waiting for a person, with the
+   * oldest one's time and at most AUTOMATED_CASES_MAX of their cases ([home.automated]); and the cases whose author asked
+   * for a person about such a measure, with the oldest request's time and at most AUTOMATED_CASES_MAX of them
+   * ([home.objected]). Task 7 adds the open cases with a match that only flags.
+   */
+  automated: z.object({
+    waiting: Count,
+    oldestAt: z.iso.datetime().nullable(),
+    objected: Count,
+    oldestObjectionAt: z.iso.datetime().nullable(),
+    cases: z.array(z.uuid()).max(AUTOMATED_CASES_MAX),
+    objectedCases: z.array(z.uuid()).max(AUTOMATED_CASES_MAX),
+  }),
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
 

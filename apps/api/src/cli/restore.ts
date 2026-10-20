@@ -601,6 +601,9 @@ async function importLine(importer: Importer, entry: TailLine, withdrawnLater: R
       return importer.effected(entry);
     case "case_decided":
     case "appeals_reviewed":
+    // 3d Task 6 (8.7, "A program's lost measure"): a program's decision is lost like a person's, by the class its one
+    // measure gives it, a restriction for a withheld image and seal_interim for a seal; a person decides it again.
+    case "automated_decided":
       return importer.decided(entry);
     case "notification_recorded":
       return importer.notification(entry);

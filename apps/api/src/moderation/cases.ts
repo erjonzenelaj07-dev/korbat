@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  AUTOMATED_CASES_MAX,
   DESTRUCTIVE_DAYS,
   DESTRUCTIVE_MAX,
   OVERVIEW_LIST_MAX,
@@ -34,6 +35,7 @@ import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import type { StoredFile } from "../media";
 import { alertUrgentLane, channelHealth, staffAlert } from "./alerts";
 import { ModerationError, type ModerationDeps } from "./context";
+import { automatedOverview, caseObjection, caseSignals } from "./automated-repo";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
@@ -252,6 +254,8 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     // 3d Task 2 (sections 7.2 and 8.2): the acts of the last 30 days that cannot be taken back, as 3c lists a lifted seal:
     // the releases of sealed images, each with its seal's case ([home.released]).
     destructive: await recentReleases(q, DESTRUCTIVE_DAYS, DESTRUCTIVE_MAX),
+    // 3d Task 6 (sections 8.2 and 10.3): the measures of programs waiting for a person, and the requests for a person.
+    automated: await automatedOverview(q, AUTOMATED_CASES_MAX),
   };
 }
 
@@ -273,7 +277,7 @@ const CURSOR_TIME = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0
 const CURSOR_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The queue's cursor: the last row's sort key as an opaque word. */
-const encodeCursor = (row: QueueCursor): string => Buffer.from(JSON.stringify([row.lane, row.deferred, row.sortAt, row.id]), "utf8").toString("base64url");
+const encodeCursor = (row: QueueCursor): string => Buffer.from(JSON.stringify([row.lane, row.objected, row.deferred, row.sortAt, row.id]), "utf8").toString("base64url");
 
 /** Reads a cursor back; anything this module did not write is refused, never guessed at. */
 function decodeCursor(cursor: string): QueueCursor {
@@ -283,12 +287,21 @@ function decodeCursor(cursor: string): QueueCursor {
   } catch {
     throw new ModerationError("invalid_request");
   }
-  if (!Array.isArray(parts) || parts.length !== 4) throw new ModerationError("invalid_request");
-  const [lane, deferred, sortAt, id] = parts as unknown[];
-  if ((lane !== 0 && lane !== 1 && lane !== 2) || typeof deferred !== "boolean" || typeof sortAt !== "string" || !CURSOR_TIME.test(sortAt) || typeof id !== "string" || !CURSOR_ID.test(id)) {
+  // 3d Task 6: five parts, with whether the case was objected; a cursor of four parts, made before, is refused, never guessed at.
+  if (!Array.isArray(parts) || parts.length !== 5) throw new ModerationError("invalid_request");
+  const [lane, objected, deferred, sortAt, id] = parts as unknown[];
+  if (
+    (lane !== 0 && lane !== 1 && lane !== 2) ||
+    typeof objected !== "boolean" ||
+    typeof deferred !== "boolean" ||
+    typeof sortAt !== "string" ||
+    !CURSOR_TIME.test(sortAt) ||
+    typeof id !== "string" ||
+    !CURSOR_ID.test(id)
+  ) {
     throw new ModerationError("invalid_request");
   }
-  return { lane, deferred, sortAt, id };
+  return { lane, objected, deferred, sortAt, id };
 }
 
 /**
@@ -315,6 +328,9 @@ export async function queue(deps: Pick<ModerationDeps, "apiDb" | "config">, curs
         suspect: row.suspect,
         reexamination: row.reexamination,
         deferred: row.deferred,
+        foundByProgram: row.foundByProgram,
+        takenByProgram: row.takenByProgram,
+        objected: row.objected,
       }),
     ),
     // One row more than the page was read: only then is there a next page.
@@ -361,6 +377,8 @@ const NO_CONTACT = { named: null, contactGiven: null, confirmed: null, suppresse
  */
 function sourceOf(item: CaseItemRow, letters: Map<string, number>, reporters: Map<string, ReporterFacts>, contacts: Map<string, NotifierFacts>, now: Date): SourceSummary {
   if (item.intakeKind === "finding") return { kind: "staff", label: SOURCE_LABELS.staff, ...NO_BANDS, ...NO_CONTACT };
+  // 3d Task 6 (design, sections 8.4 and 10.3): a program's item, whatever it cites, has the fixed label and nothing else.
+  if (item.intakeKind === "automated") return { kind: "program", label: SOURCE_LABELS.program, ...NO_BANDS, ...NO_CONTACT };
   // 3f (design, section 8.6): an order's item names its authority's order, never a reporter.
   if (item.intakeKind === "order") return { kind: "authority", label: SOURCE_LABELS.authority, ...NO_BANDS, ...NO_CONTACT };
   if (item.csam) return { kind: "anonymous", label: SOURCE_LABELS.anonymous, ...NO_BANDS, ...NO_CONTACT };
@@ -537,6 +555,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
       source: decision.source as CaseDecision["source"],
       decidedAt: decision.decidedAt,
       staffHandle: decision.staffHandle,
+      // 3d Task 6: a decision without a decider is a program's; it names no staff member.
+      byProgram: decision.staffHandle === null,
       throughSeq: decision.throughSeq,
       answersFromSeq: decision.answersFromSeq,
       reviewsDecisionId: decision.reviewsDecisionId,
@@ -593,6 +613,10 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     // Task 5 (sections 7.13 and 10.2): since when a report to the authorities is owed for this case, from reports_owed().
     reportOwed: await reportOwedOn(q, row.id),
     purges,
+    // 3d Task 6 (sections 7.11, 8.4 and 10.3): the items a program opened, never a score; and the author's request for a
+    // person about a program's measure in force on the case.
+    signals: await caseSignals(q, row.id),
+    objection: await caseObjection(q, row.id),
   };
 }
 
@@ -728,8 +752,12 @@ export async function takeSnapshot(deps: Pick<ModerationDeps, "apiDb" | "social"
   }
 }
 
-/** One run of the snapshot's transaction: the copy of the case's target, compared with the newest snapshot and stored when it differs. */
-async function snapshotIn(deps: Pick<ModerationDeps, "social" | "media">, tx: DbTx, row: CaseRow): Promise<StaffSnapshotTaken> {
+/**
+ * One run of the snapshot's transaction: the copy of the case's target, compared with the newest snapshot and stored when
+ * it differs. 3d Task 6: the automated step takes its measure's snapshot with it, inside its own transaction, after its
+ * finding (7.9 step 2.4: "a snapshot of the post as it stands, when the case's newest differs").
+ */
+export async function snapshotIn(deps: Pick<ModerationDeps, "social" | "media">, tx: DbTx, row: CaseRow): Promise<StaffSnapshotTaken> {
   const caseId = row.id;
   await tx.execute(sql`select set_config('lock_timeout', ${`${SNAPSHOT_LOCK_TIMEOUT_MS}ms`}::text, true)`);
   // The transaction's start, which the snapshots' trigger stamps and the digest covers.

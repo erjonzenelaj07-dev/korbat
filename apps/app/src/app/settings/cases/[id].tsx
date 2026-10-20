@@ -49,6 +49,11 @@ export default function Decision() {
     setShown({ kind: "decision", view: await moderation.appeal(id, statement) });
   }
 
+  /** 3d Task 6: "Ask for a person", as the appeal: the answer is the decision as it now reads, with the request sent. */
+  async function ask(text: string) {
+    setShown({ kind: "decision", view: await moderation.objection(id, text) });
+  }
+
   return (
     <AppShell>
       <ScrollView contentContainerClassName="px-4 pb-16 pt-4">
@@ -60,7 +65,7 @@ export default function Decision() {
           {shown.kind === "loading" ? <Loading /> : null}
           {shown.kind === "missing" ? <ErrorText message={DECISION_WORDS.notFound} /> : null}
           {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
-          {shown.kind === "decision" ? <DecisionDetail view={shown.view} onAppeal={appeal} /> : null}
+          {shown.kind === "decision" ? <DecisionDetail view={shown.view} onAppeal={appeal} onAsk={ask} /> : null}
           <TextLink label={DECISION_WORDS.back} href="/settings/cases" />
         </View>
       </ScrollView>
