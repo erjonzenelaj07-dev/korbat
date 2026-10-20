@@ -35,7 +35,7 @@ import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import type { StoredFile } from "../media";
 import { alertUrgentLane, channelHealth, staffAlert } from "./alerts";
 import { ModerationError, type ModerationDeps } from "./context";
-import { automatedOverview, caseObjection, caseSignals, matchFlagCases, matchFlagCount } from "./automated-repo";
+import { automatedOverview, caseFlag, caseObjection, caseSignals, matchFlagCases, matchFlagCount, queueFlags } from "./automated-repo";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
@@ -322,6 +322,9 @@ export async function queue(deps: Pick<ModerationDeps, "apiDb" | "config">, curs
   const page = found.slice(0, QUEUE_PAGE_SIZE);
   // 3d Task 7 (8.3): the cases of the page that hold an unanswered match that only flags; a chip, never a key of the order.
   const flagged = await matchFlagCases(deps.apiDb, page.map((row) => row.id));
+  // 3d Task 8 (7.13): the flag "possible coordinated reporting" of the page's cases, asked in one statement after the page
+  // is read, so it is no key of the order: a flagged case stands where its lane and age put it.
+  const coordinated = await queueFlags(deps.apiDb, page.map((row) => row.id));
   const last = page.at(-1);
   return {
     cases: page.map(
@@ -342,6 +345,7 @@ export async function queue(deps: Pick<ModerationDeps, "apiDb" | "config">, curs
         takenByProgram: row.takenByProgram,
         objected: row.objected,
         matchFlag: flagged.has(row.id),
+        flag: coordinated.get(row.id) ?? null,
       }),
     ),
     // One row more than the page was read: only then is there a next page.
@@ -500,6 +504,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
       unfounded: item.unfounded,
       markWithdrawn: item.markWithdrawn,
       orderId: item.orderId,
+      // 3d Task 8 ([case.sameSource]): a count, never a case or a person.
+      sameSourceOpen: item.sameSourceOpen,
     }),
   );
 
@@ -632,6 +638,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     objection: await caseObjection(q, row.id),
     // 3d Task 7 (sections 7.11 and 8 rule 2): the images of the case's snapshots that a match names, closed to staff.
     matchedImages: [...(await deps.media.matchedImages([...new Set(snapshots.flatMap((snapshot) => (snapshot.withheld || snapshot.media === null ? [] : snapshot.media.map((image) => image.id))))]))].sort(),
+    // 3d Task 8 (7.13, [case.flag]): the flag of this case, computed at this read and stored nowhere.
+    flag: await caseFlag(q, row.id),
   };
 }
 

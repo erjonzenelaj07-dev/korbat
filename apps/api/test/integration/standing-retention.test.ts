@@ -377,7 +377,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention of account
       const exported = await exportFor(moderationDeps(tx), sam.id);
       // It is the format's member, and nothing beyond it.
       expect(ExportFormat.shape.moderation.parse(exported)).toEqual(exported);
-      expect(Object.keys(exported)).toEqual(["decisions", "reports", "strikes", "standing", "replies", "reporting"]);
+      // 3d Task 8 (W.10): the refused uploads and the releases follow.
+      expect(Object.keys(exported)).toEqual(["decisions", "reports", "strikes", "standing", "replies", "reporting", "uploads", "releases"]);
 
       const decided = (id: string) => isoOf(tx, sql`(select decided_at from decisions where id = ${id}::uuid)`);
       const liftedAt = await isoOf(tx, sql`(select created_at from decision_actions where decision_id = ${lift}::uuid)`);

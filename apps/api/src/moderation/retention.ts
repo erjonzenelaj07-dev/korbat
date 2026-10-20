@@ -2,9 +2,11 @@ import { sql } from "drizzle-orm";
 import { RETENTION } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
+import type { Config } from "../config";
 import { createJob, type JobLock } from "../lib/jobs";
 import { DISPOSAL_BATCH } from "../media";
 import { appendAuditRow } from "../staff";
+import { eraseAutomationRecords } from "./automated-repo";
 import type { ModerationDeps } from "./context";
 import { deleteContactMessages, dueOrderRecords, duePreservations, endPreservation, eraseAuthorityRecords, eraseOrderRecords, erasedOrderFacts } from "./orders-repo";
 import { deleteAccessLog, deleteRestoreGaps, dueCases, dueIntakes, dueRedactions, dueStatements, eraseCaseEvidence, eraseIntake, eraseReplyStatements, eraseStatementTexts, forgetReportCounts, redactR4, sweepStaffTexts } from "./repo";
@@ -19,7 +21,15 @@ import { deleteAccessLog, deleteRestoreGaps, dueCases, dueIntakes, dueRedactions
  * post's content while the order's measure stands; the records of orders three years after their last event; and the
  * contact point's messages 30 days after they were handled, with the outbox rows that old; Task 5 the records to
  * authorities, and Task 6 the restore gaps closed as not needed or imported 12 months ago, with the copy marks that old
- * but the newest (sections 6.6 and 7.18).
+ * but the newest (sections 6.6 and 7.18). 3d Task 8 adds three more before the disposal (design, sections 6.8, 6.10 and
+ * 7.14): automation_records, the erasure of match records with their refusals' account and objection, of requests for a
+ * person with their decision's texts, and of signals; edge_purges, the edge's outbox rows done EDGE_RULES.keepDays ago; and
+ * tools_off, the forgetting of the hashes and the ratings a tool that is off left behind.
+ *
+ * MODERATION_RETENTION=off holds every step but tools_off, which is held by nothing but its tool's setting: forgetting
+ * what a tool that is off left behind never takes evidence or a record a restore must keep, and the rules page and the
+ * terms say of a tool that is off that korbat keeps nothing of it. So the job runs while the switch is off as well, and
+ * its round then runs tools_off alone.
  *
  * The job only names what it believes is due. Each erase function of migration 0018 checks its own rule again, against
  * values the API role cannot set, and the two gates of the freeze decide for every snapshot and every image row: so a
@@ -57,6 +67,9 @@ export type RetentionStep =
   | "contact_messages"
   | "authority_records"
   | "restore_gaps"
+  | "automation_records"
+  | "edge_purges"
+  | "tools_off"
   | "images";
 
 /** What one round did, for its log line and for the tests: counts only. */
@@ -81,6 +94,14 @@ export interface RetentionReport {
   restoreGaps: number;
   /** The access rows deleted, with the reveal reasons erased before them. */
   accessLog: number;
+  /**
+   * 3d Task 8: the rows erase_automation_records changed (match records erased, refusals that lost their account and
+   * objection, objections erased, signals deleted), the edge's outbox rows deleted, and the hashes and ratings forgotten
+   * while their tool is off.
+   */
+  automationRecords: number;
+  edgePurges: number;
+  toolsOff: number;
   /** The size of each batch of image rows the disposal deleted, in order; the last one is smaller than a full batch. */
   batches: number[];
   /** The steps and rows that raised and were left for the next round. */
@@ -173,9 +194,35 @@ async function dispose(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, re
   }
 }
 
-/** One round. A plain function, so the tests call it directly. */
-export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">): Promise<RetentionReport> {
-  const report: RetentionReport = { drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, batches: [], failed: 0 };
+/** The three settings a round reads: whether retention is on, and whether each tool is off. */
+export type RetentionSettings = Pick<Config, "MODERATION_RETENTION" | "MEDIA_MATCH" | "R1_CLASSIFIER">;
+
+/**
+ * One round. A plain function, so the tests call it directly. With `config`, as the job runs it, MODERATION_RETENTION=off
+ * holds every step but tools_off, which forgets the hashes while MEDIA_MATCH is off and the ratings while R1_CLASSIFIER is
+ * off. Without it, as the tests of the other steps call it, every step but tools_off runs: no tool is known to be off.
+ */
+export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media" | "log"> & { config?: RetentionSettings }): Promise<RetentionReport> {
+  const report: RetentionReport = {
+    drafts: 0,
+    cases: 0,
+    intakes: 0,
+    redactions: 0,
+    statements: 0,
+    replies: 0,
+    reportCounts: 0,
+    preservations: 0,
+    orderRecords: 0,
+    contactMessages: 0,
+    authorityRecords: 0,
+    restoreGaps: 0,
+    accessLog: 0,
+    automationRecords: 0,
+    edgePurges: 0,
+    toolsOff: 0,
+    batches: [],
+    failed: 0,
+  };
   /** A step in a try of its own: what it raises is logged with the step, and the round goes on. */
   const step = async (name: RetentionStep, run: () => Promise<void>) => {
     try {
@@ -199,6 +246,34 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
     }
     return done;
   };
+  /**
+   * 3d Task 8 (7.14): the step tools_off, held by nothing but each tool's setting: one transaction for both statements,
+   * with one audit row of the step and its count when it changed anything. Without a configuration no tool is known to be
+   * off, and it does nothing.
+   */
+  const toolsOff = async () => {
+    if (deps.config === undefined) return;
+    const { MEDIA_MATCH, R1_CLASSIFIER } = deps.config;
+    await step("tools_off", async () => {
+      report.toolsOff = await inStep(deps, "tools_off", {}, async (tx) => (MEDIA_MATCH === "off" ? await deps.media.forgetHashes(tx) : 0) + (R1_CLASSIFIER === "off" ? await deps.media.forgetScores(tx) : 0));
+    });
+  };
+  /** One line for a round that did something or failed somewhere: counts only. */
+  const logRound = () => {
+    const images = report.batches.reduce((sum, size) => sum + size, 0);
+    const orders = report.preservations + report.orderRecords + report.contactMessages + report.authorityRecords + report.restoreGaps;
+    const automation = report.automationRecords + report.edgePurges + report.toolsOff;
+    if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.replies + report.reportCounts + orders + automation + report.accessLog + images + report.failed > 0) {
+      deps.log.info({ job: RETENTION_JOB, ...report, images }, "moderation-retention: round");
+    }
+  };
+
+  // MODERATION_RETENTION=off, in the job's configuration: tools_off alone.
+  if (deps.config !== undefined && deps.config.MODERATION_RETENTION !== "on") {
+    await toolsOff();
+    logRound();
+    return report;
+  }
 
   await step("drafts", async () => {
     report.drafts = await inStep(deps, "drafts", {}, (tx) => sweepStaffTexts(tx, RETENTION.draftHours));
@@ -272,18 +347,26 @@ export async function retentionRound(deps: Pick<ModerationDeps, "apiDb" | "media
   await step("restore_gaps", async () => {
     report.restoreGaps = await inStep(deps, "restore_gaps", {}, (tx) => deleteRestoreGaps(tx));
   });
+  // 3d Task 8 (6.8, 7.14): one call, which checks its own periods (automation_rules().match_keep_days, 3c's schedule for a
+  // statement's texts) against the database's clock and answers a count: its audit row names no id.
+  await step("automation_records", async () => {
+    report.automationRecords = await inStep(deps, "automation_records", {}, (tx) => eraseAutomationRecords(tx));
+  });
+  // 3d Task 8 (6.3, 7.14): the edge's outbox rows done EDGE_RULES.keepDays ago, through the media module, which owns them.
+  await step("edge_purges", async () => {
+    report.edgePurges = await inStep(deps, "edge_purges", {}, (tx) => deps.media.forgetPurges(tx));
+  });
+  await toolsOff();
   await step("images", () => dispose(deps, report));
 
-  // One line for a round that did something or failed somewhere: counts only.
-  const images = report.batches.reduce((sum, size) => sum + size, 0);
-  const orders = report.preservations + report.orderRecords + report.contactMessages + report.authorityRecords + report.restoreGaps;
-  if (report.drafts + report.cases + report.intakes + report.redactions + report.statements + report.replies + report.reportCounts + orders + report.accessLog + images + report.failed > 0) {
-    deps.log.info({ job: RETENTION_JOB, ...report, images }, "moderation-retention: round");
-  }
+  logRound();
   return report;
 }
 
-/** The job: a round every ten minutes, counted from the end of the one before, on one API instance at a time. */
-export function createRetentionJob(deps: Pick<ModerationDeps, "apiDb" | "media" | "log">, lock: JobLock) {
+/**
+ * The job: a round every ten minutes, counted from the end of the one before, on one API instance at a time. Its rounds
+ * read the configuration: with MODERATION_RETENTION=off each runs tools_off alone.
+ */
+export function createRetentionJob(deps: Pick<ModerationDeps, "apiDb" | "media" | "log"> & { config?: RetentionSettings }, lock: JobLock) {
   return createJob({ name: RETENTION_JOB, intervalMs: RETENTION_INTERVAL_MS, lockTtlMs: RETENTION_INTERVAL_MS, lock, log: deps.log, run: () => retentionRound(deps) });
 }

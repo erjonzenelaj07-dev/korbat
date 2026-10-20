@@ -4,8 +4,12 @@ import { ANNEX3_GROUNDS, ORDER_GROUNDS, type TransparencyFigures } from "@korbat
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { describeEdition, describeRecipients, figureCommand, parseFigureArgs } from "../../src/cli/figures";
+import { restoreImport } from "../../src/cli/restore";
 import { runStaffCommand } from "../../src/cli/staff";
+import { loadConfig } from "../../src/config";
+import { exportLines } from "../../src/staff";
 import { headValue } from "../../src/transparency/head";
+import { rolledBack } from "./staff-fixtures";
 
 /**
  * staff.js recipients and edition (3d design, sections 7.5, 7.6 and 8.10, "The public figures and the head"; Task 4), as
@@ -285,5 +289,37 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js head-restore-ma
     expect(done).toEqual({ ok: true, lines: [`head-restore-mark: restore recorded for ${state!.today}. No published value still verifies. 0 later values are shown as retired.`] });
     const [row] = await migrateDb.execute<{ last_day: string | null }>(sql`select last_day::text from public.head_publications where kind = 'restore'`);
     expect(row!.last_day).toBeNull();
+  });
+
+  test("3d Task 8 (W.11, Restoring): restore-import prints one line for each published version of an edition that the restored database lacks, writes nothing for it and opens no gap; one it holds gets no line", async () => {
+    await rolledBack(migrateDb, async (tx) => {
+      // Before the backup: 2005's first version is published, and stays.
+      await tx.execute(sql`select public.edition_publish(2005, 'first')`);
+      const [head] = await tx.execute<{ seq: string; hash: string }>(sql`select seq::text as seq, hash from public.audit_head where id = 1`);
+      const tail: string[] = [];
+      // The lost work, rolled back to its savepoint as a restore would lose it: 2007's first version, and a row that
+      // names 2005's again, which the restored database holds.
+      await tx
+        .transaction(async (lost) => {
+          await lost.execute(sql`select public.edition_publish(2007, 'first')`);
+          await lost.execute(sql`insert into public.audit_log (actor_id, action, target_type, target_id, metadata)
+                                  values (${SYSTEM_ACTOR_ID}::uuid, 'edition_published', 'edition', '2005.1', jsonb_build_object('year', 2005, 'version', 1, 'reason', 'first'))`);
+          const [through] = await lost.execute<{ seq: string }>(sql`select seq::text as seq from public.audit_head where id = 1`);
+          for await (const line of exportLines(lost as unknown as Db, Number(head!.seq) - 1, Number(through!.seq))) tail.push(JSON.stringify(line));
+          throw new Error("lost with the restore");
+        })
+        .catch((err: unknown) => {
+          if (!(err instanceof Error) || err.message !== "lost with the restore") throw err;
+        });
+      const gaps = async () => (await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.restore_gaps`))[0]!.n;
+      const before = await gaps();
+      const done = await restoreImport(tx as unknown as Db, [], Buffer.from(tail.map((line) => `${line}${String.fromCharCode(10)}`).join(""), "utf8"), loadConfig().APP_ORIGIN);
+      if (!done.ok) throw new Error(done.problem);
+      const editions = done.lines.filter((line) => line.includes(" is not in the restored database"));
+      expect(editions).toEqual([expect.stringMatching(/^restore-import: edition 2007 version 1, published [0-9T:.-]+Z, is not in the restored database: [/]transparency no longer shows it until the job publishes the year again [(]the README, Restoring[)][.]$/)]);
+      expect(await gaps()).toBe(before);
+      const [held] = await tx.execute<{ n: number }>(sql`select count(*)::int as n from public.transparency_editions where year in (2005, 2007)`);
+      expect(held!.n).toBe(1);
+    });
   });
 });

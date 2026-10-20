@@ -233,3 +233,13 @@ Found while the tasks were dry-run in the scratch clone, by the conformance revi
 - **Section 9:** the console is usable at a width of 360 px, and its browser check fails on a horizontal scroll bar or a control smaller than 44 px. The router gains `contact`, `orders`, `order` and `restore`; the audit page gains the download, which now asks for the key, and the key filter "What one key confirmed".
 - **Section 7** (staff mails): each staff alert is also pushed, with a fixed text of counts and times; a staff mail still carries no link, and 3c's and 3e's staff mails keep their words. The runbook's kept head gains the daily download on the same visit.
 - **Section 8** (origins and hosts): Caddy's third site, `:8091`, serves the push hostname and proxies only the two topics' paths; the console's site and policy are unchanged but for one rule, that the app's and the console's sites refuse a client from the `push` network; the console never talks to ntfy.
+
+## 18. Changed by 3d (2026-10-19)
+
+`docs/superpowers/specs/2026-10-09-transparency-automation-3d-design.md` changes the step-up's actions, the system's audit rows, the router, the kept head and the API's modules.
+
+- **Section 10:** `STAFF_STEP_UP_ACTIONS` gains `seal_released`, `upload_hold_ended` and `upload_released`, each an admin's. The system actor writes plain rows without a key: `automated_decided` and `edition_published` from the API, and from the command line `quarantine_recorded`, `release_leave_recorded`, `release_leave_withdrawn`, `release_replayed` and `head_restore_marked`; `audit-verify` checks the first against the decisions. The head's daily publication writes no audit row: it would move the head it publishes.
+- **Section 9:** the router gains `uploads`.
+- **Section 7 and the runbook's kept head:** the head's daily value is published and mailed to the keeper with its place and hash. The value is a digest of a tag, the day, the place and the hash (`korbat.head.v2`), so it differs from day to day also when no staff member confirmed anything: nobody can read quiet days off the page. The keeper's daily visit stays: only the keeper holds the place.
+- **Section 4** ("publishing the audit head ... (3d)"): done here.
+- **The API's modules:** a seventh, `transparency`, entered through its index; the architecture test lists it and pins what it may import. The auth module gains a hook that tells it of a resolved or an unresolved session, and one sender of a mail to the keeper's configured address.

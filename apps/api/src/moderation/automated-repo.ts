@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { ALERT_KINDS, statementMatchKind, type AutomatedDecidedParams, type MatchHashType, type MatchKind, type SignalHandled, type SignalKind, type StatementSignal } from "@korbat/contracts";
+import { ALERT_KINDS, statementMatchKind, type AutomatedDecidedParams, type CaseFlag, type MatchHashType, type MatchKind, type SignalHandled, type SignalKind, type StatementSignal } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { iso, rows, type Runner } from "./repo";
 
@@ -263,6 +263,54 @@ export async function matchFlagCount(q: Runner): Promise<number> {
          where c.closed_at is null and i.answered_by is null and k.kind::text = 'automated' and k.rule_id is null`,
   );
   return row!.n;
+}
+
+// ---------------------------------------------------------------- the flag "possible coordinated reporting" (Task 8)
+
+/**
+ * 3d Task 8 (design, sections 2 rows 47 and 48, 6.8 and 7.13): the flag of each of the queue page's cases, in one
+ * statement over the database's case_flag, keyed by case; a case appears only while the function answers true. These two
+ * reads are case_flag's only callers (a source test holds that): the queue's, after its page is read, so the flag is no
+ * key of the order, and the case answer's below. Nothing stores the answer, and no decision reads it.
+ */
+export async function queueFlags(q: Runner, caseIds: readonly string[]): Promise<Map<string, CaseFlag>> {
+  if (caseIds.length === 0) return new Map();
+  const found = await rows<{ case_id: string; items: number; reporters: number }>(
+    q,
+    sql`select c.id as case_id, f.items, f.reporters
+          from unnest(${`{${caseIds.join(",")}}`}::uuid[]) as c(id) cross join lateral public.case_flag(c.id) f
+         where f.coordinated`,
+  );
+  return new Map(found.map((row) => [row.case_id, { items: row.items, reporters: row.reporters }]));
+}
+
+/** The case answer's read of its own case's flag ([case.flag]): the two counts while case_flag answers true, else null. */
+export async function caseFlag(q: Runner, caseId: string): Promise<CaseFlag | null> {
+  const [row] = await rows<{ coordinated: boolean; items: number; reporters: number }>(q, sql`select f.coordinated, f.items, f.reporters from public.case_flag(${caseId}::uuid) f`);
+  return row !== undefined && row.coordinated ? { items: row.items, reporters: row.reporters } : null;
+}
+
+/**
+ * 3d Task 8 (design, sections 6.8 and 7.14): the retention job's step automation_records, one call of the database's
+ * erase_automation_records in the step's transaction. The function decides every rule itself, against the database's
+ * clock and automation_rules(), so the job names nothing and the API learns only how many rows it changed.
+ */
+export async function eraseAutomationRecords(tx: DbTx): Promise<number> {
+  const [row] = await rows<{ n: number }>(tx, sql`select public.erase_automation_records() as n`);
+  return row!.n;
+}
+
+/**
+ * 3d Task 8 (W.10): the text the decision's subject sent with "Ask for a person", with its time, while korbat keeps it
+ * (erase_automation_records takes the text with its decision's texts), for the export's entry of that decision; null for a
+ * decision without one.
+ */
+export async function objectionOf(q: Runner, decisionId: string): Promise<{ text: string; createdAt: string } | null> {
+  const [row] = await rows<{ text: string; created_at: string }>(
+    q,
+    sql`select o.text, ${iso("o.created_at")} as created_at from public.automated_objections o where o.decision_id = ${decisionId}::uuid and o.text is not null`,
+  );
+  return row ? { text: row.text, createdAt: row.created_at } : null;
 }
 
 /** The request for a person about a program's measure in force on the case (CaseView.objection), or null; the oldest when several stand. */

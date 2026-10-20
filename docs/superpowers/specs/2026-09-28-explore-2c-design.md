@@ -186,3 +186,10 @@ Found while the tasks were dry-run in the scratch clone, by the adversarial revi
 - **Reads and status (section 8).** The status gains `suspended`, judged at the database's clock, and the reads add the predicate on the author, so a suspended author's posts leave the page and the chip at the next read and come back when the suspension ends, within their window.
 - **Constants (section 10).** `EXPLORE_V2` replaces `EXPLORE_V1`, with the same numbers, `version: 2` and a second entry in the change log, dated the dry run's day.
 - **Texts (section 11).** How Explore works and the status line say what a suspension does to Explore and that a restored post gets its hours back; among them a stale sentence is corrected: "What else takes a post out" no longer names "the automatic R1 and R2 checks", which rulebook version 2 removed.
+
+## 19. Changed by 3d (2026-10-19)
+
+`docs/superpowers/specs/2026-10-09-transparency-automation-3d-design.md` counts the readers of Explore as it counts every signed-out read.
+
+- **Section 2, the row "Signed out", and section 12:** a signed-out read of Explore, as of every read route, adds one keyed digest to the day's sketch of the recipients' count, under a salt that lives 26 hours. Nothing about the reader is stored and the answer is unchanged.
+- **Sections 7 and 11:** the formula and How Explore works are unchanged by 3d.

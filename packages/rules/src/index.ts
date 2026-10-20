@@ -10,7 +10,12 @@ import { ORDER_NOTICE } from "./statement";
 export type Automation =
   | "none"                 // report-driven, human decides
   | "withhold_for_review"  // automation may hide from others pending a human
-  | "auto_remove";         // automation may remove (R2 only)
+  | "auto_remove"          // automation may remove (R2 only)
+  // 3d (design, section 10.8, W.4): version 4's two values. A program's score may flag an image for a moderator and,
+  // where the owner switched that on, withhold it until the moderator decides (R1); a match may seal a post's images until
+  // an admin answers (R2). Versions 1 to 3 keep their values and render as sent.
+  | "flag_or_withhold"
+  | "seal_for_review";
 
 export interface Rule {
   id: string;
@@ -133,11 +138,37 @@ const RULES_V3 = [
   },
 ] as const satisfies readonly Rule[];
 
+/** R2's sentence of version 3 that version 4 changes (3d review ruling 2: staff never open an image a match names). */
+const R2_V3_LOOK = "After an admin has answered without a seal, staff may open them like any other image.";
+
+/**
+ * Version 4, with transparency and automation (3d design, section 18, W.4): version 3 with three changes. R1 says what a
+ * program may do with a rating, and R2 what a comparison with lists of known material may do, each pointing to the rules
+ * page's list of what runs today; and R2's sentence on staff opening images after an answer without a seal gains its
+ * exception for an image that an automated comparison matched. R3 to R6 are unchanged.
+ */
+const RULES_V4 = [
+  {
+    ...RULES_V3[0],
+    text: `${RULES_V3[0].text} korbat may let a program rate uploaded images against this rule. An image it rates as likely within the rule is put before a moderator, and korbat may hide that one image from other people until the moderator has decided; its author still sees it, is told at once and can ask for a person. No program removes anything or judges text. Whether a program runs and what runs today is stated under Automation on the rules page.`,
+    automation: "flag_or_withhold",
+  },
+  {
+    ...RULES_V3[1],
+    text: `${RULES_V3[1].text.replace(R2_V3_LOOK, "After an admin has answered without a seal, staff may open them like any other image, except an image that an automated comparison matched: korbat's staff do not open such an image at any time.")} korbat may compare the fingerprint of an uploaded image with lists of images that a named body has classified as child sexual abuse material. An upload that the body reports as an exact match with such an entry is not accepted, now or later, and is held unseen until an admin has decided what happens to the file. When an image that is already on a post matches in that way, it is put before an admin at once, korbat keeps that post's images until the admin has answered, and korbat may seal them at once until then. A match with such an entry that the body does not report as exact refuses no upload and is never sealed by a program; on a post it is put before an admin in the same way, and korbat keeps that post's images until the admin has answered. A match is a comparison of fingerprints, not korbat's finding about an image; korbat's staff do not open an image that a match names; and nothing is removed by a program. Whether a comparison runs, with which body, and what runs today is stated under Automation on the rules page.`,
+    automation: "seal_for_review",
+  },
+  RULES_V3[2],
+  RULES_V3[3],
+  RULES_V3[4],
+  RULES_V3[5],
+] as const satisfies readonly Rule[];
+
 /** The version a decision made now records. */
-export const RULES_VERSION = 3;
+export const RULES_VERSION = 4;
 
 /** Every version of the rulebook, by its number. */
-export const RULEBOOKS = { 1: RULES_V1, 2: RULES_V2, 3: RULES_V3 } as const satisfies Record<number, readonly Rule[]>;
+export const RULEBOOKS = { 1: RULES_V1, 2: RULES_V2, 3: RULES_V3, 4: RULES_V4 } as const satisfies Record<number, readonly Rule[]>;
 
 /** The rules in force. */
 export const RULES = RULEBOOKS[RULES_VERSION];
@@ -164,6 +195,8 @@ export const RULES_CHANGES: readonly RulesChange[] = [
       "A person decides every case; the automated checks that R1 and R2 named are withdrawn until they exist. R2 says how reported images are handled without anyone opening them. R4 and R5 say who may hide content while a case is decided and who decides it. R6 names coordinated manipulation.",
   },
   { version: 3, date: "2026-10-12", summary: "R6 names repeated, plainly unfounded reporting." },
+  // 3d Task 8 (W.1, W.4): the day version 4 came into force.
+  { version: 4, date: "2026-10-19", summary: "R1 and R2 say what an automated tool may do when one is switched on, and point to the list of what runs today." },
 ];
 
 export type RuleId = (typeof RULES)[number]["id"];

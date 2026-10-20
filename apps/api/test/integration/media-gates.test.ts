@@ -129,6 +129,9 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   // 3d Task 6: the automated step's two reads of scores, ids and numbers only.
   signals: { is: "neither", why: "answers the ids and scores of a post's ready images for the automated step; never a file and nothing of a sealed image's content" },
   unsignalledScores: { is: "neither", why: "answers ids and scores of recent posts' images without a signal for the automated sweep; never a file" },
+  // 3d Task 8: the retention job's two statements on this module's tables (the steps tools_off and edge_purges).
+  forgetScores: { is: "neither", why: "sets a rating null while the R1 check is off; deletes no image row and gives nothing of an image to anyone" },
+  forgetPurges: { is: "neither", why: "deletes the edge's outbox rows done long ago; deletes no image row and answers only how many" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 

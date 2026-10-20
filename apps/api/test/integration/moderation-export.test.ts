@@ -26,6 +26,8 @@ import { socialHarness, type SocialHarness } from "./social-harness";
 vi.setConfig({ testTimeout: 180_000 });
 
 const HOUR = 60 * 60_000;
+/** 3d (W.10): what a decision made by a person on no program's finding says of automated means, and that it has no objection. */
+const NOT_AUTOMATED = { automatedDetection: false, automatedDecision: "not_automated", signal: null, objection: null } as const;
 
 /**
  * The export's moderation member on PostgreSQL (3c design, sections 7.11, 11 and 12), through the account module's own
@@ -181,13 +183,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     expect(typeof reviewTexts.reason).toBe("string");
     expect(exported.json.moderation.decisions).toEqual([
       // The review: it keeps the decision, restricts nothing, and tells its own reason.
-      { id: reviewed.decisionId, decidedOn: today(), postId, kind: "review", outcome: "kept", ground: null, ruleId: null, rulesVersion: RULES_VERSION, measures: [], reversals: [], facts: null, reason: reviewTexts.reason, legalReference: null, appeal: null },
-      { id: reset, decidedOn: today(), postId: null, kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R6", rulesVersion: RULES_VERSION, measures: [{ kind: "reset_bio", mediaId: null, noEffect: null }], reversals: [], facts: resetTexts.facts, reason: resetTexts.reason, legalReference: null, appeal: null },
+      { id: reviewed.decisionId, decidedOn: today(), postId, kind: "review", outcome: "kept", ground: null, ruleId: null, rulesVersion: RULES_VERSION, measures: [], reversals: [], facts: null, reason: reviewTexts.reason, legalReference: null, appeal: null, ...NOT_AUTOMATED },
+      { id: reset, decidedOn: today(), postId: null, kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R6", rulesVersion: RULES_VERSION, measures: [{ kind: "reset_bio", mediaId: null, noEffect: null }], reversals: [], facts: resetTexts.facts, reason: resetTexts.reason, legalReference: null, appeal: null, ...NOT_AUTOMATED },
       // The removal that followed the re-examination reads like any other: nothing says what it followed.
-      { id: again, decidedOn: today(), postId: fine, kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R1", rulesVersion: RULES_VERSION, measures: [{ kind: "remove", mediaId: null, noEffect: null }], reversals: [], facts: againTexts.facts, reason: againTexts.reason, legalReference: null, appeal: null },
+      { id: again, decidedOn: today(), postId: fine, kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R1", rulesVersion: RULES_VERSION, measures: [{ kind: "remove", mediaId: null, noEffect: null }], reversals: [], facts: againTexts.facts, reason: againTexts.reason, legalReference: null, appeal: null, ...NOT_AUTOMATED },
       // 3e: the first removal of the author's post under a rule gives a strike; the later one (of a post made before the author was told of it) none.
-      { id: final, decidedOn: today(), postId, kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R3", rulesVersion: RULES_VERSION, measures: [{ kind: "remove", mediaId: null, noEffect: null }, { kind: "strike", mediaId: null, noEffect: null }], reversals: [], facts: finalTexts.facts, reason: finalTexts.reason, legalReference: null, appeal: { state: "answered", result: "kept" } },
-      { id: interim, decidedOn: today(), postId, kind: "interim", outcome: "restricted", ground: "incompatible", ruleId: "R3", rulesVersion: RULES_VERSION, measures: [{ kind: "withhold", mediaId: null, noEffect: null }], reversals: [], facts: interimTexts.facts, reason: interimTexts.reason, legalReference: null, appeal: null },
+      { id: final, decidedOn: today(), postId, kind: "final", outcome: "restricted", ground: "incompatible", ruleId: "R3", rulesVersion: RULES_VERSION, measures: [{ kind: "remove", mediaId: null, noEffect: null }, { kind: "strike", mediaId: null, noEffect: null }], reversals: [], facts: finalTexts.facts, reason: finalTexts.reason, legalReference: null, appeal: { state: "answered", result: "kept" }, ...NOT_AUTOMATED },
+      { id: interim, decidedOn: today(), postId, kind: "interim", outcome: "restricted", ground: "incompatible", ruleId: "R3", rulesVersion: RULES_VERSION, measures: [{ kind: "withhold", mediaId: null, noEffect: null }], reversals: [], facts: interimTexts.facts, reason: interimTexts.reason, legalReference: null, appeal: null, ...NOT_AUTOMATED },
     ]);
     // The post a decision names is an entry of the export's own posts.
     expect(exported.json.posts.map((post) => post.id)).toContain(postId);
@@ -238,11 +240,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     const [removalTexts, correctionTexts] = [await textsOf(removal), await textsOf(correction)];
     expect(typeof removalTexts.legal).toBe("string");
     expect(exported.json.moderation.decisions).toEqual([
-      { id: correction, decidedOn: today(), postId: removed, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: RULES_VERSION, measures: [], reversals: [{ kind: "restore", mediaId: null }], facts: null, reason: correctionTexts.reason, legalReference: null, appeal: null },
-      { id: removal, decidedOn: today(), postId: removed, kind: "final", outcome: "restricted", ground: "illegal", ruleId: null, rulesVersion: RULES_VERSION, measures: [{ kind: "remove", mediaId: null, noEffect: null }], reversals: [], facts: removalTexts.facts, reason: removalTexts.reason, legalReference: removalTexts.legal, appeal: null },
+      { id: correction, decidedOn: today(), postId: removed, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: RULES_VERSION, measures: [], reversals: [{ kind: "restore", mediaId: null }], facts: null, reason: correctionTexts.reason, legalReference: null, appeal: null, ...NOT_AUTOMATED },
+      { id: removal, decidedOn: today(), postId: removed, kind: "final", outcome: "restricted", ground: "illegal", ruleId: null, rulesVersion: RULES_VERSION, measures: [{ kind: "remove", mediaId: null, noEffect: null }], reversals: [], facts: removalTexts.facts, reason: removalTexts.reason, legalReference: removalTexts.legal, appeal: null, ...NOT_AUTOMATED },
       // What the moderator wrote for the case's record is not the author's to read: the statement's data does not hold it.
-      { id: ended, decidedOn: today(), postId: held, kind: "final", outcome: "no_violation", ground: null, ruleId: null, rulesVersion: RULES_VERSION, measures: [], reversals: [], facts: null, reason: null, legalReference: null, appeal: null },
-      { id: withhold, decidedOn: today(), postId: held, kind: "interim", outcome: "restricted", ground: "incompatible", ruleId: "R4", rulesVersion: RULES_VERSION, measures: [{ kind: "withhold", mediaId: null, noEffect: null }], reversals: [], facts: expect.any(String), reason: expect.any(String), legalReference: null, appeal: null },
+      { id: ended, decidedOn: today(), postId: held, kind: "final", outcome: "no_violation", ground: null, ruleId: null, rulesVersion: RULES_VERSION, measures: [], reversals: [], facts: null, reason: null, legalReference: null, appeal: null, ...NOT_AUTOMATED },
+      { id: withhold, decidedOn: today(), postId: held, kind: "interim", outcome: "restricted", ground: "incompatible", ruleId: "R4", rulesVersion: RULES_VERSION, measures: [{ kind: "withhold", mediaId: null, noEffect: null }], reversals: [], facts: expect.any(String), reason: expect.any(String), legalReference: null, appeal: null, ...NOT_AUTOMATED },
     ]);
     expect(exported.text).not.toContain(record);
   });
@@ -370,7 +372,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     expect(frozen.json.posts.find((post) => post.id === sealedPost)!.media.map((image) => image.id)).toEqual(sealedImages);
     expect([...frozen.json.missingMedia].sort()).toEqual([...sealedImages, plainImage].sort());
     // 3e (W.8): an account with no standing measure, no reply and no report has empty lists and counts, over the frame of its counts.
-    expect(frozen.json.moderation).toEqual({ decisions: [], reports: [], strikes: [], standing: [], replies: [], reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 } });
+    expect(frozen.json.moderation).toEqual({ decisions: [], reports: [], strikes: [], standing: [], replies: [], reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 }, uploads: [], releases: [] });
 
     const seal = await decided(moderator, notice.caseId, { kind: "interim", ruleId: "R2", actions: [act("seal_media")] });
     const sealed = await exportOf(author.id);
@@ -383,7 +385,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     for (const image of sealedImages) expect(sealed.text.includes(image), image).toBe(false);
     // The decision that sealed them is the account's to read: a seal of the images the case reaches, under R2, with its texts.
     expect(sealed.json.moderation.decisions).toEqual([
-      { id: seal, decidedOn: today(), postId: sealedPost, kind: "interim", outcome: "restricted", ground: "incompatible", ruleId: "R2", rulesVersion: RULES_VERSION, measures: [{ kind: "seal_media", mediaId: null, noEffect: null }], reversals: [], facts: expect.any(String), reason: expect.any(String), legalReference: null, appeal: null },
+      { id: seal, decidedOn: today(), postId: sealedPost, kind: "interim", outcome: "restricted", ground: "incompatible", ruleId: "R2", rulesVersion: RULES_VERSION, measures: [{ kind: "seal_media", mediaId: null, noEffect: null }], reversals: [], facts: expect.any(String), reason: expect.any(String), legalReference: null, appeal: null, ...NOT_AUTOMATED },
     ]);
     expect(sealed.text.includes(notice.ref)).toBe(false);
 

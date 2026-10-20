@@ -281,4 +281,15 @@ describe("the enum-literal rule of 3d's automated decisions migration", () => {
     expect(enumLiteralViolations(bodiesToo(figures), VALUES_3D)).toEqual([]);
     expect(flat(withoutComments(figures))).toContain("i.kind::text = 'automated'");
   });
+
+  test("3d Task 8: signals_and_retention is read under the stricter form: neither label as a literal, in its bodies either; kinds are compared as text or not at all", () => {
+    const entry = files.find((candidate) => candidate.tag.endsWith("_signals_and_retention"));
+    // The design numbers it 0037; Tasks 1 to 7 took 0033 to 0039 before it.
+    expect(entry?.tag).toBe("0040_signals_and_retention");
+    const text = readFileSync(path.join(MIGRATIONS, `${entry!.tag}.sql`), "utf8");
+    expect(enumLiteralViolations(bodiesToo(text), VALUES_3D)).toEqual([]);
+    // It reads no intake's kind or channel at all: the flag counts signed-in reporters' items by their account alone.
+    expect(flat(withoutComments(text))).not.toMatch(/[.](kind|channel)::(intake_kind|intake_channel)/);
+    expect(flat(withoutComments(text))).toContain("CREATE FUNCTION");
+  });
 });

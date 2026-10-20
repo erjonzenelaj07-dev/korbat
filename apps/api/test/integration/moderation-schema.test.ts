@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
@@ -474,6 +476,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         // daily call that stores a due edition; the figures themselves are computed by the migrator's functions alone.
         "public.band",
         "public.case_evidence_due_at",
+        // 3d Task 8 (0040_signals_and_retention): the flag, which the queue's and the case answer's reads call, and the
+        // retention job's erasure of the automated tools' records, which answers a count.
+        "public.case_flag",
         "public.decision_final_at",
         "public.delete_access_log",
         // Task 4 (0029_orders_retention): the retention job's three steps of 3f.
@@ -483,6 +488,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.edition_publish",
         // Task 5 (0030_authority_records): the retention step of the records to authorities, which answers a count.
         "public.erase_authority_records",
+        "public.erase_automation_records",
         "public.erase_case_evidence",
         "public.erase_intake",
         "public.erase_order_records",
@@ -873,6 +879,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         const f = all.find((found) => found.name === `public.${name}`)!;
         expect({ name, owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }).toEqual({ name, owner: "korbat_migrate", definer, config: pub, api, auth: false, pub: false });
       }
+    });
+
+    test("3d Task 8 (0040_signals_and_retention; design, sections 6.8 and 6.9): case_flag and erase_automation_records are the migrator's definers that the API's role alone may call; the flag is STABLE and named by nothing in the database but itself; the erasure reads its days from automation_rules(), holds no interval literal and writes none of the proof of a release; and no function 3d created holds an interval literal", async () => {
+      const all = await functions();
+      for (const name of ["public.case_flag", "public.erase_automation_records"]) {
+        const f = all.find((found) => found.name === name)!;
+        expect({ owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }, name).toEqual({ owner: "korbat_migrate", definer: true, config: ["search_path=public, pg_temp"], api: true, auth: false, pub: false });
+      }
+      const [volatility] = await apiDb.execute<{ v: string }>(sql`select provolatile as v from pg_proc where oid = 'public.case_flag(uuid)'::regprocedure`);
+      expect(volatility!.v).toBe("s");
+      // No function, view, trigger, constraint, index or policy names the flag but the function itself: no decision reads it.
+      expect(all.filter((f) => f.name !== "public.case_flag" && /case_flag/.test(f.definition)).map((f) => f.name)).toEqual([]);
+      expect((await otherDefinitions()).filter((d) => /case_flag/.test(d.definition)).map((d) => `${d.kind} ${d.name}`)).toEqual([]);
+      const erase = all.find((found) => found.name === "public.erase_automation_records")!.definition;
+      expect(erase).toMatch(/FROM public[.]automation_rules[(][)]/);
+      expect(erase).toMatch(/match_keep_days/);
+      expect(erase).not.toMatch(/interval '/i);
+      expect(erase).not.toMatch(/(INSERT INTO|UPDATE|DELETE FROM) public[.](releases|release_posts|release_leaves|release_notices|quarantine_files)[ (]/i);
+      // Every function the migrations of 3d create (0033 to 0040), as distinct from the ones they replace, reads its numbers
+      // from its rule function: none holds an interval literal.
+      const migrations = path.resolve(__dirname, "../../../../packages/db/migrations");
+      const created = ["0033_quarantine", "0034_release", "0035_edge_purges", "0036_transparency", "0037_head_publications", "0038_automated_decisions", "0039_known_material", "0040_signals_and_retention"].flatMap((tag) =>
+        [...readFileSync(path.join(migrations, `${tag}.sql`), "utf8").matchAll(/CREATE FUNCTION "public"."([a-z_0-9]+)"/g)].map((m) => `public.${m[1]}`),
+      );
+      expect(created).toEqual(expect.arrayContaining(["public.case_flag", "public.erase_automation_records", "public.automation_rules"]));
+      for (const name of created) expect(all.find((f) => f.name === name)?.definition, name).not.toMatch(/interval '/i);
     });
 
     test("3f Task 5's writers (0030_authority_records; design, section 6.7): only report_open and report_close_unsealed write a hold and a notification record, erase_authority_records deletes them, and none holds a number of order_rules()", async () => {

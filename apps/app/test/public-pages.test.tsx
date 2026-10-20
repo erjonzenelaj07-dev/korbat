@@ -160,6 +160,19 @@ describe("TOOL_TEXTS in each state (3d Task 4, W.1)", () => {
     expect(TOOL_TEXTS.edge.on).toContain(`up to ${EDGE_WORDS.edgeMinutes} minutes at the provider, up to ${EDGE_CACHE.browserSeconds / 60} minute in a browser.`);
   });
 
+  test("3d Task 8 (12.2): the R1 check and the comparison in the four states a tool can be in: off from the start, on, on with its measure, and off again after it ran, which reads as off from the start; each off text says that korbat keeps nothing of the tool, which the retention job's step tools_off makes true (automation-retention.test.ts holds the database to it)", () => {
+    const r1 = (state: PublicFacts["r1"]["state"]) => blockOf({ ...OFF, r1: { ...OFF.r1, state } }, "r1").paragraphs[0];
+    const match = (state: PublicFacts["match"]["state"]) => blockOf({ ...OFF, match: { ...OFF.match, state, source: state === "off" ? null : "Source A" } }, "match").paragraphs[0];
+    expect([r1("off"), r1("flags"), r1("withholds"), r1("off")]).toEqual([TOOL_TEXTS.r1.off, TOOL_TEXTS.r1.flags, TOOL_TEXTS.r1.withholds, TOOL_TEXTS.r1.off]);
+    expect([match("off"), match("alerts"), match("seals"), match("off")]).toEqual([TOOL_TEXTS.match.off, TOOL_TEXTS.match.alerts("Source A"), TOOL_TEXTS.match.seals("Source A"), TOOL_TEXTS.match.off]);
+    // While on, the rating and the fingerprints are kept with the image; once off, none from the time it was on.
+    expect(TOOL_TEXTS.r1.flags).toContain("korbat keeps the rating with the image");
+    expect(TOOL_TEXTS.r1.withholds).toContain("korbat keeps the rating with the image");
+    expect(TOOL_TEXTS.r1.off).toContain("korbat keeps no rating from a time when one did");
+    expect(TOOL_TEXTS.match.alerts("S")).toContain("keeps them with the image");
+    expect(TOOL_TEXTS.match.off).toContain("keeps no fingerprint from a time when it did, except the one in the record of a match");
+  });
+
   test("no text says more than is known: never that an image is such material, that korbat confirmed it, or the same fingerprint of a picture's look", () => {
     const texts = [
       TOOL_TEXTS.r1.off,

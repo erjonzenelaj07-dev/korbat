@@ -176,6 +176,17 @@ export function createMatchRepo(db: Db) {
         values (${mediaId}::uuid, ${hashes.sha256}::bytea, ${hashes.sha1}::bytea, ${hashes.md5}::bytea, 'pending')`);
     },
 
+    /**
+     * 3d Task 8 (design, sections 2 row 33, 5 and 7.14, the retention job's step tools_off): while the comparison is off,
+     * every stored row of hashes is deleted in the caller's transaction; answers how many. A match record keeps its one
+     * value until its own erasure (erase_automation_records). The step runs only while MEDIA_MATCH is off, so "korbat keeps
+     * no fingerprint from a time when it did" is true once it has run.
+     */
+    async forgetHashes(tx: Runner): Promise<number> {
+      const rows = (await tx.execute(sql`delete from public.media_hashes h returning h.media_id`)) as unknown as { media_id: string }[];
+      return rows.length;
+    },
+
     /** The upload's hashes and where it stands, or null when it has none (the comparison was off when it came). */
     async hashed(q: Runner, mediaId: string): Promise<HashedUpload | null> {
       const [row] = (await q.execute(sql`

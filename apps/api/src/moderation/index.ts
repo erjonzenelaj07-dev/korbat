@@ -340,26 +340,19 @@ export function createModeration(options: CreateModerationOptions) {
      * Starts the module's background work under the jobs' shared lock, on one API instance at a time: the dispatch job
      * and 3f's alert tick and its mail leg (two jobs since 3f's review, so a slow relay never holds the tick) always, (3d
      * Task 6) the automated sweep always, whose reads of signals each run only while their tool is on, and the retention
-     * job only while MODERATION_RETENTION is on. The dispatch and retention
-     * jobs' first rounds come ten minutes after the start, the tick's 30 seconds after it. While the switch is off nothing
-     * is erased, released or deleted, and the warning is logged at every start, so a switch left off after a restore is
-     * seen; the tick runs all the same, since an alert is never about retention. Answers the function that stops them
-     * all; a round in flight finishes.
+     * job always. The dispatch and retention jobs' first rounds come ten minutes after the start, the tick's 30 seconds
+     * after it. While MODERATION_RETENTION is off the retention job's rounds run one step alone (3d Task 8, design section
+     * 7.14): tools_off, which forgets the hashes and the ratings of a tool that is off and is held by nothing but that
+     * tool's setting; nothing else is erased, released or deleted, and the warning is logged at every start, so a switch
+     * left off after a restore is seen. The tick runs all the same, since an alert is never about retention. Answers the
+     * function that stops them all; a round in flight finishes.
      */
     startJobs: (lock: JobLock): (() => void) => {
       const stopDispatch = createDispatchJob(deps, lock).start();
       const stopTick = createAlertTick(deps, lock).start();
       const stopMail = createAlertMailJob(deps, lock).start();
       const stopSweep = createAutomatedSweepJob(deps, lock).start();
-      if (deps.config.MODERATION_RETENTION !== "on") {
-        deps.log.warn(RETENTION_OFF_WARNING);
-        return () => {
-          stopDispatch();
-          stopTick();
-          stopMail();
-          stopSweep();
-        };
-      }
+      if (deps.config.MODERATION_RETENTION !== "on") deps.log.warn(RETENTION_OFF_WARNING);
       const stopRetention = createRetentionJob(deps, lock).start();
       return () => {
         stopDispatch();

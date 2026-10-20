@@ -85,6 +85,8 @@ const NO_MODERATION: ModerationExport = {
   standing: [],
   replies: [],
   reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 },
+  uploads: [],
+  releases: [],
 };
 
 /**
@@ -247,6 +249,11 @@ function moderationMember(moderation: ModerationExport): ModerationExport {
       reason: decision.reason,
       legalReference: decision.legalReference,
       appeal: decision.appeal === null ? null : decision.appeal.state === "pending" ? { state: "pending", result: null } : { state: "answered", result: decision.appeal.result },
+      // 3d (W.10): what the statement says of automated means, and the objection to a program's measure with its time.
+      automatedDetection: decision.automatedDetection,
+      automatedDecision: decision.automatedDecision,
+      signal: decision.signal === null ? null : { kind: decision.signal.kind, source: decision.signal.source, matchKind: decision.signal.matchKind, listedAs: decision.signal.listedAs, viewed: decision.signal.viewed },
+      objection: decision.objection === null ? null : { text: decision.objection.text, createdAt: decision.objection.createdAt },
     })),
     reports: moderation.reports.map((report) => ({
       ref: report.ref,
@@ -283,6 +290,22 @@ function moderationMember(moderation: ModerationExport): ModerationExport {
       marks: moderation.reporting.marks.map((mark) => ({ ref: mark.ref, position: mark.position, sentOn: mark.sentOn, markedAt: mark.markedAt, withdrawnAt: mark.withdrawnAt, counts: mark.counts })),
       markedReports: moderation.reporting.markedReports,
     },
+    // 3d (W.10): the refused uploads as their notices read them, and the releases the account may be told of.
+    uploads: moderation.uploads.map((upload) => ({
+      id: upload.id,
+      refusedAt: upload.refusedAt,
+      source: upload.source,
+      matchKind: upload.matchKind,
+      listedAs: upload.listedAs,
+      objection: upload.objection === null ? null : { text: upload.objection.text, objectedAt: upload.objection.objectedAt },
+      mayObject: upload.mayObject,
+      endedAt: upload.endedAt,
+      endAs: upload.endAs,
+      endReason: upload.endReason,
+      released: upload.released,
+      reportKept: upload.reportKept,
+    })),
+    releases: moderation.releases.map((release) => ({ id: release.id, basis: release.basis, releasedAt: release.releasedAt, upload: release.upload })),
   };
 }
 

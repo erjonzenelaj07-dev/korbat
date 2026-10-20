@@ -82,7 +82,8 @@ const stopTransparency = transparency.startJobs(jobLock);
 // the routes of an account's own decisions and reports stand behind the auth module's session guard.
 const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, requireSession: auth.requireSession, rateLimitStore, config, logger });
 // The dispatch job: the staff alerts that are still due, the daily release of outcomes, and the mails that waited. And the
-// retention job, unless MODERATION_RETENTION switched it off: what is due is erased, and kept image rows nothing retains go.
+// retention job: what is due is erased, and kept image rows nothing retains go; while MODERATION_RETENTION is off it only
+// forgets the hashes and ratings of a tool that is off (3d Task 8).
 const stopModeration = moderation.startJobs(jobLock);
 // 3d Task 7 (design, section 5): the media module is built before the moderation module, so it is handed that module's
 // handler of a stored refusal or match afterwards (media.onMatch(moderation.matched)).

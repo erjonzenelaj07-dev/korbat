@@ -20,6 +20,7 @@ import {
   RELEASE_POSTS_MAX,
   RETENTION,
   SEAL_DRAFTS,
+  SIGNAL_RULES,
   UPLOAD_END_REASON_LABELS,
   type CaseView,
   type ContactMessage,
@@ -3029,6 +3030,61 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       fixtures.state.restore = restore;
       fixtures.state.restoreOverview = restoreOverview;
       fixtures.state.role = "moderator";
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  // ---------------------------------------------------------------- 3d Task 8: the flag, and every screen of 3d once more
+
+  const CASE_FLAG = "c13d5f7b-8a9b-4c0d-8e1f-2a3b4c5d6e7f";
+
+  test("3d Task 8: at 360 by 740 px, the queue with [queue.flag] where its lane and age put it; a case with [case.flag] and [case.sameSource]; then every screen of 8.9 once more in one pass, under the phone's rules", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const older = new Date(Date.now() - 30 * 3_600_000).toISOString();
+    const newer = new Date(Date.now() - 3_600_000).toISOString();
+    const view = postCase({ id: CASE_FLAG, flag: { items: 6, reporters: 5 } });
+    // The first item's reporter has two other open items elsewhere; the others none.
+    fixtures.state.cases.set(CASE_FLAG, { ...view, items: view.items.map((entry, index) => ({ ...entry, sameSourceOpen: index === 0 ? 2 : 0 })) });
+    // The API's order: lane and age alone. The flagged case is the newer of two in its lane, and stays second.
+    fixtures.state.queueRows = [queueRow({ id: CASE_POST, oldestOpenAt: older }), queueRow({ id: CASE_FLAG, oldestOpenAt: newer, flag: { items: 6, reporters: 5 } })];
+    try {
+      await page.goto(`${origin}/queue`);
+      const rows = page.locator("table.queue tbody tr");
+      await shown(rows.first());
+      expect((await rows.nth(0).textContent()) ?? "").not.toContain(AUTOMATION_WORDS.queueFlag);
+      expect((await rows.nth(1).textContent()) ?? "").toContain(AUTOMATION_WORDS.queueFlag);
+      await texts();
+      await cleanOnPhone();
+
+      await page.goto(`${origin}/cases/${CASE_FLAG}`);
+      await shown(page.getByText(AUTOMATION_WORDS.caseFlag(6, 5), { exact: true }));
+      expect(AUTOMATION_WORDS.caseFlag(6, 5)).toContain(`within ${SIGNAL_RULES.windowMinutes} minutes`);
+      await shown(page.getByText(AUTOMATION_WORDS.sameSource(2), { exact: false }));
+      expect(await page.getByText("other open item", { exact: false }).count()).toBe(1);
+      // The line is under the header, before the evidence.
+      const body = (await page.locator("main").textContent()) ?? "";
+      expect(body.indexOf(AUTOMATION_WORDS.caseFlag(6, 5))).toBeLessThan(body.indexOf("Evidence"));
+      await texts();
+      await cleanOnPhone();
+
+      // Every screen 3d touches, once more, at this width: Home with its block, Held uploads, After a restore.
+      const screens: [string, Locator][] = [
+        ["/", page.getByRole("heading", { name: "Home" })],
+        ["/queue", page.getByRole("heading", { name: "Queue" })],
+        ["/uploads", page.getByRole("heading", { name: CUSTODY_WORDS.uploads.title })],
+        ["/restore", page.getByRole("heading", { name: RECOVERY_WORDS.title })],
+        [`/cases/${CASE_FLAG}`, page.getByText(AUTOMATION_WORDS.caseFlag(6, 5), { exact: true })],
+      ];
+      for (const [path, mark] of screens) {
+        await page.goto(`${origin}${path}`);
+        await shown(mark.first());
+        expect(page.url(), path).toBe(`${origin}${path}`);
+        await texts();
+        await cleanOnPhone();
+      }
+    } finally {
+      fixtures.state.queueRows = null;
+      fixtures.state.cases.delete(CASE_FLAG);
       await page.setViewportSize({ width: 1280, height: 900 });
     }
   });

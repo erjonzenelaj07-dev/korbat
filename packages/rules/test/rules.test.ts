@@ -2,11 +2,11 @@ import { describe, expect, test } from "vitest";
 import { AUTOMATION_RULES, STANDING_RULES } from "@korbat/contracts";
 import { REDRESS_TEXTS, REDRESS_VERSION, RULEBOOKS, RULES, RULES_CHANGES, RULES_VERSION, getRedress, getRule, isRuleId, ORDER_NOTICE } from "../src/index";
 
-const VERSIONS = [1, 2, 3] as const;
+const VERSIONS = [1, 2, 3, 4] as const;
 
 describe("rulebook", () => {
-  test("the current rulebook is version 3, and every version is kept: a decision renders with the rules it was made under", () => {
-    expect(RULES_VERSION).toBe(3);
+  test("the current rulebook is version 4 (3d Task 8), and every version is kept: a decision renders with the rules it was made under", () => {
+    expect(RULES_VERSION).toBe(4);
     expect(Object.keys(RULEBOOKS).map(Number)).toEqual([...VERSIONS]);
     expect(RULES).toBe(RULEBOOKS[RULES_VERSION]);
   });
@@ -102,6 +102,36 @@ describe("rulebook", () => {
     expect(r6v3.allowed).toEqual([...r6v2.allowed, "Reporting in good faith something that turns out to break no rule"]);
   });
 
+  test("version 4 (3d design, W.4): version 3 with R1's and R2's texts grown by what a program may do, R2's sentence on staff's look gaining its exception, and the two new automation values; R3 to R6 unchanged", () => {
+    const [v3, v4] = [RULEBOOKS[3], RULEBOOKS[4]];
+    for (const id of ["R3", "R4", "R5", "R6"]) expect(getRule(id, 4), id).toEqual(getRule(id, 3));
+    expect(v4.map((r) => [r.id, r.automation])).toEqual([
+      ["R1", "flag_or_withhold"],
+      ["R2", "seal_for_review"],
+      ["R3", "none"],
+      ["R4", "none"],
+      ["R5", "none"],
+      ["R6", "none"],
+    ]);
+    expect(v4.filter((r) => r.seniorQueue).map((r) => r.id)).toEqual(v3.filter((r) => r.seniorQueue).map((r) => r.id));
+    const [r1v3, r1v4] = [getRule("R1", 3)!, getRule("R1", 4)!];
+    expect({ ...r1v4, text: undefined, automation: undefined }).toEqual({ ...r1v3, text: undefined, automation: undefined });
+    expect(r1v4.text).toBe(
+      `${r1v3.text} korbat may let a program rate uploaded images against this rule. An image it rates as likely within the rule is put before a moderator, and korbat may hide that one image from other people until the moderator has decided; its author still sees it, is told at once and can ask for a person. No program removes anything or judges text. Whether a program runs and what runs today is stated under Automation on the rules page.`,
+    );
+    const [r2v3, r2v4] = [getRule("R2", 3)!, getRule("R2", 4)!];
+    expect({ ...r2v4, text: undefined, automation: undefined }).toEqual({ ...r2v3, text: undefined, automation: undefined });
+    const before = "After an admin has answered without a seal, staff may open them like any other image.";
+    expect(r2v3.text).toContain(before);
+    expect(r2v4.text).toBe(
+      `${r2v3.text.replace(before, "After an admin has answered without a seal, staff may open them like any other image, except an image that an automated comparison matched: korbat's staff do not open such an image at any time.")} korbat may compare the fingerprint of an uploaded image with lists of images that a named body has classified as child sexual abuse material. An upload that the body reports as an exact match with such an entry is not accepted, now or later, and is held unseen until an admin has decided what happens to the file. When an image that is already on a post matches in that way, it is put before an admin at once, korbat keeps that post's images until the admin has answered, and korbat may seal them at once until then. A match with such an entry that the body does not report as exact refuses no upload and is never sealed by a program; on a post it is put before an admin in the same way, and korbat keeps that post's images until the admin has answered. A match is a comparison of fingerprints, not korbat's finding about an image; korbat's staff do not open an image that a match names; and nothing is removed by a program. Whether a comparison runs, with which body, and what runs today is stated under Automation on the rules page.`,
+    );
+    // The words of every text of 3d (section 18, rule 1): no text says what a match or a score does not show.
+    for (const rule of v4) expect(rule.text, rule.id).not.toMatch(/is child sexual abuse material|confirmed|posted such/);
+    // Versions 1 to 3 render as sent: their automation values are the old ones.
+    expect(RULEBOOKS[3].map((r) => r.automation)).toEqual(["none", "none", "none", "none", "none", "none"]);
+  });
+
   test("R3 reads the same in both versions", () => {
     expect(getRule("R3", 2)).toEqual(getRule("R3", 1));
   });
@@ -111,7 +141,7 @@ describe("rulebook", () => {
     expect(getRule("R6")).toBe(getRule("R6", RULES_VERSION));
     expect(getRule("R6", 1)?.title).not.toBe(getRule("R6", 2)?.title);
     expect(getRule("R9")).toBeUndefined();
-    expect(getRule("R1", 4)).toBeUndefined();
+    expect(getRule("R1", 5)).toBeUndefined();
     expect(isRuleId("R6")).toBe(true);
     expect(isRuleId("x")).toBe(false);
   });
@@ -230,6 +260,8 @@ describe("the rulebook's change log", () => {
           "A person decides every case; the automated checks that R1 and R2 named are withdrawn until they exist. R2 says how reported images are handled without anyone opening them. R4 and R5 say who may hide content while a case is decided and who decides it. R6 names coordinated manipulation.",
       },
       { version: 3, date: "2026-10-12", summary: "R6 names repeated, plainly unfounded reporting." },
+      // 3d Task 8 (W.1, W.4): the day the version came into force, a literal written by the task that ships it.
+      { version: 4, date: "2026-10-19", summary: "R1 and R2 say what an automated tool may do when one is switched on, and point to the list of what runs today." },
     ]);
     const days = RULES_CHANGES.map((change) => change.date);
     expect([...days].sort()).toEqual(days);

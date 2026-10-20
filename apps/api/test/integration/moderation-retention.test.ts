@@ -156,7 +156,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     );
     // A second round changes nothing and writes no audit row.
     const again = recordingMedia();
-    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(again.media)).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, automationRecords: 0, edgePurges: 0, toolsOff: 0, batches: [0], failed: 0 });
     expect(again.requested).toEqual([]);
     expect(await head()).toBe(start + 3);
   });
@@ -243,7 +243,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
     now += ERASURE_OVERDUE_TTL_MS + 1;
     expect(await late()).toEqual({ ...baseline, contacts: 0 });
     const after = await head();
-    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, batches: [0], failed: 0 });
+    expect(await round(casesMedia(apiDb))).toEqual({ drafts: 0, cases: 0, intakes: 0, redactions: 0, statements: 0, replies: 0, reportCounts: 0, preservations: 0, orderRecords: 0, contactMessages: 0, authorityRecords: 0, restoreGaps: 0, accessLog: 0, automationRecords: 0, edgePurges: 0, toolsOff: 0, batches: [0], failed: 0 });
     expect(await head()).toBe(after);
   });
 
@@ -350,7 +350,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
       return { lock, asked, until };
     }
 
-    test.each(["off", "on"] as const)("%s: after ten minutes the dispatch job's round runs, and the retention job's only while the switch is on; off, the warning is logged and a due case keeps its snapshot and a due R4 decision's post its body", async (setting) => {
+    test.each(["off", "on"] as const)("%s: after ten minutes the dispatch job's round runs, and the retention job's, which while the switch is off runs tools_off alone (3d Task 8); off, the warning is logged and a due case keeps its snapshot and a due R4 decision's post its body", async (setting) => {
       const p = await post(0);
       const made = await reported(aPost(p.postId));
       const removal = decided(await w.decideAs(mod, made.caseId, { kind: "final", ruleId: "R4", actions: [act("remove")] }));
@@ -376,7 +376,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
         expect(warnings.filter((line) => line === RETENTION_OFF_WARNING)).toHaveLength(setting === "off" ? 1 : 0);
         expect(RETENTION_OFF_WARNING).toBe("moderation-retention: off (MODERATION_RETENTION)");
         const dispatched = until("job:moderation-dispatch");
-        const retained = setting === "on" ? until("job:moderation-retention") : Promise.resolve();
+        // 3d Task 8 (7.14): the retention job runs in both: off, its round forgets what a tool that is off left behind, and
+        // nothing else.
+        const retained = until("job:moderation-retention");
         // Nothing of these two runs before the ten minutes are over. 3f's alert tick and (since 3f's review) its mail
         // leg, which startJobs also starts in both branches, run every 30 seconds meanwhile, and 3d Task 6's sweep of the
         // automated step every minute (it reads no signal and no image while R1_CLASSIFIER is off).
@@ -392,7 +394,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retention job", () =
         vi.useRealTimers();
       }
       expect(asked).toContain("job:moderation-dispatch");
-      expect(asked.includes("job:moderation-retention")).toBe(setting === "on");
+      expect(asked).toContain("job:moderation-retention");
       expect(await state()).toEqual(setting === "off" ? { body: "a post", redacted: false, snapshots: 1 } : { body: "", redacted: true, snapshots: 0 });
       // The author's decision screen: the copy while korbat holds it, and after the job's redaction the words of an R4 erasure.
       expect((await authorDecisionView({ apiDb }, p.authorId, removal)).content!.kind).toBe(setting === "off" ? "post" : "r4_redacted");

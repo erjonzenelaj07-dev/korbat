@@ -60,9 +60,14 @@ const full = {
         reason: "That is an attack on people for what they are.",
         legalReference: null,
         appeal: { state: "answered", result: "kept" },
+        // 3d (W.10): what the statement says of automated means, and the objection to a program's measure.
+        automatedDetection: false,
+        automatedDecision: "not_automated",
+        signal: null,
+        objection: null,
       },
       // A correction about the account itself: it names no post, lifts a reset, and carries no text that is still held.
-      { id: id(11), decidedOn: "2026-09-25", postId: null, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, measures: [], reversals: [{ kind: "restore_bio", mediaId: null }], facts: null, reason: null, legalReference: null, appeal: null },
+      { id: id(11), decidedOn: "2026-09-25", postId: null, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, measures: [], reversals: [{ kind: "restore_bio", mediaId: null }], facts: null, reason: null, legalReference: null, appeal: null, automatedDetection: false, automatedDecision: "not_automated", signal: null, objection: null },
     ],
     reports: [
       {
@@ -111,11 +116,19 @@ const full = {
       ],
       markedReports: 1,
     },
+    // 3d (W.10): a refused upload as its notice reads it, and a release the account may be told of.
+    uploads: [
+      { id: id(40), refusedAt: at, source: "test", matchKind: "exact", listedAs: "csam", objection: { text: "It is my own photo.", objectedAt: at }, mayObject: false, endedAt: null, endAs: null, endReason: null, released: null, reportKept: false },
+    ],
+    releases: [{ id: id(41), basis: "leave", releasedAt: at, upload: false }],
   },
 };
 
-/** The three members 3e adds to the moderation member, empty, as an account with no standing measure, reply or report has them. */
-const NO_STANDING = { standing: [], replies: [], reporting: { frameDays: 90, days: [], marks: [], markedReports: 0 } };
+/**
+ * The three members 3e adds to the moderation member, empty, as an account with no standing measure, reply or report has
+ * them; and the two 3d adds (W.10), as an account with no refused upload and no release has them.
+ */
+const NO_STANDING = { standing: [], replies: [], reporting: { frameDays: 90, days: [], marks: [], markedReports: 0 }, uploads: [], releases: [] };
 
 describe("what deleting an account removes, and what korbat keeps", () => {
   test("one sentence, word for word, that the deletion screen and both deletion mails say: nothing in it says that everything is gone for good, and (3f) it names what the law obliges korbat to keep, for every account", () => {
@@ -349,7 +362,8 @@ describe("the moderation member's standing, replies and reporting (3e design, W.
   const withMark = (change: Record<string, unknown>) => withReporting({ marks: [{ ...counting, ...change }] });
 
   test("come after the strikes, in this order, and every one of them is always there", () => {
-    expect(Object.keys(ExportFormat.shape.moderation.shape)).toEqual(["decisions", "reports", "strikes", "standing", "replies", "reporting"]);
+    // 3d (W.10): the refused uploads and the releases come last.
+    expect(Object.keys(ExportFormat.shape.moderation.shape)).toEqual(["decisions", "reports", "strikes", "standing", "replies", "reporting", "uploads", "releases"]);
     expect(ExportFormat.parse(full).moderation).toEqual(full.moderation);
     for (const member of ["standing", "replies", "reporting"]) expect(withModeration({ [member]: undefined }), member).toBe(false);
   });

@@ -77,6 +77,16 @@ export type SignalHandled = (typeof SIGNAL_HANDLED)[number];
 export const CAP_LIMITS = ["hour", "day", "unanswered", "waiting"] as const;
 export type CapLimit = (typeof CAP_LIMITS)[number];
 
+/**
+ * 3d Task 8 (design, sections 2 row 47, 6.8, 7.13 and 10.1): the constants of the database's case_flag, mirrored. A case
+ * is flagged "Possible coordinated reporting" when, within one window of `windowMinutes` that begins at one of its
+ * unanswered items of signed-in reporters, at least `minItems` such items from at least `minReporters` distinct reporters
+ * arrived, and at least `linkedShare` of those reporters follow, or are followed by, another of them. The flag is a hint
+ * for staff and nothing more: it orders nothing, and no decision reads it. A database test holds these four numbers to the
+ * function's own, and the console prints the minutes from here.
+ */
+export const SIGNAL_RULES = { minItems: 5, minReporters: 5, windowMinutes: 60, linkedShare: 0.5 } as const;
+
 /** How many signals one round of the sweep takes at most, and how far back it looks (section 7.9). */
 export const SWEEP_BATCH = 20;
 export const SWEEP_HOURS = 24;

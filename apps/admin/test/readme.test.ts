@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { ALERT_RULES, ALERT_TEXTS, EDGE_CACHE, EDGE_RULES, HEAD_RULES, ORDER_RULES, RECIPIENT_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES, TRANSPARENCY_RULES } from "@korbat/contracts";
+import { ALERT_RULES, ALERT_TEXTS, AUTOMATION_RULES, EDGE_CACHE, EDGE_RULES, HEAD_RULES, ORDER_RULES, RECIPIENT_RULES, REPLY_AIM_HOURS, RETENTION, SIGNAL_RULES, STANDING_RULES, TRANSPARENCY_RULES } from "@korbat/contracts";
 import { AUTOMATION_WORDS } from "../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK, RELEASE_OVERDUE_RUNBOOK } from "../src/screens/Home";
 
@@ -398,8 +398,9 @@ describe("the README's authorities' orders say what the constants say (3f design
     expect(all).not.toContain("Authorities' orders before 3f.");
     expect(all).not.toContain("in their own records until sub-project 3f");
     expect(all).not.toContain("With sub-project 3f the authorities' contact address is published as well");
-    // 3d Task 2 (W.11): the gate's first line reads 3d's quarantine and release.
-    expect(all).toContain("until sub-project 3f's order path and sub-project 3d's quarantine and release have shipped and the list below is done");
+    // 3d Task 2 (W.11): the gate's first line reads 3d's quarantine and release; 3d Task 8: and the lists, now that 3d's
+    // owner's list stands beside 3f's.
+    expect(all).toContain("until sub-project 3f's order path and sub-project 3d's quarantine and release have shipped and the lists below are done");
   });
 });
 
@@ -625,5 +626,104 @@ describe("the README's daily value of the head (3d design, W.11)", () => {
     const opens = lines.findIndex((line) => line.includes('the class "Releases and held uploads to replay" included'));
     expect(mark).toBeGreaterThan(-1);
     expect(mark).toBeLessThanOrEqual(opens);
+  });
+});
+
+/**
+ * 3d Task 8 (design, sections 7.3, 7.13, 7.14, 17 and W.11): the README whole. The section Automated tools, after
+ * Quarantine, with W.11's parts in their order and every number from its constant; the line the owner fills with
+ * counsel's advice on a held upload, word for word; Restoring with the held uploads' replay, the three actions an operator
+ * line can name, what no command closes, and the public figures a restore loses; Images' two sentences; the flag in the
+ * Moderation runbook; The edge's lab on the owner's zone; and Before going public with the 3d owner's parts A and B.
+ */
+describe("the README whole (3d design, W.11; Task 8)", () => {
+  const AUTOMATION_HEADING = "## Automated tools";
+  const AUTOMATION_PARTS = ["**A measure a program took, and a request for a person.**", "**A held upload.**", "**Switching a tool on.**", "**Cloudflare's scanning tool**"] as const;
+  const T = AUTOMATION_RULES;
+
+  test("Automated tools stands after Quarantine and before The yearly edition, with W.11's parts each once and in their order", () => {
+    const lines = readmeLines();
+    expect(lines.indexOf(AUTOMATION_HEADING)).toBeGreaterThan(lines.indexOf("## Quarantine"));
+    expect(lines.indexOf(AUTOMATION_HEADING)).toBeLessThan(lines.indexOf("## The yearly edition"));
+    const section = sectionLines(AUTOMATION_HEADING);
+    const at = AUTOMATION_PARTS.map((part) => section.findIndex((line) => line.startsWith(part)));
+    for (const part of AUTOMATION_PARTS) expect(section.filter((line) => line.startsWith(part)), part).toHaveLength(1);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  test("its numbers are the constants': the target, the two limits on unanswered measures, the delay after No report, the address's days and a match record's days; and no other", () => {
+    const text = withoutCodeMarks(sectionLines(AUTOMATION_HEADING).join(" "));
+    for (const phrase of [
+      `within ${T.objectionTargetHours} hours of a request`,
+      `while ${T.unansweredMax} of its measures under that rule wait for a person`,
+      `while a request is older than ${T.unansweredHours} hours`,
+      `The upload is deleted ${T.noReportHours} hours after "No report"`,
+      `(${RETENTION.reportHoldDays} days from the refusal)`,
+      `A match record keeps its hash for ${T.matchKeepDays} days`,
+    ]) {
+      expect(text, phrase).toContain(phrase);
+    }
+    expect(RETENTION.reportHoldDays).toBe(ORDER_RULES.reportHoldDays);
+    const values = new Set([T.objectionTargetHours, T.unansweredMax, T.unansweredHours, T.noReportHours, T.matchKeepDays, RETENTION.reportHoldDays].map(String));
+    const outside = REFERENCES.reduce((rest, pattern) => rest.replace(pattern, (_match: string, lead: unknown) => (typeof lead === "string" ? `${lead} ` : " ")), text).replace(/R[12]/g, " ");
+    expect((outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual([]);
+  });
+
+  test("A held upload holds the line the owner fills with counsel's advice, word for word, and tells an admin neither end", () => {
+    const text = sectionLines(AUTOMATION_HEADING).join(" ");
+    expect(text).toContain(`"Counsel's advice of <day> on whether a match obliges korbat to report an upload that was never posted: <not yet given>."`);
+    expect(text).toContain("The console does not say which way, and it preselects neither");
+    expect(text).toContain("staff.js upload-report <refusal> --duty <duty>");
+    for (const words of ["Report when", 'Choose "No report" only']) expect(text.includes(words), words).toBe(false);
+    // The switches as the operator sets them, and the start that reads them.
+    for (const words of ["`API_AUTOMATION_R1_ACTS=off`", "`API_AUTOMATION_R2_ACTS=off`", "`API_AUTOMATION_DPIA_R1`", "`API_AUTOMATION_DPIA_MATCH_ACTS`", "docker compose -f infra/compose.yml up -d api", "staff.js automation-status"]) {
+      expect(text, words).toContain(words);
+    }
+  });
+
+  test("Restoring replays held uploads too, an operator line names the three actions, a person closes what no command can, and the public figures a restore loses are said with what to do", () => {
+    const text = sectionLines("## Restoring").join(" ");
+    for (const words of [
+      "for sealed posts and for held uploads",
+      "a held upload whose refusal the backup does not hold is kept from every post",
+      "(`upload_hold_ended`, `upload_released`, `seal_released`)",
+      "If it is held for a report, it stays where it is, and the operator's R2 records say so.",
+      "do not run `upload-report` a second time before the keeper's files have been checked for the record of the report",
+      "a measure a program had taken is taken again by a person",
+      "**The public figures after a restore** (sub-project 3d)",
+      '("edition <year> version <n>, published <time>, is not in the restored database")',
+      "`recipient_months`",
+      'it reads "not recorded" in `staff.js recipients`',
+      "`staff.js edition <year> --correct`",
+    ]) {
+      expect(text, words).toContain(words);
+    }
+    // While the switch is off, the one step that still runs is said.
+    expect(text).toContain("nothing is erased or deleted but the fingerprints and ratings of an automated tool that is off");
+    expect(text).not.toContain("While the switch is off nothing is erased or deleted, and");
+  });
+
+  test("Images gains its two sentences, the hashes' days from matchKeepDays; the Moderation runbook names the flag with SIGNAL_RULES' numbers and the closed door on a matched image; The edge the owner's lab", () => {
+    const images = sectionLines("## Images").join(" ");
+    expect(images).toContain(`three hashes of the file as received, deleted with the image or when the check is switched off; a match record keeps one of them for ${T.matchKeepDays} days`);
+    expect(images).toContain("while the R1 check is switched on it also rates the decoded pixels, still without a network");
+    const moderation = sectionLines("## Moderation").join(" ");
+    expect(moderation).toContain(`at least ${SIGNAL_RULES.minItems} from ${SIGNAL_RULES.minReporters} signed-in accounts within ${SIGNAL_RULES.windowMinutes} minutes, at least half of them`);
+    expect(SIGNAL_RULES.linkedShare).toBe(0.5);
+    expect(moderation).toContain(`"${AUTOMATION_WORDS.queueFlag}"`);
+    expect(moderation).toContain("An image that a match of the known material check names is opened by nobody at korbat at any time");
+    expect(sectionLines("## The edge").join(" ")).toContain("the owner runs the lab on the zone");
+  });
+
+  test("Before going public holds the 3d owner's parts A and B, each line by its label and in order, after the settings; and Counsel's list points to part E", () => {
+    const section = sectionLines("## Before going public");
+    const lead = section.findIndex((line) => line.startsWith("**The owner's list (sub-project 3d).**"));
+    expect(lead).toBeGreaterThan(section.findIndex((line) => line.startsWith("Set these in")));
+    const labels = section.slice(lead).flatMap((line) => /^- [*][*]([AB][0-9])[.]/.exec(line)?.[1] ?? []);
+    expect(labels).toEqual(["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "B1", "B2", "B3", "B4", "B5", "B6", "B7"]);
+    const text = section.join(" ");
+    expect(text).toContain("Counsel's advice on a held upload");
+    expect(text).toContain(`must equal the ${RETENTION.backupDays} days of Backups`);
+    expect(text).toContain("A4 of the 3d owner's list above, and the questions of part E of section 17");
   });
 });

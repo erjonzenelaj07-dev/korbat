@@ -99,6 +99,8 @@ export function item(overrides: Partial<CaseItem> = {}): CaseItem {
     markable: false,
     unfounded: false,
     markWithdrawn: false,
+    // 3d Task 8 ([case.sameSource]): the reporter's other open items, none unless a fixture says.
+    sameSourceOpen: 0,
     ...overrides,
   };
 }
@@ -206,6 +208,8 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     objection: null,
     // 3d Task 7: no image of the case is named by a match.
     matchedImages: [],
+    // 3d Task 8 ([case.flag]): no flag unless a fixture says.
+    flag: null,
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },
@@ -436,6 +440,8 @@ export function queueRow(overrides: Partial<QueueRow> = {}): QueueRow {
     objected: false,
     // 3d Task 7: no match that only flags.
     matchFlag: false,
+    // 3d Task 8 ([queue.flag]).
+    flag: null,
     ...overrides,
   };
 }

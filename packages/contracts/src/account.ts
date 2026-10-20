@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Platform, Role } from "./auth";
-import { ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REPLY_TEXT_MAX, REVERSAL_KINDS, RULE_IDS, STANDING_BASES, STANDING_DAYS, TDB_CATEGORIES } from "./moderation";
+import { AUTOMATED_DECISIONS, ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REPLY_TEXT_MAX, REVERSAL_KINDS, RULE_IDS, STANDING_BASES, STANDING_DAYS, StatementSignal, TDB_CATEGORIES, UploadRefusalView } from "./moderation";
 import { OrderNoticeFacts, OrderTexts } from "./orders";
 
 const at = z.iso.datetime();
@@ -82,7 +82,24 @@ const ExportedDecision = z.object({
   order: OrderNoticeFacts.optional(),
   orderTexts: OrderTexts.optional(),
   erasedOn: day.nullable().optional(),
+  /**
+   * 3d (design, W.10): what the statement says of automated means, as its own columns and its signal give it
+   * (DecisionStatement's three members: false, not_automated and null for a decision made before 3d), and the text the
+   * account sent with "Ask for a person" about a program's measure, with its time, while korbat keeps it; null otherwise.
+   * Never a score, a hash, a list version or a classification.
+   */
+  automatedDetection: z.boolean(),
+  automatedDecision: z.enum(AUTOMATED_DECISIONS),
+  signal: StatementSignal.nullable(),
+  objection: z.object({ text: z.string(), createdAt: at }).nullable(),
 });
+
+/**
+ * 3d (design, W.6 and W.10): a release that concerned the account's posts or one of its uploads, as its notice reads it:
+ * its ground (a leave or instruction, or a period) and its time, and whether it was of an upload. Listed only from the
+ * time the account may be told of it: never while its notice is held. Never an authority, a reference or an assessment.
+ */
+const ExportedRelease = z.object({ id: z.uuid(), basis: z.enum(["leave", "period"]), releasedAt: at, upload: z.boolean() });
 
 /**
  * One item of a report in its sender's export: its place in the report, its korbat address (an account's under the handle
@@ -268,6 +285,13 @@ export const ExportFormat = z.object({
     standing: z.array(ExportedStanding),
     replies: z.array(ExportedReply),
     reporting: ExportedReporting,
+    /**
+     * 3d (design, W.10): the account's refused uploads, newest first, each as its notice reads it (UploadRefusalView: the
+     * day, the source, the kind of match, the objection, the end and the release as far as the account may be told of
+     * them), with no file and no hash; and the releases about its posts or uploads that it may be told of, newest first.
+     */
+    uploads: z.array(UploadRefusalView),
+    releases: z.array(ExportedRelease),
   }),
 });
 export type ExportFormat = z.infer<typeof ExportFormat>;

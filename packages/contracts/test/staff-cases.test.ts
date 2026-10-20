@@ -244,6 +244,8 @@ describe("the case answer", () => {
         markable: false,
         unfounded: false,
         markWithdrawn: false,
+        // 3d Task 8 ([case.sameSource]): the reporter's other open items.
+        sameSourceOpen: 0,
       },
     ],
     decisions: [
@@ -300,6 +302,8 @@ describe("the case answer", () => {
     signals: [],
     objection: null,
     matchedImages: [],
+    // 3d Task 8 ([case.flag]).
+    flag: null,
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {
@@ -428,7 +432,7 @@ describe("the case answer", () => {
 });
 
 describe("the queue and the overview", () => {
-  const row = { id: CASE, lane: 0, targetType: "post", openedAt: TIME, oldestOpenAt: TIME, openItems: 2, rules: ["R5"], categories: ["STATEMENT_CATEGORY_VIOLENCE"], allegesIllegal: true, suspect: false, reexamination: false, deferred: false, foundByProgram: false, takenByProgram: false, objected: false, matchFlag: false };
+  const row = { id: CASE, lane: 0, targetType: "post", openedAt: TIME, oldestOpenAt: TIME, openItems: 2, rules: ["R5"], categories: ["STATEMENT_CATEGORY_VIOLENCE"], allegesIllegal: true, suspect: false, reexamination: false, deferred: false, foundByProgram: false, takenByProgram: false, objected: false, matchFlag: false, flag: null };
 
   test("a page of the queue holds at most 50 cases and the cursor of the next", () => {
     expect(QUEUE_PAGE_SIZE).toBe(50);

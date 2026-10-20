@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
-import { EdgePurgeView, MediaId } from "./media";
+import { EDGE_RULES, EdgePurgeView, MediaId } from "./media";
 import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, ORDER_RULES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
-import { MATCH_ANSWER_REASONS, MATCH_HASH_TYPES, MATCH_KINDS, SIGNAL_KINDS, UPLOAD_END_REASONS, UPLOAD_ENDS } from "./automation";
+import { AUTOMATION_RULES, MATCH_ANSWER_REASONS, MATCH_HASH_TYPES, MATCH_KINDS, SIGNAL_KINDS, UPLOAD_END_REASONS, UPLOAD_ENDS } from "./automation";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -240,6 +240,16 @@ export const RETENTION = {
   orderPreserveMonths: ORDER_RULES.preserveMonths,
   orderRecordYears: ORDER_RULES.recordKeepYears,
   restoreGapMonths: ORDER_RULES.gapKeepMonths,
+  /**
+   * 3d (design, sections 6.10 and W.9): the days a match record keeps its hash and classification after its case closed,
+   * its hold ended or its images were released (automation_rules().match_keep_days, which erase_automation_records reads);
+   * the days korbat keeps an uploader's address after a refused upload, 3f's hold on an address (order_rules()); and the
+   * days an outbox row of the edge is kept after it was done, which the retention job's step edge_purges deletes. Each is
+   * its own constant's number, read from there, never typed twice; the terms print all three.
+   */
+  matchKeepDays: AUTOMATION_RULES.matchKeepDays,
+  reportHoldDays: ORDER_RULES.reportHoldDays,
+  edgePurgeDays: EDGE_RULES.keepDays,
 } as const;
 
 // ---------------------------------------------------------------- account sanctions (3e design, section 10.1)
@@ -1307,6 +1317,14 @@ const StoredPostState = z.enum(["visible", "withheld", "removed", "deleted_by_au
 export const QUEUE_PAGE_SIZE = 50;
 
 /**
+ * 3d Task 8 (design, sections 2 row 47, 7.13 and 10.3): what the flag "Possible coordinated reporting" shows: how many
+ * unanswered reports of signed-in reporters arrived within one window of SIGNAL_RULES.windowMinutes, and from how many
+ * accounts. Counts and never a reporter: the case page and the queue say no more ([case.flag], [queue.flag]).
+ */
+export const CaseFlag = z.strictObject({ items: Count, reporters: Count });
+export type CaseFlag = z.infer<typeof CaseFlag>;
+
+/**
  * One open case as the queue lists it: its lane, what it is about, since when it and its oldest unanswered item wait,
  * and what its unanswered items cite. `deferred` is set only under the emergency switch. Nothing here weighs a case:
  * the queue orders by lane and age alone.
@@ -1339,6 +1357,11 @@ export const QueueRow = z.object({
    * moves nothing: the case stands where its lane and age put it.
    */
   matchFlag: z.boolean(),
+  /**
+   * 3d Task 8 (design, sections 7.13, 8.3 and 10.3): the flag "Possible coordinated reporting" ([queue.flag]), the two
+   * counts of case_flag while it answers true, else null. It moves nothing: no key of the queue's order reads it.
+   */
+  flag: CaseFlag.nullable(),
 });
 export type QueueRow = z.infer<typeof QueueRow>;
 
@@ -1496,6 +1519,12 @@ export const CaseItem = z.object({
   markWithdrawn: z.boolean(),
   /** 3f (design, section 8.6): the order an order's intake item belongs to, which the page links; null on every other item. */
   orderId: z.uuid().nullable().optional(),
+  /**
+   * 3d Task 8 (design, sections 7.13 step 4, 8.4 and 10.3): how many other unanswered items the same signed-in reporter has
+   * on other open cases, as a count ([case.sameSource]); 0 for an item of any other source. It names no case and no
+   * person, and batches nothing: each case is decided on its own.
+   */
+  sameSourceOpen: Count,
 });
 export type CaseItem = z.infer<typeof CaseItem>;
 
@@ -1936,6 +1965,11 @@ export const CaseView = z.object({
    * ([case.image.matched]). A list beside the snapshots, so the members each snapshot's digest covers stay as they are.
    */
   matchedImages: z.array(z.uuid()),
+  /**
+   * 3d Task 8 (design, sections 7.13, 8.4 and 10.3): the flag "Possible coordinated reporting" ([case.flag]), the two
+   * counts of case_flag while it answers true, else null. It is no finding: the case is decided on its content as always.
+   */
+  flag: CaseFlag.nullable(),
 });
 export type CaseView = z.infer<typeof CaseView>;
 

@@ -99,10 +99,37 @@ describe("one decision as the export writes it", () => {
       reason: statement.reason,
       legalReference: null,
       appeal: null,
+      // 3d (W.10): a decision made before 3d reads false, not_automated and null, and has no objection.
+      automatedDetection: false,
+      automatedDecision: "not_automated",
+      signal: null,
+      objection: null,
     });
     expect(inFormat(entry)).toStrictEqual(entry);
     // The statement's source, its time to the second, what a seal covered and what ended with it are the screen's, not the export's.
-    expect(Object.keys(entry)).toEqual(["id", "decidedOn", "postId", "kind", "outcome", "ground", "ruleId", "rulesVersion", "measures", "reversals", "facts", "reason", "legalReference", "appeal"]);
+    expect(Object.keys(entry)).toEqual(["id", "decidedOn", "postId", "kind", "outcome", "ground", "ruleId", "rulesVersion", "measures", "reversals", "facts", "reason", "legalReference", "appeal", "automatedDetection", "automatedDecision", "signal", "objection"]);
+  });
+
+  test("3d Task 8 (W.10): a program's decision carries what its statement says of automated means, its signal without a score, and the objection with its time", () => {
+    const program: DecisionStatement = {
+      ...statement,
+      kind: "interim",
+      ruleId: "R1",
+      rulesVersion: 4,
+      facts: null,
+      reason: null,
+      source: "own_initiative",
+      measures: [{ kind: "withhold_media", mediaId: id(3), noEffect: null, sealed: null }],
+      endedMeasures: [],
+      automatedDetection: true,
+      automatedDecision: "fully",
+      signal: { kind: "r1_score", source: null, matchKind: null, listedAs: null, viewed: null },
+    };
+    const objection = { text: "Please look at it again.", createdAt: "2026-09-12T09:00:00.000Z" };
+    const entry = exportedDecision(row, program, null, null, objection);
+    expect(entry).toMatchObject({ kind: "interim", automatedDetection: true, automatedDecision: "fully", signal: { kind: "r1_score", source: null, matchKind: null, listedAs: null, viewed: null }, objection });
+    expect(inFormat(entry)).toStrictEqual(entry);
+    expect(JSON.stringify(entry)).not.toMatch(/"score"|hash|listVersion|classification/);
   });
 
   test("a decision about the account names no post; a correction's reversals are listed, and a text the statement does not hold is null", () => {

@@ -235,6 +235,35 @@ export function createMediaRepo(db: Db) {
     },
 
     /**
+     * 3d Task 8 (design, sections 2 row 33, 5 and 7.14, the retention job's step tools_off): while the R1 check is off,
+     * every stored rating is set null in the caller's transaction, but the rating of an image that an unhandled signal
+     * names, which the sweep still puts before a person. The API's role holds UPDATE of the column (0015); answers how many
+     * images it changed. The step runs only while R1_CLASSIFIER is off, so "korbat keeps no rating from a time when one
+     * did" is true once it has run.
+     */
+    async forgetScores(tx: Pick<DbTx, "execute">): Promise<number> {
+      const rows = await tx.execute<{ id: string }>(sql`
+        update public.post_media m set nsfw_score = null
+         where m.nsfw_score is not null
+           and not exists (select 1 from public.automated_signals s where s.media_id = m.id and s.handled_at is null)
+        returning m.id`);
+      return rows.length;
+    },
+
+    /**
+     * 3d Task 8 (design, sections 6.3, 6.10 and 7.14, the retention job's step edge_purges): the outbox rows of the edge
+     * done more than EDGE_RULES.keepDays ago, deleted in the caller's transaction; answers how many. A row without an
+     * outcome is never taken: the job edge-purge has not finished with it.
+     */
+    async forgetPurges(tx: Pick<DbTx, "execute">): Promise<number> {
+      const rows = await tx.execute<{ id: string }>(sql`
+        delete from public.edge_purges e
+         where e.done_at is not null and e.done_at < now() - make_interval(days => ${EDGE_RULES.keepDays}::int)
+        returning e.id`);
+      return rows.length;
+    },
+
+    /**
      * Removes an upload of this account that is not on a post. 3d Task 7 (design, sections 5 and 7.8 step 5): with
      * `keepChecking` (the comparison is on), a row still processing whose check is pending or capped is kept and answered
      * `kept`; the sweeper deletes it once finalize gave it a verdict. A row gate K keeps (a held upload) is `none`.

@@ -53,6 +53,8 @@ export function marksOf(row: QueueRow): string[] {
   if (row.takenByProgram) marks.push(AUTOMATION_WORDS.queue.taken);
   // 3d Task 7 [queue.matchFlag]: a match that only flags, which moves nothing.
   if (row.matchFlag) marks.push(AUTOMATION_WORDS.queueMatchFlag);
+  // 3d Task 8 [queue.flag]: possible coordinated reporting, which moves nothing either.
+  if (row.flag !== null) marks.push(AUTOMATION_WORDS.queueFlag);
   if (row.objected) marks.push(AUTOMATION_WORDS.queue.objected);
   return marks;
 }

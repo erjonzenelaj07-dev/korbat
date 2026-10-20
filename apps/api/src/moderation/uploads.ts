@@ -71,6 +71,30 @@ export async function refusalView(deps: Pick<ModerationDeps, "apiDb" | "media">,
   };
 }
 
+/** How many of the uploader's refusals one read of the export takes. */
+const EXPORT_REFUSALS_PAGE = 50;
+
+/**
+ * 3d Task 8 (W.10): the export's `uploads`: every refusal of the account's uploads, newest first, each as its notice reads
+ * it (UploadRefusalView, through the same view the notice's route answers), so the export says what the notice says and
+ * no more: no file, no hash, no classification and no list version.
+ */
+export async function exportedUploads(deps: Pick<ModerationDeps, "apiDb" | "media">, ownerId: string): Promise<UploadRefusalView[]> {
+  const exported: UploadRefusalView[] = [];
+  let after: { at: string; id: string } | null = null;
+  for (;;) {
+    const page: { id: string; at: string; key: string }[] = await deps.media.refusalsOf(ownerId, after, EXPORT_REFUSALS_PAGE);
+    for (const refusal of page) {
+      const view = await refusalView(deps, ownerId, refusal.id);
+      // A refusal the page has just named is the owner's, unless its record was erased in between: then it names nobody.
+      if (view !== null) exported.push(view);
+    }
+    const last = page.at(-1);
+    if (page.length < EXPORT_REFUSALS_PAGE || last === undefined) return exported;
+    after = { at: last.key, id: last.id };
+  }
+}
+
 /** GET /api/moderation/uploads/:refusal: the notice's view for its uploader alone; not_found for anyone else. */
 export async function authorUpload(deps: Pick<ModerationDeps, "apiDb" | "media">, viewer: string, refusalId: string): Promise<UploadRefusalView> {
   const view = await refusalView(deps, viewer, refusalId);

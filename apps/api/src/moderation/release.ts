@@ -343,6 +343,23 @@ export async function authorNotices(deps: Pick<ModerationDeps, "apiDb"> & { medi
   };
 }
 
+/**
+ * 3d Task 8 (W.10): the export's `releases`: every release about the account's posts, and every release of one of its
+ * refused uploads (given by id: the refusals are the media module's), newest first, each with its ground and its time and
+ * whether it was of an upload. Never one whose notice is held: the export says no more than the notices may.
+ */
+export async function exportedReleases(q: Runner, viewer: string, refusalIds: readonly string[]): Promise<{ id: string; basis: "leave" | "period"; releasedAt: string; upload: boolean }[]> {
+  const found = await rows<{ id: string; basis: "leave" | "period"; released_at: string; upload: boolean }>(
+    q,
+    sql`select r.id, r.basis, ${iso("r.released_at")} as released_at, r.upload_refusal_id is not null as upload
+          from public.releases r
+         where r.author_notice <> 'held'
+           and (${AUTHOR("r")} = ${viewer}::uuid or r.upload_refusal_id = any(${`{${refusalIds.join(",")}}`}::uuid[]))
+         order by r.released_at desc, r.id desc`,
+  );
+  return found.map((row) => ({ id: row.id, basis: row.basis, releasedAt: row.released_at, upload: row.upload }));
+}
+
 /** GET /api/moderation/releases/:release: the notice for its author alone, and not_found while it is held or for anyone else. */
 export async function authorRelease(deps: Pick<ModerationDeps, "apiDb">, viewer: string, releaseId: string): Promise<ReleaseNoticeView> {
   const view = await releaseView(deps.apiDb, releaseId, { owner: viewer });

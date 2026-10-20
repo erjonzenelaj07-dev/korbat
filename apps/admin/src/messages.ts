@@ -5,6 +5,7 @@ import {
   QUARANTINE_RULES,
   REPLY_AIM_HOURS,
   RETENTION,
+  SIGNAL_RULES,
   STANDING_RULES,
   type AppealsReviewedParams,
   type AuthorStanding,
@@ -913,6 +914,19 @@ export const AUTOMATION_WORDS = {
   },
   /** 3d Task 7 [queue.matchFlag] (8.3): a match that only flags; it moves nothing. */
   queueMatchFlag: "A match that only flags",
+  /**
+   * 3d Task 8 [queue.flag] (8.3), and the chip beside [case.flag]: the flag "possible coordinated reporting". It moves
+   * nothing: the case stands where its lane and age put it.
+   */
+  queueFlag: "Possible coordinated reporting",
+  /**
+   * [case.flag] (8.4), under the case's header with the chip: the two counts from the answer, the window's minutes and the
+   * linked share from SIGNAL_RULES (the share as a word while it is one half). It names no reporter.
+   */
+  caseFlag: (items: number, reporters: number) =>
+    `Many reports in a short time from accounts that are linked: ${items} unanswered reports from ${reporters} accounts within ${SIGNAL_RULES.windowMinutes} minutes, and at least ${SIGNAL_RULES.linkedShare === 0.5 ? "half" : `${SIGNAL_RULES.linkedShare * 100} percent`} of those accounts follow one another. This is not a finding: decide the content as always.`,
+  /** [case.sameSource] (8.4), on an item whose signed-in reporter has other unanswered items on other open cases: a count, never a case. */
+  sameSource: (n: number) => `${n} other open ${n === 1 ? "item" : "items"} from this source.`,
   /** [home.flags] (8.2). */
   homeFlags: (flags: number) =>
     `Matches that only flag: ${flags} open cases hold one, a match with an entry that its source does not class as child sexual abuse material. Each stands in the queue where its lane and age put it.`,

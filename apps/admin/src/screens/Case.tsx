@@ -493,6 +493,8 @@ function Item({ item, props }: { item: CaseItem; props: CaseScreenViewProps }) {
         {"Source: "}
         <UserText>{item.source.label}</UserText>
         {sourceWords(item.source) === "" ? "" : ` (${sourceWords(item.source)})`}
+        {/* 3d Task 8 (section 8.4): [case.sameSource], a count of the reporter's other open items; it names no case. */}
+        {item.sameSourceOpen > 0 ? ` ${AUTOMATION_WORDS.sameSource(item.sameSourceOpen)}` : ""}
         {orderId !== null && props.onOpenOrder !== undefined ? (
           <>
             {" "}
@@ -961,6 +963,12 @@ export function CaseScreenView(props: CaseScreenViewProps) {
         {`${LANE_NAMES[view.lane]}${view.lane === 0 ? " lane" : ""}; opened ${dateTime(view.openedAt)}; version ${view.stateVersion}`}
         {view.closedAt === null ? "" : `; closed ${dateTime(view.closedAt)}`}
       </p>
+      {/* 3d Task 8 (section 8.4): [case.flag] under the header, with its chip; counts only, never a reporter. */}
+      {view.flag === null ? null : (
+        <p className="notice">
+          <span className="chip">{AUTOMATION_WORDS.queueFlag}</span> <span>{AUTOMATION_WORDS.caseFlag(view.flag.items, view.flag.reporters)}</span>
+        </p>
+      )}
       {notice ? (
         <p role="status" className="notice">
           {notice}

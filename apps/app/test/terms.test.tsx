@@ -30,6 +30,9 @@ import * as terms from "../src/lib/terms";
  * RETENTION by three members: two numbers and one phrase, which the terms print as they print a rule's text. 3f (design,
  * W.6) adds "Authorities' orders" and "Contact point for authorities", rewrites "Terrorist content", grows four sections
  * by sentences and RETENTION by four members read from ORDER_RULES, whose two other numbers the terms print are held too.
+ * 3d (design, W.9) adds "Automated tools" and "Transparency", whose numbers are AUTOMATION_RULES', changes four sections'
+ * sentences, and grows "Your data" by a paragraph and RETENTION's printed list, with RETENTION's three new members, the
+ * years of the records to authorities and the reader count's salt (RECIPIENT_RULES.saltHours).
  */
 vi.mock("expo-router", () => ({
   Link: ({ href, children }: { href: string; children: ReactElement }) => cloneElement(children, { href } as object),
@@ -53,7 +56,7 @@ const textOf = (markup: string): string =>
     .trim();
 
 /** The sections 3c and 3e wrote or rewrote whole; of "Your data" they wrote every paragraph after the first, which older designs wrote. */
-const MODERATION_TITLES = ["What you can post", "The rules", "Reports and notices", "How moderators decide", "Appeals", "Strikes", "Suspension and termination", "Reporting in bad faith", "Handles", "Authorities' orders", "Terrorist content", "Contact point for authorities"];
+const MODERATION_TITLES = ["What you can post", "The rules", "Reports and notices", "How moderators decide", "Automated tools", "Appeals", "Strikes", "Suspension and termination", "Reporting in bad faith", "Handles", "Authorities' orders", "Terrorist content", "Contact point for authorities", "Transparency"];
 const bodyOf = (t: TermsModule, title: string): string => t.TERMS_SECTIONS.find((section: Section) => section.title === title)?.body ?? "";
 const paragraphsOf = (t: TermsModule, title: string): string[] => t.termsParagraphs(bodyOf(t, title));
 /** What 3c added to "Your data". */
@@ -72,7 +75,7 @@ const share = (fraction: number): string => (fraction === 0.5 ? "half" : `${frac
  * with other numbers in the constants.
  */
 function numbersTable(c: Contracts): { constant: string; section: string; phrase: string }[] {
-  const { NOTICE_LIMITS: L, RETENTION: R, DAILY_LIMITS: D, STANDING_RULES: S, ORDER_RULES: O } = c;
+  const { NOTICE_LIMITS: L, RETENTION: R, DAILY_LIMITS: D, STANDING_RULES: S, ORDER_RULES: O, AUTOMATION_RULES: A } = c;
   return [
     { constant: "NOTICE_LIMITS.signedOut.perHour", section: "Reports and notices", phrase: `at most ${L.signedOut.perHour} reports an hour and` },
     { constant: "NOTICE_LIMITS.signedOut.perDay", section: "Reports and notices", phrase: `and ${L.signedOut.perDay} a day from one network without an account` },
@@ -151,6 +154,23 @@ function numbersTable(c: Contracts): { constant: string; section: string; phrase
     { constant: "RETENTION.restoreGapMonths", section: "Your data", phrase: `A gap a restore left is kept ${count(R.restoreGapMonths, "month")} when it was closed as not needed or imported` },
     { constant: "ORDER_RULES.reportHoldDays", section: "Your data", phrase: `and for ${count(O.reportHoldDays, "day")} at most, korbat keeps the address` },
     { constant: "ORDER_RULES.reportHoldDays", section: "Your data", phrase: `is kept while a report is owed, ${count(O.reportHoldDays, "day")} at most` },
+    // 3d (W.9): a program's limits and its target in "Automated tools", and what the tools and sealed images leave behind.
+    { constant: "AUTOMATION_RULES.decisionsPerHour", section: "Automated tools", phrase: `It takes at most ${A.decisionsPerHour} measures an hour and` },
+    { constant: "AUTOMATION_RULES.decisionsPerDay", section: "Automated tools", phrase: `measures an hour and ${A.decisionsPerDay} a day under rule R1` },
+    { constant: "AUTOMATION_RULES.r2DecisionsPerHour", section: "Automated tools", phrase: `under rule R1, and ${A.r2DecisionsPerHour} and` },
+    { constant: "AUTOMATION_RULES.r2DecisionsPerDay", section: "Automated tools", phrase: ` and ${A.r2DecisionsPerDay} under rule R2` },
+    { constant: "AUTOMATION_RULES.unansweredMax", section: "Automated tools", phrase: `none under a rule while ${A.unansweredMax} of its measures under that rule wait for a person` },
+    { constant: "AUTOMATION_RULES.unansweredHours", section: "Automated tools", phrase: `a request for a person has waited longer than ${A.unansweredHours} hours` },
+    { constant: "AUTOMATION_RULES.objectionTargetHours", section: "Automated tools", phrase: `korbat's target is that one answers within ${A.objectionTargetHours} hours` },
+    { constant: "RETENTION.matchKeepDays", section: "Your data", phrase: `never your account) for ${count(R.matchKeepDays, "day")} after the case closed` },
+    { constant: "RETENTION.matchKeepDays", section: "Your data", phrase: `the record of a match: ${count(R.matchKeepDays, "day")} after its case closed` },
+    { constant: "RETENTION.reportHoldDays", section: "Your data", phrase: `korbat keeps your email address for up to ${count(R.reportHoldDays, "day")} from the refusal` },
+    { constant: "RETENTION.reportHoldDays", section: "Your data", phrase: `was not accepted: up to ${count(R.reportHoldDays, "day")} from the refusal` },
+    { constant: "RETENTION.edgePurgeDays", section: "Your data", phrase: `It keeps for ${count(R.edgePurgeDays, "day")} the record that a cached copy was to be dropped` },
+    { constant: "RETENTION.edgePurgeDays", section: "Your data", phrase: `a cached copy was to be dropped: ${count(R.edgePurgeDays, "day")} after it closed` },
+    { constant: "RETENTION.orderRecordYears", section: "Your data", phrase: `and for ${count(R.orderRecordYears, "year")} the record of a release` },
+    { constant: "RETENTION.orderRecordYears", section: "Your data", phrase: `as korbat's records to authorities (${count(R.orderRecordYears, "year")})` },
+    { constant: "RECIPIENT_RULES.saltHours", section: "Your data", phrase: `and the day's key after ${count(c.RECIPIENT_RULES.saltHours, "hour")}` },
   ];
 }
 
@@ -173,6 +193,9 @@ const constantPaths = (c: Contracts): string[] => [
   // 3f: of ORDER_RULES the terms print two numbers by themselves; the others they print through RETENTION, or not at all.
   ...numberPaths("ORDER_RULES.reportHoldDays", c.ORDER_RULES.reportHoldDays),
   ...numberPaths("ORDER_RULES.preserveMarginDays", c.ORDER_RULES.preserveMarginDays),
+  // 3d: of AUTOMATION_RULES the terms print a program's six limits and the target of an answer; of RECIPIENT_RULES the salt's hours.
+  ...(["decisionsPerHour", "decisionsPerDay", "r2DecisionsPerHour", "r2DecisionsPerDay", "unansweredMax", "unansweredHours", "objectionTargetHours"] as const).flatMap((key) => numberPaths(`AUTOMATION_RULES.${key}`, c.AUTOMATION_RULES[key])),
+  ...numberPaths("RECIPIENT_RULES.saltHours", c.RECIPIENT_RULES.saltHours),
 ];
 
 /** A rule's name inside a sentence: its title without the leading "No". */
@@ -241,6 +264,8 @@ describe("the terms' sections", () => {
       "The rules",
       "Reports and notices",
       "How moderators decide",
+      // 3d (W.9): what a program may do, after the section that says a moderator decides every case.
+      "Automated tools",
       "Appeals",
       "Strikes",
       "Suspension and termination",
@@ -249,6 +274,8 @@ describe("the terms' sections", () => {
       "Authorities' orders",
       "Terrorist content",
       "Contact point for authorities",
+      // 3d (W.9): what korbat publishes.
+      "Transparency",
       "Explore",
       "Your account",
       "Your data",
@@ -333,6 +360,8 @@ describe("the terms' sections", () => {
         "A person looks at every report about something that is on korbat.",
         "A link that names nothing korbat can show is answered automatically, and the answer says so.",
         "never by how many reports an item has, and by who sent them only under the emergency switch",
+        // 3d (W.9): the flag, which orders nothing.
+        "When many reports about one post arrive in a short time from accounts that follow one another, korbat's moderators are shown that; it changes neither the order in which reports are read nor who decides; a moderator still judges the content itself.",
         "A report is never read after a less severe one, and every report is still read and answered.",
         "gets at most one receipt a day; the others come with the next daily email",
         "korbat sends no report email to an address whose holder asked it to stop",
@@ -343,12 +372,14 @@ describe("the terms' sections", () => {
         "For a notice that something is illegal, korbat sends its decisions by email once a day when you gave an email or sent it from an account. Every decision on a report is shown under Settings, Cases, Your reports, or on the report's own page.",
       ],
       "How moderators decide": [
-        "A moderator, never a program, decides every case.",
+        // 3d (W.9): what a program may do until then is in Automated tools.
+        "A moderator decides every case; what a program may do until then is in Automated tools.",
         "A moderator never decides about their own accounts or about accounts close to them.",
         "every lifting of a seal, and every correction of such a decision",
         "a moderator and an admin decide without seeing the images, on the report and on what korbat can read",
         "Nobody at korbat opens images that are reported or found as such material while the report is unanswered or the images are sealed",
-        "After an admin has answered without a seal, staff may open them like any other image.",
+        // 3d (review ruling 2, as rulebook version 4 words R2): never an image an automated comparison matched.
+        "After an admin has answered without a seal, staff may open them like any other image, except an image that an automated comparison matched: korbat's staff do not open such an image at any time.",
         "It hides the images from everyone, their author included, from the first seal, and never hides a post's text.",
         "A report of this kind about a post that quotes another opens a case on the quoted post too.",
         "korbat does not put the old value back",
@@ -363,6 +394,8 @@ describe("the terms' sections", () => {
         "you can appeal it once, while any of it is in force",
         'choose "Appeal" on the decision\'s screen under Settings, Cases',
         "What korbat does while it decides cannot be appealed.",
+        // 3d (W.9).
+        "What a program does while a person has not decided cannot be appealed; you can ask for a person at once, and the person's decision can be appealed.",
         "a seal ends with an admin's answer to the reports it was taken on",
         "made none of the case's decisions, including hiding the content while it was decided, did not report it, and has no link to anyone in the case",
         "the appeal waits, without a time limit, and its screen says so",
@@ -569,6 +602,53 @@ describe("3f's sections and sentences (design, W.6)", () => {
   });
 });
 
+describe("3d's sections and sentences (design, W.9)", () => {
+  test("Automated tools holds the design's four paragraphs, its numbers from AUTOMATION_RULES", () => {
+    expect(paragraphsOf(terms, "Automated tools")).toEqual([
+      "korbat's decisions are taken by people. korbat may use two programs, and the rules page says under Automation which of them is switched on today.",
+      "The first rates uploaded images against rule R1 and keeps the rating with the image while the check is switched on. An image it rates as likely within the rule is put before a moderator. korbat may also hide that one image from other people until the moderator has decided; the post's text stays and you still see the image.",
+      "The second compares the fingerprint of an uploaded image with lists of images that a named body has classified as child sexual abuse material. korbat sends that body fingerprints and nothing else. An upload that the body reports as an exact match with such an entry is not accepted, now or later, and is kept, unopened, until an admin has decided whether korbat reports it to the authorities. A match with such an entry on an image of a post, exact or not, is put before an admin even when the program seals nothing; from then on korbat keeps that post's images, also if you delete the post or your account, until the admin has answered (Your data). On an exact match korbat may also seal that post's images for everyone until then. A match is a comparison of fingerprints: it is not korbat's finding about an image, and korbat's staff do not open an image that a match names, before the admin's answer or after it. A match with an entry of any other class only flags the image for a person.",
+      `A program never removes anything, never judges text, and never suspends or restricts an account. It takes at most 20 measures an hour and 100 a day under rule R1, and 20 and 100 under rule R2, none under a rule while 20 of its measures under that rule wait for a person, and none at all while a request for a person has waited longer than 72 hours. Every measure a program takes you are told at once, with the reasons and the words "automated means", under Settings, Cases and by email. You can ask for a person there, and korbat's target is that one answers within 24 hours. The person's decision is the one you can appeal. An upload that is not accepted is different: nobody at korbat can accept it, since nobody opens it; you can object, and an admin decides what happens to the file. korbat uses these programs to keep such content from being shown, on the basis of its legitimate interest in a service that follows its rules and the law; you can object to that at the address under Contact.`,
+    ]);
+  });
+
+  test("Transparency says what korbat publishes, and the one count it keeps to publish it", () => {
+    expect(paragraphsOf(terms, "Transparency")).toEqual([
+      "korbat publishes its rules, with every change, on the rules page, and each year the counts of what its moderators, its programs and authorities' orders did, on the Transparency page. It publishes numbers, never a decision, and no number small enough to point at a person, except the figures on authorities' orders, which the law asks for as numbers. To give the authorities the figure the Digital Services Act asks for, korbat counts how many accounts and readers use it each month and keeps two numbers a month; the Transparency page says how it counts and what exists until a month has ended.",
+    ]);
+  });
+
+  test("Your data: what korbat keeps on a report of child sexual abuse material it also keeps on a match; sealed images are kept for the authorities with no destruction promised and no period named; and a paragraph and RETENTION's list of what the tools leave behind, before 3f's", () => {
+    const data = paragraphsOf(terms, "Your data");
+    const all = data.join(" ");
+    expect(all).toContain("For a report of child sexual abuse material, or a comparison that finds a match of the kind Automated tools describes, korbat keeps the images of the reported or matched post,");
+    expect(all).toContain(
+      "Sealed images that korbat has reported are kept for the authorities, away from the rest of korbat's images and outside its ordinary backups. korbat does not destroy them on its own judgement, and not because an authority has assessed them: only when an authority or a court has given korbat leave or an instruction to destroy them, and an admin has confirmed it. korbat then tells you, at once or as soon as it may. If the authority answers that they are not illegal, the seal is lifted and they are shown again. An authority may never answer. korbat has set no time after which it then destroys them: they stay sealed and kept.",
+    );
+    const at = data.findIndex((paragraph) => paragraph.startsWith("While a comparison is switched on korbat keeps fingerprints"));
+    expect(at).toBeGreaterThan(0);
+    expect(data[at + 1]).toMatch(/^The periods for the automated tools and for sealed images: the record of a match: /);
+    expect(data[at + 2]).toMatch(/^Two things the law can oblige korbat to keep/);
+    for (const said of [
+      "It keeps what you wrote when you asked for a person as long as the decision's own texts, and what you wrote when you objected to a refused upload as long as that upload's record of a match.",
+      "Fingerprints of an uploaded image: as long as the image, and only while a comparison is switched on; all are deleted when it is switched off.",
+      "The rating of an image under rule R1: as long as the image, and only while the check is switched on; all are deleted when it is switched off.",
+      "The monthly count of readers: two numbers a month, kept; the counting sketches are deleted at the month's end,",
+    ]) expect(all, said).toContain(said);
+  });
+
+  test("the words (section 12.2): no text promises a destruction or names a period for sealed images, none says more of a match than is known, and none says that a program does nothing to an account", () => {
+    const all = terms.TERMS_SECTIONS.map((section) => section.body).join(" ");
+    for (const banned of ["no longer holds", "destroyed it", "assessed them as illegal", "assessed it as illegal", "is child sexual abuse material", "korbat confirmed", "posted such", "does nothing to your account", "acts on an account", "Whatever it does"]) {
+      expect(all.includes(banned), banned).toBe(false);
+    }
+    // A sentence on destroying sealed images names a leave or an instruction, never a period or an assessment.
+    for (const sentence of all.split(/[.][ ]|[.]$|[.](?=[^a-z])/m).filter((part) => /destroy/i.test(part) && /sealed/i.test(part))) expect(sentence, sentence).not.toMatch(/after [0-9]+|within [0-9]+|days|months/);
+    // The terms keep their version: 3d's sections are drafts, as 3c's, 3e's and 3f's were.
+    expect(terms.TERMS_VERSION).toBe("draft-2026-09");
+  });
+});
+
 describe("the table tests: the terms' numbers, rules, measures and outcomes are their constants'", () => {
   test("the table of numbers names every number of NOTICE_LIMITS, CSAM_NOTICE_MAX_ACCOUNTS, SUSPECT_EARLIER_MONTHS, APPEAL_MONTHS, DAILY_LIMITS, RETENTION, STANDING_RULES and REPLY_AIM_HOURS, and the two of ORDER_RULES the terms print", () => {
     expect([...new Set(numbersTable(contracts).map((row) => row.constant))].sort()).toEqual(constantPaths(contracts).sort());
@@ -600,6 +680,16 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     expect(text["Terrorist content"]).toContain("korbat keeps it, with its images and a copy of its text, for six months from the disabling");
     expect(text["Your data"]).toContain("and for seven days at most, korbat keeps the address");
     expect(text["Your data"]).toContain("A gap a restore left is kept 12 months when it was closed as not needed or imported");
+    // 3d's numbers as a reader meets them.
+    expect(text["Automated tools"]).toContain(
+      "It takes at most 20 measures an hour and 100 a day under rule R1, and 20 and 100 under rule R2, none under a rule while 20 of its measures under that rule wait for a person, and none at all while a request for a person has waited longer than 72 hours.",
+    );
+    expect(text["Automated tools"]).toContain("korbat's target is that one answers within 24 hours.");
+    expect(text["Your data"]).toContain("for 180 days after the case closed, the hold ended or the images were released");
+    expect(text["Your data"]).toContain("Your email address after an upload of yours was not accepted: up to seven days from the refusal");
+    expect(text["Your data"]).toContain("The record that a cached copy was to be dropped: 30 days after it closed.");
+    expect(text["Your data"]).toContain("and the day's key after 26 hours.");
+    expect(text["Your data"]).toContain("as korbat's records to authorities (three years).");
   });
 
   test("the terms name no measure the constants lack and no ban; every kind of the ledger is quoted; and no number but the constants', the emergency switch's 48 hours and the Regulation's own", () => {
@@ -619,6 +709,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     };
     collect([contracts.NOTICE_LIMITS, contracts.DAILY_LIMITS, contracts.RETENTION, contracts.CSAM_NOTICE_MAX_ACCOUNTS, contracts.SUSPECT_EARLIER_MONTHS, contracts.APPEAL_MONTHS, contracts.STANDING_RULES, contracts.REPLY_AIM_HOURS]);
     collect([contracts.ORDER_RULES.reportHoldDays, contracts.ORDER_RULES.preserveMarginDays]);
+    collect([contracts.AUTOMATION_RULES, contracts.RECIPIENT_RULES.saltHours]);
     const outside = Object.entries(text)
       .filter(([title]) => title !== "The rules")
       .map(([, body]) => body)
@@ -659,6 +750,9 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
           REPLY_AIM_HOURS: renumber(actual.REPLY_AIM_HOURS),
           // 3f: the two numbers of ORDER_RULES the terms print by themselves (the others through RETENTION).
           ORDER_RULES: renumber(actual.ORDER_RULES),
+          // 3d: a program's limits and target, and the reader count's salt (the rest of RECIPIENT_RULES as it is).
+          AUTOMATION_RULES: renumber(actual.AUTOMATION_RULES),
+          RECIPIENT_RULES: { ...actual.RECIPIENT_RULES, saltHours: renumber(actual.RECIPIENT_RULES.saltHours) },
           ACCOUNT_MEASURE_SCOPE: { retired: "the phrase of a retirement.", measure: "the phrase of an account measure." },
           RETIRED_HANDLE_PREFIX: "gone_",
           APPEAL_MONTHS: renumber(actual.APPEAL_MONTHS),
@@ -691,6 +785,8 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       expect(changed.contracts.STANDING_RULES.ladderDays).toHaveLength(3);
       expect(changed.contracts.APPEAL_MONTHS).toBeGreaterThan(100);
       expect(changed.contracts.ORDER_RULES.reportHoldDays).toBeGreaterThan(100);
+      expect(changed.contracts.AUTOMATION_RULES.decisionsPerHour).toBeGreaterThan(100);
+      expect(changed.contracts.RECIPIENT_RULES.saltHours).toBeGreaterThan(100);
       expect(changed.rules.RULES_VERSION).toBe(9);
       expect(changed.terms).not.toBe(terms);
     });
@@ -731,6 +827,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       collect([c.NOTICE_LIMITS, c.DAILY_LIMITS, c.RETENTION, c.CSAM_NOTICE_MAX_ACCOUNTS, c.SUSPECT_EARLIER_MONTHS, c.APPEAL_MONTHS, c.APPEAL_MONTHS + Math.ceil(c.RETENTION.intakeDays / 30), changed.rules.RULES_VERSION]);
       collect([c.STANDING_RULES, c.REPLY_AIM_HOURS, c.STANDING_RULES.ladderStrikes - 1, c.STANDING_RULES.reportWarnShare * 100]);
       collect([c.ORDER_RULES.reportHoldDays, c.ORDER_RULES.preserveMarginDays]);
+      collect([c.AUTOMATION_RULES, c.RECIPIENT_RULES.saltHours]);
       const outside = all.replace(/Article [0-9]+ of /g, " ").replace(/Article [0-9]+\([0-9]+\)|Regulation \(EU\) [0-9]+\/[0-9]+/g, " ").replace(/\bR[1-6]\b/g, " ");
       expect((outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual(["48", "48"]);
     });

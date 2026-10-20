@@ -142,6 +142,16 @@ export interface MediaForCases {
    * handled, read only while the matcher is not off.
    */
   unsignalled(limit: number, options: { hours: number; r1: { threshold: number } | null; match?: boolean }): Promise<UnsignalledImage[]>;
+  /**
+   * 3d Task 8 (design, sections 5 and 7.14): the retention job's statements on this module's tables, each in the caller's
+   * transaction, whose audit row the job writes after it; each answers how many rows it changed. The step tools_off calls
+   * forgetHashes while MEDIA_MATCH is off (every row of media_hashes) and forgetScores while R1_CLASSIFIER is off (every
+   * rating no unhandled signal names); the step edge_purges calls forgetPurges (the outbox rows of the edge done
+   * EDGE_RULES.keepDays ago).
+   */
+  forgetHashes(tx: DbTx): Promise<number>;
+  forgetScores(tx: DbTx): Promise<number>;
+  forgetPurges(tx: DbTx): Promise<number>;
 }
 
 /**
@@ -270,5 +280,8 @@ export function mediaForCases(input: Pick<MediaDeps, "repo" | "files" | "log"> &
     recentUnreported: (days, max) => deps.matches.recentUnreported(days, max),
     refusalSubject: (q, refusalId) => deps.matches.refusalSubject(q, refusalId),
     checkCounts: () => deps.matches.checkCounts(),
+    forgetHashes: (tx) => deps.matches.forgetHashes(tx),
+    forgetScores: (tx) => deps.repo.forgetScores(tx),
+    forgetPurges: (tx) => deps.repo.forgetPurges(tx),
   };
 }

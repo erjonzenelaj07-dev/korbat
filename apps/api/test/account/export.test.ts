@@ -236,6 +236,11 @@ function harness() {
   // not have: the account module writes the format's members in the format's order, and nothing else.
   const [removalId, correctionId, reportedPost] = [randomUUID(), randomUUID(), randomUUID()];
   const removal = {
+    // 3d (W.10): what the statement says of automated means and the objection, first, in another order than the format's.
+    objection: null,
+    signal: null,
+    automatedDecision: "not_automated",
+    automatedDetection: false,
     appeal: { result: "kept", state: "answered" },
     legalReference: null,
     reason: "That is an attack on people for what they are.",
@@ -256,6 +261,11 @@ function harness() {
     decidedBy: "a staff member the export must never name",
   } satisfies ModerationExport["decisions"][number] & { decidedBy: string };
   const moderation: ModerationExport = {
+    // 3d (W.10): a refused upload and a release, each object's members in another order than the format's.
+    releases: [{ upload: true, releasedAt: new Date(T0 - DAY_MS).toISOString(), basis: "leave", id: correctionId }],
+    uploads: [
+      { reportKept: true, released: new Date(T0 - DAY_MS).toISOString(), endReason: null, endAs: "report", endedAt: new Date(T0 - 2 * DAY_MS).toISOString(), mayObject: false, objection: { objectedAt: new Date(T0 - 2 * DAY_MS).toISOString(), text: "It is my own photo." }, listedAs: "csam", matchKind: "exact", source: "test", refusedAt: new Date(T0 - 3 * DAY_MS).toISOString(), id: removalId },
+    ],
     // 3e (W.8): the report counts, a reply and a suspension at once that a correction lifted, each object's members in
     // another order than the format's.
     reporting: {
@@ -300,7 +310,7 @@ function harness() {
     ],
     decisions: [
       removal,
-      { appeal: null, legalReference: null, reason: null, facts: null, reversals: [{ mediaId: null, kind: "restore_bio" }], measures: [], rulesVersion: 2, ruleId: null, ground: null, outcome: "reversed", kind: "correction", postId: null, decidedOn: "2026-09-10", id: correctionId },
+      { objection: null, signal: null, automatedDecision: "not_automated", automatedDetection: false, appeal: null, legalReference: null, reason: null, facts: null, reversals: [{ mediaId: null, kind: "restore_bio" }], measures: [], rulesVersion: 2, ruleId: null, ground: null, outcome: "reversed", kind: "correction", postId: null, decidedOn: "2026-09-10", id: correctionId },
     ],
   };
   // The deletion side of the three interfaces is not exercised by the export; test/account/deletion.test.ts covers it.
@@ -516,8 +526,12 @@ function expectedModeration(h: Harness) {
         reason: "That is an attack on people for what they are.",
         legalReference: null,
         appeal: { state: "answered", result: "kept" },
+        automatedDetection: false,
+        automatedDecision: "not_automated",
+        signal: null,
+        objection: null,
       },
-      { id: h.correctionId, decidedOn: "2026-09-10", postId: null, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, measures: [], reversals: [{ kind: "restore_bio", mediaId: null }], facts: null, reason: null, legalReference: null, appeal: null },
+      { id: h.correctionId, decidedOn: "2026-09-10", postId: null, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, measures: [], reversals: [{ kind: "restore_bio", mediaId: null }], facts: null, reason: null, legalReference: null, appeal: null, automatedDetection: false, automatedDecision: "not_automated", signal: null, objection: null },
     ],
     reports: [
       {
@@ -561,6 +575,24 @@ function expectedModeration(h: Harness) {
       marks: [{ ref: "N-ABCDEFGH24", position: 1, sentOn: "2026-09-11", markedAt: iso(T0 - DAY_MS), withdrawnAt: null, counts: true }],
       markedReports: 1,
     },
+    // 3d (W.10): the refused upload and the release, last, each in the format's order.
+    uploads: [
+      {
+        id: h.removalId,
+        refusedAt: iso(T0 - 3 * DAY_MS),
+        source: "test",
+        matchKind: "exact",
+        listedAs: "csam",
+        objection: { text: "It is my own photo.", objectedAt: iso(T0 - 2 * DAY_MS) },
+        mayObject: false,
+        endedAt: iso(T0 - 2 * DAY_MS),
+        endAs: "report",
+        endReason: null,
+        released: iso(T0 - DAY_MS),
+        reportKept: true,
+      },
+    ],
+    releases: [{ id: h.correctionId, basis: "leave", releasedAt: iso(T0 - DAY_MS), upload: true }],
   };
 }
 
@@ -710,7 +742,7 @@ describe("building the export", () => {
     const h = harness();
     const deps: AccountDeps = { ...h.deps, moderation: undefined };
     const text = (await collect(exportJson(await buildExport(deps, h.userId, h.currentSession, h.now())))).join("");
-    expect(text).toBe(JSON.stringify({ ...expectedDocument(h), moderation: { decisions: [], reports: [], strikes: [], standing: [], replies: [], reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 } } }, null, 2));
+    expect(text).toBe(JSON.stringify({ ...expectedDocument(h), moderation: { decisions: [], reports: [], strikes: [], standing: [], replies: [], reporting: { frameDays: STANDING_RULES.reportFrameDays, days: [], marks: [], markedReports: 0 }, uploads: [], releases: [] } }, null, 2));
     expect(() => ExportFormat.parse(JSON.parse(text))).not.toThrow();
     expect(h.asked).toEqual([]);
   });

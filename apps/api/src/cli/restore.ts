@@ -258,6 +258,12 @@ const CORRECTED_COLUMNS: Record<string, string> = {
 class Importer {
   readonly counts: Counts = { orders: 0, items: 0, events: 0, notifications: 0, productions: 0 };
   readonly gaps: WrittenGap[] = [];
+  /**
+   * 3d Task 8 (7.3, W.11): the published versions of the yearly edition that the restored database no longer holds, each
+   * by its year, version and the time it was published. The import writes nothing for them and opens no gap: the job
+   * publishes a due version again, and the operator reads Restoring for what a reader of /transparency then sees.
+   */
+  readonly editionsLost: { year: number; version: number; at: string }[] = [];
   constructor(
     private readonly tx: DbTx,
     private readonly importId: string,
@@ -564,6 +570,18 @@ class Importer {
   }
 
   /**
+   * 3d Task 8: a lost edition_published row (the system's, 6.4). A cheap check and no write: whether the restored database
+   * holds that version of that year's edition. One it lacks is listed for the operator, never published again here.
+   */
+  async edition(entry: TailLine): Promise<void> {
+    const year = Number(entry.metadata.year);
+    const version = Number(entry.metadata.version);
+    if (!Number.isInteger(year) || !Number.isInteger(version)) return;
+    const [held] = await rows<{ year: number }>(this.tx, sql`select e.year from public.transparency_editions e where e.year = ${year}::smallint and e.version = ${version}::smallint`);
+    if (held === undefined) this.editionsLost.push({ year, version, at: entry.line.at });
+  }
+
+  /**
    * A lost withdrawal of a leave (release_leave_withdrawn): a gap of the class release only where the restored database
    * holds the leave and shows it standing, which release-leave --withdraw --gap closes; a leave it does not hold supported
    * no release and is not recorded again.
@@ -618,6 +636,9 @@ async function importLine(importer: Importer, entry: TailLine, withdrawnLater: R
       // An access for an authority opened a production of its own (Task 5); an access for a review or a complaint did not.
       if (typeof entry.metadata.productionId === "string") return importer.noted(entry);
       return;
+    // 3d Task 8 (W.11): a published version of the yearly edition the backup lacks is listed, and nothing is written.
+    case "edition_published":
+      return importer.edition(entry);
     default:
       // A sign-in, a key's or a session's row, a retention round, a copy, a message closed, a reveal: no record of 3f and
       // no measure. The mailbox and the operator's notes are their record.
@@ -707,5 +728,9 @@ function describeImport(c: string, head: { seq: number; hash: string }, walked: 
   );
   out.push(`${c}: Not in these files: anything after ${lastAt ?? "the head"}, the keeper's last download. Compare the contact-point mailbox since then with the orders above; open what is missing with order-open.`);
   if (walked.hole !== null) out.push(`${c}: the files hold nothing between place ${walked.hole.after} and place ${walked.hole.before}: what happened there is not imported`);
+  // 3d Task 8 (W.11, Restoring): one line a published version of an edition that the restored database lost.
+  for (const lost of importer.editionsLost) {
+    out.push(`${c}: edition ${lost.year} version ${lost.version}, published ${lost.at}, is not in the restored database: /transparency no longer shows it until the job publishes the year again (the README, Restoring).`);
+  }
   return out;
 }

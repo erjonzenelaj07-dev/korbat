@@ -1045,6 +1045,11 @@ export interface CaseItemRow {
   markWithdrawn: boolean;
   /** 3f: the order of an order's intake item; null on every other item. */
   orderId: string | null;
+  /**
+   * 3d Task 8 (design, section 7.13 step 4): for an item of a signed-in reporter still linked to an account, how many
+   * other unanswered items that reporter has on other open cases; 0 for every other item. A count, never a case.
+   */
+  sameSourceOpen: number;
 }
 
 /**
@@ -1086,6 +1091,7 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
     unfounded: boolean;
     mark_withdrawn: boolean;
     order_id: string | null;
+    same_source_open: number;
   }>(
     q,
     sql`select i.id, i.seq, i.position, ${iso("i.created_at")} as created_at, i.lane, i.target_type, i.target_id, i.named_handle, i.media_id, i.suspect, i.reporter_account_id,
@@ -1099,7 +1105,11 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
                    where p.id = i.target_id order by a.created_at desc, a.id limit 1) end as quoted_case_id,
                (i.reexamines_item_id is null and n.kind = 'user' and n.reporter_id is not null and not n.alleges_illegal and not n.csam) as markable,
                (m.item_id is not null and m.withdrawn_by is null) as unfounded, (m.withdrawn_by is not null) as mark_withdrawn,
-               (select o.order_id from legal_order_items o where o.intake_item_id = i.id) as order_id
+               (select o.order_id from legal_order_items o where o.intake_item_id = i.id) as order_id,
+               case when n.kind = 'user' and not n.csam and n.channel = 'signed_in' and i.reporter_account_id is not null then
+                 (select count(*)::int from intake_items o join cases oc on oc.id = o.case_id
+                   where o.reporter_account_id = i.reporter_account_id and o.answered_by is null and o.case_id <> i.case_id and oc.closed_at is null)
+               else 0 end as same_source_open
           from intake_items i join intakes n on n.id = i.intake_id
           left join unfounded_marks m on m.item_id = i.id
          where i.case_id = ${caseId}::uuid order by i.seq`,
@@ -1137,6 +1147,7 @@ export async function caseItems(q: Runner, caseId: string, personId: string): Pr
     unfounded: row.unfounded,
     markWithdrawn: row.mark_withdrawn,
     orderId: row.order_id,
+    sameSourceOpen: row.same_source_open,
   }));
 }
 

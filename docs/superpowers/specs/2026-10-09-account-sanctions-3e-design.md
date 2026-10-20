@@ -2142,3 +2142,13 @@ The dry run built this design task by task in a scratch clone (2026-10-09 to 202
 - **Section 6:** the functions 3f replaces are written from the text "as 3e leaves it"; `measures_in_force`'s list of kinds and `append_confirmed_audit`'s list of actions grow; the enum rule binds 3f's six migrations (0026 to 0031), and `enum-literals.test.ts` covers them.
 - **Section 13**, Task 7's runbook bullet (c): "whoever has the server still runs `staff.js account-facts` before the admin answers the report, since korbat never holds an account against its deletion" is replaced by the README's: `notification-facts` after the seal for good, with the address held meanwhile. Task 4's tests of `PurgeReport.terminated` gain the member `held` (3f's Task 5).
 - **Section 16** is superseded by 3f's design. **W.3:** an order's redress is version 3's `order` texts. **W.6:** the two staff mails end as 3f's W.4 says.
+
+## 21. Changed by 3d (2026-10-19)
+
+`docs/superpowers/specs/2026-10-09-transparency-automation-3d-design.md` changes nothing of the sanctions and adds the two objection routes to what a suspension leaves.
+
+- **Section 17** (a match may ask for a protective suspension): not built. The protective suspension rests on an admin's seal for good, as 3e built it; 3d adds no second basis (section 2, row 29).
+- **Section 17** (the Transparency Database export gains the account measures): no export exists; the edition counts the account measures by kind.
+- **W.4:** rulebook version 4 follows version 3; R6 is unchanged.
+- **Section 6:** `strike_due` answers false for a decision without a decider (a test of Task 6 holds it).
+- **7.3, the table of what a suspension leaves, and section 2, row 9:** the two objection routes of 3d (`POST /api/moderation/decisions/:id/objection`, `POST /api/moderation/uploads/:refusal/objection`) join the writes a suspension leaves, as the reply and an appeal are left, for a suspended account and for a terminated account whose termination is not yet final. Each gets its row in 3e's route table, so 3e's route walk passes, and Tasks 6 and 7 each send their objection from a suspended account. Without the rows the way to a person that a statement promises would be closed for the accounts whose case is gravest.

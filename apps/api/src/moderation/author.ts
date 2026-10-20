@@ -12,6 +12,7 @@ import {
   type RuleId,
 } from "@korbat/contracts";
 import { askPersonOf, authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
+import { objectionOf } from "./automated-repo";
 import { ModerationError, type ModerationDeps } from "./context";
 import { decisionStatement } from "./statement";
 import { orderNoticeOf } from "./statement-repo";
@@ -190,6 +191,7 @@ export function exportedDecision(
   statement: DecisionStatement,
   texts: OrderTexts | null = null,
   erasedOn: string | null = null,
+  objection: { text: string; createdAt: string } | null = null,
 ): ExportedDecision {
   return {
     id: row.id,
@@ -210,6 +212,12 @@ export function exportedDecision(
     // 3f (W.7): an order's notice as its facts, with the authority's words read at the export's time and (Task 4) the day
     // the preservation's end erased the post.
     ...(statement.order ? { order: statement.order, ...(texts ? { orderTexts: texts } : {}), erasedOn } : {}),
+    // 3d Task 8 (W.10): what the statement says of automated means, read as the statement reads it (a decision made before
+    // 3d: false, not_automated and null), and the text its subject sent with "Ask for a person", with its time.
+    automatedDetection: statement.automatedDetection ?? false,
+    automatedDecision: statement.automatedDecision ?? "not_automated",
+    signal: statement.signal ?? null,
+    objection,
   };
 }
 
@@ -229,7 +237,9 @@ export async function exportedDecisions(deps: Pick<ModerationDeps, "apiDb">, acc
       // A decision is a row for good: one the list has just named has a statement.
       if (!found) throw new Error("a decision in its author's list has no statement");
       const notice = found.statement.order ? await orderNoticeOf(deps.apiDb, row.id, null) : null;
-      exported.push(exportedDecision(row, found.statement, notice?.texts ?? null, notice?.erasedOn ?? null));
+      // 3d Task 8 (W.10): only a program's decision can have been asked about.
+      const objection = found.statement.automatedDecision === "fully" ? await objectionOf(deps.apiDb, row.id) : null;
+      exported.push(exportedDecision(row, found.statement, notice?.texts ?? null, notice?.erasedOn ?? null, objection));
     }
     const last = page.at(-1);
     // A page that is not full is the last one.

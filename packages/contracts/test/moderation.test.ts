@@ -182,6 +182,10 @@ describe("limits and periods", () => {
       orderPreserveMonths: 6,
       orderRecordYears: 3,
       restoreGapMonths: 12,
+      // 3d (design, sections 6.10 and W.9): a match record's hash, an uploader's address after a refusal, an edge outbox row.
+      matchKeepDays: 180,
+      reportHoldDays: 7,
+      edgePurgeDays: 30,
     });
     // Content restricted under R4 goes when its restriction is final: the appeal's window.
     expect(RETENTION.r4FinalMonths).toBe(APPEAL_MONTHS);

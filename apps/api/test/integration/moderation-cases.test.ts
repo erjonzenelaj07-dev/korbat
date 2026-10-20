@@ -1215,11 +1215,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         expect(rows[4]).toMatchObject({ lane: 2, targetType: "account", rules: ["R6"], allegesIllegal: false, suspect: false });
         // No row names a reporter, a count of reports per person or a weight.
         // 3d Task 6: and three booleans of what a program found and took and whether the author asked for a person; Task
-        // 7: and whether a match only flags.
+        // 7: and whether a match only flags; Task 8: and the flag "possible coordinated reporting", its two counts or null.
         expect(Object.keys(rows[0]!).sort()).toEqual([
           "allegesIllegal",
           "categories",
           "deferred",
+          "flag",
           "foundByProgram",
           "id",
           "lane",
@@ -1235,6 +1236,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
           "targetType",
         ]);
         expect(rows.every((row) => !row.foundByProgram && !row.takenByProgram && !row.objected)).toBe(true);
+        expect(rows.map((row) => row.flag)).toEqual([null, null, null, null, null]);
       }, migrateDb);
     });
 
