@@ -78,3 +78,25 @@ python docs/superpowers/prompts/transparency-automation-3d/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-20)
+
+The ten prompts were replayed into this repository by the scratch tooling. Tasks 1 to 5 went through the same gated runner as the dry run: every red step failed as recorded and every gate passed, the stack rebuilds smoke-tested. Task 6's full replay then stopped on a test of 3f (`orders-hold-end`, the eight time zones) that ran past its own two-minute limit three times on a loaded machine. At that point the owner chose a faster path for Tasks 6 to 10: each task's files were written from its prompt by `write_blocks.py` and committed with the dry run's message, with the stray-file check and no gate, and the gates of Task 10 (on a database upgraded from 0032) and the stack's rebuild and smoke test ran once at the end.
+
+| Task | Commit | Checked |
+|---|---|---|
+| 1 | `f9e8c1e` | every gate |
+| 2 | `f6d85e3` | every gate |
+| 3 | `ecc2cfd` | every gate |
+| 4 | `586d742` | every gate |
+| 5 | `1283612` | every gate |
+| 6 | `d9ff85d` | written and committed; gates once at the end |
+| 7 | `247025c` | written and committed; gates once at the end |
+| 8 | `dcecf21` | written and committed; gates once at the end |
+| 9 | `9d446f6` | written and committed; gates once at the end |
+| 10 | `8668bb6` | written and committed; gates once at the end |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree is byte-identical to the dry run's except drizzle's snapshots of 0033 to 0042 and its journal, which end with a newline here and with none in the dry run. `verify_prompts.py` reproduces all 319 files.
+- **The gates at the end.** The type check, the unit suites, `generate`, the migrations applied, the console's build and browser check, the web export, the integration suite on a database upgraded from 0032 with no test failed (the dry run's same suite counted 1,767 passed and 3 skipped in 150 files; the run at the end kept only the tail of its output), the timing gate, the API bundles, then the stack rebuilt with the service `counts` and the smoke test through Caddy.
+- **What the machine needed.** Another program listened on port 8080 on every interface, so the run set `NODE_OPTIONS=--dns-result-order=ipv4first` (as 3f's replay did). Windows had reserved the ports 58022 to 58121, where Mailpit's web port 58025 lies, so for the run the development Mailpit was published on 58225 (`DEV_MAILPIT_PORT` in the ignored `infra/.env` and `MAILPIT_URL` in the API's ignored env files) and put back afterwards. If `up` fails with "ports are not available" on 58025, check `netsh interface ipv4 show excludedportrange protocol=tcp`.
+- **The review that shaped Tasks 9 and 10.** After Task 8, five finders read the built code, one lens each, and one agent walked the whole path through the rebuilt stack. They found three high defects: two starts of the matcher's step for one image could lose the finding and leave the image public; a release whose notice is held showed on the post at once; and the reader count's salt and raw identifiers were written to disk by Valkey's append-only file. The fixes, and the medium and low points upheld, are Tasks 9 and 10. The points left for the owner are in the tooling's record: the classifier's digest, PDQ and a real source's adapter, and the witness token not checked against the value.
