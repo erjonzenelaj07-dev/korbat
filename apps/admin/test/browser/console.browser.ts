@@ -3,7 +3,30 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ANNEX3_GROUND_LABELS, AUDIT_EXPORT_MAX, DISPOSITION_LABELS, GAP_CLASSES, MEASURES, ORDER_CHANNEL_LABELS, ORDER_DRAFTS, ORDER_GROUND_LABELS, ORDER_ITEM_CLOSE_REASON_LABELS, ORDER_KIND_LABELS, ORDER_RULES, QUARANTINE_RULES, RELEASE_POSTS_MAX, RETENTION, SEAL_DRAFTS, type CaseView, type ContactMessage, type RestoreGap } from "@korbat/contracts";
+import {
+  ANNEX3_GROUND_LABELS,
+  AUDIT_EXPORT_MAX,
+  DISPOSITION_LABELS,
+  GAP_CLASSES,
+  MATCH_ANSWER_REASON_LABELS,
+  MEASURES,
+  ORDER_CHANNEL_LABELS,
+  ORDER_DRAFTS,
+  ORDER_GROUND_LABELS,
+  ORDER_ITEM_CLOSE_REASON_LABELS,
+  ORDER_KIND_LABELS,
+  ORDER_RULES,
+  QUARANTINE_RULES,
+  RELEASE_POSTS_MAX,
+  RETENTION,
+  SEAL_DRAFTS,
+  UPLOAD_END_REASON_LABELS,
+  type CaseView,
+  type ContactMessage,
+  type HeldUpload,
+  type MatchRecord,
+  type RestoreGap,
+} from "@korbat/contracts";
 import { STATEMENT_WORDS } from "@korbat/rules";
 import { buildConsole } from "../../build.mjs";
 import { CONSOLE_CSP } from "../../site-headers.mjs";
@@ -2560,7 +2583,7 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       ],
       notes: [],
       history: [],
-      signals: [{ itemId: ITEM_PROGRAM, kind: "r1_score", thresholdVersion: 0 }],
+      signals: [{ itemId: ITEM_PROGRAM, kind: "r1_score", thresholdVersion: 0, match: null }],
       objection: { text: OBJECTION, createdAt: askedAt },
     });
   }
@@ -2575,7 +2598,7 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       queueRow({ id: CASE_PROGRAM, oldestOpenAt: decidedAt, openItems: 1, rules: ["R1"], categories: ["STATEMENT_CATEGORY_OTHER_VIOLATION_TC"], allegesIllegal: false, foundByProgram: true, takenByProgram: true, objected: true }),
       queueRow({ id: CASE_POST, oldestOpenAt: new Date(Date.now() - 30 * 3_600_000).toISOString() }),
     ];
-    fixtures.state.automated = { waiting: 1, oldestAt: decidedAt, objected: 1, oldestObjectionAt: askedAt, cases: [CASE_PROGRAM], objectedCases: [CASE_PROGRAM] };
+    fixtures.state.automated = { waiting: 1, oldestAt: decidedAt, objected: 1, oldestObjectionAt: askedAt, flags: 0, cases: [CASE_PROGRAM], objectedCases: [CASE_PROGRAM] };
     const at = new Date(Date.now() - 26 * 3_600_000).toISOString();
     const gap: RestoreGap = {
       id: "0000000b-7a1b-4c2d-8e3f-4a5b6c7d8e9f",
@@ -2618,7 +2641,7 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       await cleanOnPhone();
     } finally {
       fixtures.state.queueRows = null;
-      fixtures.state.automated = { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] };
+      fixtures.state.automated = { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 0, cases: [], objectedCases: [] };
       fixtures.state.restore = NO_RESTORE;
       fixtures.state.restoreOverview = { open: 0, measures: 0, importedAt: null };
       fixtures.state.cases.delete(CASE_PROGRAM);
@@ -2668,6 +2691,344 @@ describe("the staff console in Chromium, under the console site's policy", () =>
       await cleanOnPhone();
     } finally {
       fixtures.state.cases.delete(CASE_PROGRAM);
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  // ---------------------------------------------------------------- 3d Task 7: known material, at a phone's width
+
+  const CASE_MATCH = "c03b4c5d-6e7f-4a8b-9c9d-3e4f5a6b7c8d";
+  const ITEM_MATCH = "d14c5d6e-7f8a-4b9c-8d0e-4f5a6b7c8d9e";
+  const DECISION_MATCH = "e25d6e7f-8a9b-4c0d-9e1f-5a6b7c8d9e0f";
+  const REFUSAL_OPEN = "f36e7f8a-9b0c-4d1e-8f2a-6b7c8d9e0f1a";
+  const REFUSAL_REPORT = "047f8a9b-0c1d-4e2f-9a3b-7c8d9e0f1a2b";
+  const REFUSAL_NO_REPORT = "15809b0c-1d2e-4f3a-8b4c-8d9e0f1a2b3c";
+  const REFUSAL_RELEASED = "26910c1d-2e3f-4a4b-9c5d-9e0f1a2b3c4d";
+  const UPLOAD_LEAVE = "37a21d2e-3f4a-4b5c-8d6e-0f1a2b3c4d5e";
+  /** A source's strings as an adapter could return them: a bidirectional override, a look-alike label, a script address (8.9). */
+  const MATCH_RECORD: MatchRecord = { source: HOSTILE.bidi, listVersion: LOOKALIKE.label, hashType: "sha1", matchKind: "exact", classification: HOSTILE.url, listed: true, acting: true, queriedAt: new Date(Date.now() - 3_600_000).toISOString() };
+  /** What a hostile uploader could write in an objection. */
+  const UPLOAD_OBJECTION = `${HOSTILE.bidi} ${LOOKALIKE.label} ${HOSTILE.url}`;
+
+  /** A post's case a match opened on its first image: listed (acting or not) it cites R2 and freezes; another class cites no rule. */
+  function matchView(match: MatchRecord, more: Partial<CaseView> = {}): CaseView {
+    const listed = match.listed;
+    return postCase({
+      id: CASE_MATCH,
+      lane: listed ? 0 : 2,
+      stateVersion: 2,
+      intakeSeq: 1,
+      imagesAllowed: !listed,
+      suspicion: listed ? { open: true, reach: { posts: 1, images: 2, sealed: 0, served: 2, newestPostOn: "2026-09-30" }, earlier: { target: { count: 0, lastOn: null, imagesOpenedOn: null }, author: { count: 0, lastOn: null } } } : null,
+      items: [itemFixture({ id: ITEM_MATCH, source: SOURCES.program, explanation: null, mediaId: IMAGE_ONE, ruleId: listed ? "R2" : null, csam: listed, suspect: listed, lane: listed ? 0 : 2, category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS" })],
+      decisions: [],
+      notes: [],
+      history: [],
+      signals: [{ itemId: ITEM_MATCH, kind: "known_match", thresholdVersion: null, match }],
+      matchedImages: [IMAGE_ONE],
+      ...more,
+    });
+  }
+
+  test("3d Task 7: at 360 by 740 px, a case with the match's record in each of its three kinds, each with [case.matchWeak]; the queue with [queue.matchFlag]; [case.image.matched] with no reveal control and no image request; a program's seal with [case.autoR2]", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const M = AUTOMATION_WORDS.match;
+    const asked = fixtures.state.imageRequests.length;
+    const kinds: [MatchRecord, string, boolean][] = [
+      [MATCH_RECORD, M.acting, true],
+      [{ ...MATCH_RECORD, matchKind: "near", acting: false }, M.near, true],
+      [{ ...MATCH_RECORD, listed: false, acting: false }, M.flag, false],
+    ];
+    try {
+      for (const [match, words, banner] of kinds) {
+        fixtures.state.cases.set(CASE_MATCH, matchView(match));
+        await page.goto(`${origin}/cases/${CASE_MATCH}`);
+        await shown(page.getByText(words, { exact: true }));
+        await shown(page.getByText(M.weak("sha1")!, { exact: true }));
+        await shown(page.getByText(M.what, { exact: true }));
+        // The source's three strings stand in their frames, never in a label's place.
+        expect(await page.locator(".match .frame-label", { hasText: M.frame }).count()).toBe(3);
+        // 3c's banner above the evidence (the composer carries its own block of the same class besides).
+        expect(await page.locator("section.banner.suspect").count(), words).toBe(banner ? 1 : 0);
+        await shown(page.getByText(AUTOMATION_WORDS.imageMatched, { exact: true }));
+        // The matched image has no reveal control; on a flag's case the other image is offered as before.
+        expect(await page.getByRole("button", { name: "Show image" }).count()).toBe(banner ? 0 : 1);
+        await texts();
+        await cleanOnPhone();
+      }
+      expect(fixtures.state.imageRequests).toHaveLength(asked);
+
+      fixtures.state.queueRows = [queueRow({ id: CASE_MATCH, lane: 2, rules: [], categories: ["STATEMENT_CATEGORY_PROTECTION_OF_MINORS"], allegesIllegal: false, foundByProgram: false, matchFlag: true })];
+      await page.goto(`${origin}/queue`);
+      await shown(page.getByText(AUTOMATION_WORDS.queueMatchFlag, { exact: false }));
+      await texts();
+      await cleanOnPhone();
+
+      // A program's seal of the post's images on an acting match, in force: [case.auto] and [case.autoR2].
+      const decidedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+      fixtures.state.cases.set(
+        CASE_MATCH,
+        matchView(MATCH_RECORD, {
+          decisions: [
+            decisionFixture({
+              id: DECISION_MATCH,
+              kind: "interim",
+              byProgram: true,
+              staffHandle: null,
+              source: "own_initiative",
+              ruleId: "R2",
+              rulesVersion: 3,
+              redressVersion: 4,
+              suspect: true,
+              decidedAt,
+              facts: null,
+              reason: null,
+              actions: [{ id: "48b32e3f-4a5b-4c6d-9e7f-1a2b3c4d5e6f", kind: "seal_media", mediaId: null, noEffect: null, inForce: true, reversesActionId: null, liftedBy: null, sealed: { posts: 1, images: 2, deletedPosts: 0, list: [] }, ...NO_STANDING }],
+            }),
+          ],
+        }),
+      );
+      await page.goto(`${origin}/cases/${CASE_MATCH}`);
+      await shown(page.getByText(AUTOMATION_WORDS.caseAuto(bothTimes(decidedAt), MEASURES.seal_media.label), { exact: true }));
+      await shown(page.getByText(AUTOMATION_WORDS.caseAutoR2, { exact: true }));
+      await shown(page.getByText(STATEMENT_WORDS.automated.until.match, { exact: true }));
+      await texts();
+      await cleanOnPhone();
+      expect(fixtures.state.imageRequests).toHaveLength(asked);
+    } finally {
+      fixtures.state.cases.delete(CASE_MATCH);
+      fixtures.state.queueRows = null;
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 7: at 360 by 740 px, an answer without a seal on an acting match asks for its reason and is refused without one, [case.liftedMatch] in the place of 3c's sentence; with the reason the key signs it, and the matched image stays closed after the answer", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    fixtures.state.role = "admin";
+    fixtures.state.cases.set(CASE_MATCH, matchView(MATCH_RECORD));
+    const asked = fixtures.state.imageRequests.length;
+    const before = await signatures();
+    try {
+      await page.goto(`${origin}/cases/${CASE_MATCH}`);
+      const composer = page.getByRole("region", { name: "Decide" });
+      await shown(composer);
+      await composer.getByLabel(COMPOSER_KINDS.final).check();
+      await shown(composer.getByText(AUTOMATION_WORDS.liftedMatch, { exact: true }));
+      expect(await composer.getByText(COMPOSER.admin.afterwards, { exact: true }).count()).toBe(0);
+      await composer.getByLabel(COMPOSER_OUTCOMES.no_violation, { exact: true }).check();
+      await shown(composer.getByText(AUTOMATION_WORDS.answerReason.legend, { exact: true }));
+      // None of the reasons is chosen when the composer asks for one.
+      for (const label of Object.values(MATCH_ANSWER_REASON_LABELS)) expect(await composer.getByLabel(label, { exact: true }).isChecked(), label).toBe(false);
+      await composer.getByLabel("Reason", { exact: true }).fill("The source corrected its entry.");
+      await composer.getByLabel("Facts").fill(TYPED_ADMIN_FACTS);
+      await composer.getByLabel("Facts").press("Tab");
+      const confirm = composer.getByRole("button", { name: "Confirm with your staff key" });
+      const options = fixtures.state.stepUpOptionsServed;
+      await confirm.click();
+      await shown(composer.getByRole("alert").filter({ hasText: AUTOMATION_WORDS.answerReason.choose }));
+      expect(fixtures.state.stepUpOptionsServed).toBe(options);
+      expect(await signatures()).toBe(before);
+      await composer.getByLabel(MATCH_ANSWER_REASON_LABELS.source_withdrew, { exact: true }).check();
+      await confirm.click();
+      await shown(page.getByText(COMPOSER.recorded, { exact: false }));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.decisions.at(-1)).toMatchObject({ caseId: CASE_MATCH, params: { kind: "final", outcome: "no_violation", actions: [], matchAnswerReason: "source_withdrew" } });
+      await texts();
+      await cleanOnPhone();
+      // After the answer the images are served again as before; the matched one stays closed to staff, with no request.
+      fixtures.state.cases.set(CASE_MATCH, { ...fixtures.state.cases.get(CASE_MATCH)!, imagesAllowed: true, suspicion: null });
+      await page.goto(`${origin}/cases/${CASE_MATCH}`);
+      await shown(page.getByText(AUTOMATION_WORDS.imageMatched, { exact: true }));
+      expect(await page.getByRole("button", { name: "Show image" }).count()).toBe(1);
+      expect(fixtures.state.imageRequests).toHaveLength(asked);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.cases.delete(CASE_MATCH);
+      fixtures.state.role = "moderator";
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  /** One refusal of each state, as Held uploads lists them (8.6). */
+  function heldUploads(): HeldUpload[] {
+    const hour = 3_600_000;
+    const at = (hours: number) => new Date(Date.now() - hours * hour).toISOString();
+    const base = { match: MATCH_RECORD, otherRefusals: 0, uploaderGone: false, objection: null, objectedAt: null, endedAt: null, endAs: null, endReason: null, deletesAt: null, reported: false, quarantined: false, release: null };
+    const release = {
+      reported: true,
+      theirReference: LOOKALIKE.label,
+      answer: null,
+      answeredAt: null,
+      handedOverAt: null,
+      quarantined: true,
+      leave: { id: UPLOAD_LEAVE, from: "authority" as const, reference: "4 O 1/26", receivedOn: at(30).slice(0, 10), untold: false, untoldUntil: null },
+      tellHeld: false,
+      silenceDays: null,
+      releasedAt: null,
+      basis: null,
+      backupsClearAt: null,
+      noticeHeld: null,
+    };
+    return [
+      { ...base, id: REFUSAL_OPEN, refusedAt: at(5), otherRefusals: 1, uploaderGone: true },
+      // An objection that arrived after "Report".
+      { ...base, id: REFUSAL_REPORT, refusedAt: at(50), endAs: "report", endedAt: at(40), reported: true, quarantined: true, objection: UPLOAD_OBJECTION, objectedAt: at(2), release },
+      { ...base, id: REFUSAL_NO_REPORT, refusedAt: at(30), endAs: "no_report", endReason: "counsel_no_duty", endedAt: at(3), deletesAt: new Date(Date.now() + 21 * hour).toISOString() },
+      { ...base, id: REFUSAL_RELEASED, refusedAt: at(90), endAs: "report", endedAt: at(80), reported: true, quarantined: true, release: { ...release, releasedAt: at(10), basis: "leave", backupsClearAt: new Date(Date.now() + 30 * 24 * hour).toISOString(), noticeHeld: false } },
+    ];
+  }
+  const uploadBlock = (id: string) => page.locator("article.upload", { has: page.locator(`#upload-${id}`) });
+
+  test("3d Task 7: at 360 by 740 px, Held uploads with one refusal of each state, [uploads.gone] and an objection that arrived after Report; neither end chosen or focused, and no image request; greyed for a moderator", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    fixtures.state.uploads = heldUploads();
+    const asked = fixtures.state.imageRequests.length;
+    const W = CUSTODY_WORDS.uploads;
+    try {
+      fixtures.state.role = "admin";
+      await page.goto(`${origin}/`);
+      await page.getByRole("link", { name: W.title, exact: true }).click();
+      await shown(page.getByRole("heading", { name: W.title, exact: true }));
+      expect(page.url()).toBe(`${origin}/uploads`);
+      await shown(page.getByText(W.what, { exact: true }));
+      expect(await page.locator("article.upload").count()).toBe(4);
+      await shown(uploadBlock(REFUSAL_OPEN).getByText(W.gone, { exact: true }));
+      await shown(uploadBlock(REFUSAL_OPEN).getByText(W.state.open, { exact: true }));
+      await shown(uploadBlock(REFUSAL_REPORT).getByText(W.objection.by, { exact: true }));
+      await shown(uploadBlock(REFUSAL_NO_REPORT).getByText(/^Hold ended at /));
+      await shown(uploadBlock(REFUSAL_RELEASED).getByText(/^Released at /).first());
+      expect(await texts()).toContain(UPLOAD_OBJECTION);
+      // Neither end is chosen, and nothing on the page holds the focus when it loads.
+      expect(await page.locator('article.upload input[type="radio"]:checked').count()).toBe(0);
+      await page.goto(`${origin}/uploads`);
+      await shown(uploadBlock(REFUSAL_OPEN));
+      expect(await page.evaluate("document.activeElement === null || document.activeElement.closest('article.upload') === null")).toBe(true);
+      expect(await uploadBlock(REFUSAL_OPEN).getByRole("radio").count()).toBe(2);
+      expect(await uploadBlock(REFUSAL_RELEASED).getByRole("radio").count()).toBe(0);
+      expect(await page.locator("img").count()).toBe(0);
+      expect(fixtures.state.imageRequests).toHaveLength(asked);
+      await cleanOnPhone();
+
+      fixtures.state.role = "moderator";
+      await page.goto(`${origin}/uploads`);
+      await shown(uploadBlock(REFUSAL_OPEN).getByText(W.adminOnly, { exact: true }));
+      expect(await uploadBlock(REFUSAL_OPEN).getByRole("radio").first().isDisabled()).toBe(true);
+      expect(await uploadBlock(REFUSAL_OPEN).getByRole("button", { name: W.confirm }).isDisabled()).toBe(true);
+      expect(fixtures.state.imageRequests).toHaveLength(asked);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.uploads = [];
+      fixtures.state.role = "moderator";
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 7: at 360 by 740 px, Report and No report confirmed: options that bind the other end are refused before the key; then the key confirms the refusal, the end and the reason, and the block reads its new state", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    fixtures.state.role = "admin";
+    fixtures.state.uploads = heldUploads();
+    const W = CUSTODY_WORDS.uploads;
+    const before = await signatures();
+    const sent = () => fixtures.state.requests.filter((r) => r.method === "POST" && r.path.startsWith("/api/staff/uploads/")).length;
+    try {
+      await page.goto(`${origin}/uploads`);
+      const open = uploadBlock(REFUSAL_OPEN);
+      await shown(open);
+      const confirm = open.getByRole("button", { name: W.confirm });
+      expect(await confirm.isDisabled()).toBe(true);
+      await open.getByRole("radio", { name: new RegExp(`^${W.report.label}:`) }).check();
+      const [options, posted] = [fixtures.state.stepUpOptionsServed, sent()];
+      fixtures.state.mismatchNextStepUp = true;
+      await confirm.click();
+      await shown(open.getByRole("alert").filter({ hasText: messageFor("step_up_mismatch") }));
+      expect(fixtures.state.stepUpOptionsServed).toBe(options + 1);
+      expect(await signatures()).toBe(before);
+      expect(sent()).toBe(posted);
+      await clean();
+      await confirm.click();
+      await shown(uploadBlock(REFUSAL_OPEN).getByText(/^Held for a report since /));
+      expect(await signatures()).toBe(before + 1);
+      expect(fixtures.state.holdEnds.at(-1)).toEqual({ refusalId: REFUSAL_OPEN, params: { endAs: "report", reason: null } });
+      await texts();
+      await cleanOnPhone();
+
+      // "No report" on a hold ended as "Report": the reason is asked for, and the key signs it.
+      const reported = uploadBlock(REFUSAL_REPORT);
+      await reported.getByRole("radio", { name: new RegExp(`^${W.noReport.label}:`) }).check();
+      await shown(reported.getByText(W.chooseReason, { exact: true }));
+      expect(await reported.getByRole("button", { name: W.confirm }).isDisabled()).toBe(true);
+      await reported.getByRole("radio", { name: UPLOAD_END_REASON_LABELS.source_withdrew, exact: true }).check();
+      await reported.getByRole("button", { name: W.confirm }).click();
+      await shown(uploadBlock(REFUSAL_REPORT).getByText(/^Hold ended at /));
+      expect(await signatures()).toBe(before + 2);
+      expect(fixtures.state.holdEnds.at(-1)).toEqual({ refusalId: REFUSAL_REPORT, params: { endAs: "no_report", reason: "source_withdrew" } });
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.uploads = [];
+      fixtures.state.role = "moderator";
+      await page.setViewportSize({ width: 1280, height: 900 });
+    }
+  });
+
+  test("3d Task 7: at 360 by 740 px, Home with [home.flags], [home.uploads], a held upload's release and [home.unreported]; After a restore with a lost end of a hold, the refusal there and gone", async () => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    const at = new Date(Date.now() - 4 * 3_600_000).toISOString();
+    const oldest = new Date(Date.now() - 6 * 3_600_000).toISOString();
+    fixtures.state.role = "admin";
+    fixtures.state.automated = { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 2, cases: [], objectedCases: [] };
+    fixtures.state.heldUploads = { open: 1, oldest, objected: 1, capped: 3 };
+    fixtures.state.destructive = [
+      { kind: "upload_released", at, caseId: null, refusalId: REFUSAL_RELEASED },
+      { kind: "hold_ended_unreported", at, caseId: null, refusalId: REFUSAL_NO_REPORT },
+    ];
+    const restore = fixtures.state.restore;
+    const restoreOverview = fixtures.state.restoreOverview;
+    const gap = (id: string, present: boolean): RestoreGap => ({
+      id,
+      class: "release",
+      actedAt: at,
+      action: "upload_hold_ended",
+      caseId: null,
+      orderId: null,
+      itemId: null,
+      kinds: [],
+      closedAt: null,
+      disposition: null,
+      closedByDecisionId: null,
+      hold: { endAs: present ? "report" : "no_report", present },
+    });
+    fixtures.state.restore = { importedAt: new Date().toISOString(), mayOpen: false, retentionMay: true, gaps: [gap("0000000c-7a1b-4c2d-8e3f-4a5b6c7d8e01", true), gap("0000000c-7a1b-4c2d-8e3f-4a5b6c7d8e02", false)], holds: [] };
+    fixtures.state.restoreOverview = { open: 2, measures: 0, importedAt: fixtures.state.restore.importedAt };
+    try {
+      await page.goto(`${origin}/`);
+      await shown(page.getByText(AUTOMATION_WORDS.homeFlags(2), { exact: true }));
+      await shown(page.getByText(CUSTODY_WORDS.homeUploads(1, bothTimes(oldest), 1), { exact: false }));
+      await shown(page.getByText(CUSTODY_WORDS.homeUploadsCapped(3), { exact: false }));
+      await shown(page.getByRole("link", { name: CUSTODY_WORDS.homeReleasedUpload(bothTimes(at)) }));
+      await shown(page.getByRole("link", { name: CUSTODY_WORDS.homeUnreported(bothTimes(at)) }));
+      expect(await page.locator('.authorities a[href="/uploads"]').count()).toBe(3);
+      await texts();
+      await cleanOnPhone();
+      await page.goto(`${origin}/restore`);
+      const C = RECOVERY_WORDS.classes.release;
+      await shown(page.getByText(C.holdLine(bothTimes(at), "report"), { exact: true }));
+      await shown(page.getByText(C.holdLine(bothTimes(at), "no_report"), { exact: true }));
+      await shown(page.getByText(C.holdEnd(true), { exact: true }));
+      await shown(page.getByText(C.holdEnd(false), { exact: true }));
+      expect(await page.getByRole("link", { name: C.holdLink }).count()).toBe(1);
+      expect(await page.getByRole("button", { name: RECOVERY_WORDS.notNeeded }).count()).toBe(0);
+      await texts();
+      await cleanOnPhone();
+    } finally {
+      fixtures.state.automated = { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 0, cases: [], objectedCases: [] };
+      fixtures.state.heldUploads = { open: 0, oldest: null, objected: 0, capped: 0 };
+      fixtures.state.destructive = [];
+      fixtures.state.restore = restore;
+      fixtures.state.restoreOverview = restoreOverview;
+      fixtures.state.role = "moderator";
       await page.setViewportSize({ width: 1280, height: 900 });
     }
   });

@@ -35,7 +35,7 @@ import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import type { StoredFile } from "../media";
 import { alertUrgentLane, channelHealth, staffAlert } from "./alerts";
 import { ModerationError, type ModerationDeps } from "./context";
-import { automatedOverview, caseObjection, caseSignals } from "./automated-repo";
+import { automatedOverview, caseObjection, caseSignals, matchFlagCases, matchFlagCount } from "./automated-repo";
 import { liveTarget, recordIntake, storeSnapshot, type IntakeGround, type LiveTarget, type NamedTarget, type SnapshotContent } from "./intake";
 import { accountLink, parseLink, postLink } from "./links";
 import { contactOverview } from "./orders";
@@ -253,9 +253,17 @@ export async function overview(deps: Pick<ModerationDeps, "apiDb" | "config" | "
     quarantine: await quarantineCounts(q),
     // 3d Task 2 (sections 7.2 and 8.2): the acts of the last 30 days that cannot be taken back, as 3c lists a lifted seal:
     // the releases of sealed images, each with its seal's case ([home.released]).
-    destructive: await recentReleases(q, DESTRUCTIVE_DAYS, DESTRUCTIVE_MAX),
+    // 3d Task 7: with the releases of held uploads among them, and the holds ended without a report ([home.unreported]).
+    destructive: (
+      [...(await recentReleases(q, DESTRUCTIVE_DAYS, DESTRUCTIVE_MAX)), ...(await deps.media.recentUnreported(DESTRUCTIVE_DAYS, DESTRUCTIVE_MAX)).map((end) => ({ kind: "hold_ended_unreported" as const, at: end.at, caseId: null, refusalId: end.refusalId }))] as StaffOverview["destructive"]
+    )
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+      .slice(0, DESTRUCTIVE_MAX),
     // 3d Task 6 (sections 8.2 and 10.3): the measures of programs waiting for a person, and the requests for a person.
-    automated: await automatedOverview(q, AUTOMATED_CASES_MAX),
+    // 3d Task 7: and the open cases with a match that only flags ([home.flags]).
+    automated: { ...(await automatedOverview(q, AUTOMATED_CASES_MAX)), flags: await matchFlagCount(q) },
+    // 3d Task 7 (sections 7.12, 8.2 and 10.3): the held uploads, through the media module, which owns the refusals.
+    heldUploads: await deps.media.heldOverview(),
   };
 }
 
@@ -312,6 +320,8 @@ export async function queue(deps: Pick<ModerationDeps, "apiDb" | "config">, curs
   const after = cursor === undefined ? null : decodeCursor(cursor);
   const found = await queueRows(deps.apiDb, { deferUnproven: deps.config.MODERATION_DEFER_UNPROVEN === "on", after, limit: QUEUE_PAGE_SIZE + 1 });
   const page = found.slice(0, QUEUE_PAGE_SIZE);
+  // 3d Task 7 (8.3): the cases of the page that hold an unanswered match that only flags; a chip, never a key of the order.
+  const flagged = await matchFlagCases(deps.apiDb, page.map((row) => row.id));
   const last = page.at(-1);
   return {
     cases: page.map(
@@ -331,6 +341,7 @@ export async function queue(deps: Pick<ModerationDeps, "apiDb" | "config">, curs
         foundByProgram: row.foundByProgram,
         takenByProgram: row.takenByProgram,
         objected: row.objected,
+        matchFlag: flagged.has(row.id),
       }),
     ),
     // One row more than the page was read: only then is there a next page.
@@ -557,6 +568,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
       staffHandle: decision.staffHandle,
       // 3d Task 6: a decision without a decider is a program's; it names no staff member.
       byProgram: decision.staffHandle === null,
+      // 3d Task 7 (note 26): the reason of an answer without a seal on an acting match, as the key signed it.
+      matchAnswerReason: decision.matchAnswerReason as CaseDecision["matchAnswerReason"],
       throughSeq: decision.throughSeq,
       answersFromSeq: decision.answersFromSeq,
       reviewsDecisionId: decision.reviewsDecisionId,
@@ -615,9 +628,18 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
     purges,
     // 3d Task 6 (sections 7.11, 8.4 and 10.3): the items a program opened, never a score; and the author's request for a
     // person about a program's measure in force on the case.
-    signals: await caseSignals(q, row.id),
+    signals: await signalsWithRecords(deps, row.id),
     objection: await caseObjection(q, row.id),
+    // 3d Task 7 (sections 7.11 and 8 rule 2): the images of the case's snapshots that a match names, closed to staff.
+    matchedImages: [...(await deps.media.matchedImages([...new Set(snapshots.flatMap((snapshot) => (snapshot.withheld || snapshot.media === null ? [] : snapshot.media.map((image) => image.id))))]))].sort(),
   };
+}
+
+/** 3d Task 7 (CaseView.signals): each item a program opened, with a match's record read through the media module. */
+async function signalsWithRecords(deps: Pick<ModerationDeps, "apiDb" | "media">, caseId: string): Promise<CaseView["signals"]> {
+  const signals = await caseSignals(deps.apiDb, caseId);
+  const records = await deps.media.matchRecords(signals.flatMap((signal) => (signal.matchId === null ? [] : [signal.matchId])));
+  return signals.map((signal) => ({ itemId: signal.itemId, kind: signal.kind, thresholdVersion: signal.thresholdVersion, match: signal.matchId === null ? null : (records.get(signal.matchId) ?? null) }));
 }
 
 /** The alert's key for one staff account's day: its window ends at midnight UTC, so the alert goes once that day. */
@@ -684,6 +706,9 @@ export async function caseImage(deps: Pick<ModerationDeps, "apiDb" | "media">, s
   const imageId = mediaId.toLowerCase();
   if (!(await snapshotListsImage(deps.apiDb, caseId, imageId))) throw new ModerationError("image_refused");
   const image = await deps.media.staffImage(imageId, size);
+  // 3d Task 7 (design, sections 7.11 step 2 and 10.7): an image a match names is never served to staff, on this case or
+  // any other, before an answer or after it; the code says why, so the console prints [case.image.matched].
+  if (image === "matched") throw new ModerationError("image_matched");
   if (!image) throw new ModerationError("image_refused");
   try {
     // The image is of another post than this case's: the same answer as for an image that is not shown at all.

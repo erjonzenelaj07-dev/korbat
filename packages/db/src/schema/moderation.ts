@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { bigint, boolean, check, date, index, integer, jsonb, pgEnum, pgPolicy, pgTable, primaryKey, real, smallint, text, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { postMedia, postState } from "./content";
-import { apiRole, fullAccess, ts, xid8 } from "./helpers";
+import { apiRole, bytea, fullAccess, ts, xid8 } from "./helpers";
 import { profiles } from "./identity";
 import { contactMessages } from "./safety";
 
@@ -347,6 +347,12 @@ export const decisions = pgTable(
      * fully automated (decisions_decider). No profile stands for the system.
      */
     decidedBy: uuid("decided_by").references(() => profiles.id, { onDelete: "restrict" }),
+    /**
+     * 3d Task 7 (design, sections 6.7 and 7.11, note 26): the reason of an admin's answer without a seal on a case whose
+     * match is acting, one of the contracts' MATCH_ANSWER_REASONS, signed with the key; null on every other decision.
+     * decision_holds (c) holds it to the signed param and to the case at commit.
+     */
+    matchAnswerReason: text("match_answer_reason"),
     /** Forced. */
     decidedAt: ts("decided_at").notNull(),
     /** Forced: pg_current_xact_id(). Compared together with decided_at, since a restore restarts the counter. */
@@ -394,6 +400,8 @@ export const decisions = pgTable(
     ),
     // 3d (6.6): a decision without a decider is fully automated, and the only fully automated one; and it is interim.
     check("decisions_decider", sql`(${t.decidedBy} is null) = (${t.automatedDecision} = 'fully') and (${t.decidedBy} is not null or ${t.kind}::text = 'interim')`),
+    // 3d Task 7 (6.7): the closed list of MATCH_ANSWER_REASONS, written out as the release's lists are.
+    check("decisions_match_answer_reason", sql`${t.matchAnswerReason} in ('source_withdrew', 'counsel', 'other')`),
     // 3f: an untold decision has no mail pending, whatever its kind.
     check("decisions_informed", sql`${t.informedAt} is not null or ${t.authorMail}::text = 'none'`),
     check(
@@ -1221,8 +1229,8 @@ export const automatedSignals = pgTable(
     /** For an r1_score and for no other kind: the score the worker wrote and the threshold's version it was over. */
     score: real("score"),
     thresholdVersion: smallint("threshold_version"),
-    /** For a known_match and for no other kind; its foreign key to media_matches comes with that table (Task 7). */
-    matchId: uuid("match_id"),
+    /** For a known_match and for no other kind: the match record (Task 7 gives it its foreign key). */
+    matchId: uuid("match_id").references((): AnyPgColumn => mediaMatches.id, { onDelete: "restrict" }),
     /** Forced: now(). */
     createdAt: ts("created_at").notNull(),
     /** The finding's item; set once, in the step's transaction. */
@@ -1271,5 +1279,142 @@ export const automatedObjections = pgTable(
   (t) => [
     check("automated_objections_text", sql`(${t.text} is null) = (${t.erasedAt} is not null) and char_length(${t.text}) between 1 and 2000`),
     fullAccess("automated_objections_api_all", apiRole),
+  ],
+).enableRLS();
+
+// ---------------------------------------------------------------- known material (3d design, sections 2 rows 27 to 37, 6.7; Task 7)
+// The three tables of the migration known_material. Only the media module names them (the architecture test's rule on
+// post_media covers all three). The closed lists are the contracts' CHECK_STATES, MATCH_HASH_TYPES, MATCH_KINDS,
+// UPLOAD_ENDS and UPLOAD_END_REASONS, written out here as the release's lists are; a database test holds each migrated
+// CHECK to its constant.
+
+/**
+ * The fingerprints of one upload (6.7, row 33): its SHA-256, SHA-1 and MD5 of the bytes as received, taken while the API
+ * streamed the file and before the original was discarded, and the comparison's state. Written only while MEDIA_MATCH
+ * is not off, in the transaction that inserts the image row, and deleted with that row. The worker's perceptual hash
+ * (PDQ) has its three columns, which stay null in this build: no PDQ is computed (the reference's vectors were not
+ * allowed to be fetched). The API's role holds every right; the retention job deletes every row once the matcher is off.
+ */
+export const mediaHashes = pgTable(
+  "media_hashes",
+  {
+    mediaId: uuid("media_id")
+      .primaryKey()
+      .references(() => postMedia.id, { onDelete: "cascade" }),
+    sha256: bytea("sha256").notNull(),
+    sha1: bytea("sha1").notNull(),
+    md5: bytea("md5").notNull(),
+    pdq: bytea("pdq"),
+    pdqQuality: smallint("pdq_quality"),
+    pdqImpl: smallint("pdq_impl"),
+    /** pending, clear, matched, unchecked or capped. */
+    checkState: text("check_state").notNull(),
+    /** The newest attempt, and the adapter that answered it. */
+    checkedAt: ts("checked_at"),
+    source: text("source"),
+  },
+  (t) => [
+    check("media_hashes_check_state", sql`${t.checkState} in ('pending', 'clear', 'matched', 'unchecked', 'capped')`),
+    check("media_hashes_lengths", sql`octet_length(${t.sha256}) = 32 and octet_length(${t.sha1}) = 20 and octet_length(${t.md5}) = 16`),
+    check("media_hashes_pdq", sql`(${t.pdq} is null or octet_length(${t.pdq}) = 32) and (${t.pdqQuality} is null or ${t.pdqQuality} between 0 and 100)`),
+    check("media_hashes_source", sql`char_length(${t.source}) between 1 and 100`),
+    /** match-retry's read: the rows whose check is still owed an answer. */
+    index("media_hashes_retry_idx").on(t.checkState).where(sql`check_state in ('pending', 'unchecked', 'capped')`),
+    fullAccess("media_hashes_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * The record of one match (6.7, row 37): the image, the case once the automated step joined it, the source with its list
+ * version, the hash type, the kind of match and the classification as the source returned them, the one hash value that
+ * matched, and when the program was done with it (`handled_at`, the sweep's memory: review ruling 8). No account column
+ * and no text. `listed` and `acting` are forced by media_matches_insert from match_listed() and match_acting(): a record is
+ * acting only when its classification is on both lists and its source reported it as exact. The image has no foreign key:
+ * the record outlives the image row. The API's role inserts, reads, and sets `case_id` and `handled_at`, each once.
+ */
+export const mediaMatches = pgTable(
+  "media_matches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    mediaId: uuid("media_id").notNull(),
+    caseId: uuid("case_id"),
+    source: text("source").notNull(),
+    listVersion: text("list_version"),
+    hashType: text("hash_type").notNull(),
+    matchKind: text("match_kind").notNull(),
+    /** As the source returned it; null once erased. */
+    classification: text("classification"),
+    /** Forced. */
+    listed: boolean("listed").notNull(),
+    /** Forced. */
+    acting: boolean("acting").notNull(),
+    /** The one hash value that matched; null once erased. */
+    hash: bytea("hash"),
+    handledAt: ts("handled_at"),
+    /** Forced: now(). */
+    queriedAt: ts("queried_at").notNull(),
+    erasedAt: ts("erased_at"),
+  },
+  (t) => [
+    check("media_matches_hash_type", sql`${t.hashType} in ('sha256', 'sha1', 'md5', 'pdq')`),
+    check("media_matches_kind", sql`${t.matchKind} in ('exact', 'near')`),
+    check("media_matches_texts", sql`char_length(${t.source}) between 1 and 100 and char_length(${t.listVersion}) between 1 and 100 and char_length(${t.classification}) between 1 and 100`),
+    // A record that is not erased holds its hash and its classification; an erased one holds neither.
+    check("media_matches_erased", sql`(${t.erasedAt} is null) = (${t.hash} is not null) and (${t.erasedAt} is null) = (${t.classification} is not null)`),
+    check("media_matches_acting", sql`not ${t.acting} or ${t.listed}`),
+    /** Gate V and the readers: the unerased records of an image. */
+    index("media_matches_media_idx").on(t.mediaId).where(sql`erased_at is null`),
+    /** The automated sweep: the records the program is not done with. */
+    index("media_matches_open_idx").on(t.queriedAt).where(sql`handled_at is null and erased_at is null`),
+    fullAccess("media_matches_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * The hold of an upload that is on no post and has an acting match (6.7, row 35): a record of its own, not a case (O5).
+ * Its insert's definer trigger upload_refusals_insert refuses one whose match is not acting or whose image is attached,
+ * and answers refusals_capped over automation_rules().refusals_per_hour; upload_refusals_hold then holds the image row for
+ * good (hold_until infinity), marks the match handled and holds the uploader's address (F's auth.report_holds). Its end
+ * (`report` or `no_report`) is upload_hold_end's, its release upload_release's, its notification record upload-report's,
+ * each through a definer function or as the migrator. The API's role reads, inserts, and writes the two notices' states
+ * and the objection, which upload_refusals_guard lets it write once. `lifted_told` is the notice that a hold ended as
+ * no_report was lifted, pending from that end until the dispatch round mails it once the delay has passed.
+ */
+export const uploadRefusals = pgTable(
+  "upload_refusals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    mediaId: uuid("media_id").notNull().unique(),
+    /** No on delete clause: no profile row is ever deleted. Set null with the match record's erasure. */
+    ownerId: uuid("owner_id").references(() => profiles.id),
+    matchId: uuid("match_id")
+      .notNull()
+      .references(() => mediaMatches.id),
+    /** Forced: now(). */
+    refusedAt: ts("refused_at").notNull(),
+    told: deliveryState("told").notNull().default("pending"),
+    liftedTold: deliveryState("lifted_told"),
+    objection: text("objection"),
+    objectedAt: ts("objected_at"),
+    endedAt: ts("ended_at"),
+    endAs: text("end_as"),
+    endReason: text("end_reason"),
+    endedBy: uuid("ended_by"),
+    notificationId: uuid("notification_id"),
+    releaseId: uuid("release_id").references(() => releases.id),
+  },
+  (t) => [
+    check("upload_refusals_end_as", sql`${t.endAs} in ('report', 'no_report')`),
+    check("upload_refusals_end_reason", sql`${t.endReason} in ('source_withdrew', 'counsel_no_duty', 'other')`),
+    // An end has its time and its admin; a reason goes with no_report and with nothing else.
+    check(
+      "upload_refusals_ended",
+      sql`(${t.endAs} is null) = (${t.endedAt} is null) and (${t.endAs} is null) = (${t.endedBy} is null) and (${t.endReason} is not null) = (${t.endAs} is not distinct from 'no_report')`,
+    ),
+    check("upload_refusals_objection", sql`(${t.objection} is null or ${t.objectedAt} is not null) and char_length(${t.objection}) between 1 and 2000`),
+    check("upload_refusals_lifted", sql`${t.liftedTold} is null or ${t.endAs} is not distinct from 'no_report'`),
+    /** The uploader's notices and the count of other refusals an admin is shown. */
+    index("upload_refusals_owner_idx").on(t.ownerId, t.refusedAt),
+    fullAccess("upload_refusals_api_all", apiRole),
   ],
 ).enableRLS();

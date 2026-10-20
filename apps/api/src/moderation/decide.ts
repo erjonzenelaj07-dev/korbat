@@ -7,6 +7,7 @@ import type { ActiveStaffSession, StaffStepUpConfirmed } from "../auth";
 import { boundLockWaits, isBoundReached, isDeadlock } from "../lib/lock-bounds";
 import { staffAlert } from "./alerts";
 import { ModerationError, isModerationErrorCode, type ModerationDeps } from "./context";
+import { decisionCaseHasMatch } from "./automated-repo";
 import { appendConfirmedAudit, caseTarget, closeGap, handleOf, holdsAnnouncedStanding, insertAction, insertDecision, insertMarks, raisedDetail, raisedMessage, recentDecisionsBy } from "./repo";
 import { decisionStatement, sendStatement } from "./statement";
 
@@ -150,7 +151,10 @@ export async function afterDecision(deps: Pick<ModerationDeps, "apiDb" | "auth" 
         const handle = (await handleOf(deps.apiDb, staffId)) ?? "unknown";
         // 3f (design, section 7.2): the same way as the throttled alerts, without a key: a push to every staff phone, then
         // the mail as before.
-        const sent = await staffAlert(deps, null, 0, { template: "moderation_csam_lifted", handle, at: new Date(statement.decidedAt), what: unsealed ? "unsealed" : "dismissed" });
+        // 3d Task 7 (7.11 step 6, W.8): on a case whose finding came from a match the mail says that the images stay closed
+        // to staff, in the place of "staff may open them" and the look of the same day.
+        const matched = await decisionCaseHasMatch(deps.apiDb, decisionId);
+        const sent = await staffAlert(deps, null, 0, { template: "moderation_csam_lifted", handle, at: new Date(statement.decidedAt), what: unsealed ? "unsealed" : "dismissed", ...(matched ? { matched: true as const } : {}) });
         if (sent === "unsent") deps.log.error({ decisionId }, "moderation: no staff account was alerted to a decision that lifted the protection of reported images; the home screen lists it");
       }
     }

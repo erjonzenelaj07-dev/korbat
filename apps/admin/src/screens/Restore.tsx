@@ -2,8 +2,8 @@ import { GAP_CLASSES, MEASURES, type GapClass, type RestoreGap, type RestoreView
 import { useEffect, useRef, useState } from "react";
 import type { StaffApi } from "../api";
 import { AUTOMATION_WORDS, describeError, RECOVERY_WORDS } from "../messages";
-import { CaseLink, OrderLink } from "../nav";
-import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
+import { CaseLink, NavLink, OrderLink } from "../nav";
+import { parseCaseId, parseOrderId, type CaseId, type ConsolePath, type OrderId } from "../router";
 import { closeGapWithKey } from "../step-up";
 import { bothTimes, Loaded, type Loadable } from "../ui";
 import type { CredentialsLike } from "../webauthn";
@@ -49,7 +49,8 @@ function lineOf(gap: RestoreGap, n: number): string {
     case "record":
       return c.record.line(at, W.recordWhat(gap.action));
     case "release":
-      return c.release.line(gap.action, at);
+      // 3d Task 7: a lost end of a held upload's hold says how it ended.
+      return gap.action === "upload_hold_ended" && gap.hold !== undefined ? c.release.holdLine(at, gap.hold.endAs) : c.release.line(gap.action, at);
   }
 }
 
@@ -62,6 +63,8 @@ export interface RestoreScreenProps {
   onOpenCase(id: CaseId, gap: GapToTake): void;
   onOpenOrder(id: OrderId): void;
   onNotNeeded(gap: RestoreGap): void;
+  /** 3d Task 7: the link to Held uploads beside a lost end of a hold whose refusal is there. */
+  onNavigate?: (path: ConsolePath) => void;
 }
 
 /** One class's gaps: the open ones with their controls, and the closed ones of the newest import with how they closed. */
@@ -87,7 +90,21 @@ function ClassBlock({ cls, gaps, props }: { cls: GapClass; gaps: RestoreGap[]; p
               {/* 3d Task 6 (8.7): [restore.program] beside a lost measure a program took, which a person takes again as theirs. */}
               {gap.action === "automated_decided" ? <p className="hint">{AUTOMATION_WORDS.restoreProgram}</p> : null}
               {/* 3d Task 2 (8.7): no key closes a gap of the class release: the line says who does, and nothing else is offered. */}
-              {cls === "release" ? <p className="hint">{W.classes.release.control(gap.action)}</p> : null}
+              {/* 3d Task 7 [restore.holdEnd]: a lost end of a hold is closed by an admin's end again while the refusal is there. */}
+              {cls === "release" && gap.hold !== undefined ? (
+                <>
+                  {gap.hold.present && props.onNavigate !== undefined ? (
+                    <p>
+                      <NavLink to="/uploads" onNavigate={props.onNavigate}>
+                        {W.classes.release.holdLink}
+                      </NavLink>
+                    </p>
+                  ) : null}
+                  <p className="hint">{W.classes.release.holdEnd(gap.hold.present)}</p>
+                </>
+              ) : cls === "release" ? (
+                <p className="hint">{W.classes.release.control(gap.action)}</p>
+              ) : null}
               {cls === "record" || cls === "release" ? null : cls === "order_effect" ? (
                 orderId !== null ? (
                   <p>
@@ -179,12 +196,14 @@ export function Restore({
   role,
   onOpenCase,
   onOpenOrder,
+  onNavigate,
 }: {
   api: StaffApi;
   credentials: CredentialsLike;
   role: StaffRole;
   onOpenCase(id: CaseId, gap: GapToTake): void;
   onOpenOrder(id: OrderId): void;
+  onNavigate?: (path: ConsolePath) => void;
 }) {
   const [view, setView] = useState<Loadable<RestoreView>>({ state: "loading" });
   const [busy, setBusy] = useState<string | null>(null);
@@ -224,7 +243,7 @@ export function Restore({
     <Loaded
       value={view}
       render={(value) => (
-        <RestoreScreen view={value} role={role} busy={busy} notice={notice} error={error} onOpenCase={onOpenCase} onOpenOrder={onOpenOrder} onNotNeeded={(gap) => void notNeeded(gap)} />
+        <RestoreScreen view={value} role={role} busy={busy} notice={notice} error={error} onOpenCase={onOpenCase} onOpenOrder={onOpenOrder} onNotNeeded={(gap) => void notNeeded(gap)} onNavigate={onNavigate} />
       )}
     />
   );

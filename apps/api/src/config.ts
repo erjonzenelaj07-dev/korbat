@@ -290,6 +290,22 @@ const schema = z.object({
    */
   AUTOMATION_DPIA_R1: blankAsUnset.pipe(z.iso.date().optional()),
   AUTOMATION_DPIA_R1_ACTS: blankAsUnset.pipe(z.iso.date().optional()),
+  /**
+   * 3d Task 7 (design, sections 2 rows 27 to 35 and 49, 5 "The adapters" and 10.8): the comparison of uploads with known
+   * material, unprefixed since the worker reads it too. `off` (the default): no hash is computed and nothing is compared;
+   * `test`: the test matcher on the repository's two byte-constant files (refused while APP_SITE is open); a source's name:
+   * no such adapter in this build, so it stops the process at start until the owner's later task adds one.
+   */
+  MEDIA_MATCH: blankAsUnset.pipe(z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/, "must be off, test or a source's name: lower-case letters, digits, dashes and underscores").default("off")),
+  /** Whether an acting match on a post also seals the post's images until an admin answers (row 27); on by default. */
+  AUTOMATION_R2_ACTS: blankAsUnset.pipe(z.enum(["on", "off"]).default("on")),
+  /**
+   * The day of the owner's impact assessment for the comparison, and the day on which it covered the comparison's measure
+   * (row 49), each a date or empty. A real source needs the first, and with AUTOMATION_R2_ACTS=on the second; the facts
+   * route prints both in the comparison's block, and neither stands over the R1 check.
+   */
+  AUTOMATION_DPIA_MATCH: blankAsUnset.pipe(z.iso.date().optional()),
+  AUTOMATION_DPIA_MATCH_ACTS: blankAsUnset.pipe(z.iso.date().optional()),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // 3d (design, section 5, review ruling 11): in every environment, a test adapter never runs on a site people can reach.
@@ -304,6 +320,16 @@ const schema = z.object({
   }
   if (c.R1_CLASSIFIER !== "off" && c.R1_CLASSIFIER !== "test" && c.AUTOMATION_R1_ACTS === "on" && c.AUTOMATION_DPIA_R1_ACTS === undefined) {
     refuse("AUTOMATION_DPIA_R1_ACTS", "AUTOMATION_DPIA_R1_ACTS is required when a classifier withholds (AUTOMATION_R1_ACTS=on): the day the assessment covered the measure");
+  }
+  // 3d Task 7 (rows 27 and 49): no source's adapter is built in, so a source's name stops the process; and the guards a real
+  // source meets once the owner's task adds one, one tool's date never passing the other or the step from alerting to sealing.
+  if (c.MEDIA_MATCH === "test" && c.APP_SITE === "open") refuse("MEDIA_MATCH", "MEDIA_MATCH=test is refused while APP_SITE is open: a test adapter answers only on a site that is closed");
+  if (c.MEDIA_MATCH !== "off" && c.MEDIA_MATCH !== "test") refuse("MEDIA_MATCH", `MEDIA_MATCH=${c.MEDIA_MATCH}: no such adapter in this build`);
+  if (c.MEDIA_MATCH !== "off" && c.MEDIA_MATCH !== "test" && c.AUTOMATION_DPIA_MATCH === undefined) {
+    refuse("AUTOMATION_DPIA_MATCH", "AUTOMATION_DPIA_MATCH is required when MEDIA_MATCH names a source: the day of the impact assessment for the comparison");
+  }
+  if (c.MEDIA_MATCH !== "off" && c.MEDIA_MATCH !== "test" && c.AUTOMATION_R2_ACTS === "on" && c.AUTOMATION_DPIA_MATCH_ACTS === undefined) {
+    refuse("AUTOMATION_DPIA_MATCH_ACTS", "AUTOMATION_DPIA_MATCH_ACTS is required when a source's match seals (AUTOMATION_R2_ACTS=on): the day the assessment covered the measure");
   }
   // An adapter named without its settings stops the process at start, as every missing setting does.
   if (c.EDGE_PURGE === "cloudflare") {

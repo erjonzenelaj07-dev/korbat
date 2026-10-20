@@ -30,7 +30,8 @@ describe("limits and codes", () => {
   });
 
   test("error codes and failure reasons", () => {
-    expect(MediaErrorCode.options).toEqual(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable"]);
+    // 3d Task 7: upload_refused, a post that attaches an upload korbat did not accept.
+    expect(MediaErrorCode.options).toEqual(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused"]);
     expect(MediaFailure.options).toEqual(["unsupported_format", "animated_not_supported", "image_too_large", "corrupt_image", "processing_failed"]);
   });
 

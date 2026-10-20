@@ -788,6 +788,8 @@ export async function itemStatus(deps: Pick<ModerationDeps, "social" | "config">
     reexamination: reexaminable ? { open: !item.reexamined && item.inWindow, until: item.until! } : null,
     ...(rule ? { rule } : {}),
     ...(restricting && item.noEffect ? { noEffect: true as const } : {}),
+    // 3d Task 7 (7.10, 10.2): a released outcome of a decision recorded as partly automated says so in its own sentence.
+    ...(item.released && item.partly ? { automatedDecision: "partially" as const } : {}),
   };
 }
 

@@ -12,6 +12,7 @@ import {
   ReleaseNoticeView,
   ReplyResponse,
   ReportsPage,
+  UploadRefusalView,
   type CsamKeywordChoice,
   type NoticeItemStatus,
   type PostModeration,
@@ -63,6 +64,10 @@ export const moderation = {
   notices: (cursor?: string) => api(`/api/moderation/notices${query(cursor)}`, { schema: AuthorNoticesPage }),
   /** 3d Task 2: one release's notice, for its author alone; not_found for anyone else, and while it may not be told yet. */
   release: (id: string) => api(`/api/moderation/releases/${encodeURIComponent(id)}`, { schema: ReleaseNoticeView }),
+  /** 3d Task 7: a refused upload's notice, for its uploader alone; not_found for anyone else. */
+  upload: (id: string) => api(`/api/moderation/uploads/${encodeURIComponent(id)}`, { schema: UploadRefusalView }),
+  /** 3d Task 7: "Object" on a refused upload, with the one message its uploader writes; the answer is the notice as it now reads. */
+  objectToUpload: (id: string, text: string) => api(`/api/moderation/uploads/${encodeURIComponent(id)}/objection`, { json: { text }, schema: UploadRefusalView }),
   resumeReportMail: () => api("/api/moderation/report-mail/resume", { method: "POST" }),
   /** The author's appeal of a decision about them. The answer is the decision as it now reads, with the appeal waiting. */
   appeal: (id: string, statement: string) => api(`/api/moderation/decisions/${encodeURIComponent(id)}/appeal`, { json: statementOf(statement), schema: DecisionView }),

@@ -289,6 +289,16 @@ describe("the public answers' shape (3d Task 4)", () => {
     expect(PublicFacts.parse(dated)).toEqual(dated);
   });
 
+  test("3d Task 7: the comparison's block: off, only alerting or sealing (AUTOMATION_R2_ACTS), the test matcher as such with its name, and its own two days", () => {
+    expect(publicFacts(OFF).match).toEqual({ state: "off", test: false, source: null, dpia: null, dpiaActs: null });
+    expect(publicFacts({ ...OFF, MEDIA_MATCH: "off", AUTOMATION_R2_ACTS: "on" }).match.state).toBe("off");
+    expect(publicFacts({ ...OFF, MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on" }).match).toEqual({ state: "seals", test: true, source: "test", dpia: null, dpiaActs: null });
+    expect(publicFacts({ ...OFF, MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "off" }).match.state).toBe("alerts");
+    const dated = publicFacts({ ...OFF, MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on", AUTOMATION_DPIA_MATCH: "2026-10-01", AUTOMATION_DPIA_MATCH_ACTS: "2026-10-05" });
+    expect([dated.match.dpia, dated.match.dpiaActs, dated.r1.dpia]).toEqual(["2026-10-01", "2026-10-05", null]);
+    expect(PublicFacts.parse(dated)).toEqual(dated);
+  });
+
   test("the editions' answer: each year's newest version, newest year first, with its older versions and the day each was replaced", () => {
     const figures = { restrictions: { byGround: [], byMeasure: [], total: "0" }, noBreach: "0", intakes: [], appeals: [], reexaminations: [], accountMeasures: [], automated: { findings: [], measures: [] }, recipients: "not recorded" } as TransparencyFigures;
     const row = (year: number, version: number, at: string, reason: EditionRow["reason"]): EditionRow => ({ year, version, publishedAt: new Date(at), method: 1, reason, figures });

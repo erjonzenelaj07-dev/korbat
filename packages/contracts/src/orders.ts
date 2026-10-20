@@ -198,6 +198,11 @@ export const ALERT_KIND_LIST = [
   "automated_objection",
   "automation_capped",
   "automated_waiting",
+  // Task 7: the comparison of uploads needs the operator (alert_steps(), daily, while a check stays unanswered; and at once
+  // by the first upload of an hour that matched over the limit on refusals); and an admin ended a held upload's hold
+  // without a report (staffAlert after the end's commit, to every staff account, the admin included, no throttle).
+  "matcher_down",
+  "hold_ended_unreported",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -263,6 +268,9 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   // the limit's word cannot be a fact of its own.
   automation_capped: sentenceKind(3, "all", ["at", "count", "limitHour", "limitDay", "limitUnanswered", "limitWaiting"]),
   automated_waiting: sentenceKind(3, "all", ["count", "oldestAt"]),
+  matcher_down: sentenceKind(3, "all", ["since", "count", "refusalsCapped"]),
+  // The time after which the upload is deleted is a time fact, so it ends in At (W.7's `until`).
+  hold_ended_unreported: sentenceKind(3, "all", ["at", "deletesAt"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -427,7 +435,7 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     todo: "Whoever has the server reads the README's section Quarantine, on a file in neither place. An image whose seal was lifted cannot be shown again, and its author is told; a file kept for an authority cannot be handed over, and the operator tells the authority.",
   },
   // Task 2. release_undestroyed is mailed alone, so its line names the README's steps where W.7 says "the same steps";
-  // seal_released's line names the case alone until Held uploads exists (Task 7 adds "or at Held uploads").
+  // seal_released's line names the case or Held uploads (Task 7), where a release is taken.
   release_undestroyed: {
     title: "Released files still exist",
     sentence: one("{count} released files are still recorded in the quarantine, the oldest release of {oldestAt}."),
@@ -436,7 +444,7 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
   seal_released: {
     title: "An admin released sealed images",
     sentence: one("An admin released sealed images at {at}: {posts} posts, {uploads} held uploads. The files are to be destroyed."),
-    todo: "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
+    todo: "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case or at Held uploads now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
   },
   // Task 3: the 24 hours and the edge's minutes are EDGE_WORDS', so the words follow the constants.
   edge_purge_failed: {
@@ -476,6 +484,23 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     title: "A request for a person is waiting",
     sentence: one("{count} requests for a person have waited longer than {objectionTargetHours} hours, the oldest since {oldestAt}."),
     todo: "korbat publishes that target. Lift the measure or decide the case today. This repeats daily.",
+  },
+  // Task 7 (W.7): the numbers are AUTOMATION_RULES', never typed here. The daily row carries all three facts; the row
+  // written at once by an upload over the limit may count no unchecked upload, so each count's sentence is printed only
+  // when it is above zero.
+  matcher_down: {
+    title: "The comparison of uploads needs the operator",
+    sentence: [
+      { text: "Uploads are not being compared as usual." },
+      { text: "{count} are unchecked, the oldest since {since}.", when: { fact: "count", is: "positive" } },
+      { text: "{refusalsCapped} matched within an hour over the limit of {refusalsPerHour} refusals and were not refused.", when: { fact: "refusalsCapped", is: "positive" } },
+    ],
+    todo: "Unchecked uploads are accepted meanwhile and checked again for {matchRetryHours} hours. An upload over the limit is neither refused nor accepted, and nobody was told of a match: so many matches at once are more likely a fault of the source's list or of the way to it. The operator checks both, and either sets MEDIA_MATCH=off or lets the check go on.",
+  },
+  hold_ended_unreported: {
+    title: "A hold ended without a report",
+    sentence: one("An admin ended the hold on a matched upload without a report at {at}. The upload is deleted after {deletesAt}."),
+    todo: 'Every staff account gets this mail, the admin who did it too. Until the upload is deleted another admin can still end the hold as "Report" on Held uploads; after that nothing can.',
   },
 };
 

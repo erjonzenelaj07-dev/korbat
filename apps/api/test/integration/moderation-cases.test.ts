@@ -646,7 +646,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
           staffImage: async (mediaId, size) => {
             asked.push(mediaId);
             const image = await real.staffImage(mediaId, size);
-            if (!image) return null;
+            if (!image || image === "matched") return image;
             opened.push(image.file);
             return answeredPost === null ? image : { ...image, postId: answeredPost };
           },
@@ -1214,7 +1214,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         expect(rows[1]).toMatchObject({ lane: 1, openItems: 2, rules: ["R4"], categories: ["STATEMENT_CATEGORY_ILLEGAL_OR_HARMFUL_SPEECH", TC], allegesIllegal: true, suspect: false });
         expect(rows[4]).toMatchObject({ lane: 2, targetType: "account", rules: ["R6"], allegesIllegal: false, suspect: false });
         // No row names a reporter, a count of reports per person or a weight.
-        // 3d Task 6: and three booleans of what a program found and took and whether the author asked for a person.
+        // 3d Task 6: and three booleans of what a program found and took and whether the author asked for a person; Task
+        // 7: and whether a match only flags.
         expect(Object.keys(rows[0]!).sort()).toEqual([
           "allegesIllegal",
           "categories",
@@ -1222,6 +1223,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
           "foundByProgram",
           "id",
           "lane",
+          "matchFlag",
           "objected",
           "oldestOpenAt",
           "openItems",

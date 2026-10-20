@@ -13,7 +13,8 @@
  * The caps count what decisions_record counts: a program's decisions under one rule in the hour and the 24 hours before
  * now, rolling, so the lines say so. "Today" is the UTC day, as the transparency figures count days.
  *
- * Known material is Task 7's: until it is built, its line says that no comparison exists in this version.
+ * 3d Task 7: the comparison with known material, whether its match seals, its two impact assessments' days, the uploads
+ * whose check is unanswered and the refusals of the last hour against the limit, read through the media module.
  *
  * This file has no entry point of its own, so both bundles can include it (build.mjs says why that matters).
  */
@@ -22,6 +23,7 @@ import { AUTOMATION_RULES, R1_TEST_THRESHOLD, SWEEP_HOURS } from "@korbat/contra
 import type { Db, DbTx } from "@korbat/db";
 import { R1_TEST_MODEL } from "@korbat/media-protocol";
 import type { Config } from "../config";
+import { matchStatus } from "../media";
 
 export const AUTOMATION_USAGE = [
   `${"  automation-status".padEnd(41)}print each adapter of 3d, its settings and impact assessments, a program's findings today and`,
@@ -31,7 +33,19 @@ export const AUTOMATION_USAGE = [
 /** The settings automation-status reports, each read as the server reads it. */
 export type AutomationSettings = Pick<
   Config,
-  "EDGE_PURGE" | "R1_CLASSIFIER" | "AUTOMATION_R1_ACTS" | "AUTOMATION_DPIA_R1" | "AUTOMATION_DPIA_R1_ACTS" | "HEAD_WITNESS" | "HEAD_KEEPER_MAIL" | "RECIPIENTS_SIGNED_OUT"
+  | "EDGE_PURGE"
+  | "R1_CLASSIFIER"
+  | "AUTOMATION_R1_ACTS"
+  | "AUTOMATION_DPIA_R1"
+  | "AUTOMATION_DPIA_R1_ACTS"
+  | "HEAD_WITNESS"
+  | "HEAD_KEEPER_MAIL"
+  | "RECIPIENTS_SIGNED_OUT"
+  // 3d Task 7.
+  | "MEDIA_MATCH"
+  | "AUTOMATION_R2_ACTS"
+  | "AUTOMATION_DPIA_MATCH"
+  | "AUTOMATION_DPIA_MATCH_ACTS"
 >;
 
 /** What the database holds that automation-status reports, read in one statement. */
@@ -87,14 +101,15 @@ export async function automationStatus(q: Pick<Db, "execute"> | Pick<DbTx, "exec
                           where x.kind = 'head' and x.published_at is not null and x.retired_at is null
                           order by x.day desc limit 1) h on true`)) as unknown as StatusRow[];
   const r = row!;
+  const match = await matchStatus(q as Db);
   const model = r1Model(settings);
   const day = (value: string | undefined) => value ?? "not set";
   const rules = AUTOMATION_RULES;
   return [
     `${c}: edge purge: ${settings.EDGE_PURGE}; ${r.purges_waiting} purges waiting, ${r.purges_failed} failed in 24 hours.`,
     `${c}: R1 check: ${settings.R1_CLASSIFIER}, acts ${settings.AUTOMATION_R1_ACTS}; model ${model.name}, threshold version ${model.thresholdVersion}; impact assessment ${day(settings.AUTOMATION_DPIA_R1)}, for its measure ${day(settings.AUTOMATION_DPIA_R1_ACTS)}.`,
-    // Task 7 builds the comparison with known material and its settings; until then nothing of it exists to report.
-    `${c}: known material: off; no comparison is built in this version.`,
+    // 3d Task 7 (8.10): the comparison, its measure, its two days, its unanswered checks and the hour's refusals.
+    `${c}: known material: ${settings.MEDIA_MATCH}, acts ${settings.AUTOMATION_R2_ACTS}; impact assessment ${day(settings.AUTOMATION_DPIA_MATCH)}, for its measure ${day(settings.AUTOMATION_DPIA_MATCH_ACTS)}; ${match.unchecked} uploads unchecked, the oldest since ${match.oldestUnchecked ?? "none"}; refusals ${match.refusalsHour} of ${rules.refusalsPerHour} this hour.`,
     `${c}: head witness: ${settings.HEAD_WITNESS}; last value ${r.head_day ?? "none"}, witnessed ${r.head_day === null ? "no" : r.head_witnessed ? "yes" : "no"}; keeper's mail ${settings.HEAD_KEEPER_MAIL === undefined ? "not set: no daily mail is sent" : "set"}.`,
     `${c}: signed-out readers: ${settings.RECIPIENTS_SIGNED_OUT === "on" ? "counted" : "not counted"}.`,
     `${c}: a program's findings today: ${r.found_r1} under R1, ${r.found_r2} under R2, ${r.found_none} without a rule; signals the sweep left unhandled after ${SWEEP_HOURS} hours: ${r.given_up}.`,

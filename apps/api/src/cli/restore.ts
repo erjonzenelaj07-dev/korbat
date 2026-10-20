@@ -582,6 +582,11 @@ async function importLine(importer: Importer, entry: TailLine, withdrawnLater: R
   switch (entry.line.action) {
     // 3d Task 2: a release of a seal, a leave recorded and a leave withdrawn, each a gap of the class release.
     case "seal_released":
+    // 3d Task 7 (7.3 step 1): a held upload's release, and the end of a hold, each a gap of the class release: the first
+    // release-replay closes; the second the admin's new end of the hold closes when the restored database holds the
+    // refusal (upload_hold_end, reapplied), and release-replay when it does not (upload_hold_replay).
+    case "upload_released":
+    case "upload_hold_ended":
       return importer.released(entry);
     case "release_leave_recorded":
       return importer.leaveRecorded(entry, withdrawnLater);

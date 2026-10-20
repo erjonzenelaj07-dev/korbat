@@ -206,10 +206,14 @@ const AUTHOR = (alias: string) =>
  * with `owner`; null for a release that is not there, not the owner's, or (unless `held` is allowed) whose notice is held.
  * `images` is the image rows the release erased, as the seals counted them (seal_posts.images, which nothing changes).
  */
-export async function releaseView(q: Runner, releaseId: string, options: { owner?: string; allowHeld?: boolean } = {}): Promise<(ReleaseNoticeView & { authorId: string | null }) | null> {
-  const [row] = await rows<{ id: string; basis: "leave" | "period"; released_at: string; backups_clear_at: string; upload: boolean; post_ids: string[]; author_id: string | null; held: boolean; seal_decision: string | null; images: number }>(
+export async function releaseView(
+  q: Runner,
+  releaseId: string,
+  options: { owner?: string; allowHeld?: boolean; media?: Pick<ModerationDeps["media"], "refusalSubject"> } = {},
+): Promise<(ReleaseNoticeView & { authorId: string | null }) | null> {
+  const [row] = await rows<{ id: string; basis: "leave" | "period"; released_at: string; backups_clear_at: string; upload: boolean; upload_refusal_id: string | null; post_ids: string[]; author_id: string | null; held: boolean; seal_decision: string | null; images: number }>(
     q,
-    sql`select r.id, r.basis, ${iso("r.released_at")} as released_at, ${iso("r.backups_clear_at")} as backups_clear_at, r.upload_refusal_id is not null as upload,
+    sql`select r.id, r.basis, ${iso("r.released_at")} as released_at, ${iso("r.backups_clear_at")} as backups_clear_at, r.upload_refusal_id is not null as upload, r.upload_refusal_id,
                r.post_ids::text[] as post_ids, ${AUTHOR("r")} as author_id, r.author_notice = 'held' as held,
                coalesce((select a.decision_id from public.decision_actions a where a.id = r.seal_action_id),
                         (select a.decision_id from public.seal_posts s join public.decision_actions a on a.id = s.action_id
@@ -218,6 +222,9 @@ export async function releaseView(q: Runner, releaseId: string, options: { owner
           from public.releases r where r.id = ${releaseId}::uuid`,
   );
   if (row === undefined) return null;
+  // 3d Task 7: a held upload's release has no seal and no post; its author is the refusal's uploader, read through the
+  // media module, which owns the refusals.
+  if (row.upload_refusal_id !== null) row.author_id = options.media === undefined ? null : ((await options.media.refusalSubject(q, row.upload_refusal_id))?.ownerId ?? null);
   if (options.owner !== undefined && row.author_id !== options.owner) return null;
   if (row.held && !options.allowHeld) return null;
   const posts = await rows<{ id: string; created_at: string }>(
@@ -243,12 +250,12 @@ export async function releaseView(q: Runner, releaseId: string, options: { owner
  * the mail is sent, so the send after the commit and the dispatch round never both send it. The mail's result is the
  * notice's state; a relay that could not take it leaves it pending for the next round. Answers whether it was sent.
  */
-export async function sendReleaseNotice(deps: Pick<ModerationDeps, "apiDb" | "auth">, releaseId: string): Promise<boolean> {
+export async function sendReleaseNotice(deps: Pick<ModerationDeps, "apiDb" | "auth"> & { media?: ModerationDeps["media"] }, releaseId: string): Promise<boolean> {
   return deps.apiDb.transaction(async (tx) => {
     await tx.execute(sql`set local lock_timeout = '10s'`);
     const [locked] = await rows<{ id: string }>(tx, sql`select r.id from public.releases r where r.id = ${releaseId}::uuid and r.author_notice = 'pending' for update`);
     if (locked === undefined) return false;
-    const view = await releaseView(tx, releaseId, { allowHeld: false });
+    const view = await releaseView(tx, releaseId, { allowHeld: false, media: deps.media });
     if (view === null || view.authorId === null) {
       await tx.execute(sql`update public.releases set author_notice = 'none', author_notice_at = now() where id = ${releaseId}::uuid`);
       return false;
@@ -311,9 +318,9 @@ export async function releaseNotices(deps: ModerationDeps, now: Date, due: Date,
  * GET /api/moderation/notices (sections 9.6 and 10.2): the releases about the viewer's posts, newest first, 20 a page,
  * never one whose notice is held: nothing of the app shows a release while a hold on telling stands.
  */
-export async function authorNotices(deps: Pick<ModerationDeps, "apiDb">, viewer: string, cursor?: string): Promise<AuthorNoticesPage> {
+export async function authorNotices(deps: Pick<ModerationDeps, "apiDb"> & { media?: Pick<ModerationDeps["media"], "refusalsOf"> }, viewer: string, cursor?: string): Promise<AuthorNoticesPage> {
   const after = cursor === undefined ? null : decodeListCursor(cursor);
-  const found = await rows<{ id: string; at: string; key: string }>(
+  const releases = await rows<{ id: string; at: string; key: string }>(
     deps.apiDb,
     sql`select r.id, ${iso("r.released_at")} as at, ${microsOf("r.released_at")} as key
           from public.releases r
@@ -322,10 +329,16 @@ export async function authorNotices(deps: Pick<ModerationDeps, "apiDb">, viewer:
          order by r.released_at desc, r.id desc
          limit ${AUTHOR_NOTICES_PAGE_SIZE + 1}`,
   );
+  // 3d Task 7 (sections 9.5 and 10.2): the viewer's refused uploads beside them, through the media module, merged newest
+  // first under the one cursor of (time, id). A held upload's release is told in its own refusal's notice.
+  const refusals = deps.media === undefined ? [] : await deps.media.refusalsOf(viewer, after, AUTHOR_NOTICES_PAGE_SIZE + 1);
+  const found = [...releases.map((row) => ({ ...row, kind: "release" as const })), ...refusals.map((row) => ({ ...row, kind: "upload_refused" as const }))].sort((a, b) =>
+    a.key !== b.key ? (a.key < b.key ? 1 : -1) : a.id < b.id ? 1 : a.id > b.id ? -1 : 0,
+  );
   const page = found.slice(0, AUTHOR_NOTICES_PAGE_SIZE);
   const last = page[page.length - 1];
   return {
-    notices: page.map((row) => ({ kind: "release" as const, id: row.id, at: row.at })),
+    notices: page.map((row) => ({ kind: row.kind, id: row.id, at: row.at })),
     nextCursor: found.length > AUTHOR_NOTICES_PAGE_SIZE && last ? encodeListCursor({ at: last.key, id: last.id }) : null,
   };
 }

@@ -9,9 +9,11 @@ export interface ComposerImage {
   /** A blob: URL of the chosen file, so the preview shows at once and nothing has to be downloaded. */
   previewUrl: string;
   alt: string;
-  status: "uploading" | "processing" | "ready" | "failed";
+  status: "uploading" | "processing" | "ready" | "failed" | "refused";
   id: string | null;
   error: string | null;
+  /** 3d Task 7: the refusal's id, whose notice the tile's "Why" opens; null for every other status. */
+  refusalId?: string | null;
 }
 
 const FAILURES: Record<MediaFailure, string> = {
@@ -42,7 +44,8 @@ export function refusal(file: { name: string; type: string; size: number }): str
 export function describeState(images: ComposerImage[]): { waiting: boolean; failed: boolean; undescribed: boolean } {
   return {
     waiting: images.some((image) => image.status === "uploading" || image.status === "processing"),
-    failed: images.some((image) => image.status === "failed"),
+    // 3d Task 7: a refused upload is never posted: the composer holds it back as it holds back a failed one.
+    failed: images.some((image) => image.status === "failed" || image.status === "refused"),
     undescribed: images.some((image) => {
       const length = altLength(normalizeAltText(image.alt));
       return length < 1 || length > ALT_MAX_LENGTH;
@@ -52,7 +55,8 @@ export function describeState(images: ComposerImage[]): { waiting: boolean; fail
 
 /**
  * The images of one composer: uploads each chosen file, follows its processing, and keeps the
- * descriptions. Removing an image also removes the upload on the server. Blob URLs are released
+ * descriptions. Removing an image also removes the upload on the server (a refused upload, and one whose check has not
+ * answered, only from the composer: korbat keeps it as its hold or its check needs). Blob URLs are released
  * when an image goes and when the composer closes.
  */
 export function useImageUploads() {
@@ -96,6 +100,8 @@ export function useImageUploads() {
           if (!present(key)) return;
           if (state.status === "ready") return patch(key, { status: "ready" });
           if (state.status === "failed") return patch(key, { status: "failed", error: FAILURES[state.error] });
+          // 3d Task 7 (9.5): an upload the comparison refused: the tile says so and links its notice.
+          if (state.status === "refused") return patch(key, { status: "refused", refusalId: state.refusalId });
           await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         }
         if (present(key)) patch(key, { status: "failed", error: FAILURES.processing_failed });

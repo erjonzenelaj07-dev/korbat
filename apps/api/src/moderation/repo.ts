@@ -236,6 +236,8 @@ export interface NoticeItemRow {
   rulesVersion: number | null;
   /** Every measure of the answering decision changed nothing when it was imposed. */
   noEffect: boolean;
+  /** 3d Task 7: the answering decision is recorded as partly automated (update.automated.partly). */
+  partly: boolean;
   changed: boolean;
   reexamines: boolean;
   /** A moderator's decision to take no action: the only answer a re-examination can be asked for. */
@@ -308,6 +310,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
     rule_id: string | null;
     rules_version: number | null;
     no_effect: boolean;
+    partly: boolean;
     changed: boolean;
     reexamines: boolean;
     no_action: boolean;
@@ -324,7 +327,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'retire_handle') as retired,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind in ('suspend', 'terminate')) as measure,
                coalesce(d.unseen, false) as decision_unseen,
-               d.rule_id, d.rules_version, ${answerChangedNothing} as no_effect,
+               d.rule_id, d.rules_version, ${answerChangedNothing} as no_effect, coalesce(d.automated_decision = 'partially', false) as partly,
                i.revised_sent_at is not null as changed,
                i.reexamines_item_id is not null as reexamines,
                (i.answered_by is not null and i.outcome in ('no_violation', 'not_evident')) as no_action,
@@ -354,6 +357,7 @@ export async function noticeItemsOf(q: Runner, intakeIds: readonly string[]): Pr
     ruleId: row.rule_id,
     rulesVersion: row.rules_version,
     noEffect: row.no_effect,
+    partly: row.partly,
     changed: row.changed,
     reexamines: row.reexamines,
     noAction: row.no_action,
@@ -605,10 +609,11 @@ export async function insertDecision(tx: DbTx, row: { id: string; caseId: string
   const p = row.params;
   await tx.execute(
     sql`insert into decisions (id, case_id, kind, reviews_decision_id, seen_state_version, through_seq, outcome, ground, rule_id, rules_version, redress_version, category, category_keyword,
-                               snapshot_id, snapshot_digest, facts_digest, reason_digest, legal_reference_digest, decided_by)
+                               snapshot_id, snapshot_digest, facts_digest, reason_digest, legal_reference_digest, decided_by, match_answer_reason)
         values (${row.id}::uuid, ${row.caseId}::uuid, ${p.kind}::decision_kind, ${p.reviewsDecisionId}::uuid, ${p.stateVersion}::int, ${p.throughSeq}::int, ${p.outcome}::decision_outcome,
                 ${p.ground}::decision_ground, ${p.ruleId}, ${p.rulesVersion}::smallint, ${p.redressVersion}::smallint, ${p.category}, ${p.categoryKeyword},
-                ${p.snapshotId}::uuid, ${p.snapshotDigest}, ${p.factsDigest}, ${p.reasonDigest}, ${p.legalReferenceDigest}, ${row.decidedBy}::uuid)`,
+                ${p.snapshotId}::uuid, ${p.snapshotDigest}, ${p.factsDigest}, ${p.reasonDigest}, ${p.legalReferenceDigest}, ${row.decidedBy}::uuid,
+                ${p.matchAnswerReason ?? null})`,
   );
 }
 
@@ -696,7 +701,7 @@ export interface ConfirmedAuditRow {
    * 3f adds the two actions of an order's record that a key confirms and its effect, and (Task 6) a gap closed as not
    * needed and the audit log's download (append_confirmed_audit's list, 0027_orders).
    */
-  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected" | "order_effected" | "gap_closed" | "audit_exported" | "seal_released";
+  action: "case_decided" | "appeals_reviewed" | "identity_revealed" | "order_event_recorded" | "order_corrected" | "order_effected" | "gap_closed" | "audit_exported" | "seal_released" | "upload_hold_ended" | "upload_released";
   targetType: string;
   targetId: string;
   metadata: Record<string, unknown>;
@@ -1192,6 +1197,8 @@ export interface CaseDecisionRow {
   facts: string | null;
   reason: string | null;
   legalReference: string | null;
+  /** 3d Task 7: the reason of an answer without a seal on an acting match; null otherwise. */
+  matchAnswerReason: string | null;
 }
 
 /** The case's decisions, oldest first. A text is read by the digest the decision confirmed; an erased text is null. */
@@ -1200,6 +1207,7 @@ export async function caseDecisions(q: Runner, caseId: string): Promise<CaseDeci
     q,
     sql`select d.id, d.kind, d.outcome, d.ground, d.rule_id, d.rules_version, d.redress_version, d.category, d.category_keyword, d.source, ${iso("d.decided_at")} as decided_at,
                s.handle as staff_handle, d.through_seq, d.answers_from_seq, d.reviews_decision_id, d.snapshot_id, d.suspect, d.unseen, d.needs_admin, d.ended_interim,
+               d.match_answer_reason,
                (select t.text from staff_texts t where t.digest = d.facts_digest) as facts,
                (select t.text from staff_texts t where t.digest = d.reason_digest) as reason,
                (select t.text from staff_texts t where t.digest = d.legal_reference_digest) as legal_reference
@@ -1231,6 +1239,7 @@ export async function caseDecisions(q: Runner, caseId: string): Promise<CaseDeci
     facts: row.facts as string | null,
     reason: row.reason as string | null,
     legalReference: row.legal_reference as string | null,
+    matchAnswerReason: row.match_answer_reason as string | null,
   }));
 }
 
@@ -1975,6 +1984,8 @@ export interface OutcomeLineRow {
   measure: boolean;
   /** Every measure of the answering decision changed nothing when it was imposed. */
   noEffect: boolean;
+  /** 3d Task 7: the answering decision is recorded as partly automated; absent reads false. */
+  partly?: boolean;
   /** For an item about a post: the post quotes another. */
   quotes: boolean;
 }
@@ -1990,7 +2001,7 @@ export async function pendingOutcomeLines(q: Runner): Promise<OutcomeLineRow[]> 
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'seal_media') as sealed,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind = 'retire_handle') as retired,
                exists (select 1 from decision_actions a where a.decision_id = i.answered_by and a.kind in ('suspend', 'terminate')) as measure,
-               ${answerChangedNothing} as no_effect,
+               ${answerChangedNothing} as no_effect, coalesce(d.automated_decision = 'partially', false) as partly,
                coalesce((select p.quote_of_id is not null from posts p where i.target_type = 'post' and p.id = i.target_id), false) as quotes
           from intake_items i join intakes n on n.id = i.intake_id left join decisions d on d.id = i.answered_by
          where i.outcome_sent_at is not null and i.outcome_mail = 'pending' and i.shown_outcome is not null
@@ -2020,6 +2031,7 @@ export async function pendingOutcomeLines(q: Runner): Promise<OutcomeLineRow[]> 
     retired: row.retired as boolean,
     measure: row.measure as boolean,
     noEffect: row.no_effect as boolean,
+    partly: row.partly as boolean,
     quotes: row.quotes as boolean,
   }));
 }

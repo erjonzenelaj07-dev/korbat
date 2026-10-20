@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import { AppealsQuery, FindingRequest, MEDIA_SIZES, MediaId, QueueQuery, StaffTextSaveRequest } from "@korbat/contracts";
+import { AppealsQuery, FindingRequest, MEDIA_SIZES, MediaId, QueueQuery, StaffTextSaveRequest, UploadsQuery } from "@korbat/contracts";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { AuthError, type ActiveStaffSession, type AuthForStaff, type StaffStepUpConfirmed } from "../auth";
@@ -137,6 +137,35 @@ export function caseRoutes(auth: AuthForStaff, moderation: ModerationForStaff) {
       if (outcome === "ended") throw new AuthError("staff_session_required", 401);
       if (outcome === "late") throw new AuthError("challenge_expired", 400);
       return c.json(await moderation.decidedCase(staffSession(c), outcome.caseId), 201);
+    },
+  );
+
+  // 3d Task 7 (sections 7.12, 8.6 and 10.3): Held uploads, for every staff member: the refusals in their sections' order,
+  // never an image, a hash, a file's name or a handle. The two ends of a hold and the release of a held upload are an
+  // admin's (the database refuses anyone else, admin_required): the path's refusal is the action's target, and the body the
+  // params of upload_hold_ended or upload_released with the assertion as `stepUp`. Each commits with its audit row or not
+  // at all; an ended confirmation and a late one answer as a decision's do. The answer is the refusal as it now shows.
+  routes.get("/uploads", auth.requireStaff, validate("query", UploadsQuery), async (c) => c.json(await moderation.uploads(c.req.valid("query").cursor)));
+  routes.post(
+    "/uploads/:refusal/end",
+    auth.requireStaff,
+    auth.requireStaffStepUp("upload_hold_ended", (c) => c.req.param("refusal")),
+    async (c) => {
+      const outcome = await moderation.endHold(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId") });
+      if (outcome === "ended") throw new AuthError("staff_session_required", 401);
+      if (outcome === "late") throw new AuthError("challenge_expired", 400);
+      return c.json(outcome, 201);
+    },
+  );
+  routes.post(
+    "/uploads/:refusal/release",
+    auth.requireStaff,
+    auth.requireStaffStepUp("upload_released", (c) => c.req.param("refusal")),
+    async (c) => {
+      const outcome = await moderation.releaseUpload(staffSession(c), confirmedStepUp(c), { requestId: c.get("requestId") });
+      if (outcome === "ended") throw new AuthError("staff_session_required", 401);
+      if (outcome === "late") throw new AuthError("challenge_expired", 400);
+      return c.json(outcome, 201);
     },
   );
 

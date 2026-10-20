@@ -5,7 +5,7 @@
  */
 
 /** The pages the console links to by name. Such a link is only ever one of these constants, never an address built from data. */
-export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact" | "/orders" | "/restore";
+export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact" | "/orders" | "/restore" | "/uploads";
 
 /** A uuid in the one spelling PostgreSQL writes: the only form an id takes in an address the console builds. */
 const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -50,6 +50,8 @@ export type Route =
   | { name: "order"; id: OrderId }
   // 3f Task 6: what an import after a restore found lost.
   | { name: "restore" }
+  // 3d Task 7: Held uploads.
+  | { name: "uploads" }
   | { name: "case"; id: CaseId }
   | { name: "enroll"; token: string }
   | { name: "unknown" };
@@ -69,6 +71,7 @@ export function parseRoute(pathname: string): Route {
   if (path === "/contact") return { name: "contact" };
   if (path === "/orders") return { name: "orders" };
   if (path === "/restore") return { name: "restore" };
+  if (path === "/uploads") return { name: "uploads" };
   const order = /^[/]orders[/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(path);
   if (order) {
     const id = parseOrderId(order[1]!);

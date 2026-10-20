@@ -16,6 +16,7 @@ import type {
   ContactQuery,
   FindingRequest,
   FindingResponse,
+  HeldUpload,
   MediaSize,
   OrderCorrectFacts,
   OrderItemsRequest,
@@ -31,6 +32,7 @@ import type {
   StaffTextSaved,
   StaffTextsResponse,
   StandingLists,
+  UploadsPage,
 } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { MiddlewareHandler } from "hono";
@@ -54,6 +56,7 @@ import { createDispatchJob } from "./dispatch";
 import { exportFor, type ModerationExport } from "./export";
 import { addItems, closeContact, contactPage, correctOrderRecord, giveEffect, openOrder, orderView, ordersPage, recordEvent, type OrderOutcome } from "./orders";
 import { releaseSeal, type ReleaseOutcome } from "./release";
+import { endHold, heldUploads, matchedHandler, releaseUpload } from "./uploads";
 import { forgetReporter } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { standingFor, standingLists, takeDownDue, type TakeDown } from "./standing";
@@ -169,6 +172,16 @@ export interface ModerationForStaff {
    * alerted and the author's notice goes out unless it was born held.
    */
   release(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<ReleaseOutcome>;
+  /** 3d Task 7 (sections 7.12 and 8.6): a page of Held uploads, never an image, a hash or a handle. */
+  uploads(cursor?: string): Promise<UploadsPage>;
+  /**
+   * 3d Task 7: an admin's end of a held upload's hold a step-up confirmed, through upload_hold_end and the confirmed audit
+   * row upload_hold_ended; the refusal as Held uploads now shows it. "ended" and "late" as for a decision. After an end as
+   * no_report every staff account is alerted (hold_ended_unreported).
+   */
+  endHold(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<HeldUpload | "ended" | "late">;
+  /** 3d Task 7: an admin's release of a held upload ended as report, as a seal's release; the refusal as it now shows. */
+  releaseUpload(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<HeldUpload | "ended" | "late">;
 }
 
 /**
@@ -270,6 +283,9 @@ export function createModeration(options: CreateModerationOptions) {
     restore: () => restoreView(deps),
     closeGap: (session, confirmed, ctx) => closeGapNotNeeded(deps, session, confirmed, ctx),
     release: (session, confirmed, ctx) => releaseSeal(deps, session, confirmed, ctx),
+    uploads: (cursor) => heldUploads(deps, cursor),
+    endHold: (session, confirmed, ctx) => endHold(deps, session, confirmed, ctx),
+    releaseUpload: (session, confirmed, ctx) => releaseUpload(deps, session, confirmed, ctx),
     copyTaken: async (facts) => {
       // Started and not waited for, as what follows a decision is: the download's answer never waits for a mail relay.
       deps.background.start(async () => {
@@ -305,6 +321,11 @@ export function createModeration(options: CreateModerationOptions) {
     forSocial,
     /** The interface the account module's purge and export use. */
     forAccount,
+    /**
+     * 3d Task 7 (design, section 5): the handler the wiring hands the media module (media.onMatch), which it calls after
+     * the commit of a refusal, of a match on a posted image, and of an upload over the limit on refusals.
+     */
+    matched: matchedHandler(deps),
     /**
      * 3e (design, section 7.12): /api/me's standing, read fresh from the ledger: null for an account without a live
      * profile. The app composes the route from this and the auth module's meFor.

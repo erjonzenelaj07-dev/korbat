@@ -8,6 +8,8 @@ import { postMedia, posts, type Db } from "@korbat/db";
 import type { MediaFailure } from "@korbat/contracts";
 import { MEDIA_FORMATS, storeLayout, type MediaFormat, type StoreLayout } from "@korbat/media-protocol";
 import type { MediaDeps } from "../../src/media/context";
+import { matchAdapterFrom, type MatchAdapter } from "../../src/media/match-adapter";
+import { createMatchRepo } from "../../src/media/match-repo";
 import { createMediaFiles } from "../../src/media/files";
 import { status } from "../../src/media/flows/status";
 import { upload } from "../../src/media/flows/upload";
@@ -75,7 +77,7 @@ export function fakeWorker(store: StoreLayout | string) {
  * The media module on real Postgres, with both volumes in a temporary directory and a stand-in for
  * the worker that writes files and results exactly as the protocol says. Nothing here decodes an image.
  */
-export async function mediaHarness(db: Db, options: { formats?: readonly MediaFormat[]; minFreeBytes?: number; storeDevice?: number; clockStart?: number; r1Model?: string | null } = {}) {
+export async function mediaHarness(db: Db, options: { formats?: readonly MediaFormat[]; minFreeBytes?: number; storeDevice?: number; clockStart?: number; r1Model?: string | null; match?: MatchAdapter } = {}) {
   const clock = ticker(options.clockStart);
   const root = mkdtempSync(path.join(tmpdir(), "korbat-media-"));
   const files = createMediaFiles({ uploadsDir: path.join(root, "uploads"), storeDir: path.join(root, "store"), log: pino({ level: "silent" }), storeDevice: options.storeDevice });
@@ -93,6 +95,10 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
     now: clock.next,
     // 3d Task 6: the scorer's model whose scores finalize keeps; none, as with R1_CLASSIFIER=off, unless a test sets one.
     r1Model: options.r1Model ?? null,
+    // 3d Task 7: the comparison with known material, off unless a test gives an adapter (the test matcher, on a closed site).
+    match: options.match ?? matchAdapterFrom({ MEDIA_MATCH: "off", APP_SITE: "open" }),
+    matches: createMatchRepo(db),
+    matched: { handler: null },
   };
 
   const worker = fakeWorker(files.store);

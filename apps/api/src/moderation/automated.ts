@@ -20,12 +20,13 @@ import { createJob, type JobLock } from "../lib/jobs";
 import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
 import { imagePost } from "../media";
 import { appendAuditRow } from "../staff";
-import { staffAlert } from "./alerts";
+import { alertUrgentLane, staffAlert } from "./alerts";
 import { authorDecisionView } from "./author";
 import { authorDecision } from "./author-repo";
 import {
   automatedWaitingAlert,
   cappedSinceLastMeasure,
+  insertMatchSignal,
   insertObjection,
   insertScoreSignal,
   insertSystemDecision,
@@ -44,8 +45,8 @@ import { sendStatement } from "./statement";
 
 /**
  * The automated step, its sweep and "Ask for a person" (3d design, sections 2 rows 14 to 25, 5 "The lock order", 6.6,
- * 7.9, 7.10 and 7.14; Task 6). A signal is a fact about one image on a post: a score at or over the threshold (and, from
- * Task 7, a match record). The step turns it into a program's finding and, where the setting allows it, into one
+ * 7.9, 7.10 and 7.14; Task 6). A signal is a fact about one image on a post: a score at or over the threshold, or (Task 7)
+ * a match record. The step turns it into a program's finding and, where the setting allows it, into one
  * protective measure, a decision without a decider that is always interim, holds exactly that measure, and stands only
  * with the system's audit row and its signal (decision_holds at commit). It never runs inside the transaction that made
  * the post or stored the signal's fact: it is a deciding transaction of its own, which takes the author's profile first,
@@ -91,6 +92,8 @@ export interface StepOutcome {
   decisionId: string | null;
   /** The limit a refused measure met, for the alert automation_capped. */
   limit: CapLimit | null;
+  /** 3d Task 7: the finding cites R2, so the urgent alert goes out after the commit. */
+  urgent?: boolean;
 }
 
 /** The ground of a program's finding under R1: rule R1 with its default category, no sender, no text (7.9 step 2.2). */
@@ -111,6 +114,18 @@ const R1_GROUND: IntakeGround = {
   automatedProcessing: true,
 };
 
+/**
+ * 3d Task 7 (design, sections 6.6, 6.7 and 7.9 step 2.2): the ground of a program's finding on a match. A match of a class
+ * the source itself lists as child sexual abuse material, acting or not, cites R2 with its default category: lane 0, and
+ * suspect by 3c's trigger, so the post is frozen from the commit. A match of any other class cites no rule: the category
+ * the Transparency Database gives a notice that names none, lane 2, not suspect, freezing nothing and alerting nobody.
+ */
+function matchGround(listed: boolean): IntakeGround {
+  return listed
+    ? { ...R1_GROUND, ruleId: "R2", category: RULE_DEFAULT_CATEGORY.R2 }
+    : { ...R1_GROUND, ruleId: null, category: "STATEMENT_CATEGORY_NOT_SPECIFIED_NOTICE" };
+}
+
 /** Thrown inside the step's transaction to end it with nothing written: another run handled the signal first. */
 class AlreadyHandled extends Error {}
 
@@ -124,7 +139,6 @@ class AlreadyHandled extends Error {}
 export async function automatedStep(deps: ModerationDeps, signalId: string): Promise<StepOutcome> {
   const signal = await signalOf(deps.apiDb, signalId);
   if (signal === null || signal.handledAt !== null) return { handled: "already", caseId: null, decisionId: null, limit: null };
-  if (signal.kind !== "r1_score") throw new Error("the automated step of a match record is Task 7's");
   const postId = await imagePost(deps.apiDb, signal.mediaId);
   const authorId = postId === null ? null : await deps.social.postAuthor(postId);
   let outcome: StepOutcome | null = null;
@@ -152,6 +166,15 @@ export async function automatedStep(deps: ModerationDeps, signalId: string): Pro
       deps.log.error({ err }, "moderation: the staff accounts were not alerted that a program reached a limit");
     }
   }
+  // 3d Task 7 (7.9 step 3): a finding citing R2 raises the urgent alert, as any finding citing R2 does. A flag that cites
+  // no rule alerts nobody: it stands in the queue and is counted on the home screen.
+  if (done.urgent) {
+    try {
+      await alertUrgentLane(deps);
+    } catch (err) {
+      deps.log.error({ err }, "moderation: the urgent lane's alert for a program's finding under R2 was not sent; the dispatch round repeats it");
+    }
+  }
   return done;
 }
 
@@ -177,6 +200,10 @@ async function stepIn(deps: ModerationDeps, tx: DbTx, signal: SignalRow, postId:
   const locked = authorId === null ? [] : await deps.social.lockAccounts(tx, [authorId], "no key update");
   const current = await signalOf(tx, signal.id);
   if (current === null || current.handledAt !== null) throw new AlreadyHandled();
+  // 3d Task 7: a match's record, read in a statement of its own after the profile's lock, as the signal is: a record the
+  // program is done with (another entry's step, or a refusal) ends the step with nothing written.
+  const record = signal.kind === "known_match" && signal.matchId !== null ? await deps.media.matchRecord(tx, signal.matchId) : null;
+  if (signal.kind === "known_match" && (record === null || record.handled || record.erased)) throw new AlreadyHandled();
 
   // Gone: read after the profile's lock, which the author's deletion and the purge take too, so neither can commit meanwhile.
   const post = postId === null ? null : await deps.social.postRef(postId);
@@ -184,32 +211,42 @@ async function stepIn(deps: ModerationDeps, tx: DbTx, signal: SignalRow, postId:
   const live = locked.length === 1 && !locked[0]!.deleted && post !== null && post.state !== "deleted_by_author" && images.some((image) => image.mediaId === signal.mediaId);
   if (!live || postId === null) {
     await signalHandled(tx, signal.id, "gone");
+    // 3d Task 7: the record's own mark too, so the sweep never reads it again; it stays and is erased on its schedule.
+    if (record !== null) await deps.media.matchJoined(tx, record.id, null);
     return { handled: "gone", caseId: null, decisionId: null, limit: null };
   }
 
-  const recorded = await recordIntakeIn(deps, tx, { ground: R1_GROUND, live: [{ type: "post", id: postId, position: 1, mediaId: signal.mediaId }] });
+  const ground = record === null ? R1_GROUND : matchGround(record.listed);
+  const recorded = await recordIntakeIn(deps, tx, { ground, live: [{ type: "post", id: postId, position: 1, mediaId: signal.mediaId }] });
   const item = recorded.items[0];
   if (item === undefined || item.caseId === null) throw new Error("a program's finding was stored without a case");
   await joinSignal(tx, signal.id, item.id);
+  // 3d Task 7 (review ruling 8): the record is marked handled and names the finding's case, in this transaction; the
+  // guard automated_signals_guard has held the finding's rule to the record's class at the join above.
+  if (record !== null) await deps.media.matchJoined(tx, record.id, item.caseId);
+  const urgent = record !== null && record.listed;
 
-  if (deps.config.AUTOMATION_R1_ACTS !== "on") {
+  // The measure: under R1 with AUTOMATION_R1_ACTS on; under R2 with AUTOMATION_R2_ACTS on and only for an acting match,
+  // listed and exact (a flag seals nothing, which decision_holds holds at commit whatever this says).
+  const acts = record === null ? deps.config.AUTOMATION_R1_ACTS === "on" : deps.config.AUTOMATION_R2_ACTS === "on" && record.acting;
+  if (!acts) {
     await signalHandled(tx, signal.id, "finding");
-    return { handled: "finding", caseId: item.caseId, decisionId: null, limit: null };
+    return { handled: "finding", caseId: item.caseId, decisionId: null, limit: null, urgent };
   }
   try {
-    const decisionId = await tx.transaction((sp) => measureIn(deps, sp, { caseId: item.caseId!, postId, signalId: signal.id, mediaId: signal.mediaId }));
-    return { handled: "measure", caseId: item.caseId, decisionId, limit: null };
+    const decisionId = await tx.transaction((sp) => measureIn(deps, sp, { caseId: item.caseId!, postId, signalId: signal.id, mediaId: signal.mediaId, rule: record === null ? "R1" : "R2" }));
+    return { handled: "measure", caseId: item.caseId, decisionId, limit: null, urgent };
   } catch (err) {
     const refusal = raisedMessage(err);
     if (refusal === "already_protected") {
       await signalHandled(tx, signal.id, "covered");
-      return { handled: "covered", caseId: item.caseId, decisionId: null, limit: null };
+      return { handled: "covered", caseId: item.caseId, decisionId: null, limit: null, urgent };
     }
     if (refusal === "automation_capped") {
       const detail = raisedDetail(err);
       const limit = (CAP_LIMITS as readonly string[]).includes(detail ?? "") ? (detail as CapLimit) : null;
       await signalHandled(tx, signal.id, "capped");
-      return { handled: "capped", caseId: item.caseId, decisionId: null, limit };
+      return { handled: "capped", caseId: item.caseId, decisionId: null, limit, urgent };
     }
     throw err;
   }
@@ -221,6 +258,8 @@ export interface MeasureInput {
   postId: string;
   signalId: string;
   mediaId: string;
+  /** 3d Task 7: R2 seals the post's images on a match; R1 (the default) withholds the signal's image on a score. */
+  rule?: "R1" | "R2";
 }
 
 /**
@@ -228,7 +267,8 @@ export interface MeasureInput {
  * every program's decision fixes, with the case's version as this transaction reads it after the item joined, the
  * snapshot and the current rulebook and redress versions.
  */
-export function automatedParams(input: { stateVersion: number; snapshot: { id: string; digest: string }; mediaId: string }): AutomatedDecidedParams {
+export function automatedParams(input: { stateVersion: number; snapshot: { id: string; digest: string }; mediaId: string; rule?: "R1" | "R2" }): AutomatedDecidedParams {
+  const r2 = input.rule === "R2";
   return AutomatedDecidedParams.parse({
     kind: "interim",
     stateVersion: input.stateVersion,
@@ -238,12 +278,13 @@ export function automatedParams(input: { stateVersion: number; snapshot: { id: s
     snapshotDigest: input.snapshot.digest,
     outcome: "restricted",
     ground: "incompatible",
-    ruleId: "R1",
+    ruleId: r2 ? "R2" : "R1",
     rulesVersion: RULES_VERSION,
     redressVersion: REDRESS_VERSION,
-    category: RULE_DEFAULT_CATEGORY.R1,
+    category: r2 ? RULE_DEFAULT_CATEGORY.R2 : RULE_DEFAULT_CATEGORY.R1,
     categoryKeyword: null,
-    actions: [{ kind: "withhold_media", mediaId: input.mediaId }],
+    // 3d Task 7: a seal covers every image of the post (3c 6.2), so it names none.
+    actions: [r2 ? { kind: "seal_media", mediaId: null } : { kind: "withhold_media", mediaId: input.mediaId }],
     factsDigest: null,
     reasonDigest: null,
     legalReferenceDigest: null,
@@ -264,7 +305,7 @@ export async function measureIn(deps: Pick<ModerationDeps, "social" | "media">, 
   const snapshot = await snapshotIn(deps, tx, row);
   // The case's version as this transaction reads it after the item joined and the snapshot: what decisions_record compares.
   const stateVersion = (await caseById(tx, input.caseId))!.stateVersion;
-  const params = automatedParams({ stateVersion, snapshot, mediaId: input.mediaId });
+  const params = automatedParams({ stateVersion, snapshot, mediaId: input.mediaId, rule: input.rule ?? "R1" });
   const decisionId = randomUUID();
   await insertSystemDecision(tx, { id: decisionId, caseId: input.caseId, params });
   await insertAction(tx, decisionId, params.actions[0]);
@@ -306,10 +347,30 @@ export async function scoreSignal(deps: ModerationDeps, image: { mediaId: string
  * stored when the worker's result was taken in, and runs the step of each at or over the threshold, one after the other.
  */
 export function imagesPublished(deps: ModerationDeps, postId: string): void {
-  if (r1Threshold(deps.config) === null) return;
+  const scoring = r1Threshold(deps.config) !== null;
+  const matching = deps.config.MEDIA_MATCH !== "off";
+  if (!scoring && !matching) return;
   deps.background.start(async () => {
-    for (const image of await deps.media.signals(deps.apiDb, postId)) await scoreSignal(deps, image);
+    for (const image of await deps.media.signals(deps.apiDb, postId)) {
+      if (scoring) await scoreSignal(deps, image);
+      // 3d Task 7 (7.9, "What starts it"): an image accepted with a flag as an upload, now posted: its record's step.
+      if (matching && image.match !== null && !image.match.handled) await matchSignal(deps, { mediaId: image.mediaId, matchId: image.match.id });
+    }
   });
+}
+
+/**
+ * 3d Task 7 (7.9 step 1, then step 2): a match record of an image on a post becomes its signal and its step. An image that
+ * has its match signal already (handled, or a second record of the same image) starts nothing; its record is marked
+ * handled in a statement of its own, so the sweep does not find it again.
+ */
+export async function matchSignal(deps: ModerationDeps, image: { mediaId: string; matchId: string }): Promise<StepOutcome | null> {
+  const signalId = await insertMatchSignal(deps.apiDb, image);
+  if (signalId === null) {
+    await deps.apiDb.transaction((tx) => deps.media.matchJoined(tx, image.matchId, null));
+    return null;
+  }
+  return automatedStep(deps, signalId);
 }
 
 /** What one round of the sweep did. */
@@ -335,8 +396,11 @@ export interface SweepReport {
 export async function sweepRound(deps: ModerationDeps): Promise<SweepReport> {
   const report: SweepReport = { retried: 0, signalled: 0, failed: 0, waiting: false };
   const threshold = r1Threshold(deps.config);
-  if (threshold !== null) {
-    const pending = await unhandledSignals(deps.apiDb, ["r1_score"], SWEEP_HOURS, SWEEP_BATCH);
+  // 3d Task 7: the matches' two reads run only while the comparison is on, the scores' only while the scorer is.
+  const matching = deps.config.MEDIA_MATCH !== "off";
+  if (threshold !== null || matching) {
+    const kinds = [...(threshold !== null ? (["r1_score"] as const) : []), ...(matching ? (["known_match"] as const) : [])];
+    const pending = await unhandledSignals(deps.apiDb, kinds, SWEEP_HOURS, SWEEP_BATCH);
     for (const signalId of pending) {
       try {
         await automatedStep(deps, signalId);
@@ -346,10 +410,11 @@ export async function sweepRound(deps: ModerationDeps): Promise<SweepReport> {
         deps.log.error({ err, signalId }, "automated-sweep: a step failed again; the next round tries it");
       }
     }
-    const images = await deps.media.unsignalled(SWEEP_BATCH - pending.length, { hours: SWEEP_HOURS, r1: { threshold: threshold.threshold } });
+    const images = await deps.media.unsignalled(SWEEP_BATCH - pending.length, { hours: SWEEP_HOURS, r1: threshold === null ? null : { threshold: threshold.threshold }, match: matching });
     for (const image of images) {
       try {
-        if ((await scoreSignal(deps, image)) !== null) report.signalled++;
+        const outcome = image.kind === "known_match" ? await matchSignal(deps, image) : await scoreSignal(deps, image);
+        if (outcome !== null) report.signalled++;
       } catch (err) {
         report.failed++;
         deps.log.error({ err, mediaId: image.mediaId }, "automated-sweep: an image's step failed; its signal stays for the next round");

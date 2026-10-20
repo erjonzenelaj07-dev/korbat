@@ -134,7 +134,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
   test("release-leave records a leave from the paper, with its audit row, and refuses what it cannot record", async () => {
     for (const command of ["release-leave", "release-show", "release-replay"]) expect(STAFF_USAGE, command).toContain(`  ${command} `);
     const unsealed = await cli(["release-leave", randomUUID(), "--by", "court", "--reference", "4 O 1/26", "--day", "2026-10-01", "--operator", "the operator"]);
-    expect(unsealed.text).toMatch(/^err release-leave: [0-9a-f-]{36} is not the ledger row of a seal for good in force; nothing changed$/);
+    // 3d Task 7: release-leave also takes a held upload's refusal, and says so when the id names neither.
+    expect(unsealed.text).toMatch(/^err release-leave: [0-9a-f-]{36} is not the ledger row of a seal for good in force, nor a held upload's refusal; nothing changed$/);
     expect((await cli(["release-leave", atOnce.sealActionId, "--by", "police", "--reference", "x", "--day", "2026-10-01", "--operator", "op"])).text).toBe("err release-leave: --by is authority or court; nothing changed");
     expect((await cli(["release-leave", atOnce.sealActionId, "--by", "court", "--reference", "x", "--day", "2999-01-01", "--operator", "op"])).text).toBe(
       "err release-leave: --day 2999-01-01 is after today: a leave bears the day it was given; nothing changed",

@@ -88,6 +88,11 @@ export type TemplateName =
   | "release_undestroyed"
   | "seal_released"
   | "release_notice"
+  // Task 7: the uploader's notices of a refused upload, and the two staff alerts whose mail is their push's sentence.
+  | "upload_refused"
+  | "upload_hold_lifted"
+  | "matcher_down"
+  | "hold_ended_unreported"
   // Task 3: the edge's job gave up on purges at the network provider, a staff alert whose mail is its push's sentence.
   | "edge_purge_failed"
   // Task 5: the transparency job's two alerts, each a staff alert whose mail is its push's sentence (a day's value without
@@ -129,6 +134,8 @@ export interface NoticeUpdateLine {
   unseen: boolean;
   /** A link that named nothing, answered without a moderator. */
   automatic: boolean;
+  /** 3d Task 7: the answering decision is recorded as partly automated (W.3, update.automated.partly). */
+  partly?: boolean;
 }
 
 /**

@@ -16,6 +16,8 @@ import {
   OrderView,
   OrdersPage,
   RestoreView,
+  UploadsPage,
+  HeldUpload,
   QueuePage,
   RevealResponse,
   StaffEnrollVerifyResponse,
@@ -321,6 +323,10 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "POST /api/staff/restore/gaps/:gap/close",
         // 3d Task 2: an admin's release of a seal for good.
         "POST /api/staff/seals/:action/release",
+        // 3d Task 7: Held uploads, an end of a hold and the release of a held upload.
+        "GET /api/staff/uploads",
+        "POST /api/staff/uploads/:refusal/end",
+        "POST /api/staff/uploads/:refusal/release",
       ].sort(),
     );
   });
@@ -344,6 +350,9 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/restore/gaps/:gap/close": "gap_closed",
       // 3d Task 2: the release of a seal for good.
       "POST /api/staff/seals/:action/release": "seal_released",
+      // 3d Task 7: the end of a held upload's hold, and its release.
+      "POST /api/staff/uploads/:refusal/end": "upload_hold_ended",
+      "POST /api/staff/uploads/:refusal/release": "upload_released",
     });
     // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
     // none of which changes anything a user sees (3c design, section 2, Free text under the step-up).
@@ -529,6 +538,9 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       "POST /api/staff/restore/gaps/:gap/close",
       // 3d Task 2: a seal, by its ledger row.
       "POST /api/staff/seals/:action/release",
+      // 3d Task 7: a held upload, by its refusal's id, which names no account.
+      "POST /api/staff/uploads/:refusal/end",
+      "POST /api/staff/uploads/:refusal/release",
     ]);
     const answers = {
       StaffMe,
@@ -554,6 +566,9 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       OrderView,
       // 3f Task 6.
       RestoreView,
+      // 3d Task 7: Held uploads, which shows a count of the uploader's other refusals and never a handle.
+      UploadsPage,
+      HeldUpload,
     };
     const members = Object.entries(answers).flatMap(([name, schema]) => memberNames(schema).map((member) => `${name}.${member}`));
     // The walk read every member of every answer: none is of a kind it has not been taught, behind which a name could hide.

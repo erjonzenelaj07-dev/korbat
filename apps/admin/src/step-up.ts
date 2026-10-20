@@ -12,6 +12,8 @@ import {
   type OrderEffectedParams,
   type OrderEventRecordedParams,
   type SealReleasedParams,
+  type UploadHoldEndedParams,
+  type UploadReleasedParams,
 } from "@korbat/contracts";
 import { ApiError, type StaffApi } from "./api";
 import { messageFor } from "./messages";
@@ -181,6 +183,31 @@ export function releaseAction(actionId: string, params: SealReleasedParams): Sta
 export function releaseWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, caseId: string, actionId: string, params: SealReleasedParams) {
   const action = releaseAction(actionId, params);
   return confirmWithKey(deps, action, (stepUp) => deps.api.releaseSeal(caseId, actionId, { ...params, stepUp }, { activity: true }));
+}
+
+/**
+ * 3d Task 7 (sections 7.12, 8.6 and 10.4): the action of an end of a held upload's hold: the refusal as the target, and as
+ * params the end and its reason exactly as the person chose them; neither end is a default.
+ */
+export function holdEndAction(refusalId: string, params: UploadHoldEndedParams): StaffStepUpOptionsRequest {
+  return { action: "upload_hold_ended", target: { type: "upload_refusal", id: refusalId }, params };
+}
+
+/** "Report" or "No report" on Held uploads, confirmed by the key. Answers the refusal as it now shows. */
+export function endHoldWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, refusalId: string, params: UploadHoldEndedParams) {
+  const action = holdEndAction(refusalId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.endHold(refusalId, { ...params, stepUp }, { activity: true }));
+}
+
+/** 3d Task 7 (8.6): the action of a held upload's release: the refusal as the target, the ground and the recorded leave with its reference. */
+export function uploadReleaseAction(refusalId: string, params: UploadReleasedParams): StaffStepUpOptionsRequest {
+  return { action: "upload_released", target: { type: "upload_refusal", id: refusalId }, params };
+}
+
+/** "Release and destroy" on Held uploads, confirmed by the key. Answers the refusal as it now shows. */
+export function releaseUploadWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, refusalId: string, params: UploadReleasedParams) {
+  const action = uploadReleaseAction(refusalId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.releaseUpload(refusalId, { ...params, stepUp }, { activity: true }));
 }
 
 /** 3f Task 6 (8.8): an admin's "Not needed" on a gap, confirmed by the key. Answers After a restore as it now stands. */

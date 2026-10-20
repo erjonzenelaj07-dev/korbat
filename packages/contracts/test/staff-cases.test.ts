@@ -261,6 +261,7 @@ describe("the case answer", () => {
         decidedAt: TIME,
         staffHandle: "mod_anna",
         byProgram: false,
+        matchAnswerReason: null,
         throughSeq: 0,
         answersFromSeq: null,
         reviewsDecisionId: null,
@@ -298,6 +299,7 @@ describe("the case answer", () => {
     purges: [],
     signals: [],
     objection: null,
+    matchedImages: [],
   };
 
   test("parses a case with its target, suspicion, snapshots, items, decisions, appeals, texts and history", () => {
@@ -426,7 +428,7 @@ describe("the case answer", () => {
 });
 
 describe("the queue and the overview", () => {
-  const row = { id: CASE, lane: 0, targetType: "post", openedAt: TIME, oldestOpenAt: TIME, openItems: 2, rules: ["R5"], categories: ["STATEMENT_CATEGORY_VIOLENCE"], allegesIllegal: true, suspect: false, reexamination: false, deferred: false, foundByProgram: false, takenByProgram: false, objected: false };
+  const row = { id: CASE, lane: 0, targetType: "post", openedAt: TIME, oldestOpenAt: TIME, openItems: 2, rules: ["R5"], categories: ["STATEMENT_CATEGORY_VIOLENCE"], allegesIllegal: true, suspect: false, reexamination: false, deferred: false, foundByProgram: false, takenByProgram: false, objected: false, matchFlag: false };
 
   test("a page of the queue holds at most 50 cases and the cursor of the next", () => {
     expect(QUEUE_PAGE_SIZE).toBe(50);
@@ -477,7 +479,8 @@ describe("the queue and the overview", () => {
       restore: { open: 3, measures: 2, importedAt: TIME },
       quarantine: { dueIn: 1, dueOut: 2, undestroyed: 0, oldest: TIME },
       destructive: [],
-      automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
+      automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 0, cases: [], objectedCases: [] },
+      heldUploads: { open: 0, oldest: null, objected: 0, capped: 0 },
     };
     expect(StaffOverview.safeParse(overview).success).toBe(true);
     expect(StaffOverview.safeParse({ ...overview, copy: { newestAt: null } }).success).toBe(false);

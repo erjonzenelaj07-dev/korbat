@@ -297,6 +297,28 @@ export const RELEASE_TEXTS = {
   notFound: "That notice does not exist, or it is not about your posts.",
 } as const;
 
+/**
+ * 3d Task 7 (design, sections 9.5, 9.6 and 9.7): a refused upload as its uploader sees it: the composer's tile
+ * [upload.refused] with its link "Why", the post refused while it is attached [upload.refusedPost], the entry in "About
+ * you", and on the notice's screen "Object" [upload.object] under [upload.objectLead], then [upload.objected]. The
+ * notice's own paragraphs are UPLOAD_NOTICE's (W.5), which the mails share.
+ */
+export const UPLOAD_TEXTS = {
+  title: "An upload was not accepted",
+  entry: "An upload was not accepted",
+  entryOn: (day: string) => `On ${day}`,
+  refused: "This image was not accepted.",
+  why: "Why",
+  refusedPost: "This image was not accepted, so the post was not sent. Remove the image to post. Its notice is under Settings, Cases.",
+  object: "Object",
+  objectLead: "Write anything the admin should know. You can send one message. The admin reads it and decides without viewing the image. What you write is kept with this record for as long as korbat keeps the file.",
+  objectField: "Your message to the admin",
+  objected: (objectedAt: string) => `You objected on ${objectedAt}. An admin reads what you wrote; korbat tells you here what was decided, and by email when the hold is lifted.`,
+  /** objection_not_open on this screen: the objection is sent, or the hold has ended. */
+  notOpen: "You cannot object now: you objected already, or the hold has ended. Read the notice again.",
+  notFound: "That notice does not exist, or it is not about your uploads.",
+} as const;
+
 /** The terms page's Contact section, built from the build's contact address; it is not part of the terms' own sections. */
 export const CONTACT_WORDS = {
   title: "Contact",

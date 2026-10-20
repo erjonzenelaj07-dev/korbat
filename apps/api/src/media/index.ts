@@ -5,6 +5,7 @@
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import { MEDIA_SIZES, type QuarantineDirection } from "@korbat/contracts";
+import { sql } from "drizzle-orm";
 import type { Db, DbTx } from "@korbat/db";
 import { HEARTBEAT_STALE_MS, type MediaFormat } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
@@ -14,6 +15,10 @@ import type { MediaDeps, MediaForPosts } from "./context";
 import { createEdgeJob } from "./edge";
 import { edgeAdapterFrom, type EdgeAdapter } from "./edge-adapter";
 import { createMediaFiles, storedImageName, type StoredFile } from "./files";
+import { finalize } from "./flows/status";
+import { createMatchRetryJob, matchRetryRound } from "./match";
+import { matchAdapterFrom, type MatchAdapter } from "./match-adapter";
+import { createMatchRepo } from "./match-repo";
 import { createMediaRepo } from "./repo";
 import { mediaFileRoutes, mediaRoutes } from "./routes";
 import type { JobLock } from "../lib/jobs";
@@ -22,7 +27,12 @@ import { createSweeper, sweep } from "./sweeper";
 export { DISPOSAL_BATCH, mediaForCases } from "./cases";
 export type { ImageSignals, LostImage, MediaForCases, StaffImage, UnsignalledImage } from "./cases";
 export { MediaError } from "./context";
-export type { MediaDeps, MediaForPosts, PostImage } from "./context";
+export type { MatchEvent, MatchHandler, MediaDeps, MediaForPosts, PostImage } from "./context";
+// 3d Task 7: the comparison's adapter, which the wiring builds from the configuration (MEDIA_MATCH), and what its rows read.
+export { MATCH_ACTING, MATCH_LISTED, matchAdapterFrom, matchRequest } from "./match-adapter";
+export type { MatchAdapter, MatchAnswer, MatchRequest, TestMatchAdapter, UploadHashes } from "./match-adapter";
+export type { MatchRetryReport } from "./match";
+export type { OwnRefusal, RefusalRow } from "./match-repo";
 export type { StoredFile } from "./files";
 export type { CaseReach, HeldImage, HoldPair } from "./repo";
 export type { SweepReport } from "./sweeper";
@@ -160,6 +170,76 @@ export function releasedUnerased(q: Db | DbTx): Promise<{ postId: string; images
   return createMediaRepo(q as Db).releasedUnerased(q);
 }
 
+/**
+ * 3d Task 7 (design, sections 7.10 and 10.2): a match record as a statement reads it (its source, hash type, kind and
+ * whether it is listed), through the caller's own connection or transaction, as imagePost reads: the statement of a
+ * decision is built over a pool alone, and no file outside this module may name the records' table. Null when none.
+ */
+export async function matchRecordOf(q: Db | DbTx, matchId: string): Promise<{ source: string; hashType: "sha256" | "sha1" | "md5" | "pdq"; matchKind: "exact" | "near"; listed: boolean } | null> {
+  const record = await createMatchRepo(q as Db).record(q, matchId);
+  return record === null ? null : { source: record.source, hashType: record.hashType, matchKind: record.matchKind, listed: record.listed };
+}
+
+/**
+ * 3d Task 7 (design, section 8.10, automation-status): the comparison's counts, through the caller's own connection or
+ * transaction: the uploads whose check is unchecked and since when the oldest is (within the retry's hours), and the
+ * refusals written in the last hour, which the limit on refusals counts. Counts and one time, never an image.
+ */
+export async function matchStatus(q: Db | DbTx): Promise<{ unchecked: number; oldestUnchecked: string | null; refusalsHour: number }> {
+  const [row] = (await q.execute(sql`
+    select (select count(*)::int from public.media_hashes h join public.post_media m on m.id = h.media_id
+             where h.check_state = 'unchecked' and m.created_at > now() - make_interval(hours => r.match_retry_hours)) as unchecked,
+           (select to_char(min(m.created_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') from public.media_hashes h join public.post_media m on m.id = h.media_id
+             where h.check_state = 'unchecked' and m.created_at > now() - make_interval(hours => r.match_retry_hours)) as oldest,
+           (select count(*)::int from public.upload_refusals u where u.refused_at > now() - make_interval(hours => 1)) as refusals_hour
+      from public.automation_rules() r`)) as unknown as { unchecked: number; oldest: string | null; refusals_hour: number }[];
+  return { unchecked: row!.unchecked, oldestUnchecked: row!.oldest, refusalsHour: row!.refusals_hour };
+}
+
+/** 3d Task 7: a held upload as the command line reads it, through the caller's transaction (staff.js upload-report and release-leave). */
+export interface CliRefusal {
+  id: string;
+  mediaId: string;
+  ownerId: string | null;
+  ownerDeleted: boolean;
+  refusedAt: Date;
+  endAs: "report" | "no_report" | null;
+  notificationId: string | null;
+  releaseId: string | null;
+}
+
+/**
+ * 3d Task 7 (design, sections 5 and 8.10): one refusal, locked FOR UPDATE, for staff.js upload-report and release-leave,
+ * which run as the migrator and cannot build the module; no file outside it may name the refusals' table. Null when there
+ * is none.
+ */
+export async function refusalForCli(tx: DbTx, refusalId: string): Promise<CliRefusal | null> {
+  const [row] = (await tx.execute(sql`
+    select u.id, u.media_id, u.owner_id, exists (select 1 from public.profiles p where p.id = u.owner_id and p.deleted_at is not null) as owner_deleted,
+           u.refused_at, u.end_as, u.notification_id, u.release_id
+      from public.upload_refusals u where u.id = ${refusalId}::uuid for update`)) as unknown as {
+    id: string;
+    media_id: string;
+    owner_id: string | null;
+    owner_deleted: boolean;
+    refused_at: Date | string;
+    end_as: "report" | "no_report" | null;
+    notification_id: string | null;
+    release_id: string | null;
+  }[];
+  if (!row) return null;
+  return { id: row.id, mediaId: row.media_id, ownerId: row.owner_id, ownerDeleted: row.owner_deleted, refusedAt: new Date(row.refused_at), endAs: row.end_as, notificationId: row.notification_id, releaseId: row.release_id };
+}
+
+/**
+ * 3d Task 7 (design, sections 5, 7.12 step 4 and 8.10): staff.js upload-report's write, as the migrator: the id of 3f's
+ * record of the report opened for the refusal, set once. Answers whether it was set.
+ */
+export async function refusalReported(tx: DbTx, refusalId: string, notificationId: string): Promise<boolean> {
+  const rows = await tx.execute(sql`update public.upload_refusals set notification_id = ${notificationId}::uuid where id = ${refusalId}::uuid and notification_id is null returning id`);
+  return rows.length === 1;
+}
+
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account's images, and the data export. */
 export interface MediaForAccount {
   /**
@@ -238,6 +318,8 @@ export interface CreateMediaOptions {
   edge?: EdgeAdapter;
   /** 3d Task 6: the scorer's model whose scores finalize keeps (the test scorer's under R1_CLASSIFIER=test); none when absent. */
   r1Model?: string | null;
+  /** 3d Task 7: the comparison with known material, built from MEDIA_MATCH; off when none is given. */
+  match?: MatchAdapter;
 }
 
 export function createMedia(options: CreateMediaOptions) {
@@ -251,6 +333,9 @@ export function createMedia(options: CreateMediaOptions) {
     log: options.logger,
     now: options.now ?? (() => new Date()),
     r1Model: options.r1Model ?? null,
+    match: options.match ?? matchAdapterFrom({ MEDIA_MATCH: "off", APP_SITE: "open" }),
+    matches: createMatchRepo(options.apiDb),
+    matched: { handler: null },
   };
   const forPosts: MediaForPosts = {
     attach: (tx, input) => deps.repo.attach(tx, input),
@@ -284,6 +369,20 @@ export function createMedia(options: CreateMediaOptions) {
      * outbox row as off.
      */
     startEdge: (lock: JobLock) => createEdgeJob({ repo: deps.repo, adapter: edge, log: deps.log }, lock).start(),
+    /**
+     * 3d Task 7 (design, sections 5 and 7.8): hands the module the moderation module's handler of a stored refusal or of a
+     * match on a posted image (moderation.matched), once that module is built, which is after this one.
+     */
+    onMatch: (handler: NonNullable<MediaDeps["matched"]["handler"]>) => {
+      deps.matched.handler = handler;
+    },
+    /** 3d Task 7 (7.8 step 6, 7.14): one round of match-retry now; the server runs it on a timer. */
+    matchRetry: () => matchRetryRound(deps, finalize),
+    /**
+     * 3d Task 7: starts match-retry under the shared job lock, a round a minute after the last ended, and returns the
+     * function that stops it. With the comparison off a round reads nothing.
+     */
+    startMatchRetry: (lock: JobLock) => createMatchRetryJob(deps, finalize, lock).start(),
     /** An advisory health check: the worker's heartbeat is fresh and the volumes have room. */
     async healthCheck(): Promise<void> {
       const age = await deps.files.heartbeatAge(deps.now().getTime());

@@ -80,3 +80,63 @@ export type CapLimit = (typeof CAP_LIMITS)[number];
 /** How many signals one round of the sweep takes at most, and how far back it looks (section 7.9). */
 export const SWEEP_BATCH = 20;
 export const SWEEP_HOURS = 24;
+
+// ---------------------------------------------------------------- known material (3d design, sections 2 rows 26 to 37, 6.7, 7.8 and 10.1; Task 7)
+
+/** How many unanswered or capped checks one round of the job match-retry asks again at most (7.8 step 6). */
+export const MATCH_RETRY_BATCH = 20;
+
+/**
+ * The state of an upload's comparison (media_hashes.check_state): waiting for its first answer; answered clear or
+ * matched; unanswered in time, so the upload was accepted and the check is asked again for matchRetryHours; or an acting
+ * match over the limit on refusals an hour, so the upload waits unposted, untold and unrefused until the check is asked
+ * again.
+ */
+export const CHECK_STATES = ["pending", "clear", "matched", "unchecked", "capped"] as const;
+export type MatchCheckState = (typeof CHECK_STATES)[number];
+
+/** The hash a match rests on (media_matches.hash_type): three cryptographic hashes of the bytes as received, or PDQ. */
+export const MATCH_HASH_TYPES = ["sha256", "sha1", "md5", "pdq"] as const;
+export type MatchHashType = (typeof MATCH_HASH_TYPES)[number];
+
+/** The kind of match as the source reports it (media_matches.match_kind). Only `exact` acts, and only of a listed class. */
+export const MATCH_KINDS = ["exact", "near"] as const;
+export type MatchKind = (typeof MATCH_KINDS)[number];
+
+/** How an admin ends a held upload's hold (upload_refusals.end_as): neither is a default, and the console preselects neither. */
+export const UPLOAD_ENDS = ["report", "no_report"] as const;
+export type UploadEnd = (typeof UPLOAD_ENDS)[number];
+
+/** The reason of an end as no_report (upload_refusals.end_reason), a closed list. */
+export const UPLOAD_END_REASONS = ["source_withdrew", "counsel_no_duty", "other"] as const;
+export type UploadEndReason = (typeof UPLOAD_END_REASONS)[number];
+
+/** The console's words for each reason of an end as no_report (8.6), held to the list by a test. */
+export const UPLOAD_END_REASON_LABELS: Record<UploadEndReason, string> = {
+  source_withdrew: "The source withdrew or corrected its entry",
+  counsel_no_duty: "Counsel: no duty to report this",
+  other: "Another reason, written in the operator's notes",
+};
+
+/**
+ * The reason of an admin's answer without a seal on a case whose match is acting (decisions.match_answer_reason, note
+ * 26): it puts an image with an exact match back before everyone with nobody having looked.
+ */
+export const MATCH_ANSWER_REASONS = ["source_withdrew", "counsel", "other"] as const;
+export type MatchAnswerReason = (typeof MATCH_ANSWER_REASONS)[number];
+
+/** The console's words for each reason (8.4), held to the list by a test. */
+export const MATCH_ANSWER_REASON_LABELS: Record<MatchAnswerReason, string> = {
+  source_withdrew: "The source withdrew or corrected its entry",
+  counsel: "Counsel's advice, written in the operator's notes",
+  other: "Another reason, written in the operator's notes",
+};
+
+/**
+ * The statement's `matchKind`, derived and never copied (W.3): `exact` only for an exact match of a cryptographic hash of
+ * the file's bytes, `near` for every match of a perceptual hash whatever the source called it, since an equal perceptual
+ * hash says that two pictures look alike, not that two files are the same.
+ */
+export function statementMatchKind(hashType: MatchHashType, matchKind: MatchKind): MatchKind {
+  return hashType !== "pdq" && matchKind === "exact" ? "exact" : "near";
+}

@@ -15,7 +15,8 @@
  * 6. /api/me answers for it.
  * 7. It posts, the post appears in the public Latest timeline, and its profile counts one post.
  * 8. It uploads a JPEG carrying a GPS position, waits until it is ready, and posts it without text. The
- *    original upload is gone, and large.webp is served to anyone as a fresh WebP without metadata.
+ *    original upload is gone, no fingerprint of it is stored while MEDIA_MATCH is off (3d Task 7), and large.webp is
+ *    served to anyone as a fresh WebP without metadata.
  * 9. A symlink to /proc/self/environ, planted in the store from inside the worker, is refused with 404.
  * 10. Deleting the post stops the image being served, and its folder leaves the store.
  * 11. The worker has only a loopback interface and a 768 MiB memory limit, and has never restarted.
@@ -262,6 +263,10 @@ async function images(token) {
   const state = await waitReady(id, token);
   if (!check("the image is ready", state.status === "ready", state.error ?? state.status)) return;
   check("the original upload is gone", inside("api", `test -e /media/uploads/incoming/${id} && echo present || echo gone`) === "gone");
+  // 3d Task 7 (design, section 7.8; row 10): with every adapter off (MEDIA_MATCH=off) nothing is hashed: no row of
+  // media_hashes exists for the upload. Read as the database's owner inside its own container, which the id alone reaches.
+  const hashed = inside("postgres", `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from public.media_hashes where media_id = '${id}'"`);
+  check("3d: with MEDIA_MATCH off no media_hashes row exists for it", hashed === "0", hashed);
 
   const created = await api("/api/posts", { json: { media: [{ id, alt: "A plain green test image" }] }, token });
   if (!check("post it without text", created.status === 201 && created.body?.media?.length === 1, created.summary)) return;

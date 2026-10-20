@@ -306,6 +306,32 @@ describe("loadConfig", () => {
       // The R1 days never stand for the other tool's, and a day alone switches nothing on.
       expect(loadConfig({ ...good, AUTOMATION_DPIA_R1: "2026-10-01", AUTOMATION_R1_ACTS: "on" })).toMatchObject({ R1_CLASSIFIER: "off", AUTOMATION_R1_ACTS: "on" });
     });
+    // 3d Task 7 (design, section 5, the matcher's row, and rows 27 and 49): the comparison's switches fail closed.
+    test("MEDIA_MATCH is off unless set and AUTOMATION_R2_ACTS on; a blank value is the default; the two days are dates or empty", () => {
+      const c = loadConfig(good);
+      expect([c.MEDIA_MATCH, c.AUTOMATION_R2_ACTS, c.AUTOMATION_DPIA_MATCH, c.AUTOMATION_DPIA_MATCH_ACTS]).toEqual(["off", "on", undefined, undefined]);
+      expect(loadConfig({ ...good, MEDIA_MATCH: "", AUTOMATION_R2_ACTS: "", AUTOMATION_DPIA_MATCH: "", AUTOMATION_DPIA_MATCH_ACTS: "" })).toMatchObject({ MEDIA_MATCH: "off", AUTOMATION_R2_ACTS: "on", AUTOMATION_DPIA_MATCH: undefined, AUTOMATION_DPIA_MATCH_ACTS: undefined });
+      for (const refused of ["TEST", "on off", "-x"]) expect(() => loadConfig({ ...good, MEDIA_MATCH: refused }), refused).toThrow(/MEDIA_MATCH/);
+      expect(() => loadConfig({ ...good, AUTOMATION_R2_ACTS: "yes" })).toThrow(/AUTOMATION_R2_ACTS/);
+      for (const day of ["2026-13-01", "1 October 2026"]) expect(() => loadConfig({ ...good, AUTOMATION_DPIA_MATCH: day }), day).toThrow(/AUTOMATION_DPIA_MATCH/);
+      expect(loadConfig({ ...good, AUTOMATION_R2_ACTS: "off" })).toMatchObject({ AUTOMATION_R2_ACTS: "off" });
+    });
+    test("MEDIA_MATCH=test is refused while APP_SITE is open; a source's name is no adapter of this build, and needs its two days besides", () => {
+      expect(() => loadConfig({ ...good, MEDIA_MATCH: "test" })).toThrow(/MEDIA_MATCH=test is refused while APP_SITE is open/);
+      expect(loadConfig({ ...good, MEDIA_MATCH: "test", APP_SITE: "closed" })).toMatchObject({ MEDIA_MATCH: "test", AUTOMATION_R2_ACTS: "on" });
+      // A source needs the owner's later task; even with both days it stops the process at start.
+      expect(() => loadConfig({ ...good, MEDIA_MATCH: "hotline", AUTOMATION_DPIA_MATCH: "2026-10-01", AUTOMATION_DPIA_MATCH_ACTS: "2026-10-02" })).toThrow(/MEDIA_MATCH=hotline: no such adapter in this build/);
+      expect(() => loadConfig({ ...good, MEDIA_MATCH: "hotline" })).toThrow(/AUTOMATION_DPIA_MATCH is required/);
+      expect(() => loadConfig({ ...good, MEDIA_MATCH: "hotline", AUTOMATION_DPIA_MATCH: "2026-10-01" })).toThrow(/AUTOMATION_DPIA_MATCH_ACTS is required/);
+      // One tool's day never stands for the other's: the R1 days do not cover the comparison.
+      expect(() => loadConfig({ ...good, MEDIA_MATCH: "hotline", AUTOMATION_DPIA_R1: "2026-10-01", AUTOMATION_DPIA_R1_ACTS: "2026-10-02" })).toThrow(/AUTOMATION_DPIA_MATCH is required/);
+      // No message holds a secret: the refusals name settings and values the operator typed, nothing else.
+      try {
+        loadConfig({ ...good, MEDIA_MATCH: "test" });
+      } catch (err) {
+        expect(String(err)).not.toMatch(/SECRET|PASSWORD|TOKEN=/);
+      }
+    });
   });
   describe("the WebAuthn relying party", () => {
     test("defaults to the host of APP_ORIGIN and the name korbat; an empty value, as compose passes it, counts as unset", () => {

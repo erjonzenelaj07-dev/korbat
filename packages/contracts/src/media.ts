@@ -2,7 +2,8 @@ import { z } from "zod";
 import { FORBIDDEN_FORMAT } from "./text";
 
 /** Every code the media endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
-export const MediaErrorCode = z.enum(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable"]);
+// 3d Task 7 (design, sections 7.8 step 5 and 10.7): upload_refused, a post that attaches an upload korbat did not accept.
+export const MediaErrorCode = z.enum(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused"]);
 export type MediaErrorCode = z.infer<typeof MediaErrorCode>;
 
 /** Why processing an upload failed. Reported on the status response, not as an HTTP error. */
@@ -76,6 +77,10 @@ export const MediaStatusResponse = z
       lost: z.literal(true).optional(),
     }),
     z.object({ id: MediaId, status: z.literal("failed"), error: MediaFailure }),
+    // 3d Task 7 (design, sections 7.8 step 5 and 10.2): an upload korbat refused on an acting match, with the refusal's id
+    // for the link to its notice and nothing of the file: no blurhash, no sizes. An upload whose check is capped answers
+    // processing, as any upload that is still being processed.
+    z.object({ id: MediaId, status: z.literal("refused"), refusalId: z.uuid() }),
   ])
   .refine((answer) => !(answer.status === "ready" && answer.restoring && answer.lost), { message: "an image is either being restored or lost, never both" });
 export type MediaStatusResponse = z.infer<typeof MediaStatusResponse>;

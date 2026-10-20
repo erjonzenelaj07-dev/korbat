@@ -63,7 +63,7 @@ function programCase(more: Partial<CaseView> = {}, inForce = true): CaseView {
         actions: [{ id: ACTION_PROGRAM, kind: "withhold_media", mediaId: IMAGE_ONE, noEffect: null, inForce, reversesActionId: null, liftedBy: null, sealed: null, ...NO_STANDING }],
       }),
     ],
-    signals: [{ itemId: ITEM_PROGRAM, kind: "r1_score", thresholdVersion: 0 }],
+    signals: [{ itemId: ITEM_PROGRAM, kind: "r1_score", thresholdVersion: 0, match: null }],
     objection: inForce ? { text: HOSTILE_OBJECTION, createdAt: ASKED } : null,
     ...more,
   });
@@ -106,7 +106,7 @@ describe("the queue's chips (8.3)", () => {
 
 describe("Home (8.2)", () => {
   test("[home.automated] and [home.objected] with a link to each case, the target from the contracts; nothing while neither applies", () => {
-    const automated = { waiting: 2, oldestAt: AT, objected: 1, oldestObjectionAt: ASKED, cases: [CASE_POST], objectedCases: [CASE_POST] };
+    const automated = { waiting: 2, oldestAt: AT, objected: 1, oldestObjectionAt: ASKED, flags: 0, cases: [CASE_POST], objectedCases: [CASE_POST] };
     const out = html(<CustodyLines overview={overview({ automated })} now={NOW.getTime()} onOpenCase={noop} />);
     const shown = text(out);
     expect(shown).toContain(AUTOMATION_WORDS.homeAutomated(2, bothTimes(AT)));
@@ -175,7 +175,7 @@ describe("the composer on such a case (8.4)", () => {
   };
 
   test("[case.autoRecord] while an unanswered item is a program's finding, and not on a case without one", () => {
-    expect(programFinding(programCase())).toEqual({ signal: { itemId: ITEM_PROGRAM, kind: "r1_score", thresholdVersion: 0 }, mediaId: IMAGE_ONE });
+    expect(programFinding(programCase())).toEqual({ signal: { itemId: ITEM_PROGRAM, kind: "r1_score", thresholdVersion: 0, match: null }, mediaId: IMAGE_ONE });
     expect(composer(programCase())).toContain(AUTOMATION_WORDS.caseAutoRecord);
     expect(programFinding(postCase())).toBeNull();
     expect(composer(postCase())).not.toContain(AUTOMATION_WORDS.caseAutoRecord);

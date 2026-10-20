@@ -149,7 +149,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
 
   // ---------------------------------------------------------------- the routes
 
-  test("the ten signed-in routes (3e adds the reply, 3d Task 2 the notices and a release's notice, Task 6 the request for a person) are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
+  test("the twelve signed-in routes (3e adds the reply, 3d Task 2 the notices and a release's notice, Task 6 the request for a person, Task 7 a refused upload's notice and its objection) are the module's whole surface under /api/moderation; each refuses a reader without a session and an account that has not chosen a handle", async () => {
     const routes = app.routes.filter((route) => route.path.startsWith("/api/moderation") && route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
     expect([...new Set(routes)].sort()).toEqual([
       "GET /api/moderation/cases",
@@ -157,11 +157,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
       "GET /api/moderation/notices",
       "GET /api/moderation/releases/:release",
       "GET /api/moderation/reports",
+      "GET /api/moderation/uploads/:refusal",
       "POST /api/moderation/decisions/:id/appeal",
       "POST /api/moderation/decisions/:id/objection",
       "POST /api/moderation/decisions/:id/reply",
       "POST /api/moderation/items/:item/reexamine",
       "POST /api/moderation/report-mail/resume",
+      "POST /api/moderation/uploads/:refusal/objection",
     ]);
     // The session is asked for before anything of the request is read: the appeal and the re-examination refuse the
     // same way with no body at all.
@@ -176,6 +178,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
       [`/api/moderation/decisions/${randomUUID()}/reply`, "POST"],
       [`/api/moderation/decisions/${randomUUID()}/objection`, "POST"],
       [`/api/moderation/items/${randomUUID()}/reexamine`, "POST"],
+      [`/api/moderation/uploads/${randomUUID()}`, undefined],
+      [`/api/moderation/uploads/${randomUUID()}/objection`, "POST"],
     ];
     const half = await signUp(false);
     for (const [path, method] of paths) {

@@ -268,4 +268,17 @@ describe("the enum-literal rule of 3d's automated decisions migration", () => {
     const text = readFileSync(path.join(MIGRATIONS, `${files[0]!.tag}.sql`), "utf8");
     expect(enumLiteralViolations(bodiesToo(text), VALUES_3D).length).toBeGreaterThanOrEqual(4);
   });
+
+  test("3d Task 7: known_material's transparency_figures, replaced, keeps the stricter form: neither label as a literal, in its body either", () => {
+    const entry = files.find((candidate) => candidate.tag.endsWith("_known_material"));
+    // The design numbers it 0036; Tasks 1 to 6 took 0033 to 0038 before it.
+    expect(entry?.tag).toBe("0039_known_material");
+    const text = readFileSync(path.join(MIGRATIONS, `${entry!.tag}.sql`), "utf8");
+    const start = text.indexOf('CREATE OR REPLACE FUNCTION "public"."transparency_figures"');
+    const end = text.indexOf("CREATE OR REPLACE FUNCTION", start + 1);
+    expect(start).toBeGreaterThan(0);
+    const figures = text.slice(start, end === -1 ? undefined : end);
+    expect(enumLiteralViolations(bodiesToo(figures), VALUES_3D)).toEqual([]);
+    expect(flat(withoutComments(figures))).toContain("i.kind::text = 'automated'");
+  });
 });

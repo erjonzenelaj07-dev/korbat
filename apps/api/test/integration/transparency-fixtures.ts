@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { RULE_DEFAULT_CATEGORY, type OrderView } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
-import { hex64, imagePost, newRef, openCase, type TestStaff } from "./moderation-fixtures";
+import { matchForTest } from "./automation-fixtures";
+import { hex64, imagePost, newImageRow, newRef, openCase, type TestStaff } from "./moderation-fixtures";
 import { ageOrderForTest, effectParams, effectWith, orderForTest } from "./orders-fixtures";
 
 /**
@@ -66,6 +67,12 @@ export interface YearCells {
    * images under R2.
    */
   automated?: { findings?: Partial<Record<"R1" | "R2", number>>; restrictedR1?: number; measures?: Partial<Record<"R1" | "R2", number>> };
+  /**
+   * 3d Task 7: refused uploads of the year, by how their hold had ended by the edition's due day: ended as report, ended as
+   * no_report, or not at all (open). Each is an image row on no post with its acting match record and its refusal, written
+   * with the refusal's triggers off; an end is in the year, before the due day.
+   */
+  uploads?: Partial<Record<"report" | "no_report" | "open", number>>;
 }
 
 /** What the fixture made that a test reads again. */
@@ -191,6 +198,25 @@ export async function yearForTest(tx: DbTx, year: number, cells: YearCells, staf
   }
   // On again for what follows: a failure above aborted the transaction, which the caller rolls back with the switch.
   for (const table of BULK_TABLES) await tx.execute(sql.raw(`alter table public.${table} enable trigger user`));
+
+  // 3d Task 7: refused uploads. The image row and its match record go through their own triggers; the refusal, written by
+  // the hundred in a year as no flow writes it, with its triggers off, so its time and its end are the year's.
+  if (cells.uploads) {
+    await tx.execute(sql`alter table public.upload_refusals disable trigger user`);
+    for (const [label, n] of Object.entries(cells.uploads) as ["report" | "no_report" | "open", number][]) {
+      for (let g = 0; g < n; g++) {
+        const mediaId = await newImageRow(tx, authorId, null);
+        const matchId = await matchForTest(tx, mediaId, "acting");
+        const refusedAt = sql`make_timestamptz(${year}::int, ${1 + (g % 11)}::int, ${1 + (g % 28)}::int, 12, 0, 0, 'UTC')`;
+        const endedAt = label === "open" ? sql`null::timestamptz` : sql`make_timestamptz(${year}::int, ${2 + (g % 11)}::int, ${1 + (g % 28)}::int, 12, 0, 0, 'UTC')`;
+        await tx.execute(sql`
+          insert into public.upload_refusals (media_id, owner_id, match_id, refused_at, end_as, end_reason, ended_at, ended_by)
+          values (${mediaId}::uuid, ${authorId}::uuid, ${matchId}::uuid, ${refusedAt}, ${label === "open" ? null : label}, ${label === "no_report" ? "other" : null},
+                  ${endedAt}, ${label === "open" ? null : staff.id}::uuid)`);
+      }
+    }
+    await tx.execute(sql`alter table public.upload_refusals enable trigger user`);
+  }
 
   const orders: OrderView[] = [];
   for (const cell of cells.orders ?? []) orders.push(await orderOfYear(tx, year, cell, staff));

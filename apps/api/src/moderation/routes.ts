@@ -11,6 +11,7 @@ import type { ModerationDeps } from "./context";
 import { noticeContact, noticeStatus, reexamineNotice, reexamineOwnItem, submitNotice, type NoticeSender } from "./intake";
 import { authorNotices, authorRelease } from "./release";
 import { reporterList, resumeReportMail } from "./reports";
+import { authorUpload, objectToUpload } from "./uploads";
 import { fileReply } from "./standing";
 
 /** A decision's id in the lower case PostgreSQL returns. */
@@ -19,6 +20,8 @@ const DecisionParam = z.object({ id: z.uuid().transform((id) => id.toLowerCase()
 const ItemParam = z.object({ item: z.uuid().transform((id) => id.toLowerCase()) });
 /** 3d Task 2: a release's id, the same way. */
 const ReleaseParam = z.object({ release: z.uuid().transform((id) => id.toLowerCase()) });
+/** 3d Task 7: a refused upload's id, the same way. */
+const RefusalParam = z.object({ refusal: z.uuid().transform((id) => id.toLowerCase()) });
 /** 3d Task 2: a page of the notices after the cursor the API handed out. */
 const NoticesQuery = z.strictObject({ cursor: z.string().min(1).max(200).optional() });
 
@@ -93,6 +96,13 @@ export function moderationRoutes(deps: ModerationDeps, guard: MiddlewareHandler<
   // for anyone else and while its notice is held.
   r.get("/moderation/notices", guard, validate("query", NoticesQuery), async (c) => c.json(await authorNotices(deps, me(c), c.req.valid("query").cursor)));
   r.get("/moderation/releases/:release", guard, validate("param", ReleaseParam), async (c) => c.json(await authorRelease(deps, me(c), c.req.valid("param").release)));
+  // 3d Task 7 (sections 7.12 and 9.5): a refused upload's notice, for its uploader alone, not_found for anyone else; and
+  // the uploader's one objection, open while korbat holds the file and the hold did not end without a report; never
+  // suspended, as "Ask for a person" is not (E 7.3).
+  r.get("/moderation/uploads/:refusal", guard, validate("param", RefusalParam), async (c) => c.json(await authorUpload(deps, me(c), c.req.valid("param").refusal)));
+  r.post("/moderation/uploads/:refusal/objection", guard, validate("param", RefusalParam), validate("json", ObjectionRequest), async (c) =>
+    c.json(await objectToUpload(deps, me(c), c.req.valid("param").refusal, c.req.valid("json")), 201),
+  );
   // Lifts a stop of korbat's report mails to the account's address; the same answer whether or not there was one.
   r.post("/moderation/report-mail/resume", guard, async (c) => {
     await resumeReportMail(deps, me(c));

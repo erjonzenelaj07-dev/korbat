@@ -69,7 +69,7 @@ describe("no HTML or script sink in apps/admin", () => {
     expect(nav).toMatch(/to: ConsolePath/);
     expect(nav).toMatch(/id: CaseId/);
     const router = readFileSync(path.join(SRC, "router.ts"), "utf8");
-    expect(router).toContain('export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact" | "/orders" | "/restore";');
+    expect(router).toContain('export type ConsolePath = "/" | "/audit" | "/signin" | "/queue" | "/appeals" | "/standing" | "/contact" | "/orders" | "/restore" | "/uploads";');
     // An OrderId is made in one place too.
     expect(findInSource(/[^A-Za-z0-9_]as OrderId[^A-Za-z0-9_]/).map((found) => found.split(":")[0])).toEqual(["src/router.ts"]);
     // A CaseId is made in one place, by the function that checks it: nothing else may call a text a case's id.
@@ -124,8 +124,9 @@ describe("the key is asked only after the console checked what it is asked to si
     expect(stepUp).toMatch(/export async function confirmWithKey</);
     // The revocation of a session, the reveal, the decision and the review are callers of it; none asks the key itself.
     // 3f: and an order's event, an admin's correction of an order, and giving effect to an order (Task 3); Task 6: the
-    // audit log's download and a gap closed as not needed; 3d Task 2: the release of a seal for good.
-    expect(stepUp.split("confirmWithKey(deps, action,").length - 1).toBe(10);
+    // audit log's download and a gap closed as not needed; 3d Task 2: the release of a seal for good; 3d Task 7: the end of
+    // a held upload's hold and its release.
+    expect(stepUp.split("confirmWithKey(deps, action,").length - 1).toBe(12);
   });
 
   test("navigator.credentials is called only by the three ceremonies, each of which checks its challenge first", () => {

@@ -35,6 +35,7 @@ import {
 import { sendStatement } from "./statement";
 import { releaseHeldNotices } from "./orders-repo";
 import { releaseNotices } from "./release";
+import { refusalNotices } from "./uploads";
 import { appendAuditRow } from "../staff";
 
 /**
@@ -116,6 +117,8 @@ export interface DispatchReport {
   lostNotices: number;
   /** 3d Task 2: the authors told in this round of a release of sealed images of theirs. */
   releaseNotices: number;
+  /** 3d Task 7: the uploaders told in this round that an upload was refused, or that its hold was lifted. */
+  uploadNotices: number;
 }
 
 /** What a mail's result is recorded as; nothing is recorded where the relay could not take the mail, so the next round sends it again. */
@@ -324,6 +327,8 @@ export function updateLine(deps: Pick<ModerationDeps, "config">, row: OutcomeLin
     reexaminable: row.byDecision && noAction && !row.reexamined && (!row.reexamines || unseen),
     unseen,
     automatic: !row.hasCase,
+    // 3d Task 7 (7.10, W.8): the decision is recorded as partly automated: the mail prints update.automated.partly.
+    ...(row.partly ? { partly: true } : {}),
   };
 }
 
@@ -521,6 +526,7 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
     noticesReleased: 0,
     lostNotices: 0,
     releaseNotices: 0,
+    uploadNotices: 0,
   };
   const step = async (name: string, run: () => Promise<void>) => {
     try {
@@ -577,6 +583,9 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
     // 3d Task 2 (sections 7.2 and 7.14): a release's notice that was born held goes pending in the round that finds the
     // last hold on telling ended, never earlier, and is mailed then; one the send after the commit left is mailed here.
     report.releaseNotices = await releaseNotices(deps, now, due, (err, row) => logUnsent(deps, err, "notices", row));
+    // 3d Task 7 (sections 7.12 and 7.14): the refused uploads' notices the send after the refusal's commit left, and the
+    // notices that a hold ended as no_report was lifted, once its delay has passed and the end still stands.
+    report.uploadNotices = await refusalNotices(deps, now, due, RETENTION.mailGiveUpDays, (err, row) => logUnsent(deps, err, "notices", row));
   });
 
   // 2. The statements that were not mailed after their decision's commit, as they are mailed there.
@@ -617,7 +626,7 @@ export async function dispatchRound(deps: ModerationDeps, lock: JobLock): Promis
 
   // One line for a round that did something, so the day's release and its mails can be found in the log: counts only.
   const gaveUp = report.givenUp.receipts + report.givenUp.authorMails + report.givenUp.outcomes;
-  if (report.daily || report.receipts + report.statements + report.outcomeMails + gaveUp + report.noticesReleased + report.lostNotices + report.releaseNotices > 0 || report.urgent === "sent" || report.waiting === "sent") {
+  if (report.daily || report.receipts + report.statements + report.outcomeMails + gaveUp + report.noticesReleased + report.lostNotices + report.releaseNotices + report.uploadNotices > 0 || report.urgent === "sent" || report.waiting === "sent") {
     deps.log.info({ job: DISPATCH_JOB, ...report }, "moderation-dispatch: round");
   }
   return report;

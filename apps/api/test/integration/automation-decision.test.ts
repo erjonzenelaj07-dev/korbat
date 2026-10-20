@@ -8,13 +8,13 @@ import { SYSTEM_ACTOR_ID } from "../../src/auth";
 import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { automatedParams, automatedStep, measureIn } from "../../src/moderation/automated";
-import { insertScoreSignal, insertSystemDecision, joinSignal, signalHandled } from "../../src/moderation/automated-repo";
+import { insertMatchSignal, insertScoreSignal, insertSystemDecision, joinSignal, signalHandled } from "../../src/moderation/automated-repo";
 import { snapshotIn } from "../../src/moderation/cases";
 import { recordIntakeIn, type IntakeGround } from "../../src/moderation/intake";
 import { appendConfirmedAudit, caseById, insertAction } from "../../src/moderation/repo";
 import { decisionStatement } from "../../src/moderation/statement";
 import { appendAuditRow } from "../../src/staff";
-import { automationDeps, removeAutomation, signalForTest, signalRow, systemRowOf } from "./automation-fixtures";
+import { automationDeps, matchForTest, removeAutomation, signalForTest, signalRow, systemRowOf } from "./automation-fixtures";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import {
   MINORS,
@@ -431,6 +431,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automated decision o
         // The alert says which limit was met, and how many findings stand without a measure since.
         const [alert] = await tx.execute<{ facts: Record<string, number | string> }>(sql`select facts from public.alert_outbox where kind = 'automation_capped' order by id desc limit 1`);
         expect(alert!.facts).toMatchObject({ limitHour: 1, count: 1 });
+      });
+    });
+
+    test("3d Task 7 (row 4): twenty R1 decisions in the hour, then an acting match on a post, which is sealed: the counts are taken per rule", async () => {
+      await rolledBack(migrateDb, async (tx) => {
+        await history(tx, AUTOMATION_RULES.decisionsPerHour - (await counted(tx, "R1")).hour, "R1", "10 minutes", false);
+        const p = await imagePost(tx, 1);
+        const signalId = (await insertMatchSignal(tx, { mediaId: p.mediaIds[0]!, matchId: await matchForTest(tx, p.mediaIds[0]!, "acting") }))!;
+        const sealed = await automatedStep(automationDeps(tx, {}, { MEDIA_MATCH: "test" }), signalId);
+        expect(sealed.handled).toBe("measure");
+        expect(await imageStates(tx, p.mediaIds)).toEqual(["sealed"]);
       });
     });
 

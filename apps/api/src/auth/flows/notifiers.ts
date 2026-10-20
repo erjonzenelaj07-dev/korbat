@@ -127,8 +127,19 @@ export interface ReleaseNoticeMessage {
   view: ReleaseNoticeView;
 }
 
-/** What may be sent to an account: the receipt and the daily update of its reports, the statement of a decision about it, and (3d) the notices of a lost image and of a release. */
-export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage | ImageLostMessage | ReleaseNoticeMessage;
+/**
+ * 3d Task 7 (design, sections 7.12, 7.15; W.5 and W.8): the uploader's two notices of a refused upload, each with the
+ * notice's paragraphs as rendered for the app's screen (uploadNoticeParagraphs): `upload_refused` after the refusal's
+ * commit, and `upload_hold_lifted` once a hold ended as no_report has passed its delay, with the paragraph of that end. No
+ * stop of the address holds either back: each is about the account's own upload.
+ */
+export interface UploadNoticeMessage {
+  template: "upload_refused" | "upload_hold_lifted";
+  paragraphs: readonly string[];
+}
+
+/** What may be sent to an account: the receipt and the daily update of its reports, the statement of a decision about it, and (3d) the notices of a lost image, of a release and of a refused upload. */
+export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage | ImageLostMessage | ReleaseNoticeMessage | UploadNoticeMessage;
 
 /** One contact's share of the daily update: the lines of its notice, and its receipt when the 24-hour cap folded it. */
 export interface NotifierUpdatePart {
@@ -153,12 +164,16 @@ export type StaffMessage =
   | StaffAlertMessage
   // 3f's review (people4): `phones`, whether the phone alerts are on (NOTIFY), so the mail never says a push went to a
   // phone when nothing publishes one, and says instead that it is the only alert.
-  | { template: "moderation_urgent"; count: number; oldest: Date; phones: boolean }
+  // 3d Task 7 (W.7): `heldUploads`, the held uploads that wait for an admin or hold an unanswered objection, which the
+  // mail prints as a second sentence when it is above zero; `count` and `oldest` include them.
+  | { template: "moderation_urgent"; count: number; oldest: Date; phones: boolean; heldUploads?: number }
   | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number; replies?: { count: number; oldest: Date } | null; phones: boolean }
   | { template: "moderation_burst"; handle: string; count: number }
   | { template: "moderation_reads"; handle: string; limit: number }
   | { template: "moderation_reveal"; handle: string; at: Date; count: number; limit: number }
-  | { template: "moderation_csam_lifted"; handle: string; at: Date; what: "unsealed" | "dismissed" };
+  // 3d Task 7 (7.11 step 6, W.8): `matched` on a case whose finding came from a match: the variant that says the images
+  // stay closed to staff. It carries no reason: the reason is on the decision, where the console shows it.
+  | { template: "moderation_csam_lifted"; handle: string; at: Date; what: "unsealed" | "dismissed"; matched?: true };
 
 /**
  * 3f (design, sections 7.2, 7.19 and 18, W.4): the staff alerts whose mail is their push's sentence, which the alert tick
@@ -202,7 +217,11 @@ export type StaffAlertKind =
   // after its commit; a request for a person waited longer than its target, the automated sweep's own row.
   | "automated_objection"
   | "automation_capped"
-  | "automated_waiting";
+  | "automated_waiting"
+  // 3d Task 7: the comparison of uploads needs the operator (alert_steps() daily, and staffAlert at once over the limit on
+  // refusals), and a held upload's hold ended without a report (staffAlert after the end's commit).
+  | "matcher_down"
+  | "hold_ended_unreported";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -239,9 +258,11 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "automated_objection":
     case "automation_capped":
     case "automated_waiting":
+    case "matcher_down":
+    case "hold_ended_unreported":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
-      return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off" };
+      return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off", ...(message.heldUploads ? { heldUploads: String(message.heldUploads) } : {}) };
     case "moderation_waiting": {
       // A lane's pair only for a lane with a case past its time, and the measures' count only when it is not 0.
       const data: Record<string, string> = { phones: message.phones ? "on" : "off" };
@@ -261,7 +282,7 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "moderation_burst":
       return { handle: message.handle, count: String(message.count) };
     case "moderation_csam_lifted":
-      return { handle: message.handle, time: noticeTime(message.at), what: message.what };
+      return { handle: message.handle, time: noticeTime(message.at), what: message.what, ...(message.matched ? { matched: "yes" } : {}) };
     case "moderation_reads":
       return { handle: message.handle, limit: String(message.limit) };
     case "moderation_reveal":
@@ -397,10 +418,14 @@ export async function mailAccount(deps: AuthDeps, userId: string, message: Accou
       },
     });
   }
+  // 3d Task 7: nor are the notices of a refused upload, one paragraph per line, as the app's screen renders them.
+  if (message.template === "upload_refused" || message.template === "upload_hold_lifted") {
+    return deliver(deps, { to: user.email, template: message.template, data: { notice: message.paragraphs.join(LINE_BREAK) } });
+  }
   const hash = emailHash(deps.config.authHmacKey, user.email);
   if ((await deps.repo.suppressedNotifierHashes([hash])).has(hash)) return "suppressed";
   if (message.template === "notice_update") return deliver(deps, { to: user.email, template: "notice_update", data: { signedIn: true, lines: [...message.lines], receipts: [], pages: [] } });
-  return deliver(deps, { to: user.email, template: "notice_received", data: receiptData(deps, message) });
+  return deliver(deps, { to: user.email, template: "notice_received", data: receiptData(deps, message as NoticeReceivedMessage) });
 }
 
 /**

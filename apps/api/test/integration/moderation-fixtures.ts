@@ -463,6 +463,11 @@ export interface DecisionInput {
   unfounded?: readonly string[];
   /** Whether a correction withdraws an announced measure for another; false unless said. */
   replaced?: boolean;
+  /**
+   * 3d Task 7: the reason of an answer without a seal on an acting match; left out of the params unless said, as a
+   * decision signed before the member existed is.
+   */
+  matchAnswerReason?: "source_withdrew" | "counsel" | "other" | null;
 }
 
 /** A measure on the post, the account's field or the case's images; an image measure with its image. */
@@ -553,6 +558,7 @@ export async function decisionParams(db: Runner, staff: { id: string }, caseId: 
     legalReferenceDigest: await text(input.legalReferenceDigest, groundOf === "illegal", "legal_reference"),
     unfounded: [...(input.unfounded ?? [])].sort(),
     replaced: input.replaced ?? false,
+    ...(input.matchAnswerReason !== undefined ? { matchAnswerReason: input.matchAnswerReason } : {}),
   };
 }
 
@@ -962,6 +968,11 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
     // outbox row of the edge: both go with the image rows.
     await tx.execute(sql`delete from automated_signals where media_id in (select m.id from post_media m where m.owner_id = any(${profiles}))`);
     await tx.execute(sql`delete from edge_purges where media_id in (select m.id from post_media m where m.owner_id = any(${profiles}))`);
+    // 3d Task 7: a held upload's refusal and its match record, the records of these images, and the hold for good a refusal
+    // placed on an upload on no post, which would keep its row (gate K) against the delete below.
+    await tx.execute(sql`delete from upload_refusals where owner_id = any(${profiles}) or media_id in (select m.id from post_media m where m.owner_id = any(${profiles}))`);
+    await tx.execute(sql`delete from media_matches where media_id in (select m.id from post_media m where m.owner_id = any(${profiles}))`);
+    await tx.execute(sql`update post_media set hold_until = null where owner_id = any(${profiles}) and post_id is null and hold_until is not null`);
     await tx.execute(sql`delete from post_media where owner_id = any(${profiles})`);
     await tx.execute(sql`delete from posts where author_id = any(${profiles})`);
     await tx.execute(sql`delete from profiles where id = any(${profiles})`);

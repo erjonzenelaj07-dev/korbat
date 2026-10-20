@@ -20,13 +20,22 @@ import type { TransparencyRepo } from "./repo";
 
 /**
  * The facts of the running server (10.6): booleans, names, days and numbers, never a token, a zone, a host or an address.
- * The comparison with known material is built by a later task and prints off until then; the edge prints its adapter
+ * The comparison with known material prints its state (3d Task 7); the edge prints its adapter
  * (Task 3), and the head's witness its own (Task 5), never its authority's address. A test adapter prints "on" and says it
  * is one. 3d Task 6: the R1 check prints its state (off; on and flagging; on and withholding, AUTOMATION_R1_ACTS), whether
  * it is the test scorer, and its two impact assessments' days, each in its own block; the model, its digest, its
  * threshold, its version and the publisher's claim stay null while no classifier is built in, which no build of 3d does.
  */
-export function publicFacts(config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "HEAD_WITNESS" | "R1_CLASSIFIER" | "AUTOMATION_R1_ACTS" | "AUTOMATION_DPIA_R1" | "AUTOMATION_DPIA_R1_ACTS">): PublicFacts {
+export function publicFacts(
+  config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGNED_OUT" | "HEAD_WITNESS" | "R1_CLASSIFIER" | "AUTOMATION_R1_ACTS" | "AUTOMATION_DPIA_R1" | "AUTOMATION_DPIA_R1_ACTS"> &
+    Partial<Pick<Config, "MEDIA_MATCH" | "AUTOMATION_R2_ACTS" | "AUTOMATION_DPIA_MATCH" | "AUTOMATION_DPIA_MATCH_ACTS">>,
+): PublicFacts {
+  // 3d Task 7 (sections 2 rows 27 and 49, 10.6): the comparison prints its state (off; on and only alerting, the finding
+  // and the urgent alert; on and sealing, AUTOMATION_R2_ACTS), whether it is the test matcher, the source's name and its
+  // two impact assessments' days, each in its own block. A source is named here only once it has allowed that; the test
+  // matcher's name is "test".
+  const match = config.MEDIA_MATCH ?? "off";
+  const matchOn = match !== "off";
   const r1On = config.R1_CLASSIFIER !== "off";
   return {
     r1: {
@@ -40,7 +49,13 @@ export function publicFacts(config: Pick<Config, "EDGE_PURGE" | "RECIPIENTS_SIGN
       dpia: config.AUTOMATION_DPIA_R1 ?? null,
       dpiaActs: config.AUTOMATION_DPIA_R1_ACTS ?? null,
     },
-    match: { state: "off", test: false, source: null, dpia: null, dpiaActs: null },
+    match: {
+      state: !matchOn ? "off" : (config.AUTOMATION_R2_ACTS ?? "on") === "on" ? "seals" : "alerts",
+      test: match === "test",
+      source: matchOn ? match : null,
+      dpia: config.AUTOMATION_DPIA_MATCH ?? null,
+      dpiaActs: config.AUTOMATION_DPIA_MATCH_ACTS ?? null,
+    },
     edge: { on: config.EDGE_PURGE !== "off", test: config.EDGE_PURGE === "test" },
     witness: { on: config.HEAD_WITNESS !== "off", test: config.HEAD_WITNESS === "test" },
     recipientsSignedOut: config.RECIPIENTS_SIGNED_OUT === "on",

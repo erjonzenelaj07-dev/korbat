@@ -31,6 +31,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
     HEAD_WITNESS: "",
     HEAD_KEEPER_MAIL: "",
     RECIPIENTS_SIGNED_OUT: "",
+    // 3d Task 7: the comparison's four settings, blank as unset.
+    MEDIA_MATCH: "",
+    AUTOMATION_R2_ACTS: "",
+    AUTOMATION_DPIA_MATCH: "",
+    AUTOMATION_DPIA_MATCH_ACTS: "",
   };
   const run = async (env: Record<string, string>) => {
     const lines: string[] = [];
@@ -46,6 +51,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
     HEAD_WITNESS: "off",
     HEAD_KEEPER_MAIL: undefined,
     RECIPIENTS_SIGNED_OUT: "on",
+    MEDIA_MATCH: "off",
+    AUTOMATION_R2_ACTS: "on",
+    AUTOMATION_DPIA_MATCH: undefined,
+    AUTOMATION_DPIA_MATCH_ACTS: undefined,
     ...over,
   });
 
@@ -56,7 +65,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
     await closeDb(apiDb);
   });
 
-  test("with every adapter off: eight lines, each the command's, the R1 check off, known material not built, no daily mail; nothing written", async () => {
+  test("with every adapter off: eight lines, each the command's, the R1 check off, known material off, no daily mail; nothing written", async () => {
     const [head] = await apiDb.execute<{ seq: string }>(sql`select seq::text as seq from public.audit_head where id = 1`);
     const { code, lines } = await run({});
     expect(code).toBe(0);
@@ -64,7 +73,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js automation-stat
     for (const line of lines) expect(line).toMatch(/^out automation-status: /);
     expect(lines[0]).toMatch(/^out automation-status: edge purge: off; [0-9]+ purges waiting, [0-9]+ failed in 24 hours[.]$/);
     expect(lines[1]).toBe("out automation-status: R1 check: off, acts off; model none, threshold version 1; impact assessment not set, for its measure not set.");
-    expect(lines[2]).toBe("out automation-status: known material: off; no comparison is built in this version.");
+    // 3d Task 7 (8.10): the comparison, whether its match seals (on by default), its two days, and its counts.
+    expect(lines[2]).toMatch(
+      new RegExp(`^out automation-status: known material: off, acts on; impact assessment not set, for its measure not set; [0-9]+ uploads unchecked, the oldest since (none|[0-9T:.Z-]+); refusals [0-9]+ of ${AUTOMATION_RULES.refusalsPerHour} this hour[.]$`),
+    );
     expect(lines[3]).toMatch(/^out automation-status: head witness: off; last value ([0-9-]{10}|none), witnessed (yes|no); keeper's mail not set: no daily mail is sent[.]$/);
     expect(lines[4]).toBe("out automation-status: signed-out readers: counted.");
     expect(lines[5]).toMatch(new RegExp(`^out automation-status: a program's findings today: [0-9]+ under R1, [0-9]+ under R2, [0-9]+ without a rule; signals the sweep left unhandled after ${SWEEP_HOURS} hours: [0-9]+[.]$`));

@@ -51,6 +51,8 @@ export function marksOf(row: QueueRow): string[] {
   // last is why such a case stands first in its lane; the API's order says so, and the page keeps that order.
   if (row.foundByProgram) marks.push(AUTOMATION_WORDS.queue.found);
   if (row.takenByProgram) marks.push(AUTOMATION_WORDS.queue.taken);
+  // 3d Task 7 [queue.matchFlag]: a match that only flags, which moves nothing.
+  if (row.matchFlag) marks.push(AUTOMATION_WORDS.queueMatchFlag);
   if (row.objected) marks.push(AUTOMATION_WORDS.queue.objected);
   return marks;
 }

@@ -56,9 +56,14 @@ export async function upload(deps: MediaDeps, ownerId: string, request: UploadRe
   }
 
   const id = randomUUID();
-  await deps.files.receive(id, request.body, MEDIA_MAX_BYTES, (head) => checkFirstBytes(deps, head));
+  // 3d Task 7 (design, section 7.8 step 1): while the comparison with known material is on, the three hashes of the file
+  // as received are taken while it streams, and stored with the image row in one transaction; while it is off, nothing is
+  // hashed and no row of media_hashes is written.
+  const accept = (head: Uint8Array) => checkFirstBytes(deps, head);
+  const hashes = deps.match.mode === "off" ? undefined : (await deps.files.receiveHashed(id, request.body, MEDIA_MAX_BYTES, accept)).hashes;
+  if (hashes === undefined && deps.match.mode === "off") await deps.files.receive(id, request.body, MEDIA_MAX_BYTES, accept);
   try {
-    await deps.repo.insertProcessing({ id, ownerId, now: deps.now() });
+    await deps.repo.insertProcessing({ id, ownerId, now: deps.now(), hashes });
     await deps.files.commit(id);
   } catch (err) {
     await deps.repo.deleteRow(id).catch(() => undefined);

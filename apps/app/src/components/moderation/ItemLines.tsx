@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { STATEMENT_MAX, itemOutcomeWords, type NoticeItemStatus } from "@korbat/contracts";
+import { STATEMENT_WORDS } from "@korbat/rules";
 import { Button, ErrorText, Field } from "@/components/ui";
 import { externalLink } from "@/lib/links";
 import { dailyLimitFailure, itemRedress, quotedExaminedToo, utcMinute } from "@/lib/moderation";
@@ -74,6 +75,8 @@ function ItemLine({ item, both, onAsk }: { item: NoticeItemStatus & { unfounded?
           <Text className="mt-2 text-sm leading-5 text-zinc-200">
             {STATUS_WORDS.decided(item.decidedOn)} {words}
           </Text>
+          {/* 3d Task 7 (9.6, W.3): a decision recorded as partly automated says so, as the mail does. */}
+          {item.automatedDecision === "partially" ? <Text className="mt-2 text-sm leading-5 text-zinc-200">{STATEMENT_WORDS.update.automated.partly}</Text> : null}
           {item.unfounded === true ? (
             // "You can ask for a re-examination" only while one is open (3e's review, people8).
             <Text className="mt-2 text-sm leading-5 text-amber-300">{redress === "reexamination" ? STANDING_TEXTS.reports.marked : STANDING_TEXTS.reports.markedClosed}</Text>

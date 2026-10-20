@@ -258,9 +258,21 @@ export function AuthoritiesLines({
  * 3d (design, section 8.2): the block "Sealed files and programs" below "Authorities", each line only while it applies,
  * in the design's order. Task 1: [home.quarantine], while a move of sealed files into the quarantine or back to the image
  * store is due, from the four values of quarantine_counts(); once the oldest due move is older than the alert's threshold
- * it says that every staff account is alerted daily.
+ * it says that every staff account is alerted daily. Task 7 adds [home.flags], [home.uploads], a held upload's release and
+ * [home.unreported], and puts [home.released] after the lines of programs, as 8.2 orders them.
  */
-export function CustodyLines({ overview, now = Date.now(), onOpenCase }: { overview: StaffOverview; now?: number; onOpenCase?: (id: CaseId) => void }) {
+export function CustodyLines({
+  overview,
+  now = Date.now(),
+  onOpenCase,
+  onNavigate,
+}: {
+  overview: StaffOverview;
+  now?: number;
+  onOpenCase?: (id: CaseId) => void;
+  /** 3d Task 7: the links to Held uploads. */
+  onNavigate?: (path: ConsolePath) => void;
+}) {
   const { quarantine } = overview;
   const lines: ReactNode[] = [];
   if ((quarantine.dueIn > 0 || quarantine.dueOut > 0) && quarantine.oldest !== null) {
@@ -275,21 +287,6 @@ export function CustodyLines({ overview, now = Date.now(), onOpenCase }: { overv
   // 3d Task 2 (8.2): [home.undestroyed] while released files are still in the quarantine, and [home.released], one line
   // a release of the last 30 days, newest first, each linking its case.
   if (quarantine.undestroyed > 0) lines.push(<p key="undestroyed" className="notice">{RELEASE_WORDS.homeUndestroyed(quarantine.undestroyed)}</p>);
-  for (const [index, entry] of overview.destructive.filter((act) => act.kind === "seal_released").entries()) {
-    const id = entry.caseId === null ? null : parseCaseId(entry.caseId);
-    const words = RELEASE_WORDS.homeReleased(bothTimes(entry.at));
-    lines.push(
-      <p key={`released-${index}`} className="notice">
-        {id !== null && onOpenCase !== undefined ? (
-          <CaseLink id={id} onOpen={onOpenCase}>
-            {words}
-          </CaseLink>
-        ) : (
-          words
-        )}
-      </p>,
-    );
-  }
   // 3d Task 6 (8.2): [home.automated] while a program's measures wait for a person, and [home.objected] while an author's
   // request for a person waits, each with a link to each of its cases.
   const { automated } = overview;
@@ -323,6 +320,58 @@ export function CustodyLines({ overview, now = Date.now(), onOpenCase }: { overv
       </p>,
     );
   }
+  // 3d Task 7 (8.2): [home.flags] while open cases hold a match that only flags; [home.uploads] while held uploads wait,
+  // objections are unanswered or uploads wait over the limit of refusals an hour, with a link to Held uploads.
+  if (automated.flags > 0) lines.push(<p key="flags" className="notice">{AUTOMATION_WORDS.homeFlags(automated.flags)}</p>);
+  const held = overview.heldUploads;
+  const uploadsLink = (words: string) =>
+    onNavigate === undefined ? (
+      words
+    ) : (
+      <NavLink to="/uploads" onNavigate={onNavigate}>
+        {words}
+      </NavLink>
+    );
+  if (held.open > 0 || held.objected > 0 || held.capped > 0) {
+    lines.push(
+      <p key="uploads" className="notice">
+        {CUSTODY_WORDS.homeUploads(held.open, held.oldest === null ? null : bothTimes(held.oldest), held.objected)}
+        {held.capped > 0 ? ` ${CUSTODY_WORDS.homeUploadsCapped(held.capped)}` : ""} {uploadsLink(CUSTODY_WORDS.homeUploadsLink)}
+      </p>,
+    );
+  }
+  // [home.released], one line a release of the last 30 days, newest first: a seal's links its case, a held upload's Held
+  // uploads; then [home.unreported], one line a hold ended without a report.
+  for (const [index, entry] of overview.destructive.filter((act) => act.kind === "seal_released" || act.kind === "upload_released").entries()) {
+    if (entry.kind === "upload_released") {
+      lines.push(
+        <p key={`released-${index}`} className="notice">
+          {uploadsLink(CUSTODY_WORDS.homeReleasedUpload(bothTimes(entry.at)))}
+        </p>,
+      );
+      continue;
+    }
+    const id = entry.caseId === null ? null : parseCaseId(entry.caseId);
+    const words = RELEASE_WORDS.homeReleased(bothTimes(entry.at));
+    lines.push(
+      <p key={`released-${index}`} className="notice">
+        {id !== null && onOpenCase !== undefined ? (
+          <CaseLink id={id} onOpen={onOpenCase}>
+            {words}
+          </CaseLink>
+        ) : (
+          words
+        )}
+      </p>,
+    );
+  }
+  for (const [index, entry] of overview.destructive.filter((act) => act.kind === "hold_ended_unreported").entries()) {
+    lines.push(
+      <p key={`unreported-${index}`} className="notice">
+        {uploadsLink(CUSTODY_WORDS.homeUnreported(bothTimes(entry.at)))}
+      </p>,
+    );
+  }
   if (lines.length === 0) return null;
   return (
     <div role="status" className="authorities">
@@ -353,7 +402,7 @@ export function OverviewView({
   return (
     <>
       <AuthoritiesLines overview={overview} now={now} onOpenCase={onOpenCase} {...(onNavigate === undefined ? {} : { onNavigate })} {...(onOpenOrder === undefined ? {} : { onOpenOrder })} />
-      <CustodyLines overview={overview} now={now} onOpenCase={onOpenCase} />
+      <CustodyLines overview={overview} now={now} onOpenCase={onOpenCase} onNavigate={onNavigate} />
       <h3>Cases</h3>
       <ul className="lanes">
         {overview.lanes.map((lane) => (

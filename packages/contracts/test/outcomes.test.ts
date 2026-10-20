@@ -166,7 +166,7 @@ describe("outcomeWords: one item's outcome as its sender reads it", () => {
 });
 
 describe("the console's fixed drafts for a seal", () => {
-  test("SEAL_DRAFTS holds its eight texts, word for word", () => {
+  test("SEAL_DRAFTS holds its nine texts, word for word", () => {
     expect(SEAL_DRAFTS).toEqual({
       facts: {
         notice_post: "korbat received a notice that reports images of this post as child sexual abuse material.",
@@ -175,6 +175,8 @@ describe("the console's fixed drafts for a seal", () => {
         finding_post: "A moderator reported images of this post as possible child sexual abuse material.",
         finding_account: "A moderator reported images on this account's posts as possible child sexual abuse material. korbat sealed every image on the account's posts.",
         finding_added: "A moderator reported content on korbat that shows this post's images as possible child sexual abuse material.",
+        // 3d Task 7 (W.3): the facts draft of a seal on a program's match, whose comparison the console fills in.
+        match_post: "{comparison}. korbat's staff do not open such an image, and korbat has not assessed it.",
       },
       reason: {
         deciding: "korbat's staff do not open images reported this way, so korbat has not assessed them. It hides them from everyone, you included, until an admin has answered the report.",
@@ -182,7 +184,7 @@ describe("the console's fixed drafts for a seal", () => {
           "korbat's staff do not open images reported this way, so korbat has not assessed them. An admin found the report credible enough to keep the images sealed and to report them to the police, who can assess them.",
       },
     });
-    expect(Object.keys(SEAL_DRAFTS.facts).length + Object.keys(SEAL_DRAFTS.reason).length).toBe(8);
+    expect(Object.keys(SEAL_DRAFTS.facts).length + Object.keys(SEAL_DRAFTS.reason).length).toBe(9);
   });
 
   test("none says that korbat found the images to be such material, and each reason says that staff do not open them", () => {
@@ -271,7 +273,8 @@ describe("the home screen's three lists of the path for child sexual abuse mater
     restore: { open: 0, measures: 0, importedAt: null },
     quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null },
     destructive: [],
-    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
+    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 0, cases: [], objectedCases: [] },
+      heldUploads: { open: 0, oldest: null, objected: 0, capped: 0 },
   };
 
   test("StaffOverview carries the decisions that lifted the protection of reported images, the choices not to seal and the seals taken while deciding that are in force", () => {

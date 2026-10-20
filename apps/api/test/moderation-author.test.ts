@@ -108,9 +108,12 @@ describe("the module's signed-in routes", () => {
     ["GET", "/api/moderation/releases/00000000-0000-4000-8000-000000000001"],
     // 3d Task 6: the request for a person to look at a program's decision.
     ["POST", "/api/moderation/decisions/00000000-0000-4000-8000-000000000001/objection"],
+    // 3d Task 7: a refused upload's notice, and the objection to it.
+    ["GET", "/api/moderation/uploads/00000000-0000-4000-8000-000000000001"],
+    ["POST", "/api/moderation/uploads/00000000-0000-4000-8000-000000000001/objection"],
   ];
 
-  test("are the ten of the design (3e adds the reply, 3d the notices, a release's and the request for a person), beside the four public ones", () => {
+  test("are the twelve of the design (3e adds the reply, 3d the notices, a release's, the request for a person and a refused upload's notice and objection), beside the four public ones", () => {
     const routes = createModeration(options()).routes.routes.filter((route) => route.method !== "ALL").map((route) => `${route.method} ${route.path}`);
     expect([...new Set(routes)].sort()).toEqual(
       [
@@ -119,11 +122,13 @@ describe("the module's signed-in routes", () => {
         "GET /moderation/notices",
         "GET /moderation/releases/:release",
         "GET /moderation/reports",
+        "GET /moderation/uploads/:refusal",
         "POST /moderation/decisions/:id/appeal",
         "POST /moderation/decisions/:id/objection",
         "POST /moderation/decisions/:id/reply",
         "POST /moderation/items/:item/reexamine",
         "POST /moderation/report-mail/resume",
+        "POST /moderation/uploads/:refusal/objection",
         "POST /notices",
         "POST /notices/contact",
         "POST /notices/reexamine",

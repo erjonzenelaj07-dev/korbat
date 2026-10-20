@@ -24,15 +24,16 @@
  */
 import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { AuditExportLine, MEDIA_SIZES, QUARANTINE_DIRECTIONS, QUARANTINE_WORDS, RELEASE_LEAVE_FROM, type QuarantineDirection, type ReleaseLeaveFrom } from "@korbat/contracts";
+import { AuditExportLine, MEDIA_SIZES, NOTIFICATION_DUTIES, QUARANTINE_DIRECTIONS, QUARANTINE_WORDS, RELEASE_LEAVE_FROM, type QuarantineDirection, type ReleaseLeaveFrom } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
-import { quarantineNames, quarantineOrphans, storedImageName } from "../media";
+import { quarantineNames, quarantineOrphans, refusalForCli, refusalReported, storedImageName } from "../media";
 import { appendAuditRow } from "../staff";
 import { Refusal, UUID, authorityText, flag, freeText, instant, isoOf, refuse, rows } from "./orders";
 
 /** The quarantine's commands and (Task 2) the release's, each with its first lines of STAFF_USAGE. */
-export const CUSTODY_COMMANDS = ["quarantine-list", "quarantine-record", "release-leave", "release-show", "release-replay"] as const;
+// 3d Task 7: upload-report, the record of a report of a held upload ended as "Report".
+export const CUSTODY_COMMANDS = ["quarantine-list", "quarantine-record", "release-leave", "release-show", "release-replay", "upload-report"] as const;
 export type CustodyCommandName = (typeof CUSTODY_COMMANDS)[number];
 
 export const CUSTODY_USAGE = [
@@ -40,13 +41,16 @@ export const CUSTODY_USAGE = [
   `${"".padEnd(41)}the operator, one line a file, for the quarantine service; read-only; run it in the migrate service`,
   `${"  quarantine-record < receipt".padEnd(41)}record the quarantine service's receipt line by line, whatever the plan says now, with`,
   `${"".padEnd(41)}one audit row; run it in the migrate service (the README, Quarantine)`,
-  `${"  release-leave <seal> --by <authority|court>".padEnd(41)}record a leave or an instruction to destroy a seal's files, from the paper: --reference <text>`,
+  `${"  release-leave <seal|refusal> --by <authority|court>".padEnd(41)}record a leave or an instruction to destroy a seal's or a held upload's files: --reference <text>`,
   `${"".padEnd(41)}--day <yyyy-mm-dd> --operator <name> [--untold [--until <instant>]] [--gap <gap>]; --end-untold <leave>`,
   `${"".padEnd(41)}[--until <instant>] ends an open hold on telling; --withdraw <leave> --operator <name> [--gap <gap>]`,
   `${"".padEnd(41)}withdraws one recorded by mistake; run it in the migrate service (the README, A release)`,
   `${"  release-show <release>".padEnd(41)}print a release's record: its ground, its leave, each destroyed file with its digest, the`,
   `${"".padEnd(41)}author's notice and the day after which no backup deleted on time holds the files; read-only`,
-  `${"  release-replay < <the keeper's files>".padEnd(41)}after restore-import: replay each release a gap names; run it in the migrate service`,
+  `${"  release-replay < <the keeper's files>".padEnd(41)}after restore-import: replay each release and lost end of a hold a gap names; run it in the`,
+  `${"".padEnd(41)}migrate service`,
+  `${"  upload-report <refusal> --duty <duty>".padEnd(41)}open the record of a report of a held upload ended as Report (dsa18_1, dsa18_2, tco14_5 or`,
+  `${"".padEnd(41)}voluntary), as notification-open does; then report it and record it with notification-sent`,
 ];
 
 /** A custody command's words: its positional words and its flags (a flag may not repeat; --untold takes no value). */
@@ -80,6 +84,7 @@ export function parseCustodyArgs(command: CustodyCommandName, rest: readonly str
     } else positional.push(word);
   }
   if (command === "release-show" && (positional.length !== 1 || flags.size > 0)) throw new Error("release-show: name the release by its id, and nothing else");
+  if (command === "upload-report" && (positional.length !== 1 || flags.size !== 1 || !flags.has("--duty"))) throw new Error("upload-report: name the held upload's refusal by its id, with --duty and nothing else");
   return { command, positional, flags };
 }
 
@@ -497,10 +502,10 @@ async function releaseLeave(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
   }
 
   // The first form: a leave recorded from the paper.
-  if (cmd.positional.length !== 1) return refuse(c, "name the seal by its ledger row's id");
+  if (cmd.positional.length !== 1) return refuse(c, "name the seal by its ledger row's id, or the held upload by its refusal's id");
   const sealWord = cmd.positional[0]!;
   const sealId = sealWord.toLowerCase();
-  if (!UUID.test(sealId)) return refuse(c, `${sealWord} is not a seal's ledger row`);
+  if (!UUID.test(sealId)) return refuse(c, `${sealWord} is not a seal's ledger row or a refusal's id`);
   const by = flag(cmd, "--by")!;
   if (!(RELEASE_LEAVE_FROM as readonly string[]).includes(by)) return refuse(c, `--by is ${RELEASE_LEAVE_FROM.join(" or ")}`);
   const reference = authorityText(c, "--reference", flag(cmd, "--reference")!);
@@ -516,13 +521,23 @@ async function releaseLeave(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
 
   const gap = gapWord === null ? null : await releaseGap(tx, c, gapWord, "release_leave_recorded");
   // The seal: a seal_media of a decision that is not interim, in force; and its record of a report, sent.
-  const [seal] = await rows<{ record: string | null; state: string | null }>(
+  const [found] = await rows<{ record: string | null; state: string | null }>(
     tx,
     sql`select public.seal_record(f.id) as record, (select n.state from public.authority_notifications n where n.id = public.seal_record(f.id)) as state
           from public.measures_in_force f where f.id = ${sealId}::uuid and f.kind::text = 'seal_media' and f.decision_kind::text <> 'interim'`,
   );
-  if (seal === undefined) return refuse(c, `${sealId} is not the ledger row of a seal for good in force`);
-  if (seal.record === null || seal.state !== "sent") return refuse(c, `seal ${sealId} has no record of a report that was sent: record the report first (notification-sent)`);
+  // 3d Task 7 (sections 7.12 step 5 and 8.10): or a held upload ended as "Report", by its refusal, whose record of a report
+  // is the one upload-report opened (its notification_id), sent; read through the media module, which owns the refusals.
+  const refusal = found === undefined ? await refusalForCli(tx, sealId) : null;
+  if (found === undefined && refusal === null) return refuse(c, `${sealId} is not the ledger row of a seal for good in force, nor a held upload's refusal`);
+  if (refusal !== null && (refusal.endAs !== "report" || refusal.releaseId !== null)) return refuse(c, `held upload ${sealId} did not end as Report, or is released`);
+  const [uploadRecord] =
+    refusal === null || refusal.notificationId === null
+      ? []
+      : await rows<{ state: string }>(tx, sql`select n.state from public.authority_notifications n where n.id = ${refusal.notificationId}::uuid`);
+  const seal = found ?? { record: refusal!.notificationId, state: uploadRecord?.state ?? null };
+  const what = found === undefined ? "upload" : "seal";
+  if (seal.record === null || seal.state !== "sent") return refuse(c, `${what} ${sealId} has no record of a report that was sent: record the report first (${what === "upload" ? "upload-report, then " : ""}notification-sent)`);
   let leaveId: string | null = null;
   if (gap !== null) {
     // A lost leave is recorded again under the id its line names, on the record its line named.
@@ -542,9 +557,58 @@ async function releaseLeave(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
   const members = { id: row!.id, from: by, reference, receivedOn: day, untold, untoldUntil: until };
   await appendAuditRow(tx, { actorId: SYSTEM_ACTOR_ID, action: "release_leave_recorded", targetType: "notification", targetId: seal.record, requestId: null, metadata: leaveMembers(members, gap?.id ?? null) });
   return [
-    `${c}: leave ${row!.id} recorded for seal ${sealId}, on the record of its report: from ${by}, reference ${reference}, of ${day}; the person ${tellingOf(untold, until)}. An admin can now release it on the case.`,
+    `${c}: leave ${row!.id} recorded for ${what} ${sealId}, on the record of its report: from ${by}, reference ${reference}, of ${day}; the person ${tellingOf(untold, until)}. An admin can now release it on the ${what === "upload" ? "Held uploads screen" : "case"}.`,
     ...(gap === null ? [] : [`${c}: gap ${gap.id} is closed: the leave is recorded again.`]),
   ];
+}
+
+/**
+ * 3d Task 7 (sections 7.12 step 4 and 8.10): upload-report <refusal> --duty <duty>, as the migrator, in one transaction
+ * whose last statement is 3f's audit row notification_recorded with the step opened. For a held upload ended as "Report"
+ * it opens 3f's notification record under the duty, as notification-open takes them (which duty a match carries is
+ * counsel's), for the account the refusal names, without a case, and stores its id on the refusal through the media
+ * module's refusalReported. Refused (hold_not_open) when the hold did not end that way, or a record is stored already.
+ * The record names the account the refusal names: when that account is deleted it is an anonymised profile's id, and the
+ * command says so; a refusal that names nobody any more opens a record without an account.
+ */
+async function uploadReport(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
+  const c = "upload-report";
+  const word = cmd.positional[0]!;
+  const refusalId = word.toLowerCase();
+  if (!UUID.test(refusalId)) return refuse(c, `${word} is not a refusal's id`);
+  const duty = flag(cmd, "--duty")!;
+  if (!(NOTIFICATION_DUTIES as readonly string[]).includes(duty)) return refuse(c, `--duty is ${NOTIFICATION_DUTIES.join(", ")}`);
+  const refusal = await refusalForCli(tx, refusalId);
+  if (refusal === null) return refuse(c, `no held upload has the refusal ${refusalId}`);
+  if (refusal.endAs !== "report" || refusal.releaseId !== null) return refuse(c, `hold_not_open: held upload ${refusalId} did not end as Report, or is released`);
+  if (refusal.notificationId !== null) return refuse(c, `hold_not_open: held upload ${refusalId} has its record of a report already (${refusal.notificationId})`);
+  const [made] = await rows<{ id: string; since: string }>(
+    tx,
+    sql`insert into public.authority_notifications (state, duties, case_id, account_id, opened_at, opened_via, first_report_at)
+        values ('owed', ${`{${duty}}`}::text[], null, ${refusal.ownerId}::uuid, now(), 'cli', ${refusal.refusedAt.toISOString()}::timestamptz)
+        returning id, ${isoOf("opened_at")} as since`,
+  );
+  await refusalReported(tx, refusalId, made!.id);
+  // The hold on the address, as the refusal set it: how long the address is still kept for the report, if at all.
+  const [held] =
+    refusal.ownerId === null
+      ? []
+      : await rows<{ until: string | null }>(tx, sql`select to_char(auth.address_held_until(${refusal.ownerId}::uuid) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as until`);
+  await appendAuditRow(tx, {
+    actorId: SYSTEM_ACTOR_ID,
+    action: "notification_recorded",
+    targetType: "notification",
+    targetId: made!.id,
+    requestId: null,
+    metadata: { step: "opened", caseId: null, sealActionId: null, duties: [duty], sentKinds: null, at: made!.since },
+  });
+  const lines = [`${c}: record ${made!.id} opened for the held upload ${refusalId}, owed since ${made!.since}. Report it, then record it with notification-sent.`];
+  if (refusal.ownerId === null || refusal.ownerDeleted) {
+    lines.push(
+      `${c}: the uploader's account no longer exists: the record names nobody, and the report can carry the file's facts and times${held?.until ? ` (and the address until ${held.until}, while 3f still holds it)` : ""}.`,
+    );
+  }
+  return lines;
 }
 
 /** release-show <release> (sections 7.2 and 8.10), read-only: a release's record, line by line, never an authority's answer. */
@@ -624,6 +688,9 @@ async function releaseShow(tx: DbTx, cmd: CustodyCommand): Promise<string[]> {
 async function releaseReplay(migrateDb: Db, input: Buffer): Promise<{ lines: string[]; notes: string[]; failed: boolean }> {
   const c = "release-replay";
   const releases: { id: string; at: string; params: { postIds: string[]; basis: string; leaveId: string | null; theirReference: string | null } }[] = [];
+  // 3d Task 7 (sections 7.3 and 8.10): a held upload's release, and a lost end of a hold, each with its refusal and image.
+  const uploadReleases: { id: string; at: string; refusalId: string; mediaId: string; params: { basis: string; leaveId: string | null; theirReference: string | null } }[] = [];
+  const holdEnds: { at: string; refusalId: string; mediaId: string; endAs: string }[] = [];
   for (const text of input.toString("utf8").split(LF)) {
     const line = text.endsWith(CR) ? text.slice(0, -1) : text;
     if (line.trim() === "") continue;
@@ -633,13 +700,31 @@ async function releaseReplay(migrateDb: Db, input: Buffer): Promise<{ lines: str
     } catch {
       return refuse(c, "standard input holds a line that is not a line of the keeper's files");
     }
-    if (parsed.action !== "seal_released") continue;
+    if (parsed.action !== "seal_released" && parsed.action !== "upload_released" && parsed.action !== "upload_hold_ended") continue;
     // A line carries its metadata as the canonical JSON text the chain hashed.
-    let metadata: { params?: Record<string, unknown>; releaseId?: unknown } | null;
+    let metadata: { params?: Record<string, unknown>; releaseId?: unknown; mediaId?: unknown } | null;
     try {
-      metadata = JSON.parse(parsed.metadata) as { params?: Record<string, unknown>; releaseId?: unknown } | null;
+      metadata = JSON.parse(parsed.metadata) as { params?: Record<string, unknown>; releaseId?: unknown; mediaId?: unknown } | null;
     } catch {
-      return refuse(c, `the seal_released line at place ${parsed.place} holds no release`);
+      return refuse(c, `the ${parsed.action} line at place ${parsed.place} holds no release`);
+    }
+    if (parsed.action !== "seal_released") {
+      const params = metadata?.params;
+      const target = typeof parsed.targetId === "string" ? parsed.targetId : null;
+      if (target === null || typeof metadata?.mediaId !== "string" || !params) return refuse(c, `the ${parsed.action} line at place ${parsed.place} names no held upload`);
+      if (parsed.action === "upload_hold_ended") {
+        holdEnds.push({ at: parsed.at as string, refusalId: target, mediaId: metadata.mediaId, endAs: String(params.endAs) });
+        continue;
+      }
+      if (typeof metadata.releaseId !== "string") return refuse(c, `the upload_released line at place ${parsed.place} holds no release`);
+      uploadReleases.push({
+        id: metadata.releaseId,
+        at: parsed.at as string,
+        refusalId: target,
+        mediaId: metadata.mediaId,
+        params: { basis: String(params.basis), leaveId: (params.leaveId as string | null) ?? null, theirReference: (params.theirReference as string | null) ?? null },
+      });
+      continue;
     }
     const params = metadata?.params;
     if (typeof metadata?.releaseId !== "string" || !params || !Array.isArray(params.postIds)) return refuse(c, `the seal_released line at place ${parsed.place} holds no release`);
@@ -682,7 +767,74 @@ async function releaseReplay(migrateDb: Db, input: Buffer): Promise<{ lines: str
       notes.push(`${c}: release ${release.id}: replay_no_gap: no open gap of the class release names it with these facts; nothing changed for it`);
     }
   }
-  lines[0] = `${c}: ${releases.length} releases and 0 ends of a hold in the copy; ${present} already present.`;
+  // 3d Task 7: a held upload's release (upload_release_replay), which erases its image row also when the restore lost the
+  // refusal; and a lost end of a hold whose refusal the restored database lacks (upload_hold_replay), which keeps the image
+  // row from every post. A refusal the database holds answers present: its gap waits for an admin's new end.
+  for (const release of uploadReleases) {
+    try {
+      const outcome = await migrateDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '10s'`);
+        const [row] = await rows<{ result: string }>(
+          tx,
+          sql`select public.upload_release_replay(${release.id}::uuid, ${release.refusalId}::uuid, ${release.mediaId}::uuid, ${release.params.basis}, ${release.params.leaveId}::uuid,
+                                                  ${release.params.theirReference}, ${release.at}::timestamptz) as result`,
+        );
+        if (row!.result === "present") return null;
+        const [, , images] = row!.result.split(" ");
+        const [replay] = await rows<{ id: string }>(tx, sql`select id from public.releases where replay_of = ${release.id}::uuid`);
+        await appendAuditRow(tx, {
+          actorId: SYSTEM_ACTOR_ID,
+          action: "release_replayed",
+          targetType: "release",
+          targetId: replay!.id,
+          requestId: null,
+          metadata: { replayOf: release.id, posts: 0, images: Number(images), upload: true },
+        });
+        return { images: Number(images) };
+      });
+      if (outcome === null) present++;
+      else lines.push(`${c}: release ${release.id} of ${release.at}: a held upload, ${outcome.images} image rows erased.`);
+    } catch (err) {
+      const message = String((err as { cause?: { message?: string } }).cause?.message ?? (err as Error).message);
+      if (!/replay_no_gap/.test(message)) throw err;
+      notes.push(`${c}: release ${release.id}: replay_no_gap: no open gap of the class release names it with these facts; nothing changed for it`);
+    }
+  }
+  let ends = 0;
+  for (const end of holdEnds) {
+    try {
+      const outcome = await migrateDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '10s'`);
+        const [row] = await rows<{ result: string }>(
+          tx,
+          sql`select public.upload_hold_replay(${end.refusalId}::uuid, ${end.mediaId}::uuid, ${end.endAs}, ${end.at}::timestamptz) as result`,
+        );
+        if (row!.result === "present") return null;
+        await appendAuditRow(tx, {
+          actorId: SYSTEM_ACTOR_ID,
+          action: "release_replayed",
+          targetType: "upload_refusal",
+          targetId: end.refusalId,
+          requestId: null,
+          metadata: { replayOf: null, posts: 0, images: Number(row!.result.split(" ")[1]), upload: true, endAs: end.endAs, mediaId: end.mediaId },
+        });
+        return true;
+      });
+      if (outcome === null) {
+        present++;
+        notes.push(`${c}: held upload ${end.refusalId}: the restored database holds its refusal; an admin ends its hold again on Held uploads, which closes the gap`);
+      } else {
+        ends++;
+        lines.push(`${c}: held upload ${end.refusalId}: the hold's end of ${end.at} as ${end.endAs}; the image is kept from every post.`);
+      }
+    } catch (err) {
+      const message = String((err as { cause?: { message?: string } }).cause?.message ?? (err as Error).message);
+      if (!/replay_no_gap/.test(message)) throw err;
+      notes.push(`${c}: held upload ${end.refusalId}: replay_no_gap: no open gap of the class release names this end; nothing changed for it`);
+    }
+  }
+  void ends;
+  lines[0] = `${c}: ${releases.length + uploadReleases.length} releases and ${holdEnds.length} ends of a hold in the copy; ${present} already present.`;
   lines.push(
     `${c}: run the Quarantine steps now, with an inventory first: the list's destroy lines name every released file that the restored store or the quarantine still holds, and its operator lines every file it cannot place.`,
   );
@@ -709,6 +861,13 @@ export async function custodyCommand(migrateDb: Db, cmd: CustodyCommand, input: 
       return { ok: true, lines, notes: [], failed: false };
     }
     if (cmd.command === "release-replay") return { ok: true, ...(await releaseReplay(migrateDb, await input())) };
+    if (cmd.command === "upload-report") {
+      const lines = await migrateDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '10s'`);
+        return uploadReport(tx, cmd);
+      });
+      return { ok: true, lines, notes: [], failed: false };
+    }
     const receipt = await input();
     const done = await migrateDb.transaction(async (tx) => {
       await tx.execute(sql`set local lock_timeout = '10s'`);

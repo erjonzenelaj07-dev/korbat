@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DisplayName, OpaqueId, Role } from "./auth";
+import { MATCH_ANSWER_REASONS, UPLOAD_END_REASONS, UPLOAD_ENDS } from "./automation";
 import { hex, sha256, sortedJson } from "./canonical";
 import {
   ACTION_KINDS,
@@ -268,9 +269,20 @@ export const CaseDecidedParams = z
     legalReferenceDigest: Sha256Hex.nullable(),
     unfounded: z.array(LowerCaseUuid).max(UNFOUNDED_MAX),
     replaced: z.boolean(),
+    /**
+     * 3d Task 7 (design, sections 7.11 and 10.4, note 26): the reason of an answer without a seal on a case whose match is
+     * acting, one of MATCH_ANSWER_REASONS; absent or null on every other decision. decision_holds holds it to the decision
+     * and to the case at commit: a final decision that holds no seal_media and considers an item of a program's acting
+     * match needs one, and no other decision may carry one. Absent reads as null, so a decision signed before 3d's Task 7
+     * hashes as it did.
+     */
+    matchAnswerReason: z.enum(MATCH_ANSWER_REASONS).nullable().optional(),
   })
   .superRefine((params, ctx) => {
     const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+    if (params.matchAnswerReason != null && !(params.kind === "final" && !params.actions.some((action) => action.kind === "seal_media"))) {
+      refuse("matchAnswerReason", "only a final decision that holds no seal names the reason of an answer without a seal");
+    }
     const outcomes = { interim: ["restricted"], final: ["restricted", "no_violation", "not_evident"], correction: ["kept", "partly_reversed", "reversed"] } as const;
     if (!(outcomes[params.kind] as readonly string[]).includes(params.outcome)) refuse("outcome", "a decision of this kind does not have this outcome");
     if (params.kind === "interim" && params.throughSeq !== 0) refuse("throughSeq", "a decision taken while deciding answers no item");
@@ -381,6 +393,36 @@ export const SealReleasedParams = z
 export type SealReleasedParams = z.infer<typeof SealReleasedParams>;
 
 /**
+ * 3d Task 7 (design, sections 7.12 step 4 and 10.4): POST /api/staff/uploads/:refusal/end, an admin's end of a held
+ * upload's hold, by the refusal's id. `endAs` is one of UPLOAD_ENDS and neither is a default: a request without it is
+ * refused. `reason` is one of UPLOAD_END_REASONS exactly when `endAs` is no_report, and null otherwise; upload_hold_end
+ * checks both again, and upload_refusals_confirmed holds the end to these params at commit.
+ */
+export const UploadHoldEndedParams = z
+  .strictObject({ endAs: z.enum(UPLOAD_ENDS), reason: z.enum(UPLOAD_END_REASONS).nullable() })
+  .refine((params) => (params.endAs === "no_report") === (params.reason !== null), {
+    message: "an end as no_report names one of its reasons, and an end as report names none",
+    path: ["reason"],
+  });
+export type UploadHoldEndedParams = z.infer<typeof UploadHoldEndedParams>;
+
+/**
+ * 3d Task 7 (design, sections 7.12 step 5 and 10.4): POST /api/staff/uploads/:refusal/release, the release of a held
+ * upload ended as report, by the refusal's id: the ground and the recorded leave with its reference as its record holds
+ * it, set exactly when the ground is leave. No param carries an authority's answer; releases_confirmed compares these with
+ * the release's row at commit.
+ */
+export const UploadReleasedParams = z
+  .strictObject({ basis: z.enum(RELEASE_BASES), leaveId: LowerCaseUuid.nullable(), theirReference: OrderReference.nullable() })
+  .superRefine((params, ctx) => {
+    const leave = params.basis === "leave";
+    if (leave !== (params.leaveId !== null) || leave !== (params.theirReference !== null)) {
+      ctx.addIssue({ code: "custom", path: ["leaveId"], message: "a release on the ground leave names the recorded leave and its reference, and no other ground does" });
+    }
+  });
+export type UploadReleasedParams = z.infer<typeof UploadReleasedParams>;
+
+/**
  * 3d Task 6 (design, sections 6.6, 7.9 and 10.4): the params of the system's audit row automated_decided, no step-up's:
  * a program's decision as decision_holds compares it with the decision's row, member for member as CaseDecidedParams, with
  * these values fixed: kind interim, throughSeq 0, no reviewed decision, outcome restricted, ground incompatible, rule R1
@@ -442,6 +484,10 @@ export const STAFF_STEP_UP_ACTIONS = {
   audit_exported: { targetType: "audit", targetId: AuditThroughId, params: AuditExportedParams },
   /** 3d Task 2: POST /api/staff/seals/:action/release: a release of a seal for good, by the seal's ledger row. */
   seal_released: { targetType: "seal", targetId: LowerCaseUuid, params: SealReleasedParams },
+  /** 3d Task 7: POST /api/staff/uploads/:refusal/end: the end of a held upload's hold, by the refusal's id. */
+  upload_hold_ended: { targetType: "upload_refusal", targetId: LowerCaseUuid, params: UploadHoldEndedParams },
+  /** 3d Task 7: POST /api/staff/uploads/:refusal/release: the release of a held upload, by the refusal's id. */
+  upload_released: { targetType: "upload_refusal", targetId: LowerCaseUuid, params: UploadReleasedParams },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -469,6 +515,8 @@ export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [
   stepUpRequest("gap_closed"),
   stepUpRequest("audit_exported"),
   stepUpRequest("seal_released"),
+  stepUpRequest("upload_hold_ended"),
+  stepUpRequest("upload_released"),
 ]);
 export type StaffStepUpOptionsRequest = z.infer<typeof StaffStepUpOptionsRequest>;
 
@@ -519,6 +567,12 @@ export type AppealReviewRequest = z.infer<typeof AppealReviewRequest>;
  */
 export const SealReleaseRequest = SealReleasedParams.safeExtend({ stepUp: AuthenticationResponseJSON });
 export type SealReleaseRequest = z.infer<typeof SealReleaseRequest>;
+
+/** 3d Task 7: the two requests of Held uploads, each its action's params with the step-up assertion as `stepUp`. */
+export const UploadHoldEndRequest = UploadHoldEndedParams.safeExtend({ stepUp: AuthenticationResponseJSON });
+export type UploadHoldEndRequest = z.infer<typeof UploadHoldEndRequest>;
+export const UploadReleaseRequest = UploadReleasedParams.safeExtend({ stepUp: AuthenticationResponseJSON });
+export type UploadReleaseRequest = z.infer<typeof UploadReleaseRequest>;
 
 /**
  * Which ceremony a WebAuthn challenge was issued for: its second byte, in either layout below. A challenge answers only

@@ -1,6 +1,8 @@
 import { Image } from "expo-image";
+import { Link } from "expo-router";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { ALT_MAX_LENGTH, altLength, normalizeAltText } from "@korbat/contracts";
+import { UPLOAD_TEXTS } from "@/lib/moderation-words";
 import type { ComposerImage } from "./useImageUploads";
 
 const STATUS: Record<ComposerImage["status"], string> = {
@@ -8,6 +10,7 @@ const STATUS: Record<ComposerImage["status"], string> = {
   processing: "Processing…",
   ready: "Ready",
   failed: "Failed",
+  refused: UPLOAD_TEXTS.refused,
 };
 
 /**
@@ -24,11 +27,23 @@ export function ComposerImages({ images, onAlt, onRemove }: { images: ComposerIm
         const label = `image ${index + 1}`;
         return (
           <View key={image.key} className="flex-row gap-3 rounded-lg border border-zinc-800 p-2">
-            <Image source={{ uri: image.previewUrl }} contentFit="cover" accessibilityLabel={`Preview of ${label}`} style={{ width: 72, height: 72, borderRadius: 6 }} />
+            {/* 3d Task 7 (9.5): a refused upload is shown to nobody, its uploader included: no preview stands for it. */}
+            {image.status === "refused" ? (
+              <View accessibilityLabel={`${label}, not accepted`} style={{ width: 72, height: 72, borderRadius: 6 }} className="bg-zinc-800" />
+            ) : (
+              <Image source={{ uri: image.previewUrl }} contentFit="cover" accessibilityLabel={`Preview of ${label}`} style={{ width: 72, height: 72, borderRadius: 6 }} />
+            )}
             <View className="flex-1">
-              <Text accessibilityLiveRegion="polite" className={`text-xs ${image.status === "failed" ? "text-red-400" : image.status === "ready" ? "text-emerald-400" : "text-zinc-400"}`}>
+              <Text accessibilityLiveRegion="polite" className={`text-xs ${image.status === "failed" || image.status === "refused" ? "text-red-400" : image.status === "ready" ? "text-emerald-400" : "text-zinc-400"}`}>
                 {image.status === "failed" && image.error ? image.error : STATUS[image.status]}
               </Text>
+              {image.status === "refused" && image.refusalId ? (
+                <Link href={`/settings/cases/uploads/${image.refusalId}`} asChild>
+                  <Pressable className="self-start">
+                    <Text className="text-xs text-sky-400 underline">{UPLOAD_TEXTS.why}</Text>
+                  </Pressable>
+                </Link>
+              ) : null}
               <TextInput
                 accessibilityLabel={`Description of ${label}`}
                 placeholder="Describe this image for people who cannot see it"

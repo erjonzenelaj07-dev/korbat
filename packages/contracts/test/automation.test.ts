@@ -159,7 +159,8 @@ describe("what staff and the author read of a program (10.2, 10.3)", () => {
 
   test("the queue's row carries the three marks, and a signal on a case names no score", () => {
     expect(Object.keys(QueueRow.shape)).toEqual(expect.arrayContaining(["foundByProgram", "takenByProgram", "objected"]));
-    expect(Object.keys(CaseSignal.shape)).toEqual(["itemId", "kind", "thresholdVersion"]);
+    // 3d Task 7: and, for a match, its record (never its hash).
+    expect(Object.keys(CaseSignal.shape)).toEqual(["itemId", "kind", "thresholdVersion", "match"]);
     expect(Object.keys(StatementSignal.shape)).toEqual(["kind", "source", "matchKind", "listedAs", "viewed"]);
   });
 
@@ -194,7 +195,8 @@ describe("the three alerts of a program (W.7)", () => {
   const DIGIT = /[0-9]/;
 
   test("they follow head_missed at the end of the list, each a push and a sentence to every staff account", () => {
-    expect(ALERT_KIND_LIST.slice(-3)).toEqual(["automated_objection", "automation_capped", "automated_waiting"]);
+    // 3d Task 7's two kinds follow them (known-material.test.ts).
+    expect(ALERT_KIND_LIST.slice(-5, -2)).toEqual(["automated_objection", "automation_capped", "automated_waiting"]);
     for (const kind of ["automated_objection", "automation_capped", "automated_waiting"] as const) {
       expect(ALERT_KINDS[kind].priority, kind).toBe(3);
       expect(ALERT_KINDS[kind].scope, kind).toBe("all");

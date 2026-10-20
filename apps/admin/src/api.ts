@@ -5,6 +5,7 @@ import {
   ContactPage,
   ErrorEnvelope,
   FindingResponse,
+  HeldUpload,
   OrderView,
   OrdersPage,
   QueuePage,
@@ -23,6 +24,7 @@ import {
   StaffTextSaved,
   StaffTextsResponse,
   StandingLists,
+  UploadsPage,
   type AppealReviewRequest,
   type AuditExportedParams,
   type AuditMarkRequest,
@@ -43,6 +45,8 @@ import {
   type StaffSignInVerifyRequest,
   type StaffStepUpOptionsRequest,
   type StaffTextSaveRequest,
+  type UploadHoldEndRequest,
+  type UploadReleaseRequest,
 } from "@korbat/contracts";
 import type { z } from "zod";
 import { messageFor } from "./messages";
@@ -145,6 +149,12 @@ function sameCase(asked: string, view: CaseView): CaseView {
 
 /** 3f: an order answered under another order's address is no answer, as for a case. */
 function sameOrder(asked: string, view: OrderView): OrderView {
+  if (view.id !== asked) throw new ApiError(0, "invalid_answer");
+  return view;
+}
+
+/** 3d Task 7: a held upload answered under another refusal's address is no answer, as for a case. */
+function sameUpload(asked: string, view: HeldUpload): HeldUpload {
   if (view.id !== asked) throw new ApiError(0, "invalid_answer");
   return view;
 }
@@ -340,6 +350,21 @@ export function createStaffApi(deps: StaffApiDeps) {
     releaseSeal: async (caseId: string, actionId: string, body: SealReleaseRequest, call: Call = {}) => {
       if (!isLowerUuid(actionId)) throw new ApiError(0, "invalid_request");
       return sameCase(caseId, await request("POST", `/api/staff/seals/${actionId}/release`, CaseView, call, body));
+    },
+    /** 3d Task 7 (8.6): a page of Held uploads. The cursor is one the API itself handed out, encoded. */
+    uploads: (cursor: string | null, call: Call = {}) => request("GET", `/api/staff/uploads${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, UploadsPage, call),
+    /**
+     * 3d Task 7 (8.6): an admin's end of a held upload's hold, with the key's confirmation: the refusal must already be the
+     * lower-case uuid the step-up confirmed, since it is the action's target. The answer is that refusal as it now shows.
+     */
+    endHold: async (refusalId: string, body: UploadHoldEndRequest, call: Call = {}) => {
+      if (!isLowerUuid(refusalId)) throw new ApiError(0, "invalid_request");
+      return sameUpload(refusalId, await request("POST", `/api/staff/uploads/${refusalId}/end`, HeldUpload, call, body));
+    },
+    /** 3d Task 7 (8.6): the release of a held upload ended as report, built and checked as the end is. */
+    releaseUpload: async (refusalId: string, body: UploadReleaseRequest, call: Call = {}) => {
+      if (!isLowerUuid(refusalId)) throw new ApiError(0, "invalid_request");
+      return sameUpload(refusalId, await request("POST", `/api/staff/uploads/${refusalId}/release`, HeldUpload, call, body));
     },
     /** The item must already be the lower-case uuid the step-up confirmed: it is the action's target. */
     reveal: async (itemId: string, body: IdentityRevealRequest, call: Call = {}) => {

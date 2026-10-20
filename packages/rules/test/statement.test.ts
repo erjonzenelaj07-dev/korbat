@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { MEASURES, MEASURE_KINDS, ORDER_DRAFTS, ORDER_GROUNDS, ORDER_RULES, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
-import { IMAGE_LOST_NOTICE, ORDER_NOTICE, REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, type StatementInput } from "../src/index";
+import { AUTOMATION_RULES, MEASURES, MEASURE_KINDS, ORDER_DRAFTS, ORDER_GROUNDS, ORDER_RULES, RETENTION, REVERSAL_KINDS, SEAL_DRAFTS, STANDING_RULES, appealDeadline, type DecisionStatement, type MeasureKind, type ReversalKind } from "@korbat/contracts";
+import { IMAGE_LOST_NOTICE, ORDER_NOTICE, REDRESS_TEXTS, RULEBOOKS, STATEMENT_WORDS, getRule, retireEnd, statementParagraphs, UPLOAD_NOTICE, uploadNoticeParagraphs, type StatementInput } from "../src/index";
 
 /**
  * The statement of reasons (3c design, section 10): one pure function renders it for the author's screen, the console's
@@ -1473,14 +1473,145 @@ describe("3d Task 6: a program's measure and a person's decision after a score (
     expect(statementParagraphs(statement({ automatedDetection: false, automatedDecision: "not_automated", signal: null }))).toEqual(statementParagraphs(statement()));
   });
 
-  test("a match's words are the known material's: this version refuses to render one rather than say more than it holds", () => {
-    const match = { kind: "known_match", source: "Source", matchKind: "exact", listedAs: "csam", viewed: null } as const;
-    expect(() => statementParagraphs(program({ ruleId: "R2", measures: [measure("seal_media")], signal: match }))).toThrow(/not worded/);
-    expect(() => statementParagraphs(person(false, { signal: match }))).toThrow(/not worded/);
-    expect(() => statementParagraphs(person(false, { automatedDecision: "partially" }))).toThrow(/not worded/);
+  // 3d Task 7 (W.3): a match's words. The source's name is printed as the match record holds it.
+  const MATCH = { kind: "known_match", source: "Example Hotline", matchKind: "exact", listedAs: "csam", viewed: null } as const;
+  const R2 = getRule("R2", 3)!;
+  const EXACT = "an automated comparison found that an image of your post has the same fingerprint as one that Example Hotline has classified as child sexual abuse material";
+  const NEAR =
+    "an automated comparison found that an image of your post has a fingerprint of how the picture looks that Example Hotline reports as matching one it has classified as child sexual abuse material";
+  const OTHER = "an automated comparison of fingerprints with a list kept by Example Hotline flagged an image of your post for korbat's staff";
+  /** A program's seal of a post's images on an acting match, under R2, as Task 6's step records it. */
+  const sealed = (more: Partial<StatementInput> = {}) => program({ ruleId: "R2", measures: [measure("seal_media")], signal: MATCH, ...more });
+
+  test("Task 7: the comparison, word for word, by what the source lists the entry as and the kind of match; 'the same fingerprint' only for an exact one", () => {
+    expect(W.automated.comparison("csam", "exact", "Example Hotline")).toBe(EXACT);
+    expect(W.automated.comparison("csam", "near", "Example Hotline")).toBe(NEAR);
+    expect(W.automated.comparison("other", "exact", "Example Hotline")).toBe(OTHER);
+    expect(W.automated.comparison("other", "near", "Example Hotline")).toBe(OTHER);
+    expect(W.automated.notAssessed("csam", "exact")).toBe(
+      "korbat's staff do not open an image that is found this way, before a decision or after it, and korbat has not assessed it. The comparison shows that two files have the same fingerprint; it does not show what your image is.",
+    );
+    expect(W.automated.notAssessed("csam", "near")).toBe(
+      "korbat's staff do not open an image that is found this way, before a decision or after it, and korbat has not assessed it. The comparison is of fingerprints of how a picture looks, which two different images can share, by accident or on purpose; it does not show what your image is.",
+    );
+    expect(W.automated.notAssessed("other", "exact")).toBe(
+      "korbat's staff do not open an image that is found this way, before a decision or after it, and korbat has not assessed it. A flag is not a finding: it shows that a fingerprint is on a list or close to one that is, not what your image is.",
+    );
+    expect(W.update.automated.partly).toBe("This decision rests in part on an automated comparison of fingerprints; an admin took it without opening the images.");
+  });
+
+  test("Task 7: a program's seal on a match, paragraph by paragraph: the seal, its scope, until an admin answers, the source, the comparison, not assessed, the rule and Ask for a person worded for an admin", () => {
+    const paragraphs = statementParagraphs(sealed());
+    expect(paragraphs.slice(1)).toEqual([
+      W.scope.interim,
+      "This lasts until an admin has answered. The admin either seals the images for good, in which case korbat keeps them only for the authorities it reports this to, or answers without a seal, in which case they are shown again. A program does nothing else: it removes nothing, and it does not suspend, limit or end your account. While images are sealed korbat keeps what a report to the authorities would need, as its terms say for every seal (Terms, Your data).",
+      "What this decision is about was found by an automated check of korbat's own.",
+      `Automated means were used to find this and to take this measure: ${EXACT}, and korbat sealed the post's images at once. No person took part in this measure, and no admin has decided yet.`,
+      W.automated.notAssessed("csam", "exact"),
+      `The rule this was done under: korbat rule R2, "${R2.title}": ${R2.text}`,
+      REDRESS_TEXTS[4].askAdmin,
+    ]);
+    expect(paragraphs[0]).toContain("sealed");
+    const words = text(sealed());
+    expect(words).not.toMatch(/It breaks|korbat's reasons|The facts|looked at the image|confirmed|posted such|is child sexual abuse material/);
+    expect(words).not.toContain(REDRESS_TEXTS[4].askPerson);
+    // A near match's seal (a perceptual hash the source called exact acts the same way) never says "the same fingerprint".
+    expect(text(sealed({ signal: { ...MATCH, matchKind: "near" } }))).not.toContain("same fingerprint");
+    expect(text(sealed({ signal: { ...MATCH, matchKind: "near" } }))).toContain(NEAR);
+  });
+
+  test("Task 7: a person's decision on a match says a program found it and a person decided without opening the image; a partly automated one says it rests on the comparison in part", () => {
+    expect(statementParagraphs(person(false, { signal: MATCH }))).toContain(
+      `Automated means were used to find this: ${EXACT}. They were not used to decide it: a person at korbat took this decision, without opening the image that the comparison named. ${W.automated.notAssessed("csam", "exact")}`,
+    );
+    expect(statementParagraphs(person(false, { signal: MATCH, automatedDecision: "partially" }))).toContain(
+      `Automated means were used to find this, and this decision rests on them in part: ${EXACT}. An admin took the decision without opening the images, on that comparison and on what korbat can read. ${W.automated.notAssessed("csam", "exact")}`,
+    );
+    // A flag of another class: the list flagged it, and a flag is not a finding.
+    const flag = text(person(false, { signal: { ...MATCH, listedAs: "other", matchKind: "near" } }));
+    expect(flag).toContain(OTHER);
+    expect(flag).toContain("A flag is not a finding");
+    expect(flag).not.toMatch(/child sexual abuse material|same fingerprint|looked at the image/);
+    // The record of a match that the retention job erased reads as a flag of an unnamed source, never as a finding.
+    expect(text(person(false, { signal: { ...MATCH, source: null, listedAs: null, matchKind: null } }))).toContain("flagged an image of your post");
+    // A partly automated decision without a match's signal is not worded: it would say more than the record holds.
+    expect(() => statementParagraphs(person(false, { automatedDecision: "partially" }))).toThrow(/names no signal/);
   });
 
   test("a program's statement needs a redress version that holds Ask for a person", () => {
     expect(() => statementParagraphs(program({ redressVersion: 3 }))).toThrow(/Ask for a person/);
+  });
+});
+
+describe("3d Task 7: UPLOAD_NOTICE, the refused upload's notice (design, sections 7.12 and 9.5; W.5)", () => {
+  const R2 = getRule("R2", 3)!;
+  /** An upload refused on an exact match, held, with the objection open: the notice's first state. */
+  const view = (more: Partial<Parameters<typeof uploadNoticeParagraphs>[0]> = {}): Parameters<typeof uploadNoticeParagraphs>[0] => ({
+    id: "5d0c1b2a-3e4f-4a5b-8c6d-7e8f9a0b1c2d",
+    refusedAt: "2026-10-01T12:00:00.000Z",
+    source: "Example Hotline",
+    matchKind: "exact",
+    listedAs: "csam",
+    objection: null,
+    mayObject: true,
+    endedAt: null,
+    endAs: null,
+    endReason: null,
+    released: null,
+    reportKept: false,
+    ...more,
+  });
+  const render = (more: Partial<Parameters<typeof uploadNoticeParagraphs>[0]> = {}) => uploadNoticeParagraphs(view(more), R2.title, REDRESS_TEXTS[4]);
+  const HEAD = [
+    "korbat did not accept an image you uploaded on 2026-10-01 12:00 UTC. It is on no post, and nobody can see it, you included.",
+    "This was done by automated means, and no person took part: an automated comparison found that the file you uploaded has the same fingerprint as one that Example Hotline has classified as child sexual abuse material.",
+    "korbat's staff do not open an upload that is found this way, before a decision or after it, and korbat has not assessed it. The comparison shows that two files have the same fingerprint; it does not show what your image is.",
+    `The rule this was done under: korbat rule R2, "${R2.title}". What korbat compares, and with whom, is stated under Automation on the rules page.`,
+  ];
+
+  test("a held refusal: the four paragraphs every notice opens with, the hold with korbat's number of days, and the offer to object", () => {
+    expect(render()).toEqual([...HEAD, UPLOAD_NOTICE.held, REDRESS_TEXTS[4].uploadObject]);
+    expect(UPLOAD_NOTICE.held).toContain(`for up to ${ORDER_RULES.reportHoldDays} days from the refusal`);
+    expect(UPLOAD_NOTICE.held).toContain("No timer ends the hold.");
+    // A near match the source called exact acts too, and is never "the same fingerprint".
+    expect(render({ matchKind: "near" }).join(" ")).not.toContain("same fingerprint");
+  });
+
+  test("an objection replaces the offer; the hold's end without a report says what follows, by its reason; a report says korbat keeps the file for the authorities", () => {
+    const objected = render({ mayObject: false, objection: { text: "x", objectedAt: "2026-10-02T08:15:00.000Z" } });
+    expect(objected).toEqual([...HEAD, UPLOAD_NOTICE.held, "You objected on 2026-10-02 08:15 UTC. An admin reads what you wrote and decides."]);
+    expect(objected.join(" ")).not.toContain(REDRESS_TEXTS[4].uploadObject!);
+    const withdrew = render({ mayObject: false, endAs: "no_report", endReason: "source_withdrew", endedAt: "2026-10-03T10:00:00.000Z" });
+    expect(withdrew).toEqual([
+      ...HEAD,
+      `An admin ended the hold on 2026-10-03 10:00 UTC without a report, and korbat deletes the file. ${AUTOMATION_RULES.matchKeepDays} days after the hold ended korbat erases the fingerprint and the link between this record and your account; what it keeps after that is that an upload was refused on that day, with nothing that leads to you (Terms, Your data). Example Hotline withdrew or corrected its entry: you can upload the image again.`,
+    ]);
+    for (const reason of ["counsel_no_duty", "other"] as const) {
+      const words = render({ mayObject: false, endAs: "no_report", endReason: reason, endedAt: "2026-10-03T10:00:00.000Z" }).join(" ");
+      expect(words).toContain(
+        "The image is still not accepted while Example Hotline's list holds a matching entry. If you think the entry is wrong, Example Hotline is the body that can correct it: korbat cannot, since nobody at korbat opens the image.",
+      );
+      expect(words).not.toContain("you can upload the image again");
+    }
+    const report = render({ endAs: "report", endReason: null, endedAt: "2026-10-03T10:00:00.000Z" });
+    expect(report).toEqual([...HEAD, REDRESS_TEXTS[4].uploadObject, "On 2026-10-03 10:00 UTC an admin decided, without opening the file, that korbat reports it to the authorities. korbat keeps the file for them alone."]);
+    expect(render({ endAs: "report", endedAt: "2026-10-03T10:00:00.000Z", reportKept: true }).at(-1)).toBe(
+      "On 2026-10-03 10:00 UTC an admin decided, without opening the file, that korbat reports it to the authorities. korbat keeps the file for them alone. The record of that report names your account and keeps its email address for as long as korbat keeps its records to authorities (Terms, Your data).",
+    );
+  });
+
+  test("a released refusal says korbat destroys the file and not a word of what an authority found; no paragraph says what the image is or that anyone confirmed it", () => {
+    const released = render({ mayObject: false, endAs: "report", endedAt: "2026-10-03T10:00:00.000Z", released: "2026-11-03T10:00:00.000Z" });
+    expect(released.at(-1)).toBe("korbat released the file on 2026-11-03 10:00 UTC, on the leave or instruction of an authority or a court: it will not give it back, and it destroys it.");
+    for (const words of [render(), released].map((paragraphs) => paragraphs.join(" "))) {
+      expect(words).not.toMatch(/is child sexual abuse material|confirmed|posted|nobody has seen|found that the image is/);
+    }
+  });
+
+  test("a notice that offers the objection needs redress version 4's text", () => {
+    // Redress texts before version 4 hold no uploadObject.
+    expect("uploadObject" in REDRESS_TEXTS[3]).toBe(false);
+    expect(() => uploadNoticeParagraphs(view(), R2.title, {})).toThrow(/uploadObject/);
+    expect(uploadNoticeParagraphs(view({ mayObject: false }), R2.title, {})).toEqual([...HEAD, UPLOAD_NOTICE.held]);
   });
 });

@@ -3,7 +3,7 @@ import { ModerationErrorCode } from "@korbat/contracts";
 import { ModerationError, isModerationErrorCode, moderationErrorMessage } from "../src/moderation/context";
 
 describe("the moderation module's refusals", () => {
-  test("each of the fifty-four codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6; 3d design, section 10.7)", () => {
+  test("each of the fifty-seven codes this module raises answers with the status the design gives it (3c design, section 10; 3e design, section 10; 3f design, section 10.6; 3d design, section 10.7)", () => {
     const statuses = {
       notice_link_invalid: 422,
       notice_link_offsite: 422,
@@ -66,6 +66,11 @@ describe("the moderation module's refusals", () => {
       objection_not_open: 422,
       already_protected: 409,
       automation_capped: 429,
+      // 3d Task 7 (section 10.7): an end of a hold its state does not allow, one without its reason or with one too many,
+      // and an image a match names, which staff are never served (answered as an image that is not shown).
+      hold_not_open: 409,
+      invalid_hold_end: 422,
+      image_matched: 404,
     } as const;
     // The table above is the whole of the contracts' list, so a code added there fails here until its status is pinned.
     expect(Object.keys(statuses).sort()).toEqual([...ModerationErrorCode.options].sort());

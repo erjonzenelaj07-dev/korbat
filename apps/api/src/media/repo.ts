@@ -1,9 +1,10 @@
 import { and, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
-import { ALERT_KINDS, EDGE_RULES, mediaPath, type EdgePurgeView } from "@korbat/contracts";
+import { ALERT_KINDS, AUTOMATION_RULES, EDGE_RULES, mediaPath, type EdgePurgeView } from "@korbat/contracts";
 import { postMedia, posts, profiles, type Db, type DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
 import { WRITE_CLOCK, closingJudgment, liveNotSuspended } from "../lib/standing";
 import { MediaError, type PostImage } from "./context";
+import type { ReceivedHashes } from "./files";
 
 /**
  * Every SQL statement on post_media lives in this module's repository, on the korbat_api pool, and so does every
@@ -58,6 +59,9 @@ export interface CaseReach {
 /** Ids as one uuid[] parameter. */
 const uuidArray = (ids: readonly string[]): SQL => sql`${`{${ids.join(",")}}`}::uuid[]`;
 
+/** 3d Task 7: no row of upload_refusals names the image. A held or refused upload is in no reader and no export. */
+const NOT_REFUSED = sql`not exists (select 1 from public.upload_refusals r where r.media_id = ${postMedia.id})`;
+
 /**
  * An image the data export hands its owner: ready, in a state its author still sees (a sealed image is exported to
  * nobody, and a state this reader has not been taught is left out), not erased, and either on no post or on a post that
@@ -72,6 +76,9 @@ const EXPORTABLE = and(
   inArray(postMedia.moderationState, ["visible", "withheld", "removed"]),
   isNull(postMedia.erasedAt),
   or(isNull(postMedia.postId), and(ne(posts.state, "deleted_by_author"), ne(posts.state, "disabled"), isNull(posts.erasedAt))),
+  // 3d Task 7 (design, sections 5 and 7.8 step 5; review ruling 5): an image that a refusal names, whatever the hold's end,
+  // is in no export for as long as its row lives.
+  NOT_REFUSED,
 );
 
 /**
@@ -104,8 +111,24 @@ const columns = {
   moderationState: postMedia.moderationState,
 };
 
+/** The code a trigger raised (SQLSTATE P0001), or null: drizzle wraps the driver's error as a cause. */
+function raisedCode(err: unknown): string | null {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (typeof current === "object" && (current as { code?: unknown }).code === "P0001") {
+      const message = (current as { message?: unknown }).message;
+      return typeof message === "string" ? message : null;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
 export function createMediaRepo(db: Db) {
   return {
+    /** 3d Task 7: the pool this repository runs on, from which the statements on the known material's tables are built. */
+    pool: db,
+
     /** When the account was onboarded, which decides its upload tier. */
     async accountCreatedAt(userId: string): Promise<Date | null> {
       const rows = await db.select({ createdAt: profiles.createdAt }).from(profiles).where(eq(profiles.id, userId)).limit(1);
@@ -117,7 +140,7 @@ export function createMediaRepo(db: Db) {
       const rows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(postMedia)
-        .where(and(eq(postMedia.ownerId, ownerId), isNull(postMedia.postId), inArray(postMedia.status, ["processing", "ready"])));
+        .where(and(eq(postMedia.ownerId, ownerId), isNull(postMedia.postId), inArray(postMedia.status, ["processing", "ready"]), NOT_REFUSED));
       return rows[0]?.count ?? 0;
     },
 
@@ -129,7 +152,7 @@ export function createMediaRepo(db: Db) {
      * closing judgment of the owner (3e's review): a deleted or suspended owner then rolls the insert back, answered
      * account_suspended as the statement answers both.
      */
-    async insertProcessing(input: { id: string; ownerId: string; now: Date }): Promise<void> {
+    async insertProcessing(input: { id: string; ownerId: string; now: Date; hashes?: ReceivedHashes | undefined }): Promise<void> {
       await db.transaction(async (tx) => {
         const inserted = await tx.execute(sql`
           with ok as (select p.id from profiles p where p.id = ${input.ownerId}::uuid and ${liveNotSuspended("p", WRITE_CLOCK)} for key share of p)
@@ -137,6 +160,13 @@ export function createMediaRepo(db: Db) {
           select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz from ok
           returning id`);
         if (inserted.length === 0) throw new MediaError("account_suspended", 403);
+        // 3d Task 7 (design, section 7.8 step 1): with the comparison on, the hashes and the pending check are written in
+        // the same transaction, so no image row exists without its hashes.
+        if (input.hashes !== undefined) {
+          await tx.execute(sql`
+            insert into public.media_hashes (media_id, sha256, sha1, md5, check_state)
+            values (${input.id}::uuid, ${input.hashes.sha256}::bytea, ${input.hashes.sha1}::bytea, ${input.hashes.md5}::bytea, 'pending')`);
+        }
         const judged = await closingJudgment(tx, input.ownerId);
         if (!judged || judged.deleted || judged.suspended) throw new MediaError("account_suspended", 403);
       });
@@ -204,10 +234,21 @@ export function createMediaRepo(db: Db) {
       return rows.map((row) => ({ mediaId: row.id, postId: row.post_id, score: Number(row.nsfw_score) }));
     },
 
-    /** Removes an upload of this account that is not on a post. */
-    async deleteUnattached(id: string, ownerId: string): Promise<boolean> {
+    /**
+     * Removes an upload of this account that is not on a post. 3d Task 7 (design, sections 5 and 7.8 step 5): with
+     * `keepChecking` (the comparison is on), a row still processing whose check is pending or capped is kept and answered
+     * `kept`; the sweeper deletes it once finalize gave it a verdict. A row gate K keeps (a held upload) is `none`.
+     */
+    async deleteUnattached(id: string, ownerId: string, keepChecking = false): Promise<"deleted" | "kept" | "none"> {
+      if (keepChecking) {
+        const checking = (await db.execute(sql`
+          select 1 from post_media m join public.media_hashes h on h.media_id = m.id
+           where m.id = ${id}::uuid and m.owner_id = ${ownerId}::uuid and m.post_id is null and m.status = 'processing'
+             and h.check_state in ('pending', 'capped')`)) as unknown as unknown[];
+        if (checking.length === 1) return "kept";
+      }
       const rows = await db.delete(postMedia).where(and(eq(postMedia.id, id), eq(postMedia.ownerId, ownerId), isNull(postMedia.postId))).returning({ id: postMedia.id });
-      return rows.length === 1;
+      return rows.length === 1 ? "deleted" : "none";
     },
 
     /**
@@ -232,11 +273,19 @@ export function createMediaRepo(db: Db) {
      */
     async attach(tx: DbTx, input: { postId: string; ownerId: string; items: readonly { id: string; alt: string }[] }): Promise<void> {
       for (const [position, item] of input.items.entries()) {
-        const rows = await tx
-          .update(postMedia)
-          .set({ postId: input.postId, position, altText: item.alt })
-          .where(and(eq(postMedia.id, item.id), eq(postMedia.ownerId, input.ownerId), isNull(postMedia.postId), eq(postMedia.status, "ready")))
-          .returning({ id: postMedia.id });
+        let rows: { id: string }[];
+        try {
+          rows = await tx
+            .update(postMedia)
+            .set({ postId: input.postId, position, altText: item.alt })
+            .where(and(eq(postMedia.id, item.id), eq(postMedia.ownerId, input.ownerId), isNull(postMedia.postId), eq(postMedia.status, "ready")))
+            .returning({ id: postMedia.id });
+        } catch (err) {
+          // 3d Task 7 (design, section 7.8 step 5): post_media_refused refuses a refused upload, an erased one and one held
+          // for good; the post's transaction rolls back with the media error of that code.
+          if (raisedCode(err) === "upload_refused") throw new MediaError("upload_refused", 422);
+          throw err;
+        }
         if (rows.length !== 1) throw new MediaError("media_unavailable", 400);
       }
     },
@@ -329,18 +378,35 @@ export function createMediaRepo(db: Db) {
       return rows.length === 1;
     },
 
-    /** Uploads that still wait for the worker's verdict. */
+    /**
+     * Uploads that still wait for the worker's verdict. 3d Task 7: not one whose check is capped, which waits for
+     * match-retry to ask the source again, so the sweeper's round never asks it every thirty seconds.
+     */
     async processingIds(): Promise<string[]> {
-      const rows = await db.select({ id: postMedia.id }).from(postMedia).where(eq(postMedia.status, "processing")).orderBy(postMedia.createdAt);
+      const rows = await db
+        .select({ id: postMedia.id })
+        .from(postMedia)
+        .where(and(eq(postMedia.status, "processing"), sql`not exists (select 1 from public.media_hashes h where h.media_id = ${postMedia.id} and h.check_state = 'capped')`))
+        .orderBy(postMedia.createdAt);
       return rows.map((row) => row.id);
     },
 
-    /** Fails uploads the worker has not answered since `before`, and says which. */
+    /**
+     * Fails uploads the worker has not answered since `before`, and says which. 3d Task 7 (design, section 7.8 step 3): a
+     * capped upload is exempt while it is younger than AUTOMATION_RULES.matchRetryHours; after that it fails as any.
+     */
     async failStale(before: Date): Promise<string[]> {
       const rows = await db
         .update(postMedia)
         .set({ status: "failed", error: "processing_failed" })
-        .where(and(eq(postMedia.status, "processing"), lt(postMedia.createdAt, before)))
+        .where(
+          and(
+            eq(postMedia.status, "processing"),
+            lt(postMedia.createdAt, before),
+            sql`not exists (select 1 from public.media_hashes h where h.media_id = ${postMedia.id} and h.check_state = 'capped'
+                                and ${postMedia.createdAt} > now() - make_interval(hours => ${AUTOMATION_RULES.matchRetryHours}::int))`,
+          ),
+        )
         .returning({ id: postMedia.id });
       return rows.map((row) => row.id);
     },
@@ -444,13 +510,16 @@ export function createMediaRepo(db: Db) {
      * whether its content or its post's was erased, and whether its post is frozen now. Null when no row has the id or
      * the image is on no post.
      */
-    async staffAccess(id: string): Promise<{ postId: string; status: MediaRow["status"]; width: number | null; height: number | null; mediaState: MediaRow["moderationState"]; erased: boolean; frozen: boolean } | null> {
+    async staffAccess(id: string): Promise<{ postId: string; status: MediaRow["status"]; width: number | null; height: number | null; mediaState: MediaRow["moderationState"]; erased: boolean; frozen: boolean; matched: boolean } | null> {
+      // 3d Task 7 (design, sections 5 and 7.11; review ruling 2): also whether an unerased match record names the image,
+      // an acting match or a flag, which shuts gate V for it on every case, whatever was answered.
       const [row] = (await db.execute(sql`
-        select m.post_id, m.status, m.width, m.height, m.moderation_state, (m.erased_at is not null or p.erased_at is not null) as erased, public.post_frozen(m.post_id) as frozen
+        select m.post_id, m.status, m.width, m.height, m.moderation_state, (m.erased_at is not null or p.erased_at is not null) as erased, public.post_frozen(m.post_id) as frozen,
+               exists (select 1 from public.media_matches x where x.media_id = m.id and x.erased_at is null) as matched
         from post_media m join posts p on p.id = m.post_id
-        where m.id = ${id}::uuid`)) as unknown as { post_id: string; status: MediaRow["status"]; width: number | null; height: number | null; moderation_state: MediaRow["moderationState"]; erased: boolean; frozen: boolean }[];
+        where m.id = ${id}::uuid`)) as unknown as { post_id: string; status: MediaRow["status"]; width: number | null; height: number | null; moderation_state: MediaRow["moderationState"]; erased: boolean; frozen: boolean; matched: boolean }[];
       if (!row) return null;
-      return { postId: row.post_id, status: row.status, width: row.width, height: row.height, mediaState: row.moderation_state, erased: row.erased, frozen: row.frozen };
+      return { postId: row.post_id, status: row.status, width: row.width, height: row.height, mediaState: row.moderation_state, erased: row.erased, frozen: row.frozen, matched: row.matched };
     },
 
     /**

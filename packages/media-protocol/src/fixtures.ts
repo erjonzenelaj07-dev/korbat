@@ -37,3 +37,39 @@ export function carriesR1Marker(pixels: Uint8Array, width: number, height: numbe
   }
   return true;
 }
+
+/**
+ * The test matcher's two files (3d design, sections 5 "The adapters" and 12; Task 7, MEDIA_MATCH=test): two PNG images of
+ * 8 by 8 pixels of one flat colour each, written out byte for byte as hexadecimal constants, so their digests are the same
+ * on every machine and no encoder runs at test time. Each is the PNG signature, its IHDR chunk (8 by 8, 8-bit RGB), one
+ * IDAT chunk holding a zlib stream with one stored (uncompressed) block of the eight rows (a filter byte of 0, then eight
+ * pixels), and the IEND chunk; every CRC-32 and the Adler-32 are written out too. They show nothing: two flat colours.
+ * The test adapter answers on their digests, computed from these bytes when it is built, and a unit test holds those to
+ * node:crypto's. `acting` is the file the test matcher reports as an exact match of its listed and acting class;
+ * `flag` is the one it reports as a match that does not act (near of the listed class, or of the class that is not
+ * listed, as the test sets).
+ */
+const PNG_SIGNATURE = "89504e470d0a1a0a";
+const PNG_IHDR_8X8_RGB = "0000000d49484452000000080000000808020000004b6d29dc";
+const PNG_IEND = "0000000049454e44ae426082";
+
+/** One fixture's hexadecimal bytes: the signature, IHDR, the IDAT chunk of eight equal rows, and IEND. */
+function flatPng(row: string, adler: string, idatCrc: string): string {
+  // The IDAT chunk: its length (211 bytes), its type, the zlib header and the stored block's header (final, 200 bytes),
+  // the rows, the Adler-32 of the rows, and the chunk's CRC-32.
+  return PNG_SIGNATURE + PNG_IHDR_8X8_RGB + "000000d3" + "49444154" + "780101c80037ff" + row.repeat(8) + adler + idatCrc + PNG_IEND;
+}
+
+/** Hexadecimal text as bytes. */
+function bytesOf(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+export const MATCH_FIXTURES = {
+  /** Flat 0x2060a0. */
+  acting: bytesOf(flatPng("002060a02060a02060a02060a02060a02060a02060a02060a0", "026c4801", "e0c8ad94")),
+  /** Flat 0xa06020. */
+  flag: bytesOf(flatPng("00a06020a06020a06020a06020a06020a06020a06020a06020", "426c4801", "10978b5e")),
+} as const;

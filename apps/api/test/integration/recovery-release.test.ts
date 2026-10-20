@@ -153,7 +153,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore and the replay
       ["release_leave_recorded", lostLeave],
       ["seal_released", secondRelease],
     ]);
-    const view = await restoreView({ apiDb });
+    const view = await restoreView(world.moderation.deps);
     expect(view.mayOpen).toBe(false);
     expect(view.retentionMay).toBe(true);
     // Before the replay the restored database counts the images as sealed and kept.
@@ -206,7 +206,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a restore and the replay
     const withdrawn = await cli(["release-leave", "--withdraw", withdrawnLeave, "--operator", "op", "--gap", withdrawGap.id]);
     expect(withdrawn.code).toBe(0);
     expect(await openGaps()).toEqual([]);
-    expect((await restoreView({ apiDb })).mayOpen).toBe(true);
+    expect((await restoreView(world.moderation.deps)).mayOpen).toBe(true);
   });
 
   test("the list after the replay prints the released files under destroy, and the record of a destroy line names the replay", async () => {

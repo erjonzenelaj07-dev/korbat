@@ -10,6 +10,7 @@ import {
   type CaseItem,
   type CaseSnapshot,
   type CaseView,
+  type MatchRecord,
   type RevealReasonCategory,
   type RevealResponse,
   type SealRelease,
@@ -258,6 +259,41 @@ function SuspectBanner({ view, onOpenCase }: Pick<CaseScreenViewProps, "view" | 
 }
 
 /**
+ * 3d Task 7 [case.match] (section 8.4): a match's record as a list of label and value, never a hash value. The source, its
+ * list version and the classification are a source's strings, each drawn in a frame "As the source returned it" (rule 3
+ * of section 8); the hash type and the kind of match are the console's own words. Under it [case.matchWeak] for a hash
+ * that can be made to collide on purpose, then [case.matchActing], [case.matchNear] or [case.matchFlag] by what the record
+ * says, and on a case [case.matchWhat]. Held uploads prints the same record (8.6).
+ */
+export function MatchRecordView({ match, onCase = false }: { match: MatchRecord; onCase?: boolean }) {
+  const M = AUTOMATION_WORDS.match;
+  const weak = M.weak(match.hashType);
+  return (
+    <div className="match" role="group" aria-label={M.title}>
+      <dl>
+        <dt>{M.source}</dt>
+        <dd>
+          <Frame by={M.frame} text={match.source} />
+        </dd>
+        <dt>{M.listVersion}</dt>
+        <dd>{match.listVersion === null ? M.none : <Frame by={M.frame} text={match.listVersion} />}</dd>
+        <dt>{M.hashType}</dt>
+        <dd>{match.hashType}</dd>
+        <dt>{M.matchKind}</dt>
+        <dd>{match.matchKind}</dd>
+        <dt>{M.classification}</dt>
+        <dd>{match.classification === null ? M.none : <Frame by={M.frame} text={match.classification} />}</dd>
+        <dt>{M.queriedAt}</dt>
+        <dd>{bothTimes(match.queriedAt)}</dd>
+      </dl>
+      {weak === null ? null : <p className="notice">{weak}</p>}
+      <p className="notice">{match.acting ? M.acting : match.listed ? M.near : M.flag}</p>
+      {onCase ? <p className="hint">{M.what}</p> : null}
+    </div>
+  );
+}
+
+/**
  * The images a post's newest snapshot lists. Each has its entry whatever may be opened: its number, its width and height
  * as text, and its alt text in an author frame, since an alt text is text, which staff read on every path. Only the
  * image itself is held back while the post's images cannot be opened: then no grey box stands for it, nothing offers to
@@ -289,12 +325,17 @@ function Images({
         <ul className="images">
           {media.map((image, index) => {
             const id = parseImageId(image.id);
-            const shown = openable && id !== null && shownImage?.id === id ? shownImage : null;
+            // 3d Task 7 (rule 2 of section 8): an image that an unerased match record names is closed to staff on every case,
+            // also after an answer without a seal: [case.image.matched] in its place, no reveal control and no request.
+            const matched = view.matchedImages.includes(image.id);
+            const shown = openable && !matched && id !== null && shownImage?.id === id ? shownImage : null;
             // 3d Task 3 (section 8.4): the edge's purge line of an image that stopped being public; none for one that never did.
             const purge = view.purges.find((entry) => entry.mediaId === image.id);
             return (
               <li key={image.id}>
-                {openable ? (
+                {matched ? (
+                  <p className="notice">{AUTOMATION_WORDS.imageMatched}</p>
+                ) : openable ? (
                   <div className="placeholder">
                     {shown === null || id === null ? (
                       <span>{`Image ${index + 1}, not shown`}</span>
@@ -319,7 +360,7 @@ function Images({
                 ) : (
                   <Frame by="Alt text. Written by the author" text={image.alt} collapsedLabel={collapsed} />
                 )}
-                {!openable || id === null ? null : shown === null ? (
+                {!openable || matched || id === null ? null : shown === null ? (
                   <button type="button" onClick={() => onShowImage(id)}>
                     Show image
                   </button>
@@ -481,6 +522,11 @@ function Item({ item, props }: { item: CaseItem; props: CaseScreenViewProps }) {
       {(() => {
         const signal = props.view.signals.find((found) => found.itemId === item.id && found.kind === "r1_score");
         return signal === undefined ? null : <p className="hint">{AUTOMATION_WORDS.caseR1(signal.thresholdVersion ?? 0)}</p>;
+      })()}
+      {/* 3d Task 7 (section 8.4): [case.match] on every item a match opened, whether it cites R2 or no rule. */}
+      {(() => {
+        const signal = props.view.signals.find((found) => found.itemId === item.id && found.kind === "known_match");
+        return signal?.match == null ? null : <MatchRecordView match={signal.match} onCase />;
       })()}
       <p>{item.outcome === null ? "Unanswered." : `Answered: ${OUTCOME_WORDS[item.outcome]}.`}</p>
       {/* 3e Task 5 (design, section 8.4): the mark "manifestly unfounded" the answering decision set, or its withdrawal. */}
@@ -757,7 +803,8 @@ function ReleaseBlock({ decision, release }: { decision: CaseDecision; release: 
 /**
  * 3d Task 6 (section 8.4): what a program's decision was, in the console's words: [case.auto] with its one measure and the
  * statement its author was sent, drawn again from the decision, and while a withhold of an image is in force [case.autoR1].
- * The statement of a measure this version cannot word (a seal on a match, Task 7's) is left out rather than guessed.
+ * The statement of a measure this version cannot word is left out rather than guessed; Task 7's seal on a match, with
+ * [case.autoR2], is worded.
  */
 function ProgramDecision({ decision, view }: { decision: CaseDecision; view: CaseView }) {
   const measure = decision.actions.find((action) => MEASURES[action.kind].lifts === null);
@@ -780,6 +827,8 @@ function ProgramDecision({ decision, view }: { decision: CaseDecision; view: Cas
         </div>
       )}
       {measure?.kind === "withhold_media" && measure.inForce ? <p className="hint">{AUTOMATION_WORDS.caseAutoR1}</p> : null}
+      {/* 3d Task 7 [case.autoR2]: a program's seal of a post's images, which only an admin answers. */}
+      {measure?.kind === "seal_media" && measure.inForce ? <p className="hint">{AUTOMATION_WORDS.caseAutoR2}</p> : null}
     </>
   );
 }

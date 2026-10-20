@@ -105,6 +105,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: staff.js recipients and 
         "out edition: measures on accounts: none",
         "out edition: findings by a program: none",
         "out edition: measures a program took: none",
+        // 3d Task 7: an edition stored from known material on holds the uploads' table, empty here.
+        "out edition: uploads not accepted: none",
         "out edition: recipients: between about 100 and about 400",
       ],
     });

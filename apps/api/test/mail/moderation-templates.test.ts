@@ -1,11 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, ALREADY_NOT_SHOWN, EDGE_CACHE, EDGE_RULES, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, SENTENCE_MAIL_KINDS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, isTimeFact, outcomeWords, renderAlert, type AlertKind } from "@korbat/contracts";
+import { ACCOUNT_ITEM_SCOPE, ACCOUNT_SUSPECT_SCOPE, ALERT_KINDS, AUTOMATION_RULES, ALREADY_NOT_SHOWN, EDGE_CACHE, EDGE_RULES, QUOTE_ITEM_SCOPE, REPLY_AIM_HOURS, SENTENCE_MAIL_KINDS, STANDING_RULES, SUSPECT_OUTCOME_PHRASES, UNSEEN_NO_ACTION, isTimeFact, outcomeWords, renderAlert, type AlertKind } from "@korbat/contracts";
 import { noticeTime } from "../../src/auth/flows/notify";
 import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } from "../../src/mail/mailer";
 import { MemoryMailer } from "../../src/mail/memory";
 import { TICK_MAILED_KINDS } from "../../src/moderation/alerts";
 import { ACCOUNT_DELETED_HELD, DECISION_MAIL_SUBJECTS, renderMail, renderNoticeUpdate, renderTemplate } from "../../src/mail/templates";
-import { IMAGE_LOST_NOTICE, RELEASE_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
+import { IMAGE_LOST_NOTICE, RELEASE_NOTICE, STATEMENT_WORDS, UPLOAD_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
 
 /**
  * The mails of deciding and of the dispatch (3c design, section 7.15): the author's statement, the staff alerts for a
@@ -50,11 +50,13 @@ describe("the closed union of templates", () => {
       "head_unwitnessed", "head_missed", "head_published",
       // 3d Task 6: the automated decision's three alerts.
       "automated_objection", "automation_capped", "automated_waiting",
+      // 3d Task 7: the uploader's two notices of a refused upload, and the two staff alerts of known material.
+      "upload_refused", "upload_hold_lifted", "matcher_down", "hold_ended_unreported",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(72);
+    expect(new Set(names).size).toBe(76);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(72);
+    expect(Object.keys(all)).toHaveLength(76);
   });
 });
 
@@ -605,7 +607,8 @@ describe("3d Task 2: the release's two staff mails and the author's notice (W.6,
     expect(released.subject).toBe("korbat: An admin released sealed images");
     expect(paragraphs(released.text).slice(0, 2)).toEqual([
       "An admin released sealed images at 11:40 UTC: 2 posts, 0 held uploads. The files are to be destroyed.",
-      "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
+      // 3d Task 7: or at Held uploads, where a held upload's release is shown.
+      "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case or at Held uploads now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
     ]);
     const undestroyed = renderTemplate("release_undestroyed", { count: "4", oldestAt: "2026-10-16T08:05:00.000Z", now: NOW });
     expect(undestroyed.subject).toBe("korbat: Released files still exist");
@@ -690,5 +693,80 @@ describe("3d Task 5: the transparency job's two alerts and the keeper's mail (W.
     for (const [name, bad] of [["day", "18 October"], ["value", "x".repeat(64)], ["seq", "-1"], ["hash", "an entry"], ["witnessed", "yes"]] as const) {
       expect(() => renderTemplate("head_published", { day: "2026-10-18", value: VALUE, seq: "42", hash: HASH, witnessed: "none", [name]: bad }), name).toThrow(new RegExp(name));
     }
+  });
+});
+
+describe("3d Task 7: the known material's mails (W.7, W.8)", () => {
+  const NOW = "2026-10-19T12:00:00.000Z";
+  const LF = String.fromCharCode(10);
+  const NOTICE = ["korbat did not accept an image you uploaded on 2026-10-19 11:00 UTC. It is on no post, and nobody can see it, you included.", "The second paragraph."];
+
+  test("upload_refused: UPLOAD_NOTICE's paragraphs as they stand, where to read it and object, the user mail's last sentence; no link, no file", () => {
+    const r = renderTemplate("upload_refused", { notice: NOTICE.join(LF) });
+    expect(r.subject).toBe("korbat did not accept an image you uploaded");
+    expect(paragraphs(r.text)).toEqual([...NOTICE, UPLOAD_NOTICE.mailRead, LAST_USER]);
+    expect(UPLOAD_NOTICE.mailRead).toBe("Read it, and object if you wish, in korbat under Settings, Cases. korbat's emails never contain a link to act on a notice.");
+    expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
+    expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+    expect(() => renderTemplate("upload_refused", {})).toThrow(/notice/);
+  });
+
+  test("upload_hold_lifted: the end's paragraph and the same last paragraph without the objection", () => {
+    const ended = UPLOAD_NOTICE.ended.noReport("2026-10-18 09:00 UTC");
+    const r = renderTemplate("upload_hold_lifted", { notice: ended });
+    expect(r.subject).toBe("korbat lifted the hold on an image you uploaded");
+    expect(paragraphs(r.text)).toEqual([ended, UPLOAD_NOTICE.mailReadLifted, LAST_USER]);
+    expect(UPLOAD_NOTICE.mailReadLifted).not.toContain("object");
+    expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+  });
+
+  test("matcher_down and hold_ended_unreported: their pushes' sentences with the line of what to do, every number from a constant, counts and times only", () => {
+    const facts = { since: "2026-10-19T11:30:00.000Z", count: "3", refusalsCapped: "21" };
+    const r = renderTemplate("matcher_down", { ...facts, now: NOW });
+    const push = renderAlert("matcher_down", { since: facts.since, count: 3, refusalsCapped: 21 }, new Date(NOW));
+    expect(r.subject).toBe("korbat: The comparison of uploads needs the operator");
+    expect(paragraphs(r.text)).toEqual([push.sentence, push.todo, LAST_STAFF]);
+    expect(push.sentence).toBe(`Uploads are not being compared as usual. 3 are unchecked, the oldest since 11:30 UTC. 21 matched within an hour over the limit of ${AUTOMATION_RULES.refusalsPerHour} refusals and were not refused.`);
+    expect(push.todo).toContain(`checked again for ${AUTOMATION_RULES.matchRetryHours} hours`);
+    // The row written at once by an upload over the limit may count no unchecked upload: that sentence is left out.
+    expect(renderAlert("matcher_down", { since: facts.since, count: 0, refusalsCapped: 1 }, new Date(NOW)).sentence).not.toContain("unchecked");
+    const ended = renderTemplate("hold_ended_unreported", { at: "2026-10-19T11:00:00.000Z", deletesAt: "2026-10-20T11:00:00.000Z", now: NOW });
+    expect(ended.subject).toBe("korbat: A hold ended without a report");
+    expect(paragraphs(ended.text)[0]).toBe("An admin ended the hold on a matched upload without a report at 11:00 UTC. The upload is deleted after 2026-10-20 11:00 UTC.");
+    for (const mail of [r, ended]) linkless(mail);
+    expect(TICK_MAILED_KINDS).toEqual(expect.arrayContaining(["matcher_down", "hold_ended_unreported"]));
+  });
+
+  test("moderation_urgent's second sentence counts the held uploads only when there are any; moderation_csam_lifted's variant on a case with a match says nobody opens such an image", () => {
+    const base = { count: "2", oldest: TIME, phones: "on" };
+    expect(paragraphs(renderTemplate("moderation_urgent", base).text)).not.toContain("1 matched uploads are held and wait for an admin, or hold an objection that nobody has answered.");
+    expect(paragraphs(renderTemplate("moderation_urgent", { ...base, heldUploads: "3" }).text)[1]).toBe("3 matched uploads are held and wait for an admin, or hold an objection that nobody has answered.");
+    expect(paragraphs(renderTemplate("moderation_urgent", { ...base, heldUploads: "0" }).text)).toEqual(paragraphs(renderTemplate("moderation_urgent", base).text));
+    const data = { handle: "mod_anna", time: TIME, what: "dismissed" };
+    const matched = paragraphs(renderTemplate("moderation_csam_lifted", { ...data, matched: "yes" }).text);
+    expect(matched[1]).toContain("nobody at korbat opens an image that a match names");
+    expect(matched.join(" ")).not.toMatch(/staff may open them|opens them the same day/);
+    expect(paragraphs(renderTemplate("moderation_csam_lifted", data).text)[1]).toContain("staff may open them");
+  });
+
+  test("notice_update: a line of a partly automated decision prints update.automated.partly; any other line 3c's sentence; an update with both prints both", () => {
+    const line = (partly: boolean): NoticeUpdateLine => ({
+      ref: "N-ABCDEFGH23",
+      item: 1,
+      link: "http://localhost:8081/post/1a2b3c4d-0000-4000-8000-000000000001",
+      outcome: outcomeWords({ outcome: "restricted_rule", rule: { id: "R2", title: "Child sexual abuse material" }, suspect: true, sealed: true, unseen: true, noEffect: false, scope: null }),
+      reexamination: false,
+      changed: false,
+      reexaminable: false,
+      unseen: true,
+      automatic: false,
+      ...(partly ? { partly: true } : {}),
+    });
+    const render = (lines: NoticeUpdateLine[]) => paragraphs(renderNoticeUpdate({ signedIn: true, lines, receipts: [], pages: [] }).text);
+    expect(render([line(true)])).toContain(STATEMENT_WORDS.update.automated.partly);
+    expect(render([line(true)])).not.toContain("No automated means were used to decide.");
+    expect(render([line(false)])).toContain("No automated means were used to decide.");
+    expect(render([line(false)])).not.toContain(STATEMENT_WORDS.update.automated.partly);
+    expect(render([line(false), line(true)])).toEqual(expect.arrayContaining(["No automated means were used to decide.", STATEMENT_WORDS.update.automated.partly]));
   });
 });

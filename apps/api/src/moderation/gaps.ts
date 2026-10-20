@@ -81,7 +81,7 @@ interface GapRow {
  * end as the restored database holds it, which [restore.holds] tells whoever has the server to compare with the mailbox.
  * A gap names its case or its order only where the restored database holds it. No metadata leaves this function.
  */
-export async function restoreView(deps: Pick<ModerationDeps, "apiDb">): Promise<RestoreView> {
+export async function restoreView(deps: Pick<ModerationDeps, "apiDb" | "media">): Promise<RestoreView> {
   const q = deps.apiDb;
   const [newest] = await rows<{ import_id: string | null; imported_at: string | null }>(
     q,
@@ -118,9 +118,18 @@ export async function restoreView(deps: Pick<ModerationDeps, "apiDb">): Promise<
     kinds: kindsOf(row.action, row.metadata),
     closedAt: row.closed_at,
     disposition: row.disposition,
-    closedByDecisionId: row.closed_by,
+    // 3d Task 7: an admin's new end of a hold closes its gap naming the refusal, which is no decision.
+    closedByDecisionId: row.action === "upload_hold_ended" ? null : row.closed_by,
     ...(row.released ? { released: true } : {}),
   }));
+  // 3d Task 7 ([restore.holdEnd]): a lost end of a hold names its refusal and how it ended; whether the restored database
+  // holds the refusal is the media module's to say, which alone names the table.
+  for (const [at, row] of found.entries()) {
+    if (row.action !== "upload_hold_ended" || row.target_id === null) continue;
+    const params = (row.metadata as { params?: { endAs?: unknown } } | null)?.params;
+    if (params?.endAs !== "report" && params?.endAs !== "no_report") continue;
+    gaps[at] = { ...gaps[at]!, hold: { endAs: params.endAs, present: (await deps.media.held(row.target_id)) !== null } };
+  }
   const open = gaps.filter((gap) => gap.closedAt === null);
   // A held notice: an order with Section C whose hold has not ended and runs past now, about which an untold decision
   // stands or an open gap names an item: the decision taken again for it is told at that end.

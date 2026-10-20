@@ -1,5 +1,5 @@
 import { ACCOUNT_DELETION_WORDS, REPLY_AIM_HOURS, isTimeFact, renderAlert, type AlertKind } from "@korbat/contracts";
-import { IMAGE_LOST_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
+import { IMAGE_LOST_NOTICE, STATEMENT_WORDS, UPLOAD_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
 import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
@@ -390,6 +390,10 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       const lane = "in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm)";
       return staffMail("korbat: a case is waiting in the urgent lane", [
         need(data, "count") === "1" ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.` : `${need(data, "count")} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
+        // 3d Task 7 (W.7): the held uploads among them, as a second sentence when there are any.
+        ...(data.heldUploads !== undefined && data.heldUploads !== "" && data.heldUploads !== "0"
+          ? [`${data.heldUploads} matched uploads are held and wait for an admin, or hold an objection that nobody has answered.`]
+          : []),
         // 3f (W.4): the same alert went to the phone on call as a push; 3f's review (people4): unless the phone alerts are
         // switched off (NOTIFY=off), when this mail is the only alert, as before 3f.
         phonesOn(data) ? "Open the staff console. The same alert went to the phone on call." : "Open the staff console. Phone alerts are switched off on this server, so this email is the only alert.",
@@ -446,9 +450,14 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       const who = `@${need(data, "handle")}`;
       const what = CSAM_LIFTED_WHAT[need(data, "what")];
       if (what === undefined) throw new Error(`mail template data holds a "what" that moderation_csam_lifted does not have: "${data.what}"`);
+      // 3d Task 7 (7.11 step 6, W.8): on a case whose finding came from a match, the images stay closed to staff; the
+      // variant leaves out "staff may open them" and the look of the same day, and carries no reason.
+      const matched = data.matched === "yes";
       return staffMail("korbat: reported images are no longer protected", [
         `The staff account ${who} confirmed a decision at ${need(data, "time")} that ${what}.`,
-        "Unless another seal or another open report of this kind still covers them, the images its case reaches are served again as before and staff may open them. After an answer without a seal, whoever is on duty opens them the same day and, where one breaks a rule or the law, opens a finding on its post. Nobody at korbat could open those images while they were protected.",
+        matched
+          ? "Unless another seal or another open report of this kind still covers them, the images its case reaches are served again as before. They stay closed to staff: an automated comparison matched an image of this case against a list of known material, and nobody at korbat opens an image that a match names, also after this answer. No person at korbat has looked at them, and nobody is asked to."
+          : "Unless another seal or another open report of this kind still covers them, the images its case reaches are served again as before and staff may open them. After an answer without a seal, whoever is on duty opens them the same day and, where one breaks a rule or the law, opens a finding on its post. Nobody at korbat could open those images while they were protected.",
         `Every staff account gets this email. If ${who} is your account and you did not confirm it, someone else holds your key: tell the operator at once.`,
         "The staff console's home screen lists every such decision of the last 30 days with its case. A seal for good is lifted only on the answer of the authority korbat reported the images to, and a seal taken while deciding only when it was taken in error: the operator compares this decision with their R2 records. If it was not expected, ask them; if their key may be in someone else's hands, the operator revokes it with staff.js revoke, and whoever is on duty opens a finding citing R2 on the post or the account and seals its images while deciding.",
       ]);
@@ -478,7 +487,16 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
     case "automated_objection":
     case "automation_capped":
     case "automated_waiting":
+    case "matcher_down":
+    case "hold_ended_unreported":
       return alertMail(template, data);
+    case "upload_refused":
+      // 3d Task 7 (design, sections 7.12 step 1 and 7.15; W.8): UPLOAD_NOTICE's paragraphs as they stand at sending, one per
+      // line as the app's screen renders them, then where to read it and object. No link, no file, no hash.
+      return userMail("korbat did not accept an image you uploaded", [...need(data, "notice").split(String.fromCharCode(10)), UPLOAD_NOTICE.mailRead]);
+    case "upload_hold_lifted":
+      // Sent once a hold ended as no_report has passed its delay and the end still stands: the end's paragraph.
+      return userMail("korbat lifted the hold on an image you uploaded", [...need(data, "notice").split(String.fromCharCode(10)), UPLOAD_NOTICE.mailReadLifted]);
     case "head_published": {
       // 3d Task 5 (design, sections 7.7 and 18, W.8): the audit head's daily value, to HEAD_KEEPER_MAIL and to nobody else,
       // built as a staff mail. The day, the value, the place and the hash, from which the keeper computes the value again,
@@ -574,7 +592,10 @@ export function renderNoticeUpdate(data: NoticeUpdateData): RenderedMail {
   for (const page of pages) out.push(`To see report ${page.ref} or ask for a re-examination of a decision on it, open this page: ${page.pageUrl}`);
   if (lines.length > 0) {
     const automatic = lines.some((line) => line.automatic);
-    out.push(`No automated means were used to decide${automatic ? ", except for links found to name nothing on korbat, which were checked automatically" : ""}.`);
+    // 3d Task 7 (7.10, W.8): a decision recorded as partly automated reads update.automated.partly in the place of 3c's
+    // fixed sentence, which stays for every other decision; an update with both kinds of line prints both.
+    if (lines.some((line) => !line.partly)) out.push(`No automated means were used to decide${automatic ? ", except for links found to name nothing on korbat, which were checked automatically" : ""}.`);
+    if (lines.some((line) => line.partly)) out.push(STATEMENT_WORDS.update.automated.partly);
     const reexaminable = lines.some((line) => line.reexaminable);
     if (reexaminable) {
       out.push(

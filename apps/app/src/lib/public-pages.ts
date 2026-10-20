@@ -207,7 +207,8 @@ export const TRANSPARENCY_PAGE = {
     reexaminations: { action: "Action taken", no_action: "No action again" } as Record<string, string>,
     findings: (id: string) => `Findings by a program under rule ${id}`,
     measures: (id: string) => `Measures a program took under rule ${id}`,
-    uploads: { refused: "Uploads refused on a match", report: "Held for a report", no_report: "Hold ended without a report" } as Record<string, string>,
+    // 3d Task 7: the figures' `open` row, a refusal whose hold no admin had ended by the edition's due day (6.4).
+    uploads: { refused: "Uploads refused on a match", report: "Held for a report", no_report: "Hold ended without a report", open: "Held, not yet decided on the due day" } as Record<string, string>,
   },
   autoRate: (base: string, restricted: string) => `Of ${base} findings by a program under rule R1, a person then restricted ${restricted}.`,
   autoFew: "Too few findings to say what became of them.",

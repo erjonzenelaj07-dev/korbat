@@ -36,6 +36,8 @@ import {
   stepUpBinding,
   textDigest,
   SealReleaseRequest,
+  UploadHoldEndRequest,
+  UploadReleaseRequest,
   type AppealRow,
   type AppealsPage,
   type AppealsReviewedParams,
@@ -60,6 +62,9 @@ import {
   type StaffErrorCode,
   type StaffSession,
   type StaffStepUpActionInput,
+  type HeldUpload,
+  type UploadHoldEndedParams,
+  type UploadReleasedParams,
 } from "@korbat/contracts";
 import type { z } from "zod";
 import {
@@ -366,7 +371,7 @@ function ceremonyChallenge(purpose: "staff_signin" | "staff_register", binding: 
  * The status the API answers each moderation refusal the fixtures use with (apps/api/src/moderation/context.ts); the
  * unit test that holds the staff statuses to the API's source holds these too.
  */
-export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, text_quotes_user: 422, rate_limited: 429, image_refused: 404, staff_recused: 403, case_changed: 409, snapshot_mismatch: 409, reviewer_conflict: 403, strike_mismatch: 409 } as const;
+export const MODERATION_REFUSAL_STATUS = { text_not_found: 409, text_invalid: 422, text_quotes_user: 422, rate_limited: 429, image_refused: 404, staff_recused: 403, case_changed: 409, snapshot_mismatch: 409, reviewer_conflict: 403, strike_mismatch: 409, image_matched: 404 } as const;
 
 /** The kinds of text a decision or a correction names: the ones a case's answer hands back as drafts while no decision has named them. */
 const DRAFT_KINDS: readonly string[] = ["facts", "reason", "legal_reference", "review_reason"];
@@ -470,6 +475,8 @@ function applyDecision(view: CaseView, params: CaseDecidedParams, written: { fac
       staffHandle,
       // 3d Task 6: a decision the console confirms is a person's.
       byProgram: false,
+      // 3d Task 7: the reason of an answer without a seal the key signed, or none.
+      matchAnswerReason: params.matchAnswerReason ?? null,
       throughSeq: params.throughSeq,
       answersFromSeq: params.kind === "final" ? view.answeredSeq + 1 : null,
       reviewsDecisionId: params.reviewsDecisionId,
@@ -537,6 +544,7 @@ function applyReview(view: CaseView, reviewed: CaseDecision, params: AppealsRevi
       decidedAt: at,
       staffHandle,
       byProgram: false,
+      matchAnswerReason: null,
       throughSeq: 0,
       answersFromSeq: null,
       reviewsDecisionId: reviewed.id,
@@ -808,7 +816,13 @@ export function createFixtureApi() {
     /** 3d Task 2: the releases of the last 30 days that Home lists ([home.released]). */
     destructive: [] as StaffOverview["destructive"],
     /** 3d Task 6: a program's measures and the authors' requests for a person, as the overview answers them ([home.automated], [home.objected]). */
-    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] } as StaffOverview["automated"],
+    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 0, cases: [], objectedCases: [] } as StaffOverview["automated"],
+    /** 3d Task 7: the held uploads Home counts ([home.uploads]), and the refusals Held uploads lists, as their blocks stand. */
+    heldUploads: { open: 0, oldest: null, objected: 0, capped: 0 } as StaffOverview["heldUploads"],
+    uploads: [] as HeldUpload[],
+    /** 3d Task 7: every end of a hold and every release of a held upload the page sent, with the refusal and the params. */
+    holdEnds: [] as { refusalId: string; params: UploadHoldEndedParams }[],
+    uploadReleases: [] as { refusalId: string; params: UploadReleasedParams }[],
     /** 3d Task 6: the queue's one page when a step sets it, in the API's order; the fixtures' two pages otherwise. */
     queueRows: null as QueueRow[] | null,
     restore: NO_RESTORE,
@@ -1152,6 +1166,8 @@ export function createFixtureApi() {
       "POST /api/staff/audit/export",
       "POST /api/staff/audit/export/mark",
       "GET /api/staff/restore",
+      // 3d Task 7: Held uploads.
+      "GET /api/staff/uploads",
     ]);
     const revoke = req.method === "DELETE" && /^\/api\/staff\/sessions\/[^/]+$/.test(url.pathname);
     const ofCase = /^\/api\/staff\/cases\/([0-9a-f-]{36})(?:\/(snapshots|texts|decisions))?$/.exec(url.pathname);
@@ -1166,7 +1182,9 @@ export function createFixtureApi() {
     const gapClose = req.method === "POST" ? /^[/]api[/]staff[/]restore[/]gaps[/]([0-9a-f-]{36})[/]close$/.exec(url.pathname) : null;
     // 3d Task 2: an admin's release of a seal for good, by the seal's ledger row.
     const sealRelease = req.method === "POST" ? /^[/]api[/]staff[/]seals[/]([0-9a-f-]{36})[/]release$/.exec(url.pathname) : null;
-    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder && !gapClose && !sealRelease) throw new Refusal(404, "not_found");
+    // 3d Task 7: an end of a held upload's hold, or its release, by the refusal's id.
+    const ofUpload = req.method === "POST" ? /^[/]api[/]staff[/]uploads[/]([0-9a-f-]{36})[/](end|release)$/.exec(url.pathname) : null;
+    if (!routes.has(key) && !revoke && !ofCase && !image && !reveal && !review && !closing && !ofOrder && !gapClose && !sealRelease && !ofUpload) throw new Refusal(404, "not_found");
     const session = requireStaff(req);
 
     // Moderation cases (3c design, section 7.3), answered from the fixtures' cases.
@@ -1203,6 +1221,7 @@ export function createFixtureApi() {
           quarantine: state.quarantine,
           destructive: state.destructive,
           automated: state.automated,
+          heldUploads: state.heldUploads,
         }),
       };
     }
@@ -1498,6 +1517,11 @@ export function createFixtureApi() {
         problem(`${key}: an image the console must not ask for`);
         throw new Refusal(MODERATION_REFUSAL_STATUS.image_refused, "image_refused");
       }
+      // 3d Task 7 (rule 2 of section 8): an image that a match names is never asked for, on any case, whatever was answered.
+      if ([...state.cases.values()].some((view) => view.matchedImages.includes(image[2]!))) {
+        problem(`${key}: an image that a match names`);
+        throw new Refusal(MODERATION_REFUSAL_STATUS.image_matched, "image_matched");
+      }
       return { status: 200, raw: { type: "image/webp", bytes: FIXTURE_WEBP }, headers: { "cache-control": "private, no-store", "x-content-type-options": "nosniff" } };
     }
     if (ofCase) {
@@ -1660,6 +1684,36 @@ export function createFixtureApi() {
       return { status: 204 };
     }
     if (key === "GET /api/staff/restore") return { status: 200, body: state.restore };
+    // 3d Task 7: Held uploads, one page; an end of a hold or a release, an admin's, under a key that confirmed exactly
+    // this refusal and these params, as the API answers them: the refusal as it now shows.
+    if (key === "GET /api/staff/uploads") return { status: 200, body: { uploads: state.uploads, nextCursor: null } };
+    if (ofUpload) {
+      if (state.role !== "admin") throw new Refusal(403, "admin_required");
+      const refusalId = ofUpload[1]!;
+      const upload = state.uploads.find((found) => found.id === refusalId);
+      if (upload === undefined) throw new Refusal(404, "not_found");
+      const at = iso(Date.now());
+      let after: HeldUpload;
+      if (ofUpload[2] === "end") {
+        const { stepUp, ...params } = parse(UploadHoldEndRequest, body, "POST /api/staff/uploads/:refusal/end");
+        await confirmedOrder(stepUp, { action: "upload_hold_ended", target: { type: "upload_refusal", id: refusalId }, params } as StaffStepUpActionInput, session);
+        if (upload.endAs === params.endAs || upload.release?.releasedAt != null) throw new Refusal(409, "hold_not_open");
+        state.holdEnds.push({ refusalId, params });
+        after =
+          params.endAs === "report"
+            ? { ...upload, endAs: "report", endReason: null, endedAt: at, deletesAt: null }
+            : { ...upload, endAs: "no_report", endReason: params.reason, endedAt: at, deletesAt: iso(Date.now() + 24 * HOUR), release: null };
+      } else {
+        const { stepUp, ...params } = parse(UploadReleaseRequest, body, "POST /api/staff/uploads/:refusal/release");
+        await confirmedOrder(stepUp, { action: "upload_released", target: { type: "upload_refusal", id: refusalId }, params } as StaffStepUpActionInput, session);
+        const block = upload.release;
+        if (block === null || block.leave === null || block.leave.id !== params.leaveId || block.leave.reference !== params.theirReference) throw new Refusal(409, "release_mismatch");
+        state.uploadReleases.push({ refusalId, params });
+        after = { ...upload, release: { ...block, releasedAt: at, basis: "leave", backupsClearAt: iso(Date.now() + 30 * 24 * HOUR), noticeHeld: block.tellHeld } };
+      }
+      state.uploads = state.uploads.map((found) => (found.id === refusalId ? after : found));
+      return { status: 201, body: after };
+    }
     if (sealRelease) {
       // 3d Task 2: the release, as the API answers it: an admin's, under a key that confirmed exactly this seal, these
       // posts, the ground and the recorded leave with its reference as the case showed them; the case as it now stands.
@@ -1725,7 +1779,9 @@ export function createFixtureApi() {
                     ? state.restore.gaps.some((gap) => gap.id === action.target.id)
                     : action.action === "seal_released"
                       ? [...state.cases.values()].some((view) => view.decisions.some((decided) => decided.actions.some((one) => one.id === action.target.id)))
-                      : state.sessions.has(action.target.id);
+                      : action.action === "upload_hold_ended" || action.action === "upload_released"
+                        ? state.uploads.some((upload) => upload.id === action.target.id)
+                        : state.sessions.has(action.target.id);
       if (!known) throw new Refusal(404, "not_found");
       // The page builds a reveal's or a decision's params from the digests it computed itself: one a save's answer carried never gets here.
       const decided = action.action === "case_decided" ? CaseDecidedParams.parse(action.params) : null;
@@ -1745,6 +1801,10 @@ export function createFixtureApi() {
           const extra = order?.items.find((item) => item.postId !== null && !params.items.some((one) => one.itemId === item.id));
           const items = extra ? [...params.items, { itemId: extra.id, postId: extra.postId! }].sort((a, b) => (a.postId < b.postId ? -1 : a.postId > b.postId ? 1 : 0)) : params.items;
           bound = { ...action, params: { ...params, items } } as StaffStepUpActionInput;
+        } else if (action.action === "upload_hold_ended") {
+          // 3d Task 7: the other end of the same hold than the page chose.
+          const params = action.params as UploadHoldEndedParams;
+          bound = { ...action, params: params.endAs === "report" ? { endAs: "no_report", reason: "other" } : { endAs: "report", reason: null } } as StaffStepUpActionInput;
         } else if (action.action === "seal_released") {
           // 3d Task 2: the release of the same seal on the same leave, under another reference than the page showed.
           bound = { ...action, params: { ...(action.params as object), theirReference: "OTHER 9/99" } } as StaffStepUpActionInput;

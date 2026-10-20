@@ -75,6 +75,8 @@ const SEAL_FOR_GOOD: DecisionInput = { kind: "final", ruleId: "R2", actions: [ac
  */
 type Role = { is: "deleter" } | { is: "reader" } | { is: "neither"; why: string };
 const METHODS: Record<keyof MediaRepo, Role> = {
+  // 3d Task 7: the pool the repository runs on, which the known material's statements are built over; no statement.
+  pool: { is: "neither", why: "is the repository's pool, which runs no statement by itself" },
   accountCreatedAt: { is: "neither", why: "reads when an account was onboarded, and no image row" },
   pendingCount: { is: "neither", why: "counts an account's uploads that are on no post" },
   insertProcessing: { is: "neither", why: "inserts an upload on no post" },
@@ -143,7 +145,8 @@ interface Frozen {
 const DELETERS = {
   deleteUnattached: async (f: Frozen) => {
     const gone: string[] = [];
-    for (const id of f.mediaIds) if (await f.repo.deleteUnattached(id, f.ownerId)) gone.push(id);
+    // 3d Task 7: it answers what it did, deleted, kept (an upload whose check has not answered) or none.
+    for (const id of f.mediaIds) if ((await f.repo.deleteUnattached(id, f.ownerId)) === "deleted") gone.push(id);
     return gone;
   },
   detachAll: (f: Frozen) => f.repo.detachAll(f.tx, f.postId),
@@ -236,6 +239,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
   /** Whether the one function that opens an image for staff opens this one. */
   async function staffOpens(w: World, id: string): Promise<boolean> {
     const got = await w.cases.staffImage(id, "large");
+    // 3d Task 7: an image a match names answers "matched", which opens nothing.
+    if (got === "matched") return false;
     await got?.file.handle.close();
     return got !== null;
   }

@@ -18,6 +18,7 @@ import { Restore, type GapToTake } from "./screens/Restore";
 import { SignIn } from "./screens/SignIn";
 import { Standing } from "./screens/Standing";
 import { Unavailable } from "./screens/Unavailable";
+import { Uploads } from "./screens/Uploads";
 import type { ConsoleStore } from "./store";
 import type { CredentialsLike } from "./webauthn";
 
@@ -135,6 +136,8 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
         />
       ) : null}
       {route.name === "appeals" ? <Appeals api={api} onOpenCase={store.openCase} /> : null}
+      {/* 3d Task 7: Held uploads. */}
+      {route.name === "uploads" ? <Uploads api={api} credentials={credentials} role={session.me.role} /> : null}
       {route.name === "standing" ? <Standing api={api} onOpenCase={store.openCase} /> : null}
       {route.name === "contact" ? <Contact api={api} me={session.me} onOpened={onOpened} onOpenOrder={store.openOrder} /> : null}
       {route.name === "orders" ? <Orders api={api} me={session.me} onOpenOrder={store.openOrder} onOpened={onOpened} /> : null}
@@ -152,6 +155,7 @@ export function App({ store, credentials, signal }: { store: ConsoleStore; crede
             store.openCase(id);
           }}
           onOpenOrder={store.openOrder}
+          onNavigate={navigate}
         />
       ) : null}
       {route.name === "unknown" ? (

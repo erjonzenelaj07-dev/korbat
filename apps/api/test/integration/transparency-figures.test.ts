@@ -139,6 +139,24 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
     });
   });
 
+  test("3d Task 7, row 21: the uploads' table: the year's refusals by how their hold had ended by the due day, banded and folded; a year without one prints an empty table", async () => {
+    await rolledBack(w.migrateDb, async (tx) => {
+      // Twelve held for a report, three ended without one, two that no admin had ended by the due day.
+      await yearForTest(tx, YEAR, { restrictions: { R1: 1 }, uploads: { report: 12, no_report: 3, open: 2 } }, moderator);
+      const f = await figuresOf(tx, YEAR);
+      // Under ten a row folds into other: the rows are fates, never a person.
+      expect(f.uploads).toEqual([
+        { label: "report", count: "about 10" },
+        { label: "other", count: "1 to 9" },
+      ]);
+      expect(TransparencyFigures.parse(f)).toEqual(f);
+    });
+    await rolledBack(w.migrateDb, async (tx) => {
+      await yearForTest(tx, YEAR, { restrictions: { R1: 1 } }, moderator);
+      expect((await figuresOf(tx, YEAR)).uploads).toEqual([]);
+    });
+  });
+
   test("LAB E3: edition_not_due before 1 March of the next year in UTC and for the running year, whatever instant is passed; nothing is written", async () => {
     await rolledBack(w.migrateDb, async (tx) => {
       await yearForTest(tx, YEAR, { restrictions: { R1: 12 } }, moderator);

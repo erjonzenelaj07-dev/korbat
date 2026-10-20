@@ -1,6 +1,7 @@
 import { MEASURES, type DecisionStatement, type MeasureKind, type ReversalKind, type RuleId, type StandingBasis } from "@korbat/contracts";
 import { statementParagraphs } from "@korbat/rules";
 import type { DecisionMessage } from "../auth";
+import { matchRecordOf } from "../media";
 import type { ModerationDeps } from "./context";
 import { beginMailRecord, lockPendingAuthorMail, recordAuthorMail, standingWithdrawn, type MailState } from "./repo";
 import { statementSignal } from "./automated-repo";
@@ -52,7 +53,8 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
   const told = decision.kind === "correction" || decision.kind === "review" || actions.some((action) => MEASURES[action.kind].lifts === null);
   // 3d Task 6 (sections 7.10 and 10.2): the program's finding the decision rests on or considered, read only when its
   // detection was automated; a decision made before 3d reads false, not_automated and null.
-  const signal = decision.automatedDetection ? await statementSignal(q, decisionId) : null;
+  // 3d Task 7: a match's source and kind are read through the media module, which owns the records' table.
+  const signal = decision.automatedDetection ? await statementSignal(q, decisionId, (matchId) => matchRecordOf(q, matchId)) : null;
   const statement: DecisionStatement = {
     kind: decision.kind,
     outcome: decision.outcome as DecisionStatement["outcome"],

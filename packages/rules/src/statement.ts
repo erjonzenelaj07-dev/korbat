@@ -1,4 +1,18 @@
-import { EU_MEMBER_STATES, MEASURES, ORDER_DRAFTS, ORDER_RULES, RETENTION, appealDeadline, type DecisionStatement, type MeasureKind, type OrderTexts, type ReleaseNoticeView, type ReversalKind } from "@korbat/contracts";
+import {
+  AUTOMATION_RULES,
+  EU_MEMBER_STATES,
+  MEASURES,
+  ORDER_DRAFTS,
+  ORDER_RULES,
+  RETENTION,
+  appealDeadline,
+  type DecisionStatement,
+  type MeasureKind,
+  type OrderTexts,
+  type ReleaseNoticeView,
+  type ReversalKind,
+  type UploadRefusalView,
+} from "@korbat/contracts";
 // The rulebooks and the redress texts live in the index, which re-exports this module: the two import each other, and
 // each uses the other's functions only when called, never while it loads.
 import { getRedress, getRule, type RedressTexts } from "./index";
@@ -104,13 +118,50 @@ export const STATEMENT_WORDS = {
   },
   automation: "No automated means were used to find this or to decide it.",
   /**
+   * 3d Task 7 (design, sections 7.10 and 7.15; W.3, update.automated.partly): the sentence of the update to whoever reported
+   * or notified, by mail and on the report's status page, for a decision recorded as partly automated, in the place of
+   * 3c's "No automated means were used to decide.", which stays for every other decision. It names no source.
+   */
+  update: {
+    automated: {
+      partly: "This decision rests in part on an automated comparison of fingerprints; an admin took it without opening the images.",
+    },
+  },
+  /**
    * 3d Task 6 (design, section 7.10; W.3): the automation paragraph and the sentences of a decision that rests on a score.
    * A program's measure is never worded as a finding: its statement names the rule it was taken under (`ground`), never
-   * "It breaks". "Looked at the image" is said only where the record shows the moderator's view (`viewed`). A match's
-   * words (the comparison, notAssessed, partly) are the known material's (Task 7).
+   * "It breaks". "Looked at the image" is said only where the record shows the moderator's view (`viewed`). 3d Task 7: a
+   * match's words. "The same fingerprint" is said only of an exact match of a cryptographic hash; every perceptual match
+   * is "a fingerprint of how the picture looks"; a flag of another class says that the source's list flagged the image
+   * and not as what. No sentence says that an image "is" such material, that korbat confirmed it or that anyone posted it.
    */
   automated: {
+    /**
+     * The comparison (W.3), a clause the match sentences share, by what the source lists the entry as and the derived kind
+     * of match. `subject` is "an image of your post", or "the file you uploaded" in a refused upload's notice.
+     */
+    comparison: (listedAs: "csam" | "other", matchKind: "exact" | "near", source: string, subject = "an image of your post") =>
+      listedAs === "other"
+        ? `an automated comparison of fingerprints with a list kept by ${source} flagged ${subject} for korbat's staff`
+        : matchKind === "exact"
+          ? `an automated comparison found that ${subject} has the same fingerprint as one that ${source} has classified as child sexual abuse material`
+          : `an automated comparison found that ${subject} has a fingerprint of how the picture looks that ${source} reports as matching one it has classified as child sexual abuse material`,
+    /**
+     * After every paragraph that holds the comparison (W.3): korbat's staff do not open an image found this way, before a
+     * decision or after it, and korbat has not assessed it; then what the comparison shows, by the kind of match. `thing`
+     * is "an image", or "an upload" in a refused upload's notice.
+     */
+    notAssessed: (listedAs: "csam" | "other", matchKind: "exact" | "near", thing = "an image") =>
+      `korbat's staff do not open ${thing} that is found this way, before a decision or after it, and korbat has not assessed it. ${
+        listedAs === "other"
+          ? "A flag is not a finding: it shows that a fingerprint is on a list or close to one that is, not what your image is."
+          : matchKind === "exact"
+            ? "The comparison shows that two files have the same fingerprint; it does not show what your image is."
+            : "The comparison is of fingerprints of how a picture looks, which two different images can share, by accident or on purpose; it does not show what your image is."
+      }`,
     found: {
+      /** A person's decision that considered a program's match, not partly automated (an answer without a seal, a flag's). */
+      match: (comparison: string) => `Automated means were used to find this: ${comparison}. They were not used to decide it: a person at korbat took this decision, without opening the image that the comparison named.`,
       r1: {
         viewed:
           "Automated means were used to find this: a program rated an image of your post as likely within rule R1. They were not used to decide it: a moderator looked at the image and took this decision.",
@@ -118,11 +169,18 @@ export const STATEMENT_WORDS = {
           "Automated means were used to find this: a program rated an image of your post as likely within rule R1. They were not used to decide it: a moderator took this decision without opening the image.",
       },
     },
+    /** A person's decision recorded as partly automated: an admin restricted on a program's finding under R2, unseen. */
+    partly: (comparison: string) =>
+      `Automated means were used to find this, and this decision rests on them in part: ${comparison}. An admin took the decision without opening the images, on that comparison and on what korbat can read.`,
     fully: {
       r1: "Automated means were used to find this and to take this measure: a program rated an image of your post as likely within rule R1, and korbat hid that image at once. No person took part in this measure, and no moderator has decided yet.",
+      match: (comparison: string) =>
+        `Automated means were used to find this and to take this measure: ${comparison}, and korbat sealed the post's images at once. No person took part in this measure, and no admin has decided yet.`,
     },
     until: {
       r1: "This lasts until a moderator has decided. A program does nothing else: it removes nothing, hides no text, and does not suspend, limit or end your account.",
+      match:
+        "This lasts until an admin has answered. The admin either seals the images for good, in which case korbat keeps them only for the authorities it reports this to, or answers without a seal, in which case they are shown again. A program does nothing else: it removes nothing, and it does not suspend, limit or end your account. While images are sealed korbat keeps what a report to the authorities would need, as its terms say for every seal (Terms, Your data).",
     },
     ground: (id: string, title: string, text: string) => `The rule this was done under: korbat rule ${id}, "${title}": ${text}`,
     /**
@@ -329,6 +387,11 @@ const sourceSentence = (source: StatementInput["source"], automated = false): st
   return `korbat decided this ${W.source[source]}.`;
 };
 
+/** 3d Task 7: a match's three facts a statement prints; a match whose record is gone reads as a flag of an unnamed source. */
+function matchFacts(signal: NonNullable<StatementInput["signal"]>): { source: string; listedAs: "csam" | "other"; matchKind: "exact" | "near" } {
+  return { source: signal.source ?? "the source", listedAs: signal.listedAs ?? "other", matchKind: signal.matchKind ?? "near" };
+}
+
 /**
  * 3d Task 6 (design, section 7.10's table): the automation paragraph of a person's decision whose detection was
  * automated, read from the decision's own columns and its signal, so it reads as sent. A score's paragraph ends by
@@ -336,8 +399,16 @@ const sourceSentence = (source: StatementInput["source"], automated = false): st
  * the known material's sentences, which this version does not hold yet.
  */
 function automatedFoundParagraph(input: StatementInput): string {
+  // 3d Task 7: a match's paragraph: partly automated when an admin restricted on it unseen, else found by a program and
+  // decided by a person, each with the comparison and what korbat has not assessed.
+  if (input.signal?.kind === "known_match") {
+    const match = matchFacts(input.signal);
+    const comparison = W.automated.comparison(match.listedAs, match.matchKind, match.source);
+    const paragraph = input.automatedDecision === "partially" ? W.automated.partly(comparison) : W.automated.found.match(comparison);
+    return `${paragraph} ${W.automated.notAssessed(match.listedAs, match.matchKind)}`;
+  }
   if (input.automatedDecision === "partially" || input.signal?.kind !== "r1_score") {
-    throw new Error("a statement's automated match is not worded in this version of @korbat/rules");
+    throw new Error("a statement's automated finding names no signal that this version of @korbat/rules words");
   }
   const found = input.signal.viewed === true ? W.automated.found.r1.viewed : W.automated.found.r1.unviewed;
   return input.measures.some((measure) => measure.kind === "strike") ? `${found} ${W.automated.strikeRule}` : found;
@@ -351,9 +422,26 @@ function automatedFoundParagraph(input: StatementInput): string {
  * paragraph states the facts the measure rests on (DSA Art. 17(3)(b), (c)). A match's words are Task 7's.
  */
 function programParagraphs(input: StatementInput, redress: RedressTexts): string[] {
-  if (input.signal?.kind !== "r1_score" || input.ruleId === null) throw new Error("a program's measure on a match is not worded in this version of @korbat/rules");
+  if (input.signal === null || input.signal === undefined || input.ruleId === null) throw new Error("a program's measure names its signal and its rule");
   const rule = getRule(input.ruleId, input.rulesVersion);
   if (!rule) throw new Error(`a statement cites ${input.ruleId} of rulebook version ${input.rulesVersion}, which this package does not hold`);
+  // 3d Task 7 (W.3, W.4): a program's seal on a match: the seal, its scope, until an admin answers, the source, the
+  // automation paragraph with the comparison and what korbat has not assessed, the rule, and "Ask for a person" worded
+  // for an admin.
+  if (input.signal.kind === "known_match") {
+    if (redress.askAdmin === undefined) throw new Error(`a program's seal needs "Ask for a person" for an admin, which redress version ${input.redressVersion} does not hold`);
+    const match = matchFacts(input.signal);
+    return [
+      ...input.measures.map((measure) => measureParagraph(input, measure, redress)),
+      W.scope.interim,
+      W.automated.until.match,
+      sourceSentence(input.source, true),
+      W.automated.fully.match(W.automated.comparison(match.listedAs, match.matchKind, match.source)),
+      W.automated.notAssessed(match.listedAs, match.matchKind),
+      W.automated.ground(rule.id, rule.title, rule.text),
+      redress.askAdmin,
+    ];
+  }
   if (redress.askPerson === undefined) throw new Error(`a program's statement needs "Ask for a person", which redress version ${input.redressVersion} does not hold`);
   return [
     ...input.measures.map((measure) => measureParagraph(input, measure, redress)),
@@ -1087,3 +1175,61 @@ export function releaseNoticeParagraphs(
  */
 export const RELEASE_DAY_NOTICE = (createdAt: string, day: string) =>
   `The authority korbat reported the sealed images of your post of ${createdAt} to has not answered. Under korbat's terms an admin may release them on or after ${day}: korbat then erases its record of them and destroys the files, and that cannot be undone. If you want them kept, object before that day, on this notice's screen under Settings, Cases: an objection that is unanswered on that day holds the release until an admin has answered it.`;
+
+// ---------------------------------------------------------------- a refused upload (3d design, sections 7.12, 9.5; W.5)
+
+/**
+ * The refused upload's notice (3d design, W.5), which is not a decision of 3c's ledger: rendered fresh from the refusal's
+ * row and its match, so its state paragraph follows the hold. It speaks only of an acting match (the one that refuses),
+ * with W.3's comparison for `csam` and "the file you uploaded"; it never says what the image is, that korbat confirmed
+ * it, that anyone posted it, or that nobody has seen it. The app's notice screen and the mails upload_refused and
+ * upload_hold_lifted share it. Its numbers are the contracts' (ORDER_RULES.reportHoldDays, AUTOMATION_RULES.matchKeepDays).
+ */
+export const UPLOAD_NOTICE = {
+  refused: (refusedAt: string) => `korbat did not accept an image you uploaded on ${refusedAt}. It is on no post, and nobody can see it, you included.`,
+  automated: (comparison: string) => `This was done by automated means, and no person took part: ${comparison}.`,
+  rule: (title: string) => `The rule this was done under: korbat rule R2, "${title}". What korbat compares, and with whom, is stated under Automation on the rules page.`,
+  held: `korbat keeps the file, unopened, until an admin has decided what happens to it. The admin decides without opening it: either korbat reports it to the authorities and keeps it for them alone, or the hold ends and korbat deletes the file. Nobody at korbat can accept the image, since nobody opens it. No timer ends the hold. korbat tells you here, and by email when the hold is lifted. If you delete your account while the file is held, korbat keeps your email address, and nothing else of the account, for up to ${ORDER_RULES.reportHoldDays} days from the refusal (Terms, Your data).`,
+  objected: (objectedAt: string) => `You objected on ${objectedAt}. An admin reads what you wrote and decides.`,
+  ended: {
+    noReport: (endedAt: string) =>
+      `An admin ended the hold on ${endedAt} without a report, and korbat deletes the file. ${AUTOMATION_RULES.matchKeepDays} days after the hold ended korbat erases the fingerprint and the link between this record and your account; what it keeps after that is that an upload was refused on that day, with nothing that leads to you (Terms, Your data).`,
+    withdrew: (source: string) => `${source} withdrew or corrected its entry: you can upload the image again.`,
+    stillListed: (source: string) =>
+      `The image is still not accepted while ${source}'s list holds a matching entry. If you think the entry is wrong, ${source} is the body that can correct it: korbat cannot, since nobody at korbat opens the image.`,
+    report: (endedAt: string) => `On ${endedAt} an admin decided, without opening the file, that korbat reports it to the authorities. korbat keeps the file for them alone.`,
+    reportKept: "The record of that report names your account and keeps its email address for as long as korbat keeps its records to authorities (Terms, Your data).",
+  },
+  released: (releasedAt: string) => `korbat released the file on ${releasedAt}, on the leave or instruction of an authority or a court: it will not give it back, and it destroys it.`,
+  /** The mails' last paragraph: where to read it, and that korbat's mails hold no link to act on a notice. */
+  mailRead: "Read it, and object if you wish, in korbat under Settings, Cases. korbat's emails never contain a link to act on a notice.",
+  mailReadLifted: "Read it in korbat under Settings, Cases. korbat's emails never contain a link to act on a notice.",
+} as const;
+
+/**
+ * The notice's paragraphs (W.5), a pure function of UploadRefusalView and the rule's title, in their order, each only when
+ * its condition holds: refused; automated means with the comparison; not assessed; the rule; held while the hold stands
+ * (and while an end as no_report is in its delay, which the view hides); the objection's offer while it is open, or the
+ * objection; the end; the release. Every time is printed as korbat's mails print one.
+ */
+export function uploadNoticeParagraphs(view: UploadRefusalView, ruleTitle: string, redress: Pick<RedressTexts, "uploadObject">): string[] {
+  const N = UPLOAD_NOTICE;
+  const paragraphs = [
+    N.refused(utcMinute(view.refusedAt)),
+    N.automated(W.automated.comparison("csam", view.matchKind, view.source, "the file you uploaded")),
+    W.automated.notAssessed("csam", view.matchKind, "an upload"),
+    N.rule(ruleTitle),
+  ];
+  if (view.endAs === null) paragraphs.push(N.held);
+  if (view.mayObject) {
+    if (redress.uploadObject === undefined) throw new Error("a refused upload's notice needs the redress uploadObject");
+    paragraphs.push(redress.uploadObject);
+  }
+  if (view.objection !== null) paragraphs.push(N.objected(utcMinute(view.objection.objectedAt)));
+  if (view.endAs === "no_report" && view.endedAt !== null) {
+    paragraphs.push(`${N.ended.noReport(utcMinute(view.endedAt))} ${view.endReason === "source_withdrew" ? N.ended.withdrew(view.source) : N.ended.stillListed(view.source)}`);
+  }
+  if (view.endAs === "report" && view.endedAt !== null) paragraphs.push(view.reportKept ? `${N.ended.report(utcMinute(view.endedAt))} ${N.ended.reportKept}` : N.ended.report(utcMinute(view.endedAt)));
+  if (view.released !== null) paragraphs.push(N.released(utcMinute(view.released)));
+  return paragraphs;
+}

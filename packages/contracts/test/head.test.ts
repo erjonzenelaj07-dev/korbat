@@ -40,7 +40,7 @@ describe("head_unwitnessed and head_missed (W.7): the transparency job's two ale
 
   test("they follow edge_purge_failed in the list, a push and a sentence to every staff account, with the one fact day", () => {
     // 3d Task 6's three kinds follow them (automation.test.ts).
-    expect(ALERT_KIND_LIST.slice(-6, -3)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
+    expect(ALERT_KIND_LIST.slice(-8, -5)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
     for (const kind of ["head_unwitnessed", "head_missed"] as const) {
       expect(ALERT_KINDS[kind], kind).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["day"] });
       expect(SENTENCE_MAIL_KINDS, kind).toContain(kind);

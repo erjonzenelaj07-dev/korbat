@@ -9,7 +9,7 @@ import { redisJobLock } from "./lib/jobs";
 import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
 import { R1_TEST_MODEL } from "@korbat/media-protocol";
-import { createMedia, edgeAdapterFrom } from "./media";
+import { createMedia, edgeAdapterFrom, matchAdapterFrom } from "./media";
 import { RedisStore } from "./middleware/rate-limit";
 import { createModeration } from "./moderation";
 import { createProfileStore } from "./profiles/store";
@@ -54,6 +54,9 @@ const media = createMedia({
   // 3d Task 6: the scorer's model whose scores finalize keeps: the test scorer's under R1_CLASSIFIER=test (refused on an open
   // site), none while it is off; no classifier is built in, and onnx stopped the configuration.
   r1Model: config.R1_CLASSIFIER === "test" ? R1_TEST_MODEL : null,
+  // 3d Task 7: the comparison with known material (MEDIA_MATCH, off by default); the configuration refused a test adapter
+  // on an open site, and every source's name, since no source's adapter is built in.
+  match: matchAdapterFrom(config),
 });
 await media.prepare();
 // Background work runs on one API instance at a time, under locks in Redis that are refreshed while a round runs.
@@ -61,6 +64,8 @@ const jobLock = redisJobLock(redis);
 const stopSweeper = media.startSweeper(jobLock);
 // 3d Task 3: the edge's outbox, drained every fifteen seconds: closed as off while the adapter is off, else one purge a round.
 const stopEdge = media.startEdge(jobLock);
+// 3d Task 7: match-retry, a round a minute: asks again for checks that were not answered or met the limit on refusals.
+const stopMatch = media.startMatchRetry(jobLock);
 const stopJanitor = auth.startJanitor(jobLock);
 // 3d Task 4: the public figures. The module is built once auth exists, and auth is handed its count afterwards, as the
 // wiring hands the media module its handler: resolveSession then counts the month's signed-in accounts and, while
@@ -79,6 +84,9 @@ const moderation = createModeration({ apiDb, auth: auth.forModeration, social: s
 // The dispatch job: the staff alerts that are still due, the daily release of outcomes, and the mails that waited. And the
 // retention job, unless MODERATION_RETENTION switched it off: what is due is erased, and kept image rows nothing retains go.
 const stopModeration = moderation.startJobs(jobLock);
+// 3d Task 7 (design, section 5): the media module is built before the moderation module, so it is handed that module's
+// handler of a stored refusal or match afterwards (media.onMatch(moderation.matched)).
+media.onMatch(moderation.matched);
 
 const social = createSocial({
   apiDb,
@@ -145,6 +153,7 @@ async function shutdown(signal: string) {
   logger.info({ signal }, "shutting down");
   stopSweeper();
   stopEdge();
+  stopMatch();
   stopJanitor();
   stopTransparency();
   stopExplore();

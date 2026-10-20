@@ -181,6 +181,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       "automated_objection",
       "automation_capped",
       "automated_waiting",
+      "matcher_down",
+      "hold_ended_unreported",
     ]);
     expect(Object.keys(ALERT_KINDS).sort()).toEqual([...ALERT_KIND_LIST].sort());
     expect(Object.keys(ALERT_TEXTS).sort()).toEqual([...ALERT_KIND_LIST].sort());
@@ -224,6 +226,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       automated_objection: [3, "all", "push+mail", "sentence"],
       automation_capped: [3, "all", "push+mail", "sentence"],
       automated_waiting: [3, "all", "push+mail", "sentence"],
+      matcher_down: [3, "all", "push+mail", "sentence"],
+      hold_ended_unreported: [3, "all", "push+mail", "sentence"],
     };
     for (const kind of ALERT_KIND_LIST) expect(row(kind), kind).toEqual(table[kind]);
   });
@@ -263,6 +267,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       automated_objection: ["at", "count"],
       automation_capped: ["at", "count", "limitHour", "limitDay", "limitUnanswered", "limitWaiting"],
       automated_waiting: ["count", "oldestAt"],
+      matcher_down: ["since", "count", "refusalsCapped"],
+      hold_ended_unreported: ["at", "deletesAt"],
     });
     for (const kind of ALERT_KIND_LIST) expect(ALERT_KINDS[kind].facts.length, kind).toBeLessThanOrEqual(6);
     expect(["receivedAt", "dueAt", "oldestAt", "at", "since", "day"].every(isTimeFact)).toBe(true);

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, rm, stat, statfs, type FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -28,6 +29,13 @@ export function storedImageName(id: string, size: MediaSize): string {
 export interface StoredFile {
   handle: FileHandle;
   size: number;
+}
+
+/** 3d Task 7: the three digests of an upload's bytes as received (design, section 7.8 step 1). */
+export interface ReceivedHashes {
+  sha256: Buffer;
+  sha1: Buffer;
+  md5: Buffer;
 }
 
 export interface MediaFilesOptions {
@@ -100,6 +108,58 @@ export function createMediaFiles(options: MediaFilesOptions) {
 
   const namesIn = (dir: string): Promise<string[]> => readdir(dir).catch(() => []);
 
+  /** receive's body, with the three hashers when asked: each chunk is hashed as it is written, in the order it arrived. */
+  async function receiveInto(id: string, body: ReadableStream<Uint8Array> | null, maxBytes: number, accept: (head: Uint8Array) => void, hash: boolean): Promise<{ bytes: number; hashes: ReceivedHashes | null }> {
+    const reader = body?.getReader();
+    const first: Uint8Array[] = [];
+    let buffered = 0;
+    let ended = !reader;
+    try {
+      while (reader && buffered < SNIFF_BYTES) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          ended = true;
+          break;
+        }
+        first.push(chunk.value);
+        buffered += chunk.value.byteLength;
+      }
+      accept(Buffer.concat(first).subarray(0, SNIFF_BYTES));
+    } catch (err) {
+      await reader?.cancel().catch(() => undefined);
+      throw err;
+    }
+
+    const hashers = hash ? [createHash("sha256"), createHash("sha1"), createHash("md5")] : [];
+    const part = uploads.part(id);
+    const handle = await open(part, "wx");
+    let bytes = 0;
+    try {
+      const write = async (chunk: Uint8Array) => {
+        bytes += chunk.byteLength;
+        if (bytes > maxBytes) throw new MediaError("file_too_large", 413);
+        await handle.appendFile(chunk);
+        for (const hasher of hashers) hasher.update(chunk);
+      };
+      for (const chunk of first) await write(chunk);
+      while (reader && !ended) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        await write(chunk.value);
+      }
+      await handle.sync();
+      await handle.close();
+    } catch (err) {
+      await reader?.cancel().catch(() => undefined);
+      await handle.close().catch(() => undefined);
+      await rm(part, { force: true });
+      throw err;
+    }
+    if (!hash) return { bytes, hashes: null };
+    const [sha256, sha1, md5] = hashers.map((hasher) => hasher.digest());
+    return { bytes, hashes: { sha256: sha256!, sha1: sha1!, md5: md5! } };
+  }
+
   return {
     uploads,
     store,
@@ -116,50 +176,18 @@ export function createMediaFiles(options: MediaFilesOptions) {
      * declared length can be absent or wrong; one byte over `maxBytes` ends the upload.
      */
     async receive(id: string, body: ReadableStream<Uint8Array> | null, maxBytes: number, accept: (head: Uint8Array) => void): Promise<number> {
-      const reader = body?.getReader();
-      const first: Uint8Array[] = [];
-      let buffered = 0;
-      let ended = !reader;
-      try {
-        while (reader && buffered < SNIFF_BYTES) {
-          const chunk = await reader.read();
-          if (chunk.done) {
-            ended = true;
-            break;
-          }
-          first.push(chunk.value);
-          buffered += chunk.value.byteLength;
-        }
-        accept(Buffer.concat(first).subarray(0, SNIFF_BYTES));
-      } catch (err) {
-        await reader?.cancel().catch(() => undefined);
-        throw err;
-      }
+      return (await receiveInto(id, body, maxBytes, accept, false)).bytes;
+    },
 
-      const part = uploads.part(id);
-      const handle = await open(part, "wx");
-      let bytes = 0;
-      try {
-        const write = async (chunk: Uint8Array) => {
-          bytes += chunk.byteLength;
-          if (bytes > maxBytes) throw new MediaError("file_too_large", 413);
-          await handle.appendFile(chunk);
-        };
-        for (const chunk of first) await write(chunk);
-        while (reader && !ended) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          await write(chunk.value);
-        }
-        await handle.sync();
-        await handle.close();
-      } catch (err) {
-        await reader?.cancel().catch(() => undefined);
-        await handle.close().catch(() => undefined);
-        await rm(part, { force: true });
-        throw err;
-      }
-      return bytes;
+    /**
+     * 3d Task 7 (design, sections 2 row 33 and 7.8 step 1): receive, and while it writes, every chunk is fed to three
+     * hashers of node:crypto, SHA-256, SHA-1 and MD5, whose digests it answers with the byte count. The hashes are of the
+     * file as received, before anything else touches it: the store keeps only korbat's own re-encoded sizes, which no list
+     * knows. Only called while the comparison is on; with MEDIA_MATCH=off nothing is hashed.
+     */
+    async receiveHashed(id: string, body: ReadableStream<Uint8Array> | null, maxBytes: number, accept: (head: Uint8Array) => void): Promise<{ bytes: number; hashes: ReceivedHashes }> {
+      const received = await receiveInto(id, body, maxBytes, accept, true);
+      return { bytes: received.bytes, hashes: received.hashes! };
     },
 
     /** The upload becomes visible to the worker. A rename inside one volume is atomic. */

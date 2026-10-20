@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { ALERT_KINDS, type AutomatedDecidedParams, type SignalHandled, type SignalKind, type StatementSignal } from "@korbat/contracts";
+import { ALERT_KINDS, statementMatchKind, type AutomatedDecidedParams, type MatchHashType, type MatchKind, type SignalHandled, type SignalKind, type StatementSignal } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { iso, rows, type Runner } from "./repo";
 
@@ -18,6 +18,8 @@ export interface SignalRow {
   mediaId: string;
   score: number | null;
   thresholdVersion: number | null;
+  /** 3d Task 7: a known_match's record; null for a score. */
+  matchId: string | null;
   createdAt: string;
   intakeItemId: string | null;
   decisionId: string | null;
@@ -31,6 +33,7 @@ type RawSignal = {
   media_id: string;
   score: number | null;
   threshold_version: number | null;
+  match_id: string | null;
   created_at: string;
   intake_item_id: string | null;
   decision_id: string | null;
@@ -38,7 +41,7 @@ type RawSignal = {
   handled: SignalHandled | null;
 };
 
-const SIGNAL_COLUMNS = sql`s.id, s.kind, s.media_id, s.score, s.threshold_version, ${iso("s.created_at")} as created_at, s.intake_item_id, s.decision_id, ${iso("s.handled_at")} as handled_at, s.handled`;
+const SIGNAL_COLUMNS = sql`s.id, s.kind, s.media_id, s.score, s.threshold_version, s.match_id, ${iso("s.created_at")} as created_at, s.intake_item_id, s.decision_id, ${iso("s.handled_at")} as handled_at, s.handled`;
 
 const signalOfRow = (row: RawSignal): SignalRow => ({
   id: row.id,
@@ -46,6 +49,7 @@ const signalOfRow = (row: RawSignal): SignalRow => ({
   mediaId: row.media_id,
   score: row.score === null ? null : Number(row.score),
   thresholdVersion: row.threshold_version,
+  matchId: row.match_id,
   createdAt: row.created_at,
   intakeItemId: row.intake_item_id,
   decisionId: row.decision_id,
@@ -63,6 +67,21 @@ export async function insertScoreSignal(q: Runner, signal: { mediaId: string; sc
     q,
     sql`insert into public.automated_signals (kind, media_id, score, threshold_version)
         values ('r1_score', ${signal.mediaId}::uuid, ${signal.score}::real, ${signal.thresholdVersion}::smallint)
+        on conflict (media_id, kind) do nothing
+        returning id`,
+  );
+  return row?.id ?? null;
+}
+
+/**
+ * 3d Task 7 (7.9 step 1): the signal of a match record of an image on a post, one statement that does nothing when the
+ * image has a match's signal already, handled or not. Answers the new signal's id, or null when there was one.
+ */
+export async function insertMatchSignal(q: Runner, signal: { mediaId: string; matchId: string }): Promise<string | null> {
+  const [row] = await rows<{ id: string }>(
+    q,
+    sql`insert into public.automated_signals (kind, media_id, match_id)
+        values ('known_match', ${signal.mediaId}::uuid, ${signal.matchId}::uuid)
         on conflict (media_id, kind) do nothing
         returning id`,
   );
@@ -211,14 +230,39 @@ export async function automatedOverview(q: Runner, max: number): Promise<{ waiti
   };
 }
 
-/** The case page's items a program opened (CaseView.signals): each item with its signal's kind and threshold's version. */
-export async function caseSignals(q: Runner, caseId: string): Promise<{ itemId: string; kind: SignalKind; thresholdVersion: number | null }[]> {
-  const found = await rows<{ item_id: string; kind: SignalKind; threshold_version: number | null }>(
+/**
+ * The case page's items a program opened (CaseView.signals): each item with its signal's kind and threshold's version,
+ * and (3d Task 7) a match's record id, which the media module reads the record by.
+ */
+export async function caseSignals(q: Runner, caseId: string): Promise<{ itemId: string; kind: SignalKind; thresholdVersion: number | null; matchId: string | null }[]> {
+  const found = await rows<{ item_id: string; kind: SignalKind; threshold_version: number | null; match_id: string | null }>(
     q,
-    sql`select s.intake_item_id as item_id, s.kind, s.threshold_version from public.automated_signals s join public.intake_items i on i.id = s.intake_item_id
+    sql`select s.intake_item_id as item_id, s.kind, s.threshold_version, s.match_id from public.automated_signals s join public.intake_items i on i.id = s.intake_item_id
          where i.case_id = ${caseId}::uuid order by i.seq, s.id`,
   );
-  return found.map((row) => ({ itemId: row.item_id, kind: row.kind, thresholdVersion: row.threshold_version }));
+  return found.map((row) => ({ itemId: row.item_id, kind: row.kind, thresholdVersion: row.threshold_version, matchId: row.match_id }));
+}
+
+/**
+ * 3d Task 7 (QueueRow.matchFlag, StaffOverview.automated.flags): for each of these cases, whether it holds an unanswered
+ * item of a program's finding that cites no rule (a match of another class); and the count of open cases that do.
+ */
+export async function matchFlagCases(q: Runner, caseIds: readonly string[]): Promise<Set<string>> {
+  if (caseIds.length === 0) return new Set();
+  const found = await rows<{ case_id: string }>(
+    q,
+    sql`select distinct i.case_id from public.intake_items i join public.intakes k on k.id = i.intake_id
+         where i.case_id = any(${`{${caseIds.join(",")}}`}::uuid[]) and i.answered_by is null and k.kind::text = 'automated' and k.rule_id is null`,
+  );
+  return new Set(found.map((row) => row.case_id));
+}
+export async function matchFlagCount(q: Runner): Promise<number> {
+  const [row] = await rows<{ n: number }>(
+    q,
+    sql`select count(distinct i.case_id)::int as n from public.intake_items i join public.intakes k on k.id = i.intake_id join public.cases c on c.id = i.case_id
+         where c.closed_at is null and i.answered_by is null and k.kind::text = 'automated' and k.rule_id is null`,
+  );
+  return row!.n;
 }
 
 /** The request for a person about a program's measure in force on the case (CaseView.objection), or null; the oldest when several stand. */
@@ -232,6 +276,19 @@ export async function caseObjection(q: Runner, caseId: string): Promise<{ text: 
   return row ? { text: row.text, createdAt: row.created_at } : null;
 }
 
+/**
+ * 3d Task 7 (design, sections 7.11 step 6 and W.8): whether the decision's case holds a program's finding on a match, of
+ * either kind: moderation_csam_lifted then goes in its variant that leaves out "staff may open them".
+ */
+export async function decisionCaseHasMatch(q: Runner, decisionId: string): Promise<boolean> {
+  const [row] = await rows<{ matched: boolean }>(
+    q,
+    sql`select exists (select 1 from public.decisions d join public.intake_items i on i.case_id = d.case_id join public.automated_signals s on s.intake_item_id = i.id
+                        where d.id = ${decisionId}::uuid and s.kind = 'known_match') as matched`,
+  );
+  return row!.matched;
+}
+
 // ---------------------------------------------------------------- what the statement reads
 
 /**
@@ -243,15 +300,15 @@ export async function caseObjection(q: Runner, caseId: string): Promise<{ text: 
  * decision and the decision is not stored as unseen; null on a program's. Null when the decision considered no program's
  * finding. It reads the program's items and nothing of a report: no sender, no word and no count.
  */
-export async function statementSignal(q: Runner, decisionId: string): Promise<StatementSignal | null> {
-  const [row] = await rows<{ kind: SignalKind; viewed: boolean | null }>(
+export async function statementSignal(q: Runner, decisionId: string, matchOf?: (matchId: string) => Promise<{ source: string; hashType: MatchHashType; matchKind: MatchKind; listed: boolean } | null>): Promise<StatementSignal | null> {
+  const [row] = await rows<{ kind: SignalKind; viewed: boolean | null; match_id: string | null }>(
     q,
     sql`with d as (select x.id, x.case_id, x.kind, x.decided_by, x.decided_at, x.unseen, x.reviews_decision_id from public.decisions x where x.id = ${decisionId}::uuid),
              -- The decision whose considered items count: the reviewed one for a review or a correction, else itself.
              c as (select coalesce(r.id, d.id) as id, coalesce(r.decided_by, d.decided_by) as decided_by, coalesce(r.kind, d.kind) as kind,
                           coalesce(r.decided_at, d.decided_at) as decided_at, d.case_id
                      from d left join public.decisions r on r.id = d.reviews_decision_id and d.kind::text in ('review', 'correction'))
-        select s.kind,
+        select s.kind, s.match_id,
                case when d.decided_by is null then null
                     else not d.unseen and exists (select 1 from public.case_access_log l
                                                     where l.case_id = d.case_id and l.staff_id = d.decided_by and l.kind = 'image_viewed'
@@ -267,5 +324,13 @@ export async function statementSignal(q: Runner, decisionId: string): Promise<St
          order by s.created_at, s.id limit 1`,
   );
   if (!row) return null;
+  if (row.kind === "known_match") {
+    // 3d Task 7 (10.2, W.3): the source's name, the kind of match derived from the hash type (exact only for a
+    // cryptographic hash's exact match) and whether the source lists the class; never the hash type, the list version or
+    // the classification string. viewed is null for a match: nobody at korbat opens such an image.
+    const record = row.match_id === null || matchOf === undefined ? null : await matchOf(row.match_id);
+    if (record === null) return { kind: row.kind, source: null, matchKind: null, listedAs: null, viewed: null };
+    return { kind: row.kind, source: record.source, matchKind: statementMatchKind(record.hashType, record.matchKind), listedAs: record.listed ? "csam" : "other", viewed: null };
+  }
   return { kind: row.kind, source: null, matchKind: null, listedAs: null, viewed: row.viewed };
 }

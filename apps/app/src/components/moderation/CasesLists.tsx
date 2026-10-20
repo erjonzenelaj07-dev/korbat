@@ -3,7 +3,7 @@ import { Link } from "expo-router";
 import { MEASURES, type AccountStanding, type AuthorCaseRow, type AuthorNoticesPage, type ReportItem, type ReportsPage } from "@korbat/contracts";
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
-import { AUTO_WORDS, CASES_WORDS, RELEASE_TEXTS } from "@/lib/moderation-words";
+import { AUTO_WORDS, CASES_WORDS, RELEASE_TEXTS, UPLOAD_TEXTS } from "@/lib/moderation-words";
 import { ORDER_TEXTS } from "@/lib/orders";
 import { CASE_ROW_WORDS, bannerSentences, reportingLine, rowStrike, STANDING_TEXTS } from "@/lib/standing";
 import { ItemLines } from "./ItemLines";
@@ -107,7 +107,8 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
 
 /**
  * 3d Task 2 (design, section 9.6): the notices about the account's posts that are not decisions, in "About you" above
- * its decisions, newest first: "Sealed images released", each with its day and a link to its notice. A release whose
+ * its decisions, newest first: "Sealed images released", each with its day and a link to its notice; 3d Task 7: "An
+ * upload was not accepted" for a refused upload. A release whose
  * notice may not be told yet is in no answer, so it is in no list. Nothing is shown while there is none.
  */
 export function NoticesList({ notices }: { notices: AuthorNoticesPage["notices"] }) {
@@ -117,14 +118,24 @@ export function NoticesList({ notices }: { notices: AuthorNoticesPage["notices"]
       <Text accessibilityRole="header" aria-level={2} className="px-4 pt-3 text-base font-semibold text-zinc-50">
         {RELEASE_TEXTS.noticesTitle}
       </Text>
-      {notices.map((notice) => (
-        <Link key={notice.id} href={`/settings/cases/releases/${notice.id}`} asChild>
-          <Pressable className="px-4 py-3">
-            <Text className="text-base font-semibold text-zinc-50">{RELEASE_TEXTS.entry}</Text>
-            <Text className="mt-1 text-sm text-zinc-400">{RELEASE_TEXTS.entryOn(notice.at.slice(0, 10))}</Text>
-          </Pressable>
-        </Link>
-      ))}
+      {notices.map((notice) =>
+        // 3d Task 7 (9.6): a refused upload's entry leads to its notice, a release's to its own.
+        notice.kind === "upload_refused" ? (
+          <Link key={notice.id} href={`/settings/cases/uploads/${notice.id}`} asChild>
+            <Pressable className="px-4 py-3">
+              <Text className="text-base font-semibold text-zinc-50">{UPLOAD_TEXTS.entry}</Text>
+              <Text className="mt-1 text-sm text-zinc-400">{UPLOAD_TEXTS.entryOn(notice.at.slice(0, 10))}</Text>
+            </Pressable>
+          </Link>
+        ) : (
+          <Link key={notice.id} href={`/settings/cases/releases/${notice.id}`} asChild>
+            <Pressable className="px-4 py-3">
+              <Text className="text-base font-semibold text-zinc-50">{RELEASE_TEXTS.entry}</Text>
+              <Text className="mt-1 text-sm text-zinc-400">{RELEASE_TEXTS.entryOn(notice.at.slice(0, 10))}</Text>
+            </Pressable>
+          </Link>
+        ),
+      )}
     </View>
   );
 }

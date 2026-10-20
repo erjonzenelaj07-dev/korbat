@@ -74,6 +74,10 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   objection_not_open: 422,
   already_protected: 409,
   automation_capped: 429,
+  // 3d Task 7 (design, section 10.7).
+  hold_not_open: 409,
+  invalid_hold_end: 422,
+  image_matched: 404,
   not_found: 404,
   invalid_request: 400,
   onboarding_required: 403,
@@ -145,6 +149,10 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   objection_not_open: "A person has decided since, or you already asked for a person about this decision.",
   already_protected: "Another measure already protects this.",
   automation_capped: "A program has reached one of its limits.",
+  // 3d Task 7: the console words each in its own table (8.8); these are the API's plain words.
+  hold_not_open: "This hold cannot be ended this way: it is released, it ended as No report and its upload is deleted, or it ended the same way already.",
+  invalid_hold_end: "An end as No report needs exactly one of its reasons, and an end as Report takes none.",
+  image_matched: "Not opened: this image matched a list of known material. Nobody at korbat opens it, also after an answer without a seal.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // The words requireSession answers with: a route with an optional session refuses such a session itself.

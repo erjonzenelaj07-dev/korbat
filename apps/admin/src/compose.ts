@@ -15,6 +15,7 @@ import {
   isRetiredPlaceholder,
   sealFactsDraft,
   snapshotDigest,
+  statementMatchKind,
   staffTextProblem,
   textDigest,
   type ActionKind,
@@ -26,6 +27,7 @@ import {
   type CaseSnapshot,
   type CaseView,
   type DecisionActionParams,
+  type MatchAnswerReason,
   type MeasureTarget,
   type MeasureKind,
   type OrderGround,
@@ -35,9 +37,9 @@ import {
   type StaffTextDraft,
   type TdbCategory,
 } from "@korbat/contracts";
-import { REDRESS_VERSION, RULES_VERSION, type StatementInput } from "@korbat/rules";
+import { REDRESS_VERSION, RULES_VERSION, STATEMENT_WORDS, type StatementInput } from "@korbat/rules";
 import type { StaffApi } from "./api";
-import { codeOf, COMPOSER_WORDS, describeError, messageFor, NOTE_WORDS, STANDING_WORDS } from "./messages";
+import { AUTOMATION_WORDS, codeOf, COMPOSER_WORDS, describeError, messageFor, NOTE_WORDS, STANDING_WORDS } from "./messages";
 import { parseCaseId, type CaseId } from "./router";
 import { decideWithKey, reviewWithKey } from "./step-up";
 import { normalised, saveStaffText, type RandomBytes } from "./texts";
@@ -96,6 +98,11 @@ export interface CaseDraft {
   withdrawMarks?: boolean;
   /** 3f Task 3: a correction that reinstates a post after an order, its ground signed on its one action. */
   reinstate?: boolean;
+  /**
+   * 3d Task 7 (section 8.4): the reason of an answer without a seal on a case whose match acts, one of
+   * MATCH_ANSWER_REASONS, which the key signs. Nothing is chosen when the composer opens.
+   */
+  matchAnswerReason?: MatchAnswerReason | null;
 }
 
 /** The composer's own sentences, each written once. The seal's drafts are the contracts', and the statement's words the rulebook package's. */
@@ -975,10 +982,48 @@ export function offeredDraft(view: CaseView, role: StaffRole, draft: CaseDraft):
   return same ? draft : { ...draft, kind, outcome, ground, ruleId, category, actions, unfounded };
 }
 
+/**
+ * 3d Task 7 (W.3, SEAL_DRAFTS.facts.match_post): the facts draft of a seal on a case whose only unanswered suspect items
+ * are a program's, from the first of them that a match opened: W.3's comparison with "this post" for "your post" and a
+ * capital letter, then that korbat's staff do not open such an image. Null on any other case. It holds no hash, no list
+ * version and no classification string; the admin may add what the text, the alt texts and the account's conduct show.
+ */
+export function matchSealFacts(view: CaseView): string | null {
+  const suspect = suspectOpen(view);
+  if (suspect.length === 0 || suspect.some((item) => item.source.kind !== "program")) return null;
+  for (const item of suspect) {
+    const match = view.signals.find((found) => found.itemId === item.id && found.kind === "known_match")?.match;
+    if (match == null) continue;
+    const clause = STATEMENT_WORDS.automated.comparison(match.listed ? "csam" : "other", statementMatchKind(match.hashType, match.matchKind), match.source, "an image of this post");
+    return SEAL_DRAFTS.facts.match_post.replace("{comparison}", `${clause.charAt(0).toUpperCase()}${clause.slice(1)}`);
+  }
+  return null;
+}
+
 /** The fixed drafts of a seal on this case: the facts by its unanswered suspect items, the reason by whether it is taken while deciding or for good. */
 export function sealDraftFor(view: CaseView, kind: "interim" | "final"): { facts: string; reason: string } {
   const items = suspectOpen(view).map((item) => ({ source: item.source.kind === "staff" ? ("finding" as const) : ("user" as const), added: item.quotedByPosition !== null }));
-  return { facts: sealFactsDraft(view.target.type, items), reason: kind === "final" ? SEAL_DRAFTS.reason.final : SEAL_DRAFTS.reason.deciding };
+  return { facts: matchSealFacts(view) ?? sealFactsDraft(view.target.type, items), reason: kind === "final" ? SEAL_DRAFTS.reason.final : SEAL_DRAFTS.reason.deciding };
+}
+
+/**
+ * 3d Task 7 (section 8.4, note 26): whether this draft is an answer without a seal on a case whose match acts, which asks
+ * for one of MATCH_ANSWER_REASONS before the key: a final decision that holds no seal and answers an item a program's
+ * acting match opened. A match that does not act asks for none.
+ */
+export function answerReasonNeeded(view: CaseView, draft: CaseDraft): boolean {
+  if (draft.kind !== "final" || draft.actions.some((action) => action.kind === "seal_media")) return false;
+  return view.signals.some((signal) => signal.kind === "known_match" && signal.match?.acting === true && view.items.some((item) => item.id === signal.itemId && item.answeredBy === null));
+}
+
+/**
+ * 3d Task 7 ([case.autoRecord]'s second sentence, 8.4): an admin who restricts on a match's finding citing R2 (a match of
+ * the listed class): the database records the decision as partly automated (decision_holds), and the preview says so.
+ */
+export function restrictsOnMatch(view: CaseView, draft: CaseDraft): boolean {
+  if (draft.kind === "correction" || draft.kind === "review" || draft.outcome !== "restricted") return false;
+  const found = programFinding(view);
+  return found !== null && found.signal.kind === "known_match" && found.signal.match?.listed === true;
 }
 
 /** The draft once "Seal the images this case reaches" is chosen: the seal alone, under rule R2, with the fixed drafts, which the moderator may edit. */
@@ -1214,6 +1259,16 @@ export function programFinding(view: CaseView): { signal: CaseSignal; mediaId: s
 }
 
 /**
+ * 3d Task 7 (W.3): a case's signal as a statement reads it: a score with whether the image was opened; a match with its
+ * source's name, the kind of match derived as the API derives it, and what the source lists the entry as.
+ */
+export function statementSignalOf(signal: CaseSignal, viewed: boolean | null): NonNullable<StatementInput["signal"]> {
+  const match = signal.match;
+  if (signal.kind !== "known_match" || match == null) return { kind: signal.kind, source: null, matchKind: null, listedAs: null, viewed };
+  return { kind: "known_match", source: match.source, matchKind: statementMatchKind(match.hashType, match.matchKind), listedAs: match.listed ? "csam" : "other", viewed: null };
+}
+
+/**
  * The automation members of a person's statement (W.3), as the API's statement data carries them: what found the items the
  * decision is about, and whether its moderator opened the image on this case before deciding, which the page knows from
  * the images it showed this person. A correction or a review speaks of the decision it is about: a program's, or one whose
@@ -1235,7 +1290,8 @@ function automationOf(view: CaseView, draft: CaseDraft, viewedImages: readonly s
   }
   if (found === null) return {};
   const viewed = found.mediaId !== null && viewedImages.includes(found.mediaId);
-  return { automatedDetection: true, automatedDecision: "not_automated", signal: { kind: found.signal.kind, source: null, matchKind: null, listedAs: null, viewed } };
+  // 3d Task 7: a restriction on a match's finding citing R2 is partly automated, as decision_holds records it.
+  return { automatedDetection: true, automatedDecision: restrictsOnMatch(view, draft) ? "partially" : "not_automated", signal: statementSignalOf(found.signal, viewed) };
 }
 
 /**
@@ -1263,7 +1319,8 @@ export function programStatementOf(view: CaseView, decision: CaseDecision): Stat
     reviewed: null,
     automatedDetection: true,
     automatedDecision: "fully",
-    signal: { kind: signal?.kind ?? "r1_score", source: null, matchKind: null, listedAs: null, viewed: null },
+    // 3d Task 7: a program's seal on a match names the match's source and kind, as its statement was sent.
+    signal: signal === undefined ? { kind: "r1_score", source: null, matchKind: null, listedAs: null, viewed: null } : statementSignalOf(signal, null),
   };
 }
 
@@ -1476,6 +1533,9 @@ export function decisionParamsOf(view: CaseView, draft: CaseDraft, digests: Deci
     factsDigest: digests.facts,
     reasonDigest: digests.reason,
     legalReferenceDigest: law ? digests.legalReference : null,
+    // 3d Task 7: the reason of an answer without a seal on an acting match, signed only where it is asked for, so every
+    // other decision's params hash as before.
+    ...(answerReasonNeeded(view, draft) ? { matchAnswerReason: draft.matchAnswerReason ?? null } : {}),
   });
 }
 
@@ -1617,6 +1677,8 @@ export async function confirmDecision(
   const refusal = (err: unknown): ConfirmOutcome => ({ error: describeError(err), code: codeOf(err) ?? "internal" });
   if (view.id !== caseId) return { error: messageFor("invalid_answer"), code: "invalid_answer" };
   if (!complete(view, draft)) return { error: COMPOSER.incomplete, code: "incomplete" };
+  // 3d Task 7 (8.4): an answer without a seal on an acting match is refused before the key without its reason.
+  if (answerReasonNeeded(view, draft) && (draft.matchAnswerReason ?? null) === null) return { error: AUTOMATION_WORDS.answerReason.choose, code: "incomplete" };
 
   const newest = view.snapshots[0];
   // 3f (design, section 8.6): on a post preserved for an order every copy is withheld from staff, a fresh one too; the

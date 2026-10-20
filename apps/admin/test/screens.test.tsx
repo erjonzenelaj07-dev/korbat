@@ -91,7 +91,9 @@ const QUIET: StaffOverview = {
   repliesWaiting: { count: 0, oldestAt: null },
   strikeAccounts: 0,
   // 3d Task 6: no measure of a program waits and nobody asked for a person.
-  automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
+  automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 0, cases: [], objectedCases: [] },
+  // 3d Task 7: no upload is held.
+  heldUploads: { open: 0, oldest: null, objected: 0, capped: 0 },
 };
 
 describe("sign-in", () => {

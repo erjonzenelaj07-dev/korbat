@@ -181,6 +181,14 @@ services:
       AUTOMATION_R1_ACTS: ${API_AUTOMATION_R1_ACTS:-}
       AUTOMATION_DPIA_R1: ${API_AUTOMATION_DPIA_R1:-}
       AUTOMATION_DPIA_R1_ACTS: ${API_AUTOMATION_DPIA_R1_ACTS:-}
+      # 3d Task 7: the comparison of uploads with known material (unprefixed, as the design names it beside R1_CLASSIFIER):
+      # off (empty, the default), test (refused while APP_SITE is open) or a source's name, which no adapter of this build
+      # answers; whether an acting match on a post seals its images (on unless off); and its two days, empty for none. The
+      # worker is not handed it: it computes no perceptual hash in this build.
+      MEDIA_MATCH: ${MEDIA_MATCH:-}
+      AUTOMATION_R2_ACTS: ${API_AUTOMATION_R2_ACTS:-}
+      AUTOMATION_DPIA_MATCH: ${API_AUTOMATION_DPIA_MATCH:-}
+      AUTOMATION_DPIA_MATCH_ACTS: ${API_AUTOMATION_DPIA_MATCH_ACTS:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

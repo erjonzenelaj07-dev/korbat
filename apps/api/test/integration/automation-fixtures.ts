@@ -1,9 +1,12 @@
+import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
-import type { SignalKind } from "@korbat/contracts";
+import type { MatchHashType, MatchKind, SignalKind } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { loadConfig, type Config } from "../../src/config";
 import { automatedStep, type StepOutcome } from "../../src/moderation/automated";
-import { insertScoreSignal } from "../../src/moderation/automated-repo";
+import { TEST_LISTED_CLASS, TEST_LIST_VERSION, TEST_SOURCE, TEST_UNLISTED_CLASS } from "../../src/media/match-adapter";
+import { createMatchRepo } from "../../src/media/match-repo";
+import { insertMatchSignal, insertScoreSignal } from "../../src/moderation/automated-repo";
 import type { ModerationDeps } from "../../src/moderation/context";
 import { moderationDeps, uuids, type Runner } from "./moderation-fixtures";
 
@@ -30,15 +33,40 @@ export interface Signalled extends StepOutcome {
 }
 
 /**
+ * 3d Task 7: a match record of an image, as the comparison writes one, as the API's role (its trigger forces `listed` and
+ * `acting`): by default an exact SHA-256 match of the test source's listed and acting class, the record that acts.
+ * `near` gives a near match of that class (listed, not acting); `other` the class the source does not list (a flag).
+ */
+export async function matchForTest(db: Runner, mediaId: string, kind: "acting" | "near" | "other" = "acting", hashType: MatchHashType = kind === "near" ? "sha1" : kind === "other" ? "md5" : "sha256"): Promise<string> {
+  const matchKind: MatchKind = kind === "near" ? "near" : "exact";
+  const record = await createMatchRepo(db as Db).insertMatch(db, {
+    mediaId,
+    source: TEST_SOURCE,
+    listVersion: TEST_LIST_VERSION,
+    hashType,
+    kind: matchKind,
+    classification: kind === "other" ? TEST_UNLISTED_CLASS : TEST_LISTED_CLASS,
+    hash: randomBytes(hashType === "md5" ? 16 : hashType === "sha1" ? 20 : 32),
+  });
+  return record.id;
+}
+
+/**
  * `signalForTest(media, kind)` (design, section 12): inserts a signal as the API's role, as the step's first statement
  * writes one, and runs the automated step once on it. A score's signal carries `score` (1, over every threshold, unless
- * said) under the test scorer's version 0. Task 7 adds the match's kind.
+ * said) under the test scorer's version 0. 3d Task 7: a match's signal names a match record, written by matchForTest
+ * (the acting kind unless `match` says) unless an id is given.
  */
-export async function signalForTest(deps: ModerationDeps, mediaId: string, kind: SignalKind = "r1_score", score = 1): Promise<Signalled> {
-  if (kind !== "r1_score") throw new Error("a match's signal is Task 7's");
+export async function signalForTest(deps: ModerationDeps, mediaId: string, kind: SignalKind = "r1_score", score = 1, match: { id?: string; kind?: "acting" | "near" | "other" } = {}): Promise<Signalled & { matchId: string | null }> {
+  if (kind === "known_match") {
+    const matchId = match.id ?? (await matchForTest(deps.apiDb, mediaId, match.kind ?? "acting"));
+    const signalId = await insertMatchSignal(deps.apiDb, { mediaId, matchId });
+    if (signalId === null) throw new Error("the image has a match's signal already");
+    return { signalId, matchId, ...(await automatedStep(deps, signalId)) };
+  }
   const signalId = await insertScoreSignal(deps.apiDb, { mediaId, score, thresholdVersion: 0 });
   if (signalId === null) throw new Error("the image has a score's signal already");
-  return { signalId, ...(await automatedStep(deps, signalId)) };
+  return { signalId, matchId: null, ...(await automatedStep(deps, signalId)) };
 }
 
 /** A signal's row as the step left it. */
@@ -63,8 +91,11 @@ export async function systemRowOf(db: Runner, decisionId: string): Promise<{ act
  */
 export async function removeAutomation(migrateDb: Db | DbTx, alertsSince: string, mediaIds: readonly string[] = []): Promise<void> {
   await migrateDb.execute(sql`delete from public.automated_signals where media_id = any(${uuids(mediaIds)})`);
+  // 3d Task 7: the match records of these images, and refusals that name them.
+  await migrateDb.execute(sql`delete from public.upload_refusals where media_id = any(${uuids(mediaIds)})`);
+  await migrateDb.execute(sql`delete from public.media_matches where media_id = any(${uuids(mediaIds)})`);
   await migrateDb.execute(sql`delete from public.edge_purges where media_id = any(${uuids(mediaIds)})`);
   await migrateDb.execute(
-    sql`delete from public.alert_outbox where kind in ('automated_objection', 'automation_capped', 'automated_waiting', 'moderation_urgent') and created_at >= ${alertsSince}::timestamptz`,
+    sql`delete from public.alert_outbox where kind in ('automated_objection', 'automation_capped', 'automated_waiting', 'moderation_urgent', 'moderation_csam_lifted', 'matcher_down', 'hold_ended_unreported', 'seal_released') and created_at >= ${alertsSince}::timestamptz`,
   );
 }

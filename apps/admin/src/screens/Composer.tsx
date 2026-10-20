@@ -1,5 +1,7 @@
 import {
   FINDING_CATEGORIES,
+  MATCH_ANSWER_REASON_LABELS,
+  MATCH_ANSWER_REASONS,
   MEASURES,
   ORDER_DRAFTS,
   ORDER_GROUNDS,
@@ -17,6 +19,8 @@ import {
 import { ORDER_NOTICE, RULES, statementParagraphs, type StatementInput } from "@korbat/rules";
 import {
   COMPOSER,
+  answerReasonNeeded,
+  restrictsOnMatch,
   complete,
   correctable,
   correctionChoices,
@@ -951,7 +955,10 @@ export function ComposerView(shown: ComposerViewProps) {
     <section className="panel composer" aria-labelledby="composer-title">
       <h3 id="composer-title">Decide</h3>
       {/* 3d Task 6 (section 8.4): [case.autoRecord] while an unanswered item of the case is a program's finding. */}
-      {programFinding(view) === null ? null : <p className="hint">{AUTOMATION_WORDS.caseAutoRecord}</p>}
+      {/* 3d Task 7: and its second sentence for an admin who restricts on a match's finding citing R2. */}
+      {programFinding(view) === null ? null : (
+        <p className="hint">{role === "admin" && restrictsOnMatch(view, draft) ? `${AUTOMATION_WORDS.caseAutoRecord} ${AUTOMATION_WORDS.caseAutoRecordPartly}` : AUTOMATION_WORDS.caseAutoRecord}</p>
+      )}
 
       <fieldset>
         <legend>Outcome</legend>
@@ -971,6 +978,20 @@ export function ComposerView(shown: ComposerViewProps) {
         ))}
         {unseen ? <p className="notice">{COMPOSER.unseen}</p> : null}
       </fieldset>
+
+      {/* 3d Task 7 (8.4): an answer without a seal on a case whose match acts asks for its reason before the key; none is chosen when the composer opens. */}
+      {answerReasonNeeded(view, draft) ? (
+        <fieldset>
+          <legend>{AUTOMATION_WORDS.answerReason.legend}</legend>
+          {MATCH_ANSWER_REASONS.map((reason) => (
+            <label key={reason}>
+              <input type="radio" name="compose-match-reason" checked={draft.matchAnswerReason === reason} disabled={props.busy} onChange={() => props.onChange({ matchAnswerReason: reason })} />{" "}
+              <span>{MATCH_ANSWER_REASON_LABELS[reason]}</span>
+            </label>
+          ))}
+          {draft.matchAnswerReason == null ? <p className="hint">{AUTOMATION_WORDS.answerReason.choose}</p> : null}
+        </fieldset>
+      ) : null}
 
       {restricts ? (
         <fieldset>
@@ -1028,7 +1049,8 @@ export function ComposerView(shown: ComposerViewProps) {
               <p>{COMPOSER.admin.endsFreeze}</p>
               <p>{COMPOSER.admin.unseen}</p>
               {view.target.type === "post" ? <p>{COMPOSER.admin.answersEarlier}</p> : null}
-              <p>{COMPOSER.admin.afterwards}</p>
+              {/* 3d Task 7 [case.liftedMatch]: in the place of 3c's sentence on a case that holds a match. */}
+              <p>{view.signals.some((signal) => signal.kind === "known_match") ? AUTOMATION_WORDS.liftedMatch : COMPOSER.admin.afterwards}</p>
             </>
           ) : null}
         </div>

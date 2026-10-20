@@ -117,6 +117,12 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
     if (!insideMedia(path) && /\b(postMedia|post_media)\b/.test(source)) {
       violations.push(`${path}: references post_media, which only the media module may touch`);
     }
+    // 3d Task 7 (design, section 5): the three tables of the migration known_material are the media module's too.
+    if (!insideMedia(path)) {
+      for (const name of new Set([...source.matchAll(/(?<![A-Za-z0-9_])(mediaHashes|media_hashes|mediaMatches|media_matches|uploadRefusals|upload_refusals)(?![A-Za-z0-9_])/g)].map((m) => m[1]!))) {
+        violations.push(`${path}: references ${name}, which only the media module may touch`);
+      }
+    }
     // The staff module (role korbat_api) reads and writes the public audit log; staff keys, staff sessions and enrolments
     // are credentials, the auth module's alone (3a design, section 5). The moderation module owns the moderation tables on
     // the same role: a notifier's contact and the staff links live in the auth schema, out of its reach (3c design, section 5).
@@ -582,7 +588,7 @@ describe("the quarantine's boundary (3d Task 1)", () => {
  * the matcher's (media/match-adapter.ts) joins this list with the task that builds it. A package import that is no
  * database stays allowed: the adapter reads its numbers from the contracts.
  */
-const ADAPTER_FILES = ["media/edge-adapter.ts", "transparency/witness.ts"];
+const ADAPTER_FILES = ["media/edge-adapter.ts", "transparency/witness.ts", "media/match-adapter.ts"];
 function findAdapterViolations(files: SourceFile[]): string[] {
   const violations: string[] = [];
   for (const { path, source } of files) {
@@ -617,6 +623,32 @@ describe("the adapters' files (3d Task 3)", () => {
         { path: "transparency/head.ts", source: 'import { createTransparencyRepo } from "./repo";' },
       ]),
     ).toEqual(["transparency/witness.ts: imports ./repo, a file of the API", "transparency/witness.ts: imports @korbat/db, the database"]);
+    // Task 7: the matcher's file imports nothing of the media module, no repository and no database: it is given hashes.
+    expect(
+      findAdapterViolations([
+        { path: "media/match-adapter.ts", source: 'import { createMatchRepo } from "./match-repo"; import { mediaHashes } from "@korbat/db"; import { MATCH_FIXTURES } from "@korbat/media-protocol";' },
+        { path: "media/match.ts", source: 'import { createMatchRepo } from "./match-repo";' },
+      ]),
+    ).toEqual(["media/match-adapter.ts: imports ./match-repo, a file of the API", "media/match-adapter.ts: imports @korbat/db, the database"]);
+  });
+});
+
+describe("the known material's tables (3d Task 7)", () => {
+  test("only the media module names media_hashes, media_matches or upload_refusals, by table or by schema name", () => {
+    const files: SourceFile[] = [
+      { path: "moderation/uploads.ts", source: "await tx.execute(sql`select 1 from public.upload_refusals`);" },
+      { path: "moderation/automated-repo.ts", source: 'import { mediaMatches } from "@korbat/db"; const q = "media_matches";' },
+      { path: "cli/automation.ts", source: "sql`select count(*) from public.media_hashes`" },
+      { path: "media/match-repo.ts", source: "sql`select 1 from public.media_hashes join public.media_matches on true join public.upload_refusals on true`" },
+      // A column of releases and a step-up's target type are no table's name.
+      { path: "moderation/release.ts", source: "sql`select r.upload_refusal_id from public.releases r`; const target = 'upload_refusal';" },
+    ];
+    expect(findViolations(files, new Set(["mediaMatches"]), new Set())).toEqual([
+      "moderation/uploads.ts: references upload_refusals, which only the media module may touch",
+      "moderation/automated-repo.ts: references mediaMatches, which only the media module may touch",
+      "moderation/automated-repo.ts: references media_matches, which only the media module may touch",
+      "cli/automation.ts: references media_hashes, which only the media module may touch",
+    ]);
   });
 });
 

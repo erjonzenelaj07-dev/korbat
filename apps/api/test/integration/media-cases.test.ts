@@ -482,7 +482,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
     /** What staffImage answers, with the file it opened closed again: the image's post and the file's size, or null. */
     async function open(media: MediaForCases, id: string, size: "small" | "large" = "large") {
       const got = await media.staffImage(id, size);
-      if (!got) return null;
+      // 3d Task 7: an image a match names answers "matched"; none of these images has a match record.
+      if (!got || got === "matched") return null;
       await got.file.handle.close();
       return { postId: got.postId, bytes: got.file.size };
     }

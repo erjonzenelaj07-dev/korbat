@@ -140,7 +140,7 @@ describe("the release's contracts (3d Task 2)", () => {
     expect(renderAlert("seal_released", { at: "2026-10-18T11:40:00.000Z", posts: 2, uploads: 0 }, now)).toEqual({
       title: "An admin released sealed images",
       sentence: "An admin released sealed images at 11:40 UTC: 2 posts, 0 held uploads. The files are to be destroyed.",
-      todo: "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
+      todo: "This cannot be taken back. Every staff account gets this mail, the admin who did it too. If you did not expect it, look at the case or at Held uploads now and tell the operator: until the files are destroyed and the backups have aged out, a release that should not have happened can still be met by keeping them.",
     });
   });
 });

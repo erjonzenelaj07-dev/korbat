@@ -1,8 +1,9 @@
-import type { EdgePurgeView, MediaSize } from "@korbat/contracts";
+import type { EdgePurgeView, MatchRecord, MediaSize } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { VARIANTS } from "@korbat/media-protocol";
 import type { MediaDeps } from "./context";
 import type { StoredFile } from "./files";
+import { createMatchRepo, type MatchRepo, type OwnRefusal, type RefusalRow, type Runner } from "./match-repo";
 import { owedLate, requestOwed } from "./owed";
 import type { CaseReach, HeldImage, HoldPair } from "./repo";
 import { RECONCILE_MAX_ORPHANS } from "./sweeper";
@@ -40,9 +41,11 @@ export interface MediaForCases {
   /**
    * Opens an image file for staff, or answers null: the only function that does (gate V; 3c design, sections 6.1 and
    * 7.3). Never an image of a frozen post, a sealed image or an erased one, on whatever case the request came; and only a
-   * file whose header says that it is a WebP of the size its variant and its row allow.
+   * file whose header says that it is a WebP of the size its variant and its row allow. 3d Task 7 (sections 5 and 7.11,
+   * review ruling 2): never an image that an unerased match record names, an acting match or a flag, whatever its state and
+   * whatever was answered, which it answers "matched", so the route can say why.
    */
-  staffImage(mediaId: string, size: MediaSize): Promise<StaffImage | null>;
+  staffImage(mediaId: string, size: MediaSize): Promise<StaffImage | "matched" | null>;
   /** What a case about this post or account reaches: counts, a day and a time, never an id, an alt text or a file. */
   reach(target: { type: "post" | "account"; id: string }): Promise<CaseReach>;
   /**
@@ -92,27 +95,70 @@ export interface MediaForCases {
    */
   signals(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, postId: string): Promise<ImageSignals[]>;
   /**
+   * 3d Task 7 (design, sections 5 and 7.9): the match record by its id, as staff are shown it, with its image, its case,
+   * whether the program is done with it and whether it is erased; null when there is none. Through the caller's
+   * connection or transaction; it locks nothing.
+   */
+  matchRecord(q: Runner, matchId: string): Promise<(MatchRecord & { id: string; mediaId: string; caseId: string | null; handled: boolean; erased: boolean }) | null>;
+  /** The records of these match ids, as the case page shows them, keyed by id. */
+  matchRecords(matchIds: readonly string[]): Promise<Map<string, MatchRecord>>;
+  /**
+   * The automated step's write, in the step's transaction (review ruling 8): the record is marked handled and, with a case,
+   * names it once. The media module owns the table.
+   */
+  matchJoined(tx: Runner, matchId: string, caseId: string | null): Promise<void>;
+  /** Which of these images an unerased match record names: the case page's [case.image.matched]. */
+  matchedImages(mediaIds: readonly string[]): Promise<Set<string>>;
+  /** 3d Task 7 (7.12 step 1): one of the uploader's refusals, as its notice reads it; null for anyone else's. */
+  refusalOf(ownerId: string, refusalId: string): Promise<OwnRefusal | null>;
+  /** The uploader's refusals, newest first, after a cursor's (time, id), at most `limit`, each with its sort key. */
+  refusalsOf(ownerId: string, after: { at: string; id: string } | null, limit: number): Promise<{ id: string; at: string; key: string }[]>;
+  /**
+   * 7.12 step 2: the one statement that writes an objection, under the rule the guard states; `not_open` when it changed
+   * no row of the owner's, `not_found` for a refusal that is not theirs.
+   */
+  objectToRefusal(ownerId: string, refusalId: string, text: string): Promise<"objected" | "not_open" | "not_found">;
+  /** The dispatch round's notices (7.14): the refusals whose notice is owed, and its outcome. */
+  refusalsUntold(limit: number): Promise<{ id: string; ownerId: string | null; refusedAt: string }[]>;
+  refusalTold(refusalId: string, outcome: "sent" | "suppressed" | "no_address" | "none" | "failed"): Promise<void>;
+  /** The holds ended as no_report whose delay has passed and whose notice that the hold was lifted is owed, and its outcome. */
+  liftedUntold(limit: number): Promise<{ id: string; ownerId: string | null; endedAt: string }[]>;
+  liftedTold(refusalId: string, outcome: "sent" | "suppressed" | "no_address" | "none" | "failed"): Promise<void>;
+  /** Held uploads (7.12 step 3): a page from `offset`, one row more than a page; and one refusal as the list shows it. */
+  heldList(offset: number): Promise<RefusalRow[]>;
+  held(refusalId: string): Promise<RefusalRow | null>;
+  /** Home's [home.uploads] and the urgent alert's heldUploads (8.2, W.7). */
+  heldOverview(): Promise<{ open: number; oldest: string | null; objected: number; capped: number }>;
+  /** Home's [home.unreported]: the holds ended as no_report in the last `days` days, newest first. */
+  recentUnreported(days: number, max: number): Promise<{ at: string; refusalId: string }[]>;
+  /** The uploader and the image of a refusal, for the end's and the release's transactions. */
+  refusalSubject(q: Runner, refusalId: string): Promise<{ ownerId: string | null; mediaId: string } | null>;
+  /** matcher_down's facts at once (7.8): how many checks are unanswered and since when, and how many wait under the limit. */
+  checkCounts(): Promise<{ unchecked: number; capped: number; oldestUnchecked: string | null }>;
+  /**
    * 3d Task 6 (design, sections 5 and 7.9): the automated sweep's read of images without a signal: with `r1` (its
    * threshold, read only while the scorer is not off), every image of a post created in the last `hours` hours whose
    * score is at or over it and that no score's signal names; at most `limit`. Task 7 adds the match records not marked
    * handled, read only while the matcher is not off.
    */
-  unsignalled(limit: number, options: { hours: number; r1: { threshold: number } | null }): Promise<UnsignalledImage[]>;
+  unsignalled(limit: number, options: { hours: number; r1: { threshold: number } | null; match?: boolean }): Promise<UnsignalledImage[]>;
 }
 
-/** 3d Task 6: an image of a post as the automated step reads it: its id and its score. */
+/**
+ * 3d Task 6: an image of a post as the automated step reads it: its id and its score. 3d Task 7: and its unerased match
+ * record, preferring one the program is not done with: its id, whether it is listed and acting, and whether it is handled.
+ */
 export interface ImageSignals {
   mediaId: string;
   score: number | null;
+  match: { id: string; listed: boolean; acting: boolean; handled: boolean } | null;
 }
 
-/** 3d Task 6: an image the sweep found without its signal: a score at or over the threshold. */
-export interface UnsignalledImage {
-  kind: "r1_score";
-  mediaId: string;
-  postId: string;
-  score: number;
-}
+/**
+ * 3d Task 6: an image the sweep found without its signal: a score at or over the threshold. 3d Task 7: or a posted image
+ * with a match record the program is not done with.
+ */
+export type UnsignalledImage = { kind: "r1_score"; mediaId: string; postId: string; score: number } | { kind: "known_match"; mediaId: string; postId: string; matchId: string };
 
 /** 3d: an image whose files are lost, as the dispatch job tells its author of it. */
 export interface LostImage {
@@ -126,7 +172,9 @@ export interface LostImage {
  * The moderation module's interface over this module's dependencies, as createMedia hands it out; the tests build it the
  * same way. The clock is read only for the age of what is owed; without one it is the machine's.
  */
-export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log"> & { now?: () => Date }): MediaForCases {
+export function mediaForCases(input: Pick<MediaDeps, "repo" | "files" | "log"> & { matches?: MatchRepo; now?: () => Date }): MediaForCases {
+  // 3d Task 7: the statements on the known material's tables, built over the repository's own pool when none is given.
+  const deps = { ...input, matches: input.matches ?? createMatchRepo(input.repo.pool) };
   const nowMs = () => (deps.now?.() ?? new Date()).getTime();
 
   /**
@@ -151,6 +199,8 @@ export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log"> & 
     async staffImage(mediaId, size) {
       const access = await deps.repo.staffAccess(mediaId);
       if (!access || access.status !== "ready") return null;
+      // 3d Task 7: an image a match names stays closed to staff before an answer and after it, on every case.
+      if (access.matched) return "matched";
       // Gate V. The image's state is asked for by name: a state this reader has not been taught opens nothing.
       const shown = access.mediaState === "visible" || access.mediaState === "withheld" || access.mediaState === "removed";
       if (!shown || access.frozen || access.erased) return null;
@@ -187,10 +237,38 @@ export function mediaForCases(deps: Pick<MediaDeps, "repo" | "files" | "log"> & 
     lostTold: (mediaId, outcome) => deps.repo.lostTold(mediaId, outcome),
     purges: (mediaIds) => deps.repo.purges(mediaIds),
     postPurges: (postIds) => deps.repo.postPurges(postIds),
-    signals: (q, postId) => deps.repo.signals(q, postId),
-    async unsignalled(limit, options) {
-      if (options.r1 === null) return [];
-      return (await deps.repo.unsignalledScores(limit, options.hours, options.r1.threshold)).map((image) => ({ kind: "r1_score" as const, ...image }));
+    async signals(q, postId) {
+      const images = await deps.repo.signals(q, postId);
+      const records = await deps.matches.recordsOfImages(q, images.map((image) => image.mediaId));
+      return images.map((image) => ({ ...image, match: records.get(image.mediaId) ?? null }));
     },
+    async unsignalled(limit, options) {
+      // Each read runs only while its tool's adapter is not off (7.9): the caller passes the score's threshold, and
+      // `match` only while the comparison is on. Matches first: a known match must not wait behind a burst of scores.
+      const matches = options.match === true ? (await deps.matches.unhandledOnPosts(limit)).map((image) => ({ kind: "known_match" as const, ...image })) : [];
+      if (options.r1 === null) return matches;
+      const scores = (await deps.repo.unsignalledScores(limit - matches.length, options.hours, options.r1.threshold)).map((image) => ({ kind: "r1_score" as const, ...image }));
+      return [...matches, ...scores];
+    },
+    matchRecord: (q, matchId) => deps.matches.record(q, matchId),
+    matchRecords: (matchIds) => deps.matches.records(matchIds),
+    matchJoined: (tx, matchId, caseId) => deps.matches.joined(tx, matchId, caseId),
+    matchedImages: (mediaIds) => deps.matches.matched(deps.matches.db, mediaIds),
+    refusalOf: (ownerId, refusalId) => deps.matches.ownRefusal(ownerId, refusalId),
+    refusalsOf: (ownerId, after, limit) => deps.matches.refusalsOf(ownerId, after, limit),
+    async objectToRefusal(ownerId, refusalId, text) {
+      if (await deps.matches.object(ownerId, refusalId, text)) return "objected";
+      return (await deps.matches.owns(ownerId, refusalId)) ? "not_open" : "not_found";
+    },
+    refusalsUntold: (limit) => deps.matches.refusalsUntold(limit),
+    refusalTold: (refusalId, outcome) => deps.matches.refusalTold(refusalId, outcome),
+    liftedUntold: (limit) => deps.matches.liftedUntold(limit),
+    liftedTold: (refusalId, outcome) => deps.matches.liftedTold(refusalId, outcome),
+    heldList: (offset) => deps.matches.heldList(offset),
+    held: (refusalId) => deps.matches.held(refusalId),
+    heldOverview: () => deps.matches.heldOverview(),
+    recentUnreported: (days, max) => deps.matches.recentUnreported(days, max),
+    refusalSubject: (q, refusalId) => deps.matches.refusalSubject(q, refusalId),
+    checkCounts: () => deps.matches.checkCounts(),
   };
 }

@@ -148,6 +148,8 @@ export function decision(overrides: Partial<CaseDecision> = {}): CaseDecision {
     staffHandle: HOSTILE.url,
     // 3d Task 6: a person's decision, unless a test says it is a program's.
     byProgram: false,
+    // 3d Task 7: no answer without a seal on an acting match.
+    matchAnswerReason: null,
     throughSeq: 0,
     answersFromSeq: null,
     reviewsDecisionId: null,
@@ -202,6 +204,8 @@ export function postCase(overrides: Partial<CaseView> = {}): CaseView {
     // 3d Task 6: no program found anything here, and nobody asked for a person.
     signals: [],
     objection: null,
+    // 3d Task 7: no image of the case is named by a match.
+    matchedImages: [],
     history: [
       { at: "2026-10-01T08:00:00.000Z", event: "item", refId: ITEM_REPORTER, seq: 1, intakeKind: "user", ruleId: "R1", allegesIllegal: false, csam: false, reexamination: false, decisionKind: null, outcome: null, staffHandle: null, result: null },
       { at: "2026-10-01T08:00:00.000Z", event: "snapshot", refId: SNAPSHOT_ONE, seq: null, intakeKind: null, ruleId: null, allegesIllegal: null, csam: null, reexamination: null, decisionKind: null, outcome: null, staffHandle: null, result: null },
@@ -430,6 +434,8 @@ export function queueRow(overrides: Partial<QueueRow> = {}): QueueRow {
     foundByProgram: false,
     takenByProgram: false,
     objected: false,
+    // 3d Task 7: no match that only flags.
+    matchFlag: false,
     ...overrides,
   };
 }
@@ -477,7 +483,9 @@ export function overview(overrides: Partial<StaffOverview> = {}): StaffOverview 
     quarantine: { dueIn: 0, dueOut: 0, undestroyed: 0, oldest: null },
     destructive: [],
     // 3d Task 6: no measure of a program waits and nobody asked for a person.
-    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, cases: [], objectedCases: [] },
+    automated: { waiting: 0, oldestAt: null, objected: 0, oldestObjectionAt: null, flags: 0, cases: [], objectedCases: [] },
+    // 3d Task 7: no upload is held.
+    heldUploads: { open: 0, oldest: null, objected: 0, capped: 0 },
     ...overrides,
   };
 }

@@ -83,6 +83,10 @@ export function Layout({
           <NavLink to="/appeals" current={path === "/appeals"} onNavigate={onNavigate}>
             Appeals
           </NavLink>
+          {/* 3d Task 7 (8.1): Held uploads, after Appeals. */}
+          <NavLink to="/uploads" current={path === "/uploads"} onNavigate={onNavigate}>
+            Held uploads
+          </NavLink>
           <NavLink to="/standing" current={path === "/standing"} onNavigate={onNavigate}>
             Standing
           </NavLink>

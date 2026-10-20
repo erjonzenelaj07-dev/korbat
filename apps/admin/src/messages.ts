@@ -392,6 +392,11 @@ export const CONSOLE_MODERATION_CODES = [
   "release_period_unset",
   "release_period_running",
   "release_mismatch",
+  // 3d Task 7 (design, section 8.8): an end of a hold its state does not allow or without its reason, and an image that a
+  // match names, which staff are never served.
+  "hold_not_open",
+  "invalid_hold_end",
+  "image_matched",
 ] as const satisfies readonly ModerationErrorCode[];
 export type ConsoleModerationCode = (typeof CONSOLE_MODERATION_CODES)[number];
 
@@ -401,6 +406,9 @@ const COPY_BROKEN = "The download broke off, or its lines do not continue each o
 /** 3f [open.duplicate]: an order of this state, authority and reference is recorded already (order_exists). */
 const OPEN_DUPLICATE =
   "An order of this authority with this reference is already recorded. If that record is wrong, correct it on its screen; if it is closed, an admin reopens it there. Do not open the order a second time under a changed reference.";
+
+/** 3d Task 7 [case.image.matched] (8.4): in the place of an image that an unerased match record names, with no reveal control. */
+const IMAGE_MATCHED = "Not opened: this image matched a list of known material. Nobody at korbat opens it, also after an answer without a seal.";
 
 /** The console's words for each of them. A recusal reads the same whether the conflict concerns the author or a reporter. */
 export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
@@ -453,6 +461,10 @@ export const MODERATION_MESSAGES: Record<ConsoleModerationCode, string> = {
   release_period_unset: "korbat has set no period after which sealed images are released when an authority stays silent. Until counsel has set one and the terms publish it, nothing is released by time.",
   release_period_running: "The period has not ended, the author was not told the day in time, or an objection of the author's is unanswered.",
   release_mismatch: "The database refused this: the seal, the upload, the record of the report or the recorded leave is no longer what this page showed. Read the page again.",
+  // 3d Task 7 (8.8): a hold's end, and [case.image.matched] (8.4) for an image a match names.
+  hold_not_open: 'This hold cannot be ended this way: it is released, it ended as "No report" and its upload is deleted, or it ended the same way already. Read the page again.',
+  invalid_hold_end: 'An end as "No report" needs exactly one of its reasons, and an end as "Report" takes none. Nothing changed.',
+  image_matched: IMAGE_MATCHED,
 };
 
 /** A small number as a word, as the design's sentences write it; a larger one in digits. */
@@ -785,6 +797,65 @@ export const CUSTODY_WORDS = {
     inForce
       ? `Files lost: ${lost}. They were found in neither the image store nor the quarantine and are recorded as lost; there is nothing to move, hand over or destroy for them.`
       : `Files lost: ${lost}. Their images cannot be shown again; their author was told so.`,
+  /**
+   * 3d Task 7 (design, sections 8.2 and 8.6): Held uploads. No sentence names a handle, an image, a hash or a file's name;
+   * the two ends are worded as what each does, neither is preselected and no sentence says which to take (rule 4 of
+   * section 8). Every number is printed from the answer or from AUTOMATION_RULES and ORDER_RULES.
+   */
+  uploads: {
+    title: "Held uploads",
+    /** [uploads.what]. */
+    what: "An upload was not accepted because its source reports its fingerprint as an exact match with an entry that the source classifies as child sexual abuse material. It is on no post, nothing serves it, no data export holds it, and nobody at korbat opens it: this screen shows no image. It is held, with no end by a timer, until an admin ends the hold one of the two ways below.",
+    empty: "No upload is held, and none was released or ended in the last 30 days.",
+    more: "Show more",
+    refusedAt: (at: string) => `Refused at ${at}`,
+    /** [uploads.others]: counted over the refusals whose hold has not ended or ended as "Report". */
+    others: (n: number) => `Other held uploads of the same uploader: ${n}.`,
+    /** [uploads.gone], while the uploader's account no longer exists. */
+    gone: `The uploader's account no longer exists. A report can carry the file's facts and times, and the account's address only while korbat still holds it for a report: up to ${ORDER_RULES.reportHoldDays} days from the refusal, as after a seal. After that a report can carry the file's facts and times alone.`,
+    objection: { lead: (at: string) => `The uploader objected on ${at}:`, by: "Written by the uploader" },
+    /** [uploads.unseen], above the two controls, which stand side by side with the same weight. */
+    unseen:
+      "You decide without seeing the image, and this screen does not tell you which way. What you have is the record above: the source, the kind of match, the time, what the uploader wrote, and how many other uploads of the same uploader are held. Whether a match obliges korbat to report is a question of law that this screen does not answer: read the README's section A held upload, which holds what counsel has advised korbat, decide with whoever has the server, and write your ground into the operator's notes.",
+    /** The two ends, each its label and [uploads.report] or [uploads.noReport]. */
+    report: {
+      label: "Report",
+      what: 'The upload stays held and its files move to the quarantine, kept for the authority alone. Whoever has the server opens the record of the report (staff.js upload-report) and reports. The uploader reads on the notice that korbat reports the file. The hold then ends by a release on a recorded leave to destroy, or by "No report" later, with a reason.',
+    },
+    noReport: {
+      label: "No report",
+      what: `The hold ends. korbat deletes the upload ${AUTOMATION_RULES.noReportHours} hours from now; until then an admin can still end it as "Report" instead. Every staff account is mailed now that a hold ended without a report; the uploader is told that the hold was lifted only once the upload is deleted.`,
+      reason: "The reason",
+    },
+    /** The choice before the key: which end, and for "No report" which reason. Nothing is chosen when the page loads. */
+    choose: "Choose one of the two ends.",
+    chooseReason: 'Choose the reason of "No report".',
+    sign: 'You confirm with your staff key: this upload, the end you chose and, for "No report", its reason.',
+    confirm: "Confirm with your staff key",
+    adminOnly: "Only an admin can end a hold or release a held upload.",
+    /** The state lines. */
+    state: {
+      open: "Held, waiting for an admin.",
+      report: (endedAt: string, reported: boolean, quarantined: boolean) =>
+        `Held for a report since ${endedAt}. Report recorded: ${reported ? "yes" : "no"}. Files in the quarantine: ${quarantined ? "yes" : "no"}.`,
+      noReport: (endedAt: string, reason: string, deletesAt: string) => `Hold ended at ${endedAt}: ${reason}. The upload is deleted after ${deletesAt}; until then it can still be ended as "Report".`,
+      released: (releasedAt: string) => `Released at ${releasedAt}. Home counts the released files that are left to destroy.`,
+    },
+    /** The release block of a held upload: 8.5's, with "this upload" in place of "this seal, its posts". */
+    releaseSign: "You confirm with your staff key: this upload, the ground, and the leave with its reference as shown above.",
+    releaseDone: (releasedAt: string, held: boolean, backupsClearAt: string) =>
+      `Released at ${releasedAt}. Its files are in the quarantine until whoever has the server destroys them (the README, Quarantine), and every staff account is alerted daily while one is still recorded there. The uploader's notice: ${held ? "held until the person may be told" : "sent at once"}. No backup that is deleted on time holds these files after ${backupsClearAt}; a backup kept for an authority is destroyed by hand (the README, Backups).`,
+  },
+  /** [home.uploads] (8.2): a link to Held uploads; `oldest` printed by the screen. */
+  homeUploads: (open: number, oldest: string | null, objected: number) =>
+    `Held uploads: ${open} matched uploads wait for an admin${oldest === null ? "" : `, the oldest since ${oldest}`}; ${objected} uploaders objected and have no answer.`,
+  homeUploadsCapped: (capped: number) =>
+    `${capped} uploads matched over the limit of refusals an hour and are neither refused nor accepted: the operator looks at the comparison first (the alert says so).`,
+  homeUploadsLink: "Open Held uploads",
+  /** [home.released] (8.2) for a held upload: one line a release, newest first. */
+  homeReleasedUpload: (at: string) => `Released in the last 30 days, each by an admin's key: ${at}, a held upload.`,
+  /** [home.unreported] (8.2): one line an end, newest first. */
+  homeUnreported: (at: string) => `Holds ended without a report in the last 30 days, each by an admin's key: ${at}.`,
 } as const;
 
 /**
@@ -840,6 +911,55 @@ export const AUTOMATION_WORDS = {
     by: "Written by the author",
     tail: `korbat's published target is an answer within ${AUTOMATION_RULES.objectionTargetHours} hours. Lift the measure or decide the case; either way the author gets that decision's statement, and nothing else answers this.`,
   },
+  /** 3d Task 7 [queue.matchFlag] (8.3): a match that only flags; it moves nothing. */
+  queueMatchFlag: "A match that only flags",
+  /** [home.flags] (8.2). */
+  homeFlags: (flags: number) =>
+    `Matches that only flag: ${flags} open cases hold one, a match with an entry that its source does not class as child sexual abuse material. Each stands in the queue where its lane and age put it.`,
+  /**
+   * 3d Task 7 [case.match] (8.4): a match's record as a list of label and value. The source, the list version and the
+   * classification are a source's strings, drawn framed under `frame`, never in a label's place (rule 3 of section 8).
+   */
+  match: {
+    title: "The match's record",
+    frame: "As the source returned it",
+    source: "Source",
+    listVersion: "List version",
+    hashType: "Hash type",
+    matchKind: "Kind of match, as the source reported it",
+    classification: "Classification, as the source returned it",
+    queriedAt: "Compared at",
+    none: "not returned",
+    /** [case.matchWeak]: under the record for a hash that can be made to collide on purpose, or a perceptual one. */
+    weak: (hashType: "sha256" | "sha1" | "md5" | "pdq"): string | null =>
+      hashType === "md5"
+        ? "A file with the same MD5 as another can be made on purpose by whoever made both files."
+        : hashType === "sha1"
+          ? "A file with the same SHA-1 as another can be made on purpose by whoever made both files."
+          : hashType === "pdq"
+            ? "A perceptual hash describes how a picture looks. Two different pictures can have the same one, by accident or on purpose."
+            : null,
+    /** [case.matchActing]. */
+    acting:
+      "The source reports this as an exact match with an entry that it classifies as child sexual abuse material. That is the one kind of match on which korbat's program refuses an upload or, where the owner has switched that on, seals a post's images. It is the source's word about a fingerprint: nobody at korbat has checked it, and nobody can.",
+    /** [case.matchNear]. */
+    near: "The source reports this as a match with an entry that it classifies as child sexual abuse material, but it is not a match on which korbat's program acts: the source does not report it as exact (the kind of match is shown above), or the entry is outside the part of its list that korbat acts on. The program refused and sealed nothing on it, and the author was told nothing. It opened this finding under rule R2, so the post is frozen as after any such finding: korbat keeps its images, also against the author's deletion, until an admin has answered, and the urgent alert went out. A similar fingerprint can be made on purpose for a harmless image. Only an admin answers: seal for good, or answer without a seal, without seeing the images.",
+    /** [case.matchFlag]. */
+    flag: "This match is a flag and nothing more: the source does not class the entry as child sexual abuse material. The program refused, sealed and froze nothing and cited no rule, nobody was alerted, and the author was told nothing. Decide the case on what you can read: this record, the post's text and alt texts, and the account's conduct. If they give you a ground of your own, decide on that rule or the law; if they do not, decide that nothing breaks a rule, which answers the flag.",
+    /** [case.matchWhat], under either. */
+    what: "What a match shows: a file has the same, or a similar, fingerprint as one that the source classified. It does not show what the image is. Nobody at korbat opens an image that a match names, before an answer or after it. Decide as for a report: on this record, the post's text and alt texts, and the account's conduct. Never write that the image is child sexual abuse material or that korbat confirmed it.",
+  },
+  /** [case.image.matched] (8.4). */
+  imageMatched: IMAGE_MATCHED,
+  /** [case.autoR2] (8.4), for a program's seal of a post's images. */
+  caseAutoR2:
+    "Only an admin answers a seal: seal for good, or answer without a seal. You answer without seeing the images, and nobody at korbat opens them afterwards either. An answer without a seal puts them before everyone again: it needs one of the reasons below.",
+  /** [case.liftedMatch] (8.4), in the place of 3c's sentence after an answer without a seal, on a case that holds a match. */
+  liftedMatch: "After an answer without a seal the images are served again as before. They stay closed to staff: nobody at korbat opens an image that a match names, on this case or on any other. No person will have looked at them.",
+  /** [case.autoRecord]'s second sentence, for an admin who restricts on a match's finding citing R2. */
+  caseAutoRecordPartly: "It is recorded as taken partly by automated means: you cannot view the images, so the comparison is a fact your decision rests on.",
+  /** The reason an answer without a seal on an acting match asks for, before the key (8.4). */
+  answerReason: { legend: "The reason of this answer without a seal", choose: "Choose the reason of this answer without a seal: it is part of what your key signs." },
   /** [restore.program] (8.7), beside a gap whose lost row is a program's decision. */
   restoreProgram: "A program took this measure, not a person. Take it again as your own decision while you decide; the author is sent your decision's statement.",
 } as const;
@@ -972,6 +1092,15 @@ export const RECOVERY_WORDS = {
             ? `Lost: the withdrawal, on ${actedAt}, of a leave that had been recorded by mistake. The database shows that leave as standing again. Do not release on it.`
             : `Lost: a release of ${actedAt}. The database again treats its images as sealed and kept.`,
       /** [restore.release], [restore.leave] and [restore.withdrawn], in place of a control. */
+      /** 3d Task 7: a lost end of a held upload's hold, with the way it ended. */
+      holdLine: (actedAt: string, endAs: "report" | "no_report") =>
+        `Lost: the end of a held upload's hold, of ${actedAt}, as ${endAs === "report" ? "Report" : "No report"}. The database again shows the hold as open, or does not hold the refusal at all.`,
+      /** [restore.holdEnd]: when the refusal is there, beside a link to Held uploads; when it is gone, in place of a control. */
+      holdEnd: (present: boolean) =>
+        present
+          ? "End this hold again the same way; your key closes this gap. Do not run upload-report a second time: whoever has the server checks the keeper's files for the record of the report first."
+          : "No key closes this. Whoever has the server replays it (staff.js release-replay), which keeps the image's row from being posted and lists its files.",
+      holdLink: "Open Held uploads",
       control: (action: string) =>
         action === "release_leave_recorded"
           ? "No key closes this. Whoever has the server records the leave again from what korbat holds in writing (staff.js release-leave, naming this gap); that closes it."

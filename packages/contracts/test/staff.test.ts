@@ -247,6 +247,9 @@ describe("step-up actions", () => {
       "gap_closed",
       "audit_exported",
       "seal_released",
+      // 3d Task 7: the two ends of a held upload's hold and its release.
+      "upload_hold_ended",
+      "upload_released",
     ]);
     expect(StaffStepUpActionName.options).toEqual(Object.keys(STAFF_STEP_UP_ACTIONS));
     const spec = STAFF_STEP_UP_ACTIONS.staff_session_revoked;
@@ -621,7 +624,7 @@ describe("the step-up actions of moderation cases", () => {
     // They are no words about a person, are bound one line of 1 to 200 characters, and are compared with the order's row.
     // 3d Task 2 (section 10.4): the release's reference, the file number under which an authority or a court gave its
     // leave, bound as 3f binds one and compared with the leave's record at commit by releases_confirmed.
-    const named: Record<string, string[]> = { order_corrected: ["$.facts.authority", "$.facts.reference"], order_effected: ["$.authority", "$.reference"], seal_released: ["$.theirReference"] };
+    const named: Record<string, string[]> = { order_corrected: ["$.facts.authority", "$.facts.reference"], order_effected: ["$.authority", "$.reference"], seal_released: ["$.theirReference"], upload_released: ["$.theirReference"] };
     // 3f Task 6: the audit download's target is a place, as decimal digits: no text at all.
     const PLACE = "/^[1-9][0-9]{0,14}$/";
     const place = (action: string) => (s: { format: string | undefined; patterns: string[] }) => action === "audit_exported" && s.format === undefined && s.patterns.length === 1 && s.patterns[0] === PLACE;

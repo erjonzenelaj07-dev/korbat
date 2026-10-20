@@ -55,8 +55,52 @@ describe("trust and safety schema", () => {
     // copy_marks; then 3d's first, quarantine_files; then the release's four (Task 2): release_leaves, releases,
     // release_posts and release_notices; then the edge's outbox (Task 3), edge_purges; then the public figures' two (Task
     // 4), transparency_editions and recipient_months; then the head's (Task 5), head_publications; then the automated
-    // decision's two (Task 6), automated_signals and automated_objections.
-    expect(tables.length).toBe(66);
+    // decision's two (Task 6), automated_signals and automated_objections; then known material's three (Task 7),
+    // media_hashes, media_matches and upload_refusals.
+    expect(tables.length).toBe(69);
+  });
+
+  test("3d Task 7's known material (section 6.7): the hashes of an image, a match's record and a held upload's refusal, each under its closed lists, with its keys and indexes", () => {
+    const hashes = byName.get("media_hashes")!;
+    const matches = byName.get("media_matches")!;
+    const refusals = byName.get("upload_refusals")!;
+    const checkSql = (table: typeof hashes, name: string) => new PgDialect().sqlToQuery(table.checks.find((c) => c.name === name)!.value).sql;
+    // The three cryptographic hashes are required; PDQ, its quality and its implementation are null in this build.
+    expect(hashes.columns.map((c) => [c.name, c.getSQLType(), c.notNull])).toEqual([
+      ["media_id", "uuid", true],
+      ["sha256", "bytea", true],
+      ["sha1", "bytea", true],
+      ["md5", "bytea", true],
+      ["pdq", "bytea", false],
+      ["pdq_quality", "smallint", false],
+      ["pdq_impl", "smallint", false],
+      ["check_state", "text", true],
+      ["checked_at", "timestamp with time zone", false],
+      ["source", "text", false],
+    ]);
+    expect(checkSql(hashes, "media_hashes_check_state")).toBe(`"media_hashes"."check_state" in ('pending', 'clear', 'matched', 'unchecked', 'capped')`);
+    // The hashes die with their image row.
+    expect(hashes.foreignKeys.map((k) => [k.reference().columns.map((c) => c.name), getTableConfig(k.reference().foreignTable).name, k.onDelete])).toEqual([[["media_id"], "post_media", "cascade"]]);
+    expect(checkSql(matches, "media_matches_hash_type")).toBe(`"media_matches"."hash_type" in ('sha256', 'sha1', 'md5', 'pdq')`);
+    expect(checkSql(matches, "media_matches_kind")).toBe(`"media_matches"."match_kind" in ('exact', 'near')`);
+    expect(matches.checks.map((c) => c.name).sort()).toEqual(["media_matches_acting", "media_matches_erased", "media_matches_hash_type", "media_matches_kind", "media_matches_texts"]);
+    expect(checkSql(refusals, "upload_refusals_end_as")).toBe(`"upload_refusals"."end_as" in ('report', 'no_report')`);
+    expect(checkSql(refusals, "upload_refusals_end_reason")).toBe(`"upload_refusals"."end_reason" in ('source_withdrew', 'counsel_no_duty', 'other')`);
+    expect(refusals.checks.map((c) => c.name).sort()).toEqual(["upload_refusals_end_as", "upload_refusals_end_reason", "upload_refusals_ended", "upload_refusals_lifted", "upload_refusals_objection"]);
+    // A refusal's image has no foreign key, so the sweeper's deletion of an image ended as no_report never waits for it;
+    // its match record and its release are kept with it, and its owner's profile is never deleted.
+    expect(refusals.foreignKeys.map((k) => [k.reference().columns.map((c) => c.name), getTableConfig(k.reference().foreignTable).name]).sort()).toEqual([
+      [["match_id"], "media_matches"],
+      [["owner_id"], "profiles"],
+      [["release_id"], "releases"],
+    ]);
+    expect(refusals.columns.find((c) => c.name === "media_id")?.isUnique).toBe(true);
+    // The signal's match record, now that its table exists (Task 6 left it without a key).
+    const signals = byName.get("automated_signals")!;
+    expect(signals.foreignKeys.map((k) => [k.reference().columns.map((c) => c.name), getTableConfig(k.reference().foreignTable).name, k.onDelete]).sort()).toEqual([
+      [["decision_id"], "decisions", "restrict"],
+      [["match_id"], "media_matches", "restrict"],
+    ]);
   });
   test("3d's automated decision (section 6.6): a signal under closed lists, its score or its match, its four once-set columns and its indexes; the request for a person, one a decision; each read and allowed for the API's role alone", () => {
     const signals = byName.get("automated_signals")!;
@@ -85,9 +129,10 @@ describe("trust and safety schema", () => {
     expect(checkSql(signals, "automated_signals_kind")).toBe(`"automated_signals"."kind" in ('r1_score', 'known_match')`);
     expect(checkSql(signals, "automated_signals_handled")).toBe(`"automated_signals"."handled" in ('finding', 'measure', 'capped', 'covered', 'gone')`);
     expect(checkSql(signals, "automated_signals_handled_at")).toBe(`("automated_signals"."handled_at" is null) = ("automated_signals"."handled" is null)`);
-    // The image has no foreign key, so a deletion never waits for a signal; the match record's comes with its table (Task 7).
-    expect(signals.foreignKeys.map((k) => [k.reference().columns.map((c) => c.name), getTableConfig(k.reference().foreignTable).name, k.onDelete])).toEqual([
+    // The image has no foreign key, so a deletion never waits for a signal; the match record's came with its table (Task 7).
+    expect(signals.foreignKeys.map((k) => [k.reference().columns.map((c) => c.name), getTableConfig(k.reference().foreignTable).name, k.onDelete]).sort()).toEqual([
       [["decision_id"], "decisions", "restrict"],
+      [["match_id"], "media_matches", "restrict"],
     ]);
     const where = (config: { where?: SQL }) => (config.where ? new PgDialect().sqlToQuery(config.where).sql : null);
     expect(signals.indexes.map((i) => [i.config.name, i.config.unique, i.config.columns.map((c) => (c as { name: string }).name), where(i.config)]).sort()).toEqual([
@@ -936,6 +981,8 @@ describe("moderation cases 3c", () => {
       "decisions_interim",
       "decisions_keyword",
       "decisions_law_no_rule",
+      // 3d Task 7 (note 26): the reason of an answer without a seal on an acting match, one of MATCH_ANSWER_REASONS.
+      "decisions_match_answer_reason",
       "decisions_restricted",
       "decisions_reversal_plain",
       "decisions_review_target",
@@ -1393,9 +1440,9 @@ describe("the contact point and the alert channel 3f", () => {
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
     // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two,
-    // then Task 3's one, then Task 5's two, then Task 6's three.
+    // then Task 3's one, then Task 5's two, then Task 6's three, then Task 7's two.
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain(
-      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed', 'automated_objection', 'automation_capped', 'automated_waiting')",
+      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed', 'automated_objection', 'automation_capped', 'automated_waiting', 'matcher_down', 'hold_ended_unreported')",
     );
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);

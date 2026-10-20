@@ -3,7 +3,7 @@ import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
 import { EdgePurgeView, MediaId } from "./media";
 import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, ORDER_RULES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
-import { SIGNAL_KINDS } from "./automation";
+import { MATCH_ANSWER_REASONS, MATCH_HASH_TYPES, MATCH_KINDS, SIGNAL_KINDS, UPLOAD_END_REASONS, UPLOAD_ENDS } from "./automation";
 import { FORBIDDEN_FORMAT } from "./text";
 
 // Moderation cases (3c design, section 10): the constants and digests that the database, the API, the console, the app,
@@ -420,6 +420,13 @@ export const SEAL_DRAFTS = {
     finding_post: "A moderator reported images of this post as possible child sexual abuse material.",
     finding_account: "A moderator reported images on this account's posts as possible child sexual abuse material. korbat sealed every image on the account's posts.",
     finding_added: "A moderator reported content on korbat that shows this post's images as possible child sexual abuse material.",
+    /**
+     * 3d Task 7 (W.3): a seal for good on a case whose only suspect items are a program's. {comparison} is W.3's clause of
+     * the comparison (@korbat/rules), with "this post" for "your post" and a capital letter, which the console fills in;
+     * the draft says what the comparison found and not that anyone reported the images, and holds no hash, no list version
+     * and no classification string.
+     */
+    match_post: "{comparison}. korbat's staff do not open such an image, and korbat has not assessed it.",
   },
   reason: {
     deciding: "korbat's staff do not open images reported this way, so korbat has not assessed them. It hides them from everyone, you included, until an admin has answered the report.",
@@ -548,6 +555,11 @@ export const ModerationErrorCode = z.enum([
   "objection_not_open",
   "already_protected",
   "automation_capped",
+  // 3d Task 7 (design, section 10.7): the end of a held upload's hold that its state does not allow, or without its reason
+  // or with one too many; and an image that an unerased match record names, which staff are never served.
+  "hold_not_open",
+  "invalid_hold_end",
+  "image_matched",
 ]);
 export type ModerationErrorCode = z.infer<typeof ModerationErrorCode>;
 
@@ -930,6 +942,13 @@ export const NoticeItemStatus = z.object({
   reexamination: z.object({ open: z.boolean(), until: z.string() }).nullable(),
   rule: z.object({ id: z.enum(RULE_IDS), title: z.string() }).optional(),
   noEffect: z.literal(true).optional(),
+  /**
+   * 3d Task 7 (design, sections 7.10 and 10.2): the answering decision's own automated_decision, which comes only with a
+   * released outcome and only when it is `partially` (an admin restricted on a program's finding under R2 without
+   * opening the images): the line then prints update.automated.partly in the place of 3c's fixed sentence. A program's
+   * decision never answers an item, and every other line reads not_automated, so the member is absent for them.
+   */
+  automatedDecision: z.literal("partially").optional(),
 });
 export type NoticeItemStatus = z.infer<typeof NoticeItemStatus>;
 
@@ -1314,6 +1333,12 @@ export const QueueRow = z.object({
   foundByProgram: z.boolean(),
   takenByProgram: z.boolean(),
   objected: z.boolean(),
+  /**
+   * 3d Task 7 (design, sections 8.3 and 10.3): an unanswered item of the case is a program's finding that cites no rule,
+   * a match with an entry of another class than the source's own for child sexual abuse material ([queue.matchFlag]). It
+   * moves nothing: the case stands where its lane and age put it.
+   */
+  matchFlag: z.boolean(),
 });
 export type QueueRow = z.infer<typeof QueueRow>;
 
@@ -1652,6 +1677,8 @@ export const CaseDecision = z.object({
   staffHandle: z.string().nullable(),
   /** 3d Task 6 (design, sections 8.4 and 10.3): the decision has no decider: a program took it ([case.auto]). */
   byProgram: z.boolean(),
+  /** 3d Task 7 (note 26): the reason of an answer without a seal on an acting match, which the key signed; null otherwise. */
+  matchAnswerReason: z.enum(MATCH_ANSWER_REASONS).nullable(),
   throughSeq: Count,
   answersFromSeq: Count.nullable(),
   reviewsDecisionId: z.uuid().nullable(),
@@ -1813,12 +1840,33 @@ export type CaseSuspicion = z.infer<typeof CaseSuspicion>;
  * seal, and its history. `suspicion` is set for a case that holds a suspect item or a seal. `imagesAllowed` is false
  * while the post is frozen, and for every account case: an account case shows no image.
  */
+/**
+ * 3d Task 7 (design, sections 7.11, 8.4 and 10.3): a match's record as staff are shown it, never its hash value: the
+ * source, its list version and the classification as the source returned them (a third party's strings, at most 100
+ * characters, which the console draws framed), the hash type (so the console can say what an MD5 or SHA-1 match is
+ * worth), the kind of match as the source reported it, whether the source lists the class as child sexual abuse material,
+ * whether the match acts, and when the comparison was made. An erased record has no classification.
+ */
+export const MatchRecord = z.object({
+  source: z.string().min(1).max(100),
+  listVersion: z.string().max(100).nullable(),
+  hashType: z.enum(MATCH_HASH_TYPES),
+  matchKind: z.enum(MATCH_KINDS),
+  classification: z.string().max(100).nullable(),
+  listed: z.boolean(),
+  acting: z.boolean(),
+  queriedAt: z.iso.datetime(),
+});
+export type MatchRecord = z.infer<typeof MatchRecord>;
+
 /** 3d Task 6: an item a program opened, as the case page reads it (CaseView.signals). */
 export const CaseSignal = z.object({
   itemId: z.uuid(),
   kind: z.enum(SIGNAL_KINDS),
   /** The version of the threshold a score was over; 0 under the test scorer; null for a match. */
   thresholdVersion: z.number().int().min(0).nullable(),
+  /** 3d Task 7: for a match, its record ([case.match]); null for a score. */
+  match: MatchRecord.nullable(),
 });
 export type CaseSignal = z.infer<typeof CaseSignal>;
 
@@ -1882,6 +1930,12 @@ export const CaseView = z.object({
    * ([case.objection]); null when none stands. The text is the author's, drawn framed.
    */
   objection: z.object({ text: z.string(), createdAt: z.iso.datetime() }).nullable(),
+  /**
+   * 3d Task 7 (design, sections 7.11, 8 rule 2 and 10.3): the images of the case's snapshots that an unerased match record
+   * names, which staff are never served, on this case or any other, also after an answer without a seal
+   * ([case.image.matched]). A list beside the snapshots, so the members each snapshot's digest covers stay as they are.
+   */
+  matchedImages: z.array(z.uuid()),
 });
 export type CaseView = z.infer<typeof CaseView>;
 
@@ -2192,7 +2246,7 @@ export const RELEASE_NOTICE_POSTS_MAX = 20;
  * whose notice is held. Task 7 adds the refusals of uploads (`upload_refused`).
  */
 export const AuthorNoticesPage = z.object({
-  notices: z.array(z.object({ kind: z.enum(["release"]), id: z.uuid(), at: z.iso.datetime() })).max(AUTHOR_NOTICES_PAGE_SIZE),
+  notices: z.array(z.object({ kind: z.enum(["release", "upload_refused"]), id: z.uuid(), at: z.iso.datetime() })).max(AUTHOR_NOTICES_PAGE_SIZE),
   nextCursor: z.string().nullable(),
 });
 export type AuthorNoticesPage = z.infer<typeof AuthorNoticesPage>;
@@ -2217,6 +2271,31 @@ export const ReleaseNoticeView = z.object({
   sealDecisionId: z.uuid().nullable(),
 });
 export type ReleaseNoticeView = z.infer<typeof ReleaseNoticeView>;
+
+/**
+ * 3d Task 7 (design, sections 7.12, 9.5, 10.2 and W.5): GET /api/moderation/uploads/:refusal, what uploadNoticeParagraphs
+ * reads of a refused upload, for its uploader alone, and nothing of the file: no hash, no classification string, no list
+ * version, no admin. `matchKind` is derived as in a statement (statementMatchKind) and `listedAs` is always csam: only an
+ * acting match is ever refused. `mayObject` is 7.12's one rule. `endedAt`, `endAs` and `endReason` are null while the hold
+ * stands, and for an end as no_report until its delay has passed: the uploader is told of that end when it is one.
+ * `released` is the release's time, null while there is none or its notice is held. `reportKept` is true while a record of
+ * a report under 3f names the refusal.
+ */
+export const UploadRefusalView = z.object({
+  id: z.uuid(),
+  refusedAt: z.iso.datetime(),
+  source: z.string().min(1).max(100),
+  matchKind: z.enum(MATCH_KINDS),
+  listedAs: z.literal("csam"),
+  objection: z.object({ text: z.string(), objectedAt: z.iso.datetime() }).nullable(),
+  mayObject: z.boolean(),
+  endedAt: z.iso.datetime().nullable(),
+  endAs: z.enum(UPLOAD_ENDS).nullable(),
+  endReason: z.enum(UPLOAD_END_REASONS).nullable(),
+  released: z.iso.datetime().nullable(),
+  reportKept: z.boolean(),
+});
+export type UploadRefusalView = z.infer<typeof UploadRefusalView>;
 
 /** A strike as its decision's screen shows it: until when it counts, whether it still counts, ran out or was overruled, and when. */
 export const DecisionStrike = z.object({ countsUntil: z.iso.datetime(), state: z.enum(["counts", "expired", "overruled"]), overruledAt: z.iso.datetime().nullable() });
@@ -2537,11 +2616,81 @@ export const StaffOverview = z.object({
     oldestAt: z.iso.datetime().nullable(),
     objected: Count,
     oldestObjectionAt: z.iso.datetime().nullable(),
+    /** 3d Task 7: the open cases that hold an unanswered match that only flags ([home.flags]). */
+    flags: Count,
     cases: z.array(z.uuid()).max(AUTOMATED_CASES_MAX),
     objectedCases: z.array(z.uuid()).max(AUTOMATED_CASES_MAX),
   }),
+  /**
+   * 3d Task 7 (design, sections 7.12, 8.2 and 10.3): the held uploads no admin has ended, with the oldest refusal's time;
+   * the objections nobody answered, of a hold that is open or ended as report and not released; and the uploads that wait
+   * under the limit on refusals an hour, neither refused nor accepted ([home.uploads]).
+   */
+  heldUploads: z.object({ open: Count, oldest: z.iso.datetime().nullable(), objected: Count, capped: Count }),
 });
 export type StaffOverview = z.infer<typeof StaffOverview>;
+
+/**
+ * 3d Task 7 (design, sections 8.6 and 10.3): the release block of a held upload ended as report, as on a seal without its
+ * posts: the record upload-report opened (sent, its reference, the authority's assessment shown as what it is, when the
+ * files were handed over), whether both of the image's files are in the quarantine by record, the leave that stands, and
+ * whether the uploader's notice of a release taken now would be held; silence_days; and, once released, the release's
+ * time, ground, the day after which no backup that is deleted on time holds the file, and whether its notice is held.
+ */
+export const UploadRelease = z.object({
+  reported: z.boolean(),
+  theirReference: z.string().max(400).nullable(),
+  answer: z.enum(["not_illegal", "illegal", "no_assessment", "other"]).nullable(),
+  answeredAt: z.iso.datetime().nullable(),
+  handedOverAt: z.iso.datetime().nullable(),
+  quarantined: z.boolean(),
+  leave: ReleaseLeave.nullable(),
+  tellHeld: z.boolean(),
+  silenceDays: z.number().int().positive().nullable(),
+  releasedAt: z.iso.datetime().nullable(),
+  basis: z.enum(RELEASE_BASES).nullable(),
+  backupsClearAt: z.iso.datetime().nullable(),
+  noticeHeld: z.boolean().nullable(),
+});
+export type UploadRelease = z.infer<typeof UploadRelease>;
+
+/** How many held uploads one page of GET /api/staff/uploads lists. */
+export const UPLOADS_PAGE_SIZE = 50;
+
+/**
+ * 3d Task 7 (design, sections 7.12 step 3, 8.6 and 10.3): one refusal on Held uploads, never an image, a hash, a file's
+ * name or a handle: when it was refused; its match's record; `otherRefusals`, the one thing an admin is given about the
+ * uploader, the count of the same uploader's other refusals whose hold has not ended or ended as report, never one ended
+ * as no_report; whether the uploader's account still exists; the objection; its end, with `deletesAt` for an end as
+ * no_report (the image row's hold_until, after which the sweeper deletes it); whether the record of a report is set; and
+ * for an end as report the release block.
+ */
+export const HeldUpload = z.object({
+  id: z.uuid(),
+  refusedAt: z.iso.datetime(),
+  match: MatchRecord,
+  otherRefusals: Count,
+  uploaderGone: z.boolean(),
+  objection: z.string().nullable(),
+  objectedAt: z.iso.datetime().nullable(),
+  endedAt: z.iso.datetime().nullable(),
+  endAs: z.enum(UPLOAD_ENDS).nullable(),
+  endReason: z.enum(UPLOAD_END_REASONS).nullable(),
+  deletesAt: z.iso.datetime().nullable(),
+  reported: z.boolean(),
+  quarantined: z.boolean(),
+  release: UploadRelease.nullable(),
+});
+export type HeldUpload = z.infer<typeof HeldUpload>;
+
+/**
+ * GET /api/staff/uploads: the refusals whose hold has not ended, oldest first; then those ended as report and not
+ * released; then those released or ended as no_report in the last DESTRUCTIVE_DAYS days, UPLOADS_PAGE_SIZE a page.
+ */
+export const UploadsPage = z.object({ uploads: z.array(HeldUpload).max(UPLOADS_PAGE_SIZE), nextCursor: z.string().nullable() });
+export type UploadsPage = z.infer<typeof UploadsPage>;
+export const UploadsQuery = z.object({ cursor: z.string().regex(/^[A-Za-z0-9_-]{1,400}$/).optional() });
+export type UploadsQuery = z.infer<typeof UploadsQuery>;
 
 /**
  * 3f Task 6 (sections 7.17, 8.8 and 10.2): GET /api/staff/restore, what an import after a restore found lost, in the order
@@ -2566,6 +2715,11 @@ export const RestoreGap = z.object({
   closedByDecisionId: z.uuid().nullable(),
   /** 3d Task 2 ([restore.sealAgain], 8.7): the gap's case is about a post that is released, so a seal taken again freezes nothing. */
   released: z.boolean().optional(),
+  /**
+   * 3d Task 7 ([restore.holdEnd], 8.7): a lost end of a held upload's hold, with the way it ended and whether the restored
+   * database holds the refusal (an admin ends it again the same way) or not (only release-replay closes the gap).
+   */
+  hold: z.object({ endAs: z.enum(UPLOAD_ENDS), present: z.boolean() }).optional(),
 });
 export type RestoreGap = z.infer<typeof RestoreGap>;
 /** How many gaps one read of After a restore lists at most: every open gap, then the newest import's closed ones. */

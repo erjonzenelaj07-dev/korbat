@@ -4,10 +4,14 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   ACTION_KINDS,
   AUTOMATION_RULES,
+  CHECK_STATES,
   CSAM_KEYWORDS,
   DECISION_KEYWORDS,
   EDGE_PURGE_CAUSES,
   EDGE_PURGE_OUTCOMES,
+  MATCH_ANSWER_REASONS,
+  MATCH_HASH_TYPES,
+  MATCH_KINDS,
   MEASURES,
   NOTICE_LIMITS,
   ORDER_ACTION_KINDS,
@@ -15,6 +19,8 @@ import {
   SIGNAL_HANDLED,
   SIGNAL_KINDS,
   TDB_CATEGORIES,
+  UPLOAD_END_REASONS,
+  UPLOAD_ENDS,
   appealDeadline,
   textDigest,
 } from "@korbat/contracts";
@@ -22,6 +28,7 @@ import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { TEXT_DIGEST_VECTORS } from "../../../../packages/contracts/test/digest-vectors";
 import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
+import { MATCH_ACTING, MATCH_LISTED } from "../../src/media/match-adapter";
 import {
   MINORS,
   SPEECH,
@@ -493,6 +500,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         // one time and booleans: a lost image's notice owed and told, an image's custody, the home's counts and a seal's.
         "public.lost_told",
         "public.lost_untold",
+        // 3d Task 7 (0039_known_material): the adapter's listed and acting pairs, the end of a held upload's hold, its
+        // release and the release block's facts.
+        "public.match_acting",
+        "public.match_listed",
         "public.media_lost",
         "public.media_quarantined",
         // 3f's Task 2 (0027_orders): the hold and the preservation, and the two writers a key's audit row binds.
@@ -530,6 +541,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.sweep_staff_texts",
         "public.terminations_due",
         "public.transparency_rules",
+        "public.upload_hold_end",
+        "public.upload_release",
+        "public.upload_release_facts",
       ]);
     });
 
@@ -586,7 +600,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(matching(postLevel)).toEqual(["public.moderation_apply"]);
       expect(matching(postErased)).toEqual(["public.order_preservation_end", "public.redact_r4_body"]);
       // 3d Task 2 (0034_release; C 17, extended): a release and its replay erase the image rows of their posts.
-      expect(matching(imageErased)).toEqual(["public.order_preservation_end", "public.redact_r4_body", "public.release_replay", "public.seal_release"]);
+      // 3d Task 7 (0039_known_material): and a held upload's release, its replay, and the replay of a lost end as no_report.
+      expect(matching(imageErased)).toEqual([
+        "public.order_preservation_end",
+        "public.redact_r4_body",
+        "public.release_replay",
+        "public.seal_release",
+        "public.upload_hold_replay",
+        "public.upload_release",
+        "public.upload_release_replay",
+      ]);
       // Gate E: one function writes a snapshot's erasure, no function deletes a snapshot, and that one function is called
       // by the two erasures of 0018 and by nothing else.
       expect(matching(snapshotErased)).toEqual(["public.erase_snapshots"]);
@@ -668,6 +691,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         post_media_guard: 'BEFORE UPDATE OF post_id, owner_id, alt_text, "position", width, height, blurhash ON public.post_media FOR EACH ROW',
         post_media_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
         post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
+        // 3d Task 7 (0039_known_material): a refused upload is attached to no post, whatever the API sends.
+        post_media_refused: "BEFORE UPDATE OF post_id ON public.post_media FOR EACH ROW",
         // 3d Task 3 (0035_edge_purges): the edge's outbox row of an image that stops being public, after the statement.
         post_media_purge: "AFTER DELETE OR UPDATE OF moderation_state, erased_at ON public.post_media FOR EACH ROW",
         // 3e's reporting counts (0022_reporting_counts) add the tally of each report after it is stored, on the same table.
@@ -799,10 +824,63 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(listed(await checkDefinition("automated_signals", "automated_signals_handled"))).toEqual([...SIGNAL_HANDLED]);
     });
 
+    test("3d Task 7's tables and functions (0039_known_material; design, section 6.7): the grants, the CHECK lists as the contracts' constants, the adapter's pairs as MATCH_LISTED and MATCH_ACTING, and who owns and may call each function", async () => {
+      expect(await tablePrivileges("korbat_api", "public.media_hashes")).toEqual(["SELECT", "INSERT", "UPDATE", "DELETE"]);
+      expect(await tablePrivileges("korbat_api", "public.media_matches")).toEqual(["SELECT", "INSERT"]);
+      expect(await updatableColumns("korbat_api", "public.media_matches")).toEqual(["case_id", "handled_at"]);
+      expect(await tablePrivileges("korbat_api", "public.upload_refusals")).toEqual(["SELECT", "INSERT"]);
+      expect(await updatableColumns("korbat_api", "public.upload_refusals")).toEqual(["told", "lifted_told", "objection", "objected_at"]);
+      const listed = (definition: string) => [...definition.matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]);
+      expect(listed(await checkDefinition("media_hashes", "media_hashes_check_state"))).toEqual([...CHECK_STATES]);
+      expect(listed(await checkDefinition("media_matches", "media_matches_hash_type"))).toEqual([...MATCH_HASH_TYPES]);
+      expect(listed(await checkDefinition("media_matches", "media_matches_kind"))).toEqual([...MATCH_KINDS]);
+      expect(listed(await checkDefinition("upload_refusals", "upload_refusals_end_as"))).toEqual([...UPLOAD_ENDS]);
+      expect(listed(await checkDefinition("upload_refusals", "upload_refusals_end_reason"))).toEqual([...UPLOAD_END_REASONS]);
+      expect(listed(await checkDefinition("decisions", "decisions_match_answer_reason"))).toEqual([...MATCH_ANSWER_REASONS]);
+      // The database's two closed lists of pairs are the adapters' own, pair for pair, and nothing else answers true.
+      const pairs = (record: Readonly<Record<string, readonly string[]>>) => Object.entries(record).flatMap(([source, classes]) => classes.map((classification) => [source, classification] as const));
+      for (const [source, classification] of pairs(MATCH_LISTED)) {
+        expect((await apiDb.execute<{ yes: boolean }>(sql`select public.match_listed(${source}, ${classification}) as yes`))[0]!.yes, classification).toBe(true);
+      }
+      for (const [source, classification] of pairs(MATCH_ACTING)) {
+        expect((await apiDb.execute<{ yes: boolean }>(sql`select public.match_acting(${source}, ${classification}) as yes`))[0]!.yes, classification).toBe(true);
+      }
+      for (const [source, classification] of [["test", "test_unlisted"], ["other", "test_listed"], ["test", "TEST_LISTED"]] as const) {
+        const [row] = await apiDb.execute<{ listed: boolean; acting: boolean }>(sql`select public.match_listed(${source}, ${classification}) as listed, public.match_acting(${source}, ${classification}) as acting`);
+        expect(row, `${source} ${classification}`).toEqual({ listed: false, acting: false });
+      }
+      const all = await functions();
+      const pub = ["search_path=public, pg_temp"];
+      // [definer, EXECUTE for the API role]: the triggers fire for every role and nobody calls them; the API's role calls the
+      // two lists, the end of a hold, the release and its facts.
+      const expected: Record<string, [boolean, boolean]> = {
+        match_listed: [false, true],
+        match_acting: [false, true],
+        media_matches_insert: [false, false],
+        media_matches_guard: [false, false],
+        upload_refusals_insert: [true, false],
+        upload_refusals_hold: [true, false],
+        upload_refusals_guard: [false, false],
+        post_media_refused: [true, false],
+        upload_hold_end: [true, true],
+        upload_refusals_confirmed: [true, false],
+        upload_release_facts: [true, true],
+        upload_release: [true, true],
+        upload_release_replay: [true, false],
+        upload_hold_replay: [true, false],
+      };
+      for (const [name, [definer, api]] of Object.entries(expected)) {
+        const f = all.find((found) => found.name === `public.${name}`)!;
+        expect({ name, owner: f.owner, definer: f.definer, config: f.config, api: f.api, auth: f.auth, pub: f.pub }).toEqual({ name, owner: "korbat_migrate", definer, config: pub, api, auth: false, pub: false });
+      }
+    });
+
     test("3f Task 5's writers (0030_authority_records; design, section 6.7): only report_open and report_close_unsealed write a hold and a notification record, erase_authority_records deletes them, and none holds a number of order_rules()", async () => {
       const all = await functions();
       const writing = (pattern: RegExp) => all.filter((f) => pattern.test(f.definition)).map((f) => f.name);
-      expect(writing(/(UPDATE|INSERT INTO) auth[.]report_holds/i)).toEqual(["public.report_close_unsealed", "public.report_open"]);
+      // 3d Task 7 (0039_known_material): a refusal holds its uploader's address as a seal does, and an end of its hold
+      // releases it or holds it again.
+      expect(writing(/(UPDATE|INSERT INTO) auth[.]report_holds/i)).toEqual(["public.report_close_unsealed", "public.report_open", "public.upload_hold_end", "public.upload_refusals_hold"]);
       expect(writing(/(UPDATE|INSERT INTO) public[.]authority_notifications /i)).toEqual(["public.report_close_unsealed", "public.report_open"]);
       expect(writing(/DELETE FROM (auth[.]report_holds|public[.]authority_notifications|public[.]productions)/i)).toEqual(["public.erase_authority_records"]);
       // report_close_unsealed has its two callers: the final decision that answered a suspect item, and an unseal_media row.
@@ -835,7 +913,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const all = await functions();
       const writing = (pattern: RegExp) => all.filter((f) => pattern.test(f.definition)).map((f) => f.name);
       // 3d Task 2 (0034_release; design, section 6.2): the replay of a release closes its gap, as the migrator.
-      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]restore_gaps/i)).toEqual(["public.delete_restore_gaps", "public.gap_close", "public.release_replay"]);
+      // 3d Task 7 (0039_known_material): an admin's new end of a hold closes its gap, and so do the two replays of a held upload.
+      expect(writing(/(UPDATE|INSERT INTO|DELETE FROM) public[.]restore_gaps/i)).toEqual([
+        "public.delete_restore_gaps",
+        "public.gap_close",
+        "public.release_replay",
+        "public.upload_hold_end",
+        "public.upload_hold_replay",
+        "public.upload_release_replay",
+      ]);
       expect(writing(/DELETE FROM public[.]copy_marks/i)).toEqual(["public.delete_restore_gaps"]);
       // gap_close is called by the routes alone, never by another function: a decision closes a gap in the API's transaction.
       expect(writing(/gap_close[(]/).filter((name) => name !== "public.gap_close")).toEqual([]);

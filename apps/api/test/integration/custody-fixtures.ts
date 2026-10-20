@@ -47,14 +47,15 @@ export async function planOf(q: Db | DbTx, mediaIds: readonly string[]): Promise
 /**
  * What ageCustodyForTest moves back: a decision (when a move in became due) with its ledger rows; an image's quarantine
  * rows; an alert kind's rows; (3d Task 6) a signal, by its id, or the request for a person about a decision, by the
- * decision's id.
+ * decision's id; (3d Task 7) a held upload's refusal, by its id, with its match record and its image's hold.
  */
 export type CustodyAgeTarget =
   | { decision: string }
   | { media: string }
-  | { alerts: "quarantine_due" | "quarantine_lost" | "automated_waiting" | "automated_objection" | "automation_capped" }
+  | { alerts: "quarantine_due" | "quarantine_lost" | "automated_waiting" | "automated_objection" | "automation_capped" | "matcher_down" | "hold_ended_unreported" }
   | { signal: string }
-  | { objection: string };
+  | { objection: string }
+  | { refusal: string };
 
 /**
  * The fixture of 3d's section 12, `ageCustodyForTest(target, interval)` (Task 1; Tasks 2, 6 and 7 grow it): as the
@@ -63,8 +64,10 @@ export type CustodyAgeTarget =
  * decision: its decided_at, and the created_at of its ledger rows and of every ledger row that reversed one of them (when
  * a return became due). For an image: every time its quarantine rows hold. For an alert kind: when each of its outbox
  * rows was created. 3d Task 6: for a signal, when it was written and when it was handled, so the sweep's window and its
- * minute are met; for a request for a person, when it was sent, so its target and the limit on waiting are met. Run it
- * inside a transaction that ends in a rollback, or undo it.
+ * minute are met; for a request for a person, when it was sent, so its target and the limit on waiting are met. 3d Task
+ * 7: for a refusal, when it was refused, objected to and ended, when its match record was compared and handled, and the
+ * image row's hold when it is a time (an end as no_report), so the delay of noReportHours, the hold on the address and
+ * the matchKeepDays of the record are met. Run it inside a transaction that ends in a rollback, or undo it.
  */
 export async function ageCustodyForTest(q: Db | DbTx, target: CustodyAgeTarget, interval: string): Promise<void> {
   if ("decision" in target) {
@@ -83,6 +86,17 @@ export async function ageCustodyForTest(q: Db | DbTx, target: CustodyAgeTarget, 
     await q.execute(sql`update public.automated_signals set created_at = created_at - ${interval}::interval, handled_at = handled_at - ${interval}::interval where id = ${target.signal}::uuid`);
   } else if ("objection" in target) {
     await q.execute(sql`update public.automated_objections set created_at = created_at - ${interval}::interval where decision_id = ${target.objection}::uuid`);
+  } else if ("refusal" in target) {
+    await q.execute(sql`
+      update public.upload_refusals
+         set refused_at = refused_at - ${interval}::interval, objected_at = objected_at - ${interval}::interval, ended_at = ended_at - ${interval}::interval
+       where id = ${target.refusal}::uuid`);
+    await q.execute(sql`
+      update public.media_matches m set queried_at = m.queried_at - ${interval}::interval, handled_at = m.handled_at - ${interval}::interval
+        from public.upload_refusals r where r.id = ${target.refusal}::uuid and m.id = r.match_id`);
+    await q.execute(sql`
+      update public.post_media p set hold_until = p.hold_until - ${interval}::interval
+        from public.upload_refusals r where r.id = ${target.refusal}::uuid and p.id = r.media_id and p.hold_until <> 'infinity'::timestamptz`);
   } else {
     await q.execute(sql`update public.alert_outbox set created_at = created_at - ${interval}::interval where kind = ${target.alerts}`);
   }

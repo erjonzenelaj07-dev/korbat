@@ -3,11 +3,13 @@ import type { DbTx } from "@korbat/db";
 import type { MediaFormat } from "@korbat/media-protocol";
 import type { Logger } from "pino";
 import type { MediaFiles } from "./files";
+import type { MatchAdapter } from "./match-adapter";
+import type { MatchRepo } from "./match-repo";
 import type { MediaRepo } from "./repo";
 
 /** The media codes plus the shared ones the module also raises; 3e's account_suspended is the social module's code, shared. */
 export type MediaErrorKind = MediaErrorCode | "not_found" | "invalid_request" | "account_suspended";
-export type MediaErrorStatus = 400 | 403 | 404 | 409 | 413 | 415 | 503;
+export type MediaErrorStatus = 400 | 403 | 404 | 409 | 413 | 415 | 422 | 503;
 
 const MESSAGES: Record<MediaErrorKind, string> = {
   unsupported_media_type: "That file type is not supported. Use a JPEG, PNG, WebP, AVIF or GIF image.",
@@ -15,6 +17,8 @@ const MESSAGES: Record<MediaErrorKind, string> = {
   too_many_pending_uploads: "You have too many images waiting to be posted. Post or remove some first.",
   uploads_unavailable: "Image uploads are temporarily unavailable. Try again later.",
   media_unavailable: "One of the images is not available. Remove it and add it again.",
+  // 3d Task 7 (design, sections 9.5 and 9.7, [upload.refusedPost]): a post that attaches an upload korbat did not accept.
+  upload_refused: "This image was not accepted, so the post was not sent. Remove the image to post. Its notice is under Settings, Cases.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // 3e (design, sections 7.2 and 9.8): an upload while the account's suspension runs, in the social module's words.
@@ -83,4 +87,24 @@ export interface MediaDeps {
    * score only from this model, so a score of another build, or one written while the setting differed, is never stored.
    */
   r1Model: string | null;
+  /**
+   * 3d Task 7 (design, sections 5 and 7.8): the comparison with known material, as MEDIA_MATCH chose it (off unless set),
+   * and the statements on its three tables. While the adapter is off nothing is hashed or compared.
+   */
+  match: MatchAdapter;
+  matches: MatchRepo;
+  /**
+   * The moderation module's handler of a stored refusal or of a match on a posted image (media.onMatch), which the wiring
+   * hands over after the moderation module is built; null until then, and in tests that build none.
+   */
+  matched: { handler: MatchHandler | null };
 }
+
+/**
+ * 3d Task 7 (design, section 5, media.onMatch): what the media module tells the moderation module after a commit: a
+ * refusal it stored, for the uploader's notice and the urgent alert (the media module mails nobody); a match it stored for
+ * an image on a post, the automated step's entry for a late match; and the first upload of an hour that matched over the
+ * limit on refusals, for matcher_down at once. A call lost to a crash is found by the sweep or the dispatch round.
+ */
+export type MatchEvent = { kind: "refused"; refusalId: string } | { kind: "posted"; mediaId: string; matchId: string } | { kind: "capped" };
+export type MatchHandler = (event: MatchEvent) => Promise<void>;

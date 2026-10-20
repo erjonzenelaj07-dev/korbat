@@ -70,6 +70,10 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   "automated_objection",
   "automation_capped",
   "automated_waiting",
+  // 3d Task 7: matcher_down, which alert_steps() writes daily and the first upload over the limit on refusals writes at
+  // once, and hold_ended_unreported, which staffAlert writes after an end of a hold without a report.
+  "matcher_down",
+  "hold_ended_unreported",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */
@@ -187,12 +191,18 @@ export async function staffAlert(deps: Pick<ModerationDeps, "apiDb" | "auth" | "
  * two cases into the lane and sends one alert that counts both. Best effort, after the commit and the answer; the
  * dispatch job repeats it while a lane-0 item still calls for someone.
  */
-export async function alertUrgentLane(deps: Pick<ModerationDeps, "apiDb" | "auth" | "limits" | "log" | "config">): Promise<"sent" | "throttled" | "unsent" | "nothing_waiting"> {
+export async function alertUrgentLane(deps: Pick<ModerationDeps, "apiDb" | "auth" | "limits" | "log" | "config"> & { media?: Pick<ModerationDeps["media"], "heldOverview"> }): Promise<"sent" | "throttled" | "unsent" | "nothing_waiting"> {
   const waiting = await urgentWaiting(deps.apiDb);
+  // 3d Task 7 (7.8 step 4, W.7): the held uploads no admin has ended, and those ended as report and not released on which
+  // an objection waits, count beside the lane's cases, and the mail names them in a sentence of their own.
+  const held = deps.media === undefined ? null : await deps.media.heldOverview();
+  const heldUploads = held === null ? 0 : held.open + held.objected;
+  const count = waiting.count + heldUploads;
+  const oldest = [waiting.oldest, held?.oldest === null || held === null ? null : new Date(held.oldest)].filter((at): at is Date => at !== null).sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
   // Decided in the moment between the intake's commit and this read: nothing is left to alert about.
-  if (waiting.count === 0 || waiting.oldest === null) return "nothing_waiting";
+  if (count === 0 || oldest === null) return "nothing_waiting";
   // 3f's review (people4): the mail says whether the phone on call got the push, or that it is the only alert.
-  return staffAlert(deps, URGENT_ALERT_KEY, URGENT_ALERT_WINDOW_MS, { template: "moderation_urgent", count: waiting.count, oldest: waiting.oldest, phones: deps.config.NOTIFY !== "off" });
+  return staffAlert(deps, URGENT_ALERT_KEY, URGENT_ALERT_WINDOW_MS, { template: "moderation_urgent", count, oldest, phones: deps.config.NOTIFY !== "off", ...(heldUploads > 0 ? { heldUploads } : {}) });
 }
 
 // ---------------------------------------------------------------- the channel's health

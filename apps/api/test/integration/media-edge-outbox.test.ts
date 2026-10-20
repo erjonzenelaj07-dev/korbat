@@ -224,7 +224,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the edge's outbox, writt
       // Uploads on no post: deleted by their owner, and by the sweeper's expiry; neither was ever served.
       const owner = await newProfile(tx as unknown as Db);
       const [own, expired] = [await newImageRow(tx, owner.id, null), await newImageRow(tx, owner.id, null)];
-      expect(await media.deleteUnattached(own, owner.id)).toBe(true);
+      expect(await media.deleteUnattached(own, owner.id)).toBe("deleted");
       await tx.execute(sql`delete from post_media where id = ${expired}::uuid`);
       expect(await outbox(tx, [own, expired])).toEqual([]);
     });
