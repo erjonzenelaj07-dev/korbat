@@ -559,10 +559,11 @@ export const ModerationErrorCode = z.enum([
   "release_period_unset",
   "release_period_running",
   "release_mismatch",
-  // 3d Task 6 (design, section 10.7): "Ask for a person" on a decision that is not a program's or whose measure has ended,
-  // or a second time; and the two refusals of a program's measure, which the automated step records on its signal and
-  // no route answers.
+  // 3d Task 6 (design, section 10.7): "Ask for a person" on a decision that is not a program's or whose measure has ended;
+  // (3d review L10) a second time while the first request is open; and the two refusals of a program's measure, which
+  // the automated step records on its signal and no route answers.
   "objection_not_open",
+  "objection_exists",
   "already_protected",
   "automation_capped",
   // 3d Task 7 (design, section 10.7): the end of a held upload's hold that its state does not allow, or without its reason
@@ -2288,10 +2289,18 @@ export const AuthorNoticesPage = z.object({
 export type AuthorNoticesPage = z.infer<typeof AuthorNoticesPage>;
 
 /**
+ * 3d review L11 (people9): where the author's appeal of the decision that sealed stands, which the notice's paragraph on
+ * that decision follows: none filed (or a held upload's release, which has no such decision), pending, or answered.
+ * Never the answer's word: the decision's own screen gives it.
+ */
+export const RELEASE_NOTICE_APPEALS = ["none", "pending", "answered"] as const;
+export type ReleaseNoticeAppeal = (typeof RELEASE_NOTICE_APPEALS)[number];
+
+/**
  * 3d Task 2 (sections 9.6, 10.2 and W.6): GET /api/moderation/releases/:release, what releaseNoticeParagraphs reads, and
- * the decision that sealed, for the link to its screen and its appeal. Never an answer's word or an assessment, who gave
- * the leave, an authority or a reference. The route answers not_found to anyone but the posts' author, and while the
- * release's notice is held.
+ * the decision that sealed, for the link to its screen, with where its appeal stands (review L11). Never an answer's word
+ * or an assessment, who gave the leave, an authority or a reference. The route answers not_found to anyone but the posts'
+ * author, and while the release's notice is held.
  */
 export const ReleaseNoticeView = z.object({
   id: z.uuid(),
@@ -2305,6 +2314,7 @@ export const ReleaseNoticeView = z.object({
   /** The image rows the release erased: the seal's count of each post's images. */
   images: Count,
   sealDecisionId: z.uuid().nullable(),
+  appeal: z.enum(RELEASE_NOTICE_APPEALS),
 });
 export type ReleaseNoticeView = z.infer<typeof ReleaseNoticeView>;
 

@@ -244,7 +244,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
     const notices = await authorNotices(world.moderation.deps, atOnce.authorId);
     expect(notices.notices.map((notice) => notice.id)).toContain(releaseId);
     const view = await authorRelease(world.moderation.deps, atOnce.authorId, releaseId);
-    expect(view).toMatchObject({ id: releaseId, basis: "leave", upload: false, postCount: 1, images: 2, sealDecisionId: atOnce.decisionId, posts: [{ id: atOnce.postId }] });
+    // 3d review L11: no appeal of the sealing decision is filed yet, which its paragraph says.
+    expect(view).toMatchObject({ id: releaseId, basis: "leave", upload: false, postCount: 1, images: 2, sealDecisionId: atOnce.decisionId, posts: [{ id: atOnce.postId }], appeal: "none" });
     // Nobody else reads it, and its id names nothing to a stranger.
     await expect(authorRelease(world.moderation.deps, held.authorId, releaseId)).rejects.toMatchObject({ code: "not_found" });
     // A second release of the seal finds every post released; the leave it rests on cannot be withdrawn.
@@ -258,6 +259,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
     const page = await appealsList(world.moderation.deps, admin.session);
     const row = page.appeals.find((appeal) => appeal.decisionId === atOnce.decisionId);
     expect(row?.released).toMatchObject({ basis: "leave", at: expect.any(String) });
+    // 3d review L11 (people9): the notice, read again, says that this appeal is still open, as its paragraph then reads.
+    const releaseId = (await releasesOf(migrateDb, atOnce.sealActionId))[0]!.id;
+    expect((await authorRelease(world.moderation.deps, atOnce.authorId, releaseId)).appeal).toBe("pending");
   });
 
   test("a release on a leave not to be told is born held: no mail, no list, no read; the dispatch round after the hold ends sends it once", async () => {

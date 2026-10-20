@@ -44,7 +44,7 @@ import { automationDeps, removeAutomation } from "./automation-fixtures";
 import { ageCustodyForTest } from "./custody-fixtures";
 import { Browser } from "./http-client";
 import { BYTES, fakeWorker } from "./media-harness";
-import { act, decisionParams, newPostRow, removeFixtures, type DecisionInput } from "./moderation-fixtures";
+import { act, decisionParams, newPostRow, removeFixtures, rowCounts, type DecisionInput } from "./moderation-fixtures";
 import { HUMAN } from "./notices-harness";
 import { enrolKey } from "./staff-enrolment";
 import { DEVICE_BOUND, TEST_CONSOLE_ORIGIN, TEST_CONSOLE_RP_ID, issueEnrolment, newStaffAccount } from "./staff-fixtures";
@@ -77,6 +77,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automated decision a
   let settle: () => Promise<void>;
   let moderator: Awaited<ReturnType<typeof staffBrowser>>;
   let startedAt: string;
+  let before: Record<string, number>;
   const mailer = new MemoryMailer();
   const root = mkdtempSync(path.join(tmpdir(), "korbat-http-automation-"));
   const uploads = uploadsLayout(path.join(root, "uploads"));
@@ -126,6 +127,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automated decision a
     settle = moderation.settle;
     const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth(), media: media.forPosts, moderation: moderation.forSocial });
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, moderation, staff: createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff }) });
+    // Counted before the staff account's profile exists: the last test removes what the file made.
+    before = await rowCounts(apiDb, ["alert_outbox"]);
     moderator = await staffBrowser("moderator");
   }, 180_000);
   afterAll(async () => {
@@ -295,7 +298,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automated decision a
     expect(res.headers.get("cache-control")).toBe("no-store");
     const asked = await parsed(res, 201, DecisionView);
     expect(asked.askPerson).toMatchObject({ state: "asked", text: hostile });
-    expect(await refused(await program.author.b.fetch(path, { json: { text: "And again." } }))).toEqual([422, "objection_not_open"]);
+    // 3d review L10 (people8): a second request, from a stale screen or another device, is told it was sent already, never
+    // that a person has decided.
+    expect(await refused(await program.author.b.fetch(path, { json: { text: "And again." } }))).toEqual([409, "objection_exists"]);
     await settle();
     const [alert] = await migrateDb.execute<{ n: number }>(sql`select count(*)::int as n from alert_outbox where kind = 'automated_objection' and created_at >= ${startedAt}::timestamptz`);
     expect(alert!.n).toBe(1);
@@ -359,5 +364,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the automated decision a
     expect(alert!.facts).toMatchObject({ count: expect.any(Number), oldestAt: expect.any(String) });
     // The request is not a limit until it is older than unansweredHours: the program still acts.
     expect(AUTOMATION_RULES.objectionTargetHours + 1).toBeLessThan(AUTOMATION_RULES.unansweredHours);
+  });
+
+  test("this file left no row behind: the tables it writes hold what they held before it", async () => {
+    await settle();
+    await removeFixtures(migrateDb, [...profileIds, ...staffIds]);
+    await removeAutomation(migrateDb, startedAt, mediaIds);
+    profileIds.length = 0;
+    staffIds.length = 0;
+    mediaIds.length = 0;
+    expect(await rowCounts(apiDb, ["alert_outbox"])).toEqual(before);
   });
 });

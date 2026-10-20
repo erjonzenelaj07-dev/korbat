@@ -183,6 +183,9 @@ describe("the release block (3d design, section 8.5)", () => {
     expect(shown).toContain(W.done(bothTimes("2026-10-18T10:00:00.000Z"), 1, 2, 4, true, bothTimes("2026-11-17T10:00:00.000Z")));
     expect(shown).toContain("held until the person may be told");
     expect(shown).not.toContain(W.button);
+    // 3d review L18 (walk): the noun follows its count.
+    expect(W.done("x", 1, 1, 0, false, "y")).toContain("1 post, 1 image row erased.");
+    expect(W.done("x", 2, 3, 0, false, "y")).toContain("2 posts, 3 image rows erased.");
   });
 
   test("the params the key signs are the block's posts, the ground leave and the recorded leave with its reference; the action names the seal", () => {

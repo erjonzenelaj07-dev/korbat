@@ -419,6 +419,8 @@ describe("moderation error codes", () => {
       "release_period_running",
       "release_mismatch",
       "objection_not_open",
+      // 3d review L10: a second "Ask for a person" while the first is open.
+      "objection_exists",
       "already_protected",
       "automation_capped",
       // 3d Task 7.

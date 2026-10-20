@@ -234,7 +234,52 @@ function harness() {
   // a correction about the account that carries no text, and one report with a released item and a waiting one. Every
   // object's members stand in another order than the format's, and the first decision carries a member the format does
   // not have: the account module writes the format's members in the format's order, and nothing else.
-  const [removalId, correctionId, reportedPost] = [randomUUID(), randomUUID(), randomUUID()];
+  const [removalId, correctionId, reportedPost, orderedId] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  // 3d review L14 (people12): an order's notice as its author was told it, with 3f's three members, the order's facts, the
+  // authority's words and the day of an erasure, each in another order than the format's.
+  const ordered = {
+    objection: null,
+    signal: null,
+    automatedDecision: "not_automated",
+    automatedDetection: false,
+    erasedOn: "2026-09-14",
+    orderTexts: { reasonsAt: "2026-09-13T10:00:00.000Z", textsAt: "2026-09-13T10:00:00.000Z", scope: null, redress: "Court of Example", reasons: "The post incites violence." },
+    order: {
+      orderGround: null,
+      preserveEndedOn: "2026-09-14",
+      preserveExtended: false,
+      preserveFirstUntil: null,
+      preserveUntil: null,
+      holdEndReason: null,
+      informedAt: "2026-09-13T10:00:00.000Z",
+      held: false,
+      disabledAt: "2026-09-13T09:30:00.000Z",
+      withholdAuthor: false,
+      homeState: null,
+      crossBorder: false,
+      orderedFrom: "issued",
+      orderedOn: "2026-09-13",
+      verified: true,
+      reference: "AZ 1/26",
+      authority: "Example Police",
+      memberState: "DE",
+      kind: "tco_removal",
+    },
+    appeal: null,
+    legalReference: null,
+    reason: null,
+    facts: null,
+    reversals: [],
+    measures: [],
+    rulesVersion: 2,
+    ruleId: null,
+    ground: "illegal",
+    outcome: "restricted",
+    kind: "order",
+    postId: null,
+    decidedOn: "2026-09-13",
+    id: orderedId,
+  } satisfies ModerationExport["decisions"][number];
   const removal = {
     // 3d (W.10): what the statement says of automated means and the objection, first, in another order than the format's.
     objection: null,
@@ -311,6 +356,7 @@ function harness() {
     decisions: [
       removal,
       { objection: null, signal: null, automatedDecision: "not_automated", automatedDetection: false, appeal: null, legalReference: null, reason: null, facts: null, reversals: [{ mediaId: null, kind: "restore_bio" }], measures: [], rulesVersion: 2, ruleId: null, ground: null, outcome: "reversed", kind: "correction", postId: null, decidedOn: "2026-09-10", id: correctionId },
+      ordered,
     ],
   };
   // The deletion side of the three interfaces is not exercised by the export; test/account/deletion.test.ts covers it.
@@ -426,6 +472,7 @@ function harness() {
     asked,
     removalId,
     correctionId,
+    orderedId,
     reportedPost,
     userId,
     currentSession,
@@ -532,6 +579,50 @@ function expectedModeration(h: Harness) {
         objection: null,
       },
       { id: h.correctionId, decidedOn: "2026-09-10", postId: null, kind: "correction", outcome: "reversed", ground: null, ruleId: null, rulesVersion: 2, measures: [], reversals: [{ kind: "restore_bio", mediaId: null }], facts: null, reason: null, legalReference: null, appeal: null, automatedDetection: false, automatedDecision: "not_automated", signal: null, objection: null },
+      // 3d review L14 (people12): an order's notice keeps 3f's members, after the appeal, in the format's order.
+      {
+        id: h.orderedId,
+        decidedOn: "2026-09-13",
+        postId: null,
+        kind: "order",
+        outcome: "restricted",
+        ground: "illegal",
+        ruleId: null,
+        rulesVersion: 2,
+        measures: [],
+        reversals: [],
+        facts: null,
+        reason: null,
+        legalReference: null,
+        appeal: null,
+        order: {
+          kind: "tco_removal",
+          memberState: "DE",
+          authority: "Example Police",
+          reference: "AZ 1/26",
+          verified: true,
+          orderedOn: "2026-09-13",
+          orderedFrom: "issued",
+          crossBorder: false,
+          homeState: null,
+          withholdAuthor: false,
+          disabledAt: "2026-09-13T09:30:00.000Z",
+          held: false,
+          informedAt: "2026-09-13T10:00:00.000Z",
+          holdEndReason: null,
+          preserveUntil: null,
+          preserveFirstUntil: null,
+          preserveExtended: false,
+          preserveEndedOn: "2026-09-14",
+          orderGround: null,
+        },
+        orderTexts: { reasons: "The post incites violence.", redress: "Court of Example", scope: null, textsAt: "2026-09-13T10:00:00.000Z", reasonsAt: "2026-09-13T10:00:00.000Z" },
+        erasedOn: "2026-09-14",
+        automatedDetection: false,
+        automatedDecision: "not_automated",
+        signal: null,
+        objection: null,
+      },
     ],
     reports: [
       {

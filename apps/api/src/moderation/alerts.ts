@@ -89,7 +89,8 @@ const words = (values: readonly string[]) => sql`${`{${values.join(",")}}`}::tex
 export function alertFacts(message: StaffMessage): AlertFacts {
   switch (message.template) {
     case "moderation_urgent":
-      return { count: message.count, oldestAt: message.oldest.toISOString() };
+      // 3d review L8: the cases' count and oldest time, and the held uploads as a fact of their own when there are any.
+      return { count: message.count, ...(message.oldest === null ? {} : { oldestAt: message.oldest.toISOString() }), ...(message.heldUploads ? { heldUploads: message.heldUploads } : {}) };
     case "moderation_waiting":
       // What the mail lists, each line's own count: the cases of each lane past its time, the cases that hold a measure
       // taken while deciding, and the replies waiting.
@@ -210,7 +211,8 @@ export async function staffAlert(deps: Pick<ModerationDeps, "apiDb" | "auth" | "
  * The urgent lane's alert: when an intake has put an item into lane 0, every staff account is told how many cases wait
  * there and since when the oldest does, and the phone on call is woken. A notice about a post that quotes another puts
  * two cases into the lane and sends one alert that counts both. Best effort, after the commit and the answer; the
- * dispatch job repeats it while a lane-0 item still calls for someone.
+ * dispatch job repeats it while a lane-0 item still calls for someone. 3d review L8 (people6): the held uploads that wait
+ * are a fact of their own, never counted among the cases, and they alone send the alert when no case waits.
  */
 export async function alertUrgentLane(deps: Pick<ModerationDeps, "apiDb" | "auth" | "limits" | "log" | "config"> & { media?: Pick<ModerationDeps["media"], "heldOverview"> }): Promise<"sent" | "throttled" | "unsent" | "nothing_waiting"> {
   const waiting = await urgentWaiting(deps.apiDb);
@@ -218,12 +220,18 @@ export async function alertUrgentLane(deps: Pick<ModerationDeps, "apiDb" | "auth
   // an objection waits, count beside the lane's cases, and the mail names them in a sentence of their own.
   const held = deps.media === undefined ? null : await deps.media.heldOverview();
   const heldUploads = held === null ? 0 : held.open + held.objected;
-  const count = waiting.count + heldUploads;
-  const oldest = [waiting.oldest, held?.oldest === null || held === null ? null : new Date(held.oldest)].filter((at): at is Date => at !== null).sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
+  // A case without a time cannot be one the lane holds open; the count and the time are the cases' alone.
+  const cases = waiting.oldest === null ? 0 : waiting.count;
   // Decided in the moment between the intake's commit and this read: nothing is left to alert about.
-  if (count === 0 || oldest === null) return "nothing_waiting";
+  if (cases === 0 && heldUploads === 0) return "nothing_waiting";
   // 3f's review (people4): the mail says whether the phone on call got the push, or that it is the only alert.
-  return staffAlert(deps, URGENT_ALERT_KEY, URGENT_ALERT_WINDOW_MS, { template: "moderation_urgent", count, oldest, phones: deps.config.NOTIFY !== "off", ...(heldUploads > 0 ? { heldUploads } : {}) });
+  return staffAlert(deps, URGENT_ALERT_KEY, URGENT_ALERT_WINDOW_MS, {
+    template: "moderation_urgent",
+    count: cases,
+    oldest: cases === 0 ? null : waiting.oldest,
+    phones: deps.config.NOTIFY !== "off",
+    ...(heldUploads > 0 ? { heldUploads } : {}),
+  });
 }
 
 // ---------------------------------------------------------------- the channel's health

@@ -147,8 +147,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
       // Twelve held for a report, three ended without one, two that no admin had ended by the due day.
       await yearForTest(tx, YEAR, { restrictions: { R1: 1 }, uploads: { report: 12, no_report: 3, open: 2 } }, moderator);
       const f = await figuresOf(tx, YEAR);
-      // Under ten a row folds into other: the rows are fates, never a person.
+      // Under ten a row folds into other: the rows are fates, never a person. Review L13 (people11): the table's first line
+      // is its total, the year's refusals banded by itself ("Uploads refused on a match"), never folded with the fates.
       expect(f.uploads).toEqual([
+        { label: "refused", count: "about 20" },
         { label: "report", count: "about 10" },
         { label: "other", count: "1 to 9" },
       ]);
@@ -157,6 +159,14 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
     await rolledBack(w.migrateDb, async (tx) => {
       await yearForTest(tx, YEAR, { restrictions: { R1: 1 } }, moderator);
       expect((await figuresOf(tx, YEAR)).uploads).toEqual([]);
+    });
+    // Review L13: under ten refusals in all, the total is banded by itself and every fate folds into other.
+    await rolledBack(w.migrateDb, async (tx) => {
+      await yearForTest(tx, YEAR, { restrictions: { R1: 1 }, uploads: { report: 2, open: 1 } }, moderator);
+      expect((await figuresOf(tx, YEAR)).uploads).toEqual([
+        { label: "refused", count: "1 to 9" },
+        { label: "other", count: "1 to 9" },
+      ]);
     });
   });
 
@@ -175,7 +185,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the public figures and t
       await tx.execute(sql`update public.audit_log set created_at = make_timestamptz(${YEAR}::int, 12, 1, 12, 0, 0, 'UTC') where action = 'upload_hold_ended' and target_id = any(${`{${refused.map((r) => r.id).join(",")}}`}::text[])`);
       await tx.execute(sql.raw("alter table public.audit_log enable trigger user"));
       const first = (await figuresOf(tx, YEAR)).uploads;
-      expect(first).toEqual([{ label: "report", count: "about 10" }]);
+      expect(first).toEqual([
+        { label: "refused", count: "about 10" },
+        { label: "report", count: "about 10" },
+      ]);
       // In May after the due day another admin turns every end into No report.
       await tx.execute(sql`update public.upload_refusals set end_as = 'no_report', end_reason = 'other', ended_at = make_timestamptz(${YEAR + 1}::int, 5, 2, 12, 0, 0, 'UTC') where id = any(${`{${refused.map((r) => r.id).join(",")}}`}::uuid[])`);
       expect((await figuresOf(tx, YEAR)).uploads).toEqual(first);

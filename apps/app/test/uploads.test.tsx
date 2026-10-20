@@ -84,9 +84,12 @@ describe("the notice's screen (9.5, W.5)", () => {
     expect(shown).toContain("You objected on 2026-10-18 11:00 UTC.");
     const ended = view({ mayObject: false, endAs: "no_report", endReason: "source_withdrew", endedAt: "2026-10-19T09:00:00.000Z" });
     expect(textOf(html(<UploadNoticeDetail view={ended} onObject={async () => undefined} />))).toContain("Example Hotline withdrew or corrected its entry: you can upload the image again.");
+    // 3d review L7 (people5): what is written is kept as long as the terms say, the upload's record of a match, which outlasts
+    // the file by matchKeepDays after a No report's end or a release.
     expect(UPLOAD_TEXTS.objectLead).toBe(
-      "Write anything the admin should know. You can send one message. The admin reads it and decides without viewing the image. What you write is kept with this record for as long as korbat keeps the file.",
+      "Write anything the admin should know. You can send one message. The admin reads it and decides without viewing the image. What you write is kept as long as this upload's record of a match (Terms, Your data).",
     );
+    expect(UPLOAD_TEXTS.objectLead).not.toContain("keeps the file");
     expect(UPLOAD_TEXTS.objected("x")).toBe("You objected on x. An admin reads what you wrote; korbat tells you here what was decided, and by email when the hold is lifted.");
   });
 

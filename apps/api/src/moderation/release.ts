@@ -260,6 +260,15 @@ export async function releaseView(
     q,
     sql`select p.id, ${iso("p.created_at")} as created_at from public.posts p where p.id = any(${`{${row.post_ids.join(",")}}`}::uuid[]) order by p.created_at, p.id limit ${RELEASE_NOTICE_POSTS_MAX}`,
   );
+  // 3d review L11 (people9): where the appeal of the sealing decision stands now, which the notice's paragraph on that
+  // decision follows; one appeal a decision (appeals_once). A held upload's release has no such decision.
+  const [appeal] =
+    row.seal_decision === null || row.upload
+      ? []
+      : await rows<{ state: "pending" | "answered" }>(
+          q,
+          sql`select case when ap.answered_by is null then 'pending' else 'answered' end as state from public.appeals ap where ap.decision_id = ${row.seal_decision}::uuid`,
+        );
   return {
     id: row.id,
     basis: row.basis,
@@ -270,6 +279,7 @@ export async function releaseView(
     postCount: row.post_ids.length,
     images: row.images,
     sealDecisionId: row.seal_decision,
+    appeal: appeal?.state ?? "none",
     authorId: row.author_id,
   };
 }

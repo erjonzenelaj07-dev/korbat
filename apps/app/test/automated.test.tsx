@@ -127,6 +127,10 @@ describe("a program's decision on its screen (9.4)", () => {
     expect(ModerationErrorCode.options).toContain("objection_not_open");
     expect(messageFor("objection_not_open")).toBe(AUTO_WORDS.notOpen);
     expect(AUTO_WORDS.notOpen).toBe("A person has decided since: the decision is listed under Settings, Cases.");
+    // 3d review L10 (people8): a second request while the first is open has its own code and words: nobody has decided.
+    expect(ModerationErrorCode.options).toContain("objection_exists");
+    expect(messageFor("objection_exists")).toBe(AUTO_WORDS.exists);
+    expect(AUTO_WORDS.exists).toBe("You have already asked for a person about this decision. A person reads what you wrote.");
     expect(read("lib", "moderation.ts")).toContain("/api/moderation/decisions/${encodeURIComponent(id)}/objection`, { json: { text }, schema: DecisionView }");
     expect(read("app", "settings", "cases", "[id].tsx")).toContain("onAsk={ask}");
   });

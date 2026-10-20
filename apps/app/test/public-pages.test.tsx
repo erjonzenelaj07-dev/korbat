@@ -308,6 +308,31 @@ describe("the transparency page (3d Task 4)", () => {
     expect(textOf(html(<TransparencyView answer="loading" />))).not.toContain(PAGE_DOWN);
   });
 
+  test("review L12 (people10): recipients not recorded print as not recorded over the six months to the month, with the reason; never that korbat has not counted six full months", () => {
+    const year: PublicTransparency = { editions: [{ ...answer.editions[1]!, figures: empty }] };
+    const text = textOf(html(<TransparencyView answer={year} />));
+    expect(text).toContain(TRANSPARENCY_PAGE.recipientsNotRecorded("2025-02"));
+    expect(TRANSPARENCY_PAGE.recipientsNotRecorded("2025-02")).toBe(
+      "Average monthly active recipients of korbat (Article 24(2) of the Digital Services Act), over the six months to 2025-02: not recorded. korbat holds a count for fewer than six of those months: it had not counted six full months by then, or the count of a month is missing, as after a restore of its database from a backup or a loss of its counting store during that month.",
+    );
+    expect(TRANSPARENCY_PAGE.recipientsNotRecorded("2025-02")).toContain(`: ${TRANSPARENCY_PAGE.notRecorded}.`);
+    expect(text).not.toContain("has not counted six full months yet");
+    expect(Object.keys(TRANSPARENCY_PAGE)).not.toContain("recipientsNotYet");
+  });
+
+  test("review L13 (people11): the table of uploads not accepted prints its total first, Uploads refused on a match, then the fates", () => {
+    const uploads: TransparencyFigures["uploads"] = [
+      { label: "refused", count: "about 20" },
+      { label: "report", count: "about 10" },
+      { label: "other", count: "1 to 9" },
+    ];
+    const text = textOf(html(<TransparencyView answer={{ editions: [{ ...answer.editions[1]!, figures: { ...empty, uploads } }] }} />));
+    const total = text.indexOf("Uploads refused on a match: about 20");
+    expect(total).toBeGreaterThan(text.indexOf(TRANSPARENCY_PAGE.tables.uploads));
+    expect(text.indexOf("Held for a report: about 10")).toBeGreaterThan(total);
+    expect(text.indexOf("Other: 1 to 9", total)).toBeGreaterThan(total);
+  });
+
   test("every number of the page's words is its constant's: the due day, the floor, the rounding, the salt's hours; the recipients' last month is the one before the due day", () => {
     expect(TRANSPARENCY_PAGE.read).toContain(`on or after ${TRANSPARENCY_RULES.dueDay} March of the next year`);
     expect(TRANSPARENCY_PAGE.read).toContain(`korbat prints 0, "1 to ${TRANSPARENCY_RULES.floor - 1}"`);
@@ -373,6 +398,26 @@ describe("the transparency page's daily value (3d Task 5, 9.3 item 6, W.2)", () 
     expect(plain).not.toContain("openssl");
     expect(plain).not.toContain(T.download("2026-10-19"));
     expect(plain).toContain(T.headRow("2026-10-19", value("a"), "none"));
+  });
+
+  test("review L15 (people13): a test adapter's token turns on neither [tr.verify] nor a download; only a row witnessed by rfc3161 does", () => {
+    const tested: PublicHead = { days: head.days.map((row) => (row.day === "2026-10-19" ? { ...row, witness: "test" as const } : row)) };
+    const text = textOf(html(<TransparencyView answer={{ editions: [] }} head={tested} />));
+    expect(text).toContain(T.headRow("2026-10-19", value("a"), "test"));
+    expect(text).not.toContain("openssl");
+    expect(text).not.toContain(T.download("2026-10-19"));
+    // A newer test row and an older rfc3161 row: the check and the one download are the older row's.
+    const mixed: PublicHead = {
+      days: [
+        { day: "2026-10-20", kind: "head", value: value("e"), witness: "test", token: "MAMCAQA=", retiredOn: null, lastDay: null },
+        ...head.days,
+      ],
+    };
+    const both = textOf(html(<TransparencyView answer={{ editions: [] }} head={mixed} />));
+    expect(both).toContain(T.verify(value("a"), "2026-10-19"));
+    expect(both).not.toContain(T.verify(value("e"), "2026-10-20"));
+    expect(both).toContain(T.download("2026-10-19"));
+    expect(both).not.toContain(T.download("2026-10-20"));
   });
 
   test("[page.down] for this part alone; no value yet reads its sentence; while it loads, the section holds [tr.head] alone", () => {

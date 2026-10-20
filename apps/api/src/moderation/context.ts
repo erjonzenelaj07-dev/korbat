@@ -72,6 +72,8 @@ const STATUS: Record<ModerationErrorKind, ModerationErrorStatus> = {
   // 3d Task 6 (section 10.7): "Ask for a person" that is not open; and the two refusals of a program's measure, which the
   // automated step records on its signal and no route answers (their statuses are never sent).
   objection_not_open: 422,
+  // 3d review L10 (people8): a second request for a person while the first is open, as appeal_exists answers an appeal.
+  objection_exists: 409,
   already_protected: 409,
   automation_capped: 429,
   // 3d Task 7 (design, section 10.7).
@@ -146,7 +148,8 @@ const MESSAGES: Record<ModerationErrorKind, string> = {
   release_period_unset: "korbat has set no period after which sealed images are released.",
   release_period_running: "The period has not ended, the author was not told the day in time, or an objection is unanswered.",
   release_mismatch: "The seal, the record of the report or the recorded leave is no longer what was confirmed.",
-  objection_not_open: "A person has decided since, or you already asked for a person about this decision.",
+  objection_not_open: "A person has decided since, or the measure is no longer in force.",
+  objection_exists: "You have already asked for a person about this decision.",
   already_protected: "Another measure already protects this.",
   automation_capped: "A program has reached one of its limits.",
   // 3d Task 7: the console words each in its own table (8.8); these are the API's plain words.

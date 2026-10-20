@@ -62,7 +62,8 @@ export async function refusalView(deps: Pick<ModerationDeps, "apiDb" | "media">,
     matchKind: statementMatchKind(own.hashType, own.matchKind),
     listedAs: "csam",
     objection: own.objection === null || own.objectedAt === null ? null : { text: own.objection, objectedAt: own.objectedAt },
-    mayObject: own.objection === null && own.releaseId === null && own.endAs !== "no_report",
+    // 3d review L9: an end as no_report closes the objection only once it is told, after its delay.
+    mayObject: own.objection === null && own.releaseId === null && (own.endAs !== "no_report" || !own.delayPassed),
     endedAt: told ? own.endedAt : null,
     endAs: told ? own.endAs : null,
     endReason: told ? own.endReason : null,
@@ -104,7 +105,8 @@ export async function authorUpload(deps: Pick<ModerationDeps, "apiDb" | "media">
 
 /**
  * POST /api/moderation/uploads/:refusal/objection (7.12 step 2): the uploader's one objection, open while the refusal has
- * none, is not released and did not end as no_report; objection_not_open when it changed no row of theirs, not_found for
+ * none, is not released and did not end as no_report, or ended so within its delay (3d review L9: nothing tells the
+ * uploader of that end earlier); objection_not_open when it changed no row of theirs, not_found for
  * anyone else's. A suspended account may object: no suspension is read here, as for "Ask for a person" (E 7.3). After the
  * commit, unwaited for, the urgent alert counts it among the held uploads. The answer is the notice's view as it now reads.
  */

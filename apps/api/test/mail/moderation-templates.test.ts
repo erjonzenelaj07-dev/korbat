@@ -593,7 +593,11 @@ describe("3d Task 1: the quarantine's two staff mails and the mail of a lost ima
   test("image_lost: the post's day in IMAGE_LOST_NOTICE, where to read it, and the user mail's last sentence; no link and no file", () => {
     const r = renderTemplate("image_lost", { createdAt: "2026-10-01 12:00 UTC" });
     expect(r.subject).toBe("korbat lost an image of yours");
-    expect(paragraphs(r.text)).toEqual([IMAGE_LOST_NOTICE.mail("2026-10-01 12:00 UTC"), "Read it in korbat under Settings, Cases.", LAST_USER]);
+    // 3d review L16 (people2): the loss is shown on the post, where the image was ([image.lost]); no notice under Settings,
+    // Cases names it, so the mail points there and not to Cases.
+    expect(paragraphs(r.text)).toEqual([IMAGE_LOST_NOTICE.mail("2026-10-01 12:00 UTC"), IMAGE_LOST_NOTICE.mailWhere, LAST_USER]);
+    expect(IMAGE_LOST_NOTICE.mailWhere).toBe("In korbat, your post shows the same in the place of the image.");
+    expect(r.text).not.toContain("Settings, Cases");
     expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
     expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
     expect(r.text).not.toMatch(/webp|files[/]|wait/);
@@ -620,10 +624,10 @@ describe("3d Task 2: the release's two staff mails and the author's notice (W.6,
   });
 
   test("release_notice: RELEASE_NOTICE's paragraphs by the same function as the app's screen, where to read it and the user mail's last sentence; no link, no authority, no reference, no assessment", () => {
-    const data = { basis: "leave", releasedAt: "2026-10-18T10:05:00.000Z", backupsClearAt: "2026-11-17T10:05:00.000Z", upload: "no", postCount: "1", images: "2", createdAt: "2026-09-01T08:30:00.000Z" };
+    const data = { basis: "leave", releasedAt: "2026-10-18T10:05:00.000Z", backupsClearAt: "2026-11-17T10:05:00.000Z", upload: "no", postCount: "1", images: "2", createdAt: "2026-09-01T08:30:00.000Z", appeal: "none" };
     const r = renderTemplate("release_notice", data);
     expect(r.subject).toBe("korbat released sealed images of yours");
-    const expected = releaseNoticeParagraphs({ basis: "leave", releasedAt: data.releasedAt, backupsClearAt: data.backupsClearAt, upload: false, posts: [{ createdAt: data.createdAt }], postCount: 1, images: 2 });
+    const expected = releaseNoticeParagraphs({ basis: "leave", releasedAt: data.releasedAt, backupsClearAt: data.backupsClearAt, upload: false, posts: [{ createdAt: data.createdAt }], postCount: 1, images: 2, appeal: "none" });
     expect(paragraphs(r.text)).toEqual([...expected, "Read it in korbat under Settings, Cases.", LAST_USER]);
     expect(paragraphs(r.text)).toContain(RELEASE_NOTICE.what);
     expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]|no longer holds|destroyed|assessed|illegal|reference/i);
@@ -631,6 +635,22 @@ describe("3d Task 2: the release's two staff mails and the author's notice (W.6,
     // Several posts take the other lead; a basis the template does not have is refused.
     expect(paragraphs(renderTemplate("release_notice", { ...data, postCount: "3", images: "5" }).text)[0]).toBe("korbat has released the sealed images of 3 of your posts (5 in all): it will not show them again or give them back.");
     expect(() => renderTemplate("release_notice", { ...data, basis: "answer" })).toThrow(/basis/);
+    // 3d review L11 (people9): the paragraph on the sealing decision follows where the author's appeal of it stands.
+    expect(paragraphs(renderTemplate("release_notice", { ...data, appeal: "pending" }).text)[3]).toBe(RELEASE_NOTICE.seal.pending);
+    expect(paragraphs(renderTemplate("release_notice", { ...data, appeal: "answered" }).text)[3]).toBe(RELEASE_NOTICE.seal.answered);
+    expect(() => renderTemplate("release_notice", { ...data, appeal: "kept" })).toThrow(/appeal/);
+  });
+
+  test("3d review M14 (people3): a held upload's release_notice has its own subject and paragraphs: one image you uploaded, no post, no appeal, no decision", () => {
+    const data = { basis: "leave", releasedAt: "2026-10-18T10:05:00.000Z", backupsClearAt: "2026-11-17T10:05:00.000Z", upload: "yes", postCount: "0", images: "1", createdAt: "", appeal: "none" };
+    const r = renderTemplate("release_notice", data);
+    expect(r.subject).toBe("korbat released an image you uploaded");
+    const expected = releaseNoticeParagraphs({ basis: "leave", releasedAt: data.releasedAt, backupsClearAt: data.backupsClearAt, upload: true, posts: [], postCount: 0, images: 1, appeal: "none" });
+    expect(paragraphs(r.text)).toEqual([...expected, "Read it in korbat under Settings, Cases.", LAST_USER]);
+    for (const paragraph of expected) expect(paragraph).not.toMatch(/post|appeal|decision|sealed/i);
+    expect(r.subject).not.toMatch(/sealed|post/i);
+    expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]|reference|assessed|illegal/i);
+    expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
   });
 });
 
@@ -756,6 +776,18 @@ describe("3d Task 7: the known material's mails (W.7, W.8)", () => {
     expect(paragraphs(renderTemplate("moderation_urgent", base).text)).not.toContain("1 matched uploads are held and wait for an admin, or hold an objection that nobody has answered.");
     expect(paragraphs(renderTemplate("moderation_urgent", { ...base, heldUploads: "3" }).text)[1]).toBe("3 matched uploads are held and wait for an admin, or hold an objection that nobody has answered.");
     expect(paragraphs(renderTemplate("moderation_urgent", { ...base, heldUploads: "0" }).text)).toEqual(paragraphs(renderTemplate("moderation_urgent", base).text));
+    // 3d review L8 (people6): the count is the lane's cases alone. With none and held uploads only, the subject and the
+    // first sentence say that no case waits, and no time is given for a case.
+    const none = renderTemplate("moderation_urgent", { count: "0", phones: "on", heldUploads: "1" });
+    expect(none.subject).toBe("korbat: a matched upload is waiting for an admin");
+    expect(paragraphs(none.text).slice(0, 3)).toEqual([
+      "No case in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm) is waiting.",
+      "1 matched uploads are held and wait for an admin, or hold an objection that nobody has answered.",
+      "Open the staff console. The same alert went to the phone on call.",
+    ]);
+    expect(none.text).not.toMatch(/1 case |since/);
+    // A mail with no case and no held upload is not one this alert sends.
+    expect(() => renderTemplate("moderation_urgent", { count: "0", phones: "on" })).toThrow(/heldUploads/);
     const data = { handle: "mod_anna", time: TIME, what: "dismissed" };
     const matched = paragraphs(renderTemplate("moderation_csam_lifted", { ...data, matched: "yes" }).text);
     expect(matched[1]).toContain("nobody at korbat opens an image that a match names");

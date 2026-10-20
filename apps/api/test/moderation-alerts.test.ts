@@ -194,6 +194,28 @@ describe("the urgent lane's alert", () => {
     expect(w.mails).toEqual([{ template: "moderation_urgent", count: 2, oldest: new Date("2026-10-04T06:59:59.123Z"), phones: false }]);
   });
 
+  test("3d review L8 (people6): held uploads are their own fact, never counted as cases; with no case the alert still goes for them, without a case's time", async () => {
+    const held = (open: number, objected: number, oldest: string | null) => ({ heldOverview: async () => ({ open, objected, oldest, capped: 0 }) });
+    // No case waits; one upload is held: the count is 0 cases, and the held upload is told apart.
+    const none = world({ waiting: { n: 0, oldest: null } });
+    expect(await alertUrgentLane({ ...none.deps, media: held(1, 0, "2026-10-04T05:00:00.000Z") } as never)).toBe("sent");
+    expect(none.mails).toEqual([{ template: "moderation_urgent", count: 0, oldest: null, phones: true, heldUploads: 1 }]);
+    expect(none.rows()[0]![3]).toBe(JSON.stringify({ count: 0, heldUploads: 1 }));
+    // Two cases and an older held upload: the count and the time are the cases'.
+    const both = world({ waiting: { n: 2, oldest: "2026-10-04T06:59:59.123Z" } });
+    expect(await alertUrgentLane({ ...both.deps, media: held(1, 2, "2026-10-04T05:00:00.000Z") } as never)).toBe("sent");
+    expect(both.mails).toEqual([{ template: "moderation_urgent", count: 2, oldest: new Date("2026-10-04T06:59:59.123Z"), phones: true, heldUploads: 3 }]);
+    expect(alertFacts(both.mails[0]!)).toEqual({ count: 2, oldestAt: "2026-10-04T06:59:59.123Z", heldUploads: 3 });
+    // An objection after Report alone, with no open hold and no case, is still told (design 7.12 step 2).
+    const objected = world({ waiting: { n: 0, oldest: null } });
+    expect(await alertUrgentLane({ ...objected.deps, media: held(0, 1, null) } as never)).toBe("sent");
+    expect(objected.mails).toEqual([{ template: "moderation_urgent", count: 0, oldest: null, phones: true, heldUploads: 1 }]);
+    // Nothing at all waits: nothing is sent.
+    const nothing = world({ waiting: { n: 0, oldest: null } });
+    expect(await alertUrgentLane({ ...nothing.deps, media: held(0, 0, null) } as never)).toBe("nothing_waiting");
+    expect(nothing.mails).toEqual([]);
+  });
+
   test("with nothing waiting any more, nothing is sent and no window is opened", async () => {
     const w = world({ waiting: { n: 0, oldest: null } });
     expect(await alertUrgentLane(w.deps)).toBe("nothing_waiting");

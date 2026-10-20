@@ -111,7 +111,7 @@ export function FiguresView({ year, figures }: { year: number; figures: Transpar
       <Paragraph>{T.ordersHeld}</Paragraph>
       <Heading level={3}>{T.recipientsHeading}</Heading>
       <Paragraph>
-        {recipients === "not recorded" ? T.recipientsNotYet : recipients.high === undefined ? T.recipientsOff(month, recipients.low) : T.recipients(month, recipients.low, recipients.high)}
+        {recipients === "not recorded" ? T.recipientsNotRecorded(month) : recipients.high === undefined ? T.recipientsOff(month, recipients.low) : T.recipients(month, recipients.low, recipients.high)}
       </Paragraph>
     </View>
   );
@@ -188,13 +188,17 @@ function saveProof(day: string, token: string) {
 /**
  * Section 6, the audit log's daily value (3d design, section 9.3 item 6; W.2; Task 5): [tr.head], then a row a day,
  * newest first, with its value and who witnessed it, a restore's row with [tr.restore], a retired value with
- * [tr.retired] and a day without a value with [tr.headMissing]; while a shown row has a proof, [tr.verify] with the newest
- * such day's value and file, and each day's proof to download on the web. When the route did not answer, this part alone
+ * [tr.retired] and a day without a value with [tr.headMissing]; while a shown row has an outside authority's proof (review
+ * L15: never a test adapter's), [tr.verify] with the newest such day's value and file, and each such proof to download on
+ * the web. When the route did not answer, this part alone
  * reads [page.down]. The place is in no answer and on no row.
  */
 function HeadSection({ head, keeper }: { head: PublicHead | "loading" | "down"; keeper: boolean | null }) {
   const T = TRANSPARENCY_PAGE;
-  const witnessed = head === "loading" || head === "down" ? undefined : head.days.find((row) => row.token !== null);
+  // 3d review L15 (people13): only an outside timestamp authority's proof can be checked; a test adapter's token proves
+  // nothing, so it turns on neither [tr.verify] nor a download.
+  const checkable = (row: HeadDay) => row.token !== null && row.witness === "rfc3161";
+  const witnessed = head === "loading" || head === "down" ? undefined : head.days.find(checkable);
   // 3d review M13: the keeper's sentence only while the facts say a keeper's address is set; neither until they answer.
   const keeperSentence = keeper === null ? "" : ` ${keeper ? T.headKeeper : T.headNoKeeper}`;
   return (
@@ -221,7 +225,7 @@ function HeadSection({ head, keeper }: { head: PublicHead | "loading" | "down"; 
                       ? T.headRow(line.row.day, line.row.value, line.row.witness)
                       : `${T.headRow(line.row.day, line.row.value, line.row.witness)} ${T.retired(line.row.retiredOn)}`}
                 </Text>
-                {line.row.token !== null && Platform.OS === "web" ? (
+                {checkable(line.row) && Platform.OS === "web" ? (
                   <Pressable accessibilityRole="button" onPress={() => saveProof(line.row.day, line.row.token!)} className="mt-1 self-start">
                     <Text className="text-sm text-sky-400 underline">{T.download(line.row.day)}</Text>
                   </Pressable>

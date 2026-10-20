@@ -1390,8 +1390,9 @@ describe("IMAGE_LOST_NOTICE (3d design, sections 7.1 and 9.6; W.8): an image kor
     );
     expect(IMAGE_LOST_NOTICE.onImage).toBe("korbat lost this image's files while they were kept apart from its other images. It cannot be shown again. You can delete the post, or post the image again.");
     // Nothing tells the author to wait, and nothing names a file, a seal or a person.
-    for (const text of [IMAGE_LOST_NOTICE.mail("2026-10-01"), IMAGE_LOST_NOTICE.onImage]) {
-      expect(text).not.toMatch(/wait|restored|seal|file name|@/i);
+    // 3d review L16: the mail's last paragraph points to the post, where the loss is shown, and to nothing else.
+    for (const text of [IMAGE_LOST_NOTICE.mail("2026-10-01"), IMAGE_LOST_NOTICE.onImage, IMAGE_LOST_NOTICE.mailWhere]) {
+      expect(text).not.toMatch(/wait|restored|seal|file name|@|Settings, Cases/i);
     }
   });
 });

@@ -410,6 +410,11 @@ describe("the params the key confirms", () => {
     expect(predictedSource(postCase(), "final")).toBe("notice");
     expect(predictedSource(postCase({ items: [item()], intakeSeq: 1 }), "final")).toBe("report");
     expect(predictedSource(postCase({ items: [item({ source: SOURCES.staff })], intakeSeq: 1 }), "interim")).toBe("own_initiative");
+    // 3d review L17 (walk B): a program's finding is no user's report: the database records korbat's own initiative, as the
+    // author's statement then says; a user's report beside it still makes the decision one on a report.
+    expect(predictedSource(postCase({ items: [item({ source: SOURCES.program, ruleId: "R2" })], intakeSeq: 1 }), "final")).toBe("own_initiative");
+    expect(predictedSource(postCase({ items: [item({ source: SOURCES.program, ruleId: "R1" })], intakeSeq: 1 }), "interim")).toBe("own_initiative");
+    expect(predictedSource(postCase({ items: [item({ source: SOURCES.program }), item({ id: ITEM_FINDING, seq: 2 })], intakeSeq: 2 }), "final")).toBe("report");
     // An answered notice is no longer considered.
     expect(predictedSource(postCase({ answeredSeq: 2, intakeSeq: 3, items: [item({ outcome: "no_violation", answeredBy: "x" }), item({ id: ITEM_NOTIFIER, seq: 2, allegesIllegal: true, outcome: "no_violation", answeredBy: "x", source: SOURCES.notifier }), item({ id: ITEM_FINDING, seq: 3, source: SOURCES.staff })] }), "final")).toBe("own_initiative");
   });

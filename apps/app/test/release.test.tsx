@@ -9,8 +9,8 @@ import { RELEASE_TEXTS } from "../src/lib/moderation-words";
 
 /**
  * A release of sealed images as its author reads it (3d design, sections 7.2, 9.6 and W.6; Task 2): the notice's screen
- * prints RELEASE_NOTICE's paragraphs and no control, links the decision that sealed, and says [release.appeal] while an
- * appeal of that decision waits; "About you" lists the release as "Sealed images released" with its day. Nothing names an
+ * prints RELEASE_NOTICE's paragraphs and no control, links the decision that sealed, and says through the paragraph on
+ * that decision where its appeal stands (3d review L11); "About you" lists the release as "Sealed images released" with its day. Nothing names an
  * authority, a reference or an assessment, and no image is drawn.
  */
 vi.mock("expo-router", () => ({
@@ -31,23 +31,30 @@ const view: ReleaseNoticeView = {
   postCount: 1,
   images: 2,
   sealDecisionId: "1a2b3c4d-0000-4000-8000-000000000003",
+  appeal: "none",
 };
 
 describe("a release's notice in the app (3d Task 2)", () => {
   test("the screen prints the notice's paragraphs, links the decision that sealed, and offers no control", () => {
-    const markup = html(<ReleaseNoticeDetail view={view} appealOpen={false} />);
+    const markup = html(<ReleaseNoticeDetail view={view} />);
     const shown = textOf(markup);
     for (const paragraph of releaseNoticeParagraphs(view)) expect(shown).toContain(textOf(paragraph));
     expect(shown).toContain(RELEASE_TEXTS.title);
     expect(markup).toContain(`/settings/cases/${view.sealDecisionId}`);
-    expect(shown).not.toContain(RELEASE_TEXTS.appeal);
+    expect(shown).not.toContain(RELEASE_NOTICE.seal.pending);
     expect(markup).not.toMatch(/<img|<button/);
     expect(shown).not.toMatch(/no longer holds|destroyed|assessed|illegal|reference/i);
   });
 
-  test("[release.appeal] while an appeal of the sealing decision waits", () => {
-    expect(textOf(html(<ReleaseNoticeDetail view={view} appealOpen />))).toContain(RELEASE_TEXTS.appeal);
-    expect(RELEASE_TEXTS.appeal).toBe("Your appeal is still open. An admin reviews it; korbat has released the images and will not show them again.");
+  test("3d review L11 (people9): while an appeal of the sealing decision waits, the notice's own paragraph says so, once; an answered one is not called open", () => {
+    const pending = textOf(html(<ReleaseNoticeDetail view={{ ...view, appeal: "pending" }} />));
+    expect(pending).toContain(textOf(RELEASE_NOTICE.seal.pending));
+    expect(pending.split("still open").length).toBe(2);
+    const answered = textOf(html(<ReleaseNoticeDetail view={{ ...view, appeal: "answered" }} />));
+    expect(answered).toContain(textOf(RELEASE_NOTICE.seal.answered));
+    expect(answered).not.toContain("still open");
+    // The screen prints no line of its own about the appeal: the paragraph is the one the mail sent.
+    expect(Object.keys(RELEASE_TEXTS)).not.toContain("appeal");
   });
 
   test('"About you" lists a release as "Sealed images released" with its day, linking its notice, and nothing while there is none', () => {

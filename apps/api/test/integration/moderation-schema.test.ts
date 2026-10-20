@@ -906,9 +906,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         [...readFileSync(path.join(migrations, `${tag}.sql`), "utf8").matchAll(/CREATE FUNCTION "public"."([a-z_0-9]+)"/g)].map((m) => `public.${m[1]}`),
       );
       expect(created).toEqual(expect.arrayContaining(["public.case_flag", "public.erase_automation_records", "public.automation_rules", "public.upload_refused_replay", "public.upload_refusals_logged", "public.post_media_lost_told"]));
-      // 3d review: every function 0041_review replaces keeps holding none either.
-      const replaced = [...readFileSync(path.join(migrations, "0041_review.sql"), "utf8").matchAll(/CREATE OR REPLACE FUNCTION "public"."([a-z_0-9]+)"/g)].map((m) => `public.${m[1]}`);
-      expect(replaced.length).toBeGreaterThanOrEqual(10);
+      // 3d review: every function 0041_review and (Task 10) 0042_review_words replace keeps holding none either.
+      const replacedBy = (tag: string) => [...readFileSync(path.join(migrations, `${tag}.sql`), "utf8").matchAll(/CREATE OR REPLACE FUNCTION "public"."([a-z_0-9]+)"/g)].map((m) => `public.${m[1]}`);
+      expect(replacedBy("0042_review_words")).toEqual(["public.upload_refusals_guard", "public.transparency_figures"]);
+      const replaced = [...replacedBy("0041_review"), ...replacedBy("0042_review_words")];
+      expect(replaced.length).toBeGreaterThanOrEqual(12);
       for (const name of replaced) expect(all.find((f) => f.name === name)?.definition, name).not.toMatch(/interval '/i);
       for (const name of created) expect(all.find((f) => f.name === name)?.definition, name).not.toMatch(/interval '/i);
     });

@@ -10,13 +10,13 @@ import { ApiError, errorMessage } from "@/lib/api";
 import { moderation } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS, RELEASE_TEXTS } from "@/lib/moderation-words";
 
-type Shown = { kind: "loading" } | { kind: "missing" } | { kind: "failed"; message: string } | { kind: "release"; view: ReleaseNoticeView; appealOpen: boolean };
+type Shown = { kind: "loading" } | { kind: "missing" } | { kind: "failed"; message: string } | { kind: "release"; view: ReleaseNoticeView };
 
 /**
  * 3d Task 2 (design, section 9.6): a release's notice, under Settings, Cases; its entry in "About you" leads here. The
  * API answers only for the author of the released posts, and not at all while the author may not be told yet; anything
- * else reads as one sentence, whatever the id named. Whether an appeal of the sealing decision waits is read from that
- * decision, which the author may read.
+ * else reads as one sentence, whatever the id named. Where an appeal of the sealing decision stands comes with the view
+ * (3d review L11), so the screen reads nothing else.
  */
 export default function Release() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -28,15 +28,7 @@ export default function Release() {
     void (async () => {
       try {
         const view = await moderation.release(id);
-        // [release.appeal]: the decision that sealed, when its appeal waits. A failure to read it leaves the line out.
-        let appealOpen = false;
-        if (view.sealDecisionId !== null) {
-          appealOpen = await moderation.decision(view.sealDecisionId).then(
-            (decision) => decision.appeal?.state === "pending",
-            () => false,
-          );
-        }
-        if (!cancelled) setShown({ kind: "release", view, appealOpen });
+        if (!cancelled) setShown({ kind: "release", view });
       } catch (err) {
         if (cancelled) return;
         if (err instanceof ApiError && (err.status === 404 || err.code === "invalid_request")) setShown({ kind: "missing" });
@@ -59,7 +51,7 @@ export default function Release() {
           {shown.kind === "loading" ? <Loading /> : null}
           {shown.kind === "missing" ? <ErrorText message={RELEASE_TEXTS.notFound} /> : null}
           {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
-          {shown.kind === "release" ? <ReleaseNoticeDetail view={shown.view} appealOpen={shown.appealOpen} /> : null}
+          {shown.kind === "release" ? <ReleaseNoticeDetail view={shown.view} /> : null}
           <TextLink label={DECISION_WORDS.back} href="/settings/cases" />
         </View>
       </ScrollView>

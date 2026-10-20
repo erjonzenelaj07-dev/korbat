@@ -166,7 +166,9 @@ export type StaffMessage =
   // phone when nothing publishes one, and says instead that it is the only alert.
   // 3d Task 7 (W.7): `heldUploads`, the held uploads that wait for an admin or hold an unanswered objection, which the
   // mail prints as a second sentence when it is above zero; `count` and `oldest` include them.
-  | { template: "moderation_urgent"; count: number; oldest: Date; phones: boolean; heldUploads?: number }
+  // 3d review L8: `count` is the lane's cases alone and `oldest` the oldest case's, null when no case waits and the alert
+  // is for held uploads alone.
+  | { template: "moderation_urgent"; count: number; oldest: Date | null; phones: boolean; heldUploads?: number }
   | { template: "moderation_waiting"; lanes: readonly { lane: 0 | 1 | 2; count: number; oldest: Date }[]; interim: number; replies?: { count: number; oldest: Date } | null; phones: boolean }
   | { template: "moderation_burst"; handle: string; count: number }
   | { template: "moderation_reads"; handle: string; limit: number }
@@ -266,7 +268,12 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "head_unmailed":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
-      return { count: String(message.count), oldest: noticeTime(message.oldest), phones: message.phones ? "on" : "off", ...(message.heldUploads ? { heldUploads: String(message.heldUploads) } : {}) };
+      return {
+        count: String(message.count),
+        ...(message.oldest === null ? {} : { oldest: noticeTime(message.oldest) }),
+        phones: message.phones ? "on" : "off",
+        ...(message.heldUploads ? { heldUploads: String(message.heldUploads) } : {}),
+      };
     case "moderation_waiting": {
       // A lane's pair only for a lane with a case past its time, and the measures' count only when it is not 0.
       const data: Record<string, string> = { phones: message.phones ? "on" : "off" };
@@ -419,6 +426,7 @@ export async function mailAccount(deps: AuthDeps, userId: string, message: Accou
         postCount: String(view.postCount),
         images: String(view.images),
         createdAt: view.posts[0]?.createdAt ?? "",
+        appeal: view.appeal,
       },
     });
   }

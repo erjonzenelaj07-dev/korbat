@@ -253,7 +253,9 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   alert_channel_down: { priority: 3, scope: "all", legs: ["mail"], mail: "sentence", facts: ["since"] },
   mailbox_unreachable: sentenceKind(5, "all", ["since"]),
   alert_test: { priority: 3, scope: "all", legs: ["push"], mail: null, facts: ["at"] },
-  moderation_urgent: ownKind(5, "on_call", ["count", "oldestAt"]),
+  // 3d review L8: `count` is the lane's cases alone, `oldestAt` the oldest case's (absent when none waits), and
+  // `heldUploads` the held uploads that wait, a fact of their own.
+  moderation_urgent: ownKind(5, "on_call", ["count", "oldestAt", "heldUploads"]),
   moderation_waiting: ownKind(3, "all", ["count"]),
   moderation_burst: ownKind(3, "all", ["count"]),
   moderation_reads: ownKind(3, "all", ["limit"]),
@@ -421,7 +423,16 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     todo: null,
   },
   // 3c's and 3e's kinds: a push that names nobody, beside their mails, which stay word for word.
-  moderation_urgent: { title: "Urgent lane", sentence: one("{count} cases wait in the urgent lane, the oldest since {oldestAt}."), todo: null },
+  // 3d review L8 (people6): the lane's cases, or that none waits; then the held uploads in a sentence of their own.
+  moderation_urgent: {
+    title: "Urgent lane",
+    sentence: [
+      { text: "{count} cases wait in the urgent lane, the oldest since {oldestAt}.", when: { fact: "oldestAt", is: "present" } },
+      { text: "No case waits in the urgent lane.", when: { fact: "oldestAt", is: "absent" } },
+      { text: "{heldUploads} matched uploads are held and wait for an admin, or hold an objection that nobody has answered.", when: { fact: "heldUploads", is: "positive" } },
+    ],
+    todo: null,
+  },
   moderation_waiting: { title: "Cases are waiting", sentence: one("{count} cases or replies are waiting longer than their response time."), todo: null },
   moderation_burst: { title: "Many decisions in a short time", sentence: one("One staff account confirmed {count} decisions in 15 minutes. The staff mail says which."), todo: null },
   moderation_reads: { title: "A daily case limit was reached", sentence: one("One staff account opened {limit} different cases today. The staff mail says which."), todo: null },

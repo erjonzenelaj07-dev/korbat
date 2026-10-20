@@ -202,9 +202,26 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a refused upload after i
     expect(again).toMatchObject({ endAs: "report" });
     expect((await holdOf(r.mediaId))!.hold).toBe("infinity");
     expect(await addressOf(r.ownerId)).toEqual({ released: false, reason: null });
-    // No objection after an end as No report.
+    // One objection only: the one sent after Report stands through a later end as No report.
     await endAs(admin, r.refusalId, { endAs: "no_report", reason: "other" });
     expect((await authorUpload(deps(), r.ownerId, r.refusalId)).mayObject).toBe(false);
+  });
+
+  test("review L9 (people7): during a No report end's delay the uploader may still object, as the notice still says the file is held; once the delay has passed, nobody may", async () => {
+    const r = await refused();
+    await endAs(admin, r.refusalId, { endAs: "no_report", reason: "other" });
+    // Within the delay nothing tells the end: the notice reads as held and Object is offered, as before the end.
+    const during = await authorUpload(deps(), r.ownerId, r.refusalId);
+    expect(during).toMatchObject({ endAs: null, mayObject: true });
+    const objected = await objectToUpload(deps(), r.ownerId, r.refusalId, { text: "This is my own drawing." });
+    expect(objected).toMatchObject({ endAs: null, mayObject: false, objection: { text: "This is my own drawing." } });
+    // The database's guard states the same rule: a second refusal past the delay is refused for the API's role.
+    const late = await refused();
+    await endAs(admin, late.refusalId, { endAs: "no_report", reason: "other" });
+    await ageCustodyForTest(migrateDb, { refusal: late.refusalId }, `${AUTOMATION_RULES.noReportHours + 1} hours`);
+    expect((await authorUpload(deps(), late.ownerId, late.refusalId)).mayObject).toBe(false);
+    expect(await refusal(objectToUpload(deps(), late.ownerId, late.refusalId, { text: "Too late." }))).toBe("objection_not_open");
+    expect(await refusal(apiDb.execute(sql`update public.upload_refusals set objection = 'Too late.' where id = ${late.refusalId}::uuid`))).toBe("objection_not_open");
   });
 
   test("after No report the sweeper keeps the row for noReportHours and deletes it after; the uploader is told the hold was lifted, once (rows 9 and W.8)", async () => {

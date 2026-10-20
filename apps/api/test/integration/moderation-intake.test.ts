@@ -392,7 +392,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: taking in a report, a no
       expect([row!.kind, row!.priority, row!.scope, row!.mailed]).toEqual(["moderation_urgent", 5, "on_call", true]);
       const message = mailed[0]!;
       expect(message.template).toBe("moderation_urgent");
-      if (message.template === "moderation_urgent") expect(row!.facts).toEqual({ count: message.count, oldestAt: message.oldest.toISOString() });
+      // 3d review L8: a case waits, so the alert carries its count and its time; no held upload is a fact here.
+      if (message.template === "moderation_urgent") expect(row!.facts).toEqual({ count: message.count, oldestAt: message.oldest!.toISOString() });
     });
   });
 

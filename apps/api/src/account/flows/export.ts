@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import { STANDING_RULES, type Platform } from "@korbat/contracts";
+import { OrderNoticeFacts, OrderTexts, STANDING_RULES, type Platform } from "@korbat/contracts";
 import type { AccountExport } from "../../auth";
 import type { ModerationExport } from "../../moderation";
 import type { ProfileExport } from "../../social";
@@ -231,6 +231,12 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
   yield "\n}";
 }
 
+/** An object's members in the order of a format's shape, and no other member. */
+function inShapeOrder<T extends object>(shape: object, value: T): T {
+  const source = value as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(shape).map((key) => [key, source[key]])) as T;
+}
+
 /** The moderation member with every entry's members in the order of the format (ExportFormat in the contracts). */
 function moderationMember(moderation: ModerationExport): ModerationExport {
   return {
@@ -249,6 +255,15 @@ function moderationMember(moderation: ModerationExport): ModerationExport {
       reason: decision.reason,
       legalReference: decision.legalReference,
       appeal: decision.appeal === null ? null : decision.appeal.state === "pending" ? { state: "pending", result: null } : { state: "answered", result: decision.appeal.result },
+      // 3f (W.7), and 3d review L14 (people12): an order's notice keeps its facts, the authority's words and the day of an
+      // erasure, which the moderation module builds; absent on every other decision, as the format has them.
+      ...(decision.order
+        ? {
+            order: inShapeOrder(OrderNoticeFacts.shape, decision.order),
+            ...(decision.orderTexts ? { orderTexts: inShapeOrder(OrderTexts.shape, decision.orderTexts) } : {}),
+            erasedOn: decision.erasedOn ?? null,
+          }
+        : {}),
       // 3d (W.10): what the statement says of automated means, and the objection to a program's measure with its time.
       automatedDetection: decision.automatedDetection,
       automatedDecision: decision.automatedDecision,

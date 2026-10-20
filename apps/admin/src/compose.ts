@@ -1198,9 +1198,17 @@ export async function withSavedTexts(draft: CaseDraft, saved: readonly StaffText
 
 // ---------------------------------------------------------------- the statement the preview shows
 
-/** The source the database will record for a decision made now: a notice, a report, or the moderator's own finding, from the items it considers. */
+/** The kinds of source that are a user's intake, which decisions_record counts as a report or a notice (from_user). */
+const USER_SOURCES: ReadonlySet<string> = new Set(["reporter", "notifier", "anonymous", "unlinked"]);
+
+/**
+ * The source the database will record for a decision made now: a notice, a report, or korbat's own initiative, from the
+ * items it considers. 3d review L17 (walk B): as decisions_record reads it, only a user's intake is a report or a notice;
+ * a moderator's finding, a program's and an authority's order are not, so a decision on a program's finding alone
+ * previews as korbat's own initiative, which the author's statement then says.
+ */
 export function predictedSource(view: CaseView, kind: "interim" | "final"): StatementInput["source"] {
-  const fromUsers = considered(view, kind).filter((item) => item.source.kind !== "staff");
+  const fromUsers = considered(view, kind).filter((item) => USER_SOURCES.has(item.source.kind));
   if (fromUsers.some((item) => item.allegesIllegal)) return "notice";
   return fromUsers.length > 0 ? "report" : "own_initiative";
 }

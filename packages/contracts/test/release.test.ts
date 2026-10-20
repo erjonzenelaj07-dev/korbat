@@ -11,6 +11,7 @@ import {
   ModerationErrorCode,
   RELEASE_BASES,
   RELEASE_LEAVE_FROM,
+  RELEASE_NOTICE_APPEALS,
   RELEASE_NOTICE_STATES,
   RELEASE_POSTS_MAX,
   RELEASE_RULES,
@@ -117,8 +118,15 @@ describe("the release's contracts (3d Task 2)", () => {
   });
 
   test("the author's two reads: a release by its ground, times, posts and counts, never who gave the leave or what any authority found", () => {
-    const view = { id: A, basis: "leave", releasedAt: "2026-10-18T10:00:00.000Z", backupsClearAt: "2026-11-17T10:00:00.000Z", upload: false, posts: [{ id: B, createdAt: "2026-09-01T08:00:00.000Z" }], postCount: 1, images: 2, sealDecisionId: A } as const;
+    const view = { id: A, basis: "leave", releasedAt: "2026-10-18T10:00:00.000Z", backupsClearAt: "2026-11-17T10:00:00.000Z", upload: false, posts: [{ id: B, createdAt: "2026-09-01T08:00:00.000Z" }], postCount: 1, images: 2, sealDecisionId: A, appeal: "none" } as const;
     expect(ReleaseNoticeView.parse(view)).toEqual(view);
+    // 3d review L11 (people9): where the author's appeal of the sealing decision stands, which the notice's paragraph on
+    // that decision follows: none filed, pending, or answered; never the answer's word. A held upload's release has none.
+    expect([...RELEASE_NOTICE_APPEALS]).toEqual(["none", "pending", "answered"]);
+    for (const appeal of RELEASE_NOTICE_APPEALS) expect(ReleaseNoticeView.parse({ ...view, appeal }).appeal).toBe(appeal);
+    expect(ReleaseNoticeView.safeParse({ ...view, appeal: "kept" }).success).toBe(false);
+    const { appeal: _appeal, ...withoutAppeal } = view;
+    expect(ReleaseNoticeView.safeParse(withoutAppeal).success).toBe(false);
     expect(Object.keys(ReleaseNoticeView.shape).some((key) => /reference|answer|authority|court|from|leave/i.test(key))).toBe(false);
     expect(AuthorNoticesPage.parse({ notices: [{ kind: "release", id: A, at: view.releasedAt }], nextCursor: null }).notices).toHaveLength(1);
   });

@@ -254,7 +254,8 @@ describe("ALERT_KINDS (10.1): the closed list of alerts with each kind's priorit
       alert_channel_down: ["since"],
       mailbox_unreachable: ["since"],
       alert_test: ["at"],
-      moderation_urgent: ["count", "oldestAt"],
+      // 3d review L8: the held uploads are a fact of their own, never counted among the lane's cases.
+      moderation_urgent: ["count", "oldestAt", "heldUploads"],
       moderation_waiting: ["count"],
       moderation_burst: ["count"],
       moderation_reads: ["limit"],
@@ -378,6 +379,14 @@ describe("ALERT_TEXTS (W.4): one text serves both legs, and it carries counts an
 
   test("the pushes of 3c's and 3e's kinds name nobody", () => {
     expect(renderAlert("moderation_urgent", { count: 2, oldestAt: "2026-10-16T08:30:00.000Z" }, now)).toEqual({ title: "Urgent lane", sentence: "2 cases wait in the urgent lane, the oldest since 08:30 UTC.", todo: null });
+    // 3d review L8 (people6): the lane's cases alone are its count; held uploads are their own sentence, and a push with no
+    // case says so, without a time.
+    expect(renderAlert("moderation_urgent", { count: 2, oldestAt: "2026-10-16T08:30:00.000Z", heldUploads: 3 }, now).sentence).toBe(
+      "2 cases wait in the urgent lane, the oldest since 08:30 UTC. 3 matched uploads are held and wait for an admin, or hold an objection that nobody has answered.",
+    );
+    expect(renderAlert("moderation_urgent", { count: 0, heldUploads: 1 }, now).sentence).toBe(
+      "No case waits in the urgent lane. 1 matched uploads are held and wait for an admin, or hold an objection that nobody has answered.",
+    );
     expect(renderAlert("moderation_waiting", { count: 4 }, now).sentence).toBe("4 cases or replies are waiting longer than their response time.");
     expect(renderAlert("moderation_burst", { count: 20 }, now).sentence).toBe("One staff account confirmed 20 decisions in 15 minutes. The staff mail says which.");
     expect(renderAlert("moderation_reads", { limit: 200 }, now).sentence).toBe("One staff account opened 200 different cases today. The staff mail says which.");

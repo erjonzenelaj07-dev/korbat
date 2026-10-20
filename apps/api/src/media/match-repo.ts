@@ -387,13 +387,16 @@ export function createMatchRepo(db: Db) {
 
     /**
      * The one statement that writes an objection (7.12 step 2): only on the owner's refusal, and only while it has none,
-     * is not released and did not end as no_report, the rule the guard states too. Answers whether a row changed.
+     * is not released and did not end as no_report, or (3d review L9) ended so within its delay, which the uploader is
+     * not told of yet: the rule the guard states too. Answers whether a row changed.
      */
     async object(ownerId: string, refusalId: string, text: string): Promise<boolean> {
       const rows = await db.execute(sql`
-        update public.upload_refusals set objection = ${text}, objected_at = now()
-         where id = ${refusalId}::uuid and owner_id = ${ownerId}::uuid and objection is null and release_id is null and end_as is distinct from 'no_report'
-        returning id`);
+        update public.upload_refusals u set objection = ${text}, objected_at = now()
+          from public.automation_rules() r
+         where u.id = ${refusalId}::uuid and u.owner_id = ${ownerId}::uuid and u.objection is null and u.release_id is null
+           and (u.end_as is distinct from 'no_report' or u.ended_at + make_interval(hours => r.no_report_hours) > now())
+        returning u.id`);
       return rows.length === 1;
     },
 

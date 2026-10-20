@@ -388,12 +388,19 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       // The alert for the urgent lane (3c design, section 7.12): counts and times only, to every staff account. A single
       // case is its own oldest, so its sentence gives one time and is worded for one.
       const lane = "in the urgent lane (child sexual abuse or exploitation, direct threats, violence, public security or self-harm)";
-      return staffMail("korbat: a case is waiting in the urgent lane", [
-        need(data, "count") === "1" ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.` : `${need(data, "count")} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
-        // 3d Task 7 (W.7): the held uploads among them, as a second sentence when there are any.
-        ...(data.heldUploads !== undefined && data.heldUploads !== "" && data.heldUploads !== "0"
-          ? [`${data.heldUploads} matched uploads are held and wait for an admin, or hold an objection that nobody has answered.`]
-          : []),
+      const count = need(data, "count");
+      const held = data.heldUploads !== undefined && data.heldUploads !== "" && data.heldUploads !== "0" ? data.heldUploads : null;
+      // 3d review L8 (people6): `count` is the lane's cases alone. With none, the alert is for held uploads alone: its
+      // subject and first sentence say that no case waits, and no case's time is printed.
+      if (count === "0" && held === null) throw new Error("mail template data for moderation_urgent holds no case and no heldUploads");
+      return staffMail(count === "0" ? "korbat: a matched upload is waiting for an admin" : "korbat: a case is waiting in the urgent lane", [
+        count === "0"
+          ? `No case ${lane} is waiting.`
+          : count === "1"
+            ? `1 case ${lane} is waiting, since ${need(data, "oldest")}.`
+            : `${count} cases ${lane} are waiting; the oldest since ${need(data, "oldest")}.`,
+        // 3d Task 7 (W.7): the held uploads, as a sentence of their own when there are any.
+        ...(held !== null ? [`${held} matched uploads are held and wait for an admin, or hold an objection that nobody has answered.`] : []),
         // 3f (W.4): the same alert went to the phone on call as a push; 3f's review (people4): unless the phone alerts are
         // switched off (NOTIFY=off), when this mail is the only alert, as before 3f.
         phonesOn(data) ? "Open the staff console. The same alert went to the phone on call." : "Open the staff console. Phone alerts are switched off on this server, so this email is the only alert.",
@@ -525,6 +532,9 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       if (basis !== "leave" && basis !== "period") throw new Error(`mail template data holds a basis that release_notice does not have: "${basis}"`);
       const upload = need(data, "upload") === "yes";
       const postCount = Number(need(data, "postCount"));
+      // 3d review L11: where the author's appeal of the sealing decision stood when the mail was rendered.
+      const appeal = need(data, "appeal");
+      if (appeal !== "none" && appeal !== "pending" && appeal !== "answered") throw new Error(`mail template data holds an appeal that release_notice does not have: "${appeal}"`);
       const paragraphs = releaseNoticeParagraphs({
         basis,
         releasedAt: need(data, "releasedAt"),
@@ -533,14 +543,17 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
         posts: upload || postCount !== 1 ? [] : [{ createdAt: need(data, "createdAt") }],
         postCount,
         images: Number(need(data, "images")),
+        appeal,
       });
-      return userMail("korbat released sealed images of yours", [...paragraphs, "Read it in korbat under Settings, Cases."]);
+      // 3d review M14: a held upload's release is one image the uploader sent, never sealed images of theirs.
+      return userMail(upload ? "korbat released an image you uploaded" : "korbat released sealed images of yours", [...paragraphs, "Read it in korbat under Settings, Cases."]);
     }
     case "image_lost":
       // 3d (design, sections 7.1 and 7.15; W.8): sent once, when the quarantine's record says the files of an image whose
       // seal was lifted are lost. `createdAt` is the day of the post the image is on; nothing names a file, a seal, a
       // person or a link, and nothing tells the author to wait.
-      return userMail("korbat lost an image of yours", [IMAGE_LOST_NOTICE.mail(need(data, "createdAt")), "Read it in korbat under Settings, Cases."]);
+      // 3d review L16 (people2): no notice under Settings, Cases names a lost image; the post shows it in the image's place.
+      return userMail("korbat lost an image of yours", [IMAGE_LOST_NOTICE.mail(need(data, "createdAt")), IMAGE_LOST_NOTICE.mailWhere]);
     case "moderation_reads": {
       // A staff account opened as many different cases today as one account may (3c design, section 7.3): every staff
       // account is told, the account itself included, since a stolen key reads at the speed of requests.

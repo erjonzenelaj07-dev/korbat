@@ -182,6 +182,8 @@ export const AUTO_WORDS = {
   decided: (decidedAt: string) => `A person has decided since: the decision of ${decidedAt}, listed under Settings, Cases.`,
   decidedLink: "Open that decision",
   notOpen: "A person has decided since: the decision is listed under Settings, Cases.",
+  /** 3d review L10 (people8): objection_exists, a second request from a stale screen or another device; nobody has decided. */
+  exists: "You have already asked for a person about this decision. A person reads what you wrote.",
 } as const;
 
 export const CASES_WORDS = {
@@ -291,9 +293,8 @@ export const RELEASE_TEXTS = {
   entry: "Sealed images released",
   entryOn: (day: string) => `On ${day}`,
   noticesTitle: "Notices",
-  /** The link to the decision that sealed, and [release.appeal] while an appeal of it waits. */
+  /** The link to the decision that sealed. 3d review L11: the notice's own paragraph says where its appeal stands. */
   decision: "The decision that sealed the images",
-  appeal: "Your appeal is still open. An admin reviews it; korbat has released the images and will not show them again.",
   notFound: "That notice does not exist, or it is not about your posts.",
 } as const;
 
@@ -311,7 +312,8 @@ export const UPLOAD_TEXTS = {
   why: "Why",
   refusedPost: "This image was not accepted, so the post was not sent. Remove the image to post. Its notice is under Settings, Cases.",
   object: "Object",
-  objectLead: "Write anything the admin should know. You can send one message. The admin reads it and decides without viewing the image. What you write is kept with this record for as long as korbat keeps the file.",
+  // 3d review L7 (people5): the terms' period (Your data), the upload's record of a match, which outlasts the file.
+  objectLead: "Write anything the admin should know. You can send one message. The admin reads it and decides without viewing the image. What you write is kept as long as this upload's record of a match (Terms, Your data).",
   objectField: "Your message to the admin",
   objected: (objectedAt: string) => `You objected on ${objectedAt}. An admin reads what you wrote; korbat tells you here what was decided, and by email when the hold is lifted.`,
   /** objection_not_open on this screen: the objection is sent, or the hold has ended. */

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { CUSTODY_USAGE } from "../src/cli/custody";
 import { STAFF_USAGE, enrollSettings, migratorUrl, parseStaffArgs, revokeSettings, runStaffCommand, staffDatabaseUrls } from "../src/cli/staff";
 
 const HASH_A = "ab".repeat(32);
@@ -25,6 +26,15 @@ describe("staff.js arguments", () => {
     expect(STAFF_USAGE).toContain("revoke <email> all");
     // enroll runs as the migrator, in the migrate service; the usage says where.
     expect(STAFF_USAGE).toMatch(/run --rm migrate node dist\/staff\.js enroll/);
+  });
+
+  test("3d review L18 (walk): no command of the quarantine's and the release's usage runs past its column; each description starts at the 42nd character", () => {
+    for (const line of CUSTODY_USAGE) {
+      expect(line.length, line).toBeGreaterThan(41);
+      expect(line.charAt(40), line).toBe(" ");
+      expect(line.charAt(41), line).not.toBe(" ");
+    }
+    expect(STAFF_USAGE).toContain(`${"  release-leave <seal|refusal>".padEnd(41)}record a leave or an instruction to destroy`);
   });
 
   test("reads revoke with an email address and a key id or all, normalising both", () => {

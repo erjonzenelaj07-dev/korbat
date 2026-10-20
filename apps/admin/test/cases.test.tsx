@@ -153,9 +153,9 @@ describe("the console's words", () => {
   });
 
   test("the message table has one entry for every moderation code the console can meet, and the app's own codes are not among them", () => {
-    // 3d Task 6 (8.8): objection_not_open is the app's; already_protected and automation_capped never leave the API, since the
-    // automated step records them on the signal.
-    const appOnly = ["human_check_failed", "staff_cannot_report", "notice_not_found", "already_reported", "appeal_not_open", "appeal_exists", "reexamination_not_open", "reexamination_exists", "not_appealable", "objection_not_open"];
+    // 3d Task 6 (8.8): objection_not_open is the app's, and (review L10) objection_exists; already_protected and
+    // automation_capped never leave the API, since the automated step records them on the signal.
+    const appOnly = ["human_check_failed", "staff_cannot_report", "notice_not_found", "already_reported", "appeal_not_open", "appeal_exists", "reexamination_not_open", "reexamination_exists", "not_appealable", "objection_not_open", "objection_exists"];
     const apiOnly = ["already_protected", "automation_capped"];
     expect([...CONSOLE_MODERATION_CODES, ...appOnly, ...apiOnly].sort()).toEqual([...ModerationErrorCode.options].sort());
     expect(Object.keys(MODERATION_MESSAGES).sort()).toEqual([...CONSOLE_MODERATION_CODES].sort());

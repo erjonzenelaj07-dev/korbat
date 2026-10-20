@@ -445,7 +445,8 @@ export function createAutomatedSweepJob(deps: ModerationDeps, lock: JobLock) {
  * POST /api/moderation/decisions/:id/objection, "Ask for a person" (7.10): the decision is read for its subject alone
  * (not_found for anyone else, for a decision that does not exist and for one its author was not told of); one statement
  * inserts the request, which its trigger refuses with objection_not_open unless the decision is a program's and a measure
- * of it is in force, and which a second text meets as the primary key, answered with the same code. A suspended account
+ * of it is in force, and which a second text meets as the primary key, answered objection_exists (3d review L10: a stale
+ * screen or a second device is told it asked already, never that a person decided). A suspended account
  * may ask: no suspension is read here, as for the reply and the appeal. After the commit, unwaited for, every staff
  * account is alerted at most once in 15 minutes. The answer is the decision as it now reads.
  */
@@ -455,7 +456,8 @@ export async function objectToDecision(deps: ModerationDeps, viewer: string, dec
   try {
     await insertObjection(deps.apiDb, decisionId, request.text);
   } catch (err) {
-    if (raisedMessage(err) === "objection_not_open" || violatedUniqueConstraint(err) === "automated_objections_pkey") throw new ModerationError("objection_not_open");
+    if (raisedMessage(err) === "objection_not_open") throw new ModerationError("objection_not_open");
+    if (violatedUniqueConstraint(err) === "automated_objections_pkey") throw new ModerationError("objection_exists");
     throw err;
   }
   deps.background.start(async () => {

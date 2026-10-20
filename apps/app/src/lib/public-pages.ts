@@ -258,7 +258,11 @@ export const TRANSPARENCY_PAGE = {
     `Average monthly active recipients of korbat (Article 24(2) of the Digital Services Act), over the six months to ${month}: between ${low} and ${high}.`,
   recipientsOff: (month: string, low: string) =>
     `Average monthly active recipients of korbat (Article 24(2) of the Digital Services Act), over the six months to ${month}: at least ${low}; korbat does not count readers without an account.`,
-  recipientsNotYet: "korbat has not counted six full months yet.",
+  // 3d review L12 (people10): fewer than six of the six months hold a count. That is the case before korbat has counted
+  // six full months, and also after a restore lost a closed month or a loss of the counting store left a month unrecorded
+  // (the transparency job's month mark), so the page says "not recorded" with both reasons, never only the first.
+  recipientsNotRecorded: (month: string) =>
+    `Average monthly active recipients of korbat (Article 24(2) of the Digital Services Act), over the six months to ${month}: not recorded. korbat holds a count for fewer than six of those months: it had not counted six full months by then, or the count of a month is missing, as after a restore of its database from a backup or a loss of its counting store during that month.`,
   method: (method: number) =>
     `How korbat counts (method ${method}). An account that was used while signed in during a month is counted once for that month. A reader without an account is counted once for each day they read korbat: korbat cannot tell whether Tuesday's reader is Monday's, because it keeps nothing that could tell. So the true number lies between the first figure, accounts alone, and the second, accounts plus the sum of each day's readers. To count, korbat feeds a counting sketch: a small summary that cannot list who was counted. For a reader without an account it is fed with a keyed digest of the network address and the browser's name, under a random key that exists for ${RECIPIENT_RULES.saltHours} hours in korbat's short-lived store and is written nowhere else. Until a month's sketch is deleted at the month's end, whoever runs korbat's server could still ask it whether one given account was probably counted in that month; after that korbat keeps two numbers and nothing else. A crawler is left out only when it names itself. korbat does not record where a reader is, so readers outside the European Union are counted too.`,
   // The audit log's daily value (3d Task 5; 9.3 item 6, W.2).

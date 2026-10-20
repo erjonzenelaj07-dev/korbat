@@ -107,6 +107,8 @@ const MESSAGES: Partial<Record<AuthErrorCode | ModerationErrorCode | MediaErrorC
   reply_not_open: "You cannot reply to this decision: you already replied, or it has ended or was lifted.",
   // 3d Task 6 (design, section 9.7): [auto.decided] without the day, for every reason "Ask for a person" is not open.
   objection_not_open: AUTO_WORDS.notOpen,
+  // 3d review L10: a second request while the first is open, in the app's own words.
+  objection_exists: AUTO_WORDS.exists,
   // 3d Task 7 (design, section 9.7): [upload.refusedPost], a post sent with a refused upload attached.
   upload_refused: UPLOAD_TEXTS.refusedPost,
   // 3f (design, section 9.4): an appeal sent against an order's notice by hand; the screen offers none.
@@ -145,7 +147,7 @@ export function messageFor(code: string, fallback?: string, details?: unknown): 
  * restriction of reporting and a reply that is not open, whose screens print the app's own sentences of the design.
  */
 function localWording(code: string): boolean {
-  return code === "invalid_request" || code === "internal" || code === "passkey_limit" || code === "reporting_restricted" || code === "reply_not_open" || code === "objection_not_open" || code === "upload_refused";
+  return code === "invalid_request" || code === "internal" || code === "passkey_limit" || code === "reporting_restricted" || code === "reply_not_open" || code === "objection_not_open" || code === "objection_exists" || code === "upload_refused";
 }
 
 /** The message to show for any thrown value. */

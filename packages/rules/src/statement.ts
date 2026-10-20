@@ -1127,6 +1127,8 @@ export const IMAGE_LOST_NOTICE = {
   mail: (createdAt: string) =>
     `korbat lost the files of an image of your post of ${createdAt} while they were kept apart from its other images. The image cannot be shown again. You can delete the post, or post the image again. This is korbat's fault, not a decision about you.`,
   onImage: "korbat lost this image's files while they were kept apart from its other images. It cannot be shown again. You can delete the post, or post the image again.",
+  /** 3d review L16: the mail's last paragraph, where korbat shows the loss: on the post, in the image's place ([image.lost]). */
+  mailWhere: "In korbat, your post shows the same in the place of the image.",
 } as const;
 
 // ---------------------------------------------------------------- a release of sealed images (3d design, sections 7.2, 9.6; W.6)
@@ -1150,23 +1152,46 @@ export const RELEASE_NOTICE = {
       `The authority korbat had reported them to did not answer within the time korbat's terms give for that. An admin released them on ${releasedAt}, as korbat told you beforehand: korbat erased its record of the images and destroys the files. A backup of korbat's can hold them until ${backupsClearAt}, and longer only where an authority has korbat keep one.`,
   },
   what: "A person did this, not a program. It cannot be undone: the images cannot be shown again or given back. The text of your post is not touched.",
-  seal: "The decision that sealed the images stays on record under Settings, Cases. If you appealed it, your appeal is still open and an admin reviews it; if you did not, that decision's screen says whether you still can. This notice is not a new decision about you, and nothing else changes with it.",
+  /**
+   * 3d review L11 (people9): the decision that sealed, by where its author's appeal of it stands when the notice is
+   * rendered (ReleaseNoticeView.appeal): a release closes no appeal, and an answered one is not said to be open.
+   */
+  seal: {
+    none: "The decision that sealed the images stays on record under Settings, Cases. Its screen says whether you can still appeal it. This notice is not a new decision about you, and nothing else changes with it.",
+    pending: "The decision that sealed the images stays on record under Settings, Cases. Your appeal of it is still open, and an admin reviews it. This notice is not a new decision about you, and nothing else changes with it.",
+    answered: "The decision that sealed the images stays on record under Settings, Cases, with the answer to your appeal of it. This notice is not a new decision about you, and nothing else changes with it.",
+  },
+  /**
+   * 3d review M14 (people3): a held upload's release, which was one image on no post, sealed by no decision and open to
+   * no appeal: its own ground (always a leave: upload_release takes no other), what a release is, and where its notice
+   * is, the refused upload's own under Settings, Cases, whose paragraph `released` then says it.
+   */
+  upload: {
+    basis: (releasedAt: string, backupsClearAt: string) =>
+      `An admin released it on ${releasedAt}. The ground is the leave or instruction of an authority or a court to destroy it. korbat erased its record of the image and destroys its files. A backup of korbat's can hold them until ${backupsClearAt}, and longer only where an authority has korbat keep one.`,
+    what: "A person did this, not a program. It cannot be undone: the image cannot be given back.",
+    notice: "Your notice under Settings, Cases that korbat did not accept the image now says that korbat released it. Nothing else changes with this notice.",
+  },
   redress:
     "You can write to korbat about this at the address under Contact in korbat's Terms. You can also go to court, or complain to the Digital Services Coordinator of the EU country where you live (Article 53 of the Digital Services Act).",
 } as const;
 
 /**
  * The notice's paragraphs, a pure function of ReleaseNoticeView: the lead by the number of posts (or a held upload), the
- * ground, what a release is, the seal's decision and its appeal, and the redress. Every time is printed as korbat's mails
- * print one, the date and the minute in UTC.
+ * ground, what a release is, the seal's decision by where its appeal stands, and the redress; a held upload's release its
+ * own ground, what a release is and where its notice is (3d review M14). Every time is printed as korbat's mails print
+ * one, the date and the minute in UTC.
  */
 export function releaseNoticeParagraphs(
-  view: Pick<ReleaseNoticeView, "basis" | "releasedAt" | "backupsClearAt" | "upload" | "postCount" | "images"> & { posts: readonly { createdAt: string }[] },
+  view: Pick<ReleaseNoticeView, "basis" | "releasedAt" | "backupsClearAt" | "upload" | "postCount" | "images" | "appeal"> & { posts: readonly { createdAt: string }[] },
 ): string[] {
   const N = RELEASE_NOTICE;
+  const releasedAt = utcMinute(view.releasedAt);
+  const backupsClearAt = utcMinute(view.backupsClearAt);
+  if (view.upload) return [N.lead.upload, N.upload.basis(releasedAt, backupsClearAt), N.upload.what, N.upload.notice, N.redress];
   const first = view.posts[0];
-  const lead = view.upload ? N.lead.upload : view.postCount === 1 && first !== undefined ? N.lead.one(utcMinute(first.createdAt), view.images) : N.lead.several(view.postCount, view.images);
-  return [lead, N.basis[view.basis](utcMinute(view.releasedAt), utcMinute(view.backupsClearAt)), N.what, N.seal, N.redress];
+  const lead = view.postCount === 1 && first !== undefined ? N.lead.one(utcMinute(first.createdAt), view.images) : N.lead.several(view.postCount, view.images);
+  return [lead, N.basis[view.basis](releasedAt, backupsClearAt), N.what, N.seal[view.appeal], N.redress];
 }
 
 /**
