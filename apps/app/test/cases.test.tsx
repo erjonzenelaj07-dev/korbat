@@ -423,6 +423,15 @@ describe("a decision's screen", () => {
   });
   const screen = (extra: Partial<DecisionView> = {}) => html(<DecisionDetail view={view(extra)} />);
 
+  test("3d (design, section 9.1): a statement links the rules page after the rule it names; one on the law alone does not", () => {
+    const out = screen();
+    const link = out.indexOf('href="/rules"');
+    expect(link).toBeGreaterThan(-1);
+    expect(textOf(out.slice(link))).toContain(DECISION_WORDS.rulesPage);
+    expect(link).toBeGreaterThan(out.indexOf(textOf(statementParagraphs(view())[0]!).slice(0, 20)));
+    expect(screen({ ground: "illegal", ruleId: null, legalReference: "the law" } as Partial<DecisionView>)).not.toContain('href="/rules"');
+  });
+
   test("a final restriction: the statement as the mail rendered it, the post's time, the content it was made on, and Appeal with its deadline", () => {
     const out = screen();
     const text = textOf(out);

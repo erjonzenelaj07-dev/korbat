@@ -3,6 +3,7 @@ import { ScrollView, Text, View } from "react-native";
 import { TextLink } from "@/components/ui";
 import { CONTACT_EMAIL, reportHref } from "@/lib/moderation";
 import { CONTACT_WORDS } from "@/lib/moderation-words";
+import { RULES_PAGE, TRANSPARENCY_PAGE } from "@/lib/public-pages";
 import { TERMS_SECTIONS, TERMS_VERSION, termsParagraphs } from "@/lib/terms";
 
 export default function Terms() {
@@ -33,6 +34,9 @@ export default function Terms() {
           </Text>
           <Text className="mt-2 text-base leading-7 text-zinc-300">{CONTACT_WORDS.body(CONTACT_EMAIL)}</Text>
         </View>
+        {/* 3d (design, section 9.1): the two public pages, under the sections and above the report form's link. */}
+        <TextLink label={TRANSPARENCY_PAGE.rulesLink} href="/rules" />
+        <TextLink label={RULES_PAGE.transparencyLink} href="/transparency" />
         {/* The report form needs no account and no item to start from. */}
         <TextLink label={CONTACT_WORDS.report} href={reportHref()} />
         <TextLink label="Back to korbat" href="/" replace />

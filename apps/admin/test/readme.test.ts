@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { ALERT_RULES, ALERT_TEXTS, EDGE_CACHE, EDGE_RULES, ORDER_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES } from "@korbat/contracts";
+import { ALERT_RULES, ALERT_TEXTS, EDGE_CACHE, EDGE_RULES, ORDER_RULES, RECIPIENT_RULES, REPLY_AIM_HOURS, RETENTION, STANDING_RULES, TRANSPARENCY_RULES } from "@korbat/contracts";
 import { AUTOMATION_WORDS } from "../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK, RELEASE_OVERDUE_RUNBOOK } from "../src/screens/Home";
 
@@ -530,5 +530,52 @@ describe("the README's edge (3d design, W.11)", () => {
     }
     expect(text).toContain(`read the case's line "Edge copy: purge accepted"`);
     expect(AUTOMATION_WORDS.purge("accepted", "a time").startsWith("Edge copy: purge accepted")).toBe(true);
+  });
+});
+
+/**
+ * 3d Task 4 (design, sections 7.5, 7.6, 8.10 and 15; W.11's paragraph on the yearly edition, without the daily value,
+ * which is Task 5's): the README's section The yearly edition, after Quarantine, with the commands as the operator types
+ * them; and the manual yearly report of 3f, which the edition replaces, gone from the runbook and the owner's list, while
+ * tco-counts stays for the authority.
+ */
+describe("the README's yearly edition (3d design, W.11)", () => {
+  test("The yearly edition stands after Quarantine and before Profile and account, with its commands as the operator types them", () => {
+    const lines = readmeLines();
+    expect(lines.indexOf("## The yearly edition")).toBeGreaterThan(lines.indexOf("## Quarantine"));
+    expect(lines.indexOf("## The yearly edition")).toBeLessThan(lines.indexOf("## Profile and account"));
+    const all = sectionLines("## The yearly edition").join("\n");
+    for (const words of [
+      "docker compose -f infra/compose.yml run --rm migrate node dist/staff.js edition <year>",
+      "docker compose -f infra/compose.yml run --rm migrate node dist/staff.js edition <year> --correct",
+      "docker compose -f infra/compose.yml run --rm migrate node dist/staff.js recipients",
+      "`tco-counts` stays for the authority too",
+      "`--correct` computes every table again and stores the result as a corrected version beside it, which its line on the page says",
+      "`API_RECIPIENTS_SIGNED_OUT`",
+      "docker compose -f infra/compose.yml up -d api",
+    ]) {
+      expect(all, words).toContain(words);
+    }
+  });
+
+  test("its numbers are the constants': the due day, the floor and the six months", () => {
+    const text = withoutCodeMarks(sectionLines("## The yearly edition").join(" "));
+    expect(text).toContain(`on or after ${TRANSPARENCY_RULES.dueDay} March`);
+    expect(TRANSPARENCY_RULES.dueMonth).toBe(3);
+    expect(text).toContain(`"1 to ${TRANSPARENCY_RULES.floor - 1}"`);
+    expect(text).toContain(`the average of the six full months before today`);
+    expect(RECIPIENT_RULES.months).toBe(6);
+  });
+
+  test("the manual yearly report is gone, and tco-counts stays for an authority that asks", () => {
+    const all = readmeLines().join("\n");
+    expect(all).not.toContain("publish before 1 March, on the page the terms link");
+    expect(all).not.toContain("Until sub-project 3d's transparency page exists");
+    expect(all).not.toContain("create it before the first January");
+    expect(all).not.toContain("the section Authorities' orders says what to publish, and when");
+    const orders = ordersParts().orders;
+    expect(orders).toContain("staff.js tco-counts <last year> in the migrate service stays for an authority that asks");
+    expect(orders).toContain("the yearly edition on /transparency");
+    expect(ordersParts().owners).toContain("the yearly report is the edition on /transparency, which korbat publishes itself on or after 1 March");
   });
 });

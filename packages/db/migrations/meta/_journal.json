@@ -253,6 +253,13 @@
       "when": 1792364664628,
       "tag": "0035_edge_purges",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1792369190922,
+      "tag": "0036_transparency",
+      "breakpoints": true
     }
   ]
 }

@@ -98,6 +98,15 @@ const draft = (extra: Partial<ReportDraft> = {}): ReportDraft => ({ ...EMPTY_DRA
 const form = (options: { signedIn?: boolean; given?: GivenTarget | null; initial?: Partial<ReportDraft> } = {}) =>
   html(<ReportForm signedIn={options.signedIn ?? true} given={options.given === undefined ? POST : options.given} initial={options.initial} />);
 
+describe("3d (design, section 9.1): the rules page", () => {
+  test("the form links The rules beside its list of rules", () => {
+    const out = form({ initial: { ground: "rule" } });
+    expect(out).toContain('href="/rules"');
+    expect(textOf(out)).toContain("The rules");
+    expect(form({ initial: { ground: "illegal" } })).not.toContain('href="/rules"');
+  });
+});
+
 describe("the words", () => {
   test("the form's sentences are the design's, with their numbers printed from the contracts", () => {
     expect(REPORT_WORDS.question).toBe("What is wrong with it?");

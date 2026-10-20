@@ -337,6 +337,14 @@ export function DecisionDetail({ view, onAppeal }: { view: DecisionView; onAppea
 
       <Section title={DECISION_WORDS.statement}>
         {paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}
+        {/* 3d (design, section 9.1): after the rule a statement names, its own or the reviewed decision's, the rules page. */}
+        {(view.ruleId ?? view.reviewed?.ruleId ?? null) !== null ? (
+          <Link href="/rules" asChild>
+            <Pressable className="mt-3 self-start">
+              <Text className="text-sm text-sky-400 underline">{DECISION_WORDS.rulesPage}</Text>
+            </Pressable>
+          </Link>
+        ) : null}
         {/* 3e (design, section 9.2): where the strike this decision gave stands now, read fresh. */}
         {view.strike ? <Line strong>{strikeLine(view.strike)}</Line> : null}
         {resets.map((decisionId) => (

@@ -4,6 +4,7 @@ import { Link } from "expo-router";
 import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { NOTICE_LIMITS, REPORT_RULE_IDS, TDB_FORM_CATEGORIES, type AccountStanding, type CsamKeywordChoice, type NoticeResponse, type ReportRuleId } from "@korbat/contracts";
 import { RULES } from "@korbat/rules";
+import { RULES_PAGE } from "@/lib/public-pages";
 import { Body, Button, ErrorText, Field, TextButton, TextLink, Title } from "@/components/ui";
 import { ApiError } from "@/lib/api";
 import {
@@ -99,6 +100,17 @@ const KEYWORDS: ChoiceEntry<CsamKeywordChoice>[] = (Object.keys(REPORT_WORDS.key
 /** The illegal ground's optional rule: none, or one of the rules a report may cite. */
 const NO_RULE = "none";
 
+/** "The rules", the public rules page, beside the list of rules (3d design, section 9.1). */
+function RulesLink() {
+  return (
+    <Link href="/rules" asChild>
+      <Pressable className="mt-2 self-start">
+        <Text className="text-sm text-sky-400 underline">{RULES_PAGE.title}</Text>
+      </Pressable>
+    </Link>
+  );
+}
+
 /** What the form was opened on, as a link to it; a form opened without an item asks for its link instead. */
 function GivenItem({ given }: { given: GivenTarget }) {
   const [href, label] = given.kind === "post" ? [`/post/${given.id}`, given.mediaId ? REPORT_WORDS.itemImage : REPORT_WORDS.itemPost] : [`/u/${given.handle}`, REPORT_WORDS.itemProfile(given.handle)];
@@ -176,6 +188,8 @@ export function ReportForm({ signedIn, given, initial, standing = null }: { sign
       {draft.ground === "rule" ? (
         <>
           <Choice label={REPORT_WORDS.whichRule} entries={ruleEntries(true)} value={draft.ruleId} onChange={(ruleId) => set({ ruleId })} />
+          {/* 3d (design, section 9.1): every rule in full, with what it allows, beside the list. */}
+          <RulesLink />
           <Field label={REPORT_WORDS.explanation} multiline numberOfLines={4} maxLength={NOTICE_LIMITS.explanationMax} value={draft.explanation} onChangeText={(explanation) => set({ explanation })} />
         </>
       ) : null}

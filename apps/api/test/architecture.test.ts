@@ -24,8 +24,8 @@ const AUTH_SCHEMA_FILE = "auth.ts";
 const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts", "cli/staff.ts"]);
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
-/** Modules that may only be entered through their index file. */
-const MODULES = ["auth", "social", "media", "account", "staff", "moderation"] as const;
+/** Modules that may only be entered through their index file. 3d Task 4 adds the seventh, transparency. */
+const MODULES = ["auth", "social", "media", "account", "staff", "moderation", "transparency"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -613,6 +613,69 @@ describe("the adapters' files (3d Task 3)", () => {
   });
 });
 
+/**
+ * The transparency module (3d design, section 5, "The architecture test"; Task 4): it reads no session and no table of a
+ * person, so a file under transparency/ imports from @korbat/db no schema name but those of schema/transparency.ts and the
+ * audit head (Task 5's daily value), and no namespace of it. Db and DbTx, which are no schema names, stay allowed.
+ */
+const TRANSPARENCY_SCHEMA_FILE = "transparency.ts";
+const TRANSPARENCY_EXTRA_NAMES = new Set(["auditHead"]);
+
+function findTransparencyViolations(files: SourceFile[], schemaNames: Set<string>, allowed: Set<string>): string[] {
+  const violations: string[] = [];
+  for (const { path, source } of files) {
+    if (!path.startsWith("transparency/")) continue;
+    for (const name of dbImports(source)) {
+      if (name === "*") violations.push(`${path}: namespace import of @korbat/db (the transparency module names its own tables only)`);
+      else if (schemaNames.has(name) && !allowed.has(name)) violations.push(`${path}: imports ${name} from @korbat/db, which is no table of the public figures`);
+    }
+  }
+  return violations;
+}
+
+describe("the transparency module's tables (3d Task 4)", () => {
+  const schemaNames = () => new Set([...publicSchemaNames(), ...authSchemaNames()]);
+  const allowed = () => new Set([...exportedNames(TRANSPARENCY_SCHEMA_FILE), ...TRANSPARENCY_EXTRA_NAMES]);
+
+  test("the module exists, and its files name no table of @korbat/db but the public figures' two and the audit head", () => {
+    const files = loadSources();
+    expect(files.map((file) => file.path)).toContain("transparency/index.ts");
+    expect([...allowed()].sort()).toEqual(["auditHead", "recipientMonths", "transparencyEditions"]);
+    expect(findTransparencyViolations(files, schemaNames(), allowed())).toEqual([]);
+  });
+
+  test("catches a table of a person, an auth table and a namespace import, and allows its own tables, the head and the pool's types", () => {
+    const files: SourceFile[] = [
+      { path: "transparency/repo.ts", source: `import { transparencyEditions, recipientMonths, auditHead, decisions, type Db, type DbTx } from "@korbat/db";` },
+      { path: "transparency/editions.ts", source: `import type { sessions } from "@korbat/db";` },
+      { path: "transparency/recipients.ts", source: `import * as db from "@korbat/db";` },
+      { path: "transparency/routes.ts", source: `import { profiles as p } from "@korbat/db";` },
+      { path: "moderation/repo.ts", source: `import { decisions } from "@korbat/db";` },
+    ];
+    expect(findTransparencyViolations(files, new Set(["transparencyEditions", "recipientMonths", "auditHead", "decisions", "sessions", "profiles"]), new Set(["transparencyEditions", "recipientMonths", "auditHead"]))).toEqual([
+      "transparency/repo.ts: imports decisions from @korbat/db, which is no table of the public figures",
+      "transparency/editions.ts: imports sessions from @korbat/db, which is no table of the public figures",
+      "transparency/recipients.ts: namespace import of @korbat/db (the transparency module names its own tables only)",
+      "transparency/routes.ts: imports profiles from @korbat/db, which is no table of the public figures",
+    ]);
+  });
+
+  test("catches a deep import into the transparency module, from the app, the auth module and the command line", () => {
+    const files: SourceFile[] = [
+      { path: "app.ts", source: `import type { Transparency } from "./transparency";
+import { transparencyRoutes } from "./transparency/routes";` },
+      { path: "auth/middleware.ts", source: `import type { TransparencyForAuth } from "../transparency";
+import { createRecipientCounter } from "../transparency/recipients";` },
+      { path: "cli/figures.ts", source: `import { createTransparencyRepo } from "../transparency/repo";` },
+    ];
+    expect(findViolations(files, new Set(), new Set())).toEqual([
+      "app.ts: imports ./transparency/routes, which is inside the transparency module (use ./transparency)",
+      "auth/middleware.ts: imports ../transparency/recipients, which is inside the transparency module (use ./transparency)",
+      "cli/figures.ts: imports ../transparency/repo, which is inside the transparency module (use ./transparency)",
+    ]);
+  });
+});
+
 describe("module boundaries", () => {
   test("walks the real source tree", () => {
     const paths = loadSources().map((f) => f.path);
@@ -622,6 +685,7 @@ describe("module boundaries", () => {
     expect(paths).toContain("account/index.ts");
     expect(paths).toContain("staff/index.ts");
     expect(paths).toContain("moderation/index.ts");
+    expect(paths).toContain("transparency/index.ts");
     expect(paths).toContain("cli/staff.ts");
     expect(paths).toContain("app.ts");
     expect(publicSchemaNames()).toContain("profiles");

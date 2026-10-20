@@ -200,6 +200,8 @@ export const CASES_WORDS = {
 
 export const DECISION_WORDS = {
   title: "korbat's decision",
+  /** 3d (design, section 9.1): the link after the rule a statement names. */
+  rulesPage: "The rules page",
   back: "All cases",
   statement: "Statement of reasons",
   content: "What this decision was made on",

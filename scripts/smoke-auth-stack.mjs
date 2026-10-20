@@ -45,6 +45,11 @@
  * 18. With --closed (3f, the stack started with APP_SITE=closed, as for a restore): every path of the app's site, the
  *     API's included, answers 503 with Caddy's one sentence, the console's site still serves its page, and nothing else
  *     runs, since nothing else can be reached through the app's site.
+ * 19. 3d Task 4: GET /api/public/facts answers no-cache and names every tool off (the R1 check, the comparison with
+ *     known material, the edge and the head's witness). A status code proves nothing about the two public pages, since
+ *     the web export is one page and Caddy answers every unknown path with its shell: so the lead sentences of the rules
+ *     page and of the transparency page are looked for in the bundle Caddy serves under /_expo/, which proves they were
+ *     built in (the app's render tests prove the pages). An app test holds the two sentences here to the pages' own.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -417,6 +422,33 @@ async function pushSite() {
  * the server's clock rather than this machine's, and stays under 11 minutes: a round at most every 5 minutes, one that
  * skips because the last ranking is under 4.5 minutes old, and a minute and a half to spare.
  */
+/** The lead sentences of /rules and /transparency (RULES_PAGE.lead and TRANSPARENCY_PAGE.lead), held to them by an app test. */
+const RULES_LEAD =
+  "These are all of korbat's rules. korbat restricts content when it breaks one of them, or when it is illegal under EU law or the law of an EU country and korbat is told about it in a notice. Opinions are never a reason. Every decision names one of these rules or the law, and its statement shows the rule as it read on the day of the decision.";
+const TRANSPARENCY_LEAD =
+  "What korbat's moderators, its programs and authorities' orders did, in numbers. korbat publishes counts and never a decision: on a service this small, a list of decisions would point at people. Whoever a decision concerns gets its full reasons from korbat directly.";
+
+/** Step 19 (3d Task 4): the facts of a stack with every adapter off, and the two pages' lead sentences in the bundle. */
+async function publicPages() {
+  const res = await fetch(`${base}/api/public/facts`);
+  const facts = await res.json().catch(() => null);
+  check("3d: GET /api/public/facts answers no-cache", res.status === 200 && res.headers.get("cache-control") === "no-cache", `HTTP ${res.status}, ${res.headers.get("cache-control")}`);
+  check(
+    "3d: the facts name every tool off: the R1 check, the comparison with known material, the edge and the witness",
+    facts?.r1?.state === "off" && facts?.match?.state === "off" && facts?.edge?.on === false && facts?.witness?.on === false,
+    JSON.stringify(facts),
+  );
+  const shell = await (await fetch(`${base}/`)).text();
+  const scripts = [...shell.matchAll(/<script[^>]* src="([^"]+)"/g)].map((match) => match[1]).filter((src) => src.startsWith("/_expo/"));
+  if (!check("3d: the app's shell loads its bundle from /_expo/", scripts.length > 0, `${scripts.length} scripts`)) return;
+  // A minifier may write an apostrophe inside a string escaped; the sentence is looked for with it read back.
+  const escapedQuote = `${String.fromCharCode(92)}'`;
+  let bundle = "";
+  for (const src of scripts) bundle += (await (await fetch(`${base}${src}`)).text()).replaceAll(escapedQuote, "'");
+  check("3d: the rules page's lead sentence is in the bundle Caddy serves", bundle.includes(RULES_LEAD));
+  check("3d: the transparency page's lead sentence is in the bundle Caddy serves", bundle.includes(TRANSPARENCY_LEAD));
+}
+
 async function explore() {
   const deadline = Date.now() + 60_000;
   let answer;
@@ -625,6 +657,7 @@ async function main() {
   await consoleSite();
   if (pushBase) await pushSite();
   await explore();
+  await publicPages();
 
   const unknown = await withTurnstile("/api/auth/password/signin", { email: `nobody-${randomUUID()}@korbat.local`, password: "not a real password", turnstileToken: TURNSTILE_TOKEN, deviceId, platform: "ios" });
   check("password sign-in for an unknown email", unknown.body?.error?.code === "invalid_credentials", unknown.summary);

@@ -46,15 +46,48 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 61 tables in total", () => {
+  test("there are 63 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
     // legal_order_events; then the four of the records to authorities: authority_notifications,
     // authority_notification_events, productions and auth.report_holds; then the two of recovery: restore_gaps and
     // copy_marks; then 3d's first, quarantine_files; then the release's four (Task 2): release_leaves, releases,
-    // release_posts and release_notices; then the edge's outbox (Task 3), edge_purges.
-    expect(tables.length).toBe(61);
+    // release_posts and release_notices; then the edge's outbox (Task 3), edge_purges; then the public figures' two (Task
+    // 4), transparency_editions and recipient_months.
+    expect(tables.length).toBe(63);
+  });
+  test("3d's public figures (section 6.4): an edition's versions under their reason, and a month's two numbers, each read and allowed for the API's role alone", () => {
+    const editions = byName.get("transparency_editions")!;
+    const months = byName.get("recipient_months")!;
+    const checkSql = (table: typeof editions, name: string) => new PgDialect().sqlToQuery(table.checks.find((c) => c.name === name)!.value).sql;
+    expect(editions.columns.map((c) => [c.name, c.getSQLType(), c.notNull])).toEqual([
+      ["year", "smallint", true],
+      ["version", "smallint", true],
+      ["computed_at", "timestamp with time zone", true],
+      ["published_at", "timestamp with time zone", true],
+      ["method", "smallint", true],
+      ["reason", "text", true],
+      ["figures", "jsonb", true],
+    ]);
+    expect(editions.primaryKeys.map((key) => key.columns.map((c) => c.name))).toEqual([["year", "version"]]);
+    expect(checkSql(editions, "transparency_editions_reason")).toBe(`"transparency_editions"."reason" in ('first', 'hold_ended', 'correction')`);
+    expect(checkSql(editions, "transparency_editions_first")).toBe(`"transparency_editions"."version" >= 1 and ("transparency_editions"."version" = 1) = ("transparency_editions"."reason" = 'first')`);
+    expect(months.columns.map((c) => [c.name, c.getSQLType(), c.notNull])).toEqual([
+      ["month", "date", true],
+      ["signed_in", "integer", true],
+      ["signed_out_days", "integer", false],
+      ["method", "smallint", true],
+      ["computed_at", "timestamp with time zone", true],
+    ]);
+    expect(months.columns.find((c) => c.name === "month")?.primary).toBe(true);
+    expect(checkSql(months, "recipient_months_first_day")).toBe(`extract(day from "recipient_months"."month") = 1`);
+    // No foreign key and no column of a person: counts and nothing else.
+    for (const table of [editions, months]) {
+      expect(table.foreignKeys).toEqual([]);
+      expect(table.enableRLS).toBe(true);
+      expect(table.policies.map((p) => [p.name, p.for, p.to])).toEqual([[`${table.name}_api_all`, "all", apiRole]]);
+    }
   });
   test("3d's edge_purges (section 6.3): one row an image that stopped being public, its cause and its outcome under closed lists, both ends or neither, the job's index and the newest row's", () => {
     const purges = byName.get("edge_purges")!;

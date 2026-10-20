@@ -21,6 +21,8 @@
  *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-leave <seal> --by <authority|court> ...   (3d Task 2)
  *   docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-show <release>
  *   cat <the keeper's files> | docker compose -f infra/compose.yml run --rm -T migrate node dist/staff.js release-replay
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js recipients [--months 6]   (3d Task 4: cli/figures.ts)
+ *   docker compose -f infra/compose.yml run --rm migrate node dist/staff.js edition <year> [--correct]
  *
  * The commands for moderation cases (3c design, section 7.13) do their work in staff-cases.ts. link and unlink record a
  * staff member's personal accounts for the recusal check and limits sets the limits on staff, each as the migrator, in
@@ -58,6 +60,7 @@ import { LOCK_TIMEOUT_ADVICE, isLockTimeout } from "./lock-timeout";
 import { mailerFor, type CommandLineMailSettings } from "./mail";
 import { COUNT_COMMANDS, COUNT_USAGE, countCommand, parseCountArgs, type CountCommand, type CountCommandName } from "./counts";
 import { CUSTODY_COMMANDS, CUSTODY_USAGE, custodyCommand, parseCustodyArgs, type CustodyCommand, type CustodyCommandName } from "./custody";
+import { FIGURE_COMMANDS, FIGURE_USAGE, figureCommand, parseFigureArgs, type FigureCommand, type FigureCommandName } from "./figures";
 import { ORDER_COMMANDS, ORDER_USAGE, orderCommand, parseOrderArgs, type OrderCommand, type OrderCommandName } from "./orders";
 import { RECORD_COMMANDS, RECORD_USAGE, authorityHoldsFor, parseRecordArgs, recordCommand, type RecordCommand, type RecordCommandName } from "./records";
 import { RESTORE_COMMANDS, RESTORE_USAGE, auditExport, parseRestoreArgs, restoreImport, type RestoreCommand, type RestoreCommandName } from "./restore";
@@ -95,6 +98,8 @@ export const STAFF_USAGE = [
   ...COUNT_USAGE,
   // 3d Task 1 (design, section 8.10): the quarantine's list and record, as the migrator in the migrate service.
   ...CUSTODY_USAGE,
+  // 3d Task 4 (design, section 8.10): the recipients' figure and the yearly edition, as the migrator in the migrate service.
+  ...FIGURE_USAGE,
 ].join("\n");
 
 /** A place in the chain and the hash it had when someone kept it, as audit-head printed it. */
@@ -124,7 +129,9 @@ export type StaffCommand =
   // Task 7: tco-counts, whose words cli/counts.ts reads.
   | { command: "counts"; counts: CountCommand }
   // 3d Task 1: quarantine-list and quarantine-record, whose words cli/custody.ts reads.
-  | { command: "custody"; custody: CustodyCommand };
+  | { command: "custody"; custody: CustodyCommand }
+  // 3d Task 4: recipients and edition, whose words cli/figures.ts reads.
+  | { command: "figures"; figures: FigureCommand };
 
 /** A handle as the operator types it, with or without its at sign; kept in lower case, as the profiles hold it. */
 const HANDLE = /^@?[A-Za-z0-9_]{1,64}$/;
@@ -209,6 +216,7 @@ export function parseStaffArgs(args: readonly string[]): StaffCommand {
       if ((RESTORE_COMMANDS as readonly string[]).includes(command)) return { command: "restore", restore: parseRestoreArgs(command as RestoreCommandName, rest) };
       if ((COUNT_COMMANDS as readonly string[]).includes(command)) return { command: "counts", counts: parseCountArgs(command as CountCommandName, rest) };
       if ((CUSTODY_COMMANDS as readonly string[]).includes(command)) return { command: "custody", custody: parseCustodyArgs(command as CustodyCommandName, rest) };
+      if ((FIGURE_COMMANDS as readonly string[]).includes(command)) return { command: "figures", figures: parseFigureArgs(command as FigureCommandName, rest) };
       throw new Error(`unknown command: ${command}\n${STAFF_USAGE}`);
   }
 }
@@ -996,6 +1004,7 @@ export async function runStaffCommand(
   if (command.command === "restore") return runRestoreCommand(command.restore, env, out, input);
   if (command.command === "counts") return runCountCommand(command.counts, env, out);
   if (command.command === "custody") return runCustodyCommand(command.custody, env, out, input);
+  if (command.command === "figures") return runFigureCommand(command.figures, env, out);
   let urls: { api: string; auth: string | null };
   try {
     urls = staffDatabaseUrls(command, env);
@@ -1350,6 +1359,37 @@ async function runCustodyCommand(command: CustodyCommand, env: Record<string, st
     for (const line of done.lines) out.log(line);
     for (const note of done.notes) out.error(note);
     return done.failed ? 1 : 0;
+  } catch (err) {
+    out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
+    return 1;
+  } finally {
+    await closeDb(migrateDb);
+  }
+}
+
+// ---------------------------------------------------------------- the public figures (3d Task 4)
+
+/**
+ * recipients and edition (3d design, sections 7.5, 7.6 and 8.10), on the migrator's own connection, which reads only
+ * DATABASE_URL_MIGRATE: the migrator alone may store a correction, and both reads are its as well.
+ */
+async function runFigureCommand(command: FigureCommand, env: Record<string, string | undefined>, out: Output): Promise<number> {
+  let url: string;
+  try {
+    url = migratorUrl(command.command, env);
+  } catch (err) {
+    out.error((err as Error).message);
+    return 1;
+  }
+  const migrateDb = createDb(url, { max: 1 });
+  try {
+    const done = await figureCommand(migrateDb, command);
+    if (!done.ok) {
+      out.error(done.problem);
+      return 1;
+    }
+    for (const line of done.lines) out.log(line);
+    return 0;
   } catch (err) {
     out.error(isLockTimeout(err) ? `${command.command}: ${LOCK_TIMEOUT_ADVICE}` : err instanceof Error ? err.message : String(err));
     return 1;

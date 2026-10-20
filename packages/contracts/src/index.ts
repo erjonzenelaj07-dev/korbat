@@ -39,3 +39,5 @@ export * from "./passkeys";
 export * from "./social";
 export * from "./staff";
 export * from "./text";
+// 3d Task 4: the public figures. It reads moderation.ts and orders.ts for closed lists, and nothing reads it.
+export * from "./transparency";

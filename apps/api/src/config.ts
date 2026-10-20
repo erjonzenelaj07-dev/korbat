@@ -255,6 +255,12 @@ const schema = z.object({
   EDGE_API_TOKEN: optionalSecret.pipe(z.string().regex(/^[A-Za-z0-9_-]{20,200}$/, "must be the provider's API token: one word of letters, digits, dashes and underscores").optional()),
   /** The public hostname images are served under at the edge, bare: a prefix is <EDGE_HOST>/api/media/<id>/. */
   EDGE_HOST: blankAsUnset.pipe(z.string().toLowerCase().regex(RP_ID, "must be a bare domain name such as korbat.example: no scheme, port or path").optional()),
+  /**
+   * 3d Task 4 (design, sections 2 row 8, 7.5 and 10.8): whether readers without an account are counted among the
+   * recipients, each day's by a keyed digest of the network and the browser's name under a salt that lives 26 hours. On
+   * unless set to off, the owner's to decide; off leaves the second figure out, and the pages say "at least".
+   */
+  RECIPIENTS_SIGNED_OUT: blankAsUnset.pipe(z.enum(["on", "off"]).default("on")),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // 3d (design, section 5, review ruling 11): in every environment, a test adapter never runs on a site people can reach.

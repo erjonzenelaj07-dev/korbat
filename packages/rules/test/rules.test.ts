@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { STANDING_RULES } from "@korbat/contracts";
-import { REDRESS_TEXTS, REDRESS_VERSION, RULEBOOKS, RULES, RULES_VERSION, getRedress, getRule, isRuleId, ORDER_NOTICE } from "../src/index";
+import { REDRESS_TEXTS, REDRESS_VERSION, RULEBOOKS, RULES, RULES_CHANGES, RULES_VERSION, getRedress, getRule, isRuleId, ORDER_NOTICE } from "../src/index";
 
 const VERSIONS = [1, 2, 3] as const;
 
@@ -188,5 +188,28 @@ describe("redress", () => {
       "korbat's appeal does not apply to this decision. Where an earlier decision about this content still stands in part, its own screen in korbat says whether you can still appeal it. " +
         "You can go to court, or complain to the Digital Services Coordinator of the EU country where you live (Article 53 of the Digital Services Act).",
     );
+  });
+});
+
+/**
+ * 3d Task 4 (design, sections 2 row 7, 9.2 and 10.8; W.1): the rules page's change log, one dated sentence a version of
+ * the rulebook, each dated the day of the commit that added that version to this package.
+ */
+describe("the rulebook's change log", () => {
+  test("RULES_CHANGES has one entry a version of RULEBOOKS, oldest first, each with a day and W.1's sentence", () => {
+    expect(RULES_CHANGES.map((change) => change.version)).toEqual(Object.keys(RULEBOOKS).map(Number));
+    expect(RULES_CHANGES.at(-1)!.version).toBe(RULES_VERSION);
+    expect(RULES_CHANGES).toEqual([
+      { version: 1, date: "2026-09-14", summary: "The six rules as first published." },
+      {
+        version: 2,
+        date: "2026-10-04",
+        summary:
+          "A person decides every case; the automated checks that R1 and R2 named are withdrawn until they exist. R2 says how reported images are handled without anyone opening them. R4 and R5 say who may hide content while a case is decided and who decides it. R6 names coordinated manipulation.",
+      },
+      { version: 3, date: "2026-10-12", summary: "R6 names repeated, plainly unfounded reporting." },
+    ]);
+    const days = RULES_CHANGES.map((change) => change.date);
+    expect([...days].sort()).toEqual(days);
   });
 });

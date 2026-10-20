@@ -142,6 +142,30 @@ export const RULEBOOKS = { 1: RULES_V1, 2: RULES_V2, 3: RULES_V3 } as const sati
 /** The rules in force. */
 export const RULES = RULEBOOKS[RULES_VERSION];
 
+/** One version of the rulebook as the rules page's change log prints it: the day it came into force and what it changed. */
+export interface RulesChange {
+  version: number;
+  /** The day the version came into force, as the pages print a day. */
+  date: string;
+  summary: string;
+}
+
+/**
+ * The rulebook's change log (3d design, sections 2 row 7, 9.2 and 10.8; W.1), oldest first: one dated sentence a version.
+ * The day is a literal written by the task that ships the version; versions 1 to 3 carry the day of the commit that added
+ * each to this file. The rules page prints it newest first.
+ */
+export const RULES_CHANGES: readonly RulesChange[] = [
+  { version: 1, date: "2026-09-14", summary: "The six rules as first published." },
+  {
+    version: 2,
+    date: "2026-10-04",
+    summary:
+      "A person decides every case; the automated checks that R1 and R2 named are withdrawn until they exist. R2 says how reported images are handled without anyone opening them. R4 and R5 say who may hide content while a case is decided and who decides it. R6 names coordinated manipulation.",
+  },
+  { version: 3, date: "2026-10-12", summary: "R6 names repeated, plainly unfounded reporting." },
+];
+
 export type RuleId = (typeof RULES)[number]["id"];
 
 /** A rule as one version of the rulebook words it: the current version unless told. Undefined for an id or a version that does not exist. */

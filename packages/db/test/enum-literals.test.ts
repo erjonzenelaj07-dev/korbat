@@ -199,3 +199,40 @@ describe("the enum-literal rule of 3f's migrations", () => {
     expect(enumLiteralViolations(`ALTER TYPE "public"."post_state" ADD VALUE 'disabled';`, VALUES_3F)).toEqual([]);
   });
 });
+
+/**
+ * 3d (design, section 6, "The rule for the two new enum values", and 12.1 row 1): the automated decision's migration adds
+ * `automated` to intake_kind and `system` to intake_channel. The public figures' migration (Task 4) comes before it and
+ * counts intakes of the kind automated, so it is read under the stricter form of the rule: neither label appears as a
+ * literal anywhere in it, in a PL/pgSQL body either (a body that named a label its type lacks would be created and then
+ * fail when first called), but compared or cast as text.
+ */
+const VALUES_3D: readonly string[] = ["automated", "system"];
+
+/** A migration's SQL with every PL/pgSQL body read as if it were parsed at once: the stricter form. */
+const bodiesToo = (sqlText: string): string => sqlText.split("LANGUAGE plpgsql").join("LANGUAGE sql");
+
+describe("the stricter enum-literal rule of 3d's transparency migration", () => {
+  const entry = (() => {
+    const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
+    return journal.entries.find((candidate) => candidate.tag.endsWith("_transparency"));
+  })();
+
+  test("the migration transparency is there, after 3d's edge outbox", () => {
+    expect(entry?.tag).toBe("0036_transparency");
+  });
+
+  test("it names neither label as a literal anywhere, PL/pgSQL bodies included, but compared or cast as text", () => {
+    const text = readFileSync(path.join(MIGRATIONS, `${entry!.tag}.sql`), "utf8");
+    expect(enumLiteralViolations(bodiesToo(text), VALUES_3D)).toEqual([]);
+    // It does count the kind automated, as text: the test reads what it should.
+    expect(flat(withoutComments(text))).toContain("i.kind::text = 'automated'");
+  });
+
+  test("a deliberate violation is caught even inside a PL/pgSQL body, and the text forms are not", () => {
+    expect(enumLiteralViolations(bodiesToo(`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN PERFORM 1 FROM intakes i WHERE i.kind = 'automated'; END $$;`), VALUES_3D)).toHaveLength(1);
+    expect(enumLiteralViolations(bodiesToo(`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN PERFORM 1 FROM intakes i WHERE i.channel IN ('system'); END $$;`), VALUES_3D)).toHaveLength(1);
+    expect(enumLiteralViolations(bodiesToo(`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN PERFORM 1 FROM intakes i WHERE i.kind::text = 'automated'; END $$;`), VALUES_3D)).toEqual([]);
+    expect(enumLiteralViolations(bodiesToo(`CREATE FUNCTION f() RETURNS jsonb LANGUAGE plpgsql AS $$ BEGIN RETURN jsonb_build_object('automated'::text, 1); END $$;`), VALUES_3D)).toEqual([]);
+  });
+});

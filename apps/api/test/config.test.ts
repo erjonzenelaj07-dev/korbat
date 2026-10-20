@@ -212,6 +212,12 @@ describe("loadConfig", () => {
       });
     });
   });
+  test("3d Task 4: RECIPIENTS_SIGNED_OUT is on unless set to off; a blank value is on, and nothing but on and off is taken", () => {
+    expect(loadConfig(good).RECIPIENTS_SIGNED_OUT).toBe("on");
+    expect(loadConfig({ ...good, RECIPIENTS_SIGNED_OUT: "" }).RECIPIENTS_SIGNED_OUT).toBe("on");
+    expect(loadConfig({ ...good, RECIPIENTS_SIGNED_OUT: "off" }).RECIPIENTS_SIGNED_OUT).toBe("off");
+    for (const refused of ["no", "OFF", "0"]) expect(() => loadConfig({ ...good, RECIPIENTS_SIGNED_OUT: refused }), refused).toThrow(/RECIPIENTS_SIGNED_OUT/);
+  });
   describe("3d Task 3: the app's site and the edge's purge adapter (design, sections 5 and 10.8; 12.1 row 27)", () => {
     const zone = "0123456789abcdef0123456789abcdef";
     const token = "edge_token_that_must_never_be_seen_0123";

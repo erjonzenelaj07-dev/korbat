@@ -445,6 +445,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.appeal_informed_at",
         "public.appeal_reviewer_state",
         "public.append_confirmed_audit",
+        // 3d Task 4 (0036_transparency): the one place a count becomes public text, the public figures' constants, and the
+        // daily call that stores a due edition; the figures themselves are computed by the migrator's functions alone.
+        "public.band",
         "public.case_evidence_due_at",
         "public.decision_final_at",
         "public.delete_access_log",
@@ -452,6 +455,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.delete_contact_messages",
         // Task 6 (0031_recovery): the retention step of the restore gaps, which answers a count.
         "public.delete_restore_gaps",
+        "public.edition_publish",
         // Task 5 (0030_authority_records): the retention step of the records to authorities, which answers a count.
         "public.erase_authority_records",
         "public.erase_case_evidence",
@@ -505,6 +509,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.strike_due",
         "public.sweep_staff_texts",
         "public.terminations_due",
+        "public.transparency_rules",
       ]);
     });
 

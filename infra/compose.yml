@@ -165,6 +165,9 @@ services:
       EDGE_ZONE_ID: ${API_EDGE_ZONE_ID:-}
       EDGE_API_TOKEN: ${API_EDGE_API_TOKEN:-}
       EDGE_HOST: ${API_EDGE_HOST:-}
+      # 3d Task 4: whether readers without an account are counted among the recipients, each day's by a keyed digest of
+      # the network and the browser's name under a salt that lives 26 hours; on unless set to off (README, The yearly edition).
+      RECIPIENTS_SIGNED_OUT: ${API_RECIPIENTS_SIGNED_OUT:-}
       # Images. The API writes uploads and only reads what the worker stored.
       MEDIA_UPLOADS_DIR: /media/uploads
       MEDIA_STORE_DIR: /media/store

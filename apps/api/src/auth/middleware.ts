@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
+import type { TransparencyForAuth } from "../transparency";
 import { authErrorMessage, type AuthDeps } from "./context";
 import { bearerToken, checkCsrf, readSessionCookie, refreshSessionCookies } from "./cookies";
 import { SESSION_IDLE_MS, type ReauthNeeded } from "./sessions";
@@ -12,8 +13,14 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * Runs on every request. Refuses state-changing requests whose Origin is not allowed, resolves the
  * session from a bearer token (native) or the `__Host-` cookie (web), and requires the CSRF token on
  * cookie-authenticated state changes. Sets `session` and `authVia` on the context.
+ *
+ * 3d (design, sections 5 and 7.5): it is also where the recipients are counted, and the only place: the global limit runs
+ * before a session can resolve. `seenBy` answers the handler that auth.onSeen was given, or null until index.ts has
+ * registered one (and in every test that registers none), and then nothing is counted. A request with a session is
+ * `seen`; a GET without one is `seenSignedOut`, which counts it only for the public reads. Neither call is waited for, and
+ * whatever either throws is dropped: counting never fails or slows a request.
  */
-export function resolveSession(deps: AuthDeps) {
+export function resolveSession(deps: AuthDeps, seenBy: () => TransparencyForAuth | null = () => null) {
   return createMiddleware<AppEnv>(async (c, next) => {
     c.set("session", null);
     c.set("authVia", null);
@@ -36,8 +43,22 @@ export function resolveSession(deps: AuthDeps) {
         if (resolved.slid && !bearer) refreshSessionCookies(c, token, Math.floor(SESSION_IDLE_MS / 1000));
       }
     }
+    countRecipient(c, seenBy);
     await next();
   });
+}
+
+/** Hands the request to the recipients' count, as resolveSession says; never throws. */
+function countRecipient(c: Context<AppEnv>, seenBy: () => TransparencyForAuth | null): void {
+  try {
+    const handler = seenBy();
+    if (handler === null) return;
+    const session = c.get("session");
+    if (session) handler.seen(session.userId);
+    else if (c.req.method === "GET") handler.seenSignedOut(c.get("clientIp") ?? "", c.req.header("user-agent") ?? "", c.req.path);
+  } catch {
+    // Counting never fails a request.
+  }
 }
 
 /** Any signed-in session, including one whose account has not chosen a handle yet. */

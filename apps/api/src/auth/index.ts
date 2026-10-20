@@ -71,6 +71,7 @@ import { cloudflareTurnstile, type TurnstileVerifier } from "./turnstile";
 import { devProvider } from "./verify/dev";
 import type { VerificationProvider } from "./verify/provider";
 import { vonageProvider } from "./verify/vonage";
+import type { TransparencyForAuth } from "../transparency";
 
 export type { ProfileStore, RequestContext, StaffRequestContext } from "./context";
 export type { AccountExport } from "./flows/export";
@@ -93,6 +94,11 @@ export type {
 export type { NoticeUpdateLine } from "../mail/mailer";
 export type { AuthEventType, UserRole } from "./repo";
 export type { ProxyTrust } from "./client-ip";
+/**
+ * 3d (design, section 7.5): the network an address belongs to, as the limits count it: the transparency module digests
+ * a signed-out reader's network with the day's salt, never the address itself.
+ */
+export { clientNetwork } from "./client-ip";
 export type { Session } from "./sessions";
 export type { ActiveStaffSession } from "./staff/sessions";
 export type { StaffSignedIn } from "./staff/signin";
@@ -318,6 +324,9 @@ export function createAuth(options: CreateAuthOptions) {
     exportAccount: (userId) => exportAccount(deps, userId),
     appendEvent,
   };
+  // 3d (design, sections 5 and 7.5): the recipients' count, which the transparency module keeps. This module is built
+  // first, so the wiring hands it the handler once both exist (onSeen); until then resolveSession counts nothing.
+  let seenBy: TransparencyForAuth | null = null;
   const staffGuard = requireStaff(deps);
   const forStaff: AuthForStaff = {
     enrollOptions: (input) => enrollOptions(deps, input),
@@ -366,7 +375,11 @@ export function createAuth(options: CreateAuthOptions) {
     forModeration,
     /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it, and its network with it. */
     clientIdentity: clientIdentity({ trust: deps.config.trustProxy, ipHashKey: deps.config.ipHashKey }),
-    resolveSession: resolveSession(deps),
+    resolveSession: resolveSession(deps, () => seenBy),
+    /** 3d: registers the transparency module's count, which resolveSession calls from then on (index.ts, once both exist). */
+    onSeen: (handler: TransparencyForAuth) => {
+      seenBy = handler;
+    },
     requireSession,
     requireOnboarding,
     requireFreshAuth: (maxAgeSeconds?: number) => requireFreshAuth(deps, maxAgeSeconds),

@@ -738,6 +738,16 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
 });
 
 describe("the terms page", () => {
+  test("3d (design, section 9.1): it links the rules page and the transparency page under its sections, above the report form's link", () => {
+    const out = html(<Terms />);
+    const rules = out.indexOf('href="/rules"');
+    const transparency = out.indexOf('href="/transparency"');
+    const reportLink = out.indexOf('href="/report"');
+    expect(rules).toBeGreaterThan(out.indexOf(">Contact<"));
+    expect(transparency).toBeGreaterThan(rules);
+    expect(reportLink).toBeGreaterThan(transparency);
+  });
+
   test("shows every section under its heading and every paragraph of it, then Contact with the build's address and the link to the report form", () => {
     const out = html(<Terms />);
     const text = textOf(out);

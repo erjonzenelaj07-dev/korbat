@@ -14,6 +14,7 @@ import { createModeration } from "./moderation";
 import { createProfileStore } from "./profiles/store";
 import { createSocial, enforceWriteLimit, socialForModeration } from "./social";
 import { createStaff } from "./staff";
+import { createTransparency } from "./transparency";
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL, config.NODE_ENV === "development");
@@ -57,6 +58,13 @@ const stopSweeper = media.startSweeper(jobLock);
 // 3d Task 3: the edge's outbox, drained every fifteen seconds: closed as off while the adapter is off, else one purge a round.
 const stopEdge = media.startEdge(jobLock);
 const stopJanitor = auth.startJanitor(jobLock);
+// 3d Task 4: the public figures. The module is built once auth exists, and auth is handed its count afterwards, as the
+// wiring hands the media module its handler: resolveSession then counts the month's signed-in accounts and, while
+// RECIPIENTS_SIGNED_OUT is on, each day's signed-out readers. Its job closes a month's count and, once a day after the
+// dispatch hour, publishes what edition is due.
+const transparency = createTransparency({ apiDb, redis, config, logger });
+auth.onSeen(transparency.forAuth);
+const stopTransparency = transparency.startJobs(jobLock);
 
 // Moderation cases: the module owns its tables on the API's role and reaches the social module through an interface of
 // that module's own, built over the same pool, the image rows through the media module's interface for cases, and a
@@ -118,6 +126,7 @@ const app = createApp({
   account,
   staff,
   moderation,
+  transparency,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {
@@ -132,6 +141,7 @@ async function shutdown(signal: string) {
   stopSweeper();
   stopEdge();
   stopJanitor();
+  stopTransparency();
   stopExplore();
   stopPurge();
   stopModeration();

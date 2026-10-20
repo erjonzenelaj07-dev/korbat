@@ -17,6 +17,7 @@ import { ModerationError, type Moderation } from "./moderation";
 import { healthRoutes, type HealthChecks } from "./routes/health";
 import { SocialError, type Social } from "./social";
 import type { Staff } from "./staff";
+import type { Transparency } from "./transparency";
 
 /** JSON requests are small; the one raw upload route counts its own bytes and is exempt. */
 export const JSON_BODY_LIMIT_BYTES = 64 * 1024;
@@ -48,9 +49,11 @@ export interface AppDeps {
   moderation?: Moderation;
   /** Checks that report a part being down without marking the API unhealthy, the image worker for one. */
   advisoryChecks?: HealthChecks;
+  /** 3d: the public figures' two routes. Optional as the other modules are; the server always wires it. */
+  transparency?: Transparency;
 }
 
-export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks }: AppDeps) {
+export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks, transparency }: AppDeps) {
   const app = new Hono<AppEnv>();
 
   app.use(observability(logger));
@@ -71,6 +74,10 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   // cookies: after the global limit, which counts it against the visitor, and before the session's resolution, so it
   // reads no session. Every other path falls through to below.
   if (social) app.route("/api", social.statusRoutes);
+  // 3d (design, sections 9.1 and 10.6): GET /api/public/facts and /api/public/transparency, at the same place and for the
+  // same reasons: counted against the visitor by the global limit, and answered before any session is read. Each sets its
+  // own Cache-Control, which noStore leaves alone.
+  if (transparency) app.route("/api", transparency.routes);
   app.use((c, next) => (isStaffPath(c.req.path) ? next() : auth.resolveSession(c, next)));
 
   app.route("/api/health", healthRoutes(healthChecks, config.KORBAT_VERSION, advisoryChecks));
