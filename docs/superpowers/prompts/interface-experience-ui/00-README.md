@@ -76,3 +76,26 @@ python docs/superpowers/prompts/interface-experience-ui/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-22)
+
+The ten prompts were replayed into this repository by the fast path the owner chose for 3d: each task's files were written from its prompt by `write_blocks.py`, the install step run where a task changes the lockfile, and the task committed with the dry run's message and the stray-file check; then the gates of Task 10 ran once, on a database upgraded from 0042, with the console's and the app's browser checks, the stack rebuilt and the smoke test through Caddy. All passed.
+
+| Task | Commit |
+|---|---|
+| 1 | `a0ef9f0` |
+| 2 | `cd9554e` |
+| 3 | `21b9e66` |
+| 4 | `ca30365` |
+| 5 | `5d120fe` |
+| 6 | `7e892f7` |
+| 7 | `5c4e853` |
+| 8 | `61b1134` |
+| 9 | `99f995c` |
+| 10 | `005d989` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree is byte-identical to the dry run's, the lockfile included. `verify_prompts.py` reproduces all 217 files.
+- **The first fast replay left the lockfile behind.** It wrote the file blocks but skipped the install step of Tasks 1 to 3, so their commits lacked the lockfile's new entries. Nothing was pushed: the repository was reset to the prompts' commit and replayed again with the install step, which is how the prompts read.
+- **What the machine needed.** Another program listened on port 8080 on every interface, so the run set `NODE_OPTIONS=--dns-result-order=ipv4first`; Windows still reserved the ports 58022 to 58121, so the development Mailpit was published on 58225 for the run and put back afterwards, as for 3d.
+- **Three load effects the dry run settled.** A source scan in `kit.test.tsx` ran past the unit gate's 20 s only inside the workspace's parallel run (3 s alone): it carries a limit of its own. The app's browser walk read elements before the app had drawn them on a loaded machine, a different step each run: `visit()` waits for the main region and a step gets one more try. A run that slept overnight timed out one integration test: run such a file again alone.
+- **The review that shaped the design.** Before Task 1, two reviewers (build fit; people and values) recomputed every contrast pair and upheld 61 findings, applied before the design was committed. Task 10's walk-through at three widths, three themes and both motion settings found two defects (the tablet rail broke two labels; the console's table cut its dates), fixed with tests.
