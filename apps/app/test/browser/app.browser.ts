@@ -171,6 +171,9 @@ async function open(options: VisitOptions): Promise<Visit> {
 async function visit(page: Page, route: string): Promise<void> {
   await page.goto(`${origin}${route}`);
   await page.waitForLoadState("networkidle");
+  // The shell and PublicFrame both draw role="main"; on a loaded machine the app can draw it after the network is idle,
+  // and a step that measured at once read nothing (UI Task 10's runner met this in steps 6, 15 and 32).
+  await page.waitForSelector('[role="main"]', { state: "attached", timeout: 20_000 });
   await page.evaluate("document.fonts.ready.then(() => true)");
 }
 
@@ -2237,6 +2240,52 @@ describe("the app in Chromium, under the app site's policy", () => {
       await clean(visit_);
     } finally {
       await visit_.context.close();
+    }
+  });
+
+  /**
+   * UI Task 10's walk-through found the rail's Bookmarks, and signed out its Appearance, broken inside the word at 768 px
+   * at the Default text ("Bookmark" over "s"): the label may break rather than clip (section 1.5), so the clipped-label
+   * rule passes it, but a word cut in two is no label. Only the extreme sizes of step 11 may break one.
+   */
+  test("40. the nav's labels stay whole: at Default and Larger text each item's label is one line, in the tab bar at 360, the rail at 768 and the full nav at 1280, signed in and signed out", async () => {
+    // Each label of the nav as its lines: the text of every item, and how many lines its words take as drawn.
+    const LABEL_LINES = `[...document.querySelectorAll('nav[aria-label="Main"] a, nav[aria-label="Main"] [role="button"]')].map((item) => {
+      const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+      const tops = new Set();
+      const words = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.textContent.trim() === "") continue;
+        // Words clipped to 1 px for a screen reader alone are no drawn label.
+        const box = node.parentElement.getBoundingClientRect();
+        if (box.width <= 1 || box.height <= 1) continue;
+        words.push(node.textContent.trim());
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) if (rect.width > 0) tops.add(Math.round(rect.top));
+      }
+      return { label: words.join(" "), lines: tops.size };
+    }).filter((item) => item.label !== "")`;
+    for (const [width, height] of [
+      [360, 740],
+      [768, 1024],
+      [1280, 900],
+    ] as const) {
+      for (const textStep of ["default", "larger"] as const) {
+        for (const signedIn of [true, false]) {
+          const visit_ = await open({ width, height, signedIn, appearance: { theme: "light", textStep } });
+          try {
+            // Signed out the nav holds Home, Sign in and Appearance, which is the longest label there.
+            await visit(visit_.page, signedIn ? "/bookmarks" : "/settings/appearance");
+            const labels = (await visit_.page.evaluate(LABEL_LINES)) as { label: string; lines: number }[];
+            expect(labels.length, `${width} ${textStep}`).toBeGreaterThanOrEqual(signedIn ? 4 : 3);
+            expect(labels.filter((item) => item.lines !== 1), `${width} px, ${textStep}, ${signedIn ? "signed in" : "signed out"}`).toEqual([]);
+            await clean(visit_);
+          } finally {
+            await visit_.context.close();
+          }
+        }
+      }
     }
   });
 });

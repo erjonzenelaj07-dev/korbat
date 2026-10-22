@@ -473,7 +473,7 @@ describe("test/setup.ts", () => {
     }
     expect(importedNames("react-native-reanimated")).toContain("useReducedMotion");
     expect(importedNames("expo-haptics").length).toBeGreaterThan(0);
-  });
+  }, 60_000); // it imports six modules and reads every source file: about 20 s on a loaded machine
 });
 
 // UI Task 4 appends below, so the lines above keep the numbers other tasks cite.

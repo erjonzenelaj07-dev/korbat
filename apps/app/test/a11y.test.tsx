@@ -219,3 +219,139 @@ describe("focus stays visible in every theme and in forced colours (UI design, s
     expect(kit).toContain('"focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"');
   });
 });
+
+// UI Task 10 appends below, so the lines above keep the numbers the design and other tasks cite.
+import { existsSync } from "node:fs";
+import { LEGACY_COLOUR_FILES } from "./legacy-files";
+
+/**
+ * The 107 .tsx files of src/app and src/components that this sub-project added or rewrote, from its first task to its
+ * last that touched the app (`git diff --name-only --diff-filter=AM 6babae1 b2fc637 -- apps/app/src/app
+ * apps/app/src/components`), with their paths from src, sorted. UI design, section 13's Task 10: none of them may be
+ * left on a legacy list, so a later change cannot put a rewritten file back on one to keep a bare sentence or a palette
+ * colour in it.
+ */
+const REWRITTEN_FILES: readonly string[] = [
+  "app/(auth)/_layout.tsx",
+  "app/(auth)/age.tsx",
+  "app/(auth)/code.tsx",
+  "app/(auth)/handle.tsx",
+  "app/(auth)/mfa.tsx",
+  "app/(auth)/password.tsx",
+  "app/(auth)/signin.tsx",
+  "app/+not-found.tsx",
+  "app/_layout.tsx",
+  "app/bookmarks.tsx",
+  "app/email-revert/[token].tsx",
+  "app/explore/about.tsx",
+  "app/index.tsx",
+  "app/not-me/[token].tsx",
+  "app/notice/[ref].tsx",
+  "app/passkey-remove/[token].tsx",
+  "app/post/[id].tsx",
+  "app/report.tsx",
+  "app/rules.tsx",
+  "app/settings/_layout.tsx",
+  "app/settings/account.tsx",
+  "app/settings/appearance.tsx",
+  "app/settings/cases/[id].tsx",
+  "app/settings/cases/[id]/reply.tsx",
+  "app/settings/cases/index.tsx",
+  "app/settings/cases/releases/[id].tsx",
+  "app/settings/cases/uploads/[id].tsx",
+  "app/settings/index.tsx",
+  "app/settings/privacy.tsx",
+  "app/settings/profile.tsx",
+  "app/settings/security.tsx",
+  "app/terms.tsx",
+  "app/transparency.tsx",
+  "app/u/[handle]/followers.tsx",
+  "app/u/[handle]/following.tsx",
+  "app/u/[handle]/index.tsx",
+  "components/AboutCard.tsx",
+  "components/AppShell.tsx",
+  "components/GestureRoot.tsx",
+  "components/GestureRoot.web.tsx",
+  "components/HandleBox.tsx",
+  "components/Prose.tsx",
+  "components/ScreenHeader.tsx",
+  "components/SettingsNav.tsx",
+  "components/StandingBanner.tsx",
+  "components/ToastCard.tsx",
+  "components/kit/Avatar.tsx",
+  "components/kit/DragArea.tsx",
+  "components/kit/DragArea.web.tsx",
+  "components/kit/EmptyState.tsx",
+  "components/kit/ErrorState.tsx",
+  "components/kit/Icon.tsx",
+  "components/kit/Icon.web.tsx",
+  "components/kit/IconButton.tsx",
+  "components/kit/ListRow.tsx",
+  "components/kit/Menu.tsx",
+  "components/kit/PublicFrame.tsx",
+  "components/kit/Sheet.tsx",
+  "components/kit/Skeleton.tsx",
+  "components/kit/StatusChip.tsx",
+  "components/kit/Tabs.tsx",
+  "components/kit/Text.tsx",
+  "components/kit/VisuallyHidden.tsx",
+  "components/list/List.tsx",
+  "components/moderation/CasesLists.tsx",
+  "components/moderation/DecisionDetail.tsx",
+  "components/moderation/ItemLines.tsx",
+  "components/moderation/NoticeStatusView.tsx",
+  "components/moderation/RefusedNotice.tsx",
+  "components/moderation/ReleaseNotice.tsx",
+  "components/moderation/ReportForm.tsx",
+  "components/moderation/StatusSheet.tsx",
+  "components/moderation/UploadNotice.tsx",
+  "components/moderation/parts.tsx",
+  "components/security/MfaSection.tsx",
+  "components/security/PasskeysSection.tsx",
+  "components/security/ReauthPanel.tsx",
+  "components/security/SessionsSection.tsx",
+  "components/social/ComposeButton.tsx",
+  "components/social/ComposeHost.tsx",
+  "components/social/ComposeSheet.tsx",
+  "components/social/Composer.tsx",
+  "components/social/ComposerImages.tsx",
+  "components/social/ExploreList.tsx",
+  "components/social/FeedList.tsx",
+  "components/social/FeedRows.tsx",
+  "components/social/HiddenImage.tsx",
+  "components/social/ImageFault.tsx",
+  "components/social/MediaGrid.tsx",
+  "components/social/MediaViewer.tsx",
+  "components/social/NewPostsPill.tsx",
+  "components/social/PagedList.tsx",
+  "components/social/PostCard.tsx",
+  "components/social/PostMenu.tsx",
+  "components/social/ProfileList.tsx",
+  "components/social/ProfileMenu.tsx",
+  "components/social/RichText.tsx",
+  "components/social/WhoSeesThis.tsx",
+  "components/social/composer/ComposerCard.tsx",
+  "components/social/composer/ComposerField.tsx",
+  "components/social/composer/DiscardDialog.tsx",
+  "components/social/composer/ProgressRing.tsx",
+  "components/social/composer/ProgressRing.web.tsx",
+  "components/social/composer/SendBar.tsx",
+  "components/toast.tsx",
+  "components/toast.web.tsx",
+  "components/ui.tsx",
+];
+
+describe("no file this sub-project added or rewrote is left on a legacy list (UI design, sections 1.5, 4.2 and 13)", () => {
+  test("the list of rewritten files is sorted, holds 107 files without a repeat, and each of them is still in src", () => {
+    expect(REWRITTEN_FILES).toHaveLength(107);
+    expect([...REWRITTEN_FILES]).toEqual([...new Set(REWRITTEN_FILES)].sort());
+    expect(REWRITTEN_FILES.filter((name) => !existsSync(path.join(SRC, ...name.split("/"))))).toEqual([]);
+  });
+
+  test("both legacy lists are empty and name none of the rewritten files", () => {
+    expect(LEGACY_TEXT_FILES.filter((name) => REWRITTEN_FILES.includes(name))).toEqual([]);
+    expect(LEGACY_COLOUR_FILES.filter((name) => REWRITTEN_FILES.includes(name))).toEqual([]);
+    expect([...LEGACY_TEXT_FILES]).toEqual([]);
+    expect([...LEGACY_COLOUR_FILES]).toEqual([]);
+  });
+});

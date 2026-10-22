@@ -814,8 +814,11 @@ table.audit td:first-child {
     text-align: right;
   }
 
-  /* A time in the audit log stays on one line; the hashes beside it wrap by character instead. */
-  table.audit time {
+  /*
+   * A time in a table stays on one line, so Appeals' dates are never cut at their hyphen; the audit log's hashes beside its
+   * times wrap by character instead.
+   */
+  td time {
     white-space: nowrap;
   }
 

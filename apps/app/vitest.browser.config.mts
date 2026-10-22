@@ -13,6 +13,8 @@ export default defineConfig({
     include: ["test/browser/**/*.browser.ts"],
     env: { TZ: "UTC" },
     testTimeout: 120_000,
+    // One more try for a step that raced the app's render on a loaded machine; a step that fails for its own reason fails twice.
+    retry: 1,
     // The export runs once per walk, before the first step, and takes a few minutes on a busy machine.
     hookTimeout: 600_000,
   },

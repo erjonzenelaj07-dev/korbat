@@ -205,7 +205,8 @@ function TabBar({ items, pathname, onHomeAgain }: NavProps) {
 /**
  * The nav from 768 px: the rail (80 px, the "k" monogram, icons over 12 px labels) or, from 1280 px, the full nav (240 px,
  * the wordmark, labels beside the icons). Under them, signed in, New post: a button and no link, so the nav's links stay
- * the four of section 7.1.
+ * the four of section 7.1. A rail item spans the rail, as a tab bar item spans its quarter, with its ring drawn inside:
+ * Bookmarks and Appearance need all of the 80 px at the Default and Larger text, and a 64 px item broke them in the word.
  */
 function SideNav({ items, pathname, onHomeAgain, full, newPost }: NavProps & { full: boolean; newPost?: () => void }) {
   const insets = useSafeAreaInsets();
@@ -213,7 +214,7 @@ function SideNav({ items, pathname, onHomeAgain, full, newPost }: NavProps & { f
     <View
       role="navigation"
       aria-label={UI_WORDS["nav.label"]}
-      className={cn("shrink-0 gap-1", full ? "px-3" : "items-center px-2")}
+      className={cn("shrink-0 gap-1", full ? "px-3" : "items-center")}
       style={{ width: full ? COLUMNS.nav : COLUMNS.rail, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16 }}
     >
       {/* The mark only: the page's title and the Home item already name korbat, so a screen reader passes over it. */}
@@ -236,8 +237,8 @@ function SideNav({ items, pathname, onHomeAgain, full, newPost }: NavProps & { f
                 </Text>
               </Pressable>
             ) : (
-              <Pressable aria-current={current ? "page" : undefined} className={cn("min-h-[60px] w-[64px] items-center justify-center gap-1 rounded-card py-1.5 active:bg-surface-2", HOVER_WASH, FOCUS_RING)}>
-                <View className={cn("absolute bottom-4 left-[-8px] top-4 w-[3px] rounded-r-full", current ? "bg-accent" : "bg-transparent")} />
+              <Pressable aria-current={current ? "page" : undefined} className={cn("min-h-[60px] w-[80px] items-center justify-center gap-1 rounded-card py-1.5 active:bg-surface-2", HOVER_WASH, FOCUS_RING_INSET)}>
+                <View className={cn("absolute bottom-4 left-0 top-4 w-[3px] rounded-r-full", current ? "bg-accent" : "bg-transparent")} />
                 <View className={cn("h-[32px] w-[48px] max-w-full items-center justify-center rounded-full", current ? "bg-accent-wash" : undefined)}>
                   <ItemIcon item={item} current={current} />
                 </View>
