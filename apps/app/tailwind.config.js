@@ -41,6 +41,9 @@ module.exports = {
   // runtime throws in dev mode under "media" when Metro injects the stylesheet.
   darkMode: "class",
   presets: [require("nativewind/preset")],
+  // Hover styles apply only where the pointer can hover (UI design, section 5.2): every hover: class is wrapped in
+  // @media (hover: hover) and (pointer: fine), so a tap on a touch screen never leaves a row or a button washed.
+  future: { hoverOnlyWhenSupported: true },
   theme: {
     extend: {
       colors: Object.fromEntries(TOKENS.map((token) => [token, `rgb(var(--k-${token}) / <alpha-value>)`])),

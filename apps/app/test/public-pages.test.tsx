@@ -14,7 +14,7 @@ vi.mock("expo-router", () => ({
   usePathname: () => "/rules",
 }));
 vi.mock("@/lib/session", () => ({ useSession: () => ({ state: { status: "signed-out" }, refresh: async () => undefined }) }));
-vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
+// react-native-reanimated is mocked once for every test file in test/setup.ts.
 
 import { RulesView } from "../src/app/rules";
 import { TransparencyView } from "../src/app/transparency";

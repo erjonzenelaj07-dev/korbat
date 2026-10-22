@@ -70,7 +70,7 @@ interface WebTextStyle {
  * The one cast in the type code: React Native types fontSize, lineHeight and letterSpacing as numbers, and has no
  * fontVariationSettings, while react-native-web passes CSS strings and unknown properties through to the element.
  */
-function webStyle(style: WebTextStyle): TextStyle {
+function webStyle(style: Partial<WebTextStyle>): TextStyle {
   return style as unknown as TextStyle;
 }
 
@@ -108,8 +108,34 @@ export function textStyle(
   return native;
 }
 
-/** What a text says about itself by colour: an ink, the accent, an error, or a status (always with its own words, section 4.8). */
-export type Tone = "high" | "medium" | "low" | "accent" | "danger" | "review-ink" | "restricted-ink" | "verified-ink" | "explore-ink";
+/**
+ * A variable font's axes on the web, such as the monogram's "SOFT" 100 (section 6.5), through webStyle()'s one cast:
+ * React Native has no fontVariationSettings. On native it is nothing, since sub-project 5 embeds static faces.
+ */
+export function fontVariation(settings: string, platform: "web" | "native" = Platform.OS === "web" ? "web" : "native"): TextStyle {
+  return platform === "web" ? webStyle({ fontVariationSettings: settings }) : {};
+}
+
+/**
+ * What a text says about itself by colour: an ink, the accent, an error, or a status (always with its own words, section
+ * 4.8). The on- tones are for text and icons drawn on a fill: a filled button (on-accent, on-danger) and a chip's wash.
+ */
+export type Tone =
+  | "high"
+  | "medium"
+  | "low"
+  | "accent"
+  | "danger"
+  | "review-ink"
+  | "restricted-ink"
+  | "verified-ink"
+  | "explore-ink"
+  | "on-accent"
+  | "on-danger"
+  | "review-on-wash"
+  | "restricted-on-wash"
+  | "verified-on-wash"
+  | "explore-on-wash";
 
 /** Each tone's colour token, for code that needs the colour itself (Icon on native). */
 export const TONE_TOKEN: Record<Tone, ColorToken> = {
@@ -122,6 +148,12 @@ export const TONE_TOKEN: Record<Tone, ColorToken> = {
   "restricted-ink": "restricted-ink",
   "verified-ink": "verified-ink",
   "explore-ink": "explore-ink",
+  "on-accent": "on-accent",
+  "on-danger": "on-danger",
+  "review-on-wash": "review-on-wash",
+  "restricted-on-wash": "restricted-on-wash",
+  "verified-on-wash": "verified-on-wash",
+  "explore-on-wash": "explore-on-wash",
 };
 
 /** Each tone's class, written out whole so Tailwind finds it in the source. */
@@ -135,6 +167,12 @@ export const TONE_CLASS: Record<Tone, string> = {
   "restricted-ink": "text-restricted-ink",
   "verified-ink": "text-verified-ink",
   "explore-ink": "text-explore-ink",
+  "on-accent": "text-on-accent",
+  "on-danger": "text-on-danger",
+  "review-on-wash": "text-review-on-wash",
+  "restricted-on-wash": "text-restricted-on-wash",
+  "verified-on-wash": "text-verified-on-wash",
+  "explore-on-wash": "text-explore-on-wash",
 };
 
 /**
@@ -158,13 +196,14 @@ export interface TextProps extends NativeTextProps {
  * draws as h1 to h4; "p" and "span" are running text, which react-native-web draws as a block and, inside other text,
  * inline (React Native's role list has no paragraph).
  */
-export function Text({ variant = "body", tone = "high", as, italic, className, style, maxFontSizeMultiplier, ...rest }: TextProps) {
+export function Text({ variant = "body", tone = "high", as, italic, className, style, maxFontSizeMultiplier, accessibilityRole, ...rest }: TextProps) {
   const appearance = useAppearance();
   const level = as === "h1" || as === "h2" || as === "h3" || as === "h4" ? Number(as.slice(1)) : undefined;
   return (
     <NativeText
       {...rest}
-      accessibilityRole={level === undefined ? undefined : "header"}
+      // A heading's role comes from `as`; any other role the caller gives (an alert, a button) is kept.
+      accessibilityRole={level === undefined ? accessibilityRole : "header"}
       aria-level={level}
       maxFontSizeMultiplier={maxFontSizeMultiplier ?? (Platform.OS === "web" ? undefined : (MAX_SCALE[variant] ?? 2))}
       className={cn(TONE_CLASS[tone], className)}

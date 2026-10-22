@@ -28,7 +28,7 @@ vi.mock("expo-router", () => ({
   usePathname: () => "/",
 }));
 vi.mock("@/lib/session", () => ({ useSession: () => ({ state: { status: "signed-out" }, refresh: async () => undefined }) }));
-vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
+// react-native-reanimated is mocked once for every test file in test/setup.ts.
 vi.mock("@marsidev/react-turnstile", async () => {
   const { createElement } = await import("react");
   return { Turnstile: () => createElement("div", { "data-turnstile": "widget" }) };

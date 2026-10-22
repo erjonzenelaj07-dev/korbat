@@ -67,7 +67,7 @@ vi.mock("expo-image", async () => {
   const { createElement } = await import("react");
   return { Image: ({ source, accessibilityLabel }: { source: { uri: string }; accessibilityLabel: string }) => createElement("img", { "data-uri": source.uri, alt: accessibilityLabel }) };
 });
-vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
+// react-native-reanimated is mocked once for every test file in test/setup.ts.
 // The human check's widget loads a script from Cloudflare; here it is a mark a test can find.
 vi.mock("@marsidev/react-turnstile", async () => {
   const { createElement } = await import("react");

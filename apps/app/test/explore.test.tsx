@@ -52,7 +52,7 @@ vi.mock("expo-router", () => ({
 vi.mock("@/lib/session", () => ({ useSession: () => ({ state: session.state, refresh: async () => session.state }) }));
 // A post card's images and the compose sheet's slide reach native modules that do not load in Node; neither is under test.
 vi.mock("expo-image", () => ({ Image: () => null }));
-vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
+// react-native-reanimated is mocked once for every test file in test/setup.ts.
 
 const html = (element: ReactElement): string => renderToStaticMarkup(element);
 const read = (...parts: string[]): string => readFileSync(path.join(SRC, ...parts), "utf8");

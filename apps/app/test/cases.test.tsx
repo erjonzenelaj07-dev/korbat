@@ -63,7 +63,7 @@ vi.mock("expo-image", async () => {
   const { createElement } = await import("react");
   return { Image: ({ source, accessibilityLabel }: { source: { uri: string }; accessibilityLabel: string }) => createElement("img", { "data-uri": source.uri, alt: accessibilityLabel }) };
 });
-vi.mock("react-native-reanimated", () => ({ useReducedMotion: () => false }));
+// react-native-reanimated is mocked once for every test file in test/setup.ts.
 
 const html = (element: ReactElement): string => renderToStaticMarkup(element);
 const textOf = (markup: string): string =>

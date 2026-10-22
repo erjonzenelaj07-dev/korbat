@@ -59,8 +59,55 @@ export const LEGACY_COLOUR_FILES: readonly string[] = [
   "components/social/PostCard.tsx",
   "components/social/ProfileList.tsx",
   "components/social/RichText.tsx",
-  "components/ui.tsx",
   "lib/session.tsx",
+];
+
+/**
+ * The files of src/app and src/components that still hold a bare sentence as a JSX child, a text or a string literal
+ * written straight into the markup instead of a words module (UI design, section 1.5). a11y.test.tsx lets these files,
+ * and only these, keep them; a listed file that no longer holds one fails, so the task that moves a file's sentences
+ * into its area's words module takes it off this list in the same commit. Task 10 records what is left. Paths are from
+ * apps/app/src, in forward slashes, sorted.
+ */
+export const LEGACY_TEXT_FILES: readonly string[] = [
+  "app/(auth)/age.tsx",
+  "app/(auth)/code.tsx",
+  "app/(auth)/handle.tsx",
+  "app/(auth)/mfa.tsx",
+  "app/(auth)/password.tsx",
+  "app/(auth)/signin.tsx",
+  "app/bookmarks.tsx",
+  "app/email-revert/[token].tsx",
+  "app/explore/about.tsx",
+  "app/index.tsx",
+  "app/not-me/[token].tsx",
+  "app/passkey-remove/[token].tsx",
+  "app/post/[id].tsx",
+  "app/settings/account.tsx",
+  "app/settings/privacy.tsx",
+  "app/settings/profile.tsx",
+  "app/settings/security.tsx",
+  "app/terms.tsx",
+  "app/u/[handle]/followers.tsx",
+  "app/u/[handle]/following.tsx",
+  "app/u/[handle]/index.tsx",
+  "components/AppShell.tsx",
+  "components/HandleBox.tsx",
+  "components/PopularNow.tsx",
+  "components/moderation/ReportForm.tsx",
+  "components/security/MfaSection.tsx",
+  "components/security/PasskeysSection.tsx",
+  "components/security/ReauthPanel.tsx",
+  "components/security/SessionsSection.tsx",
+  "components/social/ComposeSheet.tsx",
+  "components/social/Composer.tsx",
+  "components/social/ComposerImages.tsx",
+  "components/social/ExploreList.tsx",
+  "components/social/HiddenImage.tsx",
+  "components/social/MediaGrid.tsx",
+  "components/social/MediaViewer.tsx",
+  "components/social/PagedList.tsx",
+  "components/social/PostCard.tsx",
 ];
 
 export const SRC = path.resolve(import.meta.dirname, "..", "src");

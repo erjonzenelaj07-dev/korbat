@@ -91,12 +91,5 @@ export const social = {
   setShowInExplore: (on: boolean) => api("/api/me/explore", { method: on ? "POST" : "DELETE", schema: ExploreSettingResponse }),
 };
 
-/** "just now", "5m", "3h", "2d", or a date for anything older than a week. */
-export function timeAgo(iso: string, now: number = Date.now()): string {
-  const seconds = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
-  if (seconds < 60) return "just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
-  if (seconds < 7 * 86_400) return `${Math.floor(seconds / 86_400)}d`;
-  return new Date(iso).toLocaleDateString();
-}
+/** timeAgo lives in lib/time.ts with korbat's other times (UI design, section 8.1); its callers keep importing it from here. */
+export { timeAgo } from "./time";

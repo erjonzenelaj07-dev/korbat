@@ -139,3 +139,83 @@ describe("screen-reader states", () => {
     expect(card).toMatch(/<Action ref=\{keepRef\} label="Keep"/);
   });
 });
+
+// UI Task 2 appends below, so the lines above keep the numbers other tasks cite.
+import ts from "typescript";
+import { LEGACY_TEXT_FILES } from "./legacy-files";
+
+/** A letter or a digit in any script: what makes a text a word rather than punctuation. */
+const WORDY = /[\p{L}\p{N}]/u;
+
+/**
+ * The bare sentences of one .tsx file, found by TypeScript's own parser (UI design, section 1.5, after Bluesky's
+ * avoid-unwrapped-text rule): a JSX text with a letter or a digit in it, or a string literal written as a JSX child
+ * (`{"Load more"}`). A single punctuation character or a space alone, such as `{" "}`, is allowed.
+ */
+function bareSentences(file: string, text: string): string[] {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxText(node) && WORDY.test(node.text)) found.push(node.text.trim());
+    if (ts.isJsxExpression(node) && node.expression !== undefined && (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))) {
+      const child = node.expression;
+      if (ts.isStringLiteral(child) || ts.isNoSubstitutionTemplateLiteral(child)) {
+        const words = child.text.trim();
+        if (words.length > 1 || WORDY.test(words)) found.push(child.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/** Every .tsx file under src/app and src/components that holds a bare sentence, with its path from src. */
+function filesWithBareSentences(): string[] {
+  const found: string[] = [];
+  for (const folder of ["app", "components"]) {
+    for (const file of readdirSync(path.join(SRC, folder), { recursive: true, encoding: "utf8" })) {
+      if (!file.endsWith(".tsx")) continue;
+      const name = `${folder}/${file.split(path.sep).join("/")}`;
+      if (bareSentences(name, readFileSync(path.join(SRC, folder, file), "utf8")).length > 0) found.push(name);
+    }
+  }
+  return found.sort();
+}
+
+describe("every visible sentence lives in a words module (UI design, section 1.5)", () => {
+  test("the scan finds a bare text and a bare string literal, and lets punctuation and a words constant through", () => {
+    expect(bareSentences("a.tsx", "const a = <Text>Load more</Text>;")).toEqual(["Load more"]);
+    expect(bareSentences("a.tsx", 'const a = <Text>{"Try again"}</Text>;')).toEqual(["Try again"]);
+    expect(bareSentences("a.tsx", "const a = <Text>{`Hidden`}</Text>;")).toEqual(["Hidden"]);
+    expect(bareSentences("a.tsx", "const a = <Text>16</Text>;")).toEqual(["16"]);
+    expect(bareSentences("a.tsx", 'const a = <Text>{WORDS.title} ( {" "} {"."} {count} )</Text>;')).toEqual([]);
+    // A prop is not a child: a label passed as a prop is checked where its words are, not here.
+    expect(bareSentences("a.tsx", 'const a = <Button label="Keep" />;')).toEqual([]);
+  });
+
+  test("no file of src/app or src/components holds a bare sentence, but those not yet converted", () => {
+    expect(filesWithBareSentences().filter((name) => !LEGACY_TEXT_FILES.includes(name))).toEqual([]);
+  });
+
+  test("every file still listed holds one, so a task that converts a file takes it off the list; the list is sorted", () => {
+    const found = filesWithBareSentences();
+    expect(LEGACY_TEXT_FILES.filter((name) => !found.includes(name))).toEqual([]);
+    expect([...LEGACY_TEXT_FILES]).toEqual([...new Set(LEGACY_TEXT_FILES)].sort());
+  });
+});
+
+describe("focus stays visible in every theme and in forced colours (UI design, sections 6.1 and 10)", () => {
+  test("no line takes the outline away without drawing korbat's focus-visible outline beside it", () => {
+    expect(findInSource(/\boutline-none\b/).filter((at) => !findInSource(/\boutline-none\b.*focus-visible:outline\b|focus-visible:outline\b.*\boutline-none\b/).includes(at))).toEqual([]);
+  });
+
+  test("no focus ring is drawn as a box-shadow ring, which forced colours remove", () => {
+    expect(findInSource(/focus-visible:ring\b|focus:ring\b/)).toEqual([]);
+  });
+
+  test("the kit's ring is a 2 px outline in the focus colour at a 2 px offset", () => {
+    const kit = readFileSync(path.join(SRC, "components", "kit", "interaction.ts"), "utf8");
+    expect(kit).toContain('"focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"');
+  });
+});
