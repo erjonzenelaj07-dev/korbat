@@ -1,14 +1,21 @@
 import { useState } from "react";
 import { Redirect, router } from "expo-router";
 import { SessionResult } from "@korbat/contracts";
-import { Body, Button, ErrorText, Field, Screen, TextButton, Title } from "@/components/ui";
+import { PublicFrame } from "@/components/kit/PublicFrame";
+import { Body, Button, ErrorText, Field, TextButton, Title } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
+import { AUTH_WORDS } from "@/lib/auth-words";
 import { flow } from "@/lib/flow";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
 
-/** The second factor at sign-in: an authenticator code, or one of the saved recovery codes. */
+/**
+ * The second factor at sign-in: an authenticator code, or one of the saved recovery codes. UI Task 8 (8.10): in
+ * PublicFrame, the field in the mono face with one-time-code autofill.
+ */
 export default function MfaChallenge() {
   const { refresh } = useSession();
+  const title = usePageTitle("title.mfa");
   const { mfaTicket } = flow.get();
   const [useRecovery, setUseRecovery] = useState(false);
   const [value, setValue] = useState("");
@@ -42,15 +49,13 @@ export default function MfaChallenge() {
   }
 
   return (
-    <Screen>
-      <Title>Two-factor authentication</Title>
-      {useRecovery ? (
-        <Body>Enter one of your recovery codes. Each code works once; afterwards you'll be asked to set up two-factor again.</Body>
-      ) : (
-        <Body>Enter the 6-digit code from your authenticator app.</Body>
-      )}
+    <PublicFrame>
+      {title}
+      <Title>{AUTH_WORDS.mfaTitle}</Title>
+      <Body>{useRecovery ? AUTH_WORDS.mfaRecovery : AUTH_WORDS.mfaCode}</Body>
       <Field
         label={useRecovery ? "Recovery code" : "Authentication code"}
+        mono
         autoCapitalize="none"
         autoComplete="one-time-code"
         inputMode={useRecovery ? "text" : "numeric"}
@@ -70,6 +75,6 @@ export default function MfaChallenge() {
           setError(null);
         }}
       />
-    </Screen>
+    </PublicFrame>
   );
 }

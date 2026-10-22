@@ -522,21 +522,30 @@ describe("the pages behind the links", () => {
   });
 
   test("every explanation of the lockdown names its reach as it is, before the confirmation and after it: what was set up since the day before, the person's own later additions included", () => {
-    const anchors = { "passkey-remove": "it was added", "not-me": "that sign-in", "email-revert": "the change" };
-    for (const [page, anchor] of Object.entries(anchors)) {
-      const found = sentences(read("app", page, "[token].tsx"));
-      // Twice on each page: what confirming will do, and what it did.
-      expect(found, page).toHaveLength(2);
+    const anchors = { "passkey-remove": ["PASSKEY_REMOVE_WORDS", "it was added"], "not-me": ["NOT_ME_WORDS", "that sign-in"], "email-revert": ["EMAIL_REVERT_WORDS", "the change"] };
+    for (const [page, [words, anchor]] of Object.entries(anchors)) {
+      // UI Task 8 (section 1.5): the sentences live in lib/lockdown-words.ts, one block per page, which the page reads.
+      const found = sentences(lockdownBlock(words!));
+      expect(read("app", page, "[token].tsx"), page).toContain(`${words}.`);
+      expect(found, page).toHaveLength(2); // Twice on each page: what confirming will do, and what it did.
       for (const sentence of found) expect(sentence, page).toContain(`passkeys and two-factor authentication set up since the day before ${anchor}`);
     }
-    // The dialog behind "This wasn't me", whose passkey can be a week old by then.
-    const dialog = sentences(read("components", "security", "PasskeysSection.tsx"));
+    const dialog = sentences(lockdownBlock("NOT_MINE_WORDS")); // The dialog behind "This wasn't me", whose passkey can be a week old by then.
+    expect(read("components", "security", "PasskeysSection.tsx")).toContain("NOT_MINE_WORDS.");
     expect(dialog).toHaveLength(1);
     expect(dialog[0]).toContain("every passkey and two-factor authentication set up since the day before this passkey was added is removed, including any you set up yourself after it");
     // Nowhere does the app say "in the day before", which names one day of what can be eight.
     expect(findInSource(/in the day before/)).toEqual([]);
   });
 });
+
+/** UI Task 8: one block of lib/lockdown-words.ts, from its export to its closing brace. */
+function lockdownBlock(name: string): string {
+  const words = read("lib", "lockdown-words.ts");
+  const from = words.indexOf(`export const ${name} = {`);
+  expect(from, name).toBeGreaterThanOrEqual(0);
+  return words.slice(from, words.indexOf(`${String.fromCharCode(10)}};`, from));
+}
 
 describe("the terms", () => {
   test("say what a passkey keeps on the server and that nothing about fingerprints or faces leaves the device", () => {

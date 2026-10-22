@@ -277,6 +277,51 @@ export const UI_WORDS = {
   "profile.empty.replies": "No replies yet.",
   "profile.empty.likes": "You have not liked anything yet. Only you can see this tab.",
   "bookmarks.empty.title": "No saved posts",
+  /**
+   * UI Task 8: the Settings index (8.8, the owner's ruling 10) and the settings row's pages, word for word as
+   * SettingsNav.tsx had them; the row's landmark keeps its name.
+   */
+  "settings.title": "Settings",
+  "settings.nav": "Settings",
+  "settings.security": "Security",
+  "settings.privacy": "Privacy",
+  "settings.profile": "Profile",
+  "settings.account": "Account",
+  /** Appearance and accessibility (8.8), the design's table. */
+  "appearance.title": "Appearance and accessibility",
+  "appearance.nav": "Appearance",
+  "appearance.theme": "Theme",
+  "appearance.system": "System",
+  "appearance.light": "Light",
+  "appearance.dim": "Dim",
+  "appearance.dark": "Dark",
+  "appearance.darkStyle": "Dark style",
+  "appearance.textSize": "Text size",
+  "appearance.smaller": "Smaller",
+  "appearance.default": "Default",
+  "appearance.larger": "Larger",
+  "appearance.largest": "Largest",
+  "appearance.sample": "This is how posts will read.",
+  /** The letters each text size and font row draws in its own size or face, as decoration beside its name. */
+  "appearance.glyphs": "Aa",
+  "appearance.font": "Font",
+  "appearance.korbatFonts": "korbat fonts",
+  "appearance.systemFont": "System font",
+  "appearance.motion": "Reduce motion",
+  "appearance.followSystem": "Follow the system",
+  "appearance.always": "Always",
+  "appearance.haptics": "Haptics",
+  "appearance.reading": "Reading",
+  "appearance.autoLoad": "Load older posts automatically",
+  "appearance.openNewest": "Open feeds at the newest post",
+  /** The owner's ruling 12: it hides follower counts too, and says so. */
+  "appearance.hideCounts": "Hide like, repost and follower counts",
+  /** "On this device" (8.8, decision 8): what korbat keeps in this browser, and the button that clears it. */
+  "device.title": "On this device",
+  "device.body":
+    "korbat keeps your appearance choices, where you stopped reading in Following and Latest, and drafts you have not sent in this browser until you sign out. A random device id, which tells a new device from a known one at sign-in, and your Not now on the passkey card stay.",
+  "device.clear": "Clear what this device keeps",
+  "toast.cleared": "Cleared",
 } as const;
 
 export type UiWord = keyof typeof UI_WORDS;
@@ -308,6 +353,27 @@ export const TITLE_WORDS = {
   "title.report": "Report - korbat",
   "title.notice": "Report status - korbat",
   "title.cases": "Cases - Settings - korbat",
+  /**
+   * UI Task 8: the Settings index and its pages (8.8), each the form of title.settings filled in, since a title holds no
+   * placeholder; Appearance takes the settings row's short name, as Cases does.
+   */
+  "title.settingsIndex": "Settings - korbat",
+  "title.settingsAppearance": "Appearance - Settings - korbat",
+  "title.settingsSecurity": "Security - Settings - korbat",
+  "title.settingsPrivacy": "Privacy - Settings - korbat",
+  "title.settingsProfile": "Profile - Settings - korbat",
+  "title.settingsAccount": "Account - Settings - korbat",
+  /**
+   * The sign-in flow and the token pages (8.10). A token page is named korbat alone: its address holds the link's
+   * secret and its words say what the link does, so the tab names neither (shell.test.tsx allows this one key).
+   */
+  "title.signin": "Sign in - korbat",
+  "title.code": "Check your email - korbat",
+  "title.password": "Sign in with a password - korbat",
+  "title.mfa": "Two-factor authentication - korbat",
+  "title.age": "Almost there - korbat",
+  "title.handle": "Choose your handle - korbat",
+  "title.token": "korbat",
 } as const;
 
 export type TitleWord = keyof typeof TITLE_WORDS;

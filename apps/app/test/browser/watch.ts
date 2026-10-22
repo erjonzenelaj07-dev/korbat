@@ -103,6 +103,8 @@ export async function watch(context: BrowserContext, page: Page, origin: string)
  * a mention, a link in a notice), which needs 24 by 24 px under WCAG 2.5.8, and an element clipped to 1 px by
  * VisuallyHidden, which is passed over until it holds the focus and then measured like any control (the skip link). A
  * control is an a, button, input, select, textarea or summary element, or anything with a control's role, that is shown.
+ * A control the pointer cannot press (pointer-events none: a switch inside its row, which the whole row flips, UI Task
+ * 8) is measured as the element that takes the pointer for it, since that is the target a finger aims at.
  * Plain text, evaluated in the page, so no test runner's transform can put a helper into it.
  */
 const PHONE_SCRIPT = `
@@ -126,6 +128,11 @@ const PHONE_SCRIPT = `
     if (!element.closest(scope)) continue;
     if (clipped(element) && document.activeElement !== element) continue;
     let box = element.getBoundingClientRect();
+    if (getComputedStyle(element).pointerEvents === "none") {
+      let target = element.parentElement;
+      while (target && getComputedStyle(target).pointerEvents === "none") target = target.parentElement;
+      if (target) box = target.getBoundingClientRect();
+    }
     if (element.tagName === "INPUT" && (element.type === "radio" || element.type === "checkbox")) {
       const label = element.closest("label") || (element.id ? document.querySelector("label[for='" + element.id + "']") : null);
       if (label) {

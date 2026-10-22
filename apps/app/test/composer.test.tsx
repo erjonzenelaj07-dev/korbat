@@ -256,9 +256,9 @@ describe("New post (7.2, 7.3)", () => {
       shell.pathname = "/bookmarks";
       const out = html(<AppShell>{null}</AppShell>);
       const nav = /<nav\b[^>]*aria-label="Main"[^>]*>[\s\S]*<\/nav>/.exec(out)?.[0] ?? "";
-      expect(anchors(nav).map((tag) => /href="([^"]*)"/.exec(tag)?.[1]), kind).toEqual(["/", "/bookmarks", "/u/ada", "/settings/security"]);
+      expect(anchors(nav).map((tag) => /href="([^"]*)"/.exec(tag)?.[1]), kind).toEqual(["/", "/bookmarks", "/u/ada", "/settings"]);
       const at = nav.indexOf('aria-label="New post"') >= 0 ? nav.indexOf('aria-label="New post"') : nav.lastIndexOf(">New post<");
-      expect(at, kind).toBeGreaterThan(nav.lastIndexOf('href="/settings/security"'));
+      expect(at, kind).toBeGreaterThan(nav.lastIndexOf('href="/settings"'));
       shell.state = { status: "signed-out" };
       expect(html(<AppShell>{null}</AppShell>), kind).not.toContain("New post");
     }

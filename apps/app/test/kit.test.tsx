@@ -683,3 +683,54 @@ describe("ListRow for an account (6.11, 8.4)", () => {
     expect(out).not.toContain(lucideClass(ICONS.next));
   });
 });
+
+// UI Task 8 appends below, so the lines above keep the numbers other tasks cite.
+import { Switch } from "react-native";
+import { radioMove } from "../src/components/kit/Tabs";
+
+describe("radio groups on the keyboard (6.11, UI Task 8)", () => {
+  test("Down and Right move to the next radio and Up and Left to the one before, wrapping; other keys do nothing", () => {
+    expect(radioMove(0, "ArrowDown", 4)).toBe(1);
+    expect(radioMove(0, "ArrowRight", 4)).toBe(1);
+    expect(radioMove(3, "ArrowDown", 4)).toBe(0);
+    expect(radioMove(0, "ArrowUp", 4)).toBe(3);
+    expect(radioMove(2, "ArrowLeft", 4)).toBe(1);
+    // A radio group has no Home and End (WAI-ARIA's radio group pattern), and Enter, Tab or a letter move nothing.
+    expect(radioMove(2, "Home", 4)).toBeNull();
+    expect(radioMove(2, "End", 4)).toBeNull();
+    expect(radioMove(1, "Enter", 4)).toBeNull();
+    expect(radioMove(1, "Tab", 4)).toBeNull();
+    expect(radioMove(0, "ArrowDown", 0)).toBeNull();
+  });
+
+  test("one tab stop per group: the chosen radio; the arrows reach the others and choose them at once, unanimated", () => {
+    const out = html(
+      <RadioGroup labelledBy="size-heading">
+        <ListRow label="Smaller" control={{ kind: "radio", checked: false, onSelect: noop }} />
+        <ListRow label="Default" control={{ kind: "radio", checked: true, onSelect: noop }} />
+        <ListRow label="Larger" control={{ kind: "radio", checked: false, onSelect: noop }} />
+      </RadioGroup>,
+    );
+    const radios = out.match(/<[a-z]+ [^>]*role="radio"[^>]*>/g) ?? [];
+    expect(radios.map((tag) => /tabindex="(-?[0-9])"/.exec(tag)?.[1])).toEqual(["-1", "0", "-1"]);
+    const source = kitSource("ListRow.tsx");
+    expect(source).toContain("radioMove(");
+    // The arrows choose without any motion of their own: the row's radio mark changes as a press would change it.
+    expect(source).not.toMatch(/withSpring|withTiming/);
+  });
+
+  test("a switch row can carry a Switch of its own, which keeps its own line, with the row's flip and ring", () => {
+    const out = html(
+      <ListRow
+        label="Show my posts in Explore"
+        control={{ kind: "switch", value: true, onValueChange: noop, element: <Switch accessibilityLabel="Show my posts in Explore" value onValueChange={noop} /> }}
+      />,
+    );
+    const inputs = out.match(/<input[^>]*role="switch"[^>]*>/g) ?? [];
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toContain('aria-label="Show my posts in Explore"');
+    expect(inputs[0]).toContain('checked=""');
+    expect(out).not.toContain('role="button"');
+    expect(out.match(/tabindex="0"/g) ?? []).toEqual([]);
+  });
+});

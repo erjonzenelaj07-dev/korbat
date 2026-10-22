@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { router } from "expo-router";
 import { z } from "zod";
 import { PasskeyListResponse, PasskeyOptionsResponse, PasskeyView, type MeResponse } from "@korbat/contracts";
-import { Body, Button, ErrorText, Field, Notice } from "@/components/ui";
+import { FOCUS_RING } from "@/components/kit/interaction";
+import { NeutralChip, StatusChip } from "@/components/kit/StatusChip";
+import { Text } from "@/components/kit/Text";
+import { Body, Button, ErrorText, Field, Notice, SectionRows } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
+import { NOT_MINE_WORDS } from "@/lib/lockdown-words";
 import { createPasskey, passkeysSupported } from "@/lib/passkeys";
+import { SECURITY_WORDS } from "@/lib/settings-words";
+import { cn } from "@/theme/cn";
 
 type Run = (action: () => Promise<void>) => Promise<void>;
 type Refresh = () => Promise<unknown>;
@@ -16,31 +22,26 @@ const PasskeyResponse = z.object({ passkey: PasskeyView });
 /** The PasskeyName contract's limit (the display-name rules). */
 const NAME_MAX = 50;
 
-/** The separator of a row's facts, the middle dot the sessions list uses, spelled by its code so the file stays ASCII. */
-const DOT = " " + String.fromCharCode(183) + " ";
-
 /** Ids come from the API's list; only a UUID may become part of a path. */
 const passkeyPath = (id: string) => `/api/auth/passkeys/${encodeURIComponent(z.uuid().parse(id))}`;
 
 /**
  * A short tag beside a passkey's name. It is an image to assistive technology, as the verified chip is: ARIA forbids
- * naming a generic element, and the label says what the one word means.
+ * naming a generic element, and the label says what the one word means. A fact is a neutral chip; "suspended", the one
+ * status, takes the restricted tone with its icon (UI Task 8, section 4.8), where it was red text before.
  */
-function Tag({ label, meaning, tone = "plain" }: { label: string; meaning: string; tone?: "plain" | "good" | "bad" }) {
-  const surface = tone === "good" ? "bg-emerald-950" : tone === "bad" ? "bg-red-950" : "bg-zinc-800";
-  const text = tone === "good" ? "text-emerald-300" : tone === "bad" ? "text-red-300" : "text-zinc-300";
-  return (
-    <View role="img" accessibilityLabel={`${label}: ${meaning}`} className={`rounded-full px-2 py-0.5 ${surface}`}>
-      <Text className={`text-xs font-medium ${text}`}>{label}</Text>
-    </View>
-  );
+function Tag({ label, meaning, tone = "plain" }: { label: string; meaning: string; tone?: "plain" | "bad" }) {
+  const name = `${label}: ${meaning}`;
+  return tone === "bad" ? <StatusChip tone="restricted" label={label} name={name} /> : <NeutralChip label={label} name={name} />;
 }
 
-/** A small action inside a row, an underlined text like the sessions list's Sign out. */
+/** A small action inside a row: its words in the accent, or in danger-ink when it ends something, on a 44 px target. */
 function RowButton({ label, onPress, disabled, tone = "plain" }: { label: string; onPress: () => void; disabled: boolean; tone?: "plain" | "danger" }) {
   return (
-    <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} className="mr-4 py-1">
-      <Text className={`text-sm underline ${disabled ? "text-zinc-500" : tone === "danger" ? "text-red-400" : "text-zinc-300"}`}>{label}</Text>
+    <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} className={cn("min-h-[44px] justify-center rounded-control px-2 active:opacity-70", FOCUS_RING)}>
+      <Text variant="body-strong" tone={disabled ? "low" : tone === "danger" ? "danger" : "accent"}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -71,25 +72,30 @@ export function PasskeyItem({
     if (await onRename(trimmed)) setRenaming(false);
   }
 
+  // When it was added and last used, and the device that added it, joined by commas (section 4.1: no middle dots).
+  const facts = [
+    SECURITY_WORDS.passkeyAdded(new Date(passkey.createdAt).toLocaleDateString()),
+    passkey.lastUsedAt ? SECURITY_WORDS.passkeyLastUsed(new Date(passkey.lastUsedAt).toLocaleString()) : SECURITY_WORDS.passkeyNeverUsed,
+    ...(passkey.createdOn ? [SECURITY_WORDS.passkeyAddedOn(passkey.createdOn)] : []),
+  ].join(", ");
   return (
-    <View className="mt-3 rounded-lg border border-zinc-800 px-4 py-3">
+    <View className="gap-1 border-b border-line-low px-4 pb-1 pt-3">
       <View className="flex-row flex-wrap items-center gap-2">
-        <Text className="text-base text-zinc-50">{passkey.name}</Text>
-        {passkey.current ? <Tag label="used for this session" meaning="it signed you in here" tone="good" /> : null}
+        <Text variant="body-strong" className="min-w-0 shrink web:break-words">
+          {passkey.name}
+        </Text>
+        {passkey.current ? <Tag label="used for this session" meaning="it signed you in here" /> : null}
         {passkey.isNew ? <Tag label="new" meaning="added in the last 7 days" /> : null}
         {passkey.suspended ? <Tag label="suspended" meaning="switched off because a copy of it may exist" tone="bad" /> : null}
         {passkey.synced ? <Tag label="synced" meaning="backed up by your password manager to your other devices" /> : null}
       </View>
-      <Text className="mt-1 text-xs text-zinc-400">
-        added {new Date(passkey.createdAt).toLocaleDateString()}
-        {DOT}
-        {passkey.lastUsedAt ? `last used ${new Date(passkey.lastUsedAt).toLocaleString()}` : "never used"}
-        {passkey.createdOn ? `${DOT}added on ${passkey.createdOn}` : null}
+      <Text variant="meta" tone="low">
+        {facts}
       </Text>
       {renaming ? (
         <>
           <Field label="Name" autoComplete="off" maxLength={NAME_MAX} value={name} onChangeText={setName} onSubmitEditing={() => void save()} />
-          <View className="mt-2 flex-row flex-wrap">
+          <View className="-ml-2 mt-1 flex-row flex-wrap">
             <RowButton label="Save" onPress={() => void save()} disabled={!ready || busy} />
             <RowButton
               label="Cancel"
@@ -102,7 +108,7 @@ export function PasskeyItem({
           </View>
         </>
       ) : (
-        <View className="mt-2 flex-row flex-wrap">
+        <View className="-ml-2 flex-row flex-wrap">
           <RowButton
             label="Rename"
             onPress={() => {
@@ -153,15 +159,22 @@ export function AddPasskeyDialog({
   }
 
   return (
-    <View ref={dialog} role="dialog" aria-labelledby="add-passkey-title" tabIndex={-1} className="mt-4 rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-      <Text nativeID="add-passkey-title" accessibilityRole="header" aria-level={3} className="text-base font-semibold text-zinc-50">
-        Add a passkey
+    // An inset card on the page's surface inside the section's card, with a control's boundary: a question in place.
+    <View ref={dialog} role="dialog" aria-labelledby="add-passkey-title" tabIndex={-1} className="mt-4 rounded-card border border-line-high bg-surface p-4">
+      <Text as="h3" variant="title" nativeID="add-passkey-title">
+        {SECURITY_WORDS.addTitle}
       </Text>
-      <Text className="mt-1 text-sm text-zinc-400">Your browser or password manager will ask you to confirm with your fingerprint, face, PIN or security key.</Text>
+      <Text tone="medium" className="mt-1">
+        {SECURITY_WORDS.addBody}
+      </Text>
       <Field label="Name" autoComplete="off" maxLength={NAME_MAX} placeholder="For example Laptop or Phone" value={name} onChangeText={setName} />
-      <Text className="mt-1 text-xs text-zinc-400">Optional: what korbat calls this passkey in the list.</Text>
+      <Text variant="meta" tone="low" className="mt-1">
+        {SECURITY_WORDS.addNameHint}
+      </Text>
       <Field label="Name in your password manager" autoComplete="off" maxLength={NAME_MAX} value={label} onChangeText={setLabel} onSubmitEditing={() => void create()} />
-      <Text className="mt-1 text-xs text-zinc-400">Your password manager shows this name to anyone who can see this device.</Text>
+      <Text variant="meta" tone="low" className="mt-1">
+        {SECURITY_WORDS.addLabelHint}
+      </Text>
       <ErrorText message={error} />
       <Button label="Create passkey" onPress={() => void create()} busy={busy} disabled={!ready} />
       <Button label="Cancel" onPress={onCancel} tone="secondary" />
@@ -268,22 +281,33 @@ export function PasskeysSection({ me, run, refresh, openAdd }: { me: MeResponse;
 
   return (
     <View>
-      <Body>A passkey signs you in with your fingerprint, face, PIN or a security key, and cannot be phished. You can have up to 10.</Body>
-      {passkeys === null ? <Text className="mt-3 text-sm text-zinc-400">Loading passkeys...</Text> : null}
-      {passkeys?.length === 0 ? <Text className="mt-3 text-sm text-zinc-400">You have no passkeys yet.</Text> : null}
-      {passkeys?.map((passkey) => (
-        <PasskeyItem key={passkey.id} passkey={passkey} busy={busy} onRename={(name) => rename(passkey, name)} onRemove={() => void remove(passkey)} onNotMine={() => setNotMine(passkey)} />
-      ))}
+      <Body>{SECURITY_WORDS.passkeysBody}</Body>
+      {passkeys === null ? (
+        <Text tone="low" className="mt-3">
+          {SECURITY_WORDS.passkeysLoading}
+        </Text>
+      ) : null}
+      {passkeys?.length === 0 ? (
+        <Text tone="low" className="mt-3">
+          {SECURITY_WORDS.passkeysNone}
+        </Text>
+      ) : null}
+      {/* The passkeys as rows from edge to edge of the section's card, each with its tags, its facts and its actions. */}
+      {passkeys !== null && passkeys.length > 0 ? (
+        <SectionRows>
+          {passkeys.map((passkey) => (
+            <PasskeyItem key={passkey.id} passkey={passkey} busy={busy} onRename={(name) => rename(passkey, name)} onRemove={() => void remove(passkey)} onNotMine={() => setNotMine(passkey)} />
+          ))}
+        </SectionRows>
+      ) : null}
       {notMine ? (
-        <View ref={lockdownDialog} role="dialog" aria-labelledby="not-mine-title" tabIndex={-1} className="mt-4 rounded-lg border border-red-900 bg-zinc-900 p-4">
-          <Text nativeID="not-mine-title" accessibilityRole="header" aria-level={3} className="text-base font-semibold text-zinc-50">
-            Lock down your account?
+        <View ref={lockdownDialog} role="dialog" aria-labelledby="not-mine-title" tabIndex={-1} className="mt-4 rounded-card border border-line-high bg-surface p-4">
+          <Text as="h3" variant="title" nativeID="not-mine-title">
+            {NOT_MINE_WORDS.title}
           </Text>
           {/* What the lockdown reaches, as it is: from the day before this passkey to now, which can be a week, the person's own additions since included. */}
-          <Text className="mt-1 text-sm text-zinc-300">
-            If you did not add the passkey named {notMine.name}, confirm below. Every session is signed out, including this browser, your password is removed, and every
-            passkey and two-factor authentication set up since the day before this passkey was added is removed, including any you set up yourself after it, so only someone
-            with your email can get back in.
+          <Text tone="medium" className="mt-1">
+            {NOT_MINE_WORDS.body(notMine.name)}
           </Text>
           <Button label="Sign out everywhere and lock down" onPress={() => void lockDown(notMine)} busy={busy} tone="danger" />
           <Button label="Cancel" onPress={() => setNotMine(null)} tone="secondary" />
@@ -292,7 +316,7 @@ export function PasskeysSection({ me, run, refresh, openAdd }: { me: MeResponse;
       <ErrorText message={error} />
       <Notice message={done} />
       {!supported ? (
-        <Body>This browser cannot add a passkey. Use a recent browser on a device with a screen lock, or a password manager that stores passkeys.</Body>
+        <Body>{SECURITY_WORDS.passkeysUnsupported}</Body>
       ) : adding ? (
         <AddPasskeyDialog
           handle={me.profile?.handle ?? ""}

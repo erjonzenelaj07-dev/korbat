@@ -6,47 +6,19 @@ import path from "node:path";
  * with size and weight classes instead of korbat's tokens and the Text component (UI design, sections 4.2 and 6.2).
  * contrast.test.ts lets these files, and only these, keep palette classes and hex colours; theme.test.ts lets them
  * keep size and weight classes. A listed file that no longer holds a palette class fails contrast.test.ts, so the
- * task that moves a file onto the tokens takes it off this list in the same commit; Task 8 empties it. Paths are
- * from apps/app/src, in forward slashes, sorted.
+ * task that moves a file onto the tokens takes it off this list in the same commit; Task 8 emptied it, and the export
+ * stays, empty, for Task 10's check. Paths are from apps/app/src, in forward slashes, sorted.
  */
-export const LEGACY_COLOUR_FILES: readonly string[] = [
-  "app/(auth)/age.tsx",
-  "app/settings/account.tsx",
-  "app/settings/privacy.tsx",
-  "app/settings/profile.tsx",
-  "app/settings/security.tsx",
-  "components/security/MfaSection.tsx",
-  "components/security/PasskeysSection.tsx",
-  "components/security/ReauthPanel.tsx",
-  "components/security/SessionsSection.tsx",
-];
+export const LEGACY_COLOUR_FILES: readonly string[] = [];
 
 /**
  * The files of src/app and src/components that still hold a bare sentence as a JSX child, a text or a string literal
  * written straight into the markup instead of a words module (UI design, section 1.5). a11y.test.tsx lets these files,
  * and only these, keep them; a listed file that no longer holds one fails, so the task that moves a file's sentences
- * into its area's words module takes it off this list in the same commit. Task 10 records what is left. Paths are from
- * apps/app/src, in forward slashes, sorted.
+ * into its area's words module takes it off this list in the same commit. Task 8 emptied it, and the export stays,
+ * empty, for Task 10, which records what is left. Paths are from apps/app/src, in forward slashes, sorted.
  */
-export const LEGACY_TEXT_FILES: readonly string[] = [
-  "app/(auth)/age.tsx",
-  "app/(auth)/code.tsx",
-  "app/(auth)/handle.tsx",
-  "app/(auth)/mfa.tsx",
-  "app/(auth)/password.tsx",
-  "app/(auth)/signin.tsx",
-  "app/email-revert/[token].tsx",
-  "app/not-me/[token].tsx",
-  "app/passkey-remove/[token].tsx",
-  "app/settings/account.tsx",
-  "app/settings/privacy.tsx",
-  "app/settings/profile.tsx",
-  "app/settings/security.tsx",
-  "components/security/MfaSection.tsx",
-  "components/security/PasskeysSection.tsx",
-  "components/security/ReauthPanel.tsx",
-  "components/security/SessionsSection.tsx",
-];
+export const LEGACY_TEXT_FILES: readonly string[] = [];
 
 export const SRC = path.resolve(import.meta.dirname, "..", "src");
 

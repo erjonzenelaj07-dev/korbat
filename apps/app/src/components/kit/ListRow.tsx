@@ -1,11 +1,12 @@
 import type { ReactElement, ReactNode } from "react";
-import { Pressable, Switch, View } from "react-native";
+import { Platform, Pressable, Switch, View } from "react-native";
 import { Link, type Href } from "expo-router";
 import type { IconName } from "@/components/icons";
 import { cn } from "@/theme/cn";
 import { useTheme } from "@/theme/ThemeProvider";
 import { Icon } from "./Icon";
 import { FOCUS_RING_INSET, HOVER_WASH, pressDelay } from "./interaction";
+import { radioMove } from "./Tabs";
 import { Text } from "./Text";
 
 /**
@@ -20,9 +21,14 @@ import { Text } from "./Text";
  * place, `badge` follows the label (the VerifiedChip), `detail` replaces the meta line (the handle in the mono face and
  * the bio), and a link row may carry a control of the kind "button" (FollowButton), drawn beside the link and outside
  * it, since a button inside an anchor is a control no assistive technology can reach; such a row has no chevron.
+ *
+ * UI Task 8 (8.8): a radio row is the group's one tab stop while it is chosen, and RadioGroup's arrows move the choice; a
+ * switch row may carry a Switch element of its own (`element`, Privacy's "Show my posts in Explore", whose line a test
+ * reads) in place of the row's, with the row's flip and ring; and a row that only informs (`info`, a device of Security's
+ * sessions) is neither a link nor a button, with an optional control of its own beside its words.
  */
 export type ListRowControl =
-  | { kind: "switch"; value: boolean; onValueChange: (next: boolean) => void; disabled?: boolean }
+  | { kind: "switch"; value: boolean; onValueChange: (next: boolean) => void; disabled?: boolean; element?: ReactElement }
   | { kind: "radio"; checked: boolean; onSelect: () => void };
 
 /** A control of its own beside a link row: an element with its own name and press (FollowButton). */
@@ -44,7 +50,16 @@ interface RowContent {
   detail?: ReactNode;
 }
 
-export type ListRowProps = RowContent & ({ href: Href; control?: ListRowButton } | { onPress: () => void } | { control: ListRowControl });
+export type ListRowProps = RowContent & ({ href: Href; control?: ListRowButton } | { onPress: () => void } | { control: ListRowControl } | { info: true; control?: ListRowButton });
+
+/**
+ * A switch's colours from the theme: the accent track with an on-accent thumb when on, line-high with a surface-1 thumb
+ * when off. react-native-web paints the thumb of a switch that is on in its own teal unless `activeThumbColor` names
+ * another colour, a prop React Native's types do not know, so it goes through one cast here.
+ */
+export function switchColours(colors: Record<"line-high" | "accent" | "on-accent" | "surface-1", string>): object {
+  return { trackColor: { false: colors["line-high"], true: colors.accent }, thumbColor: colors["surface-1"], activeThumbColor: colors["on-accent"] };
+}
 
 const ROW = cn("min-h-[52px] flex-row items-center gap-3 border-b border-line-low px-4 py-3", HOVER_WASH);
 
@@ -53,6 +68,12 @@ const ROW = cn("min-h-[52px] flex-row items-center gap-3 border-b border-line-lo
  * remove, so the row draws korbat's ring, inside, while the switch in it has keyboard focus.
  */
 const SWITCH_RING = "web:has-[:focus-visible]:outline web:has-[:focus-visible]:outline-2 web:has-[:focus-visible]:-outline-offset-2 web:has-[:focus-visible]:outline-focus";
+
+/**
+ * One ring, not two (UI Task 8): the browser's own ring on the switch's hidden checkbox gives way to the row's, which
+ * SWITCH_RING draws as korbat's focus-visible:outline; outline-none is a transparent outline, which forced colours still show.
+ */
+const ONE_RING = "web:[&_input]:outline-none"; // The row's focus-visible:outline above is the ring a keyboard sees.
 
 /** The pressed wash, after the 80 ms delay; an inline colour, so it shows over the hover's class. */
 function usePressedWash() {
@@ -130,6 +151,14 @@ export function ListRow(props: ListRowProps) {
     );
   }
 
+  if ("info" in props) {
+    return (
+      <View className="min-h-[52px] flex-row items-center gap-3 border-b border-line-low px-4 py-3">
+        <Content {...content} trailing={props.control?.element} />
+      </View>
+    );
+  }
+
   if ("onPress" in props) {
     return (
       <Pressable accessibilityRole="button" onPress={props.onPress} {...pressDelay(80)} className={FOCUS_RING_INSET}>
@@ -145,7 +174,8 @@ export function ListRow(props: ListRowProps) {
   const control = props.control;
   if (control.kind === "radio") {
     return (
-      <Pressable role="radio" aria-checked={control.checked} onPress={control.onSelect} {...pressDelay(80)} className={FOCUS_RING_INSET}>
+      // The group's one tab stop is its chosen radio; the arrows reach the others (RadioGroup), so a group always has one chosen.
+      <Pressable role="radio" aria-checked={control.checked} tabIndex={control.checked ? 0 : -1} onPress={control.onSelect} {...pressDelay(80)} className={FOCUS_RING_INSET}>
         {({ pressed }) => (
           <View className={ROW} style={wash(pressed)}>
             <Content {...content} trailing={<RadioMark checked={control.checked} />} />
@@ -164,12 +194,12 @@ export function ListRow(props: ListRowProps) {
   return (
     <Pressable onPress={flip} tabIndex={-1} {...pressDelay(80)}>
       {({ pressed }) => (
-        <View className={cn(ROW, SWITCH_RING)} style={wash(pressed)}>
+        <View className={cn(ROW, SWITCH_RING, ONE_RING)} style={wash(pressed)}>
           <Content
             {...content}
             trailing={
               <View pointerEvents="none">
-                <Switch accessibilityLabel={label} value={control.value} onValueChange={control.onValueChange} disabled={control.disabled} trackColor={{ false: colors["line-high"], true: colors.accent }} thumbColor={colors["surface-1"]} />
+                {control.element ?? <Switch accessibilityLabel={label} value={control.value} onValueChange={control.onValueChange} disabled={control.disabled} {...switchColours(colors)} />}
               </View>
             }
           />
@@ -179,10 +209,33 @@ export function ListRow(props: ListRowProps) {
   );
 }
 
+/**
+ * On the web, what a key does in a radio group (UI Task 8, WAI-ARIA's radio group pattern): the arrows move the focus to
+ * the next or the previous radio and choose it at once, through the row's own press, with no motion of their own (5.1);
+ * Space chooses the radio that has the focus. Native assistive technology has its own gestures for a radio group.
+ */
+function radioKeys(event: { key: string; currentTarget: unknown; preventDefault(): void }): void {
+  const radios = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="radio"]')];
+  const focused = radios.findIndex((radio) => radio === document.activeElement);
+  if (event.key === " ") {
+    if (focused !== -1 && radios[focused]!.getAttribute("aria-checked") !== "true") {
+      event.preventDefault();
+      radios[focused]!.click();
+    }
+    return;
+  }
+  const from = focused !== -1 ? focused : radios.findIndex((radio) => radio.getAttribute("aria-checked") === "true");
+  const next = radioMove(Math.max(from, 0), event.key, radios.length);
+  if (next === null) return;
+  event.preventDefault();
+  radios[next]!.focus();
+  radios[next]!.click();
+}
+
 /** A group of radio rows, named by its heading's nativeID (section 6.11). */
 export function RadioGroup({ labelledBy, children }: { labelledBy: string; children: ReactNode }) {
   return (
-    <View role="radiogroup" aria-labelledby={labelledBy}>
+    <View role="radiogroup" aria-labelledby={labelledBy} {...(Platform.OS === "web" ? ({ onKeyDown: radioKeys } as object) : {})}>
       {children}
     </View>
   );

@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Platform, ScrollView, Text, View, type TextInput } from "react-native";
+import { Platform, View, type TextInput } from "react-native";
 import { router } from "expo-router";
 import { ACCOUNT_DELETION_WORDS, BadgeVerifyResponse, DeleteStartResponse, EmailChangeResponse, FlowResponse, type MeResponse } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { Text } from "@/components/kit/Text";
+import { ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { ReauthPanel, ReenrollNotice, useReauth } from "@/components/security/ReauthPanel";
 import { SettingsNav } from "@/components/SettingsNav";
 import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/components/ui";
 import { api, ApiError, apiResponse, errorMessage } from "@/lib/api";
 import { exportFilename, saveBlob } from "@/lib/download";
 import { DELETE_HOLD } from "@/lib/orders";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
+import { ACCOUNT_WORDS } from "@/lib/settings-words";
 import { STANDING_TEXTS } from "@/lib/standing";
+import { UI_WORDS } from "@/lib/ui-words";
 
 type Run = (action: () => Promise<void>) => Promise<void>;
 type Refresh = () => Promise<unknown>;
@@ -102,11 +107,11 @@ function EmailSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
 
   return (
     <View>
-      <Body>Your address is {me.user.email}. Sign-in codes and security messages go there, and nobody else sees it.</Body>
+      <Body>{ACCOUNT_WORDS.emailBody(me.user.email)}</Body>
       {flowId ? (
         <>
-          <Body>We sent a code to {email.trim()}. Enter it to move your account to that address. Every session stays signed in.</Body>
-          <Field label="Code from the email" autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
+          <Body>{ACCOUNT_WORDS.emailSent(email.trim())}</Body>
+          <Field label="Code from the email" mono autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
           <ErrorText message={error} />
           <Button label="Change" onPress={() => void verify()} busy={busy} disabled={!CODE.test(code.trim())} />
           <Button
@@ -183,21 +188,18 @@ function BadgeSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
 
   return (
     <View>
-      <Body>
-        The Verified badge means you hold a phone number that no other account uses. To check it, the number is handed to the verification provider for one text message; korbat
-        keeps it only as a keyed hash, never the number itself.
-      </Body>
+      <Body>{ACCOUNT_WORDS.badgeBody}</Body>
       {verified ? (
         <>
-          <Body>Your account holds the badge.</Body>
+          <Body>{ACCOUNT_WORDS.badgeHeld}</Body>
           <ErrorText message={error} />
           <Notice message={done} />
           <Button ref={removeRef} label="Remove badge" onPress={() => void remove()} busy={busy} tone="danger" />
         </>
       ) : flowId ? (
         <>
-          <Body>We texted a code to {phone.trim()}.</Body>
-          <Field label="Code from the text message" autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
+          <Body>{ACCOUNT_WORDS.badgeSent(phone.trim())}</Body>
+          <Field label="Code from the text message" mono autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={() => void verify()} />
           <ErrorText message={error} />
           <Button label="Verify" onPress={() => void verify()} busy={busy} disabled={!CODE.test(code.trim())} />
           <Button
@@ -212,7 +214,9 @@ function BadgeSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh:
       ) : (
         <>
           <Field ref={phoneRef} label="Phone number" autoComplete="tel" inputMode="tel" placeholder="+447911123456" value={phone} onChangeText={setPhone} onSubmitEditing={() => void start()} />
-          <Text className="mt-1 text-xs text-zinc-400">International format: a plus sign, the country code and the number, without the leading zero.</Text>
+          <Text variant="meta" tone="low" className="mt-1">
+            {ACCOUNT_WORDS.phoneHint}
+          </Text>
           <ErrorText message={error} />
           <Notice message={done} />
           <Button label="Send code" onPress={() => void start()} busy={busy} disabled={phone.trim().length === 0} />
@@ -248,10 +252,7 @@ function ExportSection({ run }: { run: Run }) {
 
   return (
     <View>
-      <Body>
-        The archive is a ZIP with export.json (your account, profile, posts, likes, reposts, bookmarks, follows, blocks, mutes, sessions, devices and security events) and every
-        image you uploaded. It holds your email address, so keep it somewhere private. You can export once a day.
-      </Body>
+      <Body>{ACCOUNT_WORDS.exportBody}</Body>
       {Platform.OS === "web" ? (
         <>
           <ErrorText message={error} />
@@ -259,7 +260,7 @@ function ExportSection({ run }: { run: Run }) {
           <Button label="Download my data" onPress={() => void download()} busy={busy} />
         </>
       ) : (
-        <Body>Export your data from the web app.</Body>
+        <Body>{ACCOUNT_WORDS.exportNative}</Body>
       )}
     </View>
   );
@@ -301,15 +302,14 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
   return (
     <View>
       <Body>
-        {ACCOUNT_DELETION_WORDS} Your likes, reposts, bookmarks, follows, blocks and mutes are removed too. Your handle stays reserved, so nobody can take it. This
-        cannot be undone.
+        {ACCOUNT_DELETION_WORDS} {ACCOUNT_WORDS.deleteMore}
       </Body>
       {/* 3f Task 5 ([delete.hold]): what the law can oblige korbat to keep for a time, said to every account beforehand. */}
       <Body>{DELETE_HOLD}</Body>
       {flowId ? (
         <>
-          <Body>We emailed a code to {me.user.email}.</Body>
-          <Field label="Code from the email" autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} />
+          <Body>{ACCOUNT_WORDS.deleteSent(me.user.email)}</Body>
+          <Field label="Code from the email" mono autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} />
           <Field label="Type your handle to confirm" autoCapitalize="none" autoComplete="off" placeholder={`@${handle}`} value={typed} onChangeText={setTyped} />
           <ErrorText message={error} />
           <Button label="Delete my account" onPress={() => void confirm()} busy={busy} disabled={!CODE.test(code.trim()) || !matches} tone="danger" />
@@ -333,21 +333,28 @@ function DeleteSection({ me, run, refresh }: { me: MeResponse; run: Run; refresh
   );
 }
 
+/**
+ * Settings, Account (1b, 3e and 3f designs; UI design, section 8.8): the email address, the Verified badge where the
+ * build offers it, the data export and the account's deletion. UI Task 8 keeps its sections, words and flows on the
+ * tokens: the title and the settings row in ScreenHeader, the handle in the mono face under it, each section a card of
+ * fields on ScreenScroll, and the codes in the mono face.
+ */
 export default function AccountSettings() {
   const { state, refresh } = useSession();
   const reauth = useReauth();
+  const title = usePageTitle("title.settingsAccount");
 
   if (state.status !== "signed-in") return <Loading />;
   const { me } = state;
 
   return (
     <AppShell>
-      <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 py-6">
-        <Text accessibilityRole="header" className="text-3xl font-bold tracking-tight text-zinc-50">
-          Account
-        </Text>
-        <Text className="mt-2 text-base text-zinc-400">@{me.profile?.handle}</Text>
+      {title}
+      <ScreenHeader title={UI_WORDS["settings.account"]}>
         <SettingsNav current="account" />
+      </ScreenHeader>
+      <ScreenScroll screen="account">
+        <Text variant="mono" tone="medium" className="mt-2">{`@${me.profile?.handle ?? ""}`}</Text>
 
         {reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}
         {/* After a recovery code confirmed an action here: the screen stays, with the field for the code it mailed, and says where two-factor is set up again. */}
@@ -369,7 +376,7 @@ export default function AccountSettings() {
           {me.standing?.measure?.kind === "terminate" ? <Body>{STANDING_TEXTS.terminateDelete}</Body> : null}
           <DeleteSection me={me} run={reauth.run} refresh={refresh} />
         </Section>
-      </ScrollView>
+      </ScreenScroll>
     </AppShell>
   );
 }

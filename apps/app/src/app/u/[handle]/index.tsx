@@ -223,7 +223,8 @@ export default function ProfileScreen() {
           ) : null}
           {own ? (
             <View className="-mt-6">
-              <Button label={UI_WORDS["profile.settings"]} onPress={() => router.push("/settings/security")} tone="secondary" full={false} />
+              {/* UI Task 8: the Settings index, as the nav's Settings item opens it. */}
+              <Button label={UI_WORDS["profile.settings"]} onPress={() => router.push("/settings")} tone="secondary" full={false} />
             </View>
           ) : (
             <ProfileMenu profile={profile} onMute={mute} onBlock={block} />

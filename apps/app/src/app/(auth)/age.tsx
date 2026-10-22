@@ -1,18 +1,28 @@
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { Redirect, router } from "expo-router";
 import { SessionResult } from "@korbat/contracts";
-import { Body, Button, ErrorText, Field, Screen, TextLink, Title } from "@/components/ui";
+import { FOCUS_RING } from "@/components/kit/interaction";
+import { PublicFrame } from "@/components/kit/PublicFrame";
+import { Text } from "@/components/kit/Text";
+import { Body, Button, ErrorText, Field, TextLink, Title } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
+import { AUTH_WORDS } from "@/lib/auth-words";
 import { flow } from "@/lib/flow";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
 import { TERMS_VERSION } from "@/lib/terms";
+import { cn } from "@/theme/cn";
 
 const pad = (value: string, length: number) => value.trim().padStart(length, "0");
 
-/** Date of birth (checked once, never stored) and acceptance of the current terms. */
+/**
+ * Date of birth (checked once, never stored) and acceptance of the current terms. UI Task 8 (8.10): in PublicFrame, the
+ * terms' checkbox on the tokens with its tick drawn, as the report form's.
+ */
 export default function AgeAndTerms() {
   const { refresh } = useSession();
+  const title = usePageTitle("title.age");
   const { flowId } = flow.get();
   const [day, setDay] = useState("");
   const [month, setMonth] = useState("");
@@ -49,17 +59,19 @@ export default function AgeAndTerms() {
 
   if (refused) {
     return (
-      <Screen>
-        <Title>Sorry</Title>
-        <Body>You must be at least 16 to use korbat. No account was created.</Body>
-      </Screen>
+      <PublicFrame>
+        {title}
+        <Title>{AUTH_WORDS.refusedTitle}</Title>
+        <Body>{AUTH_WORDS.refusedBody}</Body>
+      </PublicFrame>
     );
   }
 
   return (
-    <Screen>
-      <Title>Almost there</Title>
-      <Body>Your date of birth is checked once and never stored.</Body>
+    <PublicFrame>
+      {title}
+      <Title>{AUTH_WORDS.ageTitle}</Title>
+      <Body>{AUTH_WORDS.ageBody}</Body>
       <View className="flex-row gap-3">
         <View className="flex-1">
           <Field label="Day" inputMode="numeric" maxLength={2} value={day} onChangeText={setDay} />
@@ -75,16 +87,17 @@ export default function AgeAndTerms() {
         accessibilityRole="checkbox"
         aria-checked={accepted}
         onPress={() => setAccepted((a) => !a)}
-        className="mt-6 flex-row items-center gap-3"
+        className={cn("mt-6 min-h-[44px] flex-row items-center gap-3 rounded-control py-1", FOCUS_RING)}
       >
-        <View className={`h-5 w-5 items-center justify-center rounded border ${accepted ? "border-zinc-50 bg-zinc-50" : "border-zinc-600"}`}>
-          {accepted ? <Text className="text-xs font-bold text-zinc-950">✓</Text> : null}
+        <View className={cn("h-5 w-5 items-center justify-center rounded-[5px] border-2", accepted ? "border-accent bg-accent" : "border-line-high bg-surface-1")}>
+          {/* The tick: two sides of a box turned 45 degrees, in the colour that reads on the accent. */}
+          {accepted ? <View className="-mt-0.5 h-2.5 w-1.5 border-b-2 border-r-2 border-on-accent" style={{ transform: [{ rotate: "45deg" }] }} /> : null}
         </View>
-        <Text className="flex-1 text-sm text-zinc-300">I accept the korbat terms ({TERMS_VERSION}).</Text>
+        <Text className="flex-1">{AUTH_WORDS.ageAccept(TERMS_VERSION)}</Text>
       </Pressable>
       <TextLink label="Read the terms" href="/terms" />
       <ErrorText message={error} />
       <Button label="Create account" onPress={submit} busy={busy} disabled={!complete} />
-    </Screen>
+    </PublicFrame>
   );
 }

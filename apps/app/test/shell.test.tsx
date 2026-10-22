@@ -116,7 +116,7 @@ describe("the navigation (sections 7.1 to 7.3)", () => {
       expect(out, kind).toContain(`data-layout="${kind}"`);
       const nav = inside(out, /<nav\b[^>]*aria-label="Main"[^>]*>/);
       expect(nav, kind).not.toBe("");
-      expect(anchors(nav).map(hrefOf), kind).toEqual(["/", "/bookmarks", "/u/ada", "/settings/security"]);
+      expect(anchors(nav).map(hrefOf), kind).toEqual(["/", "/bookmarks", "/u/ada", "/settings"]);
       const current = anchors(nav).filter((tag) => tag.includes('aria-current="page"'));
       expect(current, kind).toHaveLength(1);
       expect(current[0], kind).toContain('href="/bookmarks"');
@@ -124,7 +124,7 @@ describe("the navigation (sections 7.1 to 7.3)", () => {
       // (Its pill and bar are classes, which a static render does not draw: the browser check measures them.)
       const items = nav.split(/(?=<a\b)/).slice(1);
       expect(items.filter((item) => item.includes('stroke-width="2.25"')).map((item) => hrefOf(item)), kind).toEqual(["/bookmarks"]);
-      expect(items.filter((item) => item.includes('stroke-width="1.75"')).map((item) => hrefOf(item)), kind).toEqual(["/", "/u/ada", "/settings/security"]);
+      expect(items.filter((item) => item.includes('stroke-width="1.75"')).map((item) => hrefOf(item)), kind).toEqual(["/", "/u/ada", "/settings"]);
       expect(textOf(nav), kind).toContain(UI_WORDS["nav.bookmarks"]);
     }
   });
@@ -133,7 +133,7 @@ describe("the navigation (sections 7.1 to 7.3)", () => {
     for (const kind of KINDS) {
       shell.kind = kind;
       shell.state = { status: "signed-out" };
-      expect(anchors(inside(html(<AppShell>{null}</AppShell>), /<nav\b[^>]*>/)).map(hrefOf), kind).toEqual(["/", "/signin"]);
+      expect(anchors(inside(html(<AppShell>{null}</AppShell>), /<nav [^>]*>/)).map(hrefOf), kind).toEqual(["/", "/signin", "/settings/appearance"]);
       shell.state = { status: "loading" };
       const loading = inside(html(<AppShell>{null}</AppShell>), /<nav\b[^>]*>/);
       expect(anchors(loading).map(hrefOf), kind).toEqual(["/"]);
@@ -146,7 +146,7 @@ describe("the navigation (sections 7.1 to 7.3)", () => {
     shell.kind = "wide";
     shell.pathname = "/settings/cases";
     const current = (out: string) => anchors(inside(out, /<nav\b[^>]*>/)).filter((tag) => tag.includes('aria-current="page"')).map(hrefOf);
-    expect(current(html(<AppShell>{null}</AppShell>))).toEqual(["/settings/security"]);
+    expect(current(html(<AppShell>{null}</AppShell>))).toEqual(["/settings"]);
     shell.pathname = "/";
     expect(current(html(<AppShell>{null}</AppShell>))).toEqual(["/"]);
     shell.pathname = "/u/ada/followers";
@@ -267,7 +267,7 @@ describe("the not-found screen and the error boundary (section 8.11)", () => {
 describe("titles (section 8.1, decision 16)", () => {
   test("every title names a kind of screen, ends with korbat and holds no account", () => {
     for (const [key, title] of Object.entries(TITLE_WORDS)) {
-      expect(title, key).toMatch(/ - korbat$/);
+      expect(title, key).toMatch(key === "title.token" ? /^korbat$/ : / - korbat$/); // UI Task 8: a token page is titled korbat alone (8.10).
       expect(title, key).not.toMatch(/@|\{/);
     }
     expect(pageTitle("title.followers")).toBe("Followers - korbat");

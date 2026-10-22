@@ -1,16 +1,21 @@
 import { useState } from "react";
 import { router, useLocalSearchParams } from "expo-router";
-import { Body, Button, ErrorText, Screen, TextLink, Title } from "@/components/ui";
+import { PublicFrame } from "@/components/kit/PublicFrame";
+import { Body, Button, ErrorText, TextLink, Title } from "@/components/ui";
 import { api, errorMessage } from "@/lib/api";
+import { LINK_WORDS, PASSKEY_REMOVE_WORDS } from "@/lib/lockdown-words";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
 
 /**
  * Opened from the link in the "passkey added" notice (1c design, section 7.6). The link is the only credential
- * needed; it works for 7 days, and still once the passkey is gone. Nothing happens until the person confirms.
+ * needed; it works for 7 days, and still once the passkey is gone. Nothing happens until the person confirms. In
+ * PublicFrame since UI Task 8 (8.10), titled korbat alone, so the tab says nothing of what the link does.
  */
 export default function PasskeyRemove() {
   const { token } = useLocalSearchParams<{ token: string }>();
   const { refresh } = useSession();
+  const title = usePageTitle("title.token");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -35,27 +40,23 @@ export default function PasskeyRemove() {
 
   if (done) {
     return (
-      <Screen>
-        <Title>Your account is locked down</Title>
-        <Body>
-          The passkey is removed. Every session is signed out, your password is removed, and any passkeys and two-factor authentication set up since the day before it was added
-          are removed. Sign in again with a code sent to your email, then set a new password and turn on two-factor authentication.
-        </Body>
-        <Button label="Sign in" onPress={() => router.replace("/signin")} />
-      </Screen>
+      <PublicFrame>
+        {title}
+        <Title>{PASSKEY_REMOVE_WORDS.doneTitle}</Title>
+        <Body>{PASSKEY_REMOVE_WORDS.doneBody}</Body>
+        <Button label={LINK_WORDS.signIn} onPress={() => router.replace("/signin")} />
+      </PublicFrame>
     );
   }
 
   return (
-    <Screen>
-      <Title>Remove this passkey</Title>
-      <Body>
-        If you did not add this passkey to your korbat account, confirm below. We'll remove it, sign out every session, including this browser, remove your password, and
-        remove any passkeys and two-factor authentication set up since the day before it was added, so only someone with your email can get back in.
-      </Body>
-      <ErrorText message={valid ? error : "This link is incomplete. Open it again from the email."} />
-      <Button label="Remove the passkey and lock down my account" onPress={() => void confirm()} busy={busy} disabled={!valid} tone="danger" />
-      <TextLink label="It was me, go back" href="/" replace />
-    </Screen>
+    <PublicFrame>
+      {title}
+      <Title>{PASSKEY_REMOVE_WORDS.title}</Title>
+      <Body>{PASSKEY_REMOVE_WORDS.body}</Body>
+      <ErrorText message={valid ? error : LINK_WORDS.incomplete} />
+      <Button label={PASSKEY_REMOVE_WORDS.confirm} onPress={() => void confirm()} busy={busy} disabled={!valid} tone="danger" />
+      <TextLink label={LINK_WORDS.itWasMe} href="/" replace />
+    </PublicFrame>
   );
 }

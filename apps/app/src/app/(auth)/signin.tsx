@@ -3,9 +3,12 @@ import { View, type TextInputProps } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { FlowResponse, PasskeyOptionsResponse, SignInResponse, type AuthenticationResponseJSON } from "@korbat/contracts";
-import { Body, Button, ErrorText, Field, Screen, TextLink, Title } from "@/components/ui";
+import { PublicFrame } from "@/components/kit/PublicFrame";
+import { Body, Button, ErrorText, Field, TextLink, Title } from "@/components/ui";
 import { api, ApiError, deviceId, errorMessage, platform } from "@/lib/api";
+import { AUTH_WORDS } from "@/lib/auth-words";
 import { flow } from "@/lib/flow";
+import { usePageTitle } from "@/lib/page-title";
 import { abortPasskeyRequest, autofillPasskey, autofillSupported, confirmWithPasskey, createAutofillScheduler, passkeysSupported } from "@/lib/passkeys";
 import { useSession } from "@/lib/session";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -17,9 +20,14 @@ const EMAIL_AUTOFILL = "email webauthn" as unknown as TextInputProps["autoComple
 
 type Outcome = "done" | "expired" | "failed";
 
-/** The single entry point: one email field for both sign-up and sign-in, and a passkey where the browser has them. */
+/**
+ * The single entry point: one email field for both sign-up and sign-in, and a passkey where the browser has them. UI
+ * Task 8 (8.10): in PublicFrame, with the screen named as its tab is, and "Sign in with a passkey" a secondary button with
+ * the passkey icon under the email field.
+ */
 export default function EmailEntry() {
   const { refresh } = useSession();
+  const title = usePageTitle("title.signin");
   const turnstile = useRef<TurnstileInstance | null>(null);
   // The human check is drawn light in Light and dark in Dim and Dark, like the page around it.
   const theme = useTheme();
@@ -153,11 +161,12 @@ export default function EmailEntry() {
   }
 
   return (
-    <Screen>
-      <Title>korbat</Title>
-      <Body>Enter your email. We'll send a code that signs you in, or creates your account if you don't have one yet.</Body>
+    <PublicFrame>
+      {title}
+      <Title>{AUTH_WORDS.signinTitle}</Title>
+      <Body>{AUTH_WORDS.signinBody}</Body>
       <Field label="Email" autoComplete={EMAIL_AUTOFILL} autoCapitalize="none" inputMode="email" value={email} onChangeText={setEmail} onSubmitEditing={submit} />
-      {passkeys ? <Button label="Sign in with a passkey" onPress={() => void passkeyButton()} busy={busy} tone="secondary" /> : null}
+      {passkeys ? <Button label="Sign in with a passkey" icon="passkey" onPress={() => void passkeyButton()} busy={busy} tone="secondary" /> : null}
       <View className="mt-6">
         <Turnstile
           ref={turnstile}
@@ -176,6 +185,6 @@ export default function EmailEntry() {
       <TextLink label="Sign in with a password instead" href="/password" />
       <TextLink label="Read the terms" href="/terms" />
       <TextLink label="Back to the latest posts" href="/" replace />
-    </Screen>
+    </PublicFrame>
   );
 }

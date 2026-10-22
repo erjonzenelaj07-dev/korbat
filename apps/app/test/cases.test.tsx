@@ -276,7 +276,7 @@ describe("the notice status page", () => {
 describe("Cases, under Settings", () => {
   test("the settings row has Cases, whose screens live in a folder of their own inside the settings layout", () => {
     const out = html(<SettingsNav current="cases" />);
-    expect(hrefs(out)).toEqual(["/settings/security", "/settings/privacy", "/settings/profile", "/settings/account", "/settings/cases"]);
+    expect(hrefs(out)).toEqual(["/settings/appearance", "/settings/security", "/settings/privacy", "/settings/profile", "/settings/account", "/settings/cases"]);
     const current = (out.match(/<a\b[^>]*>/g) ?? []).filter((tag) => tag.includes('aria-current="page"'));
     expect(current).toHaveLength(1);
     expect(current[0]).toContain('href="/settings/cases"');

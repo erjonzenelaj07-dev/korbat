@@ -48,6 +48,19 @@ export function tabMove(current: number, key: string, count: number): number | n
   return null;
 }
 
+/**
+ * Where a key moves the choice in a radio group of `count` radios from `current` (UI Task 8, section 6.11, after
+ * WAI-ARIA's radio group pattern): Down and Right to the next, Up and Left to the one before, wrapping; null for any other
+ * key, Home and End included, which the pattern does not give a radio group. kit/ListRow.tsx's RadioGroup moves the focus
+ * and the choice together, at once, as Tabs does for its arrows.
+ */
+export function radioMove(current: number, key: string, count: number): number | null {
+  if (count === 0) return null;
+  if (key === "ArrowDown" || key === "ArrowRight") return (current + 1) % count;
+  if (key === "ArrowUp" || key === "ArrowLeft") return (current - 1 + count) % count;
+  return null;
+}
+
 /** The underline is a bar this wide, scaled to the tab's width, so only its transform moves (5.1). */
 const BAR = 100;
 

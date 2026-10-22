@@ -1,22 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, Switch, Text, View } from "react-native";
-import { Link } from "expo-router";
+import { Pressable, Switch, View } from "react-native";
 import { AppShell } from "@/components/AppShell";
+import { ListRow, switchColours } from "@/components/kit/ListRow";
+import { TabPanel, Tabs } from "@/components/kit/Tabs";
+import { Text } from "@/components/kit/Text";
+import { ScreenHeader } from "@/components/ScreenHeader";
 import { SettingsNav } from "@/components/SettingsNav";
 import { ProfileList } from "@/components/social/ProfileList";
-import { ErrorText, Section } from "@/components/ui";
+import { buttonFace, ErrorText, LABEL_TONE, Section, SectionRows } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { exploreSwitchText } from "@/lib/explore";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
+import { PRIVACY_WORDS } from "@/lib/settings-words";
 import { social } from "@/lib/social";
+import { UI_WORDS } from "@/lib/ui-words";
+import { useTheme } from "@/theme/ThemeProvider";
 
 type Tab = "blocked" | "muted";
 
-/**
- * react-native-web paints the thumb of a switch that is on in its own teal unless `activeThumbColor` names another colour,
- * a prop React Native's types do not know; the light thumb keeps its contrast on the dark track in both states.
- */
-const ACTIVE_THUMB = { activeThumbColor: "#fafafa" } as object;
+/** The panel the Blocked and Muted tabs control (section 6.10). */
+const PANEL = "privacy-panel";
 
 /** "Show my posts in Explore" as useExploreSwitch holds it and ExploreSwitch shows it. */
 export interface ExploreSwitchState {
@@ -66,26 +70,38 @@ export function useExploreSwitch(): ExploreSwitchState {
   return { on, busy, error, change };
 }
 
-/** The switch, its sentence, a failed save's error and the way to the rules, showing what useExploreSwitch holds. */
+/**
+ * The switch, its sentence, the way to the rules and a failed save's error, showing what useExploreSwitch holds. UI Task 8
+ * (8.8): a card of two rows, the switch row (its own Switch, whose line explore.test.tsx reads, with the theme's track,
+ * the row's flip for a pointer and its focus ring) with the sentence under its label, and a link row to How Explore works.
+ */
 export function ExploreSwitch({ on, busy, error, change }: ExploreSwitchState) {
+  const { colors } = useTheme();
   return (
-    <Section title="Explore">
-      <View className="mt-3 flex-row items-center justify-between gap-4">
-        <Text className="flex-1 text-base text-zinc-50">Show my posts in Explore</Text>
-        {/* react-native-web renders a checkbox with the switch role, named by this label and checked while it is on. */}
-        <Switch accessibilityLabel="Show my posts in Explore" value={on} disabled={busy} onValueChange={(next) => void change(next)} trackColor={{ false: "#71717a", true: "#059669" }} thumbColor="#fafafa" {...ACTIVE_THUMB} />
-      </View>
-      <Text className="mt-2 text-sm leading-5 text-zinc-400">{exploreSwitchText()}</Text>
+    <Section title={PRIVACY_WORDS.explore}>
+      <SectionRows end={error === null}>
+        <ListRow
+          label="Show my posts in Explore"
+          description={exploreSwitchText()}
+          control={{
+            kind: "switch",
+            value: on,
+            disabled: busy,
+            onValueChange: (next) => void change(next),
+            element: (
+              // react-native-web renders a checkbox with the switch role, named by this label and checked while it is on.
+              <Switch accessibilityLabel="Show my posts in Explore" value={on} disabled={busy} onValueChange={(next) => void change(next)} {...switchColours(colors)} />
+            ),
+          }}
+        />
+        <ListRow label={UI_WORDS["shell.exploreLink"]} icon="explore" href="/explore/about" />
+      </SectionRows>
       <ErrorText message={error} />
-      <Link href="/explore/about" asChild>
-        <Pressable className="mt-3 self-start">
-          <Text className="text-sm text-zinc-400 underline">How Explore works</Text>
-        </Pressable>
-      </Link>
     </Section>
   );
 }
 
+/** Unblock or Unmute beside an account: a secondary button with its own busy state and, below it, a failed undo's error. */
 function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,12 +118,14 @@ function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<
             .catch((err: unknown) => setError(errorMessage(err)))
             .finally(() => setBusy(false));
         }}
-        className="rounded-full border border-zinc-600 px-4 py-1.5"
+        className={buttonFace({ face: busy ? "inactive" : "secondary", size: "md" })}
       >
-        <Text className="text-sm text-zinc-200">{label}</Text>
+        <Text variant="body-strong" tone={LABEL_TONE[busy ? "inactive" : "secondary"]}>
+          {label}
+        </Text>
       </Pressable>
       {error ? (
-        <Text accessibilityRole="alert" className="mt-1 text-xs text-red-400">
+        <Text accessibilityRole="alert" variant="meta" tone="danger" className="mt-1">
           {error}
         </Text>
       ) : null}
@@ -115,9 +133,15 @@ function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<
   );
 }
 
-/** Whether your posts show in Explore, then blocked and muted accounts with one-tap undo. This is the only place a block can be lifted. */
+/**
+ * Whether your posts show in Explore, then blocked and muted accounts with one-tap undo. This is the only place a block
+ * can be lifted. UI Task 8 (8.8): the title and the settings row in ScreenHeader; the Explore card, the sentence on what
+ * a block and a mute do, and the Blocked and Muted tabs (the kit's Tabs: one tab stop, the arrows choose) head the list,
+ * which is their tab panel, as a profile's tabs head its posts.
+ */
 export default function Privacy() {
   const [tab, setTab] = useState<Tab>("blocked");
+  const title = usePageTitle("title.settingsPrivacy");
   // Here, not in the list's header, which the tab's key remounts: a save in progress and its error outlive a tab change.
   const explore = useExploreSwitch();
   const fetchBlocks = useCallback((cursor?: string) => social.myBlocks(cursor), []);
@@ -125,41 +149,47 @@ export default function Privacy() {
 
   return (
     <AppShell>
-      <ProfileList
-        key={tab}
-        fetchPage={tab === "blocked" ? fetchBlocks : fetchMutes}
-        empty={tab === "blocked" ? "You have not blocked anyone." : "You have not muted anyone."}
-        header={
-          <View className="border-b border-zinc-800 px-4 pt-4">
-            <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
-              Privacy
-            </Text>
-            <SettingsNav current="privacy" />
-            <ExploreSwitch {...explore} />
-            <Text className="mt-6 text-sm leading-5 text-zinc-400">
-              A block hides you and the other account from each other while signed in and refuses their interactions. Posts on korbat are public, so anyone who signs out can
-              still read them. A mute only hides an account from your timelines, and they are never told.
-            </Text>
-            <View accessibilityRole="tablist" className="mt-4 flex-row">
-              {(["blocked", "muted"] as Tab[]).map((t) => (
-                <Pressable key={t} accessibilityRole="tab" aria-selected={tab === t} onPress={() => setTab(t)} className={`mr-6 border-b-2 pb-2 ${tab === t ? "border-zinc-50" : "border-transparent"}`}>
-                  <Text className={`text-base ${tab === t ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{t === "blocked" ? "Blocked" : "Muted"}</Text>
-                </Pressable>
-              ))}
+      {title}
+      <ScreenHeader title={UI_WORDS["settings.privacy"]}>
+        <SettingsNav current="privacy" />
+      </ScreenHeader>
+      <TabPanel panelId={PANEL} selected={tab}>
+        <ProfileList
+          key={tab}
+          fetchPage={tab === "blocked" ? fetchBlocks : fetchMutes}
+          empty={tab === "blocked" ? PRIVACY_WORDS.emptyBlocked : PRIVACY_WORDS.emptyMuted}
+          header={
+            <View className="border-b border-line-low px-4 pb-1">
+              <ExploreSwitch {...explore} />
+              <Text tone="medium" className="mt-6">
+                {PRIVACY_WORDS.explain}
+              </Text>
+              <View className="mt-3">
+                <Tabs
+                  label={PRIVACY_WORDS.tabs}
+                  tabs={[
+                    { key: "blocked", label: PRIVACY_WORDS.blocked },
+                    { key: "muted", label: PRIVACY_WORDS.muted },
+                  ]}
+                  selected={tab}
+                  onSelect={setTab}
+                  panelId={PANEL}
+                />
+              </View>
             </View>
-          </View>
-        }
-        action={(item, remove) => (
-          <UndoButton
-            label={tab === "blocked" ? "Unblock" : "Unmute"}
-            onPress={async () => {
-              if (tab === "blocked") await social.setBlock(item.handle, false);
-              else await social.setMute(item.handle, false);
-              remove();
-            }}
-          />
-        )}
-      />
+          }
+          action={(item, remove) => (
+            <UndoButton
+              label={tab === "blocked" ? PRIVACY_WORDS.unblock : PRIVACY_WORDS.unmute}
+              onPress={async () => {
+                if (tab === "blocked") await social.setBlock(item.handle, false);
+                else await social.setMute(item.handle, false);
+                remove();
+              }}
+            />
+          )}
+        />
+      </TabPanel>
     </AppShell>
   );
 }

@@ -1,6 +1,8 @@
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
 import { Platform, View, useColorScheme, type StyleProp, type ViewStyle } from "react-native";
 import { resolveTheme, useAppearance, type Appearance } from "@/lib/appearance";
+import { useMotion } from "@/lib/motion";
+import { THEME_FADE } from "./motion";
 import { scopeStyle } from "./scope";
 import { THEMES, THEME_NAMES, type ColorToken, type ThemeName } from "./tokens";
 
@@ -54,13 +56,41 @@ export function ThemeScope({ theme, style, children }: { theme: ThemeName; style
 }
 
 /**
+ * How long the theme's cross-fade lasts when the screen goes from `previous` to `next` (section 5.2's theme row, UI Task
+ * 8): none on the first apply, which only keeps what theme-boot.js painted before the bundle, and none while the theme
+ * stays (a text step or a font changes nothing's colour); otherwise 200 ms, or 150 ms under reduced motion.
+ */
+export function themeFade(previous: ThemeName | null, next: ThemeName, reduced: boolean): number | null {
+  if (previous === null || previous === next) return null;
+  return reduced ? THEME_FADE.reduced : THEME_FADE.duration;
+}
+
+/** The theme the html element shows, null until the first apply; and the timer that ends a running cross-fade. */
+let shown: ThemeName | null = null;
+let fadeEnd: ReturnType<typeof setTimeout> | undefined;
+
+/**
  * What theme-boot.js did before the bundle, kept true as the reader changes their appearance or the system its scheme:
  * the theme's class on the html element (global.css switches the variables by it), the text step and font for the
  * stylesheet, the scheme for the browser's own controls, the page's colours under everything, and the theme-color meta.
+ * A change of theme after the first apply cross-fades: THEME_FADE's class goes on in the same change as the new theme,
+ * so every colour moves to the new one as a transition (theme/fonts.web.ts's rule), and comes off once the fade is over.
  */
-function applyToDocument(theme: Theme, appearance: Appearance): void {
+function applyToDocument(theme: Theme, appearance: Appearance, reduced: boolean): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
+  const fade = themeFade(shown, theme.name, reduced);
+  shown = theme.name;
+  if (fade !== null) {
+    clearTimeout(fadeEnd);
+    root.style.setProperty(THEME_FADE.property, `${fade}ms`);
+    root.classList.add(THEME_FADE.className);
+    // A frame after the fade, so the last step of every transition is drawn before the class takes them away.
+    fadeEnd = setTimeout(() => {
+      root.classList.remove(THEME_FADE.className);
+      root.style.removeProperty(THEME_FADE.property);
+    }, fade + 34);
+  }
   for (const name of THEME_NAMES) if (name !== theme.name) root.classList.remove(name);
   root.classList.add(theme.name);
   root.setAttribute("data-text-step", appearance.textStep);
@@ -85,8 +115,11 @@ function applyToDocument(theme: Theme, appearance: Appearance): void {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const theme = useTheme();
   const appearance = useAppearance();
+  // Read when the theme changes, not a reason to apply it again: the system's reduced motion changes no colour.
+  const reduced = useRef(false);
+  reduced.current = useMotion().reduced;
   useEffect(() => {
-    if (Platform.OS === "web") applyToDocument(theme, appearance);
+    if (Platform.OS === "web") applyToDocument(theme, appearance, reduced.current);
   }, [theme, appearance]);
   if (Platform.OS === "web") return <>{children}</>;
   return <View style={[{ flex: 1 }, scopeStyle(theme.name)]}>{children}</View>;

@@ -1,14 +1,39 @@
 import { useState } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
 import { RecoveryCodesResponse, TotpConfirmResponse, TotpSetupResponse, type MeResponse } from "@korbat/contracts";
+import { Icon } from "@/components/kit/Icon";
+import { Text } from "@/components/kit/Text";
 import { QrCode } from "@/components/security/QrCode";
 import { Body, Button, ErrorText, Field } from "@/components/ui";
 import { api, errorMessage } from "@/lib/api";
+import { SECURITY_WORDS } from "@/lib/settings-words";
 
 type Stage = { kind: "idle" } | { kind: "setup"; otpauthUri: string; qrSvg: string } | { kind: "codes"; recoveryCodes: string[] } | { kind: "disable" };
 
 const clipboard = (globalThis as unknown as { navigator?: { clipboard?: { writeText(text: string): Promise<void> } } }).navigator?.clipboard;
 
+/**
+ * A hint to act on, in the review tone with its icon, so it does not rely on its colour (UI design, section 4.8): after a
+ * recovery code was used, two-factor should be set up again for a fresh set.
+ */
+function Hint({ message }: { message: string }) {
+  return (
+    <View className="mt-3 flex-row items-start gap-2 rounded-control border border-review-ink/40 bg-review-wash px-3 py-2.5">
+      <View className="pt-[3px]">
+        <Icon name="review" size={16} tone="review-on-wash" />
+      </View>
+      <Text tone="review-on-wash" className="shrink">
+        {message}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Two-factor authentication on the Security screen (1c design): turning it on with an authenticator app's QR code or key
+ * and its first code, the recovery codes once, new codes, and turning it off. On the tokens since UI Task 8 (8.8): the QR
+ * code on a white plate, which a camera needs whatever the theme, and the key and the codes in the mono face.
+ */
 export function MfaSection({
   me,
   run,
@@ -71,17 +96,20 @@ export function MfaSection({
     const secret = new URL(stage.otpauthUri).searchParams.get("secret") ?? "";
     return (
       <View>
-        <Body>Scan this QR code with an authenticator app, then enter the 6-digit code it shows.</Body>
-        <View className="mt-4 items-center rounded-lg bg-white p-3">
+        <Body>{SECURITY_WORDS.mfaSetup}</Body>
+        {/* A literal white plate, not a theme's surface: a camera reads the code's dark squares only on light ground. */}
+        <View className="mt-4 items-center self-center rounded-media border border-line-low bg-white p-3">
           <QrCode svg={stage.qrSvg} size={200} />
         </View>
-        <Text className="mt-3 text-xs text-zinc-400">Can't scan it? Enter this key: </Text>
-        <Text selectable className="mt-1 font-mono text-sm text-zinc-200">
+        <Text variant="meta" tone="medium" className="mt-3">
+          {SECURITY_WORDS.mfaKey}
+        </Text>
+        <Text variant="mono" selectable className="mt-1 web:break-all">
           {secret.replace(/(.{4})/g, "$1 ").trim()}
         </Text>
-        <Field label="Code from the app" autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={confirmSetup} />
+        <Field label="Code from the app" mono autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChangeText={setCode} onSubmitEditing={confirmSetup} />
         <ErrorText message={error} />
-        <Button label="Turn on two-factor" onPress={confirmSetup} busy={busy} disabled={!/^\d{6}$/.test(code.trim())} />
+        <Button label="Turn on two-factor" onPress={confirmSetup} busy={busy} disabled={!/^[0-9]{6}$/.test(code.trim())} />
         <Button label="Cancel" onPress={() => setStage({ kind: "idle" })} tone="secondary" />
       </View>
     );
@@ -90,10 +118,10 @@ export function MfaSection({
   if (stage.kind === "codes") {
     return (
       <View>
-        <Body>Save these recovery codes somewhere safe. Each works once, and they are the only way back into your account if you lose your authenticator. They won't be shown again.</Body>
-        <View className="mt-4 flex-row flex-wrap gap-2 rounded-lg bg-zinc-900 p-4">
+        <Body>{SECURITY_WORDS.mfaCodes}</Body>
+        <View className="mt-4 flex-row flex-wrap gap-y-2 rounded-control border border-line-low bg-surface-2 p-4">
           {stage.recoveryCodes.map((c) => (
-            <Text key={c} selectable className="w-[46%] font-mono text-base text-zinc-100">
+            <Text key={c} variant="mono" selectable className="w-1/2">
               {c}
             </Text>
           ))}
@@ -104,7 +132,7 @@ export function MfaSection({
             tone="secondary"
             onPress={() => {
               clipboard
-                .writeText(stage.recoveryCodes.join("\n"))
+                .writeText(stage.recoveryCodes.join(String.fromCharCode(10)))
                 .then(() => setCopied(true))
                 .catch(() => setError("Copying is not allowed here. Select the codes and copy them by hand."));
             }}
@@ -118,7 +146,7 @@ export function MfaSection({
   if (stage.kind === "disable") {
     return (
       <View>
-        <Body>Two-factor authentication will be turned off, and your recovery codes stop working. You will be asked to confirm it's you first.</Body>
+        <Body>{SECURITY_WORDS.mfaDisable}</Body>
         <ErrorText message={error} />
         <Button label="Turn off two-factor" onPress={disable} busy={busy} tone="danger" />
         <Button label="Cancel" onPress={() => setStage({ kind: "idle" })} tone="secondary" />
@@ -128,11 +156,7 @@ export function MfaSection({
 
   return (
     <View>
-      {reenroll && me.user.mfaEnabled ? (
-        <Text className="mt-3 rounded-lg bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-          You used a recovery code. Set up two-factor again to get a fresh set of codes.
-        </Text>
-      ) : null}
+      {reenroll && me.user.mfaEnabled ? <Hint message="You used a recovery code. Set up two-factor again to get a fresh set of codes." /> : null}
       <Body>
         {me.user.mfaEnabled
           ? "Two-factor authentication is on. Signing in needs a code from your authenticator app."

@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { z } from "zod";
 import { FlowResponse, PasskeyOptionsResponse, ReauthResponse, type MeResponse, type ReauthRequest } from "@korbat/contracts";
+import { Icon } from "@/components/kit/Icon";
+import { FOCUS_RING } from "@/components/kit/interaction";
+import { Text } from "@/components/kit/Text";
 import { Body, Button, ErrorText, Field, TextLink } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { confirmWithPasskey, passkeysSupported } from "@/lib/passkeys";
 import { useSession } from "@/lib/session";
+import { SECURITY_WORDS } from "@/lib/settings-words";
+import { cn } from "@/theme/cn";
 
 type Action = () => Promise<void>;
 
@@ -106,10 +111,20 @@ export const REENROLL_HINT = "You used a recovery code. Set up two-factor again 
 export function ReenrollNotice({ me }: { me: MeResponse }) {
   const { reenroll } = useLocalSearchParams<{ reenroll?: string }>();
   if (reenroll !== "1" || !me.user.mfaEnabled) return null;
+  // A hint to act on: the review tone with its icon, so it does not rely on its colour (UI design, section 4.8).
   return (
-    <View className="mt-6 rounded-lg bg-amber-500/10 px-4 py-3">
-      <Text className="text-sm text-amber-300">{REENROLL_HINT}</Text>
-      <TextLink label="Open Security" href="/settings/security?reenroll=1" />
+    <View className="mt-6 rounded-card border border-review-ink/40 bg-review-wash px-4 pt-3">
+      <View className="flex-row items-start gap-2">
+        <View className="pt-[3px]">
+          <Icon name="review" size={16} tone="review-on-wash" />
+        </View>
+        <Text tone="review-on-wash" className="shrink">
+          {REENROLL_HINT}
+        </Text>
+      </View>
+      <View className="-mt-3 items-start">
+        <TextLink label="Open Security" href="/settings/security?reenroll=1" />
+      </View>
     </View>
   );
 }
@@ -242,23 +257,19 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
     return undefined;
   }
 
-  const explanation =
-    missing === "second"
-      ? "You confirmed a first factor; add a second one: an authenticator code, a recovery code, or a passkey that checks your fingerprint, face or PIN. "
-      : missing === "first"
-        ? "You confirmed a second factor; add a first one: your password, an email code or a passkey. "
-        : "";
+  const explanation = missing === "second" ? SECURITY_WORDS.reauthSecond : missing === "first" ? SECURITY_WORDS.reauthFirst : "";
 
   return (
-    <View ref={panel} role="dialog" aria-labelledby="reauth-title" tabIndex={-1} className="mt-6 rounded-xl border border-amber-500/40 bg-zinc-900 p-5">
-      <Text nativeID="reauth-title" accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
-        Confirm it's you
+    // A floating card in the review tone's ink at its edge: the screen asks for something before the action goes on.
+    <View ref={panel} role="dialog" aria-labelledby="reauth-title" tabIndex={-1} className="mt-6 rounded-card border border-review-ink/40 bg-surface-1 p-4">
+      <Text as="h2" variant="title" nativeID="reauth-title">
+        {SECURITY_WORDS.reauthTitle}
       </Text>
-      <Text className="mt-1 text-sm text-zinc-400">
-        {needed.level === 2 ? "This change needs two factors because two-factor authentication is on. " : "This change needs a fresh confirmation. "}
-        {explanation}
-        It stays valid for 5 minutes.
+      <Text tone="medium" className="mt-1">
+        {`${needed.level === 2 ? SECURITY_WORDS.reauthTwo : SECURITY_WORDS.reauthFresh}${explanation}${SECURITY_WORDS.reauthValid}`}
       </Text>
+      {/* The methods as pressed or unpressed buttons: the chosen one filled with the accent, the others outlined. Each is a
+          native button with its words as its only content, 44 px tall, the outline drawn by the focus ring's rule. */}
       <View className="mt-4 flex-row flex-wrap gap-2">
         {methods.map((m) => (
           <Text
@@ -270,7 +281,9 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
               setValue("");
               setError(null);
             }}
-            className={`rounded-full px-3 py-1 text-sm ${m === method ? "bg-zinc-50 text-zinc-950" : "border border-zinc-600 text-zinc-300"}`}
+            variant="body-strong"
+            tone={m === method ? "on-accent" : "high"}
+            className={cn("min-h-[44px] items-center justify-center rounded-full border px-4 py-2.5 text-center web:inline-flex web:cursor-pointer", m === method ? "border-accent bg-accent" : "border-line-high bg-surface-1 web:hover:bg-surface-2", FOCUS_RING)}
           >
             {LABELS[m]}
           </Text>
@@ -278,7 +291,7 @@ export function ReauthPanel({ me, pending, onClose }: { me: MeResponse; pending:
       </View>
       {method === "passkey" ? (
         <>
-          <Body>Confirm with a passkey of this account. The browser will ask for it.</Body>
+          <Body>{SECURITY_WORDS.reauthPasskey}</Body>
           <Button label="Use a passkey" onPress={() => void passkey()} busy={busy} />
         </>
       ) : method === "email" && !flowId ? (

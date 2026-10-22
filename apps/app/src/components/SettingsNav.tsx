@@ -1,26 +1,34 @@
 import { Pressable, View } from "react-native";
 import { Link } from "expo-router";
 import { CASES_WORDS } from "@/lib/moderation-words";
+import { UI_WORDS } from "@/lib/ui-words";
 import { cn } from "@/theme/cn";
+import type { IconName } from "./icons";
 import { FOCUS_RING, HOVER_WASH } from "./kit/interaction";
 import { Text } from "./kit/Text";
 
-export type SettingsPage = "security" | "privacy" | "profile" | "account" | "cases";
+export type SettingsPage = "appearance" | "security" | "privacy" | "profile" | "account" | "cases";
 
-const PAGES: { page: SettingsPage; label: string }[] = [
-  { page: "security", label: "Security" },
-  { page: "privacy", label: "Privacy" },
-  { page: "profile", label: "Profile" },
-  { page: "account", label: "Account" },
+/**
+ * The settings pages in their order, with their names and icons (UI design, sections 4.7 and 8.8): Appearance first
+ * (UI Task 8, the owner's ruling 10), so the page a newcomer looks for comes first, in this row and in the Settings
+ * index (app/settings/index.tsx), which lists the same pages as rows.
+ */
+export const SETTINGS_PAGES: { page: SettingsPage; label: string; icon: IconName }[] = [
+  { page: "appearance", label: UI_WORDS["appearance.nav"], icon: "appearance" },
+  { page: "security", label: UI_WORDS["settings.security"], icon: "security" },
+  { page: "privacy", label: UI_WORDS["settings.privacy"], icon: "privacy" },
+  { page: "profile", label: UI_WORDS["settings.profile"], icon: "edit-profile" },
+  { page: "account", label: UI_WORDS["settings.account"], icon: "account" },
   // The decisions about the account and the reports it sent (3c design, section 9); its screens are the folder settings/cases.
-  { page: "cases", label: CASES_WORDS.nav },
+  { page: "cases", label: CASES_WORDS.nav, icon: "cases" },
 ];
 
 /**
- * The row of links between the settings screens, shown by every one of them under its title. Each
- * link is a real anchor (expo-router's Link), so the keyboard can follow it. The screen names itself
- * through `current` instead of the row asking the router for the path, which also lets a test render
- * the row on its own.
+ * The row of links between the settings screens, shown by every one of them under its title but the index, which is the
+ * list itself. Each link is a real anchor (expo-router's Link), so the keyboard can follow it. The screen names itself
+ * through `current` instead of the row asking the router for the path, which also lets a test render the row on its own.
+ * Appearance shows the row only to a signed-in reader, since the others need an account.
  *
  * On the tokens (UI design, sections 4.8 and 7.1): each link a 44 px pill that wraps rather than clipping its word, the
  * current one in the accent wash with its label in body-strong and an accent underline beneath it, a shape mark that
@@ -28,8 +36,8 @@ const PAGES: { page: SettingsPage; label: string }[] = [
  */
 export function SettingsNav({ current }: { current: SettingsPage }) {
   return (
-    <View role="navigation" aria-label="Settings" className="mt-3 flex-row flex-wrap gap-1">
-      {PAGES.map(({ page, label }) => (
+    <View role="navigation" aria-label={UI_WORDS["settings.nav"]} className="mt-3 flex-row flex-wrap gap-1">
+      {SETTINGS_PAGES.map(({ page, label }) => (
         <Link key={page} href={`/settings/${page}`} asChild>
           <Pressable
             aria-current={page === current ? "page" : undefined}

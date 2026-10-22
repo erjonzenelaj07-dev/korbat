@@ -1,14 +1,20 @@
 import { useEffect, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { View } from "react-native";
 import { BIO_MAX_LENGTH, isRetiredPlaceholder, postLength, type MeResponse, type ProfileView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { Icon } from "@/components/kit/Icon";
+import { Text } from "@/components/kit/Text";
+import { ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { ReauthPanel, ReenrollNotice, useReauth } from "@/components/security/ReauthPanel";
 import { SettingsNav } from "@/components/SettingsNav";
 import { Body, Button, ErrorText, Field, Loading, Notice, Section } from "@/components/ui";
 import { ApiError, errorMessage } from "@/lib/api";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
+import { PROFILE_WORDS } from "@/lib/settings-words";
 import { social } from "@/lib/social";
 import { refusalSentence, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
+import { UI_WORDS } from "@/lib/ui-words";
 
 /** The DisplayName contract's limit, in the code points the counter shows. */
 const DISPLAY_NAME_MAX = 50;
@@ -18,11 +24,29 @@ const HANDLE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 type Run = (action: () => Promise<void>) => Promise<void>;
 type Refresh = () => Promise<unknown>;
 
+/** A field's count against its limit, in danger-ink once it is over, as the composer's count is. */
 function Counter({ length, max }: { length: number; max: number }) {
   return (
-    <Text className={`mt-1 text-right text-xs ${length > max ? "text-red-400" : "text-zinc-400"}`}>
-      {length}/{max}
+    <Text variant="meta" tone={length > max ? "danger" : "low"} className="mt-1 text-right">
+      {`${length}/${max}`}
     </Text>
+  );
+}
+
+/**
+ * A sentence that holds the form back (3e: a refusal while a measure runs; the date of the next handle change): an alert
+ * in the review tone with its icon, so it does not rely on its colour (UI design, section 4.8).
+ */
+function Held({ message, alert = false }: { message: string; alert?: boolean }) {
+  return (
+    <View accessibilityRole={alert ? "alert" : undefined} className="mt-4 flex-row items-start gap-2">
+      <View className="pt-[3px]">
+        <Icon name="review" size={16} tone="review-ink" />
+      </View>
+      <Text tone="review-ink" className="shrink">
+        {message}
+      </Text>
+    </View>
   );
 }
 
@@ -84,11 +108,17 @@ function ProfileForm({ handle, refresh }: { handle: string; refresh: Refresh }) 
   }
 
   if (!saved) {
-    return error ? <ErrorText message={error} /> : <Text className="mt-3 text-sm text-zinc-400">Loading your profile...</Text>;
+    return error ? (
+      <ErrorText message={error} />
+    ) : (
+      <Text tone="low" className="mt-3">
+        {PROFILE_WORDS.loading}
+      </Text>
+    );
   }
   return (
     <View>
-      <Body>Your display name is shown next to your posts. The bio is one line on your profile.</Body>
+      <Body>{PROFILE_WORDS.formBody}</Body>
       <Field label="Display name" autoComplete="name" value={displayName} onChangeText={setDisplayName} />
       <Counter length={nameLength} max={DISPLAY_NAME_MAX} />
       {/* The Bio contract refuses control characters, which a line break is, so the field stays single-line. */}
@@ -153,9 +183,7 @@ export function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; 
       <View>
         {retired && running.kind === "suspend" ? <Notice message={STANDING_TEXTS.handle.retiredSuspended} /> : null}
         <Body>{STANDING_TEXTS.handle.standing(current)}</Body>
-        <Text accessibilityRole="alert" className="mt-4 text-sm text-amber-300">
-          {refusalSentence(me.standing)}
-        </Text>
+        <Held message={refusalSentence(me.standing)} alert />
       </View>
     );
   }
@@ -163,8 +191,8 @@ export function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; 
     <View>
       {retired ? <Notice message={STANDING_TEXTS.handle.retired} /> : null}
       <Body>{STANDING_TEXTS.handle.standing(current)}</Body>
-      {allowedAt ? <Text className="mt-2 text-sm text-amber-300">Your next change is allowed on {allowedAt.toLocaleDateString()}.</Text> : null}
-      <Field label="New handle" autoCapitalize="none" autoComplete="username" placeholder="@yourname" value={handle} onChangeText={setHandle} onSubmitEditing={() => void change()} />
+      {allowedAt ? <Held message={PROFILE_WORDS.nextChange(allowedAt.toLocaleDateString())} /> : null}
+      <Field label="New handle" mono autoCapitalize="none" autoComplete="username" placeholder="@yourname" value={handle} onChangeText={setHandle} onSubmitEditing={() => void change()} />
       <ErrorText message={error} />
       <Notice message={done} />
       <Button label="Change handle" onPress={() => void change()} busy={busy} disabled={!ready} />
@@ -172,9 +200,15 @@ export function HandleSection({ me, run, refresh }: { me: MeResponse; run: Run; 
   );
 }
 
+/**
+ * Settings, Profile (1b and 3e designs; UI design, section 8.8): the name and bio, and the handle with its 30-day rule.
+ * UI Task 8 keeps its sections, words and flows on the tokens: the title and the settings row in ScreenHeader, the
+ * handle in the mono face under it, each section a card of fields on ScreenScroll.
+ */
 export default function ProfileSettings() {
   const { state, refresh } = useSession();
   const reauth = useReauth();
+  const title = usePageTitle("title.settingsProfile");
 
   if (state.status !== "signed-in") return <Loading />;
   const { me } = state;
@@ -183,12 +217,12 @@ export default function ProfileSettings() {
 
   return (
     <AppShell>
-      <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 py-6">
-        <Text accessibilityRole="header" className="text-3xl font-bold tracking-tight text-zinc-50">
-          Profile
-        </Text>
-        <Text className="mt-2 text-base text-zinc-400">@{me.profile.handle}</Text>
+      {title}
+      <ScreenHeader title={UI_WORDS["settings.profile"]}>
         <SettingsNav current="profile" />
+      </ScreenHeader>
+      <ScreenScroll screen="profile">
+        <Text variant="mono" tone="medium" className="mt-2">{`@${me.profile.handle}`}</Text>
 
         {reauth.pending ? <ReauthPanel me={me} pending={reauth.pending} onClose={reauth.clear} /> : null}
         {/* After a recovery code confirmed the handle change: the screen stays as it is and says where two-factor is set up again. */}
@@ -197,9 +231,7 @@ export default function ProfileSettings() {
         <Section title="Name and bio">
           {/* 3e (design, section 9.4): while a suspension or termination runs, the form is replaced by the refusal's sentence. */}
           {runningMeasure(me.standing) !== null ? (
-            <Text accessibilityRole="alert" className="mt-3 text-sm text-amber-300">
-              {refusalSentence(me.standing)}
-            </Text>
+            <Held message={refusalSentence(me.standing)} alert />
           ) : (
             <ProfileForm handle={me.profile.handle} refresh={refresh} />
           )}
@@ -207,7 +239,7 @@ export default function ProfileSettings() {
         <Section title="Handle">
           <HandleSection me={me} run={reauth.run} refresh={refresh} />
         </Section>
-      </ScrollView>
+      </ScreenScroll>
     </AppShell>
   );
 }

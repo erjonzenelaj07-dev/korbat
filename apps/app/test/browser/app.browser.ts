@@ -7,6 +7,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { THEMES, type ThemeName } from "../../src/theme/tokens";
 import { TITLE_WORDS, UI_WORDS } from "../../src/lib/ui-words";
+import { THEME_FADE } from "../../src/theme/motion";
 import { CASES_WORDS, DECISION_WORDS, STATUS_SHEET_WORDS } from "../../src/lib/moderation-words";
 import { RULES_PAGE } from "../../src/lib/public-pages";
 import { appSiteHeadersFromCaddyfile } from "./caddyfile";
@@ -50,7 +51,8 @@ import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } f
  * feeds kept across tabs, the keyboard on Home, and the focus after a delete with the thread held at its post; from Task
  * 6 the composer: the sheet and its toast at 360, the discard question and the drafts, Home's card and New post at
  * 1280, a reply and a quote; from Task 7 the chip's details sheet, the appeal it opens and Cases' tabs, and the link
- * under a hidden image with the terms in their frame. Later tasks add their screens' steps.
+ * under a hidden image with the terms in their frame; from Task 8 the Settings index, Appearance and its radios, the
+ * theme's cross-fade, the switch rows with Hide counts, and Clear what this device keeps. Later tasks add their steps.
  *
  * It never downloads a browser. By default it drives the Chromium build playwright-core 1.63.0 names (chromium-1243 under
  * ms-playwright), which must already be installed; KORBAT_BROWSER_CHANNEL=chrome drives the machine's own Chrome. The
@@ -172,6 +174,15 @@ async function visit(page: Page, route: string): Promise<void> {
   await page.evaluate("document.fonts.ready.then(() => true)");
 }
 
+/**
+ * UI Task 8: forgets the reading places and drafts the signed-in pages of a step kept, before it opens a page signed out.
+ * A signed-out start with one kept is a session that ended elsewhere (section 8.8), which clears the appearance with them
+ * and would cross-fade the step's theme back to System while the page is measured.
+ */
+async function forgetSession(page: Page): Promise<void> {
+  await page.evaluate(`Object.keys(localStorage).filter((key) => key.startsWith("korbat.place.") || key.startsWith("korbat.drafts.")).forEach((key) => localStorage.removeItem(key))`);
+}
+
 /** The end of every step: no report, error, warning or dialog on any channel, and nothing the fixtures did not answer. */
 async function clean(visit: Visit): Promise<void> {
   expect(visit.watcher.take()).toEqual([]);
@@ -255,6 +266,9 @@ const ROUTES = [
   "/rules",
   "/transparency",
   "/terms",
+  // UI Task 8: the Settings index and Appearance.
+  "/settings",
+  "/settings/appearance",
   "/settings/security",
   "/settings/privacy",
   "/settings/profile",
@@ -286,9 +300,8 @@ const ROUTES = [
  * the end), the tab lists, the new-posts pill, the profile's header and the thread's posts; from Task 6 every feed whole,
  * its header with Home's card and the thread's reply card included, and the compose button; from Task 7 the column of
  * every screen it moved onto the tokens (`data-screen`: the cases screens, the report form, a report's status, the
- * public pages) and PublicFrame's banner and footer. The screens' own content still paints with Tailwind's palette and
- * sizes until its task moves it onto the tokens (test/legacy-files.ts), and joins this list then: settings and sign-in
- * with Task 8.
+ * public pages) and PublicFrame's banner and footer; from Task 8, with the legacy lists empty, the whole main column of
+ * the shell and of PublicFrame, and every radio group.
  */
 const DRAWN = [
   'a[href="#main"]',
@@ -310,6 +323,8 @@ const DRAWN = [
   "[data-screen]",
   '[role="banner"]',
   '[role="contentinfo"]',
+  '[role="main"]',
+  '[role="radiogroup"]',
 ].join(", ");
 /** A page drawn wholly on the kit: everything on it is held to the rules. */
 const ALL = "body";
@@ -318,9 +333,10 @@ const ALL = "body";
  * The pages of the layout steps: Home, a post, a profile, the rules and a missing page, with the item current on each;
  * from Task 5 Bookmarks and a followers list too, drawn wholly on the kit; from Task 7 the rules wholly, Cases and a
  * decision under Settings, and the terms, which sit in PublicFrame outside the shell (`frame`), so the shell's own
- * checks pass them over.
+ * checks pass them over; from Task 8 the Settings index, Appearance signed in and out (`signedOut`), Security, and the
+ * sign-in screen in its frame.
  */
-const LAYOUT_PAGES: { name: string; route: string; current: string | null; scope: string; frame?: boolean }[] = [
+const LAYOUT_PAGES: { name: string; route: string; current: string | null; scope: string; frame?: boolean; signedOut?: boolean }[] = [
   { name: "home", route: "/", current: "/", scope: DRAWN },
   { name: "post", route: `/post/${POST_ID}`, current: null, scope: DRAWN },
   { name: "profile", route: "/u/grace", current: null, scope: DRAWN },
@@ -328,9 +344,14 @@ const LAYOUT_PAGES: { name: string; route: string; current: string | null; scope
   { name: "missing", route: "/no-such-page", current: null, scope: ALL },
   { name: "bookmarks", route: "/bookmarks", current: "/bookmarks", scope: ALL },
   { name: "followers", route: "/u/grace/followers", current: null, scope: ALL },
-  { name: "cases", route: "/settings/cases", current: "/settings/security", scope: ALL },
-  { name: "decision", route: `/settings/cases/${POST_DECISION_ID}`, current: "/settings/security", scope: ALL },
+  { name: "cases", route: "/settings/cases", current: "/settings", scope: ALL },
+  { name: "decision", route: `/settings/cases/${POST_DECISION_ID}`, current: "/settings", scope: ALL },
   { name: "terms", route: "/terms", current: null, scope: ALL, frame: true },
+  { name: "settings", route: "/settings", current: "/settings", scope: ALL },
+  { name: "appearance", route: "/settings/appearance", current: "/settings", scope: ALL },
+  { name: "appearance-out", route: "/settings/appearance", current: "/settings/appearance", scope: ALL, signedOut: true },
+  { name: "security", route: "/settings/security", current: "/settings", scope: ALL },
+  { name: "signin", route: "/signin", current: null, scope: ALL, frame: true, signedOut: true },
 ];
 
 
@@ -370,6 +391,10 @@ async function layoutStep(width: number, height: number, kind: string): Promise<
     const visit_ = await open({ width, height, appearance: { theme } });
     try {
       for (const page of LAYOUT_PAGES) {
+        // The session each page needs, read again as the page loads: Appearance signed out, and sign-in, which a signed-in
+        // account leaves for its feed.
+        fixtures.state.signedIn = page.signedOut !== true;
+        if (page.signedOut === true) await forgetSession(visit_.page);
         await visit(visit_.page, page.route);
         const layout = (await visit_.page.evaluate(LAYOUT_SCRIPT)) as Layout;
         // A page in PublicFrame has no shell: no layout kind, no nav and no context column.
@@ -669,7 +694,7 @@ describe("the app in Chromium, under the app site's policy", () => {
       // The skip link shows itself while it holds the focus, at a control's size.
       expect(stops[0]!.w).toBeGreaterThanOrEqual(44);
       expect(stops[0]!.h).toBeGreaterThanOrEqual(44);
-      expect(stops.slice(1, 5).map((stop) => (stop.inNav ? stop.href : null))).toEqual(["/", "/bookmarks", "/u/ada", "/settings/security"]);
+      expect(stops.slice(1, 5).map((stop) => (stop.inNav ? stop.href : null))).toEqual(["/", "/bookmarks", "/u/ada", "/settings"]);
       // Task 6: the nav ends with New post, a button and no link.
       expect(stops[5]!.inNav).toBe(true);
       expect(stops[5]!.role).toBe("button");
@@ -701,22 +726,29 @@ describe("the app in Chromium, under the app site's policy", () => {
     [9, "dim"],
     [10, "dark"],
   ] as const) {
-    test(`${step}. contrast as drawn in ${theme}: the shell on Home and a post, the whole rules, missing, decision and terms pages, and the open status sheet`, async () => {
+    test(`${step}. contrast as drawn in ${theme}: the shell on Home and a post, the whole rules, missing, decision, terms, Appearance, Security and sign-in pages, and the open status sheet`, async () => {
       const visit_ = await open({ width: 1280, height: 900, appearance: { theme } });
       try {
-        for (const [route, scope] of [
-          ["/", DRAWN],
-          [`/post/${POST_ID}`, DRAWN],
-          ["/rules", ALL],
-          ["/no-such-page", ALL],
+        for (const [route, scope, signedIn] of [
+          ["/", DRAWN, true],
+          [`/post/${POST_ID}`, DRAWN, true],
+          ["/rules", ALL, true],
+          ["/no-such-page", ALL, true],
           // UI Task 7: a decision's screen and the terms, wholly on the tokens.
-          [`/settings/cases/${POST_DECISION_ID}`, ALL],
-          ["/terms", ALL],
+          [`/settings/cases/${POST_DECISION_ID}`, ALL, true],
+          ["/terms", ALL, true],
+          // UI Task 8: Appearance, Security and the sign-in screen, which a signed-in account leaves for its feed.
+          ["/settings/appearance", ALL, true],
+          ["/settings/security", ALL, true],
+          ["/signin", ALL, false],
         ] as const) {
+          fixtures.state.signedIn = signedIn;
+          if (!signedIn) await forgetSession(visit_.page);
           await visit(visit_.page, route);
           expect(await contrast(visit_.page, scope), `${theme} ${route}`).toEqual([]);
           await clean(visit_);
         }
+        fixtures.state.signedIn = true;
         // The details sheet of Ada's removed post, open with its blocks (section 12.3's theme steps).
         await visit(visit_.page, "/u/ada");
         await openStatusSheet(visit_.page);
@@ -745,6 +777,8 @@ describe("the app in Chromium, under the app site's policy", () => {
         ["decision", `/settings/cases/${POST_DECISION_ID}`],
         ["rules", "/rules"],
         ["sheet", "/u/ada"],
+        // UI Task 8: Appearance, with its sample at the largest step.
+        ["appearance", "/settings/appearance"],
       ] as const) {
         await visit(visit_.page, route);
         await visit_.page.evaluate(`document.documentElement.style.fontSize = "200%"`);
@@ -1967,6 +2001,242 @@ describe("the app in Chromium, under the app site's policy", () => {
           await visit_.context.close();
         }
       }
+    }
+  });
+
+  // UI Task 8 appends below: the Settings index, Appearance, the theme's cross-fade, the switch rows and Clear.
+
+  /** A radio group of the Appearance page, by the id of the heading that names it. */
+  const radioGroup = (id: string) => `[role="radiogroup"][aria-labelledby="${id}"]`;
+  /** The html element's theme class, text step and font, as the stylesheet reads them. */
+  const HTML_STATE = `(() => { const html = document.documentElement; return { theme: ["light", "dim", "dark"].find((name) => html.classList.contains(name)) || null, step: html.getAttribute("data-text-step"), font: html.getAttribute("data-font") }; })()`;
+  /** The appearance this browser keeps, as lib/appearance.ts writes it. */
+  const STORED = `JSON.parse(localStorage.getItem("korbat.appearance") || "null")`;
+
+  test("35. the nav's Settings opens the Settings index, current there and on every page below; its six rows, Appearance first, and no settings row; signed out the nav's Appearance opens Appearance without the row, and /settings goes to sign-in", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    // A client navigation keeps the screen it left mounted, hidden, with a shell of its own: only what is shown counts.
+    const currentItem = `[...document.querySelectorAll('nav[aria-label="Main"] a[aria-current="page"]')].filter((link) => link.getClientRects().length > 0).map((link) => link.getAttribute("href"))`;
+    try {
+      await visit(page, "/");
+      await page.locator('nav[aria-label="Main"] a[href="/settings"]').click();
+      await until(page, `location.pathname === "/settings"`, "the Settings index");
+      await page.waitForLoadState("networkidle");
+      expect(await page.evaluate(`document.title`)).toBe(TITLE_WORDS["title.settingsIndex"]);
+      expect(await page.locator("h1:visible").innerText()).toBe(UI_WORDS["settings.title"]);
+      expect(await page.evaluate(currentItem)).toEqual(["/settings"]);
+      expect(await page.evaluate(`[...document.querySelectorAll('[data-screen="settings"] a')].map((link) => link.getAttribute("href"))`)).toEqual([
+        "/settings/appearance",
+        "/settings/security",
+        "/settings/privacy",
+        "/settings/profile",
+        "/settings/account",
+        "/settings/cases",
+      ]);
+      expect(await page.evaluate(`!!document.querySelector('nav[aria-label="Settings"]')`)).toBe(false);
+      await screenshot(page, "settings-index-1280-light");
+      // The first row opens Appearance, under Settings still, with the row of settings pages and Appearance current in it.
+      await page.locator('[data-screen="settings"] a[href="/settings/appearance"]').click();
+      await until(page, `location.pathname === "/settings/appearance"`, "Appearance");
+      await page.waitForLoadState("networkidle");
+      expect(await page.evaluate(currentItem)).toEqual(["/settings"]);
+      expect(await page.evaluate(`[...document.querySelectorAll('nav[aria-label="Settings"] a[aria-current="page"]')].filter((link) => link.getClientRects().length > 0).map((link) => link.getAttribute("href"))`)).toEqual(["/settings/appearance"]);
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+    const out = await open({ width: 1280, height: 900, signedIn: false, appearance: { theme: "light" } });
+    try {
+      await visit(out.page, "/");
+      expect(await out.page.evaluate(`[...document.querySelectorAll('nav[aria-label="Main"] a')].filter((link) => link.getClientRects().length > 0).map((link) => link.getAttribute("href"))`)).toEqual(["/", "/signin", "/settings/appearance"]);
+      await out.page.locator('nav[aria-label="Main"] a[href="/settings/appearance"]').click();
+      await until(out.page, `location.pathname === "/settings/appearance"`, "Appearance signed out");
+      await out.page.waitForLoadState("networkidle");
+      expect(await out.page.locator("h1:visible").innerText()).toBe(UI_WORDS["appearance.title"]);
+      expect(await out.page.evaluate(currentItem)).toEqual(["/settings/appearance"]);
+      expect(await out.page.evaluate(`[...document.querySelectorAll('nav[aria-label="Settings"]')].some((nav) => nav.getClientRects().length > 0)`)).toBe(false);
+      await screenshot(out.page, "appearance-out-1280-light");
+      await visit(out.page, "/settings");
+      await until(out.page, `location.pathname === "/signin"`, "sign-in in place of the index");
+      await clean(out);
+    } finally {
+      await out.context.close();
+    }
+  });
+
+  test("36. Appearance: each radio group is one tab stop on its chosen radio; the arrows choose at once; the html element's class, text step and font and the sample follow; the choice is kept, and the next first paint has it", async () => {
+    // Nothing kept to begin with: System, on a light system. (A stored appearance given to open() is written again at
+    // every load, which would hide what the page kept from the reload below.)
+    const visit_ = await open({ width: 1280, height: 900 });
+    const page = visit_.page;
+    try {
+      await visit(page, "/settings/appearance");
+      // One tab stop per group: the chosen radio alone has tabindex 0.
+      const stops = (await page.evaluate(
+        `[...document.querySelectorAll('[role="radiogroup"]')].map((group) => [...group.querySelectorAll('[role="radio"]')].filter((radio) => radio.getAttribute("tabindex") === "0").map((radio) => radio.getAttribute("aria-checked")))`,
+      )) as string[][];
+      // Theme, Dark style (shown under System), Text size, Font and Reduce motion.
+      expect(stops).toEqual([["true"], ["true"], ["true"], ["true"], ["true"]]);
+      // The theme: from System, Down chooses Light, Dim and then Dark at once, the focus moving with the choice.
+      await page.locator(`${radioGroup("appearance-theme")} [role="radio"][aria-checked="true"]`).focus();
+      await page.keyboard.press("ArrowDown");
+      await until(page, `${STORED} !== null && ${STORED}.theme === "light"`, "Light at once");
+      await page.keyboard.press("ArrowDown");
+      await until(page, `document.documentElement.classList.contains("dim")`, "Dim at once");
+      await page.keyboard.press("ArrowDown");
+      await until(page, `document.documentElement.classList.contains("dark")`, "Dark at once");
+      expect(await page.evaluate(`document.activeElement.getAttribute("role") + " " + document.activeElement.getAttribute("aria-checked") + " " + document.activeElement.textContent.trim()`)).toBe(
+        `radio true ${UI_WORDS["appearance.dark"]}`,
+      );
+      // The text size: the sample's body grows from 17 px to 19 px as Larger is chosen, and the html element says so.
+      const sampleSize = `parseFloat(getComputedStyle([...document.querySelectorAll("[data-sample] *")].find((e) => e.childElementCount === 0 && e.textContent.trim() === ${JSON.stringify(UI_WORDS["appearance.sample"])})).fontSize)`;
+      expect(await page.evaluate(sampleSize)).toBe(17);
+      await page.locator(`${radioGroup("appearance-text-size")} [role="radio"][aria-checked="true"]`).focus();
+      await page.keyboard.press("ArrowDown");
+      await until(page, `document.documentElement.getAttribute("data-text-step") === "larger"`, "Larger at once");
+      await until(page, `${sampleSize} === 19`, "the sample at Larger");
+      // The font: Down chooses System font; the sample's face follows.
+      await page.locator(`${radioGroup("appearance-font")} [role="radio"][aria-checked="true"]`).focus();
+      await page.keyboard.press("ArrowDown");
+      await until(page, `document.documentElement.getAttribute("data-font") === "system"`, "System font at once");
+      expect(await page.evaluate(`getComputedStyle([...document.querySelectorAll("[data-sample] *")].find((e) => e.childElementCount === 0 && e.textContent.trim() === ${JSON.stringify(UI_WORDS["appearance.sample"])})).fontFamily`)).toMatch(/^system-ui/);
+      // Tab leaves a group from its chosen radio for the next group's chosen radio: one stop each.
+      await page.keyboard.press("Tab");
+      expect(await page.evaluate(`document.activeElement.closest('[role="radiogroup"]').getAttribute("aria-labelledby") + " " + document.activeElement.getAttribute("aria-checked")`)).toBe("appearance-motion true");
+      expect(await page.evaluate(HTML_STATE)).toEqual({ theme: "dark", step: "larger", font: "system" });
+      expect(await page.evaluate(STORED)).toMatchObject({ theme: "dark", textStep: "larger", font: "system" });
+      await pause(400);
+      await screenshot(page, "appearance-chosen-1280-dark");
+      await clean(visit_);
+      // The next first paint, with the bundle held back: theme-boot.js has painted what the page kept.
+      site!.state.holdBundle = true;
+      const started = Date.now();
+      await page.goto(`${origin}/settings/appearance`, { waitUntil: "commit" });
+      await until(page, `document.documentElement.classList.contains("dark") && !!document.body`, "the kept theme on the first paint");
+      const first = (await page.evaluate(`({ state: ${HTML_STATE}, background: getComputedStyle(document.documentElement).backgroundColor, drawn: document.getElementById("root") ? document.getElementById("root").childElementCount : -1 })`)) as {
+        state: unknown;
+        background: string;
+        drawn: number;
+      };
+      expect(Date.now() - started).toBeLessThan(HOLD_MS);
+      expect(first).toEqual({ state: { theme: "dark", step: "larger", font: "system" }, background: rgb(THEMES.dark.surface), drawn: 0 });
+      site!.state.holdBundle = false;
+      await until(page, `document.querySelector("[data-layout]") !== null`, "the app drawn");
+      await page.waitForLoadState("networkidle");
+      await clean(visit_);
+    } finally {
+      site!.state.holdBundle = false;
+      await visit_.context.close();
+    }
+  });
+
+  test("37. the theme cross-fades: the class is on the html element while a change fades, 200 ms, or 150 ms under either reduced motion, and gone after; nothing fades on load", async () => {
+    for (const [run, options] of MOTION_RUNS) {
+      const visit_ = await open({ width: 1280, height: 900, ...options });
+      const page = visit_.page;
+      try {
+        // Every time the class comes or goes, with the body's transition length while it is there.
+        await visit_.context.addInitScript({
+          // An init script runs before the html element exists, so it watches the document and reads the html element's records.
+          content: `(() => { const seen = []; window.__fades = seen; let on = false; new MutationObserver((records) => { if (!records.some((record) => record.target === document.documentElement)) return; const now = document.documentElement.classList.contains(${JSON.stringify(THEME_FADE.className)}); if (now === on) return; on = now; seen.push({ on: now, at: performance.now(), duration: now && document.body ? getComputedStyle(document.body).transitionDuration : null }); }).observe(document, { attributes: true, attributeFilter: ["class"], subtree: true }); })();`,
+        });
+        await visit(page, "/settings/appearance");
+        await pause(600);
+        expect(await page.evaluate(`window.__fades.length`), `${run}: on load`).toBe(0);
+        await page.locator(`${radioGroup("appearance-theme")} [role="radio"]`).filter({ hasText: UI_WORDS["appearance.dark"] }).click();
+        await until(page, `document.documentElement.classList.contains("dark")`, `${run}: Dark`);
+        await pause(600);
+        const fades = (await page.evaluate(`window.__fades`)) as { on: boolean; at: number; duration: string | null }[];
+        const length = run === "moves" ? THEME_FADE.duration : THEME_FADE.reduced;
+        expect(fades.map((fade) => [fade.on, fade.duration]), run).toEqual([
+          [true, `${length / 1000}s`],
+          [false, null],
+        ]);
+        expect(fades[1]!.at - fades[0]!.at, run).toBeGreaterThanOrEqual(length);
+        expect(await page.evaluate(`getComputedStyle(document.documentElement).backgroundColor`)).toBe(rgb(THEMES.dark.surface));
+        await clean(visit_);
+      } finally {
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("38. the Reading switches: Tab reaches each, the row draws the 2 px ring in the focus colour in Light and Dark, and Space flips it; Hide counts hides like and repost counts on Home and the follower counts on a profile; the web has no Haptics row", async () => {
+    const READING = [UI_WORDS["appearance.autoLoad"], UI_WORDS["appearance.openNewest"], UI_WORDS["appearance.hideCounts"]];
+    for (const theme of ["light", "dark"] as const) {
+      // System, with the system's scheme choosing Light or Dark: a stored appearance given to open() would be written
+      // again at every load, over the Hide counts this step turns on before it opens Home and a profile.
+      const visit_ = await open({ width: 1280, height: 900, colorScheme: theme });
+      const page = visit_.page;
+      try {
+        await visit(page, "/settings/appearance");
+        expect(await page.evaluate(`document.documentElement.classList.contains(${JSON.stringify(theme)})`)).toBe(true);
+        expect(await page.evaluate(`[...document.querySelectorAll('input[role="switch"]')].map((input) => input.getAttribute("aria-label"))`)).toEqual(READING);
+        // From the switch before it, Tab reaches Hide counts: the switch is the row's one stop, and the row draws the ring.
+        await page.locator(`input[role="switch"][aria-label="${READING[1]}"]`).focus();
+        await page.keyboard.press("Tab");
+        expect(await page.evaluate(`document.activeElement.getAttribute("aria-label")`)).toBe(READING[2]);
+        const ring = (await page.evaluate(
+          `(() => { for (let node = document.activeElement.parentElement; node; node = node.parentElement) { const s = getComputedStyle(node); if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0) return { style: s.outlineStyle, width: parseFloat(s.outlineWidth), color: s.outlineColor, height: node.getBoundingClientRect().height }; } return null; })()`,
+        )) as { style: string; width: number; color: string; height: number } | null;
+        expect(ring, theme).not.toBeNull();
+        expect(ring!.width, theme).toBeGreaterThanOrEqual(2);
+        expect(ring!.color, theme).toBe(rgb(THEMES[theme].focus));
+        expect(ring!.height, theme).toBeGreaterThanOrEqual(52);
+        await screenshot(page, `appearance-switch-focus-1280-${theme}`);
+        await page.keyboard.press("Space");
+        await until(page, `document.activeElement.checked === true`, "Hide counts on");
+        expect(await page.evaluate(STORED)).toMatchObject({ hideCounts: true });
+        await clean(visit_);
+        if (theme === "light") {
+          // Home: every Like and Repost is named without its number, and no number shows beside them.
+          await visit(page, "/");
+          const actions = (await page.evaluate(
+            `[...document.querySelectorAll('[role="article"] [aria-label^="Like"], [role="article"] [aria-label^="Repost"]')].map((button) => ({ name: button.getAttribute("aria-label"), text: button.textContent.trim() }))`,
+          )) as { name: string; text: string }[];
+          expect(actions.length).toBeGreaterThan(0);
+          for (const action of actions) {
+            expect([UI_WORDS["post.like.none"], UI_WORDS["post.reposts.none"]], action.name).toContain(action.name);
+            expect(action.text, action.name).not.toMatch(/[0-9]/);
+          }
+          await clean(visit_);
+          // A profile: Followers and Following are links that read their word alone.
+          await visit(page, "/u/grace");
+          expect(await page.evaluate(`[...document.querySelectorAll('a[href="/u/grace/followers"], a[href="/u/grace/following"]')].map((link) => link.textContent.trim())`)).toEqual([
+            UI_WORDS["profile.followers.hidden"],
+            UI_WORDS["profile.following.hidden"],
+          ]);
+          await clean(visit_);
+        }
+      } finally {
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("39. Clear what this device keeps: with an appearance, a reading place and a draft kept, it removes the three, keeps the device id and Not now, the theme returns to System, and the toast says Cleared", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "dark", textStep: "larger" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/settings/appearance");
+      // A reading place and a draft as Home and the composer keep them, and the browser's own two.
+      await page.evaluate(
+        `(() => { localStorage.setItem("korbat.place.${ADA.id}", JSON.stringify({ latest: { newest: { key: "p", time: new Date().toISOString() }, top: { key: "p", time: new Date().toISOString() }, savedAt: Date.now() } })); localStorage.setItem("korbat.drafts.${ADA.id}", JSON.stringify({ post: "Words worth keeping" })); localStorage.setItem("korbat.deviceId", "walk-device"); localStorage.setItem("korbat.passkeySuggestion.dismissedAt", String(Date.now())); })()`,
+      );
+      expect(await page.evaluate(HTML_STATE)).toEqual({ theme: "dark", step: "larger", font: "korbat" });
+      await page.getByRole("button", { name: UI_WORDS["device.clear"], exact: true }).click();
+      await page.getByText(UI_WORDS["toast.cleared"], { exact: true }).waitFor({ state: "visible" });
+      expect(((await page.evaluate(`Object.keys(localStorage)`)) as string[]).sort()).toEqual(["korbat.deviceId", "korbat.passkeySuggestion.dismissedAt"]);
+      // System on a light system: Light, at the default step, with System chosen on the page.
+      await until(page, `document.documentElement.classList.contains("light")`, "System again");
+      expect(await page.evaluate(HTML_STATE)).toEqual({ theme: "light", step: "default", font: "korbat" });
+      expect(await page.locator(`${radioGroup("appearance-theme")} [role="radio"][aria-checked="true"]`).innerText()).toBe(UI_WORDS["appearance.system"]);
+      await pause(400);
+      await screenshot(page, "appearance-cleared-1280");
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
     }
   });
 });

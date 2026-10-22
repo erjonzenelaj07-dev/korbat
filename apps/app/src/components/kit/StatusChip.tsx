@@ -103,3 +103,20 @@ export function StatusChip({ tone, label, name, href, onPress, className, ref }:
     </View>
   );
 }
+
+/**
+ * A fact as a chip, which is no status (UI Task 8, sections 4.8 and 8.8): Security's "this device" and a passkey's tags
+ * ("used for this session", "new", "synced"). It takes no status colour and no icon, since it says nothing a colour could
+ * repeat: ink-medium on surface-2 with a line-high border, solid CanvasText under forced colours, so it keeps its shape.
+ * It is an image to assistive technology, named by `name` where the one word needs more words to be understood, as the
+ * verified chip is.
+ */
+export function NeutralChip({ label, name, className }: { label: string; name?: string; className?: string }) {
+  return (
+    <View role="img" accessibilityLabel={name ?? label} className={cn("max-w-full self-start rounded-full border border-line-high bg-surface-2 px-2 py-0.5 web:forced-colors:border-[color:CanvasText]", className)}>
+      <Text variant="chip" tone="medium" className="min-w-0 shrink web:break-words">
+        {label}
+      </Text>
+    </View>
+  );
+}

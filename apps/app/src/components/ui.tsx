@@ -46,16 +46,29 @@ export function Body({ children }: { children: ReactNode }) {
   );
 }
 
-/** A titled box on a settings screen, a card on the page; the title is a heading one level under the screen's own. */
-export function Section({ title, children }: { title: string; children: ReactNode }) {
+/**
+ * A titled box on a settings screen, a card on the page; the title is a heading one level under the screen's own, and
+ * `id` names it for a radio group it heads. UI Task 8 (8.8): its padding is the 16 px gutter of the rows and the screen,
+ * and it clips what reaches its edges to its corners, so SectionRows can run from edge to edge.
+ */
+export function Section({ title, id, children }: { title: string; id?: string; children: ReactNode }) {
   return (
-    <View className="mt-8 rounded-card border border-line-low bg-surface-1 p-5">
-      <Text as="h2" variant="title">
+    <View className="mt-8 overflow-hidden rounded-card border border-line-low bg-surface-1 p-4">
+      <Text as="h2" variant="title" nativeID={id}>
         {title}
       </Text>
       {children}
     </View>
   );
+}
+
+/**
+ * ListRows inside a Section, from edge to edge of the card under a line-low rule (UI Task 8, 8.8: "each Section becomes a
+ * card group of ListRows and fields"). `end` when the rows end the card: they then run under its padding, and the last
+ * row's own divider goes under the card's border, so one line closes the card.
+ */
+export function SectionRows({ end = false, children }: { end?: boolean; children: ReactNode }) {
+  return <View className={cn("-mx-4 mt-3 border-t border-line-low", end ? "-mb-[17px]" : undefined)}>{children}</View>;
 }
 
 /**
@@ -73,7 +86,7 @@ export function VerifiedChip() {
  * body variant at the reader's step and font (textStyle()), its placeholder ink-low, which reads at 6.29:1 or more on
  * surface-1 in every theme.
  */
-export function Field({ label, ref, style, ...input }: { label: string; ref?: Ref<TextInput> } & TextInputProps) {
+export function Field({ label, ref, style, mono = false, ...input }: { label: string; ref?: Ref<TextInput>; mono?: boolean } & TextInputProps) {
   const { colors } = useTheme();
   const appearance = useAppearance();
   return (
@@ -86,7 +99,8 @@ export function Field({ label, ref, style, ...input }: { label: string; ref?: Re
         accessibilityLabel={label}
         placeholderTextColor={colors["ink-low"]}
         className={cn("min-h-[44px] rounded-control border border-line-high bg-surface-1 px-4 py-3 text-ink-high", FOCUS_RING)}
-        style={[textStyle("body", { step: appearance.textStep, font: appearance.font }), style]}
+        // A code or a handle is set in the mono face (UI Task 8, 8.10), so 1 and l, 0 and O differ.
+        style={[textStyle(mono ? "mono" : "body", { step: appearance.textStep, font: appearance.font }), style]}
         {...input}
       />
     </View>

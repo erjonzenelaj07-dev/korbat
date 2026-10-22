@@ -20,3 +20,12 @@ export const MOTION = {
 } as const;
 
 export type MotionName = keyof typeof MOTION;
+
+/**
+ * The theme's cross-fade on the web (section 5.2's theme row, UI Task 8): when the reader changes theme after the first
+ * paint, ThemeProvider puts this class on the html element, with the fade's length in this custom property, for as long
+ * as the fade runs; theme/fonts.web.ts's rule turns every colour into a transition while it is there. 200 ms on ease;
+ * under reduced motion 150 ms, since a soft brightness change is gentler than a jump. Kept apart from MOTION, whose
+ * table is section 5.1's six values.
+ */
+export const THEME_FADE = { className: "k-theme-fade", property: "--k-theme-fade", duration: 200, reduced: 150 } as const;

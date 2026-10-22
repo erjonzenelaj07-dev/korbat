@@ -39,7 +39,7 @@ const html = (element: ReactElement): string => renderToStaticMarkup(element);
 /** Every anchor's opening tag in the markup. */
 const anchors = (markup: string): string[] => markup.match(/<a\b[^>]*>/g) ?? [];
 
-const PAGES: SettingsPage[] = ["security", "privacy", "profile", "account", "cases"];
+const PAGES: SettingsPage[] = ["appearance", "security", "privacy", "profile", "account", "cases"];
 
 describe("the settings row", () => {
   test("links every settings screen as a real anchor inside a navigation landmark", () => {
@@ -63,7 +63,7 @@ describe("the settings row", () => {
     const filesUnder = (folder: string): string[] =>
       readdirSync(path.join(dir, folder), { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesUnder(path.join(folder, entry.name)) : [path.join(folder, entry.name)]));
     const screens = readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => !entry.name.startsWith("_"))
+      .filter((entry) => !entry.name.startsWith("_") && entry.name !== "index.tsx") // UI Task 8: the Settings index lists the pages, without the row.
       .flatMap((entry) =>
         entry.isDirectory() ? filesUnder(entry.name).map((file) => ({ page: entry.name, file })) : [{ page: entry.name.endsWith(".tsx") ? entry.name.slice(0, -".tsx".length) : entry.name, file: entry.name }],
       );

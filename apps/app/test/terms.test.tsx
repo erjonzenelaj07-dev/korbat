@@ -919,3 +919,28 @@ describe("the web build's two arguments for the terms (3f, Task 7): the contact 
     expect(dockerfile.indexOf("needs EXPO_PUBLIC_HOME_STATE")).toBeLessThan(dockerfile.indexOf("npx expo export"));
   });
 });
+
+// UI Task 8 appends below, so the lines above keep the numbers other tasks cite.
+import { UI_WORDS } from "../src/lib/ui-words";
+import { sourceFiles } from "./legacy-files";
+
+describe("Your data names what the browser keeps (UI design, section 8.8)", () => {
+  test("its first paragraph names every store the app keeps in the browser, when the account's go, and the button that clears them, with no new version", () => {
+    const [first, ...added] = paragraphsOf(terms, "Your data");
+    // The stores explore.test.tsx holds the source to, each named: the device id (lib/api.ts), the appearance
+    // (lib/appearance.ts), the drafts (lib/drafts.ts), the passkey card's Not now (lib/passkeys.ts) and the reading places
+    // (lib/reading-place.ts).
+    const stores = sourceFiles().filter((file) => /localStorage|sessionStorage|indexedDB|AsyncStorage/.test(file.text));
+    expect(stores.map((file) => file.name).sort()).toEqual(["lib/api.ts", "lib/appearance.ts", "lib/drafts.ts", "lib/passkeys.ts", "lib/reading-place.ts"]);
+    for (const named of ["a random device id", "your appearance choices", "where you stopped reading in Following and Latest", "drafts you have not sent", "your Not now on the passkey card"]) {
+      expect(first, named).toContain(named);
+    }
+    expect(first).toContain("until you sign out");
+    expect(first).toContain(UI_WORDS["device.clear"]);
+    // Beside the device id's sentence, which stays word for word; 3c's paragraphs after it and the version stay.
+    expect(first).toContain("Your browser keeps a random device id so korbat can tell a new device from a known one; it is shared by every account used in that browser and is stored on the server only as a keyed hash.");
+    expect(first.indexOf("your appearance choices")).toBeGreaterThan(first.indexOf("a random device id"));
+    expect(added.length).toBeGreaterThanOrEqual(8);
+    expect(terms.TERMS_VERSION).toBe("draft-2026-09");
+  });
+});

@@ -1,3 +1,5 @@
+import { THEME_FADE } from "./motion";
+
 /**
  * The faces on web (UI design, section 4.3): korbat's own @font-face rules over the woff2 files of the three
  * @fontsource-variable packages, bundled by Metro into /assets/ (immutable in Caddy, allowed by the policy's font-src
@@ -133,6 +135,13 @@ const STYLE_ID = "korbat-fonts";
 export const STILL_RULE = ".k-still { transform: none !important; transition: opacity 150ms ease !important; }";
 
 /**
+ * The theme's cross-fade (UI design, section 5.2; UI Task 8): while ThemeProvider holds THEME_FADE's class on the html
+ * element, every element's colours move to the new theme's over the length its custom property names, on ease. Colours
+ * only, so nothing moves; a toast keeps its own motion, which this rule would otherwise cut for the fade's length.
+ */
+export const THEME_FADE_RULE = `html.${THEME_FADE.className}, html.${THEME_FADE.className} *:not([data-sonner-toast]) { transition-property: background-color, border-color, color, fill, stroke, outline-color, text-decoration-color !important; transition-duration: var(${THEME_FADE.property}) !important; transition-timing-function: ease !important; transition-delay: 0s !important; }`;
+
+/**
  * "You're all caught up" draws its check once a session (UI design, section 5.2, caught-up): the done icon's check, a
  * path about 8.5 units long, goes from a dash offset of its length to 0 in 450 ms on ease-out. FeedRows.tsx sets
  * data-draw on the icon only the first time and never under reduced motion, so the icon is otherwise drawn at once.
@@ -144,6 +153,6 @@ export function installFonts(): void {
   if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ID;
-  style.textContent = `${fontFaceCss()} ${STILL_RULE} ${DRAW_RULE}`;
+  style.textContent = `${fontFaceCss()} ${STILL_RULE} ${DRAW_RULE} ${THEME_FADE_RULE}`;
   document.head.appendChild(style);
 }
