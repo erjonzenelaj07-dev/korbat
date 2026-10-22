@@ -1,3 +1,107 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * korbat's colour tokens (UI design, section 4.2), one block per theme, each colour as an R G B triplet so a class
+ * can add its alpha: tailwind.config.js maps every token to rgb(var(--k-<token>) / <alpha-value>). The html element
+ * carries the class light, dim or dark (public/theme-boot.js sets it before the first paint, ThemeProvider keeps it),
+ * and a forced Dark scope such as the lightbox's stage takes the class dark on its own element. The values are
+ * src/theme/tokens.ts's THEMES; test/contrast.test.ts fails if they drift apart.
+ */
+/* Light ("Day"), also the values before any class is set. */
+:root {
+  --k-surface: 246 245 249;
+  --k-surface-1: 255 255 255;
+  --k-surface-2: 236 234 241;
+  --k-line-low: 221 218 228;
+  --k-line-high: 130 124 144;
+  --k-ink-high: 21 19 27;
+  --k-ink-medium: 69 64 79;
+  --k-ink-low: 98 93 110;
+  --k-accent: 90 51 214;
+  --k-on-accent: 255 255 255;
+  --k-accent-ink: 90 51 214;
+  --k-accent-wash: 236 230 255;
+  --k-focus: 90 51 214;
+  --k-danger: 194 38 27;
+  --k-on-danger: 255 255 255;
+  --k-danger-ink: 180 35 24;
+  --k-review-ink: 138 75 0;
+  --k-review-wash: 252 239 210;
+  --k-review-on-wash: 107 58 0;
+  --k-restricted-ink: 180 35 24;
+  --k-restricted-wash: 253 228 225;
+  --k-restricted-on-wash: 138 28 18;
+  --k-verified-ink: 31 85 199;
+  --k-verified-wash: 224 234 253;
+  --k-verified-on-wash: 23 63 148;
+  --k-explore-ink: 11 115 80;
+  --k-explore-wash: 218 243 232;
+  --k-explore-on-wash: 7 90 62;
+}
+
+/* Dim ("Dusk"). */
+:root.dim {
+  --k-surface: 27 26 36;
+  --k-surface-1: 36 35 47;
+  --k-surface-2: 47 45 59;
+  --k-line-low: 58 56 72;
+  --k-line-high: 128 123 147;
+  --k-ink-high: 241 239 246;
+  --k-ink-medium: 204 200 216;
+  --k-ink-low: 168 163 184;
+  --k-accent: 185 166 255;
+  --k-on-accent: 23 14 51;
+  --k-accent-ink: 185 166 255;
+  --k-accent-wash: 51 44 85;
+  --k-focus: 185 166 255;
+  --k-danger: 209 52 56;
+  --k-on-danger: 255 255 255;
+  --k-danger-ink: 255 138 128;
+  --k-review-ink: 245 184 61;
+  --k-review-wash: 58 45 23;
+  --k-review-on-wash: 250 210 122;
+  --k-restricted-ink: 255 138 128;
+  --k-restricted-wash: 61 26 31;
+  --k-restricted-on-wash: 255 180 172;
+  --k-verified-ink: 120 176 255;
+  --k-verified-wash: 26 42 69;
+  --k-verified-on-wash: 176 206 255;
+  --k-explore-ink: 75 217 162;
+  --k-explore-wash: 18 51 40;
+  --k-explore-on-wash: 147 237 201;
+}
+
+/* Dark ("Night"), on the page or on a forced scope. */
+:root.dark,
+.dark {
+  --k-surface: 16 15 22;
+  --k-surface-1: 24 23 31;
+  --k-surface-2: 34 32 43;
+  --k-line-low: 43 41 53;
+  --k-line-high: 114 109 130;
+  --k-ink-high: 243 241 247;
+  --k-ink-medium: 199 194 211;
+  --k-ink-low: 156 151 171;
+  --k-accent: 180 160 255;
+  --k-on-accent: 23 14 51;
+  --k-accent-ink: 180 160 255;
+  --k-accent-wash: 37 30 66;
+  --k-focus: 180 160 255;
+  --k-danger: 209 52 56;
+  --k-on-danger: 255 255 255;
+  --k-danger-ink: 255 123 114;
+  --k-review-ink: 245 184 61;
+  --k-review-wash: 46 35 16;
+  --k-review-on-wash: 250 210 122;
+  --k-restricted-ink: 255 123 114;
+  --k-restricted-wash: 51 20 24;
+  --k-restricted-on-wash: 255 173 166;
+  --k-verified-ink: 106 168 255;
+  --k-verified-wash: 18 33 58;
+  --k-verified-on-wash: 165 200 255;
+  --k-explore-ink: 61 211 154;
+  --k-explore-wash: 12 42 32;
+  --k-explore-on-wash: 134 235 195;
+}

@@ -1,15 +1,18 @@
 <!DOCTYPE html>
 <!-- The shell around the single-page web export: `expo export` reads public/index.html, fills in the
-     language and title, and appends the bundle and stylesheet links. It says the page is dark before
-     the bundle loads, so there is no white flash, and carries the icon as inline SVG so no request for
-     it falls through to the app. Everything else is the Expo template. -->
+     language and title, and appends the bundle and stylesheet links. theme-boot.js runs first, before
+     anything is drawn: it puts the reader's theme (stored, or the system's) on the html element with
+     the page's colours, so the first frame is already in that theme with no flash. Without scripts the
+     reset below paints the Dark theme. The icon is inline SVG so no request for it falls through to
+     the app. Everything else is the Expo template. -->
 <html lang="%LANG_ISO_CODE%">
   <head>
     <meta charset="utf-8" />
+    <script src="/theme-boot.js"></script>
     <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
-    <meta name="color-scheme" content="dark" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2309090b'/%3E%3Ctext x='16' y='23' font-size='20' font-family='system-ui,sans-serif' font-weight='700' text-anchor='middle' fill='%23fafafa'%3Ek%3C/text%3E%3C/svg%3E" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23100F16'/%3E%3Ctext x='16' y='23' font-size='20' font-family='system-ui,sans-serif' font-weight='700' text-anchor='middle' fill='%23F3F1F7'%3Ek%3C/text%3E%3C/svg%3E" />
     <title>%WEB_TITLE%</title>
     <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
     <style id="expo-reset">
@@ -28,11 +31,11 @@
         height: 100%;
         flex: 1;
       }
-      /* Dark before the bundle loads. */
-      html,
-      body {
-        background: #09090b;
-        color: #fafafa;
+      /* Dark (its surface and ink-high) for a browser without scripts. theme-boot.js sets the
+         reader's theme on the html element itself, so the body stays transparent and shows it. */
+      html {
+        background: #100F16;
+        color: #F3F1F7;
       }
     </style>
   </head>

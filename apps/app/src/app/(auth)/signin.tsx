@@ -8,6 +8,7 @@ import { api, ApiError, deviceId, errorMessage, platform } from "@/lib/api";
 import { flow } from "@/lib/flow";
 import { abortPasskeyRequest, autofillPasskey, autofillSupported, confirmWithPasskey, createAutofillScheduler, passkeysSupported } from "@/lib/passkeys";
 import { useSession } from "@/lib/session";
+import { useTheme } from "@/theme/ThemeProvider";
 
 const SITE_KEY = process.env.EXPO_PUBLIC_TURNSTILE_SITE_KEY ?? "";
 
@@ -20,6 +21,8 @@ type Outcome = "done" | "expired" | "failed";
 export default function EmailEntry() {
   const { refresh } = useSession();
   const turnstile = useRef<TurnstileInstance | null>(null);
+  // The human check is drawn light in Light and dark in Dim and Dark, like the page around it.
+  const theme = useTheme();
   const [email, setEmail] = useState(flow.get().email ?? "");
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -159,7 +162,7 @@ export default function EmailEntry() {
         <Turnstile
           ref={turnstile}
           siteKey={SITE_KEY}
-          options={{ theme: "dark", refreshExpired: "manual" }}
+          options={{ theme: theme.turnstile, refreshExpired: "manual" }}
           onSuccess={setToken}
           onExpire={() => {
             setToken(null);

@@ -1,0 +1,24 @@
+{
+  "commit": "1222b87",
+  "measuredAt": "2026-10-21",
+  "command": "expo export --platform web --output-dir <dir>, from apps/app, with EXPO_NO_DOTENV=1 and the env below in the child",
+  "env": {
+    "EXPO_NO_DOTENV": "1",
+    "EXPO_PUBLIC_API_URL": "",
+    "EXPO_PUBLIC_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+    "EXPO_PUBLIC_BADGE": "off",
+    "EXPO_PUBLIC_CONTACT_EMAIL": "",
+    "EXPO_PUBLIC_CONTACT_POINT": "",
+    "EXPO_PUBLIC_HOME_STATE": ""
+  },
+  "method": {
+    "compressor": "node:zlib gzipSync, each file compressed on its own and the sizes summed",
+    "level": 9,
+    "unit": "bytes",
+    "kilobyte": 1024,
+    "js": "_expo/static/js/web/*",
+    "css": "_expo/static/css/*"
+  },
+  "js": { "files": 1, "bytes": 3107706, "gzipBytes": 709377 },
+  "css": { "files": 1, "bytes": 14566, "gzipBytes": 3354 }
+}

@@ -7,12 +7,15 @@ import { Body, Button, ErrorText, Field, Screen, TextLink, Title } from "@/compo
 import { api, deviceId, errorMessage, platform } from "@/lib/api";
 import { flow } from "@/lib/flow";
 import { useSession } from "@/lib/session";
+import { useTheme } from "@/theme/ThemeProvider";
 
 const SITE_KEY = process.env.EXPO_PUBLIC_TURNSTILE_SITE_KEY ?? "";
 
 export default function PasswordSignIn() {
   const { refresh } = useSession();
   const turnstile = useRef<TurnstileInstance | null>(null);
+  // The human check is drawn light in Light and dark in Dim and Dark, like the page around it.
+  const theme = useTheme();
   const [email, setEmail] = useState(flow.get().email ?? "");
   const [password, setPassword] = useState("");
   const [token, setToken] = useState<string | null>(null);
@@ -56,7 +59,7 @@ export default function PasswordSignIn() {
         <Turnstile
           ref={turnstile}
           siteKey={SITE_KEY}
-          options={{ theme: "dark", refreshExpired: "manual" }}
+          options={{ theme: theme.turnstile, refreshExpired: "manual" }}
           onSuccess={setToken}
           onExpire={() => {
             setToken(null);

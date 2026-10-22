@@ -24,6 +24,7 @@ import {
 } from "@/lib/moderation";
 import { CATEGORY_LABELS, REPORT_WORDS } from "@/lib/moderation-words";
 import { reportsRestrictedUntil, runningMeasure, STANDING_TEXTS } from "@/lib/standing";
+import { useTheme } from "@/theme/ThemeProvider";
 
 const SITE_KEY = process.env.EXPO_PUBLIC_TURNSTILE_SITE_KEY ?? "";
 
@@ -149,6 +150,8 @@ export function ReportForm({ signedIn, given, initial, standing = null }: { sign
         : undefined;
   const grounds = GROUNDS.map((entry) => ("value" in entry && entry.value === "rule" && ruleClosed !== undefined ? { ...entry, disabled: ruleClosed } : entry));
   const turnstile = useRef<TurnstileInstance | null>(null);
+  // The human check is drawn light in Light and dark in Dim and Dark, like the page around it.
+  const theme = useTheme();
   const [draft, setDraft] = useState<ReportDraft>({ ...EMPTY_DRAFT, ...initial });
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -254,7 +257,7 @@ export function ReportForm({ signedIn, given, initial, standing = null }: { sign
           <Turnstile
             ref={turnstile}
             siteKey={SITE_KEY}
-            options={{ theme: "dark", refreshExpired: "manual" }}
+            options={{ theme: theme.turnstile, refreshExpired: "manual" }}
             onSuccess={setToken}
             onExpire={() => {
               setToken(null);
