@@ -31,7 +31,7 @@ vi.mock("expo-router", () => ({
 vi.mock("@/lib/session", () => ({ useSession: () => ({ state: session.state, refresh: async () => session.state }) }));
 vi.mock("expo-image", async () => {
   const { createElement } = await import("react");
-  return { Image: ({ source, accessibilityLabel }: { source: { uri: string }; accessibilityLabel: string }) => createElement("img", { "data-uri": source.uri, alt: accessibilityLabel }) };
+  return { Image: ({ source, accessibilityLabel, priority }: { source: { uri: string }; accessibilityLabel: string; priority?: string }) => createElement("img", { "data-uri": source.uri, alt: accessibilityLabel, "data-priority": priority }) };
 });
 // A toast is sonner's, which a static render has no use for; the words it would show are tested as the functions give them.
 vi.mock("@/components/toast", () => ({ toast: { show: vi.fn() }, Toaster: () => null }));
@@ -409,5 +409,31 @@ describe("FollowButton (8.4)", () => {
     const refused = await toggleFollow(refusing, lanes, "grace", true, (following) => shown.push(following));
     expect(refused.status).toBe("refused");
     expect(shown).toEqual([true, true, false, true]);
+  });
+});
+
+// UI Task 5 appends below: the card's part in the feed pattern (section 10) and the first rows' images (section 11.2).
+describe("PostCard in a feed (10, 11.2)", () => {
+  test("the article says its place in the feed, and -1 for the size while more can load", () => {
+    const out = html(<PostCard post={post()} position={3} setSize={-1} />);
+    const article = tagWith(out, 'role="article"');
+    expect(attr(article, "aria-posinset")).toBe("3");
+    expect(attr(article, "aria-setsize")).toBe("-1");
+    // Outside a feed it says nothing of a place.
+    expect(tagWith(html(<PostCard post={post()} />), 'role="article"')).not.toContain("aria-posinset");
+  });
+
+  test("its one link to the post is marked as the article's open link, the one Page Down and Page Up move to; a quote's is not", () => {
+    const quoted = { ...post({ id: id(2) }), quoteOf: null };
+    const out = html(<PostCard post={post({ quoteOf: quoted })} />);
+    const marked = anchors(out).filter((anchor) => anchor.open.includes("data-open"));
+    expect(marked.map((anchor) => anchor.href)).toEqual([`/post/${id(1)}`]);
+  });
+
+  test("the first rows' images load first: high priority when the list asks, normal otherwise", () => {
+    const image = { id: id(70), width: 800, height: 600, blurhash: "LEHV6nWB2yk8", alt: "A green square", small: "/media/x/small.webp", large: "/media/x/large.webp" };
+    const priorities = (markup: string) => tags(markup).filter((tag) => tag.startsWith("<img")).map((tag) => attr(tag, "data-priority"));
+    expect(priorities(html(<PostCard post={post({ media: [image] })} priority />))).toEqual(["high"]);
+    expect(priorities(html(<PostCard post={post({ media: [image] })} />))).toEqual(["normal"]);
   });
 });

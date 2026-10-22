@@ -182,7 +182,7 @@ describe("Explore's rows", () => {
   // these posts with, ExploreList's PostCard: an image-only post is named by the images the reader is shown.
   test("an image-only post is named by the first image the reader is shown; hidden images are skipped, and a post of hidden images alone has no image line", () => {
     const explore = readFileSync(path.join(SRC, "components", "social", "ExploreList.tsx"), "utf8");
-    expect(explore).toContain("renderItem={({ item }) => <PostCard post={item.post} onDeleted={remove} />}");
+    expect(explore).toContain("renderPost={(item, place) => <PostCard post={item.post} onDeleted={remove} {...place} />}");
     const names = (markup: string) => buttons(markup).filter((name) => name.startsWith("Open image: "));
     const first = html(<PostCard post={post(1, { body: "", media: [hidden(11), image(12, "A green square")] })} />);
     expect(names(first)).toEqual(["Open image: A green square"]);

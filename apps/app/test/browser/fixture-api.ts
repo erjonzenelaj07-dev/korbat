@@ -38,7 +38,9 @@ import type { z } from "zod";
  * every image. Every answer is checked against @korbat/contracts' schema when it is built, so the app parses exactly
  * what the API would send. A request no fixture answers is a problem of the walk, answered 404. The reader's actions on a
  * post (like, repost, save, delete) and a follow are answered from UI Task 4 on, with switches that refuse a kind or
- * hold every action's answer back; nothing else that changes something is. Nothing here needs a database or the network.
+ * hold every action's answer back; nothing else that changes something is. From UI Task 5 the timelines honour `limit`
+ * and page through 120 posts (enough for the reading place's 100 rows), a switch puts new posts above them, a thread has
+ * ancestors, and sign-out is answered. Nothing here needs a database or the network.
  */
 
 /** A WebP of 2 by 2 pixels (lossless, 38 bytes) in the accent violet: a real image, which the browser decodes under the policy. */
@@ -112,14 +114,38 @@ function parse<S extends z.ZodType>(schema: S, value: z.input<S>, what: string):
   return result.data;
 }
 
-/** A page of a timeline: posts `from` to `to`, a repost of Grace's by Linus among them, and the next page's cursor. */
-function timeline(from: number, to: number, signedIn: boolean, nextCursor: string | null) {
+/** How many posts the timelines hold: more than the reading place's window of 100 rows (UI design, section 8.2). */
+export const TIMELINE_POSTS = 120;
+
+/** New post `j` of the new-posts switch (1 is the oldest of them): newer than every other post, with ids of their own. */
+export const newPostIdOf = (j: number): string => id(900 + j);
+
+function freshPost(j: number, count: number, signedIn: boolean): PostView {
+  // Each a second apart and newer than post 1, so the newest of them comes first.
+  return post(j, signedIn, { id: newPostIdOf(j), body: `A new post, number ${j}, written while the reader was reading.`, createdAt: new Date(Date.now() - (count - j + 1) * 1000).toISOString(), media: [] });
+}
+
+/**
+ * A timeline from its start: the new posts the switch holds, newest first, then posts 1 to TIMELINE_POSTS, with a repost
+ * of Grace's by Linus before post 3 and every twentieth post after it, as a page of twenty had one at its third row.
+ */
+function timelineItems(signedIn: boolean, fresh: number): TimelineItem[] {
   const items: TimelineItem[] = [];
-  for (let n = from; n <= to; n++) {
-    if (n === from + 2) items.push({ kind: "repost", post: post(n + 40, signedIn, { author: GRACE }), repostedBy: LINUS, repostedAt: ago(n * 7 - 1) });
+  for (let j = fresh; j >= 1; j--) items.push({ kind: "post", post: freshPost(j, fresh, signedIn) });
+  for (let n = 1; n <= TIMELINE_POSTS; n++) {
+    if (n % 20 === 3) items.push({ kind: "repost", post: post(n + 40, signedIn, { author: GRACE }), repostedBy: LINUS, repostedAt: ago(n * 7 - 1) });
     items.push({ kind: "post", post: post(n, signedIn) });
   }
-  return parse(TimelinePage, { items, nextCursor }, "timeline");
+  return items;
+}
+
+/** A page of a timeline: `limit` items (20 by default, at most 50, as Pagination has it) from the cursor's place. */
+function timeline(cursor: string | null, limit: string | null, signedIn: boolean, fresh: number) {
+  const items = timelineItems(signedIn, fresh);
+  const from = cursor === null ? 0 : Number.parseInt(cursor.replace(/^at-/, ""), 10);
+  const size = Math.min(50, Math.max(1, Number.parseInt(limit ?? "20", 10) || 20));
+  const to = Math.min(items.length, from + size);
+  return parse(TimelinePage, { items: items.slice(from, to), nextCursor: to < items.length ? `at-${to}` : null }, "timeline");
 }
 
 const listItem = (author: Author, bio: string, signedIn: boolean): ProfileListItem => ({ ...author, bio, ...(signedIn ? { viewerFollows: author.handle === "grace" } : {}) });
@@ -213,6 +239,10 @@ export interface FixtureState {
    */
   refuse: Set<string>;
   delayMs: number;
+  /** New posts above the timelines' first (UI Task 5): the poll finds them, and a reload reads them. */
+  newPosts: number;
+  /** How long each timeline answer waits, so a step can watch what the answer brings. */
+  timelineDelayMs: number;
 }
 
 export interface FixtureApi {
@@ -233,7 +263,7 @@ const OTHERS = 2;
 const FLAGS = { like: "liked", repost: "reposted", bookmark: "bookmarked" } as const;
 
 export function createFixtureApi(): FixtureApi {
-  const state: FixtureState = { signedIn: false, problems: [], requests: [], refuse: new Set(), delayMs: 0 };
+  const state: FixtureState = { signedIn: false, problems: [], requests: [], refuse: new Set(), delayMs: 0, newPosts: 0, timelineDelayMs: 0 };
   const ok = (json: unknown): Answer => ({ status: 200, json });
   const posts = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => post(from + i, state.signedIn));
 
@@ -241,10 +271,7 @@ export function createFixtureApi(): FixtureApi {
   function get(path: string, query: URLSearchParams): Answer | null {
     const cursor = query.get("cursor");
     if (path === "/api/me") return state.signedIn ? ok(me()) : { status: 401, json: { error: { code: "unauthenticated", message: "Sign in to continue." } } };
-    if (path === "/api/timeline/following" || path === "/api/timeline/latest") {
-      // Two pages: twenty posts and a cursor, then ten and none.
-      return ok(cursor === null ? timeline(1, 20, state.signedIn, "page-2") : timeline(21, 30, state.signedIn, null));
-    }
+    if (path === "/api/timeline/following" || path === "/api/timeline/latest") return ok(timeline(cursor, query.get("limit"), state.signedIn, state.newPosts));
     if (path === "/api/timeline/explore") {
       const items = posts(1, 10).map((view) => ({ kind: "post" as const, post: view }));
       return ok(parse(ExplorePage, { items, nextCursor: null, computedAt: ago(5), signInForMore: !state.signedIn }, "explore"));
@@ -252,6 +279,12 @@ export function createFixtureApi(): FixtureApi {
     if (path === `/api/posts/${POST_ID}/thread`) {
       const replies = [2, 3, 5].map((n) => post(n, state.signedIn, { id: id(300 + n), replyTo: { id: POST_ID, authorHandle: GRACE.handle } }));
       return ok(parse(ThreadResponse, { ancestors: [], post: post(1, state.signedIn), replies: { items: replies, nextCursor: null } }, "thread"));
+    }
+    // Ada's post 3 replies to a chain of three, and has replies of its own: the page must scroll to hold it at the top (UI Task 5).
+    if (path === `/api/posts/${id(103)}/thread`) {
+      const ancestors = [9, 8, 6].map((n) => post(n, state.signedIn));
+      const replies = [2, 5, 7, 10, 11].map((n) => post(n, state.signedIn, { id: id(320 + n), replyTo: { id: id(103), authorHandle: ADA.handle } }));
+      return ok(parse(ThreadResponse, { ancestors, post: post(3, state.signedIn, { replyTo: { id: id(106), authorHandle: ADA.handle } }), replies: { items: replies, nextCursor: null } }, "thread"));
     }
     // Ada's own posts (3, 6, 9 and every third) have an Explore status for her: post 3 is listed, the others wait.
     const exploring = /^\/api\/posts\/([0-9a-f-]{36})\/explore$/.exec(path);
@@ -327,6 +360,11 @@ export function createFixtureApi(): FixtureApi {
 
   /** The answer to one POST the walk causes by reading: a report's status, and the passkey autofill's options on sign-in. */
   function post_(path: string, body: Buffer): Answer | null {
+    // Signing out ends the session: /api/me answers 401 from here on (UI Task 5, the session's end).
+    if (path === "/api/auth/signout") {
+      state.signedIn = false;
+      return { status: 204 };
+    }
     if (path === "/api/notices/status") {
       const asked = JSON.parse(body.toString("utf8") || "{}") as { ref?: string; token?: string };
       if (asked.ref !== NOTICE_REF || asked.token !== NOTICE_TOKEN) return null;
@@ -349,6 +387,7 @@ export function createFixtureApi(): FixtureApi {
         else if (method === "DELETE") answer = action(method, url.pathname);
         // An action's answer waits as long as the step asks, so the step sees the card change before it lands.
         if (method !== "GET" && answer !== null && state.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.delayMs));
+        if (url.pathname.startsWith("/api/timeline/") && state.timelineDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.timelineDelayMs));
       } catch (err) {
         state.problems.push(`a fixture threw for ${method} ${url.pathname}: ${String(err)}`);
       }

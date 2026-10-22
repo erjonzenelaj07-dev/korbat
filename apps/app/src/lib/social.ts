@@ -30,7 +30,11 @@ export type Page<T> = { items: T[]; nextCursor: string | null };
  */
 export type ExploreAnswer = ExplorePage & { date: string | null; receivedAt: number };
 
-const query = (cursor?: string) => (cursor ? `?cursor=${encodeURIComponent(cursor)}` : "");
+/** A list's query: its cursor and, where the caller asks for a page size (Home's feeds read 50, UI design 8.2), its limit. */
+const query = (cursor?: string, limit?: number) => {
+  const parts = [cursor ? `cursor=${encodeURIComponent(cursor)}` : "", limit === undefined ? "" : `limit=${limit}`].filter((part) => part !== "");
+  return parts.length > 0 ? `?${parts.join("&")}` : "";
+};
 /** Ids come from route params; only a UUID may become part of a path. */
 const postPath = (id: string) => `/api/posts/${encodeURIComponent(PostId.parse(id))}`;
 const handlePath = (handle: string) => `/api/profiles/${encodeURIComponent(handle.replace(/^@/, "").toLowerCase())}`;
@@ -53,8 +57,8 @@ export const social = {
   mediaStatus: (id: string) => api(`/api/media/${id}`, { schema: MediaStatusResponse }),
   removeMedia: (id: string) => api(`/api/media/${id}`, { method: "DELETE" }),
 
-  following: (cursor?: string) => api(`/api/timeline/following${query(cursor)}`, { schema: TimelinePage }),
-  latest: (cursor?: string) => api(`/api/timeline/latest${query(cursor)}`, { schema: TimelinePage }),
+  following: (cursor?: string, limit?: number) => api(`/api/timeline/following${query(cursor, limit)}`, { schema: TimelinePage }),
+  latest: (cursor?: string, limit?: number) => api(`/api/timeline/latest${query(cursor, limit)}`, { schema: TimelinePage }),
   /**
    * A page of Explore (2c design, section 8). Its cursor names the ranking it came from, which a refresh can prune
    * (explore_refreshed); signed out, the first page is all there is, and signInForMore says whether more exist. The web

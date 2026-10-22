@@ -132,11 +132,18 @@ const STYLE_ID = "korbat-fonts";
  */
 export const STILL_RULE = ".k-still { transform: none !important; transition: opacity 150ms ease !important; }";
 
+/**
+ * "You're all caught up" draws its check once a session (UI design, section 5.2, caught-up): the done icon's check, a
+ * path about 8.5 units long, goes from a dash offset of its length to 0 in 450 ms on ease-out. FeedRows.tsx sets
+ * data-draw on the icon only the first time and never under reduced motion, so the icon is otherwise drawn at once.
+ */
+export const DRAW_RULE = "@keyframes k-draw { to { stroke-dashoffset: 0; } } [data-draw] svg path { stroke-dasharray: 9; stroke-dashoffset: 9; animation: k-draw 450ms cubic-bezier(0.23, 1, 0.32, 1) forwards; }";
+
 /** Adds the one style element with the rules, once; the browser downloads a file only when text needs it. */
 export function installFonts(): void {
   if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ID;
-  style.textContent = `${fontFaceCss()} ${STILL_RULE}`;
+  style.textContent = `${fontFaceCss()} ${STILL_RULE} ${DRAW_RULE}`;
   document.head.appendChild(style);
 }

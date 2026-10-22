@@ -12,8 +12,6 @@ import path from "node:path";
 export const LEGACY_COLOUR_FILES: readonly string[] = [
   "app/(auth)/age.tsx",
   "app/explore/about.tsx",
-  "app/index.tsx",
-  "app/post/[id].tsx",
   "app/rules.tsx",
   "app/settings/account.tsx",
   "app/settings/cases/[id].tsx",
@@ -26,7 +24,6 @@ export const LEGACY_COLOUR_FILES: readonly string[] = [
   "app/settings/security.tsx",
   "app/terms.tsx",
   "app/transparency.tsx",
-  "app/u/[handle]/index.tsx",
   "components/moderation/CasesLists.tsx",
   "components/moderation/DecisionDetail.tsx",
   "components/moderation/ItemLines.tsx",
@@ -42,8 +39,6 @@ export const LEGACY_COLOUR_FILES: readonly string[] = [
   "components/social/ComposeSheet.tsx",
   "components/social/Composer.tsx",
   "components/social/ComposerImages.tsx",
-  "components/social/ExploreList.tsx",
-  "components/social/PagedList.tsx",
 ];
 
 /**
@@ -62,16 +57,13 @@ export const LEGACY_TEXT_FILES: readonly string[] = [
   "app/(auth)/signin.tsx",
   "app/email-revert/[token].tsx",
   "app/explore/about.tsx",
-  "app/index.tsx",
   "app/not-me/[token].tsx",
   "app/passkey-remove/[token].tsx",
-  "app/post/[id].tsx",
   "app/settings/account.tsx",
   "app/settings/privacy.tsx",
   "app/settings/profile.tsx",
   "app/settings/security.tsx",
   "app/terms.tsx",
-  "app/u/[handle]/index.tsx",
   "components/moderation/ReportForm.tsx",
   "components/security/MfaSection.tsx",
   "components/security/PasskeysSection.tsx",
@@ -80,8 +72,6 @@ export const LEGACY_TEXT_FILES: readonly string[] = [
   "components/social/ComposeSheet.tsx",
   "components/social/Composer.tsx",
   "components/social/ComposerImages.tsx",
-  "components/social/ExploreList.tsx",
-  "components/social/PagedList.tsx",
 ];
 
 export const SRC = path.resolve(import.meta.dirname, "..", "src");

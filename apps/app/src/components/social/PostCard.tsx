@@ -9,7 +9,7 @@ import { ErrorText, VerifiedChip } from "@/components/ui";
 import { Avatar } from "@/components/kit/Avatar";
 import { Icon } from "@/components/kit/Icon";
 import { IconButton, type IconButtonFeedback } from "@/components/kit/IconButton";
-import { FOCUS_RING, pressDelay } from "@/components/kit/interaction";
+import { FOCUS_RING, dataAttribute, pressDelay } from "@/components/kit/interaction";
 import { Menu, type MenuItem } from "@/components/kit/Menu";
 import { StatusChip, type StatusTone } from "@/components/kit/StatusChip";
 import { Text } from "@/components/kit/Text";
@@ -28,7 +28,7 @@ import { fullDate, postedWhen, timeAgo } from "@/lib/time";
 import { UI_WORDS, fill } from "@/lib/ui-words";
 import { cn } from "@/theme/cn";
 import { useLayout } from "@/theme/layout";
-import { MediaGrid } from "./MediaGrid";
+import { ImagePriority, MediaGrid } from "./MediaGrid";
 import { PostMenu } from "./PostMenu";
 import { RichText } from "./RichText";
 
@@ -42,9 +42,10 @@ const INLINE_LINK = cn("rounded-sm py-1.5 web:hover:underline", FOCUS_RING);
  * Who wrote the post and when (UI design, section 6.6): the display name in body-strong as the link to the profile, the
  * verified chip, the handle in the mono face, and the time as the post's one link. The time shows its short form ("3h"),
  * hidden from the link's name, which says it inside postedWhen's words ("3h ago, open the post"), so the name contains
- * the visible label. The thread's focused post shows the full date instead.
+ * the visible label. The thread's focused post shows the full date instead. The card's own line marks its time link as
+ * the article's open link (`open`), which a feed's Page Down and Page Up move the focus to; a quote's line does not.
  */
-function AuthorLine({ author, createdAt, postId, large = false }: { author: Author; createdAt: string; postId: string; large?: boolean }) {
+function AuthorLine({ author, createdAt, postId, large = false, open = false }: { author: Author; createdAt: string; postId: string; large?: boolean; open?: boolean }) {
   const shown = large ? fullDate(createdAt) : timeAgo(createdAt);
   const when = large ? fill(UI_WORDS["time.posted.on"], { date: shown }) : postedWhen(createdAt);
   return (
@@ -60,7 +61,7 @@ function AuthorLine({ author, createdAt, postId, large = false }: { author: Auth
       </Text>
       <Text variant="meta" tone="low">
         <Link href={`/post/${postId}`} asChild>
-          <Inline className={cn(INLINE_LINK, "px-1.5")}>
+          <Inline {...(open ? dataAttribute("open") : {})} className={cn(INLINE_LINK, "px-1.5")}>
             <Inline aria-hidden>{shown}</Inline>
             <VisuallyHidden>{fill(UI_WORDS["post.open"], { when })}</VisuallyHidden>
           </Inline>
@@ -232,8 +233,30 @@ const PENDING_MS = 400;
  * Below 768 px the images and the quoted post span the card's inner width, from the avatar's edge to the gutter; wider
  * they keep the content column's indent. `large` is the thread's focused post: its words at 19 / 28, the full date and
  * time, and the stats line above the actions (post/[id].tsx passes it in Task 5).
+ *
+ * In a feed (section 10) the article says its place, `position` from 1 and `setSize` (-1 while more can load); a list's
+ * first two rows pass `priority`, so their images load first (11.2); and a thread's ancestors are `joined`: compact,
+ * without a divider, and linked to the post below by a 2 px line-low thread line through their avatars (8.3).
  */
-export function PostCard({ post: initial, repostedBy, onDeleted, large = false }: { post: PostView; repostedBy?: Author; onDeleted?: (id: string) => void; large?: boolean }) {
+export function PostCard({
+  post: initial,
+  repostedBy,
+  onDeleted,
+  large = false,
+  position,
+  setSize,
+  priority = false,
+  joined = false,
+}: {
+  post: PostView;
+  repostedBy?: Author;
+  onDeleted?: (id: string) => void;
+  large?: boolean;
+  position?: number;
+  setSize?: number;
+  priority?: boolean;
+  joined?: boolean;
+}) {
   const { state } = useSession();
   const me = state.status === "signed-in" ? state.me.user.id : null;
   const { hideCounts } = useAppearance();
@@ -414,7 +437,7 @@ export function PostCard({ post: initial, repostedBy, onDeleted, large = false }
           </Pressable>
         </Link>
         <View className="min-w-0 flex-1">
-          <AuthorLine author={post.author} createdAt={post.createdAt} postId={post.id} large={large} />
+          <AuthorLine author={post.author} createdAt={post.createdAt} postId={post.id} large={large} open />
           {own && (post.state !== "visible" || post.inExplore) ? (
             <View className="flex-row flex-wrap gap-x-2">
               <StateChip post={post} />
@@ -464,19 +487,32 @@ export function PostCard({ post: initial, repostedBy, onDeleted, large = false }
 
   return (
     <Animated.View style={removedStyle}>
-      <View role="article" aria-labelledby={labelId} {...(webPress as object)} className={cn("border-b border-line-low px-4 py-3 web:transition-colors web:duration-[120ms]", washed ? "bg-surface-2" : "")}>
+      <View
+        role="article"
+        aria-labelledby={labelId}
+        aria-posinset={position}
+        aria-setsize={position === undefined ? undefined : setSize}
+        {...(webPress as object)}
+        // A thread's focused post draws no divider of its own: the thread's block under it does, after Quote this post.
+        className={cn(joined ? "px-4 pb-1 pt-3" : large ? "px-4 py-3" : "border-b border-line-low px-4 py-3", "web:transition-colors web:duration-[120ms]", washed ? "bg-surface-2" : "")}
+      >
+        {/* The thread line, from under the avatar to the next post's avatar: 2 px, line-low, through the avatars' centre. */}
+        {joined ? <View pointerEvents="none" aria-hidden className="absolute bottom-0 left-[37px] top-[60px] w-0.5 bg-line-low" /> : null}
         {/* The article's name, the author line as a screen reader should hear it; hidden, and named only through aria-labelledby. */}
         <Text nativeID={labelId} aria-hidden style={VISUALLY_HIDDEN}>
           {fill(UI_WORDS["post.label"], { name: post.author.displayName, handle: post.author.handle, when })}
         </Text>
-        {Platform.OS === "web" ? (
-          content
-        ) : (
-          // On native the body is one Pressable that the accessibility tree does not see: the time's link does its job there.
-          <Pressable accessible={false} {...pressDelay(80)} onPress={openPost} className="-mx-4 -my-3 px-4 py-3 active:bg-surface-2">
-            {content}
-          </Pressable>
-        )}
+        {/* The first rows of a list load their images first (11.2): the grid reads it, through the quote's too. */}
+        <ImagePriority.Provider value={priority}>
+          {Platform.OS === "web" ? (
+            content
+          ) : (
+            // On native the body is one Pressable that the accessibility tree does not see: the time's link does its job there.
+            <Pressable accessible={false} {...pressDelay(80)} onPress={openPost} className="-mx-4 -my-3 px-4 py-3 active:bg-surface-2">
+              {content}
+            </Pressable>
+          )}
+        </ImagePriority.Provider>
       </View>
     </Animated.View>
   );

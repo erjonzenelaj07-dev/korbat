@@ -1,20 +1,26 @@
-import { useCallback, useEffect, useState } from "react";
-import { Pressable, Text, View, useWindowDimensions } from "react-native";
-import { Redirect, router, useLocalSearchParams } from "expo-router";
-import type { MeResponse } from "@korbat/contracts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { View, useWindowDimensions } from "react-native";
+import { Redirect, router, useIsFocused, useLocalSearchParams } from "expo-router";
+import type { MeResponse, PostView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { Skeleton } from "@/components/kit/Skeleton";
+import { TabPanel, Tabs } from "@/components/kit/Tabs";
+import { Text } from "@/components/kit/Text";
+import { HeaderSpace, ScreenHeader } from "@/components/ScreenHeader";
 import { ComposeButton, ComposeSheet } from "@/components/social/ComposeSheet";
 import { Composer } from "@/components/social/Composer";
 import { ExploreList } from "@/components/social/ExploreList";
-import { TimelineList } from "@/components/social/PagedList";
-import { Button, Loading } from "@/components/ui";
+import { FeedList, type FeedListHandle } from "@/components/social/FeedList";
+import { Button } from "@/components/ui";
+import { insertPosted } from "@/lib/feed-cache";
+import { usePageTitle } from "@/lib/page-title";
 import { dismissSuggestion, platformPasskeyAvailable, suggestionDismissedAt, suggestPasskey } from "@/lib/passkeys";
 import { useSession } from "@/lib/session";
-import { social } from "@/lib/social";
+import { UI_WORDS } from "@/lib/ui-words";
 
 export type Tab = "following" | "latest" | "explore";
 
-const LABELS: Record<Tab, string> = { following: "Following", latest: "Latest", explore: "Explore" };
+const LABELS: Record<Tab, string> = { following: UI_WORDS["home.following"], latest: UI_WORDS["home.latest"], explore: UI_WORDS["home.explore"] };
 
 /**
  * What a signed-out reader is told under the tabs: both lists are public, and an account adds the rest. Explore's prompt
@@ -42,18 +48,23 @@ export function homeTab(param: string | string[] | undefined, signedIn: boolean)
 }
 
 /**
- * The key of Home's list: another tab, a post written here or another reader (an account's id, or none signed out) mounts
- * a new list, which reads its first page again. The reader is in it because a list read signed out has no cursor, offers
- * a sign-in and was read without any block or mute, and the web keeps a Home mounted under the sign-in screen, which Back
- * shows again once signed in.
+ * The key of Home's list: only another reader (an account's id, or none signed out) mounts a new list, which reads its
+ * first page again (UI design, section 7.5). The reader is in it because a list read signed out has no cursor, offers a
+ * sign-in and was read without any block or mute, and the web keeps a Home mounted under the sign-in screen, which Back
+ * shows again once signed in. A tab change or a new post keeps the list: a tab's rows and place come back from
+ * lib/feed-cache.ts, and the reader's own post is put on top.
  */
-export function homeListKey(tab: Tab, version: number, viewer: string | null): string {
-  return `${tab}:${version}:${viewer ?? "signed-out"}`;
+export function homeListKey(viewer: string | null): string {
+  return viewer ?? "signed-out";
 }
+
+/** Home's panel, which its tabs control. */
+const PANEL = "home-panel";
 
 /**
  * The nudge towards a passkey (1c design, section 9): for an account without one, on a device with a built-in
- * authenticator to add one with, until Not now, which holds for 30 days on this device.
+ * authenticator to add one with, until Not now, which holds for 30 days on this device. A card of its own (UI design,
+ * section 8.2), its words as they were.
  */
 function PasskeySuggestion({ me }: { me: MeResponse }) {
   const [platform, setPlatform] = useState(false);
@@ -70,93 +81,118 @@ function PasskeySuggestion({ me }: { me: MeResponse }) {
 
   if (!suggestPasskey({ passkeys: me.user.passkeys, platformAuthenticator: platform, dismissedAt, now: Date.now() })) return null;
   return (
-    <View className="mx-4 mt-3 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
-      <Text accessibilityRole="header" aria-level={2} className="text-base font-semibold text-zinc-50">
-        Sign in faster with a passkey
+    <View className="mx-4 mt-3 gap-1 rounded-card border border-line-low bg-surface-1 px-4 pb-4 pt-3">
+      <Text as="h2" variant="title">
+        {UI_WORDS["passkey.title"]}
       </Text>
-      <Text className="mt-1 text-sm text-zinc-300">A passkey signs you in with your fingerprint, face or PIN, and cannot be phished. Adding one takes a moment.</Text>
-      <View className="mt-3 flex-row gap-2">
-        <Pressable accessibilityRole="button" onPress={() => router.push("/settings/security?add=1")} className="rounded-lg bg-zinc-50 px-4 py-2">
-          <Text className="text-sm font-semibold text-zinc-950">Add a passkey</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
+      <Text tone="medium">{UI_WORDS["passkey.body"]}</Text>
+      <View className="flex-row flex-wrap gap-x-2">
+        <Button label={UI_WORDS["passkey.add"]} full={false} onPress={() => router.push("/settings/security?add=1")} />
+        <Button
+          label={UI_WORDS["passkey.notNow"]}
+          tone="secondary"
+          full={false}
           onPress={() => {
             const now = Date.now();
             dismissSuggestion(now);
             setDismissedAt(now);
           }}
-          className="rounded-lg border border-zinc-700 px-4 py-2"
-        >
-          <Text className="text-sm text-zinc-200">Not now</Text>
-        </Pressable>
+        />
       </View>
     </View>
   );
 }
 
-/** Home: Following, Latest and Explore for a signed-in account; Latest and Explore with a sign-in prompt for everyone else. */
+/** What a signed-out reader reads above the list: what the tab holds, and the way to an account. */
+function SignedOutPrompt({ tab }: { tab: Tab }) {
+  return (
+    <View className="mx-4 mt-3 rounded-card border border-line-low bg-surface-1 px-4 pb-4 pt-3">
+      <Text tone="medium">{SIGNED_OUT_PROMPTS[tab === "explore" ? "explore" : "latest"]}</Text>
+      <View className="flex-row">
+        <Button label={UI_WORDS["nav.signin"]} onPress={() => router.push("/signin")} tone="secondary" full={false} />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Home (UI design, section 8.2): the header "Home" with the tabs under it, Following, Latest and Explore for a
+ * signed-in account and Latest and Explore with a sign-in prompt for everyone else; then the tab's list, which keeps the
+ * reader's place in Following and Latest. At 768 px and wider the composer is inline above the list; below, the compose
+ * button opens the sheet. The reader's own new post goes on top of Following and Latest.
+ */
 export default function Home() {
   const { state } = useSession();
   const { width } = useWindowDimensions();
+  const title = usePageTitle("title.home");
+  const focused = useIsFocused();
   const { tab: param } = useLocalSearchParams<{ tab?: string }>();
-  const [version, setVersion] = useState(0);
   const [composing, setComposing] = useState(false);
-  const fetchFollowing = useCallback((cursor?: string) => social.following(cursor), []);
-  const fetchLatest = useCallback((cursor?: string) => social.latest(cursor), []);
+  const feed = useRef<FeedListHandle>(null);
+
+  const signedIn = state.status === "signed-in";
+  const current = homeTab(param, signedIn);
+  const header = (
+    <ScreenHeader title={UI_WORDS["home.title"]}>
+      <Tabs
+        label={UI_WORDS["home.tabs"]}
+        tabs={homeTabs(signedIn).map((key) => ({ key, label: LABELS[key] }))}
+        selected={current}
+        // The tab lives in the address, so a reload keeps it and other pages can link to one; setParams changes it in place.
+        onSelect={(tab) => router.setParams({ tab })}
+        panelId={PANEL}
+      />
+    </ScreenHeader>
+  );
+  const viewerId = state.status === "signed-in" ? state.me.user.id : null;
+  const posted = useCallback(
+    (post: PostView) => {
+      // On top of both feeds: the one on screen now, and the other one as the session keeps it.
+      insertPosted(viewerId, post);
+      feed.current?.posted(post);
+    },
+    [viewerId],
+  );
 
   if (state.status === "loading") {
     return (
       <AppShell>
-        <Loading />
+        {title}
+        {header}
+        <HeaderSpace />
+        <Skeleton.List kind="posts" count={5} />
       </AppShell>
     );
   }
   if (state.status === "signed-in" && !state.me.user.onboarded) return <Redirect href="/handle" />;
 
-  const signedIn = state.status === "signed-in";
   const viewer = state.status === "signed-in" ? state.me.user.id : null;
-  const current = homeTab(param, signedIn);
-  // The tab lives in the address, so a reload keeps it and other pages can link to one; setParams changes it in place.
   const select = (tab: Tab) => router.setParams({ tab });
   const inlineComposer = signedIn && width >= 768;
-  const posted = () => setVersion((v) => v + 1);
-
-  return (
-    <AppShell floating={signedIn && !inlineComposer ? <ComposeButton onPress={() => setComposing(true)} /> : undefined}>
-      <View className="border-b border-zinc-800 px-4 pt-4">
-        <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
-          Home
-        </Text>
-        <View accessibilityRole="tablist" className="mt-3 flex-row">
-          {homeTabs(signedIn).map((t) => (
-            <Pressable key={t} accessibilityRole="tab" aria-selected={current === t} onPress={() => select(t)} className={`mr-6 border-b-2 pb-2 ${current === t ? "border-zinc-50" : "border-transparent"}`}>
-              <Text className={`text-base ${current === t ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{LABELS[t]}</Text>
-            </Pressable>
-          ))}
-        </View>
-        {signedIn ? null : (
-          <View className="my-3 rounded-lg bg-zinc-900 px-4 py-3">
-            <Text className="text-sm text-zinc-300">{SIGNED_OUT_PROMPTS[current === "explore" ? "explore" : "latest"]}</Text>
-            <Button label="Sign in" onPress={() => router.push("/signin")} tone="secondary" />
-          </View>
-        )}
-      </View>
+  // What scrolls above the posts: the sign-in prompt, the passkey card and, wider, the composer.
+  const above = (
+    <View>
+      {signedIn ? null : <SignedOutPrompt tab={current} />}
       {state.status === "signed-in" ? <PasskeySuggestion me={state.me} /> : null}
       {inlineComposer ? (
-        <View className="border-b border-zinc-800">
+        <View className="border-b border-line-low">
           <Composer onPosted={posted} />
         </View>
       ) : null}
-      {current === "explore" ? (
-        <ExploreList key={homeListKey(current, version, viewer)} onShowLatest={() => select("latest")} />
-      ) : (
-        <TimelineList
-          key={homeListKey(current, version, viewer)}
-          fetchPage={current === "following" ? fetchFollowing : fetchLatest}
-          empty={current === "following" ? "Nothing here yet. Follow someone, or switch to Latest or Explore." : "No posts yet."}
-        />
-      )}
+    </View>
+  );
+
+  return (
+    <AppShell floating={signedIn && !inlineComposer ? <ComposeButton onPress={() => setComposing(true)} /> : undefined}>
+      {title}
+      {header}
+      <TabPanel panelId={PANEL} selected={current}>
+        {current === "explore" ? (
+          <ExploreList key={homeListKey(viewer)} onShowLatest={() => select("latest")} header={above} />
+        ) : (
+          <FeedList key={homeListKey(viewer)} handle={feed} feed={current} reader={viewer} active={focused} header={above} onShowLatest={() => select("latest")} />
+        )}
+      </TabPanel>
       <ComposeSheet open={composing} onClose={() => setComposing(false)} onPosted={posted} />
     </AppShell>
   );

@@ -598,3 +598,88 @@ describe("Menu (6.9)", () => {
     expect(nameless.icon).toBe("delete");
   });
 });
+
+// UI Task 5 appends below, after Menu's cases, so the lines above keep the numbers other tasks cite.
+import { tabId, TabPanel, Tabs, tabMove, type TabsProps } from "../src/components/kit/Tabs";
+
+describe("Tabs (6.10)", () => {
+  const tabs = [
+    { key: "posts", label: "Posts" },
+    { key: "replies", label: "Replies" },
+    { key: "likes", label: "Likes" },
+  ];
+  /** Each tab's opening tag and its first text, as explore.test.tsx's tabsOf reads a tab list. */
+  const tabsOf = (markup: string) => [...markup.matchAll(/<[a-z]+\b([^>]*\brole="tab"[^>]*)>(?:<[^>]+>)*([^<]*)/g)].map((match) => ({ tag: match[1]!, label: match[2]! }));
+
+  test("a tab list named by its label, a tab per entry with its label as its first text, the chosen one selected", () => {
+    const out = html(<Tabs label="Profile tabs" tabs={tabs} selected="replies" onSelect={noop} panelId="profile-panel" />);
+    expect(tagWith(out, 'role="tablist"')).toContain('aria-label="Profile tabs"');
+    const found = tabsOf(out);
+    expect(found.map((tab) => tab.label)).toEqual(["Posts", "Replies", "Likes"]);
+    expect(found.map((tab) => tab.tag.includes('aria-selected="true"'))).toEqual([false, true, false]);
+    // Each tab controls the panel and has the id the panel is named by.
+    for (const tab of found) expect(tab.tag).toContain('aria-controls="profile-panel"');
+    expect(found[1]!.tag).toContain(`id="${tabId("profile-panel", "replies")}"`);
+  });
+
+  test("one tab stop: the selected tab, the others reached with the arrows", () => {
+    const found = tabsOf(html(<Tabs label="Profile tabs" tabs={tabs} selected="posts" onSelect={noop} panelId="p" />));
+    expect(found.map((tab) => /tabindex="(-?\d)"/.exec(tab.tag)?.[1])).toEqual(["0", "-1", "-1"]);
+  });
+
+  test("Left and Right move and select at once and wrap; Home and End jump; other keys do nothing", () => {
+    expect(tabMove(0, "ArrowRight", 3)).toBe(1);
+    expect(tabMove(2, "ArrowRight", 3)).toBe(0);
+    expect(tabMove(0, "ArrowLeft", 3)).toBe(2);
+    expect(tabMove(1, "Home", 3)).toBe(0);
+    expect(tabMove(1, "End", 3)).toBe(2);
+    expect(tabMove(1, "ArrowDown", 3)).toBeNull();
+    expect(tabMove(1, "Enter", 3)).toBeNull();
+  });
+
+  test("the panel is a tabpanel named by the selected tab", () => {
+    const panel = tagWith(html(<TabPanel panelId="profile-panel" selected="likes"><KitText>Likes</KitText></TabPanel>), 'role="tabpanel"');
+    expect(panel).toContain('id="profile-panel"');
+    expect(panel).toContain(`aria-labelledby="${tabId("profile-panel", "likes")}"`);
+  });
+
+  test("the underline moves on spring-snap for a pointer and jumps for keys and reduced motion; the row scrolls sideways; the ring and the selection haptic", () => {
+    const source = kitSource("Tabs.tsx");
+    expect(source).toContain('motion.spring("springSnap")');
+    expect(source).toContain("lastInputWasKeyboard()");
+    expect(source).toContain('haptic("selection")');
+    expect(source).toContain("FOCUS_RING");
+    expect(source).toContain("horizontal");
+    expect(source).not.toContain("flex-wrap");
+  });
+
+  test("tsc refuses a tab list without a name", () => {
+    // @ts-expect-error label is required: it names the tab list.
+    const nameless: TabsProps<"posts"> = { tabs: [{ key: "posts", label: "Posts" }], selected: "posts", onSelect: noop, panelId: "p" };
+    expect(nameless.panelId).toBe("p");
+  });
+});
+
+describe("ListRow for an account (6.11, 8.4)", () => {
+  const account = { id: "00000000-0000-4000-8000-000000000002", displayName: "Grace Hopper" };
+
+  test("the link holds the avatar, the name with its chip and the handle; the control sits beside the link, outside it", () => {
+    const out = html(
+      <ListRow
+        label="Grace Hopper"
+        href="/u/grace"
+        leading={<Avatar account={account} size={40} />}
+        badge={<VerifiedChip />}
+        detail={<KitText variant="mono">@grace</KitText>}
+        control={{ kind: "button", element: <Button label="Follow" onPress={noop} full={false} /> }}
+      />,
+    );
+    const link = /<a\b[^>]*href="\/u\/grace"[^>]*>([\s\S]*?)<\/a>/.exec(out)?.[1] ?? "";
+    // The monogram's letter is decoration, hidden from assistive technology; the name, the chip and the handle follow it.
+    expect(textOf(link)).toBe("G Grace Hopper Verified @grace");
+    expect(link).not.toContain('role="button"');
+    expect(buttons(out)).toEqual(["Follow"]);
+    // No chevron beside a control: the row's one trailing thing is the control.
+    expect(out).not.toContain(lucideClass(ICONS.next));
+  });
+});

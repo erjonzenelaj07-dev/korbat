@@ -13,6 +13,14 @@ export const STALE_AFTER_MS = 15 * 60 * 1000;
 /** What the list's status line says once the ranking being paged is gone and the posts below it come from the current one. */
 export const EXPLORE_REFRESHED_NOTICE = "Explore was refreshed; the posts below come from the new ranking.";
 
+/** The words of Explore's list (2c design, section 11), word for word as ExploreList.tsx had them before UI Task 5 moved them here. */
+export const EXPLORE_WORDS = {
+  about: "How Explore works",
+  refresh: "Refresh",
+  showLatest: "Show Latest",
+  signInForMore: "Sign in to see more of Explore",
+} as const;
+
 /** A page of Explore is the API's default of 20 posts, and a ranking holds at most listLength: one read never needs more pages than this. */
 export const MAX_PAGES = Math.ceil(EXPLORE_V2.listLength / 20) + 1;
 

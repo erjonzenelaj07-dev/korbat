@@ -46,7 +46,7 @@ vi.mock("expo-router", () => ({
   Link: ({ href, children }: { href: string; children: ReactElement }) => cloneElement(children, { href } as object),
   Redirect: () => null,
   router: { push: () => undefined, replace: () => undefined, setParams: () => undefined },
-  useLocalSearchParams: () => route.params,
+  useLocalSearchParams: () => route.params, useIsFocused: () => true,
   usePathname: () => "/",
 }));
 vi.mock("@/lib/session", () => ({ useSession: () => ({ state: session.state, refresh: async () => session.state }) }));
@@ -217,26 +217,25 @@ describe("Home's tabs and their addresses", () => {
     route.params = {};
   });
 
-  test("each list is keyed by its tab, the posts written on Home and its reader, so signing in or out, or another account, reads it again", () => {
+  test("each list is keyed by its reader only, so a tab change or a new post keeps its rows and place, and signing in or out, or another account, reads it again", () => {
     // A list read signed out has no cursor and a sign-in link and was read without any block or mute, and the web keeps a
-    // Home mounted under the sign-in screen, which Back shows again once signed in.
-    const readers = [homeListKey("explore", 0, null), homeListKey("explore", 0, AUTHOR), homeListKey("explore", 0, OTHER)];
+    // Home mounted under the sign-in screen, which Back shows again once signed in. UI Task 5: the tab and a new post left
+    // the key (UI design, section 7.5); a tab's rows and place come back from lib/feed-cache.ts.
+    const readers = [homeListKey(null), homeListKey(AUTHOR), homeListKey(OTHER)];
     expect(new Set(readers).size).toBe(3);
-    expect(homeListKey("latest", 0, null)).not.toBe(homeListKey("latest", 0, AUTHOR));
-    // Another tab and a new post still make a new list.
-    expect(homeListKey("latest", 0, AUTHOR)).not.toBe(homeListKey("explore", 0, AUTHOR));
-    expect(homeListKey("explore", 1, AUTHOR)).not.toBe(homeListKey("explore", 0, AUTHOR));
-    // Both lists take their key from it, with the session's account as the reader.
+    expect(homeListKey(AUTHOR)).toBe(homeListKey(AUTHOR));
+    // Both lists take their key from it, with the session's account as the reader; the feeds' list is a FeedList.
     const home = block(read("app", "index.tsx"), "Home");
     expect(home).toContain('const viewer = state.status === "signed-in" ? state.me.user.id : null;');
-    expect(home.match(/key=\{homeListKey\(current, version, viewer\)\}/g)).toHaveLength(2);
+    expect(home.match(/key=\{homeListKey\(viewer\)\}/g)).toHaveLength(2);
+    expect(home).toContain("<FeedList");
   });
 
   test("a tab is chosen through the address, every link to a tab names one Home has, and Following's empty text points to Latest and Explore", () => {
     const home = read("app", "index.tsx");
     expect(home).toContain("useLocalSearchParams<{ tab?: string }>()");
     expect(home).toContain("const select = (tab: Tab) => router.setParams({ tab });");
-    expect(home).toContain('"Nothing here yet. Follow someone, or switch to Latest or Explore."');
+    expect(read("lib", "ui-words.ts")).toContain('"feed.empty.following.body": "Nothing here yet. Follow someone, or switch to Latest or Explore.",');
     const links = sourceFiles().flatMap((file) => [...file.text.matchAll(/"\/\?tab=([a-z]+)"/g)].map((match) => ({ file: file.name, tab: match[1] ?? "" })));
     // How Explore works leads back to the Explore tab; Popular now, which did too, left the shell (UI design, decision 14).
     expect(links.map((link) => link.file).sort()).toEqual(["app/explore/about.tsx"]);
@@ -524,7 +523,7 @@ describe("the Explore list", () => {
     expect(list).toContain("const remove = (id: string) => setShown(reader.remove(id));");
     // Its posts, Load more's cursor, the ranking's time and the sign-in link all come from the answer.
     for (const wire of [
-      "data={shown.items}",
+      "items: shown.items,",
       "<ExploreHeader ranking={shown.ranking} onRefresh={() => refresh(true)} lineRef={line} />",
       "onRefresh={() => refresh(false)}",
       "cursor={shown.cursor}",
@@ -825,7 +824,7 @@ describe("Explore's rows", () => {
   // first posts are the ones Popular now listed.
   test("each row is a post card, which names an image-only post by its image's description and skips a hidden image", () => {
     // The row ExploreList draws for every item of a page.
-    expect(read("components", "social", "ExploreList.tsx")).toContain("renderItem={({ item }) => <PostCard post={item.post} onDeleted={remove} />}");
+    expect(read("components", "social", "ExploreList.tsx")).toContain("renderPost={(item, place) => <PostCard post={item.post} onDeleted={remove} {...place} />}");
     const image = { id: id(90), width: 800, height: 600, blurhash: "LEHV6nWB2yk8", alt: "A green square", small: "/media/x/small.webp", large: "/media/x/large.webp" };
     // An image-only post whose first image is hidden: the shown one names it.
     const out = html(<PostCard post={post(2, { body: "", media: [{ id: id(91), hidden: true }, image] })} />);
@@ -859,9 +858,9 @@ describe("no screen caches or stores Explore's answers", () => {
       expect(file.text, file.name).not.toMatch(/^(export )?(let|var) /m);
       expect(file.text, file.name).not.toMatch(/^(export )?const \w+ = new (Map|Set|WeakMap)\b/m);
     }
-    // What the app keeps in the browser is the device id, the passkey card's Not now and the reader's appearance, nothing else.
+    // What the app keeps in the browser is the device id, the passkey card's Not now, the reader's appearance and reading places, nothing else.
     const stores = sourceFiles().filter((file) => /localStorage|sessionStorage|indexedDB|AsyncStorage/.test(file.text));
-    expect(stores.map((file) => file.name).sort()).toEqual(["lib/api.ts", "lib/appearance.ts", "lib/passkeys.ts"]);
+    expect(stores.map((file) => file.name).sort()).toEqual(["lib/api.ts", "lib/appearance.ts", "lib/passkeys.ts", "lib/reading-place.ts"]);
     // Explore's requests are the client's plain calls, which the API answers no-store.
     const social = read("lib", "social.ts");
     for (const line of social.split("\n").filter((text) => text.includes("/api/timeline/explore") || text.includes("/explore`"))) expect(line).not.toMatch(/cache/i);

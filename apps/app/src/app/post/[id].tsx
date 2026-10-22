@@ -1,27 +1,47 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Pressable, View } from "react-native";
 import { Link, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { PostId, type PostView, type ThreadResponse, type Tombstone } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { FOCUS_RING, dataAttribute } from "@/components/kit/interaction";
+import { Skeleton } from "@/components/kit/Skeleton";
+import { Text } from "@/components/kit/Text";
+import type { ListHandle } from "@/components/list/List";
+import { HeaderSpace, ScreenHeader } from "@/components/ScreenHeader";
 import { ComposeSheet } from "@/components/social/ComposeSheet";
 import { Composer } from "@/components/social/Composer";
 import { PostList } from "@/components/social/PagedList";
 import { PostCard } from "@/components/social/PostCard";
-import { Loading } from "@/components/ui";
+import { Button, TextLink } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
-import { exploreStatusText } from "@/lib/explore";
+import { EXPLORE_WORDS, exploreStatusText } from "@/lib/explore";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
+import { UI_WORDS } from "@/lib/ui-words";
+import { cn } from "@/theme/cn";
 
+/** A link of the status line: a 44 px target, as TextLink draws one. */
+const LINE_LINK = cn("min-h-[44px] justify-center rounded-control active:opacity-70", FOCUS_RING);
+
+/**
+ * A post above the focused one, in the chain it replies to (UI design, section 8.3): a compact card joined to the next
+ * by the 2 px thread line through the avatars; a post that is gone keeps its sentence, in the italic text face on a
+ * surface-2 block, on the same line.
+ */
 function AncestorRow({ item }: { item: PostView | Tombstone }) {
   if (!("author" in item)) {
     return (
-      <View className="border-b border-zinc-800 px-4 py-3">
-        <Text className="text-sm italic text-zinc-400">{item.deleted ? "This post was deleted by its author." : "This post is unavailable."}</Text>
+      <View className="px-4 pb-1 pt-3">
+        <View className="rounded-media bg-surface-2 px-3 py-2.5">
+          <Text tone="medium" italic>
+            {item.deleted ? UI_WORDS["post.deleted"] : UI_WORDS["post.unavailable"]}
+          </Text>
+        </View>
       </View>
     );
   }
-  return <PostCard post={item} />;
+  return <PostCard post={item} joined />;
 }
 
 /**
@@ -55,16 +75,22 @@ function ExploreStatusLine({ id }: { id: string }) {
   if (!text) return null;
   return (
     <View className="px-4 pb-2">
-      <Text className="text-sm leading-5 text-zinc-300">{text}</Text>
-      <View className="mt-1 flex-row flex-wrap gap-x-4">
+      <Text variant="meta" tone="medium">
+        {text}
+      </Text>
+      <View className="flex-row flex-wrap gap-x-4">
         <Link href="/explore/about" asChild>
-          <Pressable>
-            <Text className="text-sm text-zinc-400 underline">How Explore works</Text>
+          <Pressable className={LINE_LINK}>
+            <Text tone="accent" className="underline web:underline-offset-2">
+              {EXPLORE_WORDS.about}
+            </Text>
           </Pressable>
         </Link>
         <Link href="/settings/privacy" asChild>
-          <Pressable>
-            <Text className="text-sm text-zinc-400 underline">Your Explore setting</Text>
+          <Pressable className={LINE_LINK}>
+            <Text tone="accent" className="underline web:underline-offset-2">
+              {UI_WORDS["thread.exploreSetting"]}
+            </Text>
           </Pressable>
         </Link>
       </View>
@@ -82,6 +108,8 @@ export default function Thread() {
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [quoting, setQuoting] = useState(quote === "1");
+  const title = usePageTitle("title.post");
+  const missingTitle = usePageTitle("title.postMissing");
 
   useEffect(() => {
     let cancelled = false;
@@ -133,19 +161,25 @@ export default function Thread() {
 
   const fetchReplies = useCallback((cursor?: string) => social.thread(id, cursor).then((t) => t.replies), [id]);
 
+  // The page opens with the focused post at the top of the view and its ancestors above it, kept there by the list's
+  // anchor while they and the replies are drawn (section 7.5); a reply written here reads the replies again, not the post.
+  const list = useRef<ListHandle>(null);
+  const opened = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!thread || opened.current === thread.post.id || thread.ancestors.length === 0) return;
+    opened.current = thread.post.id;
+    list.current?.hold("focused");
+  }, [thread]);
+
   if (error) {
     return (
       <AppShell>
-        <View className="px-4 py-10">
-          <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
-            This post is not available
-          </Text>
-          <Text className="mt-2 text-base text-zinc-400">{error}</Text>
-          <Link href="/" replace asChild>
-            <Pressable className="mt-6">
-              <Text className="text-sm text-zinc-400 underline">Back to the timeline</Text>
-            </Pressable>
-          </Link>
+        {missingTitle}
+        <ScreenHeader title={UI_WORDS["thread.missing"]} back="/" />
+        <HeaderSpace />
+        <View className="items-start gap-2 px-4 py-6">
+          <Text tone="medium">{error}</Text>
+          <TextLink label={UI_WORDS["thread.back"]} href="/" replace />
         </View>
       </AppShell>
     );
@@ -153,7 +187,10 @@ export default function Thread() {
   if (!thread) {
     return (
       <AppShell>
-        <Loading />
+        {title}
+        <ScreenHeader title={UI_WORDS["thread.title"]} back="/" />
+        <HeaderSpace />
+        <Skeleton.List kind="posts" count={1} />
       </AppShell>
     );
   }
@@ -161,28 +198,39 @@ export default function Thread() {
   const mine = viewer !== null && thread.post.author.id === viewer;
   const header = (
     <View>
-      {thread.ancestors.map((item) => (
-        <AncestorRow key={item.id} item={item} />
-      ))}
-      <View className="border-b-2 border-zinc-700">
-        <PostCard post={thread.post} onDeleted={() => router.replace("/")} />
-        {/* Replies and quotes never enter Explore, so they get no line and no request. */}
-        {mine && thread.post.replyTo === null && thread.post.quoteOf === null ? <ExploreStatusLine id={thread.post.id} /> : null}
-        {signedIn ? (
-          <View className="flex-row justify-end px-4 pb-2">
-            <Pressable accessibilityRole="button" onPress={() => setQuoting(true)}>
-              <Text className="text-sm text-zinc-400 underline">Quote this post</Text>
-            </Pressable>
-          </View>
-        ) : null}
+      <View {...dataAttribute("thread")}>
+        {thread.ancestors.map((item) => (
+          <AncestorRow key={item.id} item={item} />
+        ))}
+        {/* The focused post, which the list holds at the top when the page opens. */}
+        <View {...dataAttribute("row", "focused")} className="border-b border-line-low">
+          <PostCard post={thread.post} large onDeleted={() => router.replace("/")} />
+          {/* Replies and quotes never enter Explore, so they get no line and no request. */}
+          {mine && thread.post.replyTo === null && thread.post.quoteOf === null ? <ExploreStatusLine id={thread.post.id} /> : null}
+          {signedIn ? (
+            <View className="flex-row justify-end px-4 pb-3">
+              <View className="-mt-6">
+                <Button label={UI_WORDS["thread.quote"]} tone="secondary" full={false} onPress={() => setQuoting(true)} />
+              </View>
+            </View>
+          ) : null}
+        </View>
       </View>
-      {signedIn ? <Composer replyTo={thread.post} onPosted={() => setVersion((v) => v + 1)} /> : null}
+      {signedIn ? (
+        <Composer replyTo={thread.post} onPosted={() => setVersion((v) => v + 1)} />
+      ) : (
+        <View className="border-b border-line-low px-4 py-1">
+          <TextLink label={UI_WORDS["thread.signIn"]} href="/signin" />
+        </View>
+      )}
     </View>
   );
 
   return (
     <AppShell>
-      <PostList key={version} fetchPage={fetchReplies} empty="No replies yet." header={header} />
+      {title}
+      <ScreenHeader title={UI_WORDS["thread.title"]} back="/" />
+      <PostList key={version} handle={list} fetchPage={fetchReplies} empty={UI_WORDS["thread.empty"]} header={header} />
       <ComposeSheet open={quoting} quoteOf={thread.post} onClose={() => setQuoting(false)} onPosted={(post) => router.push(`/post/${post.id}`)} />
     </AppShell>
   );

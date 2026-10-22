@@ -50,7 +50,7 @@ export default function Bookmarks() {
     <AppShell>
       {title}
       <BookmarksHeader />
-      <PostList fetchPage={fetchPage} empty={UI_WORDS["bookmarks.empty"]} />
+      <PostList fetchPage={fetchPage} empty={{ title: UI_WORDS["bookmarks.empty.title"], body: UI_WORDS["bookmarks.empty"] }} />
     </AppShell>
   );
 }

@@ -245,16 +245,16 @@ describe("what leads to the form", () => {
     expect(html(<MediaGrid media={[image(1)]} postId={id(5)} />)).not.toContain("/report");
   });
 
-  test("a profile has Report beside Mute and Block, and signed out too", () => {
-    const profile = read("app", "u", "[handle]", "index.tsx");
-    // Anyone but the profile's owner is offered it.
-    expect(profile).toContain("const report = own ? null : (");
-    expect(profile).toContain("<Link href={reportHref({ account: profile.handle })} asChild>");
-    // In the row of the signed-in controls, after Block; and alone in their place when they are not shown.
-    const row = profile.slice(profile.indexOf("{me && !own && viewer ? ("), profile.indexOf("{!own && !(me && viewer) ?"));
-    expect(row.indexOf("Block</Text>")).toBeGreaterThan(row.indexOf("Mute"));
-    expect(row.indexOf("{report}")).toBeGreaterThan(row.indexOf("Block</Text>"));
-    expect(profile).toContain('{!own && !(me && viewer) ? <View className="mt-3 flex-row">{report}</View> : null}');
+  test("UI Task 5: a profile has Report in its More menu, drawn open, after Mute and Block, and signed out too; never on the reader's own", () => {
+    const grace = { id: id(902), handle: "grace", displayName: "Grace", bio: "", verified: false, createdAt: "2026-10-01T10:00:00.000Z", counts: { posts: 1, followers: 0, following: 0 } };
+    session.state = { status: "signed-out" };
+    expect(hrefs(html(<ProfileMenuPanel profile={grace} />))).toEqual(["/report?account=grace"]);
+    session.state = me(id(901));
+    const menu = textOf(html(<ProfileMenuPanel profile={{ ...grace, viewer: { following: false, followedBy: false, blocked: false, muted: false } }} />));
+    expect(menu.indexOf("Block")).toBeGreaterThan(menu.indexOf("Mute"));
+    expect(menu.indexOf("Report")).toBeGreaterThan(menu.indexOf("Block"));
+    session.state = me(id(902));
+    expect(html(<ProfileMenuPanel profile={grace} />)).toBe("");
   });
 
   test("the terms page ends with a Contact section built from the build's address, and a link to the form, which needs no account", () => {
@@ -592,3 +592,5 @@ describe("the build's contact address", () => {
 
 // UI Task 4: Report moved into the post card's More menu (UI design, decision 12); imported here, below, so the lines above keep their numbers.
 import { PostMenuPanel } from "../src/components/social/PostMenu";
+// UI Task 5: the profile's More menu, imported here for the same reason.
+import { ProfileMenuPanel } from "../src/components/social/ProfileMenu";

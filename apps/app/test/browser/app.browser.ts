@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { THEMES, type ThemeName } from "../../src/theme/tokens";
 import { TITLE_WORDS, UI_WORDS } from "../../src/lib/ui-words";
 import { appSiteHeadersFromCaddyfile } from "./caddyfile";
-import { createFixtureApi, DECISION_ID, MISSING_POST_ID, NOTICE_REF, NOTICE_TOKEN, POST_ID, postIdOf, RELEASE_ID, UPLOAD_ID, type FixtureApi } from "./fixture-api";
+import { ADA, createFixtureApi, DECISION_ID, MISSING_POST_ID, newPostIdOf, NOTICE_REF, NOTICE_TOKEN, POST_ID, postIdOf, RELEASE_ID, UPLOAD_ID, type FixtureApi } from "./fixture-api";
 import { HOLD_MS, startAppSite, type AppSiteServer } from "./server";
 import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } from "./watch";
 
@@ -26,7 +26,9 @@ import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } f
  * the keyboard; contrast as drawn in Light, Dim and Dark; text at Largest with the root at 200 percent at 320 px; every
  * route signed out and signed in; the requests and the time before the first content; the offline banner; the header
  * that hides on a phone, and stays under reduced motion; the soft reset; and from Task 4 the lightbox, Like with its
- * rollback, Follow with its rollback, the menus, and Who sees this. Later tasks add their screens' steps.
+ * rollback, Follow with its rollback, the menus, and Who sees this; from Task 5 the new-posts pill, the reading place, the
+ * feeds kept across tabs, the keyboard on Home, and the focus after a delete with the thread held at its post. Later
+ * tasks add their screens' steps.
  *
  * It never downloads a browser. By default it drives the Chromium build playwright-core 1.63.0 names (chromium-1243 under
  * ms-playwright), which must already be installed; KORBAT_BROWSER_CHANNEL=chrome drives the machine's own Chrome. The
@@ -256,10 +258,11 @@ const ROUTES = [
  * The parts of a page this sub-project has drawn so far, which the walk holds to the phone's target rule, the labels'
  * fit and contrast as drawn: the skip link, the nav, the context column, the screen header, the offline banner, and a
  * screen that is the kit's alone (the missing page); from Task 4 every post card (an article), every sheet and dialog,
- * a menu's popover, the follow button and the toaster. The screens' own content still paints with Tailwind's palette and
- * sizes until its task moves it onto the tokens (test/legacy-files.ts), and joins this list then: the feeds, threads and
- * profiles with Task 5, the composer with Task 6, the moderation and public pages with Task 7, settings and sign-in with
- * Task 8.
+ * a menu's popover, the follow button and the toaster; from Task 5 every row of a feed (its posts, the marker, Load more,
+ * the end), the tab lists, the new-posts pill, the profile's header and the thread's posts. A feed's header is not held
+ * yet: it holds the composer, which Task 6 moves onto the tokens. The screens' own content still paints with Tailwind's
+ * palette and sizes until its task moves it onto the tokens (test/legacy-files.ts), and joins this list then: the
+ * composer with Task 6, the moderation and public pages with Task 7, settings and sign-in with Task 8.
  */
 const DRAWN = [
   'a[href="#main"]',
@@ -272,17 +275,27 @@ const DRAWN = [
   "[data-menu]",
   "[data-follow]",
   "[data-sonner-toaster]",
+  '[role="feed"] [data-row]',
+  '[role="tablist"]',
+  "[data-pill]",
+  "[data-profile-header]",
+  "[data-thread]",
 ].join(", ");
 /** A page drawn wholly on the kit: everything on it is held to the rules. */
 const ALL = "body";
 
-/** The pages of the layout steps: Home, a post, a profile, the rules and a missing page, with the item current on each. */
+/**
+ * The pages of the layout steps: Home, a post, a profile, the rules and a missing page, with the item current on each;
+ * from Task 5 Bookmarks and a followers list too, drawn wholly on the kit.
+ */
 const LAYOUT_PAGES: { name: string; route: string; current: string | null; scope: string }[] = [
   { name: "home", route: "/", current: "/", scope: DRAWN },
   { name: "post", route: `/post/${POST_ID}`, current: null, scope: DRAWN },
   { name: "profile", route: "/u/grace", current: null, scope: DRAWN },
   { name: "rules", route: "/rules", current: null, scope: DRAWN },
   { name: "missing", route: "/no-such-page", current: null, scope: ALL },
+  { name: "bookmarks", route: "/bookmarks", current: "/bookmarks", scope: ALL },
+  { name: "followers", route: "/u/grace/followers", current: null, scope: ALL },
 ];
 
 
@@ -588,8 +601,8 @@ describe("the app in Chromium, under the app site's policy", () => {
     const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "dark" } });
     try {
       await visit(visit_.page, "/");
-      const focused = `(() => { const e = document.activeElement; const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return { tag: e.tagName.toLowerCase(), href: e.getAttribute("href"), inMain: !!e.closest("main"), isMain: e.tagName === "MAIN", inNav: !!e.closest('nav[aria-label="Main"]'), outline: s.outlineStyle, width: parseFloat(s.outlineWidth), w: r.width, h: r.height }; })()`;
-      type Focus = { tag: string; href: string | null; inMain: boolean; isMain: boolean; inNav: boolean; outline: string; width: number; w: number; h: number };
+      const focused = `(() => { const e = document.activeElement; const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return { tag: e.tagName.toLowerCase(), href: e.getAttribute("href"), role: e.getAttribute("role"), inMain: !!e.closest("main"), isMain: e.tagName === "MAIN", inNav: !!e.closest('nav[aria-label="Main"]'), outline: s.outlineStyle, width: parseFloat(s.outlineWidth), w: r.width, h: r.height }; })()`;
+      type Focus = { tag: string; href: string | null; role: string | null; inMain: boolean; isMain: boolean; inNav: boolean; outline: string; width: number; w: number; h: number };
       const stops: Focus[] = [];
       for (let i = 0; i < 6; i++) {
         await visit_.page.keyboard.press("Tab");
@@ -603,13 +616,12 @@ describe("the app in Chromium, under the app site's policy", () => {
       expect(stops[0]!.h).toBeGreaterThanOrEqual(44);
       expect(stops.slice(1, 5).map((stop) => (stop.inNav ? stop.href : null))).toEqual(["/", "/bookmarks", "/u/ada", "/settings/security"]);
       expect(stops[5]!.inMain).toBe(true);
-      // The shell's stops draw korbat's ring, 2 px; the first stop inside Home's column is Home's own tab, drawn by Task 5,
-      // which shows the browser's ring until then.
-      for (const stop of stops.slice(0, 5)) {
+      // Every stop draws korbat's ring, 2 px: the shell's, and the first stop inside Home's column, Home's own tab (Task 5).
+      expect(stops[5]!.role).toBe("tab");
+      for (const stop of stops.slice(0, 6)) {
         expect(stop.outline, JSON.stringify(stop)).not.toBe("none");
         expect(stop.width, JSON.stringify(stop)).toBeGreaterThanOrEqual(2);
       }
-      expect(stops[5]!.outline).not.toBe("none");
       await screenshot(visit_.page, "keyboard-1280-dark-main");
       // The skip link moves the focus into the main column without changing the address.
       await visit(visit_.page, "/");
@@ -652,11 +664,12 @@ describe("the app in Chromium, under the app site's policy", () => {
   test("11. at 320 by 640 with Largest text and the root at 200 percent, nothing scrolls sideways and no label is cut", async () => {
     const visit_ = await open({ width: 320, height: 640, appearance: { theme: "light", textStep: "largest" } });
     try {
-      // The screens this task draws: a missing page, wholly the kit's, and Bookmarks under its header. Home and a post
-      // join when Task 5 moves them onto the kit (their tabs and rows still use fixed sizes from before).
+      // The screens drawn on the kit: a missing page, Bookmarks under its header, and from Task 5 Home with its tabs and
+      // rows. A post joins with Task 6, which moves its reply composer onto the kit.
       for (const [name, route] of [
         ["missing", "/no-such-page"],
         ["bookmarks", "/bookmarks"],
+        ["home", "/"],
       ] as const) {
         await visit(visit_.page, route);
         await visit_.page.evaluate(`document.documentElement.style.fontSize = "200%"`);
@@ -1119,6 +1132,271 @@ describe("the app in Chromium, under the app site's policy", () => {
           await visit_.context.close();
         }
       }
+    }
+  });
+
+  // UI Task 5: the feeds that keep the reader's place (UI design, sections 7.5, 8.2, 8.3 and 10).
+
+  /** The post at the top of the main column's list: its open link and how far its top is below the list's top line. */
+  const TOP_ARTICLE = `(() => { const list = ${LIST}; if (!list) return null; const line = list.getBoundingClientRect().top + (parseFloat(getComputedStyle(list.firstElementChild).paddingTop) || 0); const article = [...list.querySelectorAll('[role="article"]')].find((a) => a.querySelector("[data-open]") && a.getBoundingClientRect().bottom > line + 1); if (!article) return null; return { href: article.querySelector("[data-open]").getAttribute("href"), top: Math.round((article.getBoundingClientRect().top - line) * 10) / 10 }; })()`;
+  type Top = { href: string; top: number } | null;
+  /** Whether the post at the top is the one at `href`, its top within 2 px of the list's top line. */
+  const onTop = (href: string) => `(() => { const top = ${TOP_ARTICLE}; return !!top && top.href === ${JSON.stringify(href)} && Math.abs(top.top) <= 2; })()`;
+
+  /** Scrolls the list until fixture post `href` is at its top line, as a reader would, a screen at a time. */
+  async function scrollToPost(page: Page, href: string): Promise<void> {
+    for (let tries = 0; tries < 40; tries++) {
+      const there = await page.evaluate(
+        `(() => { const list = ${LIST}; if (!list) return false; const link = list.querySelector('[role="article"] [data-open][href="${href}"]'); if (!link) { list.scrollTop += 500; return false; } const line = list.getBoundingClientRect().top + (parseFloat(getComputedStyle(list.firstElementChild).paddingTop) || 0); const delta = link.closest('[role="article"]').getBoundingClientRect().top - line; list.scrollTop += delta; return Math.abs(delta) < 1; })()`,
+      );
+      if (there) return;
+      await pause(120);
+    }
+    throw new Error(`${href} never came to the top`);
+  }
+
+  /** Waits until a condition on the walk's side is true. */
+  async function waitFor(check: () => boolean, what: string, timeout = 10_000): Promise<void> {
+    const end = Date.now() + timeout;
+    while (!check()) {
+      if (Date.now() > end) throw new Error(`not within ${timeout} ms: ${what}`);
+      await pause(50);
+    }
+  }
+
+  /** How many API requests have begun with `path` so far. */
+  const asked = (path: string) => fixtures.state.requests.filter((request) => request.path.startsWith(path)).length;
+
+  /** The keys of every reading place in the page's storage. */
+  const PLACES = `Object.keys(localStorage).filter((key) => key.startsWith("korbat.place."))`;
+
+  test("23. new posts: after the poll the pill says how many are above while the post on top stays still; pressing it brings the oldest new post to the top; at zero it says You're all caught up; it slides in, and only fades under reduced motion", async () => {
+    for (const [name, options] of MOTION_RUNS) {
+      const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" }, ...options });
+      const page = visit_.page;
+      try {
+        // The page's own clock, so the walk need not wait the poll's 30 seconds: it flows as time does, and jumps on asking.
+        await page.clock.install();
+        await visit(page, "/?tab=latest");
+        await scrollToPost(page, `/post/${postIdOf(6)}`);
+        await pause(400);
+        const before = (await page.evaluate(TOP_ARTICLE)) as Top;
+        expect(before?.href).toBe(`/post/${postIdOf(6)}`);
+        // Three posts arrive; the timeline's answer waits a moment, so the pill's entrance is sampled from its first frame.
+        fixtures.state.newPosts = 3;
+        fixtures.state.timelineDelayMs = 600;
+        await page.clock.fastForward(31_000);
+        const frames = sampleFrames(page, `document.querySelector("[data-pill]") && document.querySelector("[data-pill]").parentElement`, "transform", 1400);
+        const pill = page.locator("[data-pill]");
+        await pill.waitFor({ state: "visible" });
+        expect(transformed(await frames), name).toBe(name === "moves");
+        fixtures.state.timelineDelayMs = 0;
+        expect(await pill.innerText()).toBe("3 new posts");
+        expect(await pill.getAttribute("aria-label")).toBe("3 new posts above, go to the first one");
+        // Nothing the reader reads moved.
+        const after = (await page.evaluate(TOP_ARTICLE)) as Top;
+        expect(after?.href, name).toBe(before?.href);
+        expect(Math.abs(after!.top - before!.top), name).toBeLessThanOrEqual(1);
+        if (name === "moves") await screenshot(page, "pill-1280-light");
+        // The pill takes the reader to the oldest of the new posts, right above where they were, to read on upwards.
+        await pill.click();
+        await until(page, onTop(`/post/${newPostIdOf(1)}`), "the oldest new post on top", 5000);
+        await until(page, `document.querySelector("[data-pill]") && document.querySelector("[data-pill]").innerText === "2 new posts"`, "two left", 3000);
+        // Up to the newest: none left, and the pill says so for two seconds before it leaves.
+        await scrollList(page, 0);
+        await until(page, `!!document.querySelector("[data-pill]") && document.querySelector("[data-pill]").innerText === ${JSON.stringify(UI_WORDS["feed.caughtUp"])}`, "caught up", 3000);
+        if (name === "moves") await screenshot(page, "pill-caught-up-1280-light");
+        await pill.waitFor({ state: "detached", timeout: 6000 });
+        await clean(visit_);
+      } finally {
+        fixtures.state.newPosts = 0;
+        fixtures.state.timelineDelayMs = 0;
+        await visit_.context.close();
+      }
+    }
+    // The pill at a phone's width, in both themes, under the floating header.
+    for (const theme of ["light", "dark"] as const) {
+      const visit_ = await open({ width: 360, height: 740, appearance: { theme } });
+      const page = visit_.page;
+      try {
+        await page.clock.install();
+        await visit(page, "/?tab=latest");
+        await scrollToPost(page, `/post/${postIdOf(4)}`);
+        fixtures.state.newPosts = 2;
+        await page.clock.fastForward(31_000);
+        await page.locator("[data-pill]").waitFor({ state: "visible" });
+        await pause(400);
+        await screenshot(page, `pill-360-${theme}`);
+        expect(await contrast(page, "[data-pill]")).toEqual([]);
+        expect(await phoneProblems(page, "[data-pill]")).toEqual([]);
+        await clean(visit_);
+      } finally {
+        fixtures.state.newPosts = 0;
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("24. the reading place: Latest opens again at the post the reader stopped at, You were here above it and the new posts counted; at the newest when the reader asks; nothing kept signed out; signing out clears it with the appearance", async () => {
+    const visit_ = await open({ width: 1280, height: 900 });
+    const page = visit_.page;
+    try {
+      await visit(page, "/?tab=latest");
+      // The first posts are seen (half in view for half a second), then the reader stops at post 12.
+      await pause(800);
+      await scrollToPost(page, `/post/${postIdOf(12)}`);
+      await pause(1600);
+      expect(await page.evaluate(PLACES)).toEqual([`korbat.place.${ADA.id}`]);
+      // Two posts arrive while the reader is away; the feed opens at post 12 again.
+      fixtures.state.newPosts = 2;
+      await visit(page, "/?tab=latest");
+      await until(page, onTop(`/post/${postIdOf(12)}`), "post 12 on top again");
+      // The marker sits above the posts already seen, under the two new ones, which the pill counts.
+      const marker = page.locator("[data-marker]");
+      expect(await marker.innerText()).toContain(UI_WORDS["feed.marker.title"]);
+      expect(await marker.innerText()).toContain(UI_WORDS["feed.marker.body"]);
+      expect(await page.locator("[data-pill]").innerText()).toBe("2 new posts");
+      expect(
+        await page.evaluate(`(() => { const marker = document.querySelector("[data-marker]"); const post = document.querySelector('[data-open][href="/post/${postIdOf(12)}"]'); return !!(marker.compareDocumentPosition(post) & Node.DOCUMENT_POSITION_FOLLOWING); })()`),
+      ).toBe(true);
+      await screenshot(page, "place-1280-light");
+      // "Open feeds at the newest post": the newest, whatever was kept.
+      await page.evaluate(`localStorage.setItem("korbat.appearance", JSON.stringify({ openNewest: true }))`);
+      await visit(page, "/?tab=latest");
+      // At the top of the list, under the composer: the first post is the newest.
+      await until(page, `!!${LIST} && ${LIST}.scrollTop === 0 && document.querySelector('[role="feed"] [role="article"] [data-open]').getAttribute("href") === "/post/${newPostIdOf(2)}"`, "the newest post first, at the top");
+      // Signing out ends the session: every place and the appearance go.
+      await visit(page, "/settings/security");
+      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await until(page, `location.pathname === "/" && !document.querySelector('nav[aria-label="Main"] a[href="/bookmarks"]')`, "signed out, on Home");
+      expect(await page.evaluate(PLACES)).toEqual([]);
+      expect(await page.evaluate(`localStorage.getItem("korbat.appearance")`)).toBeNull();
+      await clean(visit_);
+    } finally {
+      fixtures.state.newPosts = 0;
+      await visit_.context.close();
+    }
+    // A reader who is signed out keeps no place.
+    const out = await open({ width: 1280, height: 900, signedIn: false });
+    try {
+      await visit(out.page, "/?tab=latest");
+      await pause(800);
+      await scrollToPost(out.page, `/post/${postIdOf(12)}`);
+      await pause(1600);
+      expect(await out.page.evaluate(PLACES)).toEqual([]);
+      expect(await out.page.locator("[data-marker], [data-pill]").count()).toBe(0);
+      await clean(out);
+    } finally {
+      await out.context.close();
+    }
+  });
+
+  test("25. Following, Latest and Following again: the same post on top and page one not asked again; Explore is read again each time it is chosen", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "dark" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/");
+      await scrollToPost(page, `/post/${postIdOf(9)}`);
+      await pause(300);
+      const before = (await page.evaluate(TOP_ARTICLE)) as Top;
+      const following = asked("/api/timeline/following");
+      const tab = (label: string) => page.locator('[role="tablist"] [role="tab"]', { hasText: label });
+      await tab(UI_WORDS["home.latest"]).click();
+      await until(page, `new URL(location.href).searchParams.get("tab") === "latest" && !!document.querySelector('[role="feed"] [role="article"]')`, "Latest shown");
+      await tab(UI_WORDS["home.following"]).click();
+      await until(page, onTop(before!.href), "the same post on top");
+      const after = (await page.evaluate(TOP_ARTICLE)) as Top;
+      expect(Math.abs(after!.top - before!.top)).toBeLessThanOrEqual(2);
+      expect(asked("/api/timeline/following")).toBe(following);
+      // Explore is never kept: each time it is chosen, it is read again.
+      const explore = asked("/api/timeline/explore");
+      await tab(UI_WORDS["home.explore"]).click();
+      await waitFor(() => asked("/api/timeline/explore") === explore + 1, "Explore read");
+      await tab(UI_WORDS["home.latest"]).click();
+      await until(page, `new URL(location.href).searchParams.get("tab") === "latest"`, "Latest again");
+      await tab(UI_WORDS["home.explore"]).click();
+      await waitFor(() => asked("/api/timeline/explore") === explore + 2, "Explore read again");
+      await page.waitForLoadState("networkidle");
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+  });
+
+  test("26. the keyboard on Home: Tab reaches the skip link, the nav, Home's tab and the first post's open link in that order; Page Down and Page Up move between posts; the arrows choose the tabs; the list is a feed", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/");
+      const feed = page.locator('[role="feed"]');
+      expect(await feed.count()).toBe(1);
+      expect(await feed.getAttribute("aria-busy")).toBe("false");
+      expect(await feed.locator('[role="article"]').first().getAttribute("aria-posinset")).toBe("1");
+      expect(await feed.locator('[role="article"]').first().getAttribute("aria-setsize")).toBe("-1");
+      const first = (await page.evaluate(`document.querySelector('[role="feed"] [role="article"] [data-open]').getAttribute("href")`)) as string;
+      const WHERE = `(() => { const e = document.activeElement; return { href: e.getAttribute("href"), role: e.getAttribute("role"), nav: !!e.closest('nav[aria-label="Main"]'), open: e.hasAttribute("data-open"), outline: parseFloat(getComputedStyle(e).outlineWidth) }; })()`;
+      type Where = { href: string | null; role: string | null; nav: boolean; open: boolean; outline: number };
+      const kinds: string[] = [];
+      for (let i = 0; i < 40 && !kinds.includes("post"); i++) {
+        await page.keyboard.press("Tab");
+        const at = (await page.evaluate(WHERE)) as Where;
+        const kind = at.href === "#main" ? "skip" : at.nav ? "nav" : at.role === "tab" ? "tab" : at.open && at.href === first ? "post" : "other";
+        kinds.push(kind);
+        if (kind === "tab" || kind === "post") expect(at.outline, kind).toBeGreaterThanOrEqual(2);
+      }
+      expect(kinds.indexOf("skip")).toBe(0);
+      expect(kinds.indexOf("nav")).toBe(1);
+      expect(kinds.indexOf("tab")).toBeGreaterThan(kinds.lastIndexOf("nav"));
+      expect(kinds.indexOf("post")).toBeGreaterThan(kinds.indexOf("tab"));
+      // One tab stop for the whole tab list.
+      expect(kinds.filter((kind) => kind === "tab")).toHaveLength(1);
+      // Page Down and Page Up: from article to article, by their open links.
+      const hrefs = (await feed.locator('[role="article"] [data-open]').evaluateAll((links) => links.slice(0, 3).map((link) => link.getAttribute("href")))) as string[];
+      await page.keyboard.press("PageDown");
+      expect(((await page.evaluate(WHERE)) as Where).href).toBe(hrefs[1]);
+      await page.keyboard.press("PageDown");
+      expect(((await page.evaluate(WHERE)) as Where).href).toBe(hrefs[2]);
+      await page.keyboard.press("PageUp");
+      expect(((await page.evaluate(WHERE)) as Where).href).toBe(hrefs[1]);
+      await screenshot(page, "keyboard-1280-light-post");
+      // The tabs' arrows choose at once and move the focus with the choice.
+      await page.locator('[role="tab"][aria-selected="true"]').focus();
+      await page.keyboard.press("ArrowRight");
+      await until(page, `new URL(location.href).searchParams.get("tab") === "latest" && document.activeElement.getAttribute("aria-selected") === "true"`, "Latest chosen by the arrow");
+      await page.keyboard.press("ArrowLeft");
+      await until(page, `new URL(location.href).searchParams.get("tab") === "following" && document.activeElement.getAttribute("aria-selected") === "true"`, "Following chosen by the arrow");
+      await page.waitForLoadState("networkidle");
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+  });
+
+  test("27. a deleted post hands the focus to the next post's open link; a reply's thread opens with its post at the top and its chain above it", async () => {
+    const MORE = `[role="button"][aria-label="${UI_WORDS["post.more"]}"]`;
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/?tab=latest");
+      const ada = postArticle(page, 3);
+      await ada.locator(MORE).click();
+      await page.locator("[data-menu]").getByRole("button", { name: UI_WORDS["post.delete"] }).click();
+      const question = ada.locator('[role="dialog"]');
+      await question.waitFor({ state: "visible" });
+      await question.getByRole("button", { name: UI_WORDS["post.delete"] }).focus();
+      await page.keyboard.press("Enter");
+      await postArticle(page, 3).waitFor({ state: "detached" });
+      await until(page, `!!document.activeElement && document.activeElement.hasAttribute("data-open") && document.activeElement.getAttribute("href") === "/post/${postIdOf(4)}"`, "post 4's open link focused");
+      // Ada's post 3 replies to a chain of three: the page opens with it at the top, the chain above, out of view.
+      const FOCUSED_ROW = `(() => { const list = ${LIST}; const row = document.querySelector('[data-row="focused"]'); if (!list || !row) return null; return { top: row.getBoundingClientRect().top - list.getBoundingClientRect().top - (parseFloat(getComputedStyle(list.firstElementChild).paddingTop) || 0), scroll: list.scrollTop }; })()`;
+      await visit(page, `/post/${postIdOf(3)}`);
+      await until(page, `(() => { const at = ${FOCUSED_ROW}; return !!at && Math.abs(at.top) <= 2 && at.scroll > 0; })()`, "the post on top, its chain above");
+      expect(await page.locator('[data-thread] [role="article"]').count()).toBe(4);
+      expect(await page.title()).toBe(TITLE_WORDS["title.post"]);
+      await screenshot(page, "thread-1280-light");
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
     }
   });
 });

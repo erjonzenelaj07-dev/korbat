@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppState, View } from "react-native";
 import { MeResponse } from "@korbat/contracts";
 import { ErrorState, isOffline } from "@/components/kit/ErrorState";
 import { api, ApiError, errorMessage, setSuspendedHandler, setUnauthenticatedHandler } from "./api";
+import { placesStored } from "./reading-place";
+import { clearSessionTraces, sessionEnded } from "./session-end";
 
 type SessionState =
   | { status: "loading" }
@@ -65,6 +67,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Every end of a session arrives here as a change of state, whatever caused it (section 8.8).
+  const previous = useRef<SessionState["status"]>("loading");
+  useEffect(() => {
+    if (sessionEnded(previous.current, state.status, placesStored())) clearSessionTraces();
+    previous.current = state.status;
+  }, [state.status]);
 
   useEffect(() => {
     setUnauthenticatedHandler(() => setState((current) => (current.status === "signed-in" ? { status: "signed-out" } : current)));

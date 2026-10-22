@@ -423,8 +423,8 @@ describe("the header that hides, and the soft reset (sections 5.2 and 7.1, revie
   });
 
   test("the lists hand the shell their scroll and their way to the top, and the three screens title themselves through ScreenHeader", () => {
-    const list = read("components", "social", "PagedList.tsx");
-    expect(list).toContain("onScroll={scroll.onScroll}");
+    const list = read("components", "list", "List.tsx");
+    expect(list).toContain("scroll.onScroll(event);");
     expect(list).toContain("scroll.register(");
     for (const file of [["app", "bookmarks.tsx"], ["app", "u", "[handle]", "followers.tsx"], ["app", "u", "[handle]", "following.tsx"]]) {
       expect(read(...file), file.join("/")).toContain("<ScreenHeader");

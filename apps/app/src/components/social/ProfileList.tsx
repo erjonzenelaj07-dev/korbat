@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { Pressable, View } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
-import { Link } from "expo-router";
 import type { ProfileListItem } from "@korbat/contracts";
 import { RefusedNotice } from "@/components/moderation/RefusedNotice";
 import { toast } from "@/components/toast";
 import { LABEL_TONE, VerifiedChip, buttonFace } from "@/components/ui";
 import { Avatar } from "@/components/kit/Avatar";
-import { FOCUS_RING, dataAttribute, pressDelay } from "@/components/kit/interaction";
+import { dataAttribute, pressDelay } from "@/components/kit/interaction";
+import { ListRow } from "@/components/kit/ListRow";
 import { Text } from "@/components/kit/Text";
 import { useHaptics } from "@/lib/haptics";
 import { useMotion, usePressScale } from "@/lib/motion";
@@ -16,40 +16,34 @@ import { useSession } from "@/lib/session";
 import { isSuspendedRefusal } from "@/lib/standing";
 import { lanes, laneKey, social, type Page } from "@/lib/social";
 import { UI_WORDS } from "@/lib/ui-words";
-import { cn } from "@/theme/cn";
 import { PagedList } from "./PagedList";
 
 /**
- * One account in a list of followers or followings (UI design, sections 6.5, 6.11 and 8.4): the monogram, the display
- * name with the verified chip, the handle in the mono face and the bio, together one link to the profile, and the row's
- * action (FollowButton) beside it. Task 5 moves it onto ListRow.
+ * One account in a list of followers or followings (UI design, sections 6.5, 6.11 and 8.4), as a ListRow: the monogram
+ * in the icon's place, the display name with the verified chip, the handle in the mono face and the bio, together one
+ * link to the profile, and FollowButton as the row's control, beside the link and outside it.
  */
 export function ProfileRow({ item, action }: { item: ProfileListItem; action?: ReactElement }) {
   return (
-    <View className="flex-row items-center gap-3 border-b border-line-low px-4 py-3">
-      <Link href={`/u/${item.handle}`} asChild>
-        <Pressable className={cn("min-h-[44px] flex-1 flex-row items-center gap-3 rounded-control web:hover:bg-surface-2", FOCUS_RING)}>
-          <Avatar account={item} size={40} />
-          <View className="min-w-0 flex-1">
-            <View className="flex-row flex-wrap items-center gap-x-1.5">
-              <Text variant="body-strong" className="shrink">
-                {item.displayName}
-              </Text>
-              {item.verified ? <VerifiedChip /> : null}
-            </View>
-            <Text variant="mono" tone="low">
-              @{item.handle}
+    <ListRow
+      label={item.displayName}
+      href={`/u/${item.handle}`}
+      leading={<Avatar account={item} size={40} />}
+      badge={item.verified ? <VerifiedChip /> : undefined}
+      detail={
+        <>
+          <Text variant="mono" tone="low">
+            @{item.handle}
+          </Text>
+          {item.bio ? (
+            <Text tone="medium" numberOfLines={2} className="mt-0.5">
+              {item.bio}
             </Text>
-            {item.bio ? (
-              <Text tone="medium" numberOfLines={2} className="mt-0.5">
-                {item.bio}
-              </Text>
-            ) : null}
-          </View>
-        </Pressable>
-      </Link>
-      {action}
-    </View>
+          ) : null}
+        </>
+      }
+      control={action ? { kind: "button", element: action } : undefined}
+    />
   );
 }
 
@@ -134,6 +128,7 @@ export function ProfileList({
       keyOf={(item) => item.id}
       empty={empty}
       header={header}
+      kind="accounts"
       render={(item, remove) => <ProfileRow item={item} action={action?.(item, () => remove(item.id))} />}
     />
   );

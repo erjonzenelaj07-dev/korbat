@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { Pressable, Switch, View } from "react-native";
 import { Link, type Href } from "expo-router";
 import type { IconName } from "@/components/icons";
@@ -15,10 +15,18 @@ import { Text } from "./Text";
  * least (a 44 px target and its padding), divided by line-low, surface-2 under a fine pointer, and surface-2 when
  * pressed, after 80 ms, since a scroll starts on rows. Rows never scale. Their focus ring is drawn inside, where the
  * column's edges cannot clip it.
+ *
+ * UI Task 5 extends it for a list of accounts (8.4): `leading` puts an element (the account's Avatar) in the icon's
+ * place, `badge` follows the label (the VerifiedChip), `detail` replaces the meta line (the handle in the mono face and
+ * the bio), and a link row may carry a control of the kind "button" (FollowButton), drawn beside the link and outside
+ * it, since a button inside an anchor is a control no assistive technology can reach; such a row has no chevron.
  */
 export type ListRowControl =
   | { kind: "switch"; value: boolean; onValueChange: (next: boolean) => void; disabled?: boolean }
   | { kind: "radio"; checked: boolean; onSelect: () => void };
+
+/** A control of its own beside a link row: an element with its own name and press (FollowButton). */
+export type ListRowButton = { kind: "button"; element: ReactElement };
 
 interface RowContent {
   label: string;
@@ -28,9 +36,15 @@ interface RowContent {
   /** A short trailing text, such as the chosen theme. */
   value?: string;
   tone?: "default" | "danger";
+  /** In the icon's place: an account's Avatar. */
+  leading?: ReactNode;
+  /** After the label: the VerifiedChip. */
+  badge?: ReactNode;
+  /** Under the label in place of the description: an account's handle and bio. */
+  detail?: ReactNode;
 }
 
-export type ListRowProps = RowContent & ({ href: Href } | { onPress: () => void } | { control: ListRowControl });
+export type ListRowProps = RowContent & ({ href: Href; control?: ListRowButton } | { onPress: () => void } | { control: ListRowControl });
 
 const ROW = cn("min-h-[52px] flex-row items-center gap-3 border-b border-line-low px-4 py-3", HOVER_WASH);
 
@@ -47,15 +61,26 @@ function usePressedWash() {
 }
 
 /** The label, its description, and what trails it. */
-function Content({ label, description, icon, value, tone = "default", trailing }: RowContent & { trailing?: ReactNode }) {
+function Content({ label, description, icon, value, tone = "default", leading, badge, detail, trailing }: RowContent & { trailing?: ReactNode }) {
   const danger = tone === "danger";
+  const title = (
+    <Text variant="body-strong" tone={danger ? "danger" : "high"} className={badge === undefined ? undefined : "shrink"}>
+      {label}
+    </Text>
+  );
   return (
     <>
-      {icon !== undefined ? <Icon name={icon} size={20} tone={danger ? "danger" : "medium"} /> : null}
-      <View className="flex-1 gap-0.5">
-        <Text variant="body-strong" tone={danger ? "danger" : "high"}>
-          {label}
-        </Text>
+      {leading ?? (icon !== undefined ? <Icon name={icon} size={20} tone={danger ? "danger" : "medium"} /> : null)}
+      <View className="min-w-0 flex-1 gap-0.5">
+        {badge === undefined ? (
+          title
+        ) : (
+          <View className="flex-row flex-wrap items-center gap-x-1.5">
+            {title}
+            {badge}
+          </View>
+        )}
+        {detail}
         {description !== undefined ? (
           <Text variant="meta" tone="low">
             {description}
@@ -80,20 +105,28 @@ function RadioMark({ checked }: { checked: boolean }) {
 export function ListRow(props: ListRowProps) {
   const wash = usePressedWash();
   const { colors } = useTheme();
-  const { label, description, icon, value, tone } = props;
-  const content = { label, description, icon, value, tone };
+  const { label, description, icon, value, tone, leading, badge, detail } = props;
+  const content = { label, description, icon, value, tone, leading, badge, detail };
 
   if ("href" in props) {
-    return (
+    const link = (
       <Link href={props.href} asChild>
-        <Pressable {...pressDelay(80)} className={FOCUS_RING_INSET}>
+        <Pressable {...pressDelay(80)} className={cn(FOCUS_RING_INSET, props.control ? "min-w-0 flex-1" : undefined)}>
           {({ pressed }) => (
-            <View className={ROW} style={wash(pressed)}>
-              <Content {...content} trailing={<Icon name="next" size={20} tone="low" />} />
+            <View className={props.control ? cn(ROW, "border-b-0 pr-2") : ROW} style={wash(pressed)}>
+              <Content {...content} trailing={props.control ? undefined : <Icon name="next" size={20} tone="low" />} />
             </View>
           )}
         </Pressable>
       </Link>
+    );
+    if (!props.control) return link;
+    // The control beside the link, in the same row and under the same divider, but no part of the anchor.
+    return (
+      <View className="flex-row items-center border-b border-line-low pr-4">
+        {link}
+        {props.control.element}
+      </View>
     );
   }
 

@@ -159,6 +159,73 @@ export const UI_WORDS = {
   /** FollowButton (8.4), word for word as ProfileList.tsx had them. */
   "follow.follow": "Follow",
   "follow.following": "Following",
+  /**
+   * Home's feeds (8.2): the marker, the new-posts pill, the gap, the end, the empty states and Load more. The empty
+   * sentences and Load more are word for word what index.tsx and PagedList.tsx had; feed.pill.label is the pill's name
+   * and feed.pill.announce what a screen reader hears once when it first shows.
+   */
+  "feed.marker.title": "You were here",
+  "feed.marker.body": "Newer posts are above. Below are posts you have already seen.",
+  "feed.caughtUp": "You're all caught up",
+  "feed.pill": "{n} new posts",
+  "feed.pill.one": "1 new post",
+  "feed.pill.many": "50+ new posts",
+  "feed.pill.label": "{visible} above, go to the first one",
+  "feed.pill.announce": "{visible} above",
+  "feed.gap": "Show more new posts",
+  "feed.end.following": "That's everything in Following.",
+  "feed.end.latest": "That's everything in Latest.",
+  "feed.empty.following.title": "Your Following feed is empty",
+  "feed.empty.following.body": "Nothing here yet. Follow someone, or switch to Latest or Explore.",
+  "feed.empty.following.action": "Open Latest",
+  "feed.empty.latest.title": "Nothing posted yet",
+  "feed.empty.latest.body": "No posts yet.",
+  "feed.loadMore": "Load more",
+  /** Home (8.2): its title, its tab list's name and its tabs, and the passkey card's words as index.tsx had them. */
+  "home.title": "Home",
+  "home.tabs": "Feeds",
+  "home.following": "Following",
+  "home.latest": "Latest",
+  "home.explore": "Explore",
+  "passkey.title": "Sign in faster with a passkey",
+  "passkey.body": "A passkey signs you in with your fingerprint, face or PIN, and cannot be phished. Adding one takes a moment.",
+  "passkey.add": "Add a passkey",
+  "passkey.notNow": "Not now",
+  /** A post and its thread (8.3), word for word as post/[id].tsx had them; thread.signIn is new. */
+  "thread.title": "Post",
+  "thread.missing": "This post is not available",
+  "thread.back": "Back to the timeline",
+  "thread.quote": "Quote this post",
+  "thread.empty": "No replies yet.",
+  "thread.signIn": "Sign in to reply.",
+  "thread.exploreSetting": "Your Explore setting",
+  /** A profile (8.4), word for word as u/[handle]/index.tsx had them; the hidden counts' words and More's name are new. */
+  "profile.more": "More options for @{handle}",
+  "profile.posts": "posts",
+  "profile.followers": "followers",
+  "profile.following": "following",
+  "profile.followers.hidden": "Followers",
+  "profile.following.hidden": "Following",
+  "profile.followsYou": "Follows you",
+  "profile.mute": "Mute",
+  "profile.unmute": "Unmute",
+  "profile.block": "Block",
+  "profile.unblock": "Unblock",
+  "profile.blockQuestion": "Block @{handle}?",
+  "profile.blockBody":
+    "Neither of you will see the other's posts or profile while signed in, and you will unfollow each other. Posts on korbat are public, so a block does not hide them from someone who signs out. You can undo this in your privacy settings.",
+  "profile.cancel": "Cancel",
+  "profile.signIn": "Sign in to follow this account.",
+  "profile.settings": "Security and privacy settings",
+  "profile.missing": "This account is not available",
+  "profile.tabs": "Profile",
+  "profile.tab.posts": "Posts",
+  "profile.tab.replies": "Replies",
+  "profile.tab.likes": "Likes",
+  "profile.empty.posts": "No posts yet.",
+  "profile.empty.replies": "No replies yet.",
+  "profile.empty.likes": "You have not liked anything yet. Only you can see this tab.",
+  "bookmarks.empty.title": "No saved posts",
 } as const;
 
 export type UiWord = keyof typeof UI_WORDS;
@@ -173,6 +240,10 @@ export const TITLE_WORDS = {
   "title.bookmarks": "Bookmarks - korbat",
   "title.followers": "Followers - korbat",
   "title.following": "Following - korbat",
+  "title.home": "Home - korbat",
+  "title.post": "Post - korbat",
+  "title.postMissing": "Post not available - korbat",
+  "title.profile": "Profile - korbat",
 } as const;
 
 export type TitleWord = keyof typeof TITLE_WORDS;

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { createContext, useContext, useRef, useState } from "react";
 import { Image } from "expo-image";
 import { Pressable, View } from "react-native";
 import { isHiddenMedia, type HiddenMedia, type MediaView } from "@korbat/contracts";
@@ -24,15 +24,22 @@ const THUMBNAIL = 64;
 export const clampRatio = (width: number, height: number): number => Math.min(MAX_RATIO, Math.max(MIN_RATIO, width / height));
 
 /**
+ * Whether the images below load first (section 11.2): a list sets it for its first two rows, through PostCard, so the
+ * images a reader sees on opening are asked before those further down.
+ */
+export const ImagePriority = createContext(false);
+
+/**
  * The small size of an image with its blurhash (UI design, section 11.2). expo-image loads it lazily on the web and keeps
  * its view for the next image of a recycled row by the media id; the blurhash cross-fades into the image in 150 ms
  * unless motion is reduced, by the system or the reader, which swaps it at once.
  */
 function Picture({ item, style, onError }: { item: MediaView; style: { width: number | "100%"; height: number | "100%" }; onError?: () => void }) {
   const { reduced } = useMotion();
+  const first = useContext(ImagePriority);
   return (
     // On the web expo-image takes the <img alt> from accessibilityLabel, not from alt.
-    <Image source={{ uri: `${API_BASE}${item.small}` }} placeholder={{ blurhash: item.blurhash }} recyclingKey={item.id} contentFit="cover" transition={reduced ? 0 : 150} accessibilityLabel={item.alt} style={style} onError={onError} />
+    <Image source={{ uri: `${API_BASE}${item.small}` }} placeholder={{ blurhash: item.blurhash }} recyclingKey={item.id} contentFit="cover" transition={reduced ? 0 : 150} priority={first ? "high" : "normal"} accessibilityLabel={item.alt} style={style} onError={onError} />
   );
 }
 

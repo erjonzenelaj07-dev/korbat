@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type Ref } from "react";
-import { FlatList, Pressable, Text, View } from "react-native";
-import { Link } from "expo-router";
+import { useCallback, useEffect, useRef, useState, type ReactElement, type Ref } from "react";
+import { View } from "react-native";
 import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
+import { List, useStable } from "@/components/list/List";
+import { Text } from "@/components/kit/Text";
+import { Button, ErrorText, TextLink } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
-import { EXPLORE_REFRESHED_NOTICE, exploreEmptyText, exploreReader, NOTHING_SHOWN, rankingAge, type ExploreShown, type RankingRead } from "@/lib/explore";
+import { EXPLORE_REFRESHED_NOTICE, EXPLORE_WORDS, exploreEmptyText, exploreReader, NOTHING_SHOWN, rankingAge, type ExploreShown, type RankingRead } from "@/lib/explore";
+import { feedRows } from "@/lib/feed-rows";
 import { social } from "@/lib/social";
+import { UI_WORDS } from "@/lib/ui-words";
+import { FeedRowView, feedRowVersion } from "./FeedRows";
 import { PostCard } from "./PostCard";
 
 /** Reads the clock again every minute, so "Updated N minutes ago" stays true while the screen is open. */
@@ -18,34 +23,33 @@ function useMinuteClock(): number {
 }
 
 function AboutLink() {
-  return (
-    <Link href="/explore/about" asChild>
-      <Pressable className="py-1">
-        <Text className="text-sm text-zinc-400 underline">How Explore works</Text>
-      </Pressable>
-    </Link>
-  );
+  return <TextLink label={EXPLORE_WORDS.about} href="/explore/about" />;
 }
 
 /**
  * Under the tabs: how long ago the ranking on screen was computed, or since when it had not been when it was read; once it
  * is as old as the refresh interval, Refresh, which reads the first page again (pull to refresh does so on a phone, but
  * nothing does on the web); and the link to its rules. The line can take the focus, which the list gives it after Refresh.
+ * A stale ranking's line is in the review ink, its words saying the same (UI design, section 4.8).
  */
 export function ExploreHeader({ ranking, onRefresh, lineRef }: { ranking: RankingRead | null; onRefresh: () => void; lineRef?: Ref<View> }) {
   const now = useMinuteClock();
   // Before the first round there is no ranking, no time to show and nothing to read again.
   const age = ranking ? rankingAge(ranking, now) : null;
   return (
-    <View className="flex-row flex-wrap items-center justify-between gap-x-4 border-b border-zinc-800 px-4 py-2">
-      <View ref={lineRef} tabIndex={-1}>
-        {age ? <Text className={`text-sm ${age.stale ? "text-amber-300" : "text-zinc-400"}`}>{age.text}</Text> : null}
+    <View className="flex-row flex-wrap items-center justify-between gap-x-4 border-b border-line-low px-4 py-1">
+      <View ref={lineRef} tabIndex={-1} className="rounded-control">
+        {age ? (
+          <Text variant="meta" tone={age.stale ? "review-ink" : "low"}>
+            {age.text}
+          </Text>
+        ) : null}
       </View>
       <View className="flex-row items-center gap-x-4">
         {age?.offerRefresh ? (
-          <Pressable accessibilityRole="button" onPress={onRefresh} className="rounded-lg border border-zinc-700 px-3 py-1">
-            <Text className="text-sm text-zinc-200">Refresh</Text>
-          </Pressable>
+          <View className="-mt-6">
+            <Button label={EXPLORE_WORDS.refresh} tone="secondary" full={false} onPress={onRefresh} />
+          </View>
         ) : null}
         <AboutLink />
       </View>
@@ -56,12 +60,12 @@ export function ExploreHeader({ ranking, onRefresh, lineRef }: { ranking: Rankin
 /** An empty Explore (2c design, section 11): when a post appears there, in the formula's numbers, with the rules and a way on. */
 export function ExploreEmpty({ onShowLatest, formula = EXPLORE_V2 }: { onShowLatest: () => void; formula?: ExploreFormula }) {
   return (
-    <View className="items-center px-4 py-10">
-      <Text className="mb-3 text-center text-base leading-6 text-zinc-400">{exploreEmptyText(formula)}</Text>
+    <View className="items-center gap-2 px-6 py-12">
+      <Text tone="medium" className="max-w-[440px] text-center">
+        {exploreEmptyText(formula)}
+      </Text>
       <AboutLink />
-      <Pressable accessibilityRole="button" onPress={onShowLatest} className="mt-4 rounded-lg border border-zinc-700 px-4 py-2">
-        <Text className="text-sm text-zinc-200">Show Latest</Text>
-      </Pressable>
+      <Button label={EXPLORE_WORDS.showLatest} tone="secondary" full={false} onPress={onShowLatest} />
     </View>
   );
 }
@@ -87,40 +91,26 @@ export function ExploreFooter({
   statusRef?: Ref<View>;
 }) {
   return (
-    <View className="items-center py-4">
+    <View className="items-center px-4 pb-8 pt-2">
       <View ref={statusRef} role="status" aria-live="polite" tabIndex={-1}>
-        {notice ? <Text className="mb-2 px-4 text-center text-sm text-zinc-300">{notice}</Text> : null}
+        {notice ? <Text tone="medium" className="mb-2 text-center">{notice}</Text> : null}
       </View>
-      {error ? (
-        <Text accessibilityRole="alert" className="mb-2 text-sm text-red-400">
-          {error}
-        </Text>
-      ) : null}
-      {cursor ? (
-        <Pressable accessibilityRole="button" onPress={onLoadMore} className="rounded-lg border border-zinc-700 px-4 py-2">
-          <Text className="text-sm text-zinc-200">Load more</Text>
-        </Pressable>
-      ) : null}
-      {signInForMore ? (
-        <Link href="/signin" asChild>
-          <Pressable className="rounded-lg border border-zinc-700 px-4 py-2">
-            <Text className="text-sm text-zinc-200">Sign in to see more of Explore</Text>
-          </Pressable>
-        </Link>
-      ) : null}
+      <ErrorText message={error} />
+      {cursor ? <Button label={UI_WORDS["feed.loadMore"]} tone="secondary" full={false} onPress={onLoadMore} /> : null}
+      {signInForMore ? <TextLink label={EXPLORE_WORDS.signInForMore} href="/signin" /> : null}
     </View>
   );
 }
-
 /**
- * Explore under Home's tabs (2c design, section 11), on PagedList's pattern. Its reads go through one exploreReader made
- * with the list, which lets one read run at a time and answers what the list shows; the component only puts that on
- * screen. A cursor names the ranking it came from; when a refresh has pruned that ranking, the reader reads the current
- * one from its first page and adds only the posts not on screen, so the posts already read stay where they are, the focus
- * stays at the footer and the status line says what happened. Home remounts the list for another tab, a new post or
- * another reader. The answers live in this component and its reader alone: nothing keeps them once it unmounts.
+ * Explore under Home's tabs (2c design, section 11; UI design, section 8.2), on List and its typed rows. Its reads go
+ * through one exploreReader made with the list, which lets one read run at a time and answers what the list shows; the
+ * component only puts that on screen. A cursor names the ranking it came from; when a refresh has pruned that ranking,
+ * the reader reads the current one from its first page and adds only the posts not on screen, so the posts already read
+ * stay where they are, the focus stays at the footer and the status line says what happened. Explore is ranked, so it
+ * has no marker, no pill and no stored place, and it is never kept in lib/feed-cache.ts: its answers live in this
+ * component and its reader alone, nothing keeps them once it unmounts, and returning to the tab reads it again.
  */
-export function ExploreList({ onShowLatest }: { onShowLatest: () => void }) {
+export function ExploreList({ onShowLatest, header }: { onShowLatest: () => void; header?: ReactElement }) {
   const [reader] = useState(() => exploreReader(social.explore));
   const [shown, setShown] = useState<ExploreShown>(NOTHING_SHOWN);
   const [loading, setLoading] = useState(true);
@@ -178,30 +168,48 @@ export function ExploreList({ onShowLatest }: { onShowLatest: () => void }) {
   }, [lineFocus]);
 
   const remove = (id: string) => setShown(reader.remove(id));
+  // Rows drawn earlier keep what they were drawn with (List): these reach the latest state.
+  const retry = useStable(() => void load());
+
+  // The posts as typed rows: skeletons, the error and the empty state are rows of the list, so the tabs above never move.
+  // Load more and the sign-in link stay in the footer, with the status line the refresh notice needs.
+  const result = feedRows({
+    items: shown.items,
+    keyOf: (item) => item.post.id,
+    status: loading ? "loading" : error && shown.items.length === 0 ? "error" : "ready",
+    error,
+    cursor: null,
+  });
+  // The ranking says whether more exists: the feed's size is unknown while it has a cursor.
+  const setSize = shown.cursor === null ? result.setSize : -1;
 
   return (
-    <FlatList
-      data={shown.items}
-      keyExtractor={(item) => item.post.id}
-      renderItem={({ item }) => <PostCard post={item.post} onDeleted={remove} />}
-      ListHeaderComponent={<ExploreHeader ranking={shown.ranking} onRefresh={() => refresh(true)} lineRef={line} />}
+    <List
+      rows={result.rows}
+      keyOf={(row) => row.key}
+      versionOf={(row) => feedRowVersion(row, setSize)}
+      renderRow={(row, index) => (
+        <FeedRowView
+          row={row}
+          index={index}
+          setSize={setSize}
+          renderPost={(item, place) => <PostCard post={item.post} onDeleted={remove} {...place} />}
+          empty={<ExploreEmpty onShowLatest={onShowLatest} />}
+          onRetry={retry}
+          onLoadMore={retry}
+        />
+      )}
+      header={
+        <>
+          {header}
+          <ExploreHeader ranking={shown.ranking} onRefresh={() => refresh(true)} lineRef={line} />
+        </>
+      }
+      feed
+      busy={loading}
       refreshing={refreshing}
       onRefresh={() => refresh(false)}
-      ListEmptyComponent={
-        loading ? null : error ? (
-          <View className="items-center px-4 py-10">
-            <Text accessibilityRole="alert" className="text-center text-base text-zinc-400">
-              {error}
-            </Text>
-            <Pressable accessibilityRole="button" onPress={() => void load()} className="mt-4 rounded-lg border border-zinc-700 px-4 py-2">
-              <Text className="text-sm text-zinc-200">Try again</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <ExploreEmpty onShowLatest={onShowLatest} />
-        )
-      }
-      ListFooterComponent={
+      footer={
         <ExploreFooter
           cursor={shown.cursor}
           signInForMore={shown.signInForMore}
