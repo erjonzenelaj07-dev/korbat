@@ -9,12 +9,13 @@ import { Text } from "@/components/kit/Text";
 import type { ListHandle } from "@/components/list/List";
 import { HeaderSpace, ScreenHeader } from "@/components/ScreenHeader";
 import { ComposeSheet } from "@/components/social/ComposeSheet";
-import { Composer } from "@/components/social/Composer";
+import { ComposerCard, type ComposerCardHandle } from "@/components/social/composer/ComposerCard";
 import { PostList } from "@/components/social/PagedList";
 import { PostCard } from "@/components/social/PostCard";
 import { Button, TextLink } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { EXPLORE_WORDS, exploreStatusText } from "@/lib/explore";
+import { insertPosted } from "@/lib/feed-cache";
 import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
@@ -98,9 +99,15 @@ function ExploreStatusLine({ id }: { id: string }) {
   );
 }
 
-/** A post with the chain it replies to above it and its direct replies below, oldest first. */
+/**
+ * A post with the chain it replies to above it and its direct replies below, oldest first. Under the focused post, the
+ * reply card (Task 6) at every width: "Write your reply", opening in place on focus; `?reply=1`, which a card's Reply
+ * gives, opens it at once with the focus in it, and the focused post's own Reply opens it too. A reply sent reads the
+ * replies again (and the composer's toast says it was sent). `?quote=1` opens the quote sheet, whose post goes on top of
+ * Home's feeds; its toast's View opens it, where today's code went to it at once.
+ */
 export default function Thread() {
-  const { id, quote } = useLocalSearchParams<{ id: string; quote?: string }>();
+  const { id, quote, reply } = useLocalSearchParams<{ id: string; quote?: string; reply?: string }>();
   const { state } = useSession();
   const viewer = state.status === "signed-in" && state.me.user.onboarded ? state.me.user.id : null;
   const signedIn = viewer !== null;
@@ -108,6 +115,7 @@ export default function Thread() {
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [quoting, setQuoting] = useState(quote === "1");
+  const replyCard = useRef<ComposerCardHandle>(null);
   const title = usePageTitle("title.post");
   const missingTitle = usePageTitle("title.postMissing");
 
@@ -131,7 +139,7 @@ export default function Thread() {
     return () => {
       cancelled = true;
     };
-  }, [id, version]);
+  }, [id]);
 
   // The screen stays mounted under the ones it links to, and Back shows it again as it was: on every focus after the
   // first, the post is read again into the thread on screen, without clearing it, so its card (the In Explore chip
@@ -159,7 +167,9 @@ export default function Thread() {
     }, [id]),
   );
 
-  const fetchReplies = useCallback((cursor?: string) => social.thread(id, cursor).then((t) => t.replies), [id]);
+  // A new `version` (a reply sent here) is a new source, which the list reads again from its first page; the list and its
+  // header, where the reply card holds the focus, stay mounted.
+  const fetchReplies = useCallback((cursor?: string) => social.thread(id, cursor).then((t) => t.replies), [id, version]);
 
   // The page opens with the focused post at the top of the view and its ancestors above it, kept there by the list's
   // anchor while they and the replies are drawn (section 7.5); a reply written here reads the replies again, not the post.
@@ -204,7 +214,7 @@ export default function Thread() {
         ))}
         {/* The focused post, which the list holds at the top when the page opens. */}
         <View {...dataAttribute("row", "focused")} className="border-b border-line-low">
-          <PostCard post={thread.post} large onDeleted={() => router.replace("/")} />
+          <PostCard post={thread.post} large onDeleted={() => router.replace("/")} onReply={signedIn ? () => replyCard.current?.open() : undefined} />
           {/* Replies and quotes never enter Explore, so they get no line and no request. */}
           {mine && thread.post.replyTo === null && thread.post.quoteOf === null ? <ExploreStatusLine id={thread.post.id} /> : null}
           {signedIn ? (
@@ -217,7 +227,19 @@ export default function Thread() {
         </View>
       </View>
       {signedIn ? (
-        <Composer replyTo={thread.post} onPosted={() => setVersion((v) => v + 1)} />
+        <View className="border-b border-line-low px-4 py-3">
+          <ComposerCard
+            key={thread.post.id}
+            handle={replyCard}
+            replyTo={thread.post}
+            startOpen={reply === "1"}
+            onPosted={() => {
+              // The replies are read again; the focused post counts the new one at once, without reading the thread.
+              setThread((current) => (current ? { ...current, post: { ...current.post, counts: { ...current.post.counts, replies: current.post.counts.replies + 1 } } } : current));
+              setVersion((v) => v + 1);
+            }}
+          />
+        </View>
       ) : (
         <View className="border-b border-line-low px-4 py-1">
           <TextLink label={UI_WORDS["thread.signIn"]} href="/signin" />
@@ -230,8 +252,8 @@ export default function Thread() {
     <AppShell>
       {title}
       <ScreenHeader title={UI_WORDS["thread.title"]} back="/" />
-      <PostList key={version} handle={list} fetchPage={fetchReplies} empty={UI_WORDS["thread.empty"]} header={header} />
-      <ComposeSheet open={quoting} quoteOf={thread.post} onClose={() => setQuoting(false)} onPosted={(post) => router.push(`/post/${post.id}`)} />
+      <PostList handle={list} fetchPage={fetchReplies} empty={UI_WORDS["thread.empty"]} header={header} />
+      <ComposeSheet open={quoting} quoteOf={thread.post} onClose={() => setQuoting(false)} onPosted={(post) => insertPosted(viewer, post)} />
     </AppShell>
   );
 }

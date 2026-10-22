@@ -39,13 +39,30 @@ export function writeFeedCache(reader: string | null, feed: FeedName, snapshot: 
   kept.set(feedCacheKey(reader, feed), snapshot);
 }
 
-/** The reader's own new post on top of both their feeds kept here (section 8.2); a feed not kept reads it with page one. */
+/** Who hears of the reader's own new posts: a Home feed on screen, or kept mounted under another screen. */
+type PostedListener = (reader: string | null, post: PostView) => void;
+const postedListeners = new Set<PostedListener>();
+
+/** Hears every post insertPosted() puts on top (UI Task 6: a post sent from another screen's sheet); returns the unsubscribe. */
+export function onPosted(listener: PostedListener): () => void {
+  postedListeners.add(listener);
+  return () => {
+    postedListeners.delete(listener);
+  };
+}
+
+/**
+ * The reader's own new post on top of both their feeds kept here (section 8.2); a feed not kept reads it with page one.
+ * A feed on screen, or one the web keeps mounted under the screen the post was sent from, is told too, and puts it on
+ * top of its own rows.
+ */
 export function insertPosted(reader: string | null, post: PostView): void {
   for (const feed of ["following", "latest"] as const) {
     const snapshot = readFeedCache(reader, feed);
     if (!snapshot || snapshot.items.some((item) => item.kind === "post" && item.post.id === post.id)) continue;
     kept.set(feedCacheKey(reader, feed), { ...snapshot, items: [{ kind: "post", post }, ...snapshot.items] });
   }
+  for (const listener of postedListeners) listener(reader, post);
 }
 
 export function clearFeedCache(): void {

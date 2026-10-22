@@ -5,6 +5,7 @@ import { Stack, type ErrorBoundaryProps } from "expo-router";
 import { GestureHandlerRootView } from "@/components/GestureRoot";
 import { Icon } from "@/components/kit/Icon";
 import { PublicFrame } from "@/components/kit/PublicFrame";
+import { ComposeHost } from "@/components/social/ComposeHost";
 import { Text } from "@/components/kit/Text";
 import { Toaster } from "@/components/toast";
 import { Button, TextLink } from "@/components/ui";
@@ -45,7 +46,8 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 
 /**
  * The root of every screen: the gesture root and the safe areas outside everything (section 7.4), the theme inside them,
- * the session inside the theme, and the one Toaster beside the screens, inside the theme so toasts take its tokens.
+ * the session inside the theme, and the one Toaster beside the screens, inside the theme so toasts take its tokens. The
+ * app's one New post sheet (Task 6) sits beside the screens inside the session, which it needs for the drafts.
  */
 export default function RootLayout() {
   return (
@@ -54,6 +56,7 @@ export default function RootLayout() {
         <ThemeProvider>
           <SessionProvider>
             <Stack screenOptions={{ headerShown: false }} />
+            <ComposeHost />
           </SessionProvider>
           <Toaster />
         </ThemeProvider>

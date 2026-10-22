@@ -36,9 +36,6 @@ export const LEGACY_COLOUR_FILES: readonly string[] = [
   "components/security/PasskeysSection.tsx",
   "components/security/ReauthPanel.tsx",
   "components/security/SessionsSection.tsx",
-  "components/social/ComposeSheet.tsx",
-  "components/social/Composer.tsx",
-  "components/social/ComposerImages.tsx",
 ];
 
 /**
@@ -69,9 +66,6 @@ export const LEGACY_TEXT_FILES: readonly string[] = [
   "components/security/PasskeysSection.tsx",
   "components/security/ReauthPanel.tsx",
   "components/security/SessionsSection.tsx",
-  "components/social/ComposeSheet.tsx",
-  "components/social/Composer.tsx",
-  "components/social/ComposerImages.tsx",
 ];
 
 export const SRC = path.resolve(import.meta.dirname, "..", "src");

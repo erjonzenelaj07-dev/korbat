@@ -7,8 +7,7 @@ import { Skeleton } from "@/components/kit/Skeleton";
 import { TabPanel, Tabs } from "@/components/kit/Tabs";
 import { Text } from "@/components/kit/Text";
 import { HeaderSpace, ScreenHeader } from "@/components/ScreenHeader";
-import { ComposeButton, ComposeSheet } from "@/components/social/ComposeSheet";
-import { Composer } from "@/components/social/Composer";
+import { ComposerCard, type ComposerCardHandle } from "@/components/social/composer/ComposerCard";
 import { ExploreList } from "@/components/social/ExploreList";
 import { FeedList, type FeedListHandle } from "@/components/social/FeedList";
 import { Button } from "@/components/ui";
@@ -118,8 +117,10 @@ function SignedOutPrompt({ tab }: { tab: Tab }) {
 /**
  * Home (UI design, section 8.2): the header "Home" with the tabs under it, Following, Latest and Explore for a
  * signed-in account and Latest and Explore with a sign-in prompt for everyone else; then the tab's list, which keeps the
- * reader's place in Following and Latest. At 768 px and wider the composer is inline above the list; below, the compose
- * button opens the sheet. The reader's own new post goes on top of Following and Latest.
+ * reader's place in Following and Latest. At 768 px and wider the composer is a card at the top of the list, collapsed to
+ * "What's on your mind?" until it is focused or pressed (decision 19), and the nav's New post opens and focuses it
+ * (AppShell's onNewPost); below, the compose button opens the app's New post sheet. The reader's own new post goes on
+ * top of Following and Latest.
  */
 export default function Home() {
   const { state } = useSession();
@@ -127,8 +128,8 @@ export default function Home() {
   const title = usePageTitle("title.home");
   const focused = useIsFocused();
   const { tab: param } = useLocalSearchParams<{ tab?: string }>();
-  const [composing, setComposing] = useState(false);
   const feed = useRef<FeedListHandle>(null);
+  const card = useRef<ComposerCardHandle>(null);
 
   const signedIn = state.status === "signed-in";
   const current = homeTab(param, signedIn);
@@ -175,15 +176,15 @@ export default function Home() {
       {signedIn ? null : <SignedOutPrompt tab={current} />}
       {state.status === "signed-in" ? <PasskeySuggestion me={state.me} /> : null}
       {inlineComposer ? (
-        <View className="border-b border-line-low">
-          <Composer onPosted={posted} />
+        <View className="border-b border-line-low px-4 py-3">
+          <ComposerCard handle={card} onPosted={posted} />
         </View>
       ) : null}
     </View>
   );
 
   return (
-    <AppShell floating={signedIn && !inlineComposer ? <ComposeButton onPress={() => setComposing(true)} /> : undefined}>
+    <AppShell compose onNewPost={inlineComposer ? () => card.current?.open() : undefined}>
       {title}
       {header}
       <TabPanel panelId={PANEL} selected={current}>
@@ -193,7 +194,6 @@ export default function Home() {
           <FeedList key={homeListKey(viewer)} handle={feed} feed={current} reader={viewer} active={focused} header={above} onShowLatest={() => select("latest")} />
         )}
       </TabPanel>
-      <ComposeSheet open={composing} onClose={() => setComposing(false)} onPosted={posted} />
     </AppShell>
   );
 }

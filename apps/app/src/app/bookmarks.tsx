@@ -46,8 +46,9 @@ export default function Bookmarks() {
   if (state.status === "signed-out") return <Redirect href="/signin" />;
   if (!state.me.user.onboarded) return <Redirect href="/handle" />;
 
+  // The phone's compose button shows here (section 7.2).
   return (
-    <AppShell>
+    <AppShell compose>
       {title}
       <BookmarksHeader />
       <PostList fetchPage={fetchPage} empty={{ title: UI_WORDS["bookmarks.empty.title"], body: UI_WORDS["bookmarks.empty"] }} />

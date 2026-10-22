@@ -5,7 +5,7 @@ import type { PostView, TimelineItem } from "@korbat/contracts";
 import { List, useStable, type ListHandle } from "@/components/list/List";
 import { errorMessage } from "@/lib/api";
 import { useAppearance } from "@/lib/appearance";
-import { readFeedCache, writeFeedCache, type FeedSnapshot } from "@/lib/feed-cache";
+import { onPosted, readFeedCache, writeFeedCache, type FeedSnapshot } from "@/lib/feed-cache";
 import { feedRows, timelineTime, trimOlder, type FeedName, type FeedRow } from "@/lib/feed-rows";
 import { useMotion } from "@/lib/motion";
 import { createNewPosts, gapRows, NEW_LIMIT, newRows, pageVisible, pollActive, type NewPostsClock } from "@/lib/new-posts";
@@ -372,18 +372,16 @@ export function FeedList({
     if (oldest) list.current?.jumpTo(timelineKey(oldest), !motion.reduced);
   });
 
-  useImperativeHandle(
-    handle,
-    () => ({
-      posted(post) {
-        const now = latest.current.state;
-        if (now.status !== "ready" || now.items.some((item) => timelineKey(item) === post.id)) return;
-        own.current = post.id;
-        insertAbove([{ kind: "post", post }], null, false);
-      },
-    }),
-    [],
-  );
+  // The reader's own new post on top. Home tells it, and so does lib/feed-cache.ts for a post sent from any screen; the
+  // second word of the same post is passed over (own.current is set at once, before the state that holds it renders).
+  const posted = useStable((post: PostView) => {
+    const now = latest.current.state;
+    if (own.current === post.id || now.status !== "ready" || now.items.some((item) => timelineKey(item) === post.id)) return;
+    own.current = post.id;
+    insertAbove([{ kind: "post", post }], null, false);
+  });
+  useImperativeHandle(handle, () => ({ posted }), [posted]);
+  useEffect(() => onPosted((who, post) => (who === reader ? posted(post) : undefined)), [reader, posted]);
 
   const renderPost = (item: TimelineItem, place: PostPlace, key: string) => {
     const card = <PostCard post={item.post} repostedBy={item.kind === "repost" ? item.repostedBy : undefined} onDeleted={() => remove(key)} {...place} />;

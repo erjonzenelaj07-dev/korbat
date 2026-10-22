@@ -243,8 +243,9 @@ export default function ProfileScreen() {
     </View>
   );
 
+  // The phone's compose button shows on a profile (section 7.2).
   return (
-    <AppShell>
+    <AppShell compose>
       {title}
       <TabPanel panelId={PANEL} selected={tab}>
         {tab === "posts" ? (

@@ -57,18 +57,22 @@ export function describeState(images: ComposerImage[]): { waiting: boolean; fail
  * The images of one composer: uploads each chosen file, follows its processing, and keeps the
  * descriptions. Removing an image also removes the upload on the server (a refused upload, and one whose check has not
  * answered, only from the composer: korbat keeps it as its hold or its check needs). Blob URLs are released
- * when an image goes and when the composer closes.
+ * when an image goes and when the composer closes. `onImages` hears every change of the list: the composer's reducer
+ * (composer/state.ts) holds the images with the rest of what the reader is writing (UI design, section 6.15).
  */
-export function useImageUploads() {
+export function useImageUploads(onImages?: (images: ComposerImage[]) => void) {
   const [images, setImages] = useState<ComposerImage[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   /** The same list as `images`, readable by callbacks without waiting for a render. */
   const list = useRef<ComposerImage[]>([]);
   const closed = useRef(false);
+  const listener = useRef(onImages);
+  listener.current = onImages;
 
   const commit = useCallback((next: ComposerImage[]) => {
     list.current = next;
     setImages(next);
+    listener.current?.(next);
   }, []);
 
   useEffect(() => {

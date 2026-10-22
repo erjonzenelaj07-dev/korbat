@@ -121,12 +121,37 @@ function opensOnClick(open: () => void) {
 }
 
 /**
+ * The quoted post as the composer previews it (UI design, Task 6): the same frame and words, with its author line as
+ * text, nothing to open and nothing to click, so the composer's sheet holds no live link out of the post being written.
+ */
+function QuotePreview({ quote }: { quote: QuotedPost }) {
+  return (
+    <View className="mt-2 rounded-media border border-line-low px-3 py-2.5">
+      <View className="flex-row flex-wrap items-center gap-x-1.5">
+        <Text variant="body-strong">{quote.author.displayName}</Text>
+        {quote.author.verified ? <VerifiedChip /> : null}
+        <Text variant="mono" tone="low">
+          @{quote.author.handle}
+        </Text>
+        <Text variant="meta" tone="low">
+          {timeAgo(quote.createdAt)}
+        </Text>
+      </View>
+      {quote.body ? <Text className="mt-0.5">{quote.body}</Text> : null}
+      <MediaGrid media={quote.media} compact />
+    </View>
+  );
+}
+
+/**
  * A quoted post (section 6.6): a bordered region with its own author line, whose time is the link to the quoted post,
  * so the quote has one open target too; its words are plain text, and its images open nothing, since they belong to the
- * quoted post, where the grid and the viewer are. A press on its empty space opens the quoted post.
+ * quoted post, where the grid and the viewer are. A press on its empty space opens the quoted post. `preview` is the
+ * composer's form, which opens nothing (QuotePreview).
  */
-export function QuoteEmbed({ quote }: { quote: QuotedPost | Tombstone }) {
+export function QuoteEmbed({ quote, preview = false }: { quote: QuotedPost | Tombstone; preview?: boolean }) {
   if (!("author" in quote)) return <TombstoneBox tombstone={quote} />;
+  if (preview) return <QuotePreview quote={quote} />;
   const open = () => router.push(`/post/${quote.id}`);
   const content = (
     <>
@@ -247,6 +272,7 @@ export function PostCard({
   setSize,
   priority = false,
   joined = false,
+  onReply,
 }: {
   post: PostView;
   repostedBy?: Author;
@@ -256,6 +282,8 @@ export function PostCard({
   setSize?: number;
   priority?: boolean;
   joined?: boolean;
+  /** What Reply does instead of opening the thread: the thread's own focused post opens its reply card (Task 6). */
+  onReply?: () => void;
 }) {
   const { state } = useSession();
   const me = state.status === "signed-in" ? state.me.user.id : null;
@@ -287,6 +315,9 @@ export function PostCard({
   const own = post.author.id === me;
   const viewer = post.viewer ?? NO_VIEWER;
   const openPost = () => router.push(`/post/${post.id}`);
+  // Reply (section 6.6): the thread, with its reply card open and focused (?reply=1); signed out, the thread, which says
+  // how to sign in to reply.
+  const reply = onReply ?? (() => router.push(me === null ? `/post/${post.id}` : `/post/${post.id}?reply=1`));
 
   /** Marks a kind busy if its request is still out after 400 ms, and returns the function that ends it. */
   const pending = (kind: ToggleKind | "delete") => {
@@ -394,7 +425,7 @@ export function PostCard({
   const actions = (
     // It wraps rather than cutting More off at the largest text on the narrowest phone.
     <View className="-ml-2.5 mt-1 flex-row flex-wrap items-center">
-      <IconButton icon="reply" label={countLabel("reply", post.counts.replies, hideCounts)} count={shownCount("reply", post.counts.replies, hideCounts)} onPress={openPost} />
+      <IconButton icon="reply" label={countLabel("reply", post.counts.replies, hideCounts)} count={shownCount("reply", post.counts.replies, hideCounts)} onPress={reply} />
       <Menu
         label={countLabel("repost", post.counts.reposts, hideCounts)}
         title={UI_WORDS["post.repost"]}

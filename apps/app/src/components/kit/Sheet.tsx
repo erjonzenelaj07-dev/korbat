@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent } from "react-native";
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent } from "react-native";
 import Animated, { cancelAnimation, runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "@/components/GestureRoot";
@@ -17,7 +17,7 @@ import { Text } from "./Text";
  * bottom, follows the finger down and rubber-bands up, and closes on a release whose momentum carries it past half its
  * height; from 768 px the same content as a centred dialog, 560 px wide, that grows from 0.96. Under reduced motion, and
  * when opened from the keyboard, it fades in 150 ms and moves not at all. The first users are the post's menus and Who
- * sees this; the composer moves onto it in Task 6.
+ * sees this; the composer (Task 6) is the first to pass its own width (640) and to ask its own question before closing.
  *
  * React Native's Modal holds it. On the web react-native-web draws the Modal's content as the dialog itself (role
  * "dialog", aria-modal), traps the focus inside, closes on Escape through onRequestClose and gives the focus back to the
@@ -65,7 +65,9 @@ export function SheetFrame({ titleId, title, description, layout, size = "auto",
   const phone = layout === "phone";
   const screen = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const maxHeight = screen.height > 0 ? Math.round(screen.height * (phone && size === "tall" ? 0.9 : 0.85)) : undefined;
+  const share = phone && size === "tall" ? 0.9 : 0.85;
+  // On the web the share of the visual viewport (dvh), so a sheet shrinks above the on-screen keyboard (section 7.4).
+  const maxHeight = Platform.OS === "web" ? (`${Math.round(share * 100)}dvh` as unknown as number) : screen.height > 0 ? Math.round(screen.height * share) : undefined;
   const header = (
     // A phone's sheet has its handle above the title; a dialog's title keeps clear of its 24 px corners instead.
     <View className={phone ? "px-5 pb-3 pt-2" : "px-5 pb-3 pt-5"}>
@@ -123,6 +125,19 @@ export interface SheetProps {
   /** What takes the focus on opening: the title (default), or the first control, as a menu's first item. */
   initialFocus?: "title" | "first";
   children: ReactNode;
+}
+
+/**
+ * Room for the on-screen keyboard (section 7.4): natively React Native's KeyboardAvoidingView, until sub-project 5 brings
+ * react-native-keyboard-controller; on the web nothing, since the sheet's height follows the visual viewport (dvh).
+ */
+function KeyboardRoom({ children }: { children: ReactNode }) {
+  if (Platform.OS === "web") return <>{children}</>;
+  return (
+    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+      {children}
+    </KeyboardAvoidingView>
+  );
 }
 
 /** The focusable elements of a menu or a form, in order, for the "first" focus. */
@@ -288,23 +303,25 @@ export function Sheet({ open, onClose, onClosed, title, description, dismissible
   return (
     <Modal visible={shown} transparent animationType="none" onRequestClose={dismiss} onDismiss={closed} aria-labelledby={titleId}>
       <GestureHandlerRootView style={{ flex: 1 }}>
-        <SheetFrame
-          titleId={titleId}
-          title={title}
-          description={description}
-          layout={layout}
-          size={size}
-          width={width}
-          onClose={dismiss}
-          panelStyle={panelStyle}
-          scrimStyle={scrimStyle}
-          drag={dismissible ? drag : undefined}
-          titleRef={titleRef}
-          panelRef={panelRef}
-          onPanelLayout={onPanelLayout}
-        >
-          {children}
-        </SheetFrame>
+        <KeyboardRoom>
+          <SheetFrame
+            titleId={titleId}
+            title={title}
+            description={description}
+            layout={layout}
+            size={size}
+            width={width}
+            onClose={dismiss}
+            panelStyle={panelStyle}
+            scrimStyle={scrimStyle}
+            drag={dismissible ? drag : undefined}
+            titleRef={titleRef}
+            panelRef={panelRef}
+            onPanelLayout={onPanelLayout}
+          >
+            {children}
+          </SheetFrame>
+        </KeyboardRoom>
       </GestureHandlerRootView>
     </Modal>
   );

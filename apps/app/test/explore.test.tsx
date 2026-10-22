@@ -858,9 +858,9 @@ describe("no screen caches or stores Explore's answers", () => {
       expect(file.text, file.name).not.toMatch(/^(export )?(let|var) /m);
       expect(file.text, file.name).not.toMatch(/^(export )?const \w+ = new (Map|Set|WeakMap)\b/m);
     }
-    // What the app keeps in the browser is the device id, the passkey card's Not now, the reader's appearance and reading places, nothing else.
+    // What the app keeps in the browser is the device id, the passkey card's Not now, the reader's appearance, reading places and drafts, nothing else.
     const stores = sourceFiles().filter((file) => /localStorage|sessionStorage|indexedDB|AsyncStorage/.test(file.text));
-    expect(stores.map((file) => file.name).sort()).toEqual(["lib/api.ts", "lib/appearance.ts", "lib/passkeys.ts", "lib/reading-place.ts"]);
+    expect(stores.map((file) => file.name).sort()).toEqual(["lib/api.ts", "lib/appearance.ts", "lib/drafts.ts", "lib/passkeys.ts", "lib/reading-place.ts"]);
     // Explore's requests are the client's plain calls, which the API answers no-store.
     const social = read("lib", "social.ts");
     for (const line of social.split("\n").filter((text) => text.includes("/api/timeline/explore") || text.includes("/explore`"))) expect(line).not.toMatch(/cache/i);

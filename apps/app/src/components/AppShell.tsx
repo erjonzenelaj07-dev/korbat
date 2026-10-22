@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, View, type GestureResponderEvent } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Link, usePathname } from "expo-router";
+import { openNewPost } from "@/lib/composing";
 import { useSession } from "@/lib/session";
 import { ShellScrollProvider, softReset, useShellScroll } from "@/lib/shell-scroll";
 import { setComposeButtonShown } from "@/lib/toast-rules";
@@ -15,16 +16,23 @@ import { Icon } from "./kit/Icon";
 import { FOCUS_RING, FOCUS_RING_INSET, HOVER_WASH } from "./kit/interaction";
 import { Text } from "./kit/Text";
 import { VISUALLY_HIDDEN } from "./kit/VisuallyHidden";
+import { ComposeButton, NewPostButton } from "./social/ComposeButton";
 import { StandingBanner } from "./StandingBanner";
 
 /**
  * The shell around every screen of the app (UI design, section 7): the navigation, the main column the screen draws in,
  * and from 1024 px the context column. useLayout() picks one of four layouts by the window's width:
  *
- * - phone (below 768 px): a bottom tab bar, icons over 12 px labels, and the screen's floating compose button;
+ * - phone (below 768 px): a bottom tab bar, icons over 12 px labels, and on Home, a profile and Bookmarks (the screens
+ *   that pass `compose`) the floating compose button;
  * - tablet (768 to 1023 px): a rail 80 px wide at the left, with the "k" monogram, and the 600 px column centred in the rest;
  * - desktop (1024 to 1279 px): the rail, the column and the 320 px context column, together and centred;
  * - wide (1280 px and up): the full nav, 240 px with the wordmark and labels beside the icons, the column and the context.
+ *
+ * Signed in, the rail and the full nav end with New post on every screen (Task 6): the compose button in the rail, a
+ * full-width button in the full nav. It opens the app's one New post sheet (lib/composing.ts, mounted in the root layout
+ * as components/social/ComposeHost.tsx), a 640 px dialog at these widths, unless the screen gives `onNewPost`: Home
+ * gives the one that opens and focuses its own card in the list.
  *
  * The nav is a landmark named "Main" with the same items and hrefs at every width (Home, Bookmarks, Profile, Settings for
  * an account; Home and Sign in signed out). The current item keeps aria-current="page" on its anchor and is marked by
@@ -193,9 +201,10 @@ function TabBar({ items, pathname, onHomeAgain }: NavProps) {
 
 /**
  * The nav from 768 px: the rail (80 px, the "k" monogram, icons over 12 px labels) or, from 1280 px, the full nav (240 px,
- * the wordmark, labels beside the icons). Under them, the screen's own New post button when it gives one.
+ * the wordmark, labels beside the icons). Under them, signed in, New post: a button and no link, so the nav's links stay
+ * the four of section 7.1.
  */
-function SideNav({ items, pathname, onHomeAgain, full, floating }: NavProps & { full: boolean; floating?: ReactNode }) {
+function SideNav({ items, pathname, onHomeAgain, full, newPost }: NavProps & { full: boolean; newPost?: () => void }) {
   const insets = useSafeAreaInsets();
   return (
     <View
@@ -237,7 +246,7 @@ function SideNav({ items, pathname, onHomeAgain, full, floating }: NavProps & { 
           </ItemLink>
         );
       })}
-      {floating ? <View className="mt-4 items-center">{floating}</View> : null}
+      {newPost ? <View className={cn("mt-4", full ? "self-stretch" : "items-center")}>{full ? <NewPostButton onPress={newPost} /> : <ComposeButton onPress={newPost} />}</View> : null}
     </View>
   );
 }
@@ -255,18 +264,28 @@ function ContextColumn() {
   );
 }
 
-export function AppShell({ children, floating }: { children: ReactNode; floating?: ReactNode }) {
+interface AppShellProps {
+  children: ReactNode;
+  /** A control floating over a phone's column, bottom right. */
+  floating?: ReactNode;
+  /** The phone's compose button on this screen (7.2: Home, a profile and Bookmarks), for a signed-in reader. */
+  compose?: boolean;
+  /** What New post does here instead of opening the sheet: Home opens and focuses its own card from 768 px. */
+  onNewPost?: () => void;
+}
+
+export function AppShell({ children, floating, compose = false, onNewPost }: AppShellProps) {
   const kind = useLayout();
   return (
     <ShellScrollProvider phone={kind === "phone"}>
-      <Shell kind={kind} floating={floating}>
+      <Shell kind={kind} floating={floating} compose={compose} onNewPost={onNewPost}>
         {children}
       </Shell>
     </ShellScrollProvider>
   );
 }
 
-function Shell({ kind, children, floating }: { kind: LayoutKind; children: ReactNode; floating?: ReactNode }) {
+function Shell({ kind, children, floating, compose, onNewPost }: { kind: LayoutKind } & AppShellProps) {
   const { state } = useSession();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
@@ -278,7 +297,10 @@ function Shell({ kind, children, floating }: { kind: LayoutKind; children: React
   const banner = signedIn ? <StandingBanner standing={state.me.standing} /> : null;
   const items = navItems(state.status, handle);
   const phone = kind === "phone";
-  const hasFloating = floating !== undefined && floating !== null && floating !== false;
+  const newPost = signedIn ? (onNewPost ?? openNewPost) : undefined;
+  // The phone's floating control: the screen's own, or the compose button where the screen asks for it.
+  const shownFloating = floating ?? (compose && newPost ? <ComposeButton onPress={newPost} /> : null);
+  const hasFloating = shownFloating !== undefined && shownFloating !== null && shownFloating !== false;
 
   // Toasts on a phone screen with the compose button sit above it (section 5.4); the Toaster lives outside the screen.
   useEffect(() => {
@@ -311,7 +333,7 @@ function Shell({ kind, children, floating }: { kind: LayoutKind; children: React
         {hasFloating ? (
           // 16 px from the right, and 16 px above the tab bar and the bottom safe area (section 7.2).
           <View pointerEvents="box-none" style={{ position: "absolute", right: 16, bottom: 56 + insets.bottom + 16 }}>
-            {floating}
+            {shownFloating}
           </View>
         ) : null}
       </View>
@@ -332,14 +354,14 @@ function Shell({ kind, children, floating }: { kind: LayoutKind; children: React
       <SkipLink onSkip={focusMain} />
       {context ? (
         <View className="w-full flex-row" style={{ maxWidth: together, gap: COLUMNS.gap }}>
-          <SideNav {...nav} full={kind === "wide"} floating={floating} />
+          <SideNav {...nav} full={kind === "wide"} newPost={newPost} />
           {timeline}
           <ContextColumn />
         </View>
       ) : (
         // A tablet: the rail at the left edge and the column centred in the rest.
         <View className="w-full flex-row">
-          <SideNav {...nav} full={false} floating={floating} />
+          <SideNav {...nav} full={false} newPost={newPost} />
           <View className="min-w-0 flex-1 flex-row justify-center">
             {timeline}
           </View>

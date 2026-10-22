@@ -38,6 +38,8 @@ vi.mock("react-native-reanimated", async () => {
     useReducedMotion: vi.fn(() => false),
     useSharedValue: <T>(initial: T) => ({ value: initial }),
     useAnimatedStyle: <T>(updater: () => T) => updater(),
+    // UI Task 6: the composer's native ring animates its dash offset as a prop.
+    useAnimatedProps: <T>(updater: () => T) => updater(),
     useDerivedValue: <T>(updater: () => T) => ({ value: updater() }),
     withSpring: <T>(to: T) => to,
     withTiming: <T>(to: T) => to,

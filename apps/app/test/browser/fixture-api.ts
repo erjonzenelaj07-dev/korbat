@@ -12,6 +12,7 @@ import {
   PasskeyListResponse,
   PasskeyOptionsResponse,
   PostPage,
+  PostView,
   ProfilePage,
   ProfileView,
   PublicFacts,
@@ -25,7 +26,6 @@ import {
   UploadRefusalView,
   type Author,
   type MediaView,
-  type PostView,
   type ProfileListItem,
   type TimelineItem,
 } from "@korbat/contracts";
@@ -40,7 +40,9 @@ import type { z } from "zod";
  * post (like, repost, save, delete) and a follow are answered from UI Task 4 on, with switches that refuse a kind or
  * hold every action's answer back; nothing else that changes something is. From UI Task 5 the timelines honour `limit`
  * and page through 120 posts (enough for the reading place's 100 rows), a switch puts new posts above them, a thread has
- * ancestors, and sign-out is answered. Nothing here needs a database or the network.
+ * ancestors, and sign-out is answered. From UI Task 6 a post the reader writes (POST /api/posts) is answered as the API
+ * answers it, goes on top of the timelines, has a thread and a page of its own, and a reply joins its thread's replies.
+ * Nothing here needs a database or the network.
  */
 
 /** A WebP of 2 by 2 pixels (lossless, 38 bytes) in the accent violet: a real image, which the browser decodes under the policy. */
@@ -140,8 +142,8 @@ function timelineItems(signedIn: boolean, fresh: number): TimelineItem[] {
 }
 
 /** A page of a timeline: `limit` items (20 by default, at most 50, as Pagination has it) from the cursor's place. */
-function timeline(cursor: string | null, limit: string | null, signedIn: boolean, fresh: number) {
-  const items = timelineItems(signedIn, fresh);
+function timeline(cursor: string | null, limit: string | null, signedIn: boolean, fresh: number, written: TimelineItem[] = []) {
+  const items = [...written, ...timelineItems(signedIn, fresh)];
   const from = cursor === null ? 0 : Number.parseInt(cursor.replace(/^at-/, ""), 10);
   const size = Math.min(50, Math.max(1, Number.parseInt(limit ?? "20", 10) || 20));
   const to = Math.min(items.length, from + size);
@@ -243,6 +245,8 @@ export interface FixtureState {
   newPosts: number;
   /** How long each timeline answer waits, so a step can watch what the answer brings. */
   timelineDelayMs: number;
+  /** The posts the reader wrote in the walk (UI Task 6), newest first: on top of the timelines, each with its own thread. */
+  written: PostView[];
 }
 
 export interface FixtureApi {
@@ -254,6 +258,9 @@ export interface FixtureApi {
 
 type Answer = { status: number; json?: unknown; raw?: Buffer; type?: string };
 
+/** The reader's k-th post written in the walk (UI Task 6): ids of their own, after every fixture's. */
+export const writtenIdOf = (k: number): string => id(2000 + k);
+
 /** A fixture post's number from its id: post n has the id id(100 + n). */
 const numberOf = (postId: string): number => Number.parseInt(postId.slice(-12), 10) - 100;
 
@@ -263,7 +270,11 @@ const OTHERS = 2;
 const FLAGS = { like: "liked", repost: "reposted", bookmark: "bookmarked" } as const;
 
 export function createFixtureApi(): FixtureApi {
-  const state: FixtureState = { signedIn: false, problems: [], requests: [], refuse: new Set(), delayMs: 0, newPosts: 0, timelineDelayMs: 0 };
+  const state: FixtureState = { signedIn: false, problems: [], requests: [], refuse: new Set(), delayMs: 0, newPosts: 0, timelineDelayMs: 0, written: [] };
+  /** The written posts that are not replies, as timeline rows: the API puts the reader's own posts on top of both feeds. */
+  const writtenRows = (): TimelineItem[] => state.written.filter((view) => view.replyTo === null).map((view) => ({ kind: "post" as const, post: view }));
+  /** The written replies to one post, oldest first, as the replies route lists them. */
+  const writtenReplies = (postId: string): PostView[] => state.written.filter((view) => view.replyTo?.id === postId).reverse();
   const ok = (json: unknown): Answer => ({ status: 200, json });
   const posts = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => post(from + i, state.signedIn));
 
@@ -271,14 +282,14 @@ export function createFixtureApi(): FixtureApi {
   function get(path: string, query: URLSearchParams): Answer | null {
     const cursor = query.get("cursor");
     if (path === "/api/me") return state.signedIn ? ok(me()) : { status: 401, json: { error: { code: "unauthenticated", message: "Sign in to continue." } } };
-    if (path === "/api/timeline/following" || path === "/api/timeline/latest") return ok(timeline(cursor, query.get("limit"), state.signedIn, state.newPosts));
+    if (path === "/api/timeline/following" || path === "/api/timeline/latest") return ok(timeline(cursor, query.get("limit"), state.signedIn, state.newPosts, writtenRows()));
     if (path === "/api/timeline/explore") {
       const items = posts(1, 10).map((view) => ({ kind: "post" as const, post: view }));
       return ok(parse(ExplorePage, { items, nextCursor: null, computedAt: ago(5), signInForMore: !state.signedIn }, "explore"));
     }
     if (path === `/api/posts/${POST_ID}/thread`) {
       const replies = [2, 3, 5].map((n) => post(n, state.signedIn, { id: id(300 + n), replyTo: { id: POST_ID, authorHandle: GRACE.handle } }));
-      return ok(parse(ThreadResponse, { ancestors: [], post: post(1, state.signedIn), replies: { items: replies, nextCursor: null } }, "thread"));
+      return ok(parse(ThreadResponse, { ancestors: [], post: post(1, state.signedIn), replies: { items: [...replies, ...writtenReplies(POST_ID)], nextCursor: null } }, "thread"));
     }
     // Ada's post 3 replies to a chain of three, and has replies of its own: the page must scroll to hold it at the top (UI Task 5).
     if (path === `/api/posts/${id(103)}/thread`) {
@@ -286,6 +297,12 @@ export function createFixtureApi(): FixtureApi {
       const replies = [2, 5, 7, 10, 11].map((n) => post(n, state.signedIn, { id: id(320 + n), replyTo: { id: id(103), authorHandle: ADA.handle } }));
       return ok(parse(ThreadResponse, { ancestors, post: post(3, state.signedIn, { replyTo: { id: id(106), authorHandle: ADA.handle } }), replies: { items: replies, nextCursor: null } }, "thread"));
     }
+    // A post the reader wrote in the walk: its page, with no ancestors and its replies; its Explore status waits.
+    const writtenThread = /^\/api\/posts\/([0-9a-f-]{36})\/thread$/.exec(path);
+    const written = writtenThread ? state.written.find((view) => view.id === writtenThread[1]) : undefined;
+    if (written) return ok(parse(ThreadResponse, { ancestors: [], post: written, replies: { items: writtenReplies(written.id), nextCursor: null } }, "written thread"));
+    const writtenExplore = /^\/api\/posts\/([0-9a-f-]{36})\/explore$/.exec(path);
+    if (writtenExplore && state.written.some((view) => view.id === writtenExplore[1])) return ok(parse(ExploreStatus, { status: "pending", computedAt: ago(5) }, "explore status"));
     // Ada's own posts (3, 6, 9 and every third) have an Explore status for her: post 3 is listed, the others wait.
     const exploring = /^\/api\/posts\/([0-9a-f-]{36})\/explore$/.exec(path);
     if (exploring && numberOf(exploring[1]!) % 3 === 0) {
@@ -371,12 +388,35 @@ export function createFixtureApi(): FixtureApi {
       return ok(parse(NoticeStatus, { ref: NOTICE_REF, receivedAt: ago(60 * 24 * 2), items: [], contact: null }, "notice status"));
     }
     if (path === "/api/auth/passkey/signin/options") return ok(parse(PasskeyOptionsResponse, { options: { challenge: "Y2hhbGxlbmdlLW9mLXRoZS13YWxr", rpId: "localhost", userVerification: "required", allowCredentials: [], timeout: 300000 } }, "passkey options"));
+    // A post the reader writes (UI Task 6): answered as the API answers it, by Ada, now, with the post it replies to or quotes.
+    if (path === "/api/posts") {
+      const asked = JSON.parse(body.toString("utf8") || "{}") as { body?: string; replyToId?: string; quoteOfId?: string };
+      const quoted = asked.quoteOfId ? post(numberOf(asked.quoteOfId), state.signedIn) : null;
+      const view = parse(
+        PostView,
+        {
+          id: writtenIdOf(state.written.length + 1),
+          author: ADA,
+          body: asked.body ?? "",
+          createdAt: new Date().toISOString(),
+          state: "visible",
+          replyTo: asked.replyToId ? { id: asked.replyToId, authorHandle: GRACE.handle } : null,
+          counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
+          media: [],
+          viewer: { liked: false, reposted: false, bookmarked: false },
+          quoteOf: quoted ? { ...quoted, quoteOf: null } : null,
+        },
+        "written post",
+      );
+      state.written.unshift(view);
+      return ok(view);
+    }
     return null;
   }
 
   return {
     state,
-    postStatus: (asked) => (asked === POST_ID || asked === id(103) ? 204 : 404),
+    postStatus: (asked) => (asked === POST_ID || asked === id(103) || state.written.some((view) => view.id === asked) ? 204 : 404),
     async handle(req, res, url, body) {
       const method = req.method ?? "GET";
       state.requests.push({ method, path: `${url.pathname}${url.search}`, at: Date.now() });

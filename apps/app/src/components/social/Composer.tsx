@@ -1,115 +1,152 @@
-import { useEffect, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
-import { MEDIA_MAX_PER_POST, POST_MAX_LENGTH, normalizePostBody, postLength, type PostView } from "@korbat/contracts";
+import { useEffect, useImperativeHandle, useReducer, useRef, type Ref } from "react";
+import { TextInput, View } from "react-native";
+import { router } from "expo-router";
+import { MEDIA_MAX_PER_POST, type PostView } from "@korbat/contracts";
+import { Text } from "@/components/kit/Text";
+import { toast } from "@/components/toast";
 import { errorMessage } from "@/lib/api";
+import { createDraftKeeper, draftContext, readDraft } from "@/lib/drafts";
+import { useHaptics } from "@/lib/haptics";
 import { canPickImages, pickImages } from "@/lib/pick-images";
+import { useSession } from "@/lib/session";
 import { social } from "@/lib/social";
+import { UI_WORDS } from "@/lib/ui-words";
+import { ComposerField } from "./composer/ComposerField";
+import { DiscardDialog } from "./composer/DiscardDialog";
+import { SendBar } from "./composer/SendBar";
+import { composerReducer, composerView, initialComposer, type ComposerKind } from "./composer/state";
 import { ComposerImages } from "./ComposerImages";
 import { QuoteEmbed } from "./PostCard";
-import { describeState, useImageUploads } from "./useImageUploads";
+import { useImageUploads } from "./useImageUploads";
+
+/** What sending says, by what was sent (section 5.4): the same name as the button had. */
+const SENT: Record<ComposerKind, string> = { post: UI_WORDS["toast.sent.post"], reply: UI_WORDS["toast.sent.reply"], quote: UI_WORDS["toast.sent.quote"] };
+
+/**
+ * The toast after sending (UI design, sections 5.4 and 6.15): the sentence names what was sent, and its View opens the
+ * new post. It is announced politely; the post's own place is in the sentence, so View is a convenience, not the only way.
+ */
+export function announceSent(kind: ComposerKind, post: PostView): void {
+  toast.show({ message: SENT[kind], action: { label: UI_WORDS["toast.view"], onPress: () => router.push(`/post/${post.id}`) } });
+}
+
+/** What a card does with its composer: put the focus back in the field. */
+export interface ComposerHandle {
+  focus(): void;
+}
 
 interface ComposerProps {
   replyTo?: PostView;
   quoteOf?: PostView;
   onPosted?: (post: PostView) => void;
+  /** Cancel in the send bar, which a sheet gives: it closes, asking first when there is content. */
   onCancel?: () => void;
   autoFocus?: boolean;
   /** Told whenever the draft gains or loses content, so a sheet can ask before discarding it. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** The discard question shows in place of the send bar (ComposeSheet asks it). */
+  asking?: boolean;
+  onKeep?: () => void;
+  onDiscard?: () => void;
+  /** The field lost the focus (a card closes itself when it is then empty). */
+  onFieldBlur?: () => void;
+  handle?: Ref<ComposerHandle>;
 }
 
 /**
- * One composer for posts, replies and quotes, with up to four images. The counters use the same
- * normalization the server applies, so what they allow is exactly what the API accepts. A post
- * needs text or an image, and every image needs to be processed and described before it can go.
- * States reach assistive technology through `aria-*` props: react-native-web 0.21 ignores
- * `accessibilityState`, and `disabled` already sets `aria-disabled`.
+ * One composer for posts, replies and quotes, with up to four images (UI design, section 6.15), on its parts: the field,
+ * the image tray, the quoted post's preview (no live link in it), and the send bar with the ring and the Post button, or,
+ * while a sheet asks, the discard question. composer/state.ts holds what is being written and says what follows; the
+ * text is kept on the device per context (lib/drafts.ts) from the first keystroke, 500 ms after typing stops, and the
+ * draft is removed when the post is sent or discarded. Sending fires the success haptic and the toast with View, and
+ * hands the post on; the field keeps or gets back the focus as its container decides. States reach assistive
+ * technology through aria-* props: react-native-web 0.21 ignores accessibilityState.
  */
-export function Composer({ replyTo, quoteOf, onPosted, onCancel, autoFocus, onDirtyChange }: ComposerProps) {
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const uploads = useImageUploads();
+export function Composer({ replyTo, quoteOf, onPosted, onCancel, autoFocus, onDirtyChange, asking = false, onKeep, onDiscard, onFieldBlur, handle }: ComposerProps) {
+  const { state: session } = useSession();
+  const account = session.status === "signed-in" ? session.me.user.id : null;
+  const context = draftContext(replyTo?.id, quoteOf?.id);
+  const [state, dispatch] = useReducer(composerReducer, context, (opening) => initialComposer(opening, account ? readDraft(account, opening) : ""));
+  const uploads = useImageUploads((images) => dispatch({ type: "images", images }));
+  const view = composerView(state);
+  const haptic = useHaptics();
+  const field = useRef<TextInput>(null);
 
-  const length = postLength(normalizePostBody(text));
-  const { waiting, failed, undescribed } = describeState(uploads.images);
-  const hasContent = length >= 1 || uploads.images.length >= 1;
-  useEffect(() => onDirtyChange?.(hasContent), [hasContent, onDirtyChange]);
-  const ready = hasContent && length <= POST_MAX_LENGTH && !waiting && !failed && !undescribed && !busy;
-  // While images hold the post back, the button itself says what is missing, what the user can act
-  // on first. Its accessible name is then that sentence, so a screen reader hears the reason too.
-  const missing = failed ? "Remove the failed image" : undescribed ? "Describe every image" : waiting ? "Waiting for images…" : null;
-  const action = replyTo ? "Reply" : quoteOf ? "Quote" : "Post";
+  // One keeper per account and context; leaving writes what is still waiting.
+  const keeper = useRef(createDraftKeeper(account, context));
+  useEffect(() => {
+    const own = createDraftKeeper(account, context);
+    keeper.current = own;
+    return () => own.dispose();
+  }, [account, context]);
+
+  useEffect(() => {
+    onDirtyChange?.(view.hasContent);
+  }, [view.hasContent, onDirtyChange]);
+  useImperativeHandle(handle, () => ({ focus: () => field.current?.focus() }), []);
+
+  // When the question is withdrawn (Keep writing, or Escape while it asks), the focus goes back to the words.
+  const wasAsking = useRef(asking);
+  useEffect(() => {
+    if (wasAsking.current && !asking) field.current?.focus();
+    wasAsking.current = asking;
+  }, [asking]);
+
+  const type = (text: string) => {
+    dispatch({ type: "type", text });
+    keeper.current.typed(text);
+  };
 
   async function submit() {
-    if (!ready) return;
-    setBusy(true);
-    setError(null);
+    if (!view.ready) return;
+    dispatch({ type: "send" });
     try {
       const post = await social.createPost({
-        body: text,
-        media: uploads.images.map((image) => ({ id: image.id!, alt: image.alt })),
+        body: state.text,
+        media: state.images.map((image) => ({ id: image.id!, alt: image.alt })),
         ...(replyTo ? { replyToId: replyTo.id } : {}),
         ...(quoteOf ? { quoteOfId: quoteOf.id } : {}),
       });
-      setText("");
+      // Touch and sight on the same frame: the haptic before the composer empties.
+      haptic("success");
+      keeper.current.sent();
       uploads.clear();
+      dispatch({ type: "sent" });
+      announceSent(view.kind, post);
       onPosted?.(post);
     } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
+      dispatch({ type: "failed", error: errorMessage(err) });
     }
   }
 
-  async function addImages() {
-    uploads.add(await pickImages());
-  }
+  const discard = () => {
+    keeper.current.discarded();
+    dispatch({ type: "discard" });
+    onDiscard?.();
+  };
+
+  const addImage = canPickImages && state.images.length < MEDIA_MAX_PER_POST ? () => void pickImages().then(uploads.add) : undefined;
 
   return (
-    <View className="px-4 py-3">
-      {replyTo ? <Text className="mb-2 text-xs text-zinc-400">Replying to @{replyTo.author.handle}</Text> : null}
-      <TextInput
-        accessibilityLabel={replyTo ? "Your reply" : quoteOf ? "Your comment on the quoted post" : "What's on your mind?"}
-        placeholder={replyTo ? "Write your reply" : quoteOf ? "Add your comment" : "What's on your mind?"}
-        placeholderTextColor="#a1a1aa"
-        multiline
-        autoFocus={autoFocus}
-        value={text}
-        onChangeText={setText}
-        className="min-h-[88px] rounded-lg border border-zinc-500 bg-zinc-900 px-4 py-3 text-base leading-6 text-zinc-50"
-      />
-      <ComposerImages images={uploads.images} onAlt={uploads.setAlt} onRemove={uploads.remove} />
-      {quoteOf ? <QuoteEmbed quote={{ ...quoteOf, quoteOf: null }} /> : null}
+    <View>
+      <ComposerField fieldRef={field} kind={view.kind} value={state.text} onChangeText={type} length={view.length} autoFocus={autoFocus} onBlur={onFieldBlur} />
+      <ComposerImages images={state.images} onAlt={uploads.setAlt} onRemove={uploads.remove} />
+      {quoteOf ? <QuoteEmbed quote={{ ...quoteOf, quoteOf: null }} preview /> : null}
       {uploads.notice ? (
-        <Text accessibilityRole="alert" className="mt-2 text-sm text-amber-300">
+        <Text accessibilityRole="alert" variant="meta" tone="danger" className="mt-2">
           {uploads.notice}
         </Text>
       ) : null}
-      {error ? (
-        <Text accessibilityRole="alert" className="mt-2 text-sm text-red-400">
-          {error}
+      {state.error ? (
+        <Text accessibilityRole="alert" tone="danger" className="mt-2">
+          {state.error}
         </Text>
       ) : null}
-      <View className="mt-2 flex-row items-center gap-3">
-        {canPickImages && uploads.images.length < MEDIA_MAX_PER_POST ? (
-          <Pressable accessibilityRole="button" onPress={() => void addImages()} className="rounded-lg border border-zinc-700 px-3 py-2">
-            <Text className="text-sm text-zinc-200">Add image</Text>
-          </Pressable>
-        ) : null}
-        <View className="flex-1" />
-        <Text className={`text-xs ${length > POST_MAX_LENGTH ? "text-red-400" : "text-zinc-400"}`}>
-          {length}/{POST_MAX_LENGTH}
-        </Text>
-        {onCancel ? (
-          <Pressable accessibilityRole="button" onPress={onCancel} className="rounded-lg border border-zinc-700 px-4 py-2">
-            <Text className="text-sm text-zinc-200">Cancel</Text>
-          </Pressable>
-        ) : null}
-        <Pressable accessibilityRole="button" aria-busy={busy} disabled={!ready} onPress={() => void submit()} className={`rounded-lg px-4 py-2 ${ready ? "bg-zinc-50" : "bg-zinc-800"}`}>
-          <Text className={`text-sm font-semibold ${ready ? "text-zinc-950" : "text-zinc-500"}`}>{busy ? "Posting…" : (missing ?? action)}</Text>
-        </Pressable>
-      </View>
+      {asking ? (
+        <DiscardDialog onDiscard={discard} onKeep={() => onKeep?.()} />
+      ) : (
+        <SendBar onAddImage={addImage} length={view.length} onCancel={onCancel} label={view.button} ready={view.ready} busy={state.busy} onPost={() => void submit()} />
+      )}
     </View>
   );
 }

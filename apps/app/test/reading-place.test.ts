@@ -218,11 +218,16 @@ describe("cleared when the session ends (section 8.8)", () => {
 
   test("the provider decides with sessionEnded on every change of its state, and clears through the stores' own functions", () => {
     const session = readFileSync(path.join(SRC, "lib", "session.tsx"), "utf8");
-    expect(session).toContain("if (sessionEnded(previous.current, state.status, placesStored())) clearSessionTraces();");
+    expect(session).toContain("if (sessionEnded(previous.current, state.status, tracesStored())) clearSessionTraces();");
     const end = readFileSync(path.join(SRC, "lib", "session-end.ts"), "utf8");
     expect(end).toContain("clearAppearance();");
     expect(end).toContain("clearPlaces();");
     // reading-place.ts is the only module that touches the places' keys.
     expect(session + end).not.toContain("korbat.place");
+    // UI Task 6: the drafts end with the session too, through drafts.ts, the only module that touches their keys; the
+    // first answer of /me ends a session while a place or a draft is stored (tracesStored, in session-end.ts).
+    expect(end).toContain("clearDrafts();");
+    expect(session + end).not.toContain("korbat.drafts");
+    expect(end).toContain("return placesStored() || draftsStored();");
   });
 });

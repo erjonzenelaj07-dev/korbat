@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { THEMES, type ThemeName } from "../../src/theme/tokens";
 import { TITLE_WORDS, UI_WORDS } from "../../src/lib/ui-words";
 import { appSiteHeadersFromCaddyfile } from "./caddyfile";
-import { ADA, createFixtureApi, DECISION_ID, MISSING_POST_ID, newPostIdOf, NOTICE_REF, NOTICE_TOKEN, POST_ID, postIdOf, RELEASE_ID, UPLOAD_ID, type FixtureApi } from "./fixture-api";
+import { ADA, createFixtureApi, DECISION_ID, GRACE, MISSING_POST_ID, newPostIdOf, NOTICE_REF, NOTICE_TOKEN, POST_ID, postIdOf, RELEASE_ID, UPLOAD_ID, writtenIdOf, type FixtureApi } from "./fixture-api";
 import { HOLD_MS, startAppSite, type AppSiteServer } from "./server";
 import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } from "./watch";
 
@@ -27,8 +27,9 @@ import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } f
  * route signed out and signed in; the requests and the time before the first content; the offline banner; the header
  * that hides on a phone, and stays under reduced motion; the soft reset; and from Task 4 the lightbox, Like with its
  * rollback, Follow with its rollback, the menus, and Who sees this; from Task 5 the new-posts pill, the reading place, the
- * feeds kept across tabs, the keyboard on Home, and the focus after a delete with the thread held at its post. Later
- * tasks add their screens' steps.
+ * feeds kept across tabs, the keyboard on Home, and the focus after a delete with the thread held at its post; from Task
+ * 6 the composer: the sheet and its toast at 360, the discard question and the drafts, Home's card and New post at
+ * 1280, a reply and a quote. Later tasks add their screens' steps.
  *
  * It never downloads a browser. By default it drives the Chromium build playwright-core 1.63.0 names (chromium-1243 under
  * ms-playwright), which must already be installed; KORBAT_BROWSER_CHANNEL=chrome drives the machine's own Chrome. The
@@ -259,10 +260,10 @@ const ROUTES = [
  * fit and contrast as drawn: the skip link, the nav, the context column, the screen header, the offline banner, and a
  * screen that is the kit's alone (the missing page); from Task 4 every post card (an article), every sheet and dialog,
  * a menu's popover, the follow button and the toaster; from Task 5 every row of a feed (its posts, the marker, Load more,
- * the end), the tab lists, the new-posts pill, the profile's header and the thread's posts. A feed's header is not held
- * yet: it holds the composer, which Task 6 moves onto the tokens. The screens' own content still paints with Tailwind's
- * palette and sizes until its task moves it onto the tokens (test/legacy-files.ts), and joins this list then: the
- * composer with Task 6, the moderation and public pages with Task 7, settings and sign-in with Task 8.
+ * the end), the tab lists, the new-posts pill, the profile's header and the thread's posts; from Task 6 every feed whole,
+ * its header with Home's card and the thread's reply card included, and the compose button. The screens' own content
+ * still paints with Tailwind's palette and sizes until its task moves it onto the tokens (test/legacy-files.ts), and
+ * joins this list then: the moderation and public pages with Task 7, settings and sign-in with Task 8.
  */
 const DRAWN = [
   'a[href="#main"]',
@@ -275,7 +276,8 @@ const DRAWN = [
   "[data-menu]",
   "[data-follow]",
   "[data-sonner-toaster]",
-  '[role="feed"] [data-row]',
+  '[role="feed"]',
+  "[data-compose]",
   '[role="tablist"]',
   "[data-pill]",
   "[data-profile-header]",
@@ -597,14 +599,14 @@ describe("the app in Chromium, under the app site's policy", () => {
     await layoutStep(1280, 900, "wide");
   });
 
-  test("7. the keyboard: the skip link first, then the nav in order, then the main column, every focus drawn at 2 px or more", async () => {
+  test("7. the keyboard: the skip link first, then the nav in order with New post last, then the main column, every focus drawn at 2 px or more", async () => {
     const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "dark" } });
     try {
       await visit(visit_.page, "/");
       const focused = `(() => { const e = document.activeElement; const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return { tag: e.tagName.toLowerCase(), href: e.getAttribute("href"), role: e.getAttribute("role"), inMain: !!e.closest("main"), isMain: e.tagName === "MAIN", inNav: !!e.closest('nav[aria-label="Main"]'), outline: s.outlineStyle, width: parseFloat(s.outlineWidth), w: r.width, h: r.height }; })()`;
       type Focus = { tag: string; href: string | null; role: string | null; inMain: boolean; isMain: boolean; inNav: boolean; outline: string; width: number; w: number; h: number };
       const stops: Focus[] = [];
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 7; i++) {
         await visit_.page.keyboard.press("Tab");
         stops.push((await visit_.page.evaluate(focused)) as Focus);
         if (i === 0) await screenshot(visit_.page, "keyboard-1280-dark-skip");
@@ -615,10 +617,14 @@ describe("the app in Chromium, under the app site's policy", () => {
       expect(stops[0]!.w).toBeGreaterThanOrEqual(44);
       expect(stops[0]!.h).toBeGreaterThanOrEqual(44);
       expect(stops.slice(1, 5).map((stop) => (stop.inNav ? stop.href : null))).toEqual(["/", "/bookmarks", "/u/ada", "/settings/security"]);
-      expect(stops[5]!.inMain).toBe(true);
+      // Task 6: the nav ends with New post, a button and no link.
+      expect(stops[5]!.inNav).toBe(true);
+      expect(stops[5]!.role).toBe("button");
+      expect(stops[5]!.href).toBeNull();
+      expect(stops[6]!.inMain).toBe(true);
       // Every stop draws korbat's ring, 2 px: the shell's, and the first stop inside Home's column, Home's own tab (Task 5).
-      expect(stops[5]!.role).toBe("tab");
-      for (const stop of stops.slice(0, 6)) {
+      expect(stops[6]!.role).toBe("tab");
+      for (const stop of stops.slice(0, 7)) {
         expect(stop.outline, JSON.stringify(stop)).not.toBe("none");
         expect(stop.width, JSON.stringify(stop)).toBeGreaterThanOrEqual(2);
       }
@@ -665,15 +671,22 @@ describe("the app in Chromium, under the app site's policy", () => {
     const visit_ = await open({ width: 320, height: 640, appearance: { theme: "light", textStep: "largest" } });
     try {
       // The screens drawn on the kit: a missing page, Bookmarks under its header, and from Task 5 Home with its tabs and
-      // rows. A post joins with Task 6, which moves its reply composer onto the kit.
+      // rows; from Task 6 a post with its reply card, and Home's New post sheet open with words in its field.
       for (const [name, route] of [
         ["missing", "/no-such-page"],
         ["bookmarks", "/bookmarks"],
         ["home", "/"],
+        ["post", `/post/${POST_ID}`],
+        ["composer", "/"],
       ] as const) {
         await visit(visit_.page, route);
         await visit_.page.evaluate(`document.documentElement.style.fontSize = "200%"`);
         await pause(300);
+        if (name === "composer") {
+          await visit_.page.locator("[data-compose]").click();
+          await visit_.page.locator('[role="dialog"] textarea').fill("Morning light over the harbour, written at the largest text.");
+          await pause(400);
+        }
         await screenshot(visit_.page, `largest-320-${name}`);
         // What sticks out past the window's right edge, should anything.
         const wide = (await visit_.page.evaluate(
@@ -1397,6 +1410,328 @@ describe("the app in Chromium, under the app site's policy", () => {
       await clean(visit_);
     } finally {
       await visit_.context.close();
+    }
+  });
+
+  // UI Task 6: the composer (UI design, sections 6.15, 7.2, 7.3, 8.2, 8.3, 8.6 and 10).
+
+  /** Every drafts key in the page's storage. */
+  const DRAFTS = `Object.keys(localStorage).filter((key) => key.startsWith("korbat.drafts."))`;
+  /** The reader's kept drafts, by context. */
+  const draftsOf = (page: Page) => page.evaluate(`JSON.parse(localStorage.getItem("korbat.drafts.${ADA.id}") || "{}")`) as Promise<Record<string, string>>;
+  /** The open dialog's field. */
+  const sheetField = (page: Page) => page.locator('[role="dialog"] textarea');
+  /** Whether two boxes overlap. */
+  const intersects = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) =>
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  /** The words of the first post of the feed on screen. */
+  const FIRST_POST = `(() => { const article = document.querySelector('[role="feed"] [role="article"]'); return article ? article.innerText : ""; })()`;
+  /** Home's card's height: the box that grows, around [data-composer-card]. */
+  const CARD_HEIGHT = `(() => { const card = document.querySelector("[data-composer-card]"); return card ? card.parentElement.getBoundingClientRect().height : null; })()`;
+  /** Whether Home's card is open or closed. */
+  const cardIs = (state: "open" | "closed") => `(() => { const card = document.querySelector("[data-composer-card]"); return !!card && card.getAttribute("data-composer-card") === "${state}"; })()`;
+  /** What holds the focus is the field named `name`. */
+  const fieldFocused = (name: string) => `(${FOCUSED}) === ${JSON.stringify(name)} && document.activeElement.tagName === "TEXTAREA"`;
+  /** The card's height on every frame for `ms`, from now. */
+  const sampleHeights = (page: Page, ms: number) =>
+    page.evaluate(
+      `new Promise((resolve) => { const out = []; const start = performance.now(); const tick = () => { out.push(${CARD_HEIGHT}); if (performance.now() - start < ${ms}) requestAnimationFrame(tick); else resolve(out); }; tick(); })`,
+    ) as Promise<(number | null)[]>;
+  /** The nav's New post, from 768 px. */
+  const navNewPost = (page: Page) => page.locator('nav[aria-label="Main"]').getByRole("button", { name: UI_WORDS["composer.newPost"], exact: true });
+
+  /** Opens the New post sheet: the compose button on a phone's Home, the nav's New post on Bookmarks wider up. */
+  async function openSheet(page: Page, width: number): Promise<void> {
+    if (width < 768) {
+      await visit(page, "/");
+      await page.locator("[data-compose]").click();
+    } else {
+      await visit(page, "/bookmarks");
+      await navNewPost(page).click();
+    }
+    await page.locator('[role="dialog"]').waitFor({ state: "visible" });
+    await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the field focused", 5000);
+  }
+
+  test("28. at 360 the compose button opens the sheet New post with its field focused; the ring and its number; Post closes it at once, its toast and View keep clear of the button, the post is on top, the focus is back on the button and View opens the post; the button shows on a profile and Bookmarks, not on a post", async () => {
+    for (const theme of ["light", "dark"] as const) {
+      const visit_ = await open({ width: 360, height: 740, appearance: { theme } });
+      const page = visit_.page;
+      try {
+        await visit(page, "/");
+        const button = page.locator("[data-compose]");
+        expect(await button.count()).toBe(1);
+        await button.click();
+        const dialog = page.locator('[role="dialog"]');
+        await dialog.waitFor({ state: "visible" });
+        expect(await page.evaluate(DIALOG_NAME)).toBe(UI_WORDS["composer.title.post"]);
+        await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the field focused", 5000);
+        // Near the end the ring turns review-ink and says what is left.
+        await sheetField(page).fill("Morning light over the harbour. ".repeat(30).slice(0, 950));
+        await dialog.getByText("50", { exact: true }).waitFor({ state: "visible" });
+        expect(await page.evaluate(`getComputedStyle(document.querySelector('[role="dialog"] svg[data-ring]')).color`)).toBe(rgb(THEMES[theme]["review-ink"]));
+        await pause(400);
+        await screenshot(page, `composer-360-${theme}`);
+        expect(await contrast(page, '[role="dialog"]')).toEqual([]);
+        expect(await phoneProblems(page, '[role="dialog"]')).toEqual([]);
+        expect(await clippedLabels(page, '[role="dialog"]')).toEqual([]);
+        // Post: the sheet closes at once and the toast offers View, above the compose button, never over it.
+        const words = `A post from the walk in ${theme}.`;
+        await sheetField(page).fill(words);
+        await dialog.getByRole("button", { name: UI_WORDS["composer.action.post"], exact: true }).click();
+        await dialog.waitFor({ state: "detached" });
+        await page.locator("[data-sonner-toaster]").getByText(UI_WORDS["toast.sent.post"]).waitFor({ state: "visible" });
+        await pause(600);
+        const view = page.locator("[data-sonner-toaster]").getByRole("button", { name: UI_WORDS["toast.view"], exact: true });
+        const compose = (await button.boundingBox())!;
+        expect(intersects((await page.locator("[data-sonner-toast]").first().boundingBox())!, compose)).toBe(false);
+        expect(intersects((await view.boundingBox())!, compose)).toBe(false);
+        await screenshot(page, `toast-360-${theme}`);
+        expect(await contrast(page, "[data-sonner-toaster]")).toEqual([]);
+        await until(page, `${FIRST_POST}.includes(${JSON.stringify(words)})`, "the post on top of Home");
+        await until(page, `(${FOCUSED}) === ${JSON.stringify(UI_WORDS["composer.newPost"])}`, "the focus back on the compose button", 5000);
+        await view.click();
+        await until(page, `location.pathname === "/post/${writtenIdOf(1)}"`, "View opens the post");
+        await page.locator('[data-row="focused"] [role="article"]').getByText(words).waitFor({ state: "visible" });
+        await page.waitForLoadState("networkidle");
+        // A profile and Bookmarks show the button; a post does not.
+        for (const [route, count] of [
+          ["/u/grace", 1],
+          ["/bookmarks", 1],
+          [`/post/${POST_ID}`, 0],
+        ] as const) {
+          await visit(page, route);
+          expect(await page.locator("[data-compose]").count(), route).toBe(count);
+        }
+        await clean(visit_);
+      } finally {
+        fixtures.state.written.length = 0;
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("29. an empty sheet closes at once on Escape; with words Escape asks Discard this draft?, Keep writing keeps the words and the focus, Discard closes, and the focus is back on the opener; the draft is kept 500 ms after typing, survives a reload and goes when sent; signing out clears every draft", async () => {
+    const visit_ = await open({ width: 360, height: 740, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      const dialog = page.locator('[role="dialog"]');
+      const question = page.locator('[role="alertdialog"]');
+      const opener = page.locator("[data-compose]");
+      const backOnOpener = `(${FOCUSED}) === ${JSON.stringify(UI_WORDS["composer.newPost"])}`;
+      await openSheet(page, 360);
+      // Empty: Escape closes it at once, with no question.
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      expect(await question.count()).toBe(0);
+      await until(page, backOnOpener, "the focus back on the opener", 5000);
+      // With words: kept on the device 500 ms after typing stops; Escape asks, Keep writing keeps them and the focus.
+      await opener.click();
+      await dialog.waitFor({ state: "visible" });
+      await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the field focused", 5000);
+      await page.keyboard.type("Words worth keeping");
+      await pause(700);
+      expect((await draftsOf(page)).post).toBe("Words worth keeping");
+      await page.keyboard.press("Escape");
+      await question.waitFor({ state: "visible" });
+      expect(await question.innerText()).toContain(UI_WORDS["composer.discard.question"]);
+      await until(page, `(${FOCUSED}) === ${JSON.stringify(UI_WORDS["composer.discard.keep"])}`, "Keep writing focused", 3000);
+      await question.getByRole("button", { name: UI_WORDS["composer.discard.keep"], exact: true }).click();
+      await question.waitFor({ state: "detached" });
+      expect(await sheetField(page).inputValue()).toBe("Words worth keeping");
+      await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the focus back in the field", 3000);
+      // Discard closes it, the focus goes back to the opener, and the draft is gone.
+      await page.keyboard.press("Escape");
+      await question.waitFor({ state: "visible" });
+      await question.getByRole("button", { name: UI_WORDS["composer.discard.confirm"], exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+      await until(page, backOnOpener, "the focus back on the opener after Discard", 5000);
+      expect(await page.evaluate(DRAFTS)).toEqual([]);
+      // A draft survives a reload, and is gone once sent.
+      await opener.click();
+      await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the field focused", 5000);
+      await page.keyboard.type("Kept across a reload");
+      await pause(700);
+      await openSheet(page, 360);
+      expect(await sheetField(page).inputValue()).toBe("Kept across a reload");
+      await dialog.getByRole("button", { name: UI_WORDS["composer.action.post"], exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+      expect(await page.evaluate(DRAFTS)).toEqual([]);
+      // Signing out clears every draft on the device, another account's too.
+      await opener.click();
+      await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the field focused", 5000);
+      await page.keyboard.type("Left on this device");
+      await pause(700);
+      await page.evaluate(`localStorage.setItem("korbat.drafts.00000000-0000-4000-8000-0000000000aa", JSON.stringify({ post: "Another account's words" }))`);
+      expect(await page.evaluate(DRAFTS)).toHaveLength(2);
+      await visit(page, "/settings/security");
+      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await until(page, `location.pathname === "/" && !document.querySelector('nav[aria-label="Main"] a[href="/bookmarks"]')`, "signed out, on Home");
+      expect(await page.evaluate(DRAFTS)).toEqual([]);
+      await clean(visit_);
+    } finally {
+      fixtures.state.written.length = 0;
+      await visit_.context.close();
+    }
+    // The question as drawn: in a phone's sheet and in the 640 px dialog, in both themes.
+    for (const width of [360, 1280]) {
+      for (const theme of ["light", "dark"] as const) {
+        const shot = await open({ width, height: width < 768 ? 740 : 900, appearance: { theme } });
+        try {
+          await openSheet(shot.page, width);
+          await shot.page.keyboard.type("A draft to think twice about");
+          await shot.page.keyboard.press("Escape");
+          const asked = shot.page.locator('[role="alertdialog"]');
+          await asked.waitFor({ state: "visible" });
+          await pause(400);
+          await screenshot(shot.page, `discard-${width}-${theme}`);
+          expect(await contrast(shot.page, '[role="dialog"]')).toEqual([]);
+          if (width < 768) expect(await phoneProblems(shot.page, '[role="dialog"]')).toEqual([]);
+          await asked.getByRole("button", { name: UI_WORDS["composer.discard.confirm"], exact: true }).click();
+          await shot.page.locator('[role="dialog"]').waitFor({ state: "detached" });
+          await clean(shot);
+        } finally {
+          await shot.context.close();
+        }
+      }
+    }
+  });
+
+  test("30. at 1280 Home's card opens in place on a click and grows, at once under reduced motion, and closes back empty when the focus leaves it; the nav's New post focuses it on Home and opens a 640 px dialog on Bookmarks, whose post is then on top of Home", async () => {
+    for (const [name, options] of [
+      ["moves", {}],
+      ["system-reduced", { reducedMotion: "reduce" as const }],
+    ] as const) {
+      const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" }, ...options });
+      const page = visit_.page;
+      try {
+        await visit(page, "/");
+        const collapsed = page.getByRole("button", { name: UI_WORDS["composer.collapsed"], exact: true });
+        await collapsed.waitFor({ state: "visible" });
+        const before = (await page.evaluate(CARD_HEIGHT)) as number;
+        const frames = sampleHeights(page, 700);
+        await collapsed.click();
+        const heights = (await frames).filter((height): height is number => height !== null);
+        await until(page, cardIs("open"), "the card open");
+        await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the card's field focused", 3000);
+        await pause(300);
+        const after = (await page.evaluate(CARD_HEIGHT)) as number;
+        expect(after, name).toBeGreaterThan(before + 40);
+        // Moving, some frames fall between the two heights; reduced, none does.
+        const between = heights.filter((height) => height > before + 2 && height < after - 2);
+        if (name === "moves") expect(between.length, heights.join(" ")).toBeGreaterThan(0);
+        else expect(between, heights.join(" ")).toEqual([]);
+        // Left empty, it closes back to its one line.
+        await page.locator('aside[aria-label="About korbat"]').getByText(UI_WORDS["shell.howTitle"], { exact: true }).click();
+        await until(page, cardIs("closed"), "the card closed back", 3000);
+        await pause(400);
+        expect(Math.abs(((await page.evaluate(CARD_HEIGHT)) as number) - before), name).toBeLessThanOrEqual(1);
+        await clean(visit_);
+      } finally {
+        await visit_.context.close();
+      }
+    }
+    for (const theme of ["light", "dark"] as const) {
+      const visit_ = await open({ width: 1280, height: 900, appearance: { theme } });
+      const page = visit_.page;
+      try {
+        await visit(page, "/");
+        // On Home the nav's New post opens and focuses the card, and opens no dialog.
+        await navNewPost(page).click();
+        await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the card's field focused", 3000);
+        expect(await page.locator('[role="dialog"]').count()).toBe(0);
+        await page.keyboard.type(`Written in the card in ${theme}.`);
+        await pause(400);
+        await screenshot(page, `card-open-1280-${theme}`);
+        expect(await contrast(page, "[data-composer-card]")).toEqual([]);
+        await page.locator("[data-composer-card]").getByRole("button", { name: UI_WORDS["composer.action.post"], exact: true }).click();
+        await page.locator("[data-sonner-toaster]").getByText(UI_WORDS["toast.sent.post"]).waitFor({ state: "visible" });
+        await until(page, `${FIRST_POST}.includes(${JSON.stringify(`Written in the card in ${theme}.`)})`, "the card's post on top");
+        // On Bookmarks the nav's New post opens the 640 px dialog.
+        await visit(page, "/bookmarks");
+        await navNewPost(page).click();
+        const dialog = page.locator('[role="dialog"]');
+        await dialog.waitFor({ state: "visible" });
+        expect(await page.evaluate(DIALOG_NAME)).toBe(UI_WORDS["composer.title.post"]);
+        // Its layout width, which the dialog's opening scale (0.96 to 1) does not change.
+        expect(await page.evaluate(`[...document.querySelectorAll('[role="dialog"] *')].some((element) => element.offsetWidth === 640)`)).toBe(true);
+        await until(page, fieldFocused(UI_WORDS["composer.field.post"]), "the dialog's field focused", 5000);
+        const words = `Sent from Bookmarks in ${theme}.`;
+        await sheetField(page).fill(words);
+        await pause(400);
+        await screenshot(page, `bookmarks-dialog-1280-${theme}`);
+        expect(await contrast(page, '[role="dialog"]')).toEqual([]);
+        await dialog.getByRole("button", { name: UI_WORDS["composer.action.post"], exact: true }).click();
+        await dialog.waitFor({ state: "detached" });
+        await until(page, `(${FOCUSED}) === ${JSON.stringify(UI_WORDS["composer.newPost"])}`, "the focus back on New post", 5000);
+        await visit(page, "/");
+        await until(page, `${FIRST_POST}.includes(${JSON.stringify(words)})`, "that post on top of Home");
+        await clean(visit_);
+      } finally {
+        fixtures.state.written.length = 0;
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("31. Reply on a feed card opens the thread with Your reply focused, and a reply is sent with its toast and read again; Repost's Quote opens a sheet whose preview holds no link, and a quote is sent with its toast while the page stays", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/?tab=latest");
+      await postArticle(page, 1).getByRole("button", { name: /^Reply/ }).click();
+      await until(page, `location.pathname === "/post/${POST_ID}" && new URL(location.href).searchParams.get("reply") === "1"`, "the thread, its reply card asked for");
+      await until(page, fieldFocused(UI_WORDS["composer.field.reply"]), "Your reply focused", 5000);
+      const read = asked(`/api/posts/${POST_ID}/thread`);
+      await page.keyboard.type("A reply from the walk.");
+      await page.locator("[data-composer-card]").getByRole("button", { name: UI_WORDS["composer.action.reply"], exact: true }).click();
+      await page.locator("[data-sonner-toaster]").getByText(UI_WORDS["toast.sent.reply"]).waitFor({ state: "visible" });
+      await waitFor(() => asked(`/api/posts/${POST_ID}/thread`) > read, "the replies read again");
+      await page.locator('[role="article"]').filter({ hasText: "A reply from the walk." }).waitFor({ state: "visible" });
+      // The card stays open and empty, with the focus in its field.
+      await until(page, fieldFocused(UI_WORDS["composer.field.reply"]), "the focus back in the reply card", 3000);
+      // Repost's Quote: the quote sheet over the thread, its preview of the post linking nowhere.
+      await visit(page, "/?tab=latest");
+      await postArticle(page, 1).getByRole("button", { name: /^Repost/ }).click();
+      await page.locator("[data-menu]").getByRole("link", { name: UI_WORDS["post.quote"], exact: true }).click();
+      const dialog = page.locator('[role="dialog"]');
+      await dialog.waitFor({ state: "visible" });
+      expect(await page.evaluate(DIALOG_NAME)).toBe(UI_WORDS["composer.title.quote"]);
+      await until(page, fieldFocused(UI_WORDS["composer.field.quote"]), "the quote's field focused", 5000);
+      expect(await dialog.locator("a").count()).toBe(0);
+      expect(await dialog.innerText()).toContain(GRACE.displayName);
+      await page.keyboard.type("Worth reading.");
+      await pause(400);
+      await screenshot(page, "quote-1280-light");
+      await dialog.getByRole("button", { name: UI_WORDS["composer.action.quote"], exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+      await page.locator("[data-sonner-toaster]").getByText(UI_WORDS["toast.sent.quote"]).waitFor({ state: "visible" });
+      // The page stays: the toast's View is the way to the quote.
+      expect(new URL(page.url()).pathname).toBe(`/post/${POST_ID}`);
+      await page.waitForLoadState("networkidle");
+      await clean(visit_);
+    } finally {
+      fixtures.state.written.length = 0;
+      await visit_.context.close();
+    }
+    // The reply card as drawn, opened by ?reply=1: on a phone and at 1280, in both themes.
+    for (const width of [360, 1280]) {
+      for (const theme of ["light", "dark"] as const) {
+        const shot = await open({ width, height: width < 768 ? 740 : 900, appearance: { theme } });
+        try {
+          await visit(shot.page, `/post/${POST_ID}?reply=1`);
+          await until(shot.page, fieldFocused(UI_WORDS["composer.field.reply"]), "Your reply focused", 5000);
+          await shot.page.keyboard.type("A reply in progress.");
+          await pause(400);
+          await screenshot(shot.page, `reply-card-${width}-${theme}`);
+          expect(await contrast(shot.page, "[data-composer-card]")).toEqual([]);
+          if (width < 768) expect(await phoneProblems(shot.page, "[data-composer-card]")).toEqual([]);
+          expect(await clippedLabels(shot.page, "[data-composer-card]")).toEqual([]);
+          await clean(shot);
+        } finally {
+          await shot.context.close();
+        }
+      }
     }
   });
 });

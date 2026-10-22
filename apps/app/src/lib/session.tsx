@@ -3,8 +3,7 @@ import { AppState, View } from "react-native";
 import { MeResponse } from "@korbat/contracts";
 import { ErrorState, isOffline } from "@/components/kit/ErrorState";
 import { api, ApiError, errorMessage, setSuspendedHandler, setUnauthenticatedHandler } from "./api";
-import { placesStored } from "./reading-place";
-import { clearSessionTraces, sessionEnded } from "./session-end";
+import { clearSessionTraces, sessionEnded, tracesStored } from "./session-end";
 
 type SessionState =
   | { status: "loading" }
@@ -71,7 +70,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Every end of a session arrives here as a change of state, whatever caused it (section 8.8).
   const previous = useRef<SessionState["status"]>("loading");
   useEffect(() => {
-    if (sessionEnded(previous.current, state.status, placesStored())) clearSessionTraces();
+    if (sessionEnded(previous.current, state.status, tracesStored())) clearSessionTraces();
     previous.current = state.status;
   }, [state.status]);
 
