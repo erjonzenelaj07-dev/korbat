@@ -33,9 +33,63 @@ export const UI_WORDS = {
   "time.posted.now": "posted just now",
   "time.posted.ago": "{short} ago",
   "time.posted.on": "on {date}",
+  /** The shell (7.1 to 7.5, 8.1): the skip link, the context column and its card, the header's back button. */
+  "shell.skip": "Skip to the main content",
+  "shell.about": "About korbat",
+  "shell.howTitle": "How korbat works",
+  "shell.how1": "Following and Latest are in time order.",
+  "shell.how2": "korbat never lowers a post's reach in secret.",
+  "shell.how3": "The rules are public, and so is how they are enforced.",
+  "shell.rulesLink": "The rules",
+  "shell.transparencyLink": "Transparency",
+  "shell.exploreLink": "How Explore works",
+  "shell.back": "Back",
+  /** The navigation landmark's name and its items, the same words at every width (7.1). */
+  "nav.label": "Main",
+  "nav.home": "Home",
+  "nav.bookmarks": "Bookmarks",
+  "nav.profile": "Profile",
+  "nav.settings": "Settings",
+  "nav.signin": "Sign in",
+  /** The rail's mark (7.1), the wordmark's first letter, as the favicon draws it. */
+  "nav.monogram": "k",
+  /** HandleBox, in the context column (7.3), word for word as it had them. */
+  "handle.title": "Go to a profile",
+  "handle.field": "Handle",
+  "handle.placeholder": "@handle",
+  "handle.open": "Open",
+  "handle.invalid": "Handles are 3 to 20 letters, numbers or underscores.",
+  /** A mistyped address and the error boundary (8.11). */
+  "notFound.title": "This page doesn't exist",
+  "notFound.action": "Go to Home",
+  "crash.title": "Something went wrong on this screen",
+  "crash.body": "Try again, or go back to Home.",
+  "crash.retry": "Try again",
+  /** Bookmarks, followers and following (8.4, 8.5): their titles and empty sentences, word for word as the screens had them. */
+  "bookmarks.title": "Bookmarks",
+  "bookmarks.private": "Private to you.",
+  "bookmarks.empty": "Nothing saved yet. Use Save on a post to keep it here.",
+  "followers.title": "Followers",
+  "followers.empty": "No followers yet.",
+  "following.title": "Following",
+  "following.empty": "Not following anyone yet.",
 } as const;
 
 export type UiWord = keyof typeof UI_WORDS;
+
+/**
+ * Each screen's browser tab title (8.1, decision 16), read by lib/page-title.tsx: "<what> - korbat", naming the kind of
+ * screen and never an account, so a synced browser history holds no handles (the h1 inside the page names the account).
+ * A title joins this table with the first screen that sets it.
+ */
+export const TITLE_WORDS = {
+  "title.notFound": "Page not found - korbat",
+  "title.bookmarks": "Bookmarks - korbat",
+  "title.followers": "Followers - korbat",
+  "title.following": "Following - korbat",
+} as const;
+
+export type TitleWord = keyof typeof TITLE_WORDS;
 
 /** A template with each `{name}` replaced by its value; a name with no value stays as it is written. */
 export function fill(template: string, values: Record<string, string | number>): string {

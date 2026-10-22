@@ -51,6 +51,11 @@
  *     the web export is one page and Caddy answers every unknown path with its shell: so the lead sentences of the rules
  *     page and of the transparency page are looked for in the bundle Caddy serves under /_expo/, which proves they were
  *     built in (the app's render tests prove the pages). An app test holds the two sentences here to the pages' own.
+ * 20. UI Task 3: the app's page and the files it loads first, as Caddy serves them: / answers 200 with no-cache;
+ *     /theme-boot.js, the script that paints the reader's theme before the bundle, answers 200 with no-cache like the
+ *     page; the first font file the entry bundle names (a hashed /assets/__node_modules/@fontsource-variable/... woff2)
+ *     answers 200 with public, max-age=31536000, immutable; and a post's page answers 200 while the post is public and
+ *     404 for a post that does not exist (step 17 checks the rest of the post's page).
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -454,6 +459,31 @@ async function publicPages() {
   check("3d: the transparency page's lead sentence is in the bundle Caddy serves", bundle.includes(TRANSPARENCY_LEAD));
 }
 
+/**
+ * Step 20 (UI Task 3): the app's page, theme-boot.js, the first font the entry bundle names and a post's page, each with
+ * its status and caching. `postId` is a public post's.
+ */
+async function appShell(postId) {
+  const page = await send("/");
+  check("UI: / answers the app's page with no-cache", page.status === 200 && page.headers.get("cache-control") === "no-cache", `HTTP ${page.status}, ${page.headers.get("cache-control")}`);
+  const boot = await send("/theme-boot.js");
+  check("UI: /theme-boot.js answers 200 with no-cache, like the page", boot.status === 200 && boot.headers.get("cache-control") === "no-cache", `HTTP ${boot.status}, ${boot.headers.get("cache-control")}`);
+  const entry = /<script[^>]* src="(\/_expo\/static\/js\/web\/[^"]+\.js)"/.exec(page.bytes.toString("utf8"))?.[1];
+  if (!check("UI: the page names its entry bundle", entry !== undefined)) return;
+  const bundle = (await send(entry)).bytes.toString("utf8");
+  // On web Metro's require of a font yields its hashed address as a string, which the bundle carries (Task 1).
+  const font = /\/assets\/__node_modules\/@fontsource-variable\/[a-z-]+\/files\/[a-z0-9-]+\.[0-9a-f]+\.woff2/.exec(bundle)?.[0];
+  const file = font === undefined ? null : await send(font);
+  check(
+    "UI: the first font the bundle names answers 200, public, max-age=31536000, immutable",
+    file?.status === 200 && file.headers.get("cache-control") === "public, max-age=31536000, immutable",
+    font === undefined ? "no font in the bundle" : `${font}: HTTP ${file?.status}, ${file?.headers.get("cache-control")}`,
+  );
+  const shown = await postPage(postId);
+  const missing = await postPage(randomUUID());
+  check("UI: a public post's page answers 200 and a missing post's 404", shown.status === 200 && missing.status === 404, `HTTP ${shown.status}, ${missing.status}`);
+}
+
 async function explore() {
   const deadline = Date.now() + 60_000;
   let answer;
@@ -691,6 +721,7 @@ async function main() {
   check("the post appears in the public Latest timeline", Array.isArray(latest.body?.items) && latest.body.items.some((item) => item.post?.id === created.body?.id), latest.summary);
   const profile = await api(`/api/profiles/${handle}`);
   check("the profile counts one post", profile.body?.counts?.posts === 1, profile.summary);
+  await appShell(created.body?.id);
 
   await images(token);
   if (worstCase) await worstCaseImages(token);

@@ -4,7 +4,7 @@ import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
 import type { HiddenMedia, MediaView, PostView } from "@korbat/contracts";
-import { PopularPosts } from "../src/components/PopularNow";
+// UI Task 3: PopularNow.tsx left the shell (UI design, decision 14); its case is on Explore's rows at the end.
 import { HIDDEN_IMAGE, SEALED_IMAGE, hiddenImageWords } from "../src/components/social/HiddenImage";
 import { MediaGrid } from "../src/components/social/MediaGrid";
 import { MediaViewerContent } from "../src/components/social/MediaViewer";
@@ -177,19 +177,21 @@ describe("the viewer", () => {
   });
 });
 
-describe("Popular now", () => {
+describe("Explore's rows", () => {
+  // UI Task 3: Popular now left the context column (UI design, decision 14). Its case moves to the row Explore lists
+  // these posts with, ExploreList's PostCard: an image-only post is named by the images the reader is shown.
   test("an image-only post is named by the first image the reader is shown; hidden images are skipped, and a post of hidden images alone has no image line", () => {
-    const out = html(
-      <PopularPosts
-        posts={[
-          post(1, { body: "", media: [hidden(11), image(12, "A green square")] }),
-          post(2, { body: "", media: [sealed(21), hidden(22)] }),
-          post(3, { body: "", media: [image(31, "A red circle"), hidden(32)] }),
-        ]}
-      />,
-    );
-    const lines = [...out.matchAll(/<a\b[^>]*href="\/post\/[^"]+"[^>]*>(.*?)<\/a>/g)].map((match) => textOf(match[1]!));
-    expect(lines).toEqual(["Ada Image: A green square", "Ada", "Ada Image: A red circle"]);
-    expect(out).not.toContain("undefined");
+    const explore = readFileSync(path.join(SRC, "components", "social", "ExploreList.tsx"), "utf8");
+    expect(explore).toContain("renderItem={({ item }) => <PostCard post={item.post} onDeleted={remove} />}");
+    const names = (markup: string) => buttons(markup).filter((name) => name.startsWith("Open image: "));
+    const first = html(<PostCard post={post(1, { body: "", media: [hidden(11), image(12, "A green square")] })} />);
+    expect(names(first)).toEqual(["Open image: A green square"]);
+    expect(loaded(first)).toEqual([expect.stringContaining(`/api/media/${id(12)}/small.webp`)]);
+    const none = html(<PostCard post={post(2, { body: "", media: [sealed(21), hidden(22)] })} />);
+    expect(names(none)).toEqual([]);
+    expect(loaded(none)).toEqual([]);
+    const third = html(<PostCard post={post(3, { body: "", media: [image(31, "A red circle"), hidden(32)] })} />);
+    expect(names(third)).toEqual(["Open image: A red circle"]);
+    for (const out of [first, none, third]) expect(out).not.toContain("undefined");
   });
 });

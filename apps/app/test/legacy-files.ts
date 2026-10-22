@@ -11,7 +11,6 @@ import path from "node:path";
  */
 export const LEGACY_COLOUR_FILES: readonly string[] = [
   "app/(auth)/age.tsx",
-  "app/bookmarks.tsx",
   "app/explore/about.tsx",
   "app/index.tsx",
   "app/post/[id].tsx",
@@ -27,14 +26,7 @@ export const LEGACY_COLOUR_FILES: readonly string[] = [
   "app/settings/security.tsx",
   "app/terms.tsx",
   "app/transparency.tsx",
-  "app/u/[handle]/followers.tsx",
-  "app/u/[handle]/following.tsx",
   "app/u/[handle]/index.tsx",
-  "components/AppShell.tsx",
-  "components/HandleBox.tsx",
-  "components/PopularNow.tsx",
-  "components/SettingsNav.tsx",
-  "components/StandingBanner.tsx",
   "components/moderation/CasesLists.tsx",
   "components/moderation/DecisionDetail.tsx",
   "components/moderation/ItemLines.tsx",
@@ -59,7 +51,6 @@ export const LEGACY_COLOUR_FILES: readonly string[] = [
   "components/social/PostCard.tsx",
   "components/social/ProfileList.tsx",
   "components/social/RichText.tsx",
-  "lib/session.tsx",
 ];
 
 /**
@@ -76,7 +67,6 @@ export const LEGACY_TEXT_FILES: readonly string[] = [
   "app/(auth)/mfa.tsx",
   "app/(auth)/password.tsx",
   "app/(auth)/signin.tsx",
-  "app/bookmarks.tsx",
   "app/email-revert/[token].tsx",
   "app/explore/about.tsx",
   "app/index.tsx",
@@ -88,12 +78,7 @@ export const LEGACY_TEXT_FILES: readonly string[] = [
   "app/settings/profile.tsx",
   "app/settings/security.tsx",
   "app/terms.tsx",
-  "app/u/[handle]/followers.tsx",
-  "app/u/[handle]/following.tsx",
   "app/u/[handle]/index.tsx",
-  "components/AppShell.tsx",
-  "components/HandleBox.tsx",
-  "components/PopularNow.tsx",
   "components/moderation/ReportForm.tsx",
   "components/security/MfaSection.tsx",
   "components/security/PasskeysSection.tsx",

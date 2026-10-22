@@ -7,7 +7,7 @@ import { EXPLORE_V2, ExploreStatusKind, type ExploreFormula, type ExplorePage, t
 import ExploreAbout, { ExploreRules } from "../src/app/explore/about";
 import Home, { homeListKey, homeTab, homeTabs } from "../src/app/index";
 import { ExploreSwitch, useExploreSwitch } from "../src/app/settings/privacy";
-import { PopularPosts } from "../src/components/PopularNow";
+// UI Task 3: PopularNow.tsx left the shell (UI design, decision 14); its case is on Explore's rows below.
 import { ExploreEmpty, ExploreFooter, ExploreHeader } from "../src/components/social/ExploreList";
 import { PostCard } from "../src/components/social/PostCard";
 import { ApiError } from "../src/lib/api";
@@ -238,8 +238,8 @@ describe("Home's tabs and their addresses", () => {
     expect(home).toContain("const select = (tab: Tab) => router.setParams({ tab });");
     expect(home).toContain('"Nothing here yet. Follow someone, or switch to Latest or Explore."');
     const links = sourceFiles().flatMap((file) => [...file.text.matchAll(/"\/\?tab=([a-z]+)"/g)].map((match) => ({ file: file.name, tab: match[1] ?? "" })));
-    // Popular now and How Explore works lead back to the Explore tab.
-    expect(links.map((link) => link.file).sort()).toEqual(["app/explore/about.tsx", "components/PopularNow.tsx"]);
+    // How Explore works leads back to the Explore tab; Popular now, which did too, left the shell (UI design, decision 14).
+    expect(links.map((link) => link.file).sort()).toEqual(["app/explore/about.tsx"]);
     for (const link of links) expect(homeTab(link.tab, false), link.file).toBe(link.tab);
   });
 });
@@ -819,23 +819,23 @@ describe("the In Explore chip", () => {
   });
 });
 
-describe("the context column", () => {
-  test("Popular now lists posts as links to their threads, an image-only post by its image's description, then a link to Explore", () => {
+describe("Explore's rows", () => {
+  // UI Task 3: Popular now left the context column (UI design, decision 14), and with it its own line for an image-only
+  // post. The case it shared with hidden-media.test.tsx lives on where those posts are listed now: Explore's rows, whose
+  // first posts are the ones Popular now listed.
+  test("each row is a post card, which names an image-only post by its image's description and skips a hidden image", () => {
+    // The row ExploreList draws for every item of a page.
+    expect(read("components", "social", "ExploreList.tsx")).toContain("renderItem={({ item }) => <PostCard post={item.post} onDeleted={remove} />}");
     const image = { id: id(90), width: 800, height: 600, blurhash: "LEHV6nWB2yk8", alt: "A green square", small: "/media/x/small.webp", large: "/media/x/large.webp" };
-    const out = html(<PopularPosts posts={[post(1), post(2, { body: "", media: [image] }), post(3)]} />);
-    expect(out).toMatch(/<h2[^>]*>Popular now<\/h2>/);
-    expect(anchors(out).map((tag) => /href="([^"]+)"/.exec(tag)?.[1])).toEqual([`/post/${id(1)}`, `/post/${id(2)}`, `/post/${id(3)}`, "/?tab=explore"]);
-    expect(linkTexts(out, `/post/${id(1)}`)[0]).toContain("post number 1");
-    expect(linkTexts(out, `/post/${id(2)}`)[0]).toContain("Image: A green square");
-    expect(linkTexts(out, "/?tab=explore")).toEqual(["More in Explore"]);
-  });
-
-  test("sits above the handle box on wide screens and asks Explore for its first three posts", () => {
-    expect(read("components", "AppShell.tsx")).toMatch(/<PopularNow \/>\s*<HandleBox \/>/);
-    expect(read("lib", "social.ts")).toContain('popular: () => api("/api/timeline/explore?limit=3", { schema: ExplorePage }),');
-    expect(read("components", "PopularNow.tsx")).toContain(".popular()");
-    // The handle box is no longer the only way to find anyone.
-    expect(read("components", "HandleBox.tsx")).not.toContain("only discovery tool");
+    // An image-only post whose first image is hidden: the shown one names it.
+    const out = html(<PostCard post={post(2, { body: "", media: [{ id: id(91), hidden: true }, image] })} />);
+    expect(out).toContain('aria-label="Open image: A green square"');
+    expect(out.match(/aria-label="Open image:/g)).toHaveLength(1);
+    expect(out).not.toContain("undefined");
+    // A post of hidden images alone offers no image to open: the placeholder says why in the image's place, and the card's
+    // author line and time name the post, as they do every post, so no line of its own is needed.
+    const hiddenOnly = html(<PostCard post={post(3, { body: "", media: [{ id: id(92), hidden: true }] })} />);
+    expect(hiddenOnly).not.toContain('aria-label="Open image:');
   });
 });
 
@@ -851,9 +851,9 @@ describe("the terms", () => {
 describe("no screen caches or stores Explore's answers", () => {
   test("the files that ask for Explore keep its answers in component state only: no browser storage, no cache, no module-level variable", () => {
     const callers = sourceFiles().filter((file) => /social\s*\.(explore|popular|exploreStatus)\b/.test(file.text));
-    expect(callers.map((file) => file.name).sort()).toEqual(["app/post/[id].tsx", "components/PopularNow.tsx", "components/social/ExploreList.tsx"]);
+    expect(callers.map((file) => file.name).sort()).toEqual(["app/post/[id].tsx", "components/social/ExploreList.tsx"]);
     const explore = sourceFiles().filter((file) => [...callers.map((caller) => caller.name), "lib/explore.ts", "app/explore/about.tsx"].includes(file.name));
-    expect(explore).toHaveLength(5);
+    expect(explore).toHaveLength(4);
     for (const file of explore) {
       expect(file.text, file.name).not.toMatch(/localStorage|sessionStorage|indexedDB|AsyncStorage|caches\./);
       expect(file.text, file.name).not.toMatch(/^(export )?(let|var) /m);

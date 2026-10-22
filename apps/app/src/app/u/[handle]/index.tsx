@@ -50,6 +50,9 @@ export default function ProfileScreen() {
   }, [confirmBlock]);
 
   useEffect(() => {
+    // UI Task 3: the profile is read once the session is known, since what it holds depends on the reader; read while
+    // the session loads, it was read twice, and its posts with it (UI design, section 11.3: three requests at most).
+    if (state.status === "loading") return;
     let cancelled = false;
     setProfile(null);
     setError(null);

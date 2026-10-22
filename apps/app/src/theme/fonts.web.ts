@@ -126,11 +126,17 @@ export function fontFaceCss(urlFor: (face: FontFaceRule) => string = (face) => u
 
 const STYLE_ID = "korbat-fonts";
 
+/**
+ * The rule a toast takes under korbat's own "Reduce motion: Always" (UI design, section 5.4): toast.web.tsx gives each
+ * toast the class, and the toast fades instead of moving. It rides in this style element, the one korbat writes.
+ */
+export const STILL_RULE = ".k-still { transform: none !important; transition: opacity 150ms ease !important; }";
+
 /** Adds the one style element with the rules, once; the browser downloads a file only when text needs it. */
 export function installFonts(): void {
   if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ID;
-  style.textContent = fontFaceCss();
+  style.textContent = `${fontFaceCss()} ${STILL_RULE}`;
   document.head.appendChild(style);
 }

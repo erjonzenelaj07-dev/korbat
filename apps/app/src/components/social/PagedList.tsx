@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import { FlatList, Pressable, Text, View } from "react-native";
 import type { PostView, TimelineItem } from "@korbat/contracts";
 import { errorMessage } from "@/lib/api";
+import { useShellScroll } from "@/lib/shell-scroll";
 import type { Page } from "@/lib/social";
 import { PostCard } from "./PostCard";
 
@@ -28,6 +29,11 @@ export function PagedList<T>({ fetchPage, keyOf, render, empty, header }: PagedL
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const sequence = useRef(0);
+  // The shell (lib/shell-scroll.tsx): the list's scroll hides and shows the phone's header, and the current Home item
+  // pressed again brings it to its first, newest row. Task 5 moves this onto the List wrapper.
+  const scroll = useShellScroll();
+  const list = useRef<FlatList<T>>(null);
+  useEffect(() => scroll.register({ toTop: (animated) => list.current?.scrollToOffset({ offset: 0, animated }) }), [scroll.register]);
 
   const load = useCallback(
     async (after?: string) => {
@@ -65,6 +71,11 @@ export function PagedList<T>({ fetchPage, keyOf, render, empty, header }: PagedL
 
   return (
     <FlatList
+      ref={list}
+      onScroll={scroll.onScroll}
+      scrollEventThrottle={16}
+      // On a phone the header floats over the list: its first row starts below it.
+      contentContainerStyle={scroll.headerSpace > 0 ? { paddingTop: scroll.headerSpace } : undefined}
       data={items}
       keyExtractor={keyOf}
       renderItem={({ item }) => render(item, remove)}

@@ -171,8 +171,8 @@ describe("3e Task 4: the banner in every state (design, section 9.1)", () => {
     expect(textOf(out)).toContain(` ${STANDING_TEXTS.banner.reply} `);
     // Once replied, no Reply; the running suspension is red.
     expect(html(<StandingBanner standing={held} />)).not.toContain("/reply");
-    // Amber before the start, red while it runs: the colour repeats the words (a static render carries no class, so the source says it).
-    expect(read("components", "StandingBanner.tsx")).toContain('measure.state === "running" ? "border-red-800 bg-red-950" : "border-amber-700 bg-amber-950"');
+    // The review wash before the start, the restricted wash while it runs (UI design, 4.8): the colour repeats the words and the icon.
+    expect(read("components", "StandingBanner.tsx")).toContain('measure.state === "running" ? "border-restricted-ink/40 bg-restricted-wash" : "border-review-ink/40 bg-review-wash"');
   });
 
   test("a termination: announced in the suspension's words with terminate your account; running with its deletion, its appeal pending, and its reply unanswered", () => {

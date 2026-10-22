@@ -4,7 +4,8 @@ import { useLocalSearchParams } from "expo-router";
 import { NoticeRef, type NoticeItemStatus, type NoticeStatus } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
 import { NoticeNotFound, NoticeStatusView } from "@/components/moderation/NoticeStatusView";
-import { Button, ErrorText, Loading } from "@/components/ui";
+import { Skeleton } from "@/components/kit/Skeleton";
+import { Button, ErrorText } from "@/components/ui";
 import { ApiError, errorMessage } from "@/lib/api";
 import { fragmentToken, moderation } from "@/lib/moderation";
 import { STATUS_WORDS } from "@/lib/moderation-words";
@@ -70,7 +71,14 @@ export default function NoticePage() {
     await load(ref, token);
   }
 
-  if (shown.kind === "loading") return <Loading />;
+  // While the status loads the page stays in the shell, as skeleton lines (UI design, section 6.12).
+  if (shown.kind === "loading") {
+    return (
+      <AppShell>
+        <Skeleton.Page />
+      </AppShell>
+    );
+  }
   return (
     <AppShell>
       <ScrollView contentContainerClassName="px-4 pb-16 pt-6">

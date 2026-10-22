@@ -107,6 +107,24 @@ export const Skeleton = {
     </Pulse>
   ),
   /**
+   * A screen that is not a list, while it loads (a form, a notice's status): a heading's bar and lines of text in a
+   * readable column, with the polite status "Loading", which a screen reader hears instead of the shapes.
+   */
+  Page: () => (
+    <View className="gap-3 px-4 pt-6">
+      <VisuallyHidden role="status">{UI_WORDS["spinner.label"]}</VisuallyHidden>
+      <Pulse>
+        <View className="w-full max-w-[576px] gap-3">
+          <TextBar width="55%" variant="post" />
+          <TextBar width="100%" />
+          <TextBar width="92%" />
+          <TextBar width="70%" />
+          <BlockShape height={44} />
+        </View>
+      </Pulse>
+    </View>
+  ),
+  /**
    * A list's first page while it loads: `count` rows of posts or accounts, and once the polite status "Loading posts"
    * or "Loading accounts", which a screen reader hears instead of the shapes.
    */

@@ -66,8 +66,6 @@ export const social = {
     const page = ExplorePage.parse(await res.json());
     return { ...page, date: res.headers.get("date"), receivedAt: Date.now() };
   },
-  /** The first three posts of Explore, for the context column's Popular now. */
-  popular: () => api("/api/timeline/explore?limit=3", { schema: ExplorePage }),
 
   profile: (handle: string) => api(handlePath(handle), { schema: ProfileView }),
   profilePosts: (handle: string, cursor?: string) => api(`${handlePath(handle)}/posts${query(cursor)}`, { schema: TimelinePage }),

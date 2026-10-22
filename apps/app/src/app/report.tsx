@@ -1,8 +1,8 @@
 import { ScrollView, View } from "react-native";
 import { Redirect, useLocalSearchParams } from "expo-router";
 import { AppShell } from "@/components/AppShell";
+import { Skeleton } from "@/components/kit/Skeleton";
 import { ReportForm } from "@/components/moderation/ReportForm";
-import { Loading } from "@/components/ui";
 import { givenTarget } from "@/lib/moderation";
 import { useSession } from "@/lib/session";
 
@@ -15,7 +15,14 @@ import { useSession } from "@/lib/session";
 export default function Report() {
   const params = useLocalSearchParams<{ post?: string; media?: string; account?: string }>();
   const { state } = useSession();
-  if (state.status === "loading") return <Loading />;
+  // While the session loads the form's place stays in the shell, as skeleton lines (UI design, section 6.12).
+  if (state.status === "loading") {
+    return (
+      <AppShell>
+        <Skeleton.Page />
+      </AppShell>
+    );
+  }
   if (state.status === "signed-in" && !state.me.user.onboarded) return <Redirect href="/handle" />;
   const given = givenTarget(params);
   return (

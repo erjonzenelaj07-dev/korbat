@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { AppState, Pressable, Text, View } from "react-native";
+import { AppState, View } from "react-native";
 import { MeResponse } from "@korbat/contracts";
+import { ErrorState, isOffline } from "@/components/kit/ErrorState";
 import { api, ApiError, errorMessage, setSuspendedHandler, setUnauthenticatedHandler } from "./api";
 
 type SessionState =
@@ -25,26 +26,29 @@ async function loadSession(): Promise<SessionState> {
   }
 }
 
+/** Why /me could not be read: its sentence, and whether no answer came at all (offline, or no connection to korbat). */
+interface Failure {
+  message: string;
+  offline: boolean;
+}
+
 /**
  * Only a 401 means signed out. Any other failure to load the session (no network, a 5xx, a limit)
  * is shown as such with a retry, instead of sending someone with a valid cookie back through sign-in.
+ * It is the kit's ErrorState (UI design, section 6.12): the sentence as an alert and "Try again", or, when the request
+ * got no answer (ApiError status 0), "You're offline", which tries again by itself once the browser is back online.
  */
-function SessionFailure({ message, onRetry }: { message: string; onRetry: () => void }) {
+function SessionFailure({ failure, onRetry }: { failure: Failure; onRetry: () => void }) {
   return (
-    <View className="flex-1 items-center justify-center bg-zinc-950 px-6">
-      <Text accessibilityRole="alert" className="text-center text-base text-zinc-200">
-        {message}
-      </Text>
-      <Pressable accessibilityRole="button" onPress={onRetry} className="mt-6 rounded-lg bg-zinc-50 px-4 py-3">
-        <Text className="text-base font-semibold text-zinc-950">Try again</Text>
-      </Pressable>
+    <View className="flex-1 justify-center bg-surface">
+      <ErrorState message={failure.message} offline={failure.offline} onRetry={onRetry} />
     </View>
   );
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SessionState>({ status: "loading" });
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
 
   const refresh = useCallback(async () => {
     setFailure(null);
@@ -53,7 +57,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setState(next);
       return next;
     } catch (err) {
-      setFailure(errorMessage(err));
+      setFailure({ message: errorMessage(err), offline: isOffline(err) });
       return { status: "loading" } as const;
     }
   }, []);
@@ -86,7 +90,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(() => ({ state, refresh }), [state, refresh]);
-  return <SessionContext.Provider value={value}>{failure ? <SessionFailure message={failure} onRetry={() => void refresh()} /> : children}</SessionContext.Provider>;
+  // Stable, since ErrorState waits for the browser to come back online through an effect that depends on it.
+  const retry = useCallback(() => void refresh(), [refresh]);
+  return <SessionContext.Provider value={value}>{failure ? <SessionFailure failure={failure} onRetry={retry} /> : children}</SessionContext.Provider>;
 }
 
 export function useSession(): SessionValue {

@@ -13,11 +13,12 @@ import { Text } from "./Text";
  */
 export type EmptyAction = { label: string; href: Href } | { label: string; onPress: () => void };
 
-export function EmptyState({ icon, title, body, action }: { icon?: IconName; title: string; body?: string; action?: EmptyAction }) {
+export function EmptyState({ icon, title, body, action, level = 2 }: { icon?: IconName; title: string; body?: string; action?: EmptyAction; level?: 1 | 2 }) {
   return (
     <View className="items-center gap-3 px-6 py-12">
       {icon !== undefined ? <Icon name={icon} size={24} tone="low" /> : null}
-      <Text as="h2" variant="display-3" className="text-center">
+      {/* Level 1 where the empty state is the whole screen and its title the screen's one h1 (the not-found screen). */}
+      <Text as={level === 1 ? "h1" : "h2"} variant="display-3" className="text-center">
         {title}
       </Text>
       {body !== undefined ? (
