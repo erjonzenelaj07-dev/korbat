@@ -100,6 +100,8 @@ export const REPORT_WORDS = {
   unavailable: (contact: string) => `korbat cannot take reports right now. Try again in a few minutes, or ${MAIL_INSTEAD(contact)}`,
   /** After each of the three on the anonymous path: a mail is not anonymous. */
   mailShowsAddress: "An email shows korbat your address. korbat deletes your email, and its reply to you, once your report is entered.",
+  /** UI Task 7: the form's, the sent screen's and the status page's link home, once written in their markup. */
+  back: "Back to korbat",
 } as const;
 
 /** The Transparency Database's names for the categories the illegal ground offers. */
@@ -261,6 +263,32 @@ export const DECISION_WORDS = {
   notFound: "That decision does not exist, or it is not about your account.",
   /** A statement is never rendered with another version of the rules than the one it was made under. */
   cannotRender: "This decision was made under a version of the rules this page does not hold yet. Reload the page to read it.",
+} as const;
+
+/**
+ * The details sheet of the author's moderation chip (UI design, section 8.7; UI Task 7): its labelled blocks, in the
+ * design's keys. "Decided by" names a role, never a person: a moderator, korbat's automated check only for a decision
+ * DecisionView marks fully automated, or an authority's order. `status.illegal` is the Rule block's words for a decision
+ * on the law, which the design's table lacks; its legal reference follows it.
+ */
+export const STATUS_SHEET_WORDS = {
+  "status.rule": "Rule",
+  "status.illegal": "Illegal content",
+  "status.does": "What it does",
+  "status.appliesTo": "Applies to",
+  "status.appliesPost": "This post",
+  "status.appliesImage": "This image",
+  "status.appliesAccount": "Your account",
+  "status.whoSees": "Who can see it now",
+  "status.decidedBy": "Decided by",
+  "status.byPerson": "A korbat moderator",
+  "status.byProgram": "korbat's automated check",
+  "status.byOrder": "An authority's order",
+  "status.when": "When",
+  "status.statement": "Statement",
+  "status.readAll": "Read the full decision",
+  "status.appeal": "Appeal",
+  "status.appealUntil": "You can appeal until {date}.",
 } as const;
 
 /** The chip on the author's own withheld or removed post, and the labels on their own images. */

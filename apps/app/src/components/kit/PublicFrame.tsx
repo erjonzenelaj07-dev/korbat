@@ -10,8 +10,8 @@ import { Text } from "./Text";
  * The frame of the pages outside the app's shell (UI design, section 7.3): the sign-in flow, the three token pages and
  * the terms, so they no longer look like another app. The wordmark at the top leads to /, the content is the page's
  * main landmark in a column 440 px wide (640 px with `wide`, for the terms), and the footer links the public pages. The
- * page's body does not scroll on the web (public/index.html), so the frame scrolls itself. No screen uses it until
- * Task 8 moves them in.
+ * page's body does not scroll on the web (public/index.html), so the frame scrolls itself. The terms are its first
+ * screen (UI Task 7); Task 8 moves the sign-in flow and the token pages in.
  */
 const FOOTER: { label: string; href: Href }[] = [
   { label: UI_WORDS["frame.rules"], href: "/rules" },
@@ -19,8 +19,11 @@ const FOOTER: { label: string; href: Href }[] = [
   { label: UI_WORDS["frame.terms"], href: "/terms" },
 ];
 
-/** A link of the frame: 44 px tall around its words, dimmed while pressed, underlined under a fine pointer. */
-const LINK = cn("group min-h-[44px] justify-center rounded-control px-1 active:opacity-70", FOCUS_RING);
+/**
+ * A link of the frame: a 44 by 44 px target at least around its words (a short word such as "Terms" is narrower than
+ * that at the default size, UI Task 7), dimmed while pressed, underlined under a fine pointer.
+ */
+const LINK = cn("group min-h-[44px] min-w-[44px] items-center justify-center rounded-control px-1 active:opacity-70", FOCUS_RING);
 
 export function PublicFrame({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
   // The column's width is a style, not a class, so a test can read it from the markup.

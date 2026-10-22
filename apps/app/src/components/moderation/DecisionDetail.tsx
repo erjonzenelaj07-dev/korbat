@@ -1,9 +1,12 @@
 import { Image } from "expo-image";
-import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Pressable, View, type TextInput } from "react-native";
 import { Link } from "expo-router";
 import { OBJECTION_TEXT_MAX, STATEMENT_MAX, type DecisionAppeal, type DecisionContent, type DecisionStatement, type DecisionView } from "@korbat/contracts";
 import { ORDER_NOTICE, statementParagraphs } from "@korbat/rules";
+import { Icon } from "@/components/kit/Icon";
+import { FOCUS_RING } from "@/components/kit/interaction";
+import { Text } from "@/components/kit/Text";
 import { Button, ErrorText, Field, Section } from "@/components/ui";
 import { SEALED_IMAGE } from "@/components/social/HiddenImage";
 import { clampRatio } from "@/components/social/MediaGrid";
@@ -13,15 +16,19 @@ import { appealWaitWords, CONTACT_EMAIL, dailyLimitFailure, utcMinute } from "@/
 import { AUTO_WORDS, CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
 import { ORDER_TEXTS } from "@/lib/orders";
 import { nowSentence, replyStandsLine, reportingNowLine, restsOnLine, STANDING_TEXTS, standingMeasureOf, strikeLine } from "@/lib/standing";
+import { cn } from "@/theme/cn";
+import { CaseLink, Line, Note } from "./parts";
 
-const Line = ({ children, strong = false }: { children: string; strong?: boolean }) => <Text className={`mt-3 text-base leading-6 ${strong ? "font-semibold text-zinc-100" : "text-zinc-200"}`}>{children}</Text>;
-const Note = ({ children }: { children: string }) => <Text className="mt-3 text-sm leading-5 text-zinc-400">{children}</Text>;
+/**
+ * UI Task 7 (design, section 8.7): the decision's parts are cards (ui.tsx's Section, a card of surface-1 with its title
+ * as a level-2 heading) holding labelled lines on the tokens; every sentence is the one the screen said before.
+ */
 
-/** One field of an account as korbat copied it. */
+/** One field of an account as korbat copied it: its label in body-strong, then the value. */
 function FieldValue({ label, value }: { label: string; value: string }) {
   return (
-    <Text className="mt-3 text-base leading-6 text-zinc-200">
-      <Text className="font-semibold text-zinc-100">{label}</Text> {value.length > 0 ? value : DECISION_WORDS.empty}
+    <Text className="mt-3">
+      <Text variant="body-strong">{label}</Text> {value.length > 0 ? value : DECISION_WORDS.empty}
     </Text>
   );
 }
@@ -50,19 +57,24 @@ function Content({ content }: { content: DecisionContent }) {
       {content.body.length > 0 ? <Line>{content.body}</Line> : <Note>{DECISION_WORDS.noText}</Note>}
       {content.imagesHidden === "sealed"
         ? Array.from({ length: content.imageCount }, (_, index) => (
-            <View key={index} className="mt-3 items-center justify-center rounded-lg bg-zinc-900 px-3 py-6">
-              <Text className="text-center text-sm leading-5 text-zinc-400">{SEALED_IMAGE}</Text>
+            <View key={index} className="mt-3 items-center justify-center gap-2 rounded-media bg-surface-2 px-3 py-6">
+              <Icon name="hidden" size={20} tone="medium" />
+              <Text tone="medium" className="text-center">
+                {SEALED_IMAGE}
+              </Text>
             </View>
           ))
         : null}
       {content.imagesHidden === "deleted_by_author" && content.imageCount > 0 ? <Note>{DECISION_WORDS.deletedImages}</Note> : null}
       {content.images.map((image) => (
         <View key={image.id} className="mt-3">
-          <View className="overflow-hidden rounded-xl border border-zinc-800" style={{ aspectRatio: clampRatio(image.width, image.height) }}>
+          <View className="overflow-hidden rounded-media border border-line-low bg-surface-2" style={{ aspectRatio: clampRatio(image.width, image.height) }}>
             {/* On the web expo-image takes the <img alt> from accessibilityLabel, not from alt. */}
             <Image source={{ uri: `${API_BASE}${image.small}` }} contentFit="cover" accessibilityLabel={image.alt} style={{ width: "100%", height: "100%" }} />
           </View>
-          <Text className="mt-1 text-sm leading-5 text-zinc-300">{image.alt}</Text>
+          <Text variant="meta" tone="medium" className="mt-1">
+            {image.alt}
+          </Text>
         </View>
       ))}
     </View>
@@ -105,14 +117,21 @@ function OrderNotice({ view }: { view: DecisionView }) {
   const words = authorityWords(view);
   return (
     <View role="article">
-      <Text accessibilityRole="header" aria-level={1} className="text-lg font-semibold text-zinc-50">
+      {/* UI Task 7: a level-2 heading, as the decision's own, under the screen's title "Cases", its one level-1 heading. */}
+      <Text as="h2" variant="display-3">
         {ORDER_TEXTS.notice.title}
       </Text>
-      {view.post ? <Text className="mt-1 text-base text-zinc-300">{DECISION_WORDS.post(utcMinute(view.post.createdAt))}</Text> : null}
+      {view.post ? (
+        <Text tone="medium" className="mt-1">
+          {DECISION_WORDS.post(utcMinute(view.post.createdAt))}
+        </Text>
+      ) : null}
       <View className="mt-2">{paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}</View>
       {words.length > 0 ? (
-        <View role="group" aria-label={ORDER_NOTICE.wordsBlock} className="mt-4 rounded-lg border border-zinc-700 px-3 pb-3">
-          <Text className="mt-3 text-sm font-semibold text-zinc-300">{ORDER_NOTICE.wordsBlock}</Text>
+        <View role="group" aria-label={ORDER_NOTICE.wordsBlock} className="mt-6 rounded-card border border-line-high bg-surface-1 px-5 pb-4">
+          <Text variant="body-strong" tone="medium" className="mt-4">
+            {ORDER_NOTICE.wordsBlock}
+          </Text>
           {words.map((entry) => (
             <View key={entry.label}>
               <Line strong>{entry.label}</Line>
@@ -140,10 +159,16 @@ function OrderNotice({ view }: { view: DecisionView }) {
  * The appeal's form (3c design, section 9): an optional statement, free of form, and the button. The request is a POST
  * the screen sends; a refusal is worded under the button, and what was written stays.
  */
-function AppealForm({ onAppeal }: { onAppeal: (statement: string) => Promise<void> }) {
+function AppealForm({ onAppeal, focus = false }: { onAppeal: (statement: string) => Promise<void>; focus?: boolean }) {
   const [statement, setStatement] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const field = useRef<TextInput>(null);
+  // UI Task 7 (section 8.7): opened from the details sheet's "Appeal" (?appeal=1), the field takes the focus once the
+  // decision shows; the browser scrolls it into view.
+  useEffect(() => {
+    if (focus) field.current?.focus();
+  }, [focus]);
 
   async function send() {
     if (busy) return;
@@ -161,7 +186,7 @@ function AppealForm({ onAppeal }: { onAppeal: (statement: string) => Promise<voi
   return (
     <View>
       <Note>{DECISION_WORDS.appealHint}</Note>
-      <Field label={DECISION_WORDS.appealStatement} value={statement} onChangeText={setStatement} multiline maxLength={STATEMENT_MAX} />
+      <Field ref={field} label={DECISION_WORDS.appealStatement} value={statement} onChangeText={setStatement} multiline maxLength={STATEMENT_MAX} />
       <Button label={DECISION_WORDS.appeal} onPress={() => void send()} busy={busy} />
       <ErrorText message={error} />
     </View>
@@ -179,11 +204,7 @@ function AppealAnswer({ appeal }: { appeal: Extract<DecisionAppeal, { state: "an
       <Line strong>{DECISION_WORDS.appealAnswered(appeal.answeredOn)}</Line>
       <Note>{DECISION_WORDS.appealAnswer}</Note>
       {paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}
-      <Link href={`/settings/cases/${appeal.answeredBy}`} asChild>
-        <Pressable className="mt-3 self-start">
-          <Text className="text-sm text-sky-400 underline">{DECISION_WORDS.answerScreen}</Text>
-        </Pressable>
-      </Link>
+      <CaseLink href={`/settings/cases/${appeal.answeredBy}`} label={DECISION_WORDS.answerScreen} className="mt-3" />
     </View>
   );
 }
@@ -194,7 +215,7 @@ function AppealAnswer({ appeal }: { appeal: Extract<DecisionAppeal, { state: "an
  * none was filed, until when one can be, with the form when the screen can send it; or that a restriction reversed in
  * full leaves nothing to appeal.
  */
-function Appeal({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void> }) {
+function Appeal({ view, onAppeal, focus = false }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void>; focus?: boolean }) {
   const { appeal } = view;
   if (appeal?.state === "answered") return <AppealAnswer appeal={appeal} />;
   if (appeal?.state === "pending") {
@@ -209,7 +230,7 @@ function Appeal({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement:
     return (
       <View>
         <Line>{DECISION_WORDS.appealUntil(utcMinute(view.appealUntil))}</Line>
-        {onAppeal ? <AppealForm onAppeal={onAppeal} /> : null}
+        {onAppeal ? <AppealForm onAppeal={onAppeal} focus={focus} /> : null}
       </View>
     );
   }
@@ -222,8 +243,11 @@ function Appeal({ view, onAppeal }: { view: DecisionView; onAppeal?: (statement:
  * request as sent with korbat's published target ([auto.asked]); and once a person has decided, [auto.decided] with a
  * link to that decision. A refusal is worded under the button and what was written stays; objection_not_open reads as
  * [auto.decided] without the day. A suspended account can ask: nothing here reads its standing.
+ *
+ * UI Task 7: exported for the details sheet (StatusSheet), which offers it as this screen does; there it is not
+ * `framed` (it stands in the sheet's own Appeal block) and its link closes the sheet first (`onLeave`).
  */
-function AskPerson({ view, onAsk }: { view: DecisionView; onAsk?: (text: string) => Promise<void> }) {
+export function AskPerson({ view, onAsk, framed = true, onLeave }: { view: DecisionView; onAsk?: (text: string) => Promise<void>; framed?: boolean; onLeave?: (href: string) => void }) {
   const ask = view.askPerson ?? null;
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -245,8 +269,8 @@ function AskPerson({ view, onAsk }: { view: DecisionView; onAsk?: (text: string)
     }
   }
 
-  return (
-    <Section title={AUTO_WORDS.ask}>
+  const content = (
+    <>
       {ask.state === "asked" ? (
         <View>
           <Line strong>{AUTO_WORDS.asked(utcMinute(ask.createdAt))}</Line>
@@ -256,7 +280,7 @@ function AskPerson({ view, onAsk }: { view: DecisionView; onAsk?: (text: string)
       {ask.state === "decided" ? (
         <View>
           <Line strong>{AUTO_WORDS.decided(utcMinute(ask.decidedAt))}</Line>
-          <DecisionLink id={ask.decisionId} label={AUTO_WORDS.decidedLink} />
+          <DecisionLink id={ask.decisionId} label={AUTO_WORDS.decidedLink} onLeave={onLeave} />
         </View>
       ) : null}
       {ask.state === "open" && onAsk !== undefined ? (
@@ -271,19 +295,14 @@ function AskPerson({ view, onAsk }: { view: DecisionView; onAsk?: (text: string)
           <Button label={AUTO_WORDS.ask} onPress={() => setOpen(true)} />
         )
       ) : null}
-    </Section>
+    </>
   );
+  return framed ? <Section title={AUTO_WORDS.ask}>{content}</Section> : <View>{content}</View>;
 }
 
 /** A link to another decision's screen, as a line of its own. */
-function DecisionLink({ id, label }: { id: string; label: string }) {
-  return (
-    <Link href={`/settings/cases/${id}`} asChild>
-      <Pressable className="mt-3 self-start">
-        <Text className="text-sm text-sky-400 underline">{label}</Text>
-      </Pressable>
-    </Link>
-  );
+function DecisionLink({ id, label, onLeave }: { id: string; label: string; onLeave?: (href: string) => void }) {
+  return <CaseLink href={`/settings/cases/${id}`} label={label} onLeave={onLeave} className="mt-2" />;
 }
 
 /** The states in which a measure ended before its time, by a decision the block links to. */
@@ -319,8 +338,8 @@ function StandingNow({ view }: { view: DecisionView }) {
       {decisions.length > 0 ? <Note>{protective ? `${STANDING_TEXTS.rests.basis} ${STANDING_TEXTS.rests.basisProtective}` : STANDING_TEXTS.rests.basis}</Note> : null}
       {standing.replyOpen ? (
         <Link href={`/settings/cases/${view.id}/reply`} asChild>
-          <Pressable accessibilityRole="button" className="mt-4 self-start rounded-lg border border-zinc-500 px-4 py-2">
-            <Text className="text-base font-semibold text-zinc-50">{STANDING_TEXTS.reply.button}</Text>
+          <Pressable accessibilityRole="button" className={cn("mt-4 min-h-[44px] justify-center self-start rounded-control border border-line-high bg-surface-1 px-4 py-2 active:bg-surface-2 web:hover:bg-surface-2", FOCUS_RING)}>
+            <Text variant="body-strong">{STANDING_TEXTS.reply.button}</Text>
           </Pressable>
         </Link>
       ) : null}
@@ -381,7 +400,18 @@ function StandingAppealNotes({ view }: { view: DecisionView }) {
  * appeal stands. A decision that ends or lifts a field reset links the decision that reset the field while korbat still
  * keeps the old value there. With `onAppeal` a decision that can still be appealed carries the appeal's form.
  */
-export function DecisionDetail({ view, onAppeal, onAsk }: { view: DecisionView; onAppeal?: (statement: string) => Promise<void>; onAsk?: (text: string) => Promise<void> }) {
+export function DecisionDetail({
+  view,
+  onAppeal,
+  onAsk,
+  focusAppeal = false,
+}: {
+  view: DecisionView;
+  onAppeal?: (statement: string) => Promise<void>;
+  onAsk?: (text: string) => Promise<void>;
+  /** UI Task 7: the screen was opened with ?appeal=1, from the details sheet's Appeal: the appeal's field takes the focus. */
+  focusAppeal?: boolean;
+}) {
   // 3f: an order's notice, and the reinstatement after one, render as a notice and offer no appeal.
   if (view.order) return <OrderNotice view={view} />;
   const paragraphs = paragraphsOf(view);
@@ -390,31 +420,30 @@ export function DecisionDetail({ view, onAppeal, onAsk }: { view: DecisionView; 
   return (
     <View>
       {/* The screen's own title is "Cases": this heading and the sections under it are one level below it. */}
-      <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
+      <Text as="h2" variant="display-3">
         {DECISION_WORDS.title}
       </Text>
-      <Text className="mt-1 text-base text-zinc-300">{view.post ? DECISION_WORDS.post(utcMinute(view.post.createdAt)) : CASES_WORDS.profile}</Text>
-      {/* 3d Task 6 (section 9.4): [auto.chip] beside the day of a decision a program took; nothing on a post says "program". */}
-      {view.automatedDecision === "fully" ? <Text className="mt-1 self-start rounded border border-zinc-600 px-2 py-0.5 text-sm text-zinc-200">{`${AUTO_WORDS.chip}, ${view.decidedAt.slice(0, 10)}`}</Text> : null}
+      <Text tone="medium" className="mt-1">
+        {view.post ? DECISION_WORDS.post(utcMinute(view.post.createdAt)) : CASES_WORDS.profile}
+      </Text>
+      {/* 3d Task 6 (section 9.4): [auto.chip] beside the day of a decision a program took; nothing on a post says "program".
+          A neutral chip: it states a fact, not a status, so it takes no status colour (UI design, section 4.8). */}
+      {view.automatedDecision === "fully" ? (
+        <View className="mt-2 self-start rounded-full border border-line-high bg-surface-2 px-2.5 py-0.5 web:forced-colors:border-[color:CanvasText]">
+          <Text variant="chip" tone="medium">{`${AUTO_WORDS.chip}, ${view.decidedAt.slice(0, 10)}`}</Text>
+        </View>
+      ) : null}
 
       <Section title={DECISION_WORDS.statement}>
         {paragraphs ? paragraphs.map((paragraph, index) => <Line key={index}>{paragraph}</Line>) : <Note>{DECISION_WORDS.cannotRender}</Note>}
         {/* 3d (design, section 9.1): after the rule a statement names, its own or the reviewed decision's, the rules page. */}
         {(view.ruleId ?? view.reviewed?.ruleId ?? null) !== null ? (
-          <Link href="/rules" asChild>
-            <Pressable className="mt-3 self-start">
-              <Text className="text-sm text-sky-400 underline">{DECISION_WORDS.rulesPage}</Text>
-            </Pressable>
-          </Link>
+          <CaseLink href="/rules" label={DECISION_WORDS.rulesPage} className="mt-3" />
         ) : null}
         {/* 3e (design, section 9.2): where the strike this decision gave stands now, read fresh. */}
         {view.strike ? <Line strong>{strikeLine(view.strike)}</Line> : null}
         {resets.map((decisionId) => (
-          <Link key={decisionId} href={`/settings/cases/${decisionId}`} asChild>
-            <Pressable className="mt-3 self-start">
-              <Text className="text-sm text-sky-400 underline">{DECISION_WORDS.resetDecision}</Text>
-            </Pressable>
-          </Link>
+          <CaseLink key={decisionId} href={`/settings/cases/${decisionId}`} label={DECISION_WORDS.resetDecision} className="mt-3" />
         ))}
       </Section>
 
@@ -429,7 +458,7 @@ export function DecisionDetail({ view, onAppeal, onAsk }: { view: DecisionView; 
       {view.appeal || view.appealUntil || view.reversedOn ? (
         <Section title={DECISION_WORDS.appeal}>
           <StandingAppealNotes view={view} />
-          <Appeal view={view} onAppeal={onAppeal} />
+          <Appeal view={view} onAppeal={onAppeal} focus={focusAppeal} />
         </Section>
       ) : null}
     </View>

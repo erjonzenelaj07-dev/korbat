@@ -1,6 +1,7 @@
-import { Pressable, Text, View } from "react-native";
-import { Link } from "expo-router";
+import { View } from "react-native";
 import { MEASURES, type AccountStanding, type AuthorCaseRow, type AuthorNoticesPage, type ReportItem, type ReportsPage } from "@korbat/contracts";
+import { ListRow } from "@/components/kit/ListRow";
+import { Text } from "@/components/kit/Text";
 import { Button, ErrorText } from "@/components/ui";
 import { utcMinute } from "@/lib/moderation";
 import { AUTO_WORDS, CASES_WORDS, RELEASE_TEXTS, UPLOAD_TEXTS } from "@/lib/moderation-words";
@@ -73,32 +74,53 @@ function kindWords(row: AuthorCaseRow): string | null {
 /**
  * "About you" (3c design, section 9): the decisions about the account that its holder was told of, newest first. Each
  * row is a link to the decision's screen and says what it is about (the post, by its creation time, or the profile), the
- * decision's day, what was done, the rule or the law, and where its appeal stands.
+ * decision's day, what was done, the rule or the law, and where its appeal stands. UI Task 7 (section 8.7): a vertical
+ * list of ListRow links, dated, each its title in body-strong over its lines, with the row's chevron.
  */
 export function DecisionsList({ decisions, now = new Date() }: { decisions: readonly AuthorCaseRow[]; now?: Date }) {
-  if (decisions.length === 0) return <Text className="px-4 py-8 text-base text-zinc-400">{CASES_WORDS.noDecisions}</Text>;
+  if (decisions.length === 0) {
+    return (
+      <Text tone="medium" className="px-4 py-8">
+        {CASES_WORDS.noDecisions}
+      </Text>
+    );
+  }
   return (
-    <View>
+    <View role="list">
       {decisions.map((row) => {
         const kind = kindWords(row);
+        const lines = [
+          // 3d Task 6 (section 9.6): a decision a program took says so; a person's later decision is its own row.
+          row.byProgram === true ? AUTO_WORDS.row(done(row, now)) : done(row, now),
+          // 3f: an order's row names no rule and no law of korbat's judgement.
+          row.order === undefined && (row.ruleId || row.legal) ? (row.ruleId ? CASES_WORDS.rule(row.ruleId) : CASES_WORDS.law) : null,
+          row.appealUntil ? CASES_WORDS.appealOpen(utcMinute(row.appealUntil)) : null,
+          row.appeal ? CASES_WORDS.appealState[row.appeal] : null,
+          row.reversedOn ? CASES_WORDS.reversed(row.reversedOn) : null,
+        ];
         return (
-          <Link key={row.id} href={`/settings/cases/${row.id}`} asChild>
-            <Pressable className="border-b border-zinc-800 px-4 py-3">
-              <Text className="text-base font-semibold text-zinc-50">{row.post ? CASES_WORDS.post(utcMinute(row.post.createdAt)) : CASES_WORDS.profile}</Text>
-              <Text className="mt-1 text-sm text-zinc-400">
-                {/* 3f's review (people9): an order's row shows the day its author was told, which the list sorts it by. */}
-                {row.toldOn !== undefined ? ORDER_TEXTS.row.toldOn(row.toldOn) : CASES_WORDS.decidedOn(row.decidedOn)}
-                {kind ? ` (${kind})` : ""}
-              </Text>
-              {/* 3d Task 6 (section 9.6): a decision a program took says so; a person's later decision is its own row. */}
-              <Text className="mt-1 text-sm leading-5 text-zinc-200">{row.byProgram === true ? AUTO_WORDS.row(done(row, now)) : done(row, now)}</Text>
-              {/* 3f: an order's row names no rule and no law of korbat's judgement. */}
-              {row.order === undefined && (row.ruleId || row.legal) ? <Text className="mt-1 text-sm text-zinc-300">{row.ruleId ? CASES_WORDS.rule(row.ruleId) : CASES_WORDS.law}</Text> : null}
-              {row.appealUntil ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.appealOpen(utcMinute(row.appealUntil))}</Text> : null}
-              {row.appeal ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.appealState[row.appeal]}</Text> : null}
-              {row.reversedOn ? <Text className="mt-1 text-sm text-zinc-300">{CASES_WORDS.reversed(row.reversedOn)}</Text> : null}
-            </Pressable>
-          </Link>
+          <View key={row.id} role="listitem">
+            <ListRow
+              label={row.post ? CASES_WORDS.post(utcMinute(row.post.createdAt)) : CASES_WORDS.profile}
+              href={`/settings/cases/${row.id}`}
+              detail={
+                <View className="gap-0.5">
+                  <Text variant="meta" tone="low">
+                    {/* 3f's review (people9): an order's row shows the day its author was told, which the list sorts it by. */}
+                    {row.toldOn !== undefined ? ORDER_TEXTS.row.toldOn(row.toldOn) : CASES_WORDS.decidedOn(row.decidedOn)}
+                    {kind ? ` (${kind})` : ""}
+                  </Text>
+                  {lines.map((line, index) =>
+                    line === null ? null : (
+                      <Text key={index} variant="meta" tone={index === 0 ? "high" : "medium"}>
+                        {line}
+                      </Text>
+                    ),
+                  )}
+                </View>
+              }
+            />
+          </View>
         );
       })}
     </View>
@@ -114,26 +136,16 @@ export function DecisionsList({ decisions, now = new Date() }: { decisions: read
 export function NoticesList({ notices }: { notices: AuthorNoticesPage["notices"] }) {
   if (notices.length === 0) return null;
   return (
-    <View className="border-b border-zinc-800">
-      <Text accessibilityRole="header" aria-level={2} className="px-4 pt-3 text-base font-semibold text-zinc-50">
+    <View className="pt-4">
+      <Text as="h2" variant="title" className="px-4 pb-1">
         {RELEASE_TEXTS.noticesTitle}
       </Text>
       {notices.map((notice) =>
         // 3d Task 7 (9.6): a refused upload's entry leads to its notice, a release's to its own.
         notice.kind === "upload_refused" ? (
-          <Link key={notice.id} href={`/settings/cases/uploads/${notice.id}`} asChild>
-            <Pressable className="px-4 py-3">
-              <Text className="text-base font-semibold text-zinc-50">{UPLOAD_TEXTS.entry}</Text>
-              <Text className="mt-1 text-sm text-zinc-400">{UPLOAD_TEXTS.entryOn(notice.at.slice(0, 10))}</Text>
-            </Pressable>
-          </Link>
+          <ListRow key={notice.id} label={UPLOAD_TEXTS.entry} description={UPLOAD_TEXTS.entryOn(notice.at.slice(0, 10))} href={`/settings/cases/uploads/${notice.id}`} />
         ) : (
-          <Link key={notice.id} href={`/settings/cases/releases/${notice.id}`} asChild>
-            <Pressable className="px-4 py-3">
-              <Text className="text-base font-semibold text-zinc-50">{RELEASE_TEXTS.entry}</Text>
-              <Text className="mt-1 text-sm text-zinc-400">{RELEASE_TEXTS.entryOn(notice.at.slice(0, 10))}</Text>
-            </Pressable>
-          </Link>
+          <ListRow key={notice.id} label={RELEASE_TEXTS.entry} description={RELEASE_TEXTS.entryOn(notice.at.slice(0, 10))} href={`/settings/cases/releases/${notice.id}`} />
         ),
       )}
     </View>
@@ -149,14 +161,15 @@ export function NoticesList({ notices }: { notices: AuthorNoticesPage["notices"]
 export function StandingBlock({ activeStrikes, standing = null }: { activeStrikes: number; standing?: AccountStanding | null }) {
   const measure = bannerSentences(standing);
   const reporting = reportingLine(standing);
+  // A card of surface-1 above the list: it says where the account stands, in words; no status colour (section 4.8).
   return (
-    <View className="border-b border-zinc-800 px-4 pb-4 pt-3">
-      <Text accessibilityRole="header" aria-level={2} className="text-base font-semibold text-zinc-50">
+    <View className="mx-4 mt-4 gap-1 rounded-card border border-line-low bg-surface-1 px-4 py-3">
+      <Text as="h2" variant="title">
         {STANDING_TEXTS.cases.title}
       </Text>
-      <Text className="mt-1 text-sm leading-5 text-zinc-200">{activeStrikes > 0 ? STANDING_TEXTS.cases.strikes(activeStrikes) : STANDING_TEXTS.cases.none}</Text>
-      {measure !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{measure.join(" ")}</Text> : null}
-      {reporting !== null ? <Text className="mt-1 text-sm leading-5 text-zinc-200">{reporting}</Text> : null}
+      <Text tone="medium">{activeStrikes > 0 ? STANDING_TEXTS.cases.strikes(activeStrikes) : STANDING_TEXTS.cases.none}</Text>
+      {measure !== null ? <Text tone="medium">{measure.join(" ")}</Text> : null}
+      {reporting !== null ? <Text tone="medium">{reporting}</Text> : null}
     </View>
   );
 }
@@ -183,17 +196,25 @@ export function ReportsList({
   return (
     <View>
       {page.reportMailStopped ? (
-        <View className="border-b border-zinc-800 px-4 pb-4 pt-3">
-          <Text className="text-sm leading-5 text-zinc-200">{CASES_WORDS.mailStopped}</Text>
+        <View className="mx-4 mt-4 rounded-card border border-line-low bg-surface-1 px-4 pb-4 pt-3">
+          <Text>{CASES_WORDS.mailStopped}</Text>
           <Button label={CASES_WORDS.resume} onPress={() => onResume?.()} busy={busy} tone="secondary" />
-          <Text className="mt-2 text-sm leading-5 text-zinc-400">{CASES_WORDS.resumeHint}</Text>
+          <Text variant="meta" tone="medium" className="mt-2">
+            {CASES_WORDS.resumeHint}
+          </Text>
           <ErrorText message={error} />
         </View>
       ) : null}
-      {page.reports.length === 0 ? <Text className="px-4 py-8 text-base text-zinc-400">{CASES_WORDS.noReports}</Text> : null}
+      {page.reports.length === 0 ? (
+        <Text tone="medium" className="px-4 py-8">
+          {CASES_WORDS.noReports}
+        </Text>
+      ) : null}
       {page.reports.map((report) => (
-        <View key={report.ref} className="border-b border-zinc-800 px-4 pb-4 pt-3">
-          <Text className="text-base font-semibold text-zinc-50">{CASES_WORDS.report(report.ref, utcMinute(report.receivedAt))}</Text>
+        <View key={report.ref} className="border-b border-line-low px-4 pb-4 pt-4">
+          <Text as="h2" variant="body-strong">
+            {CASES_WORDS.report(report.ref, utcMinute(report.receivedAt))}
+          </Text>
           <ItemLines items={report.items} onReexamine={onReexamine} />
         </View>
       ))}

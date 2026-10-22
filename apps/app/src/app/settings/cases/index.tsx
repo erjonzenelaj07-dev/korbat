@@ -1,15 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import type { AuthorCaseRow, AuthorNoticesPage, ReportItem, ReportRow } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { Skeleton } from "@/components/kit/Skeleton";
+import { VisuallyHidden } from "@/components/kit/VisuallyHidden";
+import { TabPanel, Tabs } from "@/components/kit/Tabs";
 import { DecisionsList, NoticesList, ReportsList, StandingBlock } from "@/components/moderation/CasesLists";
+import { ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { SettingsNav } from "@/components/SettingsNav";
 import { ErrorText, TextButton } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { moderation } from "@/lib/moderation";
 import { CASES_WORDS, STATUS_WORDS } from "@/lib/moderation-words";
+import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
+import { UI_WORDS } from "@/lib/ui-words";
 
 type Tab = "about" | "reports";
 
@@ -24,15 +30,36 @@ interface Pages<T> {
 
 const EMPTY = { rows: [], next: null, loaded: false, busy: false, error: null };
 
+/** The panel the two tabs control (section 6.10). */
+const PANEL = "cases-panel";
+
+/** A tab's first page on its way (6.12): rows of the list's shape, hidden from assistive technology, and one polite status. */
+function RowsLoading() {
+  return (
+    <View>
+      <VisuallyHidden role="status">{UI_WORDS["spinner.label"]}</VisuallyHidden>
+      {(["46%", "38%", "52%", "41%"] as const).map((width, index) => (
+        <View key={index} aria-hidden className="min-h-[52px] gap-2 border-b border-line-low px-4 py-3">
+          <Skeleton.Text width={width} />
+          <Skeleton.Text width="64%" variant="meta" />
+        </View>
+      ))}
+    </View>
+  );
+}
+
 /**
  * Cases (3c design, section 9), inside the settings layout, which lets in only a signed-in account with a handle: two
  * tabs. "About you" lists the decisions about the account; "Your reports" lists the reports it sent, with their outcomes
  * once released and, when the account's address stopped korbat's report mails, the notice and the button that resumes
- * them. A link from the report form opens the second tab (`?tab=reports`).
+ * them. A link from the report form opens the second tab (`?tab=reports`). UI Task 7 (sections 6.10 and 8.7): the title,
+ * the settings row and the tabs in ScreenHeader, the tabs the kit's Tabs (one tab stop, the arrows choose), the list
+ * under them a TabPanel, and skeleton rows while a tab's first page loads.
  */
 export default function Cases() {
   const params = useLocalSearchParams<{ tab?: string }>();
   const [tab, setTab] = useState<Tab>(params.tab === "reports" ? "reports" : "about");
+  const title = usePageTitle("title.cases");
   // 3e: the block "Your standing" reads the account's measure from /me, which the session holds fresh.
   const { state } = useSession();
   const [decisions, setDecisions] = useState<Pages<AuthorCaseRow>>(EMPTY);
@@ -103,31 +130,37 @@ export default function Cases() {
   const shown = tab === "about" ? decisions : reports;
   return (
     <AppShell>
-      <ScrollView>
-        <View className="border-b border-zinc-800 px-4 pt-4">
-          <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
-            {CASES_WORDS.title}
-          </Text>
-          <SettingsNav current="cases" />
-          <View accessibilityRole="tablist" className="mt-4 flex-row">
-            {(["about", "reports"] as Tab[]).map((t) => (
-              <Pressable key={t} accessibilityRole="tab" aria-selected={tab === t} onPress={() => setTab(t)} className={`mr-6 border-b-2 pb-2 ${tab === t ? "border-zinc-50" : "border-transparent"}`}>
-                <Text className={`text-base ${tab === t ? "font-semibold text-zinc-50" : "text-zinc-400"}`}>{CASES_WORDS.tabs[t]}</Text>
-              </Pressable>
-            ))}
+      {title}
+      <ScreenHeader title={CASES_WORDS.title}>
+        <SettingsNav current="cases" />
+        <View className="mt-1">
+          <Tabs
+            label={CASES_WORDS.title}
+            tabs={[
+              { key: "about", label: CASES_WORDS.tabs.about },
+              { key: "reports", label: CASES_WORDS.tabs.reports },
+            ]}
+            selected={tab}
+            onSelect={setTab}
+            panelId={PANEL}
+          />
+        </View>
+      </ScreenHeader>
+      <TabPanel panelId={PANEL} selected={tab}>
+        <ScreenScroll screen="cases" flush>
+          {!shown.loaded && shown.error === null ? <RowsLoading /> : null}
+          {tab === "about" && decisions.loaded ? <StandingBlock activeStrikes={activeStrikes} standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
+          {tab === "about" && decisions.loaded ? <NoticesList notices={notices} /> : null}
+          {tab === "about" && decisions.loaded ? <DecisionsList decisions={decisions.rows} /> : null}
+          {tab === "reports" && reports.loaded ? <ReportsList page={{ reports: reports.rows, reportMailStopped: mailStopped }} onResume={() => void resume()} onReexamine={reexamine} busy={resuming} error={resumeError} /> : null}
+          <View className="px-4 pb-4">
+            <ErrorText message={shown.error} />
+            {/* A first read that failed is asked again by hand; the tab does not ask in a loop. */}
+            {shown.error && !shown.loaded ? <TextButton label={STATUS_WORDS.retry} onPress={() => void (tab === "about" ? loadDecisions() : loadReports())} /> : null}
+            {shown.next ? <TextButton label={CASES_WORDS.more} onPress={() => void (tab === "about" ? loadDecisions(shown.next!) : loadReports(shown.next!))} /> : null}
           </View>
-        </View>
-        {tab === "about" && decisions.loaded ? <StandingBlock activeStrikes={activeStrikes} standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
-        {tab === "about" && decisions.loaded ? <NoticesList notices={notices} /> : null}
-        {tab === "about" && decisions.loaded ? <DecisionsList decisions={decisions.rows} /> : null}
-        {tab === "reports" && reports.loaded ? <ReportsList page={{ reports: reports.rows, reportMailStopped: mailStopped }} onResume={() => void resume()} onReexamine={reexamine} busy={resuming} error={resumeError} /> : null}
-        <View className="px-4 pb-10">
-          <ErrorText message={shown.error} />
-          {/* A first read that failed is asked again by hand; the tab does not ask in a loop. */}
-          {shown.error && !shown.loaded ? <TextButton label={STATUS_WORDS.retry} onPress={() => void (tab === "about" ? loadDecisions() : loadReports())} /> : null}
-          {shown.next ? <TextButton label={CASES_WORDS.more} onPress={() => void (tab === "about" ? loadDecisions(shown.next!) : loadReports(shown.next!))} /> : null}
-        </View>
-      </ScrollView>
+        </ScreenScroll>
+      </TabPanel>
     </AppShell>
   );
 }

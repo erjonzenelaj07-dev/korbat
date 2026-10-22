@@ -1,25 +1,39 @@
 import { useEffect, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import type { DecisionView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { Skeleton } from "@/components/kit/Skeleton";
 import { DecisionDetail } from "@/components/moderation/DecisionDetail";
+import { HeaderSpace, ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { SettingsNav } from "@/components/SettingsNav";
-import { ErrorText, Loading, TextLink } from "@/components/ui";
+import { ErrorText, TextLink } from "@/components/ui";
 import { ApiError, errorMessage } from "@/lib/api";
 import { moderation } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
+import { usePageTitle } from "@/lib/page-title";
 
 type Shown = { kind: "loading" } | { kind: "missing" } | { kind: "failed"; message: string } | { kind: "decision"; view: DecisionView };
 
+/** The screen's header: "Cases", its one level-1 heading, Back to the list, and the settings row under it. */
+function CasesHeader() {
+  return (
+    <ScreenHeader title={CASES_WORDS.title} back="/settings/cases">
+      <SettingsNav current="cases" />
+    </ScreenHeader>
+  );
+}
+
 /**
- * One decision (3c design, section 9), under Settings, Cases: the chip on a post and each row of "About you" lead here.
- * The API answers only for the account the decision is about and only for a decision that account was told of; anything
- * else reads as one sentence, whatever the id named.
+ * One decision (3c design, section 9), under Settings, Cases: the chip's details sheet, its "Read the full decision" and
+ * each row of "About you" lead here. The API answers only for the account the decision is about and only for a decision
+ * that account was told of; anything else reads as one sentence, whatever the id named. UI Task 7 (section 8.7): the
+ * title in ScreenHeader, skeleton lines in the shell while it loads, and ?appeal=1 (the sheet's "Appeal") focuses the
+ * appeal's field once the decision shows.
  */
 export default function Decision() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, appeal } = useLocalSearchParams<{ id: string; appeal?: string }>();
   const [shown, setShown] = useState<Shown>({ kind: "loading" });
+  const title = usePageTitle("title.cases");
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +59,7 @@ export default function Decision() {
    * decision as it now reads, with the appeal waiting, and the screen shows that. A refusal is thrown to the form, which
    * words it in place and keeps what was written.
    */
-  async function appeal(statement: string) {
+  async function sendAppeal(statement: string) {
     setShown({ kind: "decision", view: await moderation.appeal(id, statement) });
   }
 
@@ -54,21 +68,27 @@ export default function Decision() {
     setShown({ kind: "decision", view: await moderation.objection(id, text) });
   }
 
+  // While the decision loads the screen stays in the shell, under its header, as skeleton lines (section 6.12).
+  if (shown.kind === "loading") {
+    return (
+      <AppShell>
+        {title}
+        <CasesHeader />
+        <HeaderSpace />
+        <Skeleton.Page />
+      </AppShell>
+    );
+  }
   return (
     <AppShell>
-      <ScrollView contentContainerClassName="px-4 pb-16 pt-4">
-        <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
-          {CASES_WORDS.title}
-        </Text>
-        <SettingsNav current="cases" />
-        <View className="mt-6 w-full max-w-xl">
-          {shown.kind === "loading" ? <Loading /> : null}
-          {shown.kind === "missing" ? <ErrorText message={DECISION_WORDS.notFound} /> : null}
-          {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
-          {shown.kind === "decision" ? <DecisionDetail view={shown.view} onAppeal={appeal} onAsk={ask} /> : null}
-          <TextLink label={DECISION_WORDS.back} href="/settings/cases" />
-        </View>
-      </ScrollView>
+      {title}
+      <CasesHeader />
+      <ScreenScroll screen="decision">
+        {shown.kind === "missing" ? <ErrorText message={DECISION_WORDS.notFound} /> : null}
+        {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
+        {shown.kind === "decision" ? <DecisionDetail view={shown.view} onAppeal={sendAppeal} onAsk={ask} focusAppeal={appeal === "1"} /> : null}
+        <TextLink label={DECISION_WORDS.back} href="/settings/cases" />
+      </ScreenScroll>
     </AppShell>
   );
 }

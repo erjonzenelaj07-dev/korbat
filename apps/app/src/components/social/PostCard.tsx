@@ -4,6 +4,7 @@ import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 
 import { Link, router } from "expo-router";
 import type { Author, PostView, QuotedPost, Tombstone } from "@korbat/contracts";
 import { RefusedNotice } from "@/components/moderation/RefusedNotice";
+import { StatusSheet } from "@/components/moderation/StatusSheet";
 import { toast } from "@/components/toast";
 import { ErrorText, VerifiedChip } from "@/components/ui";
 import { Avatar } from "@/components/kit/Avatar";
@@ -175,17 +176,35 @@ export function QuoteEmbed({ quote, preview = false }: { quote: QuotedPost | Tom
 }
 
 /**
- * The chip on the author's own withheld or removed post (3c design, section 9; UI design, section 4.8). With the decision
- * behind the state it names the rule or says "illegal content", in the review tone while korbat decides and the
- * restricted tone once removed, and links to the decision's statement under Settings, Cases; Task 7 turns the link into
- * the button that opens the details sheet. A view without the decision's facts still says the state, and links nowhere.
+ * The chip on the author's own withheld or removed post (3c design, section 9; UI design, sections 4.8, 6.13 and 8.7).
+ * With the decision behind the state it names the rule or says "illegal content", in the review tone while korbat decides
+ * and the restricted tone once removed, and is the button that opens StatusSheet, the decision's details, named by its
+ * own words; the sheet is mounted only while it is open, and the focus comes back to the chip when it has closed. Its
+ * state lives here, in the card, so opening it redraws no row of the list. A view without the decision's facts still
+ * says the state, as information only.
  */
 function StateChip({ post }: { post: PostView }) {
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetMounted, setSheetMounted] = useState(false);
+  const chipRef = useRef<View>(null);
   if (post.state === "visible") return null;
   const decision = post.moderation;
   const tone: StatusTone = (decision ? decision.interim : post.state === "withheld") ? "review" : "restricted";
   const words = decision ? chipText(decision) : tone === "review" ? CHIP_WORDS.underReview : CHIP_WORDS.removed;
-  return <StatusChip tone={tone} label={words} href={decision ? `/settings/cases/${decision.decisionId}` : undefined} />;
+  const openSheet = () => {
+    setSheetMounted(true);
+    setSheetOpen(true);
+  };
+  const closed = () => {
+    setSheetMounted(false);
+    chipRef.current?.focus();
+  };
+  return (
+    <>
+      <StatusChip tone={tone} label={words} onPress={decision ? openSheet : undefined} ref={chipRef} />
+      {sheetMounted && decision ? <StatusSheet post={post} decisionId={decision.decisionId} title={words} open={sheetOpen} onClose={() => setSheetOpen(false)} onClosed={closed} /> : null}
+    </>
+  );
 }
 
 /**

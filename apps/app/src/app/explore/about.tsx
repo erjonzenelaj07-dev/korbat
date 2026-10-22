@@ -1,53 +1,48 @@
-import { ScrollView, Text, View } from "react-native";
+import { View } from "react-native";
 import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { DatedList, Heading, Paragraph } from "@/components/Prose";
+import { ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { TextLink } from "@/components/ui";
-import { exploreRules } from "@/lib/explore";
+import { EXPLORE_WORDS, exploreRules } from "@/lib/explore";
+import { usePageTitle } from "@/lib/page-title";
 
 /**
  * Every rule of a formula with its numbers, then its version and dated change log. The page shows EXPLORE_V2, the
- * constant the refresh ranks with, so the published rules are the ones in force; tests pass other formulas.
+ * constant the refresh ranks with, so the published rules are the ones in force; tests pass other formulas. UI Task 7
+ * (section 8.9): each rule a section under a level-2 heading in the reading layout, the change log a dated list.
  */
 export function ExploreRules({ formula = EXPLORE_V2 }: { formula?: ExploreFormula }) {
   return (
     <View>
       {exploreRules(formula).map((section) => (
-        <View key={section.title} className="mt-8">
-          <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-100">
-            {section.title}
-          </Text>
-          <Text className="mt-2 text-base leading-7 text-zinc-300">{section.body}</Text>
+        <View key={section.title}>
+          <Heading level={2}>{section.title}</Heading>
+          <Paragraph>{section.body}</Paragraph>
         </View>
       ))}
-      <View className="mt-8">
-        <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-100">
-          Version and changes
-        </Text>
-        <Text className="mt-2 text-base leading-7 text-zinc-300">{`This is version ${formula.version} of the formula.`}</Text>
-        {formula.changes.map((change) => (
-          <Text key={change.version} className="mt-2 text-base leading-7 text-zinc-300">
-            {`Version ${change.version}, ${change.date}: ${change.summary}`}
-          </Text>
-        ))}
-      </View>
+      <Heading level={2}>{EXPLORE_WORDS.versionHeading}</Heading>
+      <Paragraph>{EXPLORE_WORDS.version(formula.version)}</Paragraph>
+      <DatedList label={EXPLORE_WORDS.versionHeading} entries={formula.changes.map((change) => ({ key: String(change.version), text: EXPLORE_WORDS.change(change) }))} />
     </View>
   );
 }
 
-/** How Explore works (2c design, section 11): public, so anyone can hold the order Explore shows to its published rules. */
+/**
+ * How Explore works (2c design, section 11): public, so anyone can hold the order Explore shows to its published rules.
+ * UI Task 7: its title is the screen's ScreenHeader, and Back to Explore leads to Home's Explore tab.
+ */
 export default function ExploreAbout() {
+  const title = usePageTitle("title.exploreAbout");
   return (
     <AppShell>
-      <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 py-6">
-        <Text accessibilityRole="header" className="text-3xl font-bold tracking-tight text-zinc-50">
-          How Explore works
-        </Text>
-        <Text className="mt-2 text-base leading-6 text-zinc-400">
-          Explore lists recent posts that other accounts approve of, in an order anyone can check: these are all of its rules and numbers.
-        </Text>
+      {title}
+      <ScreenHeader title={EXPLORE_WORDS.about} />
+      <ScreenScroll screen="explore-about">
+        <Paragraph tone="high">{EXPLORE_WORDS.aboutLead}</Paragraph>
         <ExploreRules />
-        <TextLink label="Back to Explore" href="/?tab=explore" />
-      </ScrollView>
+        <TextLink label={EXPLORE_WORDS.backToExplore} href="/?tab=explore" />
+      </ScreenScroll>
     </AppShell>
   );
 }

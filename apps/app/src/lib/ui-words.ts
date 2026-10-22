@@ -144,6 +144,8 @@ export const UI_WORDS = {
   "media.previous": "Previous image",
   "media.next": "Next image",
   "media.count": "{n} of {total}",
+  /** UI Task 7 (decision 10, 8.7): the link under a grid that holds a hidden image, to the rules page. */
+  "media.whyHidden": "Why are images hidden?",
   /** Toasts (5.4, 8.6). */
   "toast.view": "View",
   "toast.linkCopied": "Link copied",
@@ -293,6 +295,19 @@ export const TITLE_WORDS = {
   "title.post": "Post - korbat",
   "title.postMissing": "Post not available - korbat",
   "title.profile": "Profile - korbat",
+  /** UI Task 7: the public pages (8.9). */
+  "title.rules": "Rules - korbat",
+  "title.transparency": "Transparency - korbat",
+  "title.exploreAbout": "How Explore works - korbat",
+  "title.terms": "Terms - korbat",
+  /**
+   * UI Task 7: screens the design gives no title (8.1 wants one), each named by its kind: the report form, a report's
+   * status page (never its reference), and the case screens in the form of 8.8's title.settings, filled, since a title
+   * holds no placeholder.
+   */
+  "title.report": "Report - korbat",
+  "title.notice": "Report status - korbat",
+  "title.cases": "Cases - Settings - korbat",
 } as const;
 
 export type TitleWord = keyof typeof TITLE_WORDS;

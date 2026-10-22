@@ -293,7 +293,7 @@ describe("Cases, under Settings", () => {
     for (const file of ["index.tsx", "[id].tsx"]) expect(read("app", "settings", "cases", file), file).toContain('<SettingsNav current="cases" />');
     // Two tabs, and the list each shows.
     const screen = read("app", "settings", "cases", "index.tsx");
-    expect(screen).toContain('accessibilityRole="tablist"');
+    expect(tabsOf(screen)).toContain('role="tablist"');
     expect(screen).toContain("moderation.cases(");
     expect(screen).toContain("moderation.reports(");
     expect(screen).toContain("moderation.resumeReportMail()");
@@ -585,18 +585,18 @@ describe("the chips and the labels", () => {
     expect(removed).toContain(STANDING_TEXTS.chip("Removed: R3", until));
   });
 
-  test("the author's own withheld or removed post shows the chip as a link to the decision's statement, amber while korbat decides and red once removed", () => {
+  test("the author's own withheld or removed post shows the chip as the button that opens the decision's sheet, which links its statement, amber while korbat decides and red once removed", () => {
     session.state = me(id(900));
     const removed = html(<PostCard post={post({ moderation: { decisionId: id(3), ruleId: "R3", legal: false, interim: false, strikeUntil: null } })} />);
     expect(textOf(removed)).toContain("Removed: R3");
-    expect(hrefs(removed)).toContain(`/settings/cases/${id(3)}`);
+    expect(hrefs(sheetOf(removed, id(3)))).toContain(`/settings/cases/${id(3)}`);
     const held = html(<PostCard post={post({ state: "withheld", moderation: { decisionId: id(4), ruleId: null, legal: true, interim: true, strikeUntil: null } })} />);
     expect(textOf(held)).toContain("Under review: illegal content");
-    expect(hrefs(held)).toContain(`/settings/cases/${id(4)}`);
+    expect(hrefs(sheetOf(held, id(4)))).toContain(`/settings/cases/${id(4)}`);
     // The colours are class names, which a render without the style compiler does not carry: they are read from the source.
     const card = read("components", "social", "PostCard.tsx");
     expect(card).toContain('const tone: StatusTone = (decision ? decision.interim : post.state === "withheld") ? "review" : "restricted";');
-    expect(card).toContain("<StatusChip tone={tone} label={words} href={decision ? `/settings/cases/${decision.decisionId}` : undefined} />");
+    expect(card).toContain("<StatusChip tone={tone} label={words} onPress={decision ? openSheet : undefined} ref={chipRef} />");
     // Without the decision's facts the chip still says the state, and links nowhere.
     const bare = html(<PostCard post={post()} />);
     expect(textOf(bare)).toContain("Removed");
@@ -872,3 +872,64 @@ describe("3e's review: what Cases says of a suspension, a termination and their 
     }
   });
 });
+
+// UI Task 7 appends below, so the lines above keep the numbers other tasks cite.
+import { Tabs } from "../src/components/kit/Tabs";
+import { StatusSheetBody } from "../src/components/moderation/StatusSheet";
+
+/**
+ * Cases' tabs are the kit's Tabs (UI design, section 6.10): the screen names `<Tabs`, which draws the tab list's role
+ * that the screen used to write by hand.
+ */
+function tabsOf(screen: string): string {
+  expect(screen).toContain("<Tabs");
+  return html(<Tabs label={CASES_WORDS.title} tabs={[{ key: "about", label: CASES_WORDS.tabs.about }, { key: "reports", label: CASES_WORDS.tabs.reports }]} selected="about" onSelect={() => undefined} panelId="cases" />);
+}
+
+/** A removed post's decision as GET /api/moderation/decisions/:id answers it, for the sheet the chip opens. */
+const sheetDecision: DecisionView = {
+  id: id(3),
+  kind: "final",
+  outcome: "restricted",
+  ground: "incompatible",
+  ruleId: "R3",
+  rulesVersion: 2,
+  redressVersion: 1,
+  legalReference: null,
+  facts: "The post attacks a group for its religion.",
+  reason: "That is an attack on people, not on an idea.",
+  source: "report",
+  decidedAt: TIME,
+  post: { id: id(1), createdAt: "2026-09-01T08:30:00.000Z" },
+  measures: [{ kind: "remove", mediaId: null, noEffect: null, sealed: null }],
+  reversals: [],
+  endedMeasures: [],
+  reviewed: null,
+  appealUntil: "2027-04-04T10:00:00.000Z",
+  reversedOn: null,
+  content: { kind: "post", body: "my own post", deletedByAuthor: false, images: [], imageCount: 0, imagesHidden: null },
+  appeal: null,
+  strike: null,
+  standing: null,
+};
+
+/**
+ * UI Task 7 (section 8.7): the chip on a card is the button that opens StatusSheet (aria-haspopup="dialog"), and the
+ * decision's statement is linked from the sheet, drawn here open with the decision `decisionId` names.
+ */
+function sheetOf(card: string, decisionId: string): string {
+  expect(card).toContain('aria-haspopup="dialog"');
+  expect(hrefs(card).filter((href) => href.startsWith("/settings/cases"))).toEqual([]);
+  const post: PostView = {
+    id: id(1),
+    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false },
+    body: "my own post",
+    createdAt: TIME,
+    state: "removed",
+    replyTo: null,
+    counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
+    media: [],
+    quoteOf: null,
+  };
+  return html(<StatusSheetBody load={{ kind: "shown", view: { ...sheetDecision, id: decisionId } }} post={post} me={null} onRetry={() => undefined} />);
+}

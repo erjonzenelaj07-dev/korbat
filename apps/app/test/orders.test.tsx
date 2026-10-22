@@ -101,7 +101,7 @@ describe("the notice of an authority's order (9.3)", () => {
     const out = html(<DecisionDetail view={view} onAppeal={async () => undefined} />);
     const read = textOf(out);
     expect(out).toContain('role="article"');
-    expect(out).toMatch(/aria-level="1"[^>]*>Notice: an authority&#x27;s order</);
+    expect(out).toMatch(/aria-level="2"[^>]*>Notice: an authority&#x27;s order</);
     for (const paragraph of statementParagraphs(view, { texts: view.orderTexts ?? null, erasedOn: null })) expect(read).toContain(paragraph);
     expect(out).toContain(`aria-label="${ORDER_NOTICE.wordsBlock.replace("'", "&#x27;")}"`);
     expect(read).toContain(`${ORDER_NOTICE.reasonsLabel} Der Beitrag ruft zu Gewalt auf.`);

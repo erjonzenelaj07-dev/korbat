@@ -7,8 +7,28 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { THEMES, type ThemeName } from "../../src/theme/tokens";
 import { TITLE_WORDS, UI_WORDS } from "../../src/lib/ui-words";
+import { CASES_WORDS, DECISION_WORDS, STATUS_SHEET_WORDS } from "../../src/lib/moderation-words";
+import { RULES_PAGE } from "../../src/lib/public-pages";
 import { appSiteHeadersFromCaddyfile } from "./caddyfile";
-import { ADA, createFixtureApi, DECISION_ID, GRACE, MISSING_POST_ID, newPostIdOf, NOTICE_REF, NOTICE_TOKEN, POST_ID, postIdOf, RELEASE_ID, UPLOAD_ID, writtenIdOf, type FixtureApi } from "./fixture-api";
+import {
+  ADA,
+  createFixtureApi,
+  DECISION_ID,
+  GRACE,
+  HIDDEN_IMAGE_POST_ID,
+  MISSING_POST_ID,
+  newPostIdOf,
+  NOTICE_REF,
+  NOTICE_TOKEN,
+  POST_DECISION_ID,
+  POST_ID,
+  postIdOf,
+  RELEASE_ID,
+  REMOVED_CHIP,
+  UPLOAD_ID,
+  writtenIdOf,
+  type FixtureApi,
+} from "./fixture-api";
 import { HOLD_MS, startAppSite, type AppSiteServer } from "./server";
 import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } from "./watch";
 
@@ -29,7 +49,8 @@ import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } f
  * rollback, Follow with its rollback, the menus, and Who sees this; from Task 5 the new-posts pill, the reading place, the
  * feeds kept across tabs, the keyboard on Home, and the focus after a delete with the thread held at its post; from Task
  * 6 the composer: the sheet and its toast at 360, the discard question and the drafts, Home's card and New post at
- * 1280, a reply and a quote. Later tasks add their screens' steps.
+ * 1280, a reply and a quote; from Task 7 the chip's details sheet, the appeal it opens and Cases' tabs, and the link
+ * under a hidden image with the terms in their frame. Later tasks add their screens' steps.
  *
  * It never downloads a browser. By default it drives the Chromium build playwright-core 1.63.0 names (chromium-1243 under
  * ms-playwright), which must already be installed; KORBAT_BROWSER_CHANNEL=chrome drives the machine's own Chrome. The
@@ -240,6 +261,8 @@ const ROUTES = [
   "/settings/account",
   "/settings/cases",
   `/settings/cases/${DECISION_ID}`,
+  // UI Task 7: the decision of Ada's removed post, opened as its details sheet's Appeal opens it.
+  `/settings/cases/${POST_DECISION_ID}?appeal=1`,
   `/settings/cases/${DECISION_ID}/reply`,
   `/settings/cases/releases/${RELEASE_ID}`,
   `/settings/cases/uploads/${UPLOAD_ID}`,
@@ -261,9 +284,11 @@ const ROUTES = [
  * screen that is the kit's alone (the missing page); from Task 4 every post card (an article), every sheet and dialog,
  * a menu's popover, the follow button and the toaster; from Task 5 every row of a feed (its posts, the marker, Load more,
  * the end), the tab lists, the new-posts pill, the profile's header and the thread's posts; from Task 6 every feed whole,
- * its header with Home's card and the thread's reply card included, and the compose button. The screens' own content
- * still paints with Tailwind's palette and sizes until its task moves it onto the tokens (test/legacy-files.ts), and
- * joins this list then: the moderation and public pages with Task 7, settings and sign-in with Task 8.
+ * its header with Home's card and the thread's reply card included, and the compose button; from Task 7 the column of
+ * every screen it moved onto the tokens (`data-screen`: the cases screens, the report form, a report's status, the
+ * public pages) and PublicFrame's banner and footer. The screens' own content still paints with Tailwind's palette and
+ * sizes until its task moves it onto the tokens (test/legacy-files.ts), and joins this list then: settings and sign-in
+ * with Task 8.
  */
 const DRAWN = [
   'a[href="#main"]',
@@ -282,22 +307,30 @@ const DRAWN = [
   "[data-pill]",
   "[data-profile-header]",
   "[data-thread]",
+  "[data-screen]",
+  '[role="banner"]',
+  '[role="contentinfo"]',
 ].join(", ");
 /** A page drawn wholly on the kit: everything on it is held to the rules. */
 const ALL = "body";
 
 /**
  * The pages of the layout steps: Home, a post, a profile, the rules and a missing page, with the item current on each;
- * from Task 5 Bookmarks and a followers list too, drawn wholly on the kit.
+ * from Task 5 Bookmarks and a followers list too, drawn wholly on the kit; from Task 7 the rules wholly, Cases and a
+ * decision under Settings, and the terms, which sit in PublicFrame outside the shell (`frame`), so the shell's own
+ * checks pass them over.
  */
-const LAYOUT_PAGES: { name: string; route: string; current: string | null; scope: string }[] = [
+const LAYOUT_PAGES: { name: string; route: string; current: string | null; scope: string; frame?: boolean }[] = [
   { name: "home", route: "/", current: "/", scope: DRAWN },
   { name: "post", route: `/post/${POST_ID}`, current: null, scope: DRAWN },
   { name: "profile", route: "/u/grace", current: null, scope: DRAWN },
-  { name: "rules", route: "/rules", current: null, scope: DRAWN },
+  { name: "rules", route: "/rules", current: null, scope: ALL },
   { name: "missing", route: "/no-such-page", current: null, scope: ALL },
   { name: "bookmarks", route: "/bookmarks", current: "/bookmarks", scope: ALL },
   { name: "followers", route: "/u/grace/followers", current: null, scope: ALL },
+  { name: "cases", route: "/settings/cases", current: "/settings/security", scope: ALL },
+  { name: "decision", route: `/settings/cases/${POST_DECISION_ID}`, current: "/settings/security", scope: ALL },
+  { name: "terms", route: "/terms", current: null, scope: ALL, frame: true },
 ];
 
 
@@ -339,10 +372,11 @@ async function layoutStep(width: number, height: number, kind: string): Promise<
       for (const page of LAYOUT_PAGES) {
         await visit(visit_.page, page.route);
         const layout = (await visit_.page.evaluate(LAYOUT_SCRIPT)) as Layout;
-        expect(layout.kind, page.name).toBe(kind);
+        // A page in PublicFrame has no shell: no layout kind, no nav and no context column.
+        expect(layout.kind, page.name).toBe(page.frame ? null : kind);
         expect(layout.current, page.name).toEqual(page.current === null ? [] : [page.current]);
         // The context column from 1024 px only.
-        expect(layout.context, page.name).toBe(width >= 1024);
+        expect(layout.context, page.name).toBe(!page.frame && width >= 1024);
         expect(layout.scroll, `${page.name}: no horizontal scroll`).toBeLessThanOrEqual(0);
         expect(await clippedLabels(visit_.page, page.scope), page.name).toEqual([]);
         if (width < 768) expect(await phoneProblems(visit_.page, page.scope), page.name).toEqual([]);
@@ -483,6 +517,25 @@ async function cleanAfterRefusals(visit: Visit): Promise<void> {
 const article = (page: Page, n: number) => page.locator('[role="article"]').nth(n);
 /** The article of fixture post `n`, found by its one link to the post. */
 const postArticle = (page: Page, n: number) => page.locator('[role="article"]').filter({ has: page.locator(`a[href="/post/${postIdOf(n)}"]`) });
+
+/** UI Task 7: the chip of Ada's removed post on her own profile, the button that opens its details sheet. */
+const statusChip = (page: Page) => page.locator('[aria-haspopup="dialog"]').filter({ hasText: REMOVED_CHIP });
+/** The labelled blocks of the open details sheet, by their names, in their order. */
+const STATUS_BLOCKS = `[...document.querySelectorAll('[role="dialog"] [data-status-block]')].map((block) => block.getAttribute("data-status-block"))`;
+/** The design's order of the blocks while an appeal can still be filed: Appeal first (section 8.7). */
+const OPEN_ORDER = ["appeal", "rule", "does", "appliesTo", "whoSees", "decidedBy", "when", "statement"];
+
+/**
+ * The placeholder's sentence (HiddenImage.tsx's HIDDEN_IMAGE, word for word): that component file draws, so the walk,
+ * which runs in Node without react-native, holds its own copy, which hidden-media.test.tsx pins to the same words.
+ */
+const HIDDEN_IMAGE_WORDS = "Image hidden by korbat moderation";
+
+/** Opens the details sheet of Ada's removed post (on /u/ada) and waits until its blocks are drawn. */
+async function openStatusSheet(page: Page): Promise<void> {
+  await statusChip(page).click();
+  await until(page, `${STATUS_BLOCKS}.length === ${OPEN_ORDER.length}`, "the status sheet's blocks");
+}
 
 /**
  * How much of a greyscale screenshot differs from its own background: the pixels whose luminance is more than 0.08 away
@@ -648,19 +701,29 @@ describe("the app in Chromium, under the app site's policy", () => {
     [9, "dim"],
     [10, "dark"],
   ] as const) {
-    test(`${step}. contrast as drawn in ${theme}: the shell on Home, a post and the rules, and the whole missing page`, async () => {
+    test(`${step}. contrast as drawn in ${theme}: the shell on Home and a post, the whole rules, missing, decision and terms pages, and the open status sheet`, async () => {
       const visit_ = await open({ width: 1280, height: 900, appearance: { theme } });
       try {
         for (const [route, scope] of [
           ["/", DRAWN],
           [`/post/${POST_ID}`, DRAWN],
-          ["/rules", DRAWN],
+          ["/rules", ALL],
           ["/no-such-page", ALL],
+          // UI Task 7: a decision's screen and the terms, wholly on the tokens.
+          [`/settings/cases/${POST_DECISION_ID}`, ALL],
+          ["/terms", ALL],
         ] as const) {
           await visit(visit_.page, route);
           expect(await contrast(visit_.page, scope), `${theme} ${route}`).toEqual([]);
           await clean(visit_);
         }
+        // The details sheet of Ada's removed post, open with its blocks (section 12.3's theme steps).
+        await visit(visit_.page, "/u/ada");
+        await openStatusSheet(visit_.page);
+        // Sampled once the sheet's opening fade has ended: the walk reads colours as drawn, opacity included.
+        await pause(500);
+        expect(await contrast(visit_.page, '[role="dialog"]'), `${theme} the status sheet`).toEqual([]);
+        await clean(visit_);
       } finally {
         await visit_.context.close();
       }
@@ -671,13 +734,17 @@ describe("the app in Chromium, under the app site's policy", () => {
     const visit_ = await open({ width: 320, height: 640, appearance: { theme: "light", textStep: "largest" } });
     try {
       // The screens drawn on the kit: a missing page, Bookmarks under its header, and from Task 5 Home with its tabs and
-      // rows; from Task 6 a post with its reply card, and Home's New post sheet open with words in its field.
+      // rows; from Task 6 a post with its reply card, and Home's New post sheet open with words in its field; from Task 7
+      // a decision's screen, the rules, and the details sheet of Ada's removed post, open.
       for (const [name, route] of [
         ["missing", "/no-such-page"],
         ["bookmarks", "/bookmarks"],
         ["home", "/"],
         ["post", `/post/${POST_ID}`],
         ["composer", "/"],
+        ["decision", `/settings/cases/${POST_DECISION_ID}`],
+        ["rules", "/rules"],
+        ["sheet", "/u/ada"],
       ] as const) {
         await visit(visit_.page, route);
         await visit_.page.evaluate(`document.documentElement.style.fontSize = "200%"`);
@@ -685,6 +752,10 @@ describe("the app in Chromium, under the app site's policy", () => {
         if (name === "composer") {
           await visit_.page.locator("[data-compose]").click();
           await visit_.page.locator('[role="dialog"] textarea').fill("Morning light over the harbour, written at the largest text.");
+          await pause(400);
+        }
+        if (name === "sheet") {
+          await openStatusSheet(visit_.page);
           await pause(400);
         }
         await screenshot(visit_.page, `largest-320-${name}`);
@@ -1730,6 +1801,170 @@ describe("the app in Chromium, under the app site's policy", () => {
           await clean(shot);
         } finally {
           await shot.context.close();
+        }
+      }
+    }
+  });
+
+  // UI Task 7: the moderation surfaces and the public pages (UI design, sections 8.7 and 8.9; decision 10).
+
+  test("32. the status sheet: the chip is a button that opens a dialog, named by its words; skeletons while the decision is read, then the blocks in the design's order; Decided by in role terms; Read the full decision opens the case; Escape gives the focus back to the chip; a refused read's Try again reads it again", async () => {
+    for (const [width, height] of [
+      [360, 740],
+      [1280, 900],
+    ] as const) {
+      for (const theme of ["light", "dark"] as const) {
+        const visit_ = await open({ width, height, appearance: { theme } });
+        const page = visit_.page;
+        try {
+          await visit(page, "/u/ada");
+          const chip = statusChip(page);
+          // The chip: a button that opens a dialog, named by its own words, with a 44 px target.
+          const tag = (await page.evaluate(`(() => { const e = [...document.querySelectorAll('[aria-haspopup="dialog"]')].find((x) => x.textContent.trim() === ${JSON.stringify(REMOVED_CHIP)}); return e ? { role: e.getAttribute("role"), popup: e.getAttribute("aria-haspopup"), name: e.textContent.trim(), height: e.offsetHeight } : null; })()`)) as {
+            role: string | null;
+            popup: string | null;
+            name: string;
+            height: number;
+          };
+          expect(tag).toEqual({ role: "button", popup: "dialog", name: REMOVED_CHIP, height: expect.any(Number) });
+          expect(tag.height).toBeGreaterThanOrEqual(44);
+          // While the decision is on its way: the dialog named by the chip's words, skeletons and one status, no block yet.
+          fixtures.state.delayMs = 1500;
+          const asked = fixtures.state.requests.length;
+          await chip.click();
+          const dialog = page.locator('[role="dialog"]');
+          await dialog.waitFor({ state: "visible" });
+          expect(await page.evaluate(DIALOG_NAME)).toBe(REMOVED_CHIP);
+          await dialog.locator('[role="status"]').waitFor({ state: "attached" });
+          expect(await page.evaluate(`${STATUS_BLOCKS}.length`)).toBe(0);
+          await pause(300);
+          await screenshot(page, `status-sheet-loading-${width}-${theme}`);
+          // Each opening reads the decision.
+          expect(fixtures.state.requests.slice(asked).map((request) => request.path)).toContain(`/api/moderation/decisions/${POST_DECISION_ID}`);
+          await until(page, `${STATUS_BLOCKS}.length === ${OPEN_ORDER.length}`, "the blocks", 10_000);
+          fixtures.state.delayMs = 0;
+          expect(await page.evaluate(STATUS_BLOCKS)).toEqual(OPEN_ORDER);
+          const decided = dialog.locator('[data-status-block="decidedBy"]');
+          expect(await decided.innerText()).toContain(STATUS_SHEET_WORDS["status.byPerson"]);
+          expect(await dialog.locator('[data-status-block="appliesTo"]').innerText()).toContain(STATUS_SHEET_WORDS["status.appliesPost"]);
+          expect(await dialog.locator('[data-status-block="whoSees"]').innerText()).toContain(UI_WORDS["reach.private"]);
+          await pause(300);
+          await screenshot(page, `status-sheet-open-${width}-${theme}`);
+          expect(await contrast(page, '[role="dialog"]')).toEqual([]);
+          if (width < 768) expect(await phoneProblems(page, '[role="dialog"]')).toEqual([]);
+          expect(await clippedLabels(page, '[role="dialog"]')).toEqual([]);
+          // Escape closes it, and the focus is back on the chip.
+          await page.keyboard.press("Escape");
+          await dialog.waitFor({ state: "detached" });
+          await until(page, `(${FOCUSED}) === ${JSON.stringify(REMOVED_CHIP)}`, "the focus back on the chip", 3000);
+          // A refused read says so, with Try again, which reads the decision again.
+          fixtures.state.refuse.add("decision");
+          await chip.click();
+          await dialog.getByRole("alert").waitFor({ state: "visible" });
+          await pause(300);
+          await screenshot(page, `status-sheet-failed-${width}-${theme}`);
+          fixtures.state.refuse.delete("decision");
+          const again = fixtures.state.requests.length;
+          await dialog.getByRole("button", { name: UI_WORDS["error.retry"], exact: true }).click();
+          await until(page, `${STATUS_BLOCKS}.length === ${OPEN_ORDER.length}`, "the blocks after Try again");
+          expect(fixtures.state.requests.slice(again).map((request) => request.path)).toContain(`/api/moderation/decisions/${POST_DECISION_ID}`);
+          // Read the full decision: the sheet closes, then the case opens under Settings, Cases.
+          await dialog.getByRole("link", { name: STATUS_SHEET_WORDS["status.readAll"], exact: true }).click();
+          await until(page, `location.pathname === "/settings/cases/${POST_DECISION_ID}"`, "the decision's screen");
+          await page.locator("h1").filter({ hasText: CASES_WORDS.title }).waitFor({ state: "visible" });
+          await page.getByText(DECISION_WORDS.title, { exact: true }).waitFor({ state: "visible" });
+          expect(await page.locator('[role="dialog"]').count()).toBe(0);
+          await page.waitForLoadState("networkidle");
+          if (theme === "light") await screenshot(page, `decision-${width}-${theme}`);
+          await cleanAfterRefusals(visit_);
+        } finally {
+          fixtures.state.delayMs = 0;
+          fixtures.state.refuse.clear();
+          await visit_.context.close();
+        }
+      }
+    }
+  });
+
+  test("33. the sheet's Appeal opens the decision with ?appeal=1 and the appeal's field focused; Cases' tabs are one tab stop, and Right selects Your reports", async () => {
+    for (const [width, height, theme] of [
+      [1280, 900, "light"],
+      [360, 740, "dark"],
+    ] as const) {
+      const visit_ = await open({ width, height, appearance: { theme } });
+      const page = visit_.page;
+      try {
+        await visit(page, "/u/ada");
+        await openStatusSheet(page);
+        const appeal = page.locator('[role="dialog"] [data-status-appeal]');
+        expect(await appeal.innerText()).toBe(STATUS_SHEET_WORDS["status.appeal"]);
+        // Its layout height: the dialog's opening scale would shrink the drawn box for a moment.
+        expect(await page.evaluate(`document.querySelector('[role="dialog"] [data-status-appeal]').offsetHeight`)).toBeGreaterThanOrEqual(44);
+        await appeal.click();
+        await until(page, `location.pathname === "/settings/cases/${POST_DECISION_ID}" && new URL(location.href).searchParams.get("appeal") === "1"`, "the decision, its appeal asked for");
+        await until(page, fieldFocused(DECISION_WORDS.appealStatement), "the appeal's field focused", 8000);
+        await pause(300);
+        await screenshot(page, `decision-appeal-${width}-${theme}`);
+        await clean(visit_);
+        // Cases: two tabs, one tab stop (the selected tab); the arrows choose.
+        await visit(page, "/settings/cases");
+        const tabs = page.locator('[role="tablist"] [role="tab"]');
+        expect(await tabs.count()).toBe(2);
+        expect(await page.evaluate(`[...document.querySelectorAll('[role="tablist"] [role="tab"]')].map((tab) => tab.getAttribute("tabindex"))`)).toEqual(["0", "-1"]);
+        await tabs.first().focus();
+        await page.keyboard.press("ArrowRight");
+        await until(page, `document.activeElement && document.activeElement.getAttribute("role") === "tab" && document.activeElement.getAttribute("aria-selected") === "true" && document.activeElement.textContent.trim() === ${JSON.stringify(CASES_WORDS.tabs.reports)}`, "Your reports chosen and focused", 3000);
+        await page.getByText(CASES_WORDS.noReports).waitFor({ state: "visible" });
+        expect(await page.evaluate(`[...document.querySelectorAll('[role="tablist"] [role="tab"]')].map((tab) => tab.getAttribute("tabindex"))`)).toEqual(["-1", "0"]);
+        // The panel is named by the chosen tab.
+        expect(await page.evaluate(`(() => { const panel = document.querySelector('[role="tabpanel"]'); const tab = panel && document.getElementById(panel.getAttribute("aria-labelledby")); return tab ? tab.textContent.trim() : null; })()`)).toBe(CASES_WORDS.tabs.reports);
+        await page.waitForLoadState("networkidle");
+        await screenshot(page, `cases-reports-${width}-${theme}`);
+        await clean(visit_);
+      } finally {
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("34. under a grid that holds a hidden image, Why are images hidden? is a 44 px link to the rules and the placeholder no control; the terms stand in PublicFrame's 640 px column with its banner and footer", async () => {
+    for (const [width, height] of [
+      [360, 740],
+      [1280, 900],
+    ] as const) {
+      for (const theme of ["light", "dark"] as const) {
+        const visit_ = await open({ width, height, appearance: { theme } });
+        const page = visit_.page;
+        try {
+          await visit(page, "/u/grace");
+          const card = page.locator('[role="article"]').filter({ has: page.locator(`a[href="/post/${HIDDEN_IMAGE_POST_ID}"]`) });
+          const link = card.getByRole("link", { name: UI_WORDS["media.whyHidden"], exact: true });
+          expect(await link.getAttribute("href")).toBe("/rules");
+          expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+          // The placeholder is no control: nothing around its words takes a press or the focus.
+          const placeholder = (await page.evaluate(
+            `(() => { const words = [...document.querySelectorAll('[role="article"] *')].find((e) => e.childElementCount === 0 && e.textContent.trim() === ${JSON.stringify(HIDDEN_IMAGE_WORDS)}); return words ? { control: !!words.closest('a, button, [role="button"], [role="link"], [tabindex="0"]') } : null; })()`,
+          )) as { control: boolean } | null;
+          expect(placeholder).toEqual({ control: false });
+          await card.scrollIntoViewIfNeeded();
+          await pause(300);
+          await screenshot(page, `hidden-image-${width}-${theme}`);
+          if (width < 768) expect(await phoneProblems(page, '[role="article"]')).toEqual([]);
+          await link.click();
+          await until(page, `location.pathname === "/rules"`, "the rules page");
+          await page.locator("h1").filter({ hasText: RULES_PAGE.title }).waitFor({ state: "visible" });
+          await page.waitForLoadState("networkidle");
+          await clean(visit_);
+          // The terms in the frame: the wordmark's banner, the page's column of 640 px at most, and the footer's links.
+          await visit(page, "/terms");
+          const frame = (await page.evaluate(
+            `(() => { const main = document.querySelector('[role="main"]'); return { banner: !!document.querySelector('[role="banner"]'), footer: !!document.querySelector('[role="contentinfo"]'), shell: !!document.querySelector("[data-layout]"), column: main ? main.offsetWidth : 0, footerAfter: !!main && !!document.querySelector('[role="contentinfo"]') && (main.compareDocumentPosition(document.querySelector('[role="contentinfo"]')) & 4) === 4 }; })()`,
+          )) as { banner: boolean; footer: boolean; shell: boolean; column: number; footerAfter: boolean };
+          expect(frame).toEqual({ banner: true, footer: true, shell: false, column: width >= 768 ? 640 : width - 32, footerAfter: true });
+          await screenshot(page, `terms-${width}-${theme}`);
+          await clean(visit_);
+        } finally {
+          await visit_.context.close();
         }
       }
     }

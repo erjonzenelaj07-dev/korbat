@@ -1,4 +1,5 @@
 import { cva } from "class-variance-authority";
+import type { Ref } from "react";
 import { Pressable, View } from "react-native";
 import Animated from "react-native-reanimated";
 import { Link, type Href } from "expo-router";
@@ -54,6 +55,8 @@ interface StatusChipProps {
   onPress?: () => void;
   /** Where the chip sits in its parent, such as self-center beside a display name. */
   className?: string;
+  /** The button form's pressable, which takes the focus back when the sheet it opened has closed (UI Task 7). */
+  ref?: Ref<View>;
 }
 
 /** The drawn chip: icon, words that wrap, and the button form's chevron. */
@@ -61,7 +64,8 @@ function Face({ tone, label, chevron }: { tone: StatusTone; label: string; chevr
   return (
     <View className={chip({ tone })}>
       <Icon name={STATUS_ICON[tone]} size={14} tone={ON_WASH[tone]} />
-      <Text variant="chip" tone={ON_WASH[tone]} className="shrink">
+      {/* At the largest text on the narrowest phone a single word can be wider than the chip: it breaks rather than clip. */}
+      <Text variant="chip" tone={ON_WASH[tone]} className="min-w-0 shrink web:break-words">
         {label}
       </Text>
       {chevron ? <Icon name="next" size={14} tone={ON_WASH[tone]} /> : null}
@@ -69,7 +73,7 @@ function Face({ tone, label, chevron }: { tone: StatusTone; label: string; chevr
   );
 }
 
-export function StatusChip({ tone, label, name, href, onPress, className }: StatusChipProps) {
+export function StatusChip({ tone, label, name, href, onPress, className, ref }: StatusChipProps) {
   const press = usePressScale(0.97);
   if (href === undefined && onPress === undefined) {
     return (
@@ -91,7 +95,7 @@ export function StatusChip({ tone, label, name, href, onPress, className }: Stat
             </Pressable>
           </Link>
         ) : (
-          <Pressable accessibilityRole="button" aria-haspopup="dialog" onPress={onPress} {...press.handlers} className={target}>
+          <Pressable ref={ref} accessibilityRole="button" aria-haspopup="dialog" onPress={onPress} {...press.handlers} className={target}>
             <Face tone={tone} label={label} chevron />
           </Pressable>
         )}

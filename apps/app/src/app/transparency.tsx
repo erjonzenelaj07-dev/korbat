@@ -1,45 +1,34 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { Platform, Pressable, View } from "react-native";
 import { ANNEX3_GROUNDS, ORDER_GROUNDS, PublicFacts, PublicHead, PublicTransparency, type OrderFigures, type TransparencyFigures } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { FOCUS_RING } from "@/components/kit/interaction";
+import { Text } from "@/components/kit/Text";
+import { FigureRows, Heading, Paragraph } from "@/components/Prose";
+import { ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { TextLink } from "@/components/ui";
 import { api } from "@/lib/api";
 import { saveBlob } from "@/lib/download";
+import { usePageTitle } from "@/lib/page-title";
 import { PAGE_DOWN, TRANSPARENCY_PAGE, recipientsMonth } from "@/lib/public-pages";
+import { cn } from "@/theme/cn";
 
 const T = TRANSPARENCY_PAGE;
 type Edition = PublicTransparency["editions"][number];
 type Row = { label: string; count: string };
 
-/** A heading of the page: level 2 a year or a fixed section, level 3 a table inside a year. */
-function Heading({ level, children }: { level: 2 | 3; children: string }) {
-  return (
-    <Text accessibilityRole="header" aria-level={level} className={level === 2 ? "mt-8 text-lg font-semibold text-zinc-100" : "mt-5 text-base font-semibold text-zinc-100"}>
-      {children}
-    </Text>
-  );
-}
-const Paragraph = ({ children }: { children: ReactNode }) => <Text className="mt-2 text-base leading-7 text-zinc-300">{children}</Text>;
+/** A text button of the page (an older version shown or hidden, a day's proof saved): accent words in a 44 px target. */
+const PAGE_BUTTON = cn("group mt-1 min-h-[44px] justify-center self-start rounded-control active:opacity-70", FOCUS_RING);
 
 /**
- * One table: its heading and its rows, each read as "label: value" and laid out as a block, never a chart (9.1); a table
- * with no row is its "none" sentence.
+ * One table: its heading and its rows, each read as "label: value", label and value rows, never a chart (9.1; UI Task
+ * 7, section 8.9); a table with no row is its "none" sentence.
  */
 function Table({ title, rows }: { title: string; rows: Row[] }) {
   return (
     <View>
       <Heading level={3}>{title}</Heading>
-      {rows.length === 0 ? (
-        <Paragraph>{T.tableNone}</Paragraph>
-      ) : (
-        <View role="list" aria-label={title}>
-          {rows.map((row) => (
-            <Text key={row.label} role="listitem" className="mt-1 text-base leading-6 text-zinc-300">
-              {`${row.label}: ${row.count}`}
-            </Text>
-          ))}
-        </View>
-      )}
+      {rows.length === 0 ? <Paragraph>{T.tableNone}</Paragraph> : <FigureRows label={title} rows={rows} />}
     </View>
   );
 }
@@ -123,8 +112,10 @@ function OlderVersion({ year, older }: { year: number; older: Edition["older"][n
   return (
     <View>
       <Paragraph>{T.versionLine(older.version, older.publishedOn, older.replacedOn)}</Paragraph>
-      <Pressable accessibilityRole="button" onPress={() => setOpen(!open)} className="mt-1 self-start">
-        <Text className="text-sm text-sky-400 underline">{open ? T.hideVersion : T.showVersion}</Text>
+      <Pressable accessibilityRole="button" aria-expanded={open} onPress={() => setOpen(!open)} className={PAGE_BUTTON}>
+        <Text tone="accent" className="underline decoration-1 underline-offset-2 web:group-hover:decoration-2">
+          {open ? T.hideVersion : T.showVersion}
+        </Text>
       </Pressable>
       {open ? <FiguresView year={year} figures={older.figures} /> : null}
     </View>
@@ -210,15 +201,16 @@ function HeadSection({ head, keeper }: { head: PublicHead | "loading" | "down"; 
       ) : head.days.length === 0 ? (
         <Paragraph>{T.headNone}</Paragraph>
       ) : (
-        <View role="list" aria-label={T.headHeading}>
+        // A dated list, newest first; each day's value in the mono face, which breaks anywhere rather than run off the page.
+        <View role="list" aria-label={T.headHeading} className="mt-4 border-l-2 border-line-low">
           {headLines(head.days).map((line) =>
             line.kind === "missing" ? (
-              <Text key={`${line.day}-missing`} role="listitem" className="mt-1 text-base leading-6 text-zinc-300">
-                {T.headMissingRow(line.day)}
-              </Text>
+              <View key={`${line.day}-missing`} role="listitem" className="pb-3 pl-4">
+                <Text tone="medium">{T.headMissingRow(line.day)}</Text>
+              </View>
             ) : (
-              <View key={`${line.row.day}-${line.row.kind}`} role="listitem" className="mt-1">
-                <Text className="break-all text-base leading-6 text-zinc-300">
+              <View key={`${line.row.day}-${line.row.kind}`} role="listitem" className="pb-3 pl-4">
+                <Text variant="mono" tone="medium" className="web:break-all">
                   {line.row.kind === "restore"
                     ? T.restore(line.row.day, line.row.lastDay)
                     : line.row.retiredOn === null
@@ -226,8 +218,10 @@ function HeadSection({ head, keeper }: { head: PublicHead | "loading" | "down"; 
                       : `${T.headRow(line.row.day, line.row.value, line.row.witness)} ${T.retired(line.row.retiredOn)}`}
                 </Text>
                 {checkable(line.row) && Platform.OS === "web" ? (
-                  <Pressable accessibilityRole="button" onPress={() => saveProof(line.row.day, line.row.token!)} className="mt-1 self-start">
-                    <Text className="text-sm text-sky-400 underline">{T.download(line.row.day)}</Text>
+                  <Pressable accessibilityRole="button" onPress={() => saveProof(line.row.day, line.row.token!)} className={PAGE_BUTTON}>
+                    <Text tone="accent" className="underline decoration-1 underline-offset-2 web:group-hover:decoration-2">
+                      {T.download(line.row.day)}
+                    </Text>
                   </Pressable>
                 ) : null}
               </View>
@@ -244,15 +238,13 @@ function HeadSection({ head, keeper }: { head: PublicHead | "loading" | "down"; 
  * The transparency page as it reads with the editions and the head's values it was given (3d design, section 9.3; W.2).
  * It shows what the stored editions hold and never a live count: no year section for the running year, and [tr.none]
  * while no edition exists. When a route did not answer, the fixed texts stand and that route's part alone reads
- * [page.down].
+ * [page.down]. UI Task 7 (section 8.9): the page's title is the screen's ScreenHeader; here the lead and the sections
+ * in the reading layout of components/Prose.tsx.
  */
 export function TransparencyView({ answer, head = "loading", keeper = null }: { answer: PublicTransparency | "loading" | "down"; head?: PublicHead | "loading" | "down"; keeper?: boolean | null }) {
   return (
     <View>
-      <Text accessibilityRole="header" className="text-3xl font-bold tracking-tight text-zinc-50">
-        {T.title}
-      </Text>
-      <Paragraph>{T.lead}</Paragraph>
+      <Paragraph tone="high">{T.lead}</Paragraph>
       <Paragraph>{T.read}</Paragraph>
       {answer === "loading" ? null : answer === "down" ? (
         <Paragraph>{PAGE_DOWN}</Paragraph>
@@ -280,6 +272,7 @@ export default function TransparencyPage() {
   const [answer, setAnswer] = useState<PublicTransparency | "loading" | "down">("loading");
   const [head, setHead] = useState<PublicHead | "loading" | "down">("loading");
   const [keeper, setKeeper] = useState<boolean | null>(null);
+  const title = usePageTitle("title.transparency");
   useEffect(() => {
     let live = true;
     api("/api/public/facts", { schema: PublicFacts })
@@ -310,11 +303,11 @@ export default function TransparencyPage() {
   }, []);
   return (
     <AppShell>
-      <ScrollView className="flex-1 bg-zinc-950" contentContainerClassName="px-4 pb-16 pt-6">
-        <View className="w-full max-w-xl">
-          <TransparencyView answer={answer} head={head} keeper={keeper} />
-        </View>
-      </ScrollView>
+      {title}
+      <ScreenHeader title={T.title} />
+      <ScreenScroll screen="transparency">
+        <TransparencyView answer={answer} head={head} keeper={keeper} />
+      </ScreenScroll>
     </AppShell>
   );
 }

@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { REPLY_TEXT_MAX, type DecisionView, type ReplyResponse } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { Skeleton } from "@/components/kit/Skeleton";
+import { Text } from "@/components/kit/Text";
+import { HeaderSpace, ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { SettingsNav } from "@/components/SettingsNav";
-import { Body, Button, ErrorText, Field, Loading, TextLink } from "@/components/ui";
+import { Body, Button, ErrorText, Field, TextLink } from "@/components/ui";
 import { ApiError, errorMessage } from "@/lib/api";
 import { moderation } from "@/lib/moderation";
 import { CASES_WORDS, DECISION_WORDS } from "@/lib/moderation-words";
+import { usePageTitle } from "@/lib/page-title";
 import { STANDING_TEXTS, standingMeasureOf } from "@/lib/standing";
 
 type Shown = { kind: "loading" } | { kind: "missing" } | { kind: "failed"; message: string } | { kind: "decision"; view: DecisionView };
@@ -62,8 +66,8 @@ export function ReplyPanel({ view, onSend }: { view: DecisionView; onSend: (stat
     return (
       <View>
         {/* The Notice of the answer, which takes the focus (9.8). */}
-        <View ref={sentRef} accessibilityRole="alert" focusable className="mt-4 rounded-lg bg-zinc-900 px-4 py-3">
-          <Text className="text-sm text-zinc-300">{sent.onTime ? STANDING_TEXTS.reply.sentOnTime(measure.kind, sent.filedAt) : STANDING_TEXTS.reply.sentLate(measure.kind, sent.filedAt)}</Text>
+        <View ref={sentRef} accessibilityRole="alert" focusable className="mt-4 rounded-card border border-line-low bg-surface-1 px-4 py-3">
+          <Text>{sent.onTime ? STANDING_TEXTS.reply.sentOnTime(measure.kind, sent.filedAt) : STANDING_TEXTS.reply.sentLate(measure.kind, sent.filedAt)}</Text>
         </View>
         <TextLink label={STANDING_TEXTS.reply.back} href={`/settings/cases/${view.id}`} />
       </View>
@@ -81,12 +85,18 @@ export function ReplyPanel({ view, onSend }: { view: DecisionView; onSend: (stat
     <View>
       <Body>{opening}</Body>
       <Field label={STANDING_TEXTS.reply.field} value={statement} onChangeText={setStatement} multiline maxLength={REPLY_TEXT_MAX} />
-      <Text aria-live="polite" className="mt-1 text-sm text-zinc-400">
+      <Text aria-live="polite" variant="meta" tone="low" className="mt-1">
         {STANDING_TEXTS.reply.count(statement.length)}
       </Text>
-      <Text className="mt-3 text-sm leading-5 text-zinc-400">{STANDING_TEXTS.reply.hint}</Text>
-      <Text className="mt-3 text-sm leading-5 text-zinc-400">{STANDING_TEXTS.reply.once}</Text>
-      <Text className="mt-3 text-sm leading-5 text-zinc-400">{STANDING_TEXTS.reply.kept}</Text>
+      <Text tone="medium" className="mt-3">
+        {STANDING_TEXTS.reply.hint}
+      </Text>
+      <Text tone="medium" className="mt-3">
+        {STANDING_TEXTS.reply.once}
+      </Text>
+      <Text tone="medium" className="mt-3">
+        {STANDING_TEXTS.reply.kept}
+      </Text>
       <Button label={STANDING_TEXTS.reply.send} onPress={() => void send()} busy={busy} />
       <ErrorText message={error} />
     </View>
@@ -96,11 +106,13 @@ export function ReplyPanel({ view, onSend }: { view: DecisionView; onSend: (stat
 /**
  * The reply screen (3e design, section 9.3), under Settings, Cases, beside the decision's screen: "Reply" on the banner
  * and on the decision's screen lead here while the reply is open. The decision is read fresh; an id that names no
- * decision of this account reads as the decision's screen says it.
+ * decision of this account reads as the decision's screen says it. UI Task 7: "Cases" in ScreenHeader with Back to the
+ * decision, the reply's title a level-2 heading under it, skeleton lines in the shell while it loads.
  */
 export default function Reply() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [shown, setShown] = useState<Shown>({ kind: "loading" });
+  const title = usePageTitle("title.cases");
 
   useEffect(() => {
     let cancelled = false;
@@ -120,23 +132,34 @@ export default function Reply() {
     };
   }, [id]);
 
+  const header = (
+    <ScreenHeader title={CASES_WORDS.title} back={`/settings/cases/${id}`}>
+      <SettingsNav current="cases" />
+    </ScreenHeader>
+  );
+  // While the decision loads the screen stays in the shell, under its header, as skeleton lines (section 6.12).
+  if (shown.kind === "loading") {
+    return (
+      <AppShell>
+        {title}
+        {header}
+        <HeaderSpace />
+        <Skeleton.Page />
+      </AppShell>
+    );
+  }
   return (
     <AppShell>
-      <ScrollView contentContainerClassName="px-4 pb-16 pt-4">
-        <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
-          {CASES_WORDS.title}
+      {title}
+      {header}
+      <ScreenScroll screen="reply">
+        <Text as="h2" variant="display-3">
+          {STANDING_TEXTS.reply.title}
         </Text>
-        <SettingsNav current="cases" />
-        <View className="mt-6 w-full max-w-xl">
-          <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
-            {STANDING_TEXTS.reply.title}
-          </Text>
-          {shown.kind === "loading" ? <Loading /> : null}
-          {shown.kind === "missing" ? <ErrorText message={DECISION_WORDS.notFound} /> : null}
-          {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
-          {shown.kind === "decision" ? <ReplyPanel view={shown.view} onSend={(statement) => moderation.reply(id, statement)} /> : null}
-        </View>
-      </ScrollView>
+        {shown.kind === "missing" ? <ErrorText message={DECISION_WORDS.notFound} /> : null}
+        {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
+        {shown.kind === "decision" ? <ReplyPanel view={shown.view} onSend={(statement) => moderation.reply(id, statement)} /> : null}
+      </ScreenScroll>
     </AppShell>
   );
 }

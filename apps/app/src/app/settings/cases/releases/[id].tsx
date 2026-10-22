@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import type { ReleaseNoticeView } from "@korbat/contracts";
 import { AppShell } from "@/components/AppShell";
+import { Skeleton } from "@/components/kit/Skeleton";
 import { ReleaseNoticeDetail } from "@/components/moderation/ReleaseNotice";
+import { HeaderSpace, ScreenHeader, ScreenScroll } from "@/components/ScreenHeader";
 import { SettingsNav } from "@/components/SettingsNav";
-import { ErrorText, Loading, TextLink } from "@/components/ui";
+import { ErrorText, TextLink } from "@/components/ui";
 import { ApiError, errorMessage } from "@/lib/api";
 import { moderation } from "@/lib/moderation";
+import { usePageTitle } from "@/lib/page-title";
 import { CASES_WORDS, DECISION_WORDS, RELEASE_TEXTS } from "@/lib/moderation-words";
 
 type Shown = { kind: "loading" } | { kind: "missing" } | { kind: "failed"; message: string } | { kind: "release"; view: ReleaseNoticeView };
@@ -21,6 +23,7 @@ type Shown = { kind: "loading" } | { kind: "missing" } | { kind: "failed"; messa
 export default function Release() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [shown, setShown] = useState<Shown>({ kind: "loading" });
+  const title = usePageTitle("title.cases");
 
   useEffect(() => {
     let cancelled = false;
@@ -40,21 +43,32 @@ export default function Release() {
     };
   }, [id]);
 
+  const header = (
+    <ScreenHeader title={CASES_WORDS.title} back="/settings/cases">
+      <SettingsNav current="cases" />
+    </ScreenHeader>
+  );
+  // While the notice loads the screen stays in the shell, under its header, as skeleton lines (UI design, section 6.12).
+  if (shown.kind === "loading") {
+    return (
+      <AppShell>
+        {title}
+        {header}
+        <HeaderSpace />
+        <Skeleton.Page />
+      </AppShell>
+    );
+  }
   return (
     <AppShell>
-      <ScrollView contentContainerClassName="px-4 pb-16 pt-4">
-        <Text accessibilityRole="header" className="text-xl font-bold text-zinc-50">
-          {CASES_WORDS.title}
-        </Text>
-        <SettingsNav current="cases" />
-        <View className="mt-6 w-full max-w-xl">
-          {shown.kind === "loading" ? <Loading /> : null}
-          {shown.kind === "missing" ? <ErrorText message={RELEASE_TEXTS.notFound} /> : null}
-          {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
-          {shown.kind === "release" ? <ReleaseNoticeDetail view={shown.view} /> : null}
-          <TextLink label={DECISION_WORDS.back} href="/settings/cases" />
-        </View>
-      </ScrollView>
+      {title}
+      {header}
+      <ScreenScroll screen="release">
+        {shown.kind === "missing" ? <ErrorText message={RELEASE_TEXTS.notFound} /> : null}
+        {shown.kind === "failed" ? <ErrorText message={shown.message} /> : null}
+        {shown.kind === "release" ? <ReleaseNoticeDetail view={shown.view} /> : null}
+        <TextLink label={DECISION_WORDS.back} href="/settings/cases" />
+      </ScreenScroll>
     </AppShell>
   );
 }

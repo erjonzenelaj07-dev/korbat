@@ -19,6 +19,12 @@ export const EXPLORE_WORDS = {
   refresh: "Refresh",
   showLatest: "Show Latest",
   signInForMore: "Sign in to see more of Explore",
+  /** How Explore works (2c design, section 11), word for word as app/explore/about.tsx had them before UI Task 7. */
+  aboutLead: "Explore lists recent posts that other accounts approve of, in an order anyone can check: these are all of its rules and numbers.",
+  versionHeading: "Version and changes",
+  version: (version: number) => `This is version ${version} of the formula.`,
+  change: (change: { version: number; date: string; summary: string }) => `Version ${change.version}, ${change.date}: ${change.summary}`,
+  backToExplore: "Back to Explore",
 } as const;
 
 /** A page of Explore is the API's default of 20 posts, and a ranking holds at most listLength: one read never needs more pages than this. */

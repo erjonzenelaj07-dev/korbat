@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
 import { OBJECTION_TEXT_MAX, type UploadRefusalView } from "@korbat/contracts";
 import { getRedress, getRule, REDRESS_VERSION, RULES_VERSION, uploadNoticeParagraphs } from "@korbat/rules";
+import { Text } from "@/components/kit/Text";
 import { Button, ErrorText, Field, Section } from "@/components/ui";
 import { ApiError, errorMessage } from "@/lib/api";
 import { utcMinute } from "@/lib/moderation";
 import { UPLOAD_TEXTS } from "@/lib/moderation-words";
+import { Line } from "./parts";
 
 /**
  * 3d Task 7 (design, sections 7.12 and 9.5; W.5): the notice of an upload korbat did not accept, on its screen under
@@ -13,6 +15,7 @@ import { UPLOAD_TEXTS } from "@/lib/moderation-words";
  * with the rule's current title and the current redress texts, so the state paragraph follows the hold. No image is
  * shown: nobody can see it, its uploader included. "Object" stands while the view says an objection is open: one field
  * under [upload.objectLead]; once sent, [upload.objected]. A suspended account can object: nothing here reads its standing.
+ * UI Task 7: on the tokens, its title a level-2 heading under the screen's "Cases", "Object" a card.
  */
 export function UploadNoticeDetail({ view, onObject }: { view: UploadRefusalView; onObject?: (text: string) => Promise<void> }) {
   const rule = getRule("R2", RULES_VERSION);
@@ -20,13 +23,11 @@ export function UploadNoticeDetail({ view, onObject }: { view: UploadRefusalView
   const paragraphs = rule && redress ? uploadNoticeParagraphs(view, rule.title, redress) : [];
   return (
     <View>
-      <Text accessibilityRole="header" aria-level={2} className="text-lg font-semibold text-zinc-50">
+      <Text as="h2" variant="display-3">
         {UPLOAD_TEXTS.title}
       </Text>
       {paragraphs.map((paragraph, index) => (
-        <Text key={index} className="mt-3 text-base leading-6 text-zinc-200">
-          {paragraph}
-        </Text>
+        <Line key={index}>{paragraph}</Line>
       ))}
       <ObjectControl view={view} onObject={onObject} />
     </View>
@@ -59,7 +60,7 @@ function ObjectControl({ view, onObject }: { view: UploadRefusalView; onObject?:
   if (sent !== null && view.objection !== null) {
     return (
       <Section title={UPLOAD_TEXTS.object}>
-        <Text className="mt-2 text-base leading-6 text-zinc-100">{UPLOAD_TEXTS.objected(utcMinute(view.objection.objectedAt))}</Text>
+        <Text className="mt-2">{UPLOAD_TEXTS.objected(utcMinute(view.objection.objectedAt))}</Text>
       </Section>
     );
   }
@@ -68,7 +69,9 @@ function ObjectControl({ view, onObject }: { view: UploadRefusalView; onObject?:
     <Section title={UPLOAD_TEXTS.object}>
       {open ? (
         <View>
-          <Text className="mt-2 text-sm leading-5 text-zinc-400">{UPLOAD_TEXTS.objectLead}</Text>
+          <Text tone="medium" className="mt-2">
+            {UPLOAD_TEXTS.objectLead}
+          </Text>
           <Field label={UPLOAD_TEXTS.objectField} value={text} onChangeText={setText} multiline maxLength={OBJECTION_TEXT_MAX} />
           <Button label={UPLOAD_TEXTS.object} onPress={() => void send()} busy={busy} />
           <ErrorText message={error} />

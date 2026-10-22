@@ -42,7 +42,9 @@ import type { z } from "zod";
  * and page through 120 posts (enough for the reading place's 100 rows), a switch puts new posts above them, a thread has
  * ancestors, and sign-out is answered. From UI Task 6 a post the reader writes (POST /api/posts) is answered as the API
  * answers it, goes on top of the timelines, has a thread and a page of its own, and a reply joins its thread's replies.
- * Nothing here needs a database or the network.
+ * From UI Task 7 Ada's profile starts with a post of hers that korbat removed, whose decision has a screen of its own,
+ * and Grace's with a post that holds an image hidden from readers; `delayMs` holds a decision's answer back too, and the
+ * kind "decision" in `refuse` refuses it. Nothing here needs a database or the network.
  */
 
 /** A WebP of 2 by 2 pixels (lossless, 38 bytes) in the accent violet: a real image, which the browser decodes under the policy. */
@@ -64,6 +66,17 @@ export const MISSING_POST_ID = id(999);
 export const DECISION_ID = id(501);
 export const RELEASE_ID = id(502);
 export const UPLOAD_ID = id(503);
+/**
+ * UI Task 7: a post of Ada's that korbat removed under R6 (on top of her own profile, signed in as her), the decision
+ * about it, which its chip's details sheet reads, and a post of Grace's whose second image is hidden from readers (on
+ * top of her profile). Their ids are their own, so posts 1 to 120 keep theirs.
+ */
+export const REMOVED_POST_ID = id(401);
+export const POST_DECISION_ID = id(504);
+export const HIDDEN_IMAGE_POST_ID = id(402);
+/** The removed post's chip, as chipText() words a final decision under R6 without a strike. */
+export const REMOVED_CHIP = "Removed: R6";
+
 /** A report's status page: its reference and the token its link carries in the fragment. */
 export const NOTICE_REF = "N-ABCDEFGH23";
 export const NOTICE_TOKEN = "A".repeat(43);
@@ -228,6 +241,65 @@ function decision() {
   );
 }
 
+/** The decision about Ada's removed post (UI Task 7): final, under R6, after a report, which she can still appeal. */
+function postDecision() {
+  return parse(
+    DecisionView,
+    {
+      id: POST_DECISION_ID,
+      kind: "final",
+      outcome: "restricted",
+      ground: "incompatible",
+      ruleId: "R6",
+      rulesVersion: 3,
+      redressVersion: 2,
+      legalReference: null,
+      facts: "The post offered followers for sale.",
+      reason: "Selling followers is spam under rule R6: it fakes the reach that korbat's feeds show in time order.",
+      source: "report",
+      decidedAt: ago(60 * 24 * 2),
+      post: { id: REMOVED_POST_ID, createdAt: ago(60 * 24 * 3) },
+      measures: [{ kind: "remove", mediaId: null, noEffect: null, sealed: null }],
+      reversals: [],
+      endedMeasures: [],
+      reviewed: null,
+      appealUntil: daysAhead(170),
+      reversedOn: null,
+      content: { kind: "post", body: REMOVED_BODY, deletedByAuthor: false, images: [], imageCount: 0, imagesHidden: null },
+      appeal: null,
+      strike: null,
+      standing: null,
+    } as z.input<typeof DecisionView>,
+    "post decision",
+  );
+}
+
+const REMOVED_BODY = "Buy a thousand followers for five euros, delivered by tonight.";
+
+/** Ada's removed post as she reads it on her own profile: removed, with the chip's facts of its decision. */
+function removedPost(signedIn: boolean): PostView {
+  return post(41, signedIn, {
+    id: REMOVED_POST_ID,
+    author: ADA,
+    body: REMOVED_BODY,
+    createdAt: ago(60 * 24 * 3),
+    state: "removed",
+    media: [],
+    moderation: { decisionId: POST_DECISION_ID, ruleId: "R6", legal: false, interim: false, strikeUntil: null },
+  });
+}
+
+/** Grace's post with two images, the second hidden from every reader by moderation (decision 10). */
+function hiddenImagePost(signedIn: boolean): PostView {
+  return post(42, signedIn, {
+    id: HIDDEN_IMAGE_POST_ID,
+    author: GRACE,
+    body: "Two photographs from the harbour walk; one of them is not shown to you.",
+    createdAt: ago(3),
+    media: [image(42), { id: id(781), hidden: true }],
+  });
+}
+
 export interface FixtureState {
   /** Whether /api/me answers the account or 401. */
   signedIn: boolean;
@@ -237,7 +309,8 @@ export interface FixtureState {
   requests: { method: string; path: string; at: number }[];
   /**
    * The actions the API refuses for now (like, repost, bookmark, follow, delete), with a 503 as a busy server would, so
-   * a step sees the card roll back; and how long every action's answer waits, so a step sees the change before it.
+   * a step sees the card roll back; and how long every action's answer waits, so a step sees the change before it. UI
+   * Task 7: "decision" refuses the removed post's decision, and `delayMs` holds every decision's answer too.
    */
   refuse: Set<string>;
   delayMs: number;
@@ -314,7 +387,12 @@ export function createFixtureApi(): FixtureApi {
       if (!author) return null;
       const tab = profilePath[2];
       if (tab === undefined) return ok(profile(author, state.signedIn));
-      if (tab === "posts") return ok(parse(TimelinePage, { items: posts(1, 12).map((view) => ({ kind: "post" as const, post: { ...view, author } })), nextCursor: null }, "profile posts"));
+      if (tab === "posts") {
+        // UI Task 7: Ada, signed in, reads her removed post first; Grace's profile starts with the post with a hidden image.
+        const first = author.id === ADA.id ? (state.signedIn ? [removedPost(true)] : []) : author.id === GRACE.id ? [hiddenImagePost(state.signedIn)] : [];
+        const items = [...first, ...posts(1, 12).map((view) => ({ ...view, author }))].map((view) => ({ kind: "post" as const, post: view }));
+        return ok(parse(TimelinePage, { items, nextCursor: null }, "profile posts"));
+      }
       if (tab === "replies") return ok(parse(PostPage, { items: [], nextCursor: null }, "replies"));
       const people = [listItem(GRACE, "Compilers, ships and the occasional heron.", state.signedIn), listItem(LINUS, "Kernels and coffee.", state.signedIn)].filter((p) => p.handle !== author.handle);
       return ok(parse(ProfilePage, { items: people, nextCursor: null }, "profile list"));
@@ -337,6 +415,10 @@ export function createFixtureApi(): FixtureApi {
     if (path === "/api/moderation/reports") return ok(parse(ReportsPage, { reports: [], nextCursor: null, reportMailStopped: false }, "reports"));
     if (path === "/api/moderation/notices") return ok(parse(AuthorNoticesPage, { notices: [], nextCursor: null }, "notices"));
     if (path === `/api/moderation/decisions/${DECISION_ID}`) return ok(decision());
+    if (path === `/api/moderation/decisions/${POST_DECISION_ID}`) {
+      if (state.refuse.has("decision")) return { status: 503, json: { error: { code: "unavailable", message: "korbat is busy. Try again in a moment." } } };
+      return ok(postDecision());
+    }
     if (path === `/api/moderation/releases/${RELEASE_ID}`) {
       return ok(parse(ReleaseNoticeView, { id: RELEASE_ID, basis: "period", releasedAt: ago(60), backupsClearAt: daysAhead(35), upload: false, posts: [{ id: id(103), createdAt: ago(60 * 24 * 40) }], postCount: 1, images: 1, sealDecisionId: null, appeal: "none" }, "release"));
     }
@@ -425,8 +507,10 @@ export function createFixtureApi(): FixtureApi {
         if (method === "GET") answer = get(url.pathname, url.searchParams);
         else if (method === "POST") answer = post_(url.pathname, body) ?? action(method, url.pathname);
         else if (method === "DELETE") answer = action(method, url.pathname);
-        // An action's answer waits as long as the step asks, so the step sees the card change before it lands.
-        if (method !== "GET" && answer !== null && state.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.delayMs));
+        // An action's answer waits as long as the step asks, so the step sees the card change before it lands; from UI
+        // Task 7 so does a decision's, so a step sees the details sheet's skeletons before the blocks.
+        const held = method !== "GET" || url.pathname.startsWith("/api/moderation/decisions/");
+        if (held && answer !== null && state.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.delayMs));
         if (url.pathname.startsWith("/api/timeline/") && state.timelineDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.timelineDelayMs));
       } catch (err) {
         state.problems.push(`a fixture threw for ${method} ${url.pathname}: ${String(err)}`);

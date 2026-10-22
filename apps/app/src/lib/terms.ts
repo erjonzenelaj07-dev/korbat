@@ -33,6 +33,13 @@ import { numberWord } from "./moderation-words";
  */
 export const TERMS_VERSION = "draft-2026-09";
 
+/** The terms page's own words around its sections (UI Task 7), word for word as app/terms.tsx had them in its markup. */
+export const TERMS_PAGE = {
+  title: "korbat terms",
+  version: (version: string) => `Version ${version}`,
+  back: "Back to korbat",
+} as const;
+
 /**
  * The moderation sections (3c design, section 9) state each rule of the mechanism once more, for the people it is
  * applied to. So that the text cannot drift from the mechanism, nothing it shares with the mechanism is typed here: every

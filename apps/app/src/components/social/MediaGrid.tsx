@@ -2,7 +2,9 @@ import { createContext, useContext, useRef, useState } from "react";
 import { Image } from "expo-image";
 import { Pressable, View } from "react-native";
 import { isHiddenMedia, type HiddenMedia, type MediaView } from "@korbat/contracts";
-import { FOCUS_RING_INSET } from "@/components/kit/interaction";
+import { Link } from "expo-router";
+import { Icon } from "@/components/kit/Icon";
+import { FOCUS_RING, FOCUS_RING_INSET } from "@/components/kit/interaction";
 import { StatusChip } from "@/components/kit/StatusChip";
 import { Text } from "@/components/kit/Text";
 import { API_BASE } from "@/lib/api";
@@ -100,6 +102,7 @@ function Grid({ media, postId, own }: { media: (MediaView | HiddenMedia)[]; post
   const first = media[0]!;
   // Descriptions exist only for the images this reader is shown.
   const anyShown = media.some((item) => !isHiddenMedia(item));
+  const anyHidden = media.some(isHiddenMedia);
 
   let frame;
   if (media.length === 1) {
@@ -128,21 +131,37 @@ function Grid({ media, postId, own }: { media: (MediaView | HiddenMedia)[]; post
         {frame}
         <View pointerEvents="none" aria-hidden className="absolute inset-0 rounded-media border border-line-low" />
       </View>
-      {anyShown ? (
-        // The one ALT toggle (a per-image badge would say nothing: every korbat image has a description), a 44 px target.
-        <Pressable
-          accessibilityRole="button"
-          aria-expanded={described}
-          accessibilityLabel={described ? UI_WORDS["media.hideAlt"] : UI_WORDS["media.showAlt"]}
-          onPress={() => setDescribed(!described)}
-          className={cn("group min-h-[44px] min-w-[44px] items-start justify-center self-start rounded-control", FOCUS_RING_INSET)}
-        >
-          <View className={cn("rounded-[6px] border px-1.5 py-0.5", described ? "border-accent bg-accent-wash" : "border-line-high bg-surface-1 web:group-hover:bg-surface-2")}>
-            <Text variant="chip" tone={described ? "accent" : "medium"}>
-              {UI_WORDS["media.alt"]}
-            </Text>
-          </View>
-        </Pressable>
+      {anyShown || anyHidden ? (
+        <View className="flex-row flex-wrap items-center gap-x-4">
+          {anyShown ? (
+            // The one ALT toggle (a per-image badge would say nothing: every korbat image has a description), a 44 px target.
+            <Pressable
+              accessibilityRole="button"
+              aria-expanded={described}
+              accessibilityLabel={described ? UI_WORDS["media.hideAlt"] : UI_WORDS["media.showAlt"]}
+              onPress={() => setDescribed(!described)}
+              className={cn("group min-h-[44px] min-w-[44px] items-start justify-center self-start rounded-control", FOCUS_RING_INSET)}
+            >
+              <View className={cn("rounded-[6px] border px-1.5 py-0.5", described ? "border-accent bg-accent-wash" : "border-line-high bg-surface-1 web:group-hover:bg-surface-2")}>
+                <Text variant="chip" tone={described ? "accent" : "medium"}>
+                  {UI_WORDS["media.alt"]}
+                </Text>
+              </View>
+            </Pressable>
+          ) : null}
+          {anyHidden ? (
+            // Decision 10: a reader gets no cover to lift, since the image never reaches them; the row under the grid
+            // says where korbat's moderation is explained instead. The placeholder itself stays no control.
+            <Link href="/rules" asChild>
+              <Pressable className={cn("group min-h-[44px] flex-row items-center gap-1.5 self-start rounded-control active:opacity-70", FOCUS_RING)}>
+                <Icon name="info" size={16} tone="accent" />
+                <Text variant="meta" tone="accent" className="underline decoration-1 underline-offset-2 web:group-hover:decoration-2">
+                  {UI_WORDS["media.whyHidden"]}
+                </Text>
+              </Pressable>
+            </Link>
+          ) : null}
+        </View>
       ) : null}
       {described
         ? media.map((item, index) => (
