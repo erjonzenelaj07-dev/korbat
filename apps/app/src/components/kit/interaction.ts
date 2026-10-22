@@ -31,3 +31,33 @@ export const HOVER_WASH = "web:hover:bg-surface-2 web:transition-colors web:dura
 export function pressDelay(ms: number): object {
   return Platform.OS === "web" ? { delayPressIn: ms } : { unstable_pressDelay: ms };
 }
+
+/**
+ * Whether the reader's last input on the web was a key rather than a pointer. Keyboard actions do not animate their
+ * content (section 5.1): a sheet, a dialog or a menu opened from the keyboard takes its reduced form, and a toggle pressed
+ * with Enter or Space cross-fades instead of popping. The listeners are installed once, when the kit loads, in the
+ * capture phase, so they hear a key before any handler acts on it; native has no such modality and answers false.
+ */
+const modality = { keyboard: false };
+
+if (Platform.OS === "web" && typeof document !== "undefined") {
+  document.addEventListener("keydown", (event) => {
+    // A modifier alone (Alt+Tab away, Shift held) says nothing about how the next action is made.
+    if (!["Shift", "Control", "Alt", "Meta"].includes(event.key)) modality.keyboard = true;
+  }, true);
+  document.addEventListener("pointerdown", () => {
+    modality.keyboard = false;
+  }, true);
+}
+
+export function lastInputWasKeyboard(): boolean {
+  return modality.keyboard;
+}
+
+/**
+ * A data attribute on the web (react-native-web's dataSet), which the browser check and the render tests find an element
+ * by: `data-scrim`, `data-handle`, `data-menu`. React Native's own types have no dataSet, so it goes through one cast here.
+ */
+export function dataAttribute(name: string, value = ""): object {
+  return { dataSet: { [name]: value } };
+}

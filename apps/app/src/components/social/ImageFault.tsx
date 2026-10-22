@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
 import type { MediaStatusResponse } from "@korbat/contracts";
+import { Icon } from "@/components/kit/Icon";
+import { Text } from "@/components/kit/Text";
 import { IMAGE_FAULT_WORDS } from "@/lib/moderation-words";
 import { social } from "@/lib/social";
 
@@ -54,11 +56,19 @@ export function useImageFault(id: string, own: boolean): { fault: ImageFault | n
   return { fault: found?.id === id ? found.fault : null, onError: own ? onError : undefined };
 }
 
-/** What stands in the place of the author's own image that did not load, with the words of its fault. */
+/**
+ * What stands in the place of the author's own image that did not load, with the words of its fault, on surface-2 as a
+ * hidden image's placeholder is (UI design, section 6.7). A lost image is an error, so it says so in danger-ink with the
+ * error icon as well as in words; one being restored is neutral, with the retry icon.
+ */
 export function ImageFaultView({ fault }: { fault: ImageFault }) {
+  const lost = fault === "lost";
   return (
-    <View style={{ flex: 1 }} className="items-center justify-center bg-zinc-900 px-3 py-4">
-      <Text className={`text-center text-sm leading-5 ${fault === "lost" ? "text-red-300" : "text-zinc-300"}`}>{IMAGE_FAULT_WORDS[fault]}</Text>
+    <View style={{ flex: 1 }} className="items-center justify-center gap-2 bg-surface-2 px-3 py-4">
+      <Icon name={lost ? "error" : "retry"} size={20} tone={lost ? "danger" : "medium"} />
+      <Text variant="meta" tone={lost ? "danger" : "medium"} className="text-center">
+        {IMAGE_FAULT_WORDS[fault]}
+      </Text>
     </View>
   );
 }

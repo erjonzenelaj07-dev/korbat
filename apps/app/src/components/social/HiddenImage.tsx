@@ -1,5 +1,8 @@
-import { Text, View } from "react-native";
+import { View } from "react-native";
 import { isHiddenMedia, type HiddenMedia, type MediaView } from "@korbat/contracts";
+import { Icon } from "@/components/kit/Icon";
+import { Text } from "@/components/kit/Text";
+import { UI_WORDS } from "@/lib/ui-words";
 
 /** What stands in the place of an image korbat's moderation hid from this reader; it does not say why. */
 export const HIDDEN_IMAGE = "Image hidden by korbat moderation";
@@ -12,13 +15,17 @@ export function hiddenImageWords(item: HiddenMedia): string {
 }
 
 /**
- * The placeholder of a hidden image, filling the cell or the frame it is put in. A hidden image has no file to load, no
- * description and nothing to open, so this is words in a box: no picture, and no control.
+ * The placeholder of a hidden image, filling the cell or the frame it is put in (UI design, sections 4.8 and 6.7): the
+ * hidden icon and the sentence in ink-medium on surface-2, a neutral look rather than a status colour. A hidden image has
+ * no file to load, no description and nothing to open, so this is words in a box: no picture, and no control.
  */
 export function HiddenImage({ item }: { item: HiddenMedia }) {
   return (
-    <View style={{ flex: 1 }} className="items-center justify-center bg-zinc-900 px-3 py-4">
-      <Text className="text-center text-sm leading-5 text-zinc-400">{hiddenImageWords(item)}</Text>
+    <View style={{ flex: 1 }} className="items-center justify-center gap-2 bg-surface-2 px-3 py-4">
+      <Icon name="hidden" size={20} tone="medium" />
+      <Text variant="meta" tone="medium" className="text-center">
+        {hiddenImageWords(item)}
+      </Text>
     </View>
   );
 }
@@ -30,8 +37,11 @@ export function HiddenImage({ item }: { item: HiddenMedia }) {
  */
 export function HiddenThumbnail({ size }: { size: number }) {
   return (
-    <View aria-hidden className="items-center justify-center border border-zinc-800 bg-zinc-900" style={{ width: size, height: size, borderRadius: 6 }}>
-      <Text className="text-xs text-zinc-500">Hidden</Text>
+    <View aria-hidden className="items-center justify-center gap-0.5 rounded-media border border-line-low bg-surface-2" style={{ width: size, height: size }}>
+      <Icon name="hidden" size={16} tone="medium" />
+      <Text variant="chip" tone="medium">
+        {UI_WORDS["media.hidden"]}
+      </Text>
     </View>
   );
 }
@@ -44,5 +54,9 @@ export function HiddenThumbnail({ size }: { size: number }) {
 export function HiddenRowWords({ media }: { media: readonly (MediaView | HiddenMedia)[] }) {
   const hidden = media.filter(isHiddenMedia);
   if (hidden.length === 0) return null;
-  return <Text className="mt-1 text-xs leading-4 text-zinc-400">{hiddenImageWords(hidden.find((item) => item.sealed) ?? hidden[0]!)}</Text>;
+  return (
+    <Text variant="meta" tone="medium" className="mt-1">
+      {hiddenImageWords(hidden.find((item) => item.sealed) ?? hidden[0]!)}
+    </Text>
+  );
 }

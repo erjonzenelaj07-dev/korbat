@@ -1,240 +1,483 @@
-import { useEffect, useRef, useState, type Ref } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "react";
+import { Platform, Pressable, Text as Inline, View } from "react-native";
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { Link, router } from "expo-router";
 import type { Author, PostView, QuotedPost, Tombstone } from "@korbat/contracts";
-import { VerifiedChip } from "@/components/ui";
+import { RefusedNotice } from "@/components/moderation/RefusedNotice";
+import { toast } from "@/components/toast";
+import { ErrorText, VerifiedChip } from "@/components/ui";
+import { Avatar } from "@/components/kit/Avatar";
+import { Icon } from "@/components/kit/Icon";
+import { IconButton, type IconButtonFeedback } from "@/components/kit/IconButton";
+import { FOCUS_RING, pressDelay } from "@/components/kit/interaction";
+import { Menu, type MenuItem } from "@/components/kit/Menu";
+import { StatusChip, type StatusTone } from "@/components/kit/StatusChip";
+import { Text } from "@/components/kit/Text";
+import { VISUALLY_HIDDEN, VisuallyHidden } from "@/components/kit/VisuallyHidden";
 import { errorMessage } from "@/lib/api";
-import { chipText, reportHref } from "@/lib/moderation";
-import { CHIP_WORDS, REPORT_WORDS } from "@/lib/moderation-words";
+import { useAppearance } from "@/lib/appearance";
+import { useHaptics } from "@/lib/haptics";
+import { chipText } from "@/lib/moderation";
+import { CHIP_WORDS } from "@/lib/moderation-words";
+import { useMotion } from "@/lib/motion";
+import { countLabel, deleteWithLeave, failedWords, shownCount, threadStats, toggleEngagement, type ToggleKind } from "@/lib/post-actions";
 import { useSession } from "@/lib/session";
 import { isSuspendedRefusal } from "@/lib/standing";
-import { RefusedNotice } from "@/components/moderation/RefusedNotice";
-import { social, timeAgo, type EngagementKind } from "@/lib/social";
+import { lanes, laneKey, social } from "@/lib/social";
+import { fullDate, postedWhen, timeAgo } from "@/lib/time";
+import { UI_WORDS, fill } from "@/lib/ui-words";
+import { cn } from "@/theme/cn";
+import { useLayout } from "@/theme/layout";
 import { MediaGrid } from "./MediaGrid";
+import { PostMenu } from "./PostMenu";
 import { RichText } from "./RichText";
 
-function AuthorLine({ author, createdAt }: { author: Author; createdAt: string }) {
+/**
+ * A link inside a line of text (the author line, the repost line, the reply context): inline, so a phone holds it to
+ * WCAG 2.5.8's 24 px rather than a control's 44, and padded to reach it, which does not move the line.
+ */
+const INLINE_LINK = cn("rounded-sm py-1.5 web:hover:underline", FOCUS_RING);
+
+/**
+ * Who wrote the post and when (UI design, section 6.6): the display name in body-strong as the link to the profile, the
+ * verified chip, the handle in the mono face, and the time as the post's one link. The time shows its short form ("3h"),
+ * hidden from the link's name, which says it inside postedWhen's words ("3h ago, open the post"), so the name contains
+ * the visible label. The thread's focused post shows the full date instead.
+ */
+function AuthorLine({ author, createdAt, postId, large = false }: { author: Author; createdAt: string; postId: string; large?: boolean }) {
+  const shown = large ? fullDate(createdAt) : timeAgo(createdAt);
+  const when = large ? fill(UI_WORDS["time.posted.on"], { date: shown }) : postedWhen(createdAt);
   return (
-    <View className="flex-row flex-wrap items-baseline gap-x-2">
-      <Link href={`/u/${author.handle}`} asChild>
-        <Pressable>
-          <Text className="text-base font-semibold text-zinc-50">{author.displayName}</Text>
-        </Pressable>
-      </Link>
+    <View className="flex-row flex-wrap items-center gap-x-1.5">
+      <Text variant="body-strong">
+        <Link href={`/u/${author.handle}`} asChild>
+          <Inline className={INLINE_LINK}>{author.displayName}</Inline>
+        </Link>
+      </Text>
       {author.verified ? <VerifiedChip /> : null}
-      <Text className="text-sm text-zinc-400">
-        @{author.handle} · {timeAgo(createdAt)}
+      <Text variant="mono" tone="low">
+        @{author.handle}
+      </Text>
+      <Text variant="meta" tone="low">
+        <Link href={`/post/${postId}`} asChild>
+          <Inline className={cn(INLINE_LINK, "px-1.5")}>
+            <Inline aria-hidden>{shown}</Inline>
+            <VisuallyHidden>{fill(UI_WORDS["post.open"], { when })}</VisuallyHidden>
+          </Inline>
+        </Link>
       </Text>
     </View>
   );
 }
 
-function TombstoneBox({ tombstone }: { tombstone: Tombstone }) {
+/** The repost line above a reposted post: the repost icon, and "Ben reposted" with Ben's name a link to his profile. */
+function RepostLine({ by }: { by: Author }) {
+  const [before, after] = UI_WORDS["post.reposted"].split("{displayName}");
   return (
-    <View className="mt-2 rounded-lg border border-zinc-800 px-3 py-2">
-      <Text className="text-sm italic text-zinc-400">{tombstone.deleted ? "This post was deleted by its author." : "This post is unavailable."}</Text>
+    <View className="mb-1 flex-row items-center gap-2 pl-6">
+      <Icon name="repost" size={16} tone="low" />
+      <Text variant="meta" tone="low" className="shrink">
+        {before}
+        <Link href={`/u/${by.handle}`} asChild>
+          <Inline className={cn(INLINE_LINK, "text-ink-medium")}>{by.displayName}</Inline>
+        </Link>
+        {after}
+      </Text>
     </View>
   );
 }
 
+/** A quoted post that is gone: its sentence in the text face's italic, on surface-2 (section 8.3). */
+function TombstoneBox({ tombstone }: { tombstone: Tombstone }) {
+  return (
+    <View className="mt-2 rounded-media bg-surface-2 px-3 py-2.5">
+      <Text tone="medium" italic>
+        {tombstone.deleted ? UI_WORDS["post.deleted"] : UI_WORDS["post.unavailable"]}
+      </Text>
+    </View>
+  );
+}
+
+/** What a press on a card's empty space must leave alone: its links and controls, which act for themselves. */
+const CONTROL = "a, button, input, textarea, select, [role=button], [role=link], [role=dialog], [role=switch]";
+
+/**
+ * The open target of a card's body for pointers on the web (section 6.6): a click on the card that is not on one of its
+ * links or controls, and that does not end a text selection, opens `href`. A click from a menu or sheet the card opened
+ * reaches this handler through React's portal, but is not inside the card's own element, so it is left alone.
+ */
+function opensOnClick(open: () => void) {
+  return (event: MouseEvent & { currentTarget: Element; target: Element }) => {
+    const root = event.currentTarget;
+    if (!root.contains(event.target)) return;
+    const control = event.target.closest?.(CONTROL);
+    if (control && root.contains(control)) return;
+    const selection = typeof window !== "undefined" ? window.getSelection() : null;
+    if (selection && !selection.isCollapsed && selection.anchorNode && root.contains(selection.anchorNode)) return;
+    event.stopPropagation();
+    open();
+  };
+}
+
+/**
+ * A quoted post (section 6.6): a bordered region with its own author line, whose time is the link to the quoted post,
+ * so the quote has one open target too; its words are plain text, and its images open nothing, since they belong to the
+ * quoted post, where the grid and the viewer are. A press on its empty space opens the quoted post.
+ */
 export function QuoteEmbed({ quote }: { quote: QuotedPost | Tombstone }) {
   if (!("author" in quote)) return <TombstoneBox tombstone={quote} />;
-  return (
-    <Link href={`/post/${quote.id}`} asChild>
-      <Pressable className="mt-2 rounded-lg border border-zinc-800 px-3 py-2">
-        <AuthorLine author={quote.author} createdAt={quote.createdAt} />
-        {quote.body ? <RichText body={quote.body} className="mt-1 text-sm leading-5 text-zinc-300" /> : null}
-        <MediaGrid media={quote.media} compact postId={quote.id} />
+  const open = () => router.push(`/post/${quote.id}`);
+  const content = (
+    <>
+      <AuthorLine author={quote.author} createdAt={quote.createdAt} postId={quote.id} />
+      {quote.body ? <Text className="mt-0.5">{quote.body}</Text> : null}
+      <MediaGrid media={quote.media} compact postId={quote.id} />
+    </>
+  );
+  if (Platform.OS !== "web") {
+    return (
+      <Pressable accessible={false} {...pressDelay(80)} onPress={open} className="mt-2 rounded-media border border-line-low px-3 py-2.5 active:bg-surface-2">
+        {content}
       </Pressable>
-    </Link>
+    );
+  }
+  return (
+    <View {...({ onClick: opensOnClick(open) } as object)} className="mt-2 rounded-media border border-line-low px-3 py-2.5 web:cursor-pointer web:hover:bg-surface-2 web:transition-colors web:duration-[120ms]">
+      {content}
+    </View>
   );
 }
 
 /**
- * The chip on the author's own withheld or removed post (3c design, section 9). With the decision behind the state it
- * names the rule or says "illegal content", amber while korbat decides and red once removed, and links to the decision's
- * statement under Settings, Cases. A view without the decision's facts still says the state, and links nowhere.
+ * The chip on the author's own withheld or removed post (3c design, section 9; UI design, section 4.8). With the decision
+ * behind the state it names the rule or says "illegal content", in the review tone while korbat decides and the
+ * restricted tone once removed, and links to the decision's statement under Settings, Cases; Task 7 turns the link into
+ * the button that opens the details sheet. A view without the decision's facts still says the state, and links nowhere.
  */
 function StateChip({ post }: { post: PostView }) {
   if (post.state === "visible") return null;
   const decision = post.moderation;
-  const amber = decision ? decision.interim : post.state === "withheld";
-  const surface = `self-start rounded-full px-2 py-0.5 ${amber ? "bg-amber-500/15" : "bg-red-500/15"}`;
-  const words = <Text className={`text-xs font-medium ${amber ? "text-amber-300" : "text-red-300"}`}>{decision ? chipText(decision) : amber ? CHIP_WORDS.underReview : CHIP_WORDS.removed}</Text>;
-  if (!decision) return <View className={surface}>{words}</View>;
-  return (
-    <Link href={`/settings/cases/${decision.decisionId}`} asChild>
-      <Pressable className={surface}>{words}</Pressable>
-    </Link>
-  );
+  const tone: StatusTone = (decision ? decision.interim : post.state === "withheld") ? "review" : "restricted";
+  const words = decision ? chipText(decision) : tone === "review" ? CHIP_WORDS.underReview : CHIP_WORDS.removed;
+  return <StatusChip tone={tone} label={words} href={decision ? `/settings/cases/${decision.decisionId}` : undefined} />;
 }
 
 /**
- * The author's own post while it is in the current Explore ranking (2c design, section 8): a link to the post, whose
- * status line under it says more and leads to the switch.
+ * The delete question's two controls, as the card's actions were before the icons: a word in a 44 px target, Delete in
+ * the danger fill, Keep plain. While the request is out both are busy.
  */
-function ExploreChip({ id }: { id: string }) {
+function Action({ label, tone = "plain", busy, onPress, ref }: { label: string; tone?: "danger" | "plain"; busy?: boolean; onPress: () => void; ref?: Ref<View> }) {
   return (
-    <Link href={`/post/${id}`} asChild>
-      <Pressable className="self-start rounded-full bg-emerald-500/15 px-2 py-0.5">
-        <Text className="text-xs font-medium text-emerald-300">In Explore</Text>
-      </Pressable>
-    </Link>
-  );
-}
-
-/**
- * `active` colours the action. `pressed` tells a screen reader that a toggle is on, and is for
- * toggles whose label stays the same (Like, Repost); Save changes its label instead, which
- * already says so. While one action's request is in flight, every action waits.
- */
-function Action({
-  label,
-  count,
-  active,
-  pressed,
-  busy,
-  activeClass,
-  onPress,
-  ref,
-}: {
-  label: string;
-  count?: number;
-  active?: boolean;
-  pressed?: boolean;
-  busy?: boolean;
-  activeClass?: string;
-  onPress: () => void;
-  ref?: Ref<View>;
-}) {
-  return (
-    <Pressable ref={ref} accessibilityRole="button" aria-pressed={pressed} aria-busy={busy} disabled={busy} onPress={onPress} className="flex-row items-center gap-1 py-1 pr-4">
-      <Text className={`text-sm ${active ? activeClass : "text-zinc-400"}`}>{label}</Text>
-      {count !== undefined && count > 0 ? <Text className={`text-sm ${active ? activeClass : "text-zinc-400"}`}>{count}</Text> : null}
+    <Pressable
+      ref={ref}
+      accessibilityRole="button"
+      aria-busy={busy}
+      disabled={busy}
+      onPress={onPress}
+      {...pressDelay(0)}
+      className={cn(
+        "min-h-[44px] items-center justify-center rounded-control border px-4",
+        tone === "danger" ? "border-danger bg-danger web:hover:bg-danger/90" : "border-line-high bg-surface-1 web:hover:bg-surface-2",
+        FOCUS_RING,
+      )}
+    >
+      <Text variant="body-strong" tone={tone === "danger" ? "on-danger" : "high"}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
 
 /**
- * One post in any list. Actions update the card from the server's answer, so counts never drift
- * from the truth. A signed-out reader is sent to sign in on the first action.
+ * "Delete this post?" in place of the action row (section 6.6), with Delete and Keep. Keep, the safe answer, takes the
+ * focus when the question shows; the card gives it back to More when the question is withdrawn.
  */
-export function PostCard({ post: initial, repostedBy, onDeleted }: { post: PostView; repostedBy?: Author; onDeleted?: (id: string) => void }) {
+export function DeleteQuestion({ postId, busy, onDelete, onKeep, keepRef }: { postId: string; busy: boolean; onDelete: () => void; onKeep: () => void; keepRef?: Ref<View> }) {
+  return (
+    <View role="dialog" aria-labelledby={`delete-${postId}`} className="mt-2 flex-row flex-wrap items-center gap-2 rounded-card border border-line-high bg-surface-1 px-3 py-2 web:forced-colors:border-[color:CanvasText]">
+      <Text nativeID={`delete-${postId}`} variant="body-strong" className="mr-auto">
+        {UI_WORDS["post.deleteQuestion"]}
+      </Text>
+      <Action label={UI_WORDS["post.delete"]} tone="danger" busy={busy} onPress={onDelete} />
+      <Action ref={keepRef} label="Keep" busy={busy} onPress={onKeep} />
+    </View>
+  );
+}
+
+/**
+ * The Repost menu's items (decision 12): Repost, or Undo repost once reposted, and Quote, a real link to the post's
+ * quote composer as today (`?quote=1`), or to sign in for a reader who is signed out.
+ */
+export function repostMenuItems(post: PostView, signedIn: boolean, onRepost: () => void): MenuItem[] {
+  return [
+    { label: post.viewer?.reposted ? UI_WORDS["post.unrepost"] : UI_WORDS["post.repost"], icon: "repost", onSelect: onRepost },
+    { label: UI_WORDS["post.quote"], icon: "quote", href: signedIn ? `/post/${post.id}?quote=1` : "/signin" },
+  ];
+}
+
+const NO_VIEWER = { liked: false, reposted: false, bookmarked: false };
+
+/** How long an action's request may be out before its control says it is busy (section 5.2, pending). */
+const PENDING_MS = 400;
+
+/**
+ * One post in any list (UI design, section 6.6): an article named by its author line, with one explicit link to the post
+ * in its time, and for pointers the whole card body as the open target. Reply, Repost (a menu: Repost or Undo repost, and
+ * Quote), Like and Save act at once: the state, the icon and the count change on the press, with its haptic and its
+ * motion, the request goes out in its kind's lane, and the server's answer replaces the counts, so they never drift; a
+ * refusal puts the old state back, nudges the control and says so in a toast, and a write refused for a suspension shows
+ * the standing's sentence under the card (3e, 9.4). A signed-out reader is sent to sign in on the first action. More
+ * holds Who sees this, Copy link, Delete for the author and Report for everyone else.
+ *
+ * Below 768 px the images and the quoted post span the card's inner width, from the avatar's edge to the gutter; wider
+ * they keep the content column's indent. `large` is the thread's focused post: its words at 19 / 28, the full date and
+ * time, and the stats line above the actions (post/[id].tsx passes it in Task 5).
+ */
+export function PostCard({ post: initial, repostedBy, onDeleted, large = false }: { post: PostView; repostedBy?: Author; onDeleted?: (id: string) => void; large?: boolean }) {
   const { state } = useSession();
   const me = state.status === "signed-in" ? state.me.user.id : null;
+  const { hideCounts } = useAppearance();
+  const phone = useLayout() === "phone";
+  const motion = useMotion();
+  const haptic = useHaptics();
+  const labelId = useId();
   const [post, setPost] = useState(initial);
   const [error, setError] = useState<string | null>(null);
   // 3e (design, section 9.4): an action refused account_suspended shows the refusal's sentence from /me, read again after it.
   const [refused, setRefused] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<Partial<Record<ToggleKind | "delete", boolean>>>({});
+  const [feedback, setFeedback] = useState<Partial<Record<ToggleKind, IconButtonFeedback>>>({});
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [washed, setWashed] = useState(false);
   useEffect(() => setPost(initial), [initial]);
-  const deleteRef = useRef<View>(null);
+  const moreRef = useRef<View>(null);
   const keepRef = useRef<View>(null);
   const wasConfirming = useRef(false);
-  // The Delete control leaves the tree while the question shows, so a keyboard user would drop to the page
-  // body: the safe answer takes the focus, and Delete takes it back when the question is withdrawn.
+  // The action row, More with it, leaves the tree while the question shows, so a keyboard user would drop to the page
+  // body: the safe answer takes the focus, and More takes it back when the question is withdrawn.
   useEffect(() => {
     if (confirmingDelete) keepRef.current?.focus();
-    else if (wasConfirming.current) deleteRef.current?.focus();
+    else if (wasConfirming.current) moreRef.current?.focus();
     wasConfirming.current = confirmingDelete;
   }, [confirmingDelete]);
 
-  /** Runs one request at a time: a second tap while one is in flight does nothing, so a double tap cannot undo itself. */
-  async function request(action: () => Promise<void>) {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await action();
-      setError(null);
-      setRefused(false);
-    } catch (err) {
-      setRefused(isSuspendedRefusal(err));
-      setError(isSuspendedRefusal(err) ? null : errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const own = post.author.id === me;
+  const viewer = post.viewer ?? NO_VIEWER;
+  const openPost = () => router.push(`/post/${post.id}`);
 
-  function toggle(kind: EngagementKind) {
+  /** Marks a kind busy if its request is still out after 400 ms, and returns the function that ends it. */
+  const pending = (kind: ToggleKind | "delete") => {
+    const timer = setTimeout(() => setBusy((current) => ({ ...current, [kind]: true })), PENDING_MS);
+    return () => {
+      clearTimeout(timer);
+      setBusy((current) => ({ ...current, [kind]: false }));
+    };
+  };
+  const play = (kind: ToggleKind, next: Omit<IconButtonFeedback, "at">) => setFeedback((current) => ({ ...current, [kind]: { ...next, at: (current[kind]?.at ?? 0) + 1 } }));
+
+  function toggle(kind: ToggleKind) {
     if (!me) {
       router.push("/signin");
       return;
     }
-    const current = post.viewer ?? { liked: false, reposted: false, bookmarked: false };
-    const on = kind === "like" ? !current.liked : kind === "repost" ? !current.reposted : !current.bookmarked;
-    void request(async () => {
-      const result = await social.engage(post.id, kind, on);
-      setPost((current) => ({ ...current, counts: result.counts, viewer: result.viewer }));
+    // A second tap while this kind's request is out is not sent (lib/social.ts, lanes), and changes nothing on screen.
+    if (lanes.busy(laneKey.post(post.id, kind))) return;
+    const moves = kind !== "bookmark";
+    const done = pending(kind);
+    void toggleEngagement(social, lanes, post, kind, setPost, (on) => {
+      // Touch and sight on the same frame: the haptic before the state changes, the motion with it.
+      haptic(on ? "toggleOn" : "toggleOff");
+      play(kind, { turn: on ? "on" : "off", pop: kind === "like" ? "springLike" : "springToggle", count: moves ? (on ? 1 : -1) : 0 });
+    }).then((result) => {
+      done();
+      if (result.status === "busy") return;
+      if (result.status === "answered") {
+        setRefused(false);
+        // Saved: a polite toast says it worked, with the way to the saved posts; unsaving says nothing.
+        if (kind === "bookmark" && result.on) toast.show({ message: UI_WORDS["toast.saved"], action: { label: UI_WORDS["toast.view"], onPress: () => router.push("/bookmarks") } });
+        return;
+      }
+      const err = result.error;
+      haptic("error");
+      play(kind, { turn: "back", count: moves ? (result.on ? -1 : 1) : 0 });
+      // A suspension is said under the card in the standing's words; trying again would not help, so no toast says to.
+      if (isSuspendedRefusal(err)) setRefused(true);
+      else toast.show({ message: failedWords(kind, result.on), tone: "rollback" });
     });
   }
+
+  // The card fades (post-removed, 150 ms; at once under reduced motion) before its list lets it go.
+  const opacity = useSharedValue(1);
+  const leave = () =>
+    new Promise<void>((resolve) => {
+      if (motion.reduced) {
+        resolve();
+        return;
+      }
+      opacity.value = withTiming(0, motion.timing("easeOut", 150), (finished) => {
+        "worklet";
+        if (finished) runOnJS(resolve)();
+      });
+    });
+  const removedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
   function remove() {
-    void request(async () => {
-      await social.deletePost(post.id);
-      setConfirmingDelete(false);
-      onDeleted?.(post.id);
+    const done = pending("delete");
+    void deleteWithLeave(social, lanes, post.id, leave).then((result) => {
+      done();
+      if (result.status === "deleted") {
+        onDeleted?.(post.id);
+        return;
+      }
+      if (result.status === "refused") {
+        const err = result.error;
+        setRefused(isSuspendedRefusal(err));
+        setError(isSuspendedRefusal(err) ? null : errorMessage(err));
+      }
     });
   }
 
-  return (
-    <View className="border-b border-zinc-800 px-4 py-3">
-      {repostedBy ? <Text className="mb-1 text-xs text-zinc-400">↻ {repostedBy.displayName} reposted</Text> : null}
-      <AuthorLine author={post.author} createdAt={post.createdAt} />
-      {post.author.id === me ? <StateChip post={post} /> : null}
-      {/* The API sets inExplore only on the viewer's own posts; the check keeps the chip on them whatever a view carries. */}
-      {post.author.id === me && post.inExplore ? <ExploreChip id={post.id} /> : null}
-      {post.replyTo ? (
-        <Text className="text-xs text-zinc-400">
-          {post.replyTo.authorHandle ? "Replying to " : "Replying to a post you can't see"}
-          {post.replyTo.authorHandle ? (
-            <Link href={`/u/${post.replyTo.authorHandle}`} asChild>
-              <Text className="text-sky-400">@{post.replyTo.authorHandle}</Text>
-            </Link>
-          ) : null}
-        </Text>
-      ) : null}
-      {/* A post may consist of images only, and then there is no text to link. */}
-      {post.body ? (
-        <Link href={`/post/${post.id}`} asChild>
-          <Pressable className="mt-1">
-            <RichText body={post.body} />
+  // The press wash of the card's body (section 5.1): after 80 ms, gone again on 10 px of movement, so a scroll never flashes it.
+  const wash = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null);
+  const unwash = () => {
+    if (wash.current) clearTimeout(wash.current.timer);
+    wash.current = null;
+    setWashed(false);
+  };
+  const webPress =
+    Platform.OS === "web"
+      ? {
+          onClick: opensOnClick(openPost),
+          onPointerDown: (event: PointerEvent & { target: Element; currentTarget: Element }) => {
+            const control = event.target.closest?.(CONTROL);
+            if (control && event.currentTarget.contains(control)) return;
+            unwash();
+            wash.current = { timer: setTimeout(() => setWashed(true), 80), x: event.clientX, y: event.clientY };
+          },
+          onPointerMove: (event: PointerEvent) => {
+            if (wash.current && Math.hypot(event.clientX - wash.current.x, event.clientY - wash.current.y) > 10) unwash();
+          },
+          onPointerUp: unwash,
+          onPointerCancel: unwash,
+          onPointerLeave: unwash,
+        }
+      : {};
+
+  const media = <MediaGrid media={post.media} postId={post.id} own={post.author.id === me} />;
+  const quote = post.quoteOf ? <QuoteEmbed quote={post.quoteOf} /> : null;
+  const stats = large ? threadStats(post.counts, hideCounts) : "";
+  const when = postedWhen(post.createdAt);
+
+  const actions = (
+    // It wraps rather than cutting More off at the largest text on the narrowest phone.
+    <View className="-ml-2.5 mt-1 flex-row flex-wrap items-center">
+      <IconButton icon="reply" label={countLabel("reply", post.counts.replies, hideCounts)} count={shownCount("reply", post.counts.replies, hideCounts)} onPress={openPost} />
+      <Menu
+        label={countLabel("repost", post.counts.reposts, hideCounts)}
+        title={UI_WORDS["post.repost"]}
+        icon="repost"
+        items={repostMenuItems(post, me !== null, () => toggle("repost"))}
+        trigger={{ pressed: viewer.reposted, disc: viewer.reposted, tone: viewer.reposted ? "accent" : "low", count: shownCount("repost", post.counts.reposts, hideCounts), busy: busy.repost === true, feedback: feedback.repost }}
+      />
+      <IconButton
+        icon="like"
+        label={countLabel("like", post.counts.likes, hideCounts)}
+        count={shownCount("like", post.counts.likes, hideCounts)}
+        pressed={viewer.liked}
+        filled={viewer.liked}
+        busy={busy.like === true}
+        feedback={feedback.like}
+        onPress={() => toggle("like")}
+      />
+      <IconButton
+        icon="bookmarks"
+        label={viewer.bookmarked ? UI_WORDS["post.saved"] : UI_WORDS["post.save"]}
+        tone={viewer.bookmarked ? "accent" : "low"}
+        filled={viewer.bookmarked}
+        busy={busy.bookmark === true}
+        feedback={feedback.bookmark}
+        onPress={() => toggle("bookmark")}
+      />
+      <View className="flex-1" />
+      <PostMenu post={post} onDelete={() => setConfirmingDelete(true)} triggerRef={moreRef} />
+    </View>
+  );
+
+  const content: ReactNode = (
+    <>
+      {repostedBy ? <RepostLine by={repostedBy} /> : null}
+      <View className="flex-row gap-2">
+        {/* The avatar opens the profile too, but the name is the one keyboard and screen-reader target. */}
+        <Link href={`/u/${post.author.handle}`} asChild>
+          <Pressable tabIndex={-1} aria-hidden className="h-11 w-11 items-center justify-center rounded-full">
+            <Avatar account={post.author} size={40} />
           </Pressable>
         </Link>
-      ) : null}
-      <MediaGrid media={post.media} postId={post.id} own={post.author.id === me} />
-      {post.quoteOf ? <QuoteEmbed quote={post.quoteOf} /> : null}
-      <View className="mt-2 flex-row flex-wrap items-center">
-        <Action label="Reply" count={post.counts.replies} onPress={() => router.push(`/post/${post.id}`)} />
-        <Action label="Repost" count={post.counts.reposts} active={post.viewer?.reposted} pressed={post.viewer?.reposted} busy={busy} activeClass="text-emerald-400" onPress={() => toggle("repost")} />
-        <Action label="Quote" count={post.counts.quotes} onPress={() => (me ? router.push(`/post/${post.id}?quote=1`) : router.push("/signin"))} />
-        <Action label="Like" count={post.counts.likes} active={post.viewer?.liked} pressed={post.viewer?.liked} busy={busy} activeClass="text-rose-400" onPress={() => toggle("like")} />
-        <Action label={post.viewer?.bookmarked ? "Saved" : "Save"} active={post.viewer?.bookmarked} busy={busy} activeClass="text-sky-400" onPress={() => toggle("bookmark")} />
-        {post.author.id === me && !confirmingDelete ? <Action ref={deleteRef} label="Delete" busy={busy} onPress={() => setConfirmingDelete(true)} /> : null}
-        {/* Anyone but the author may report the post, signed in or out; the form is a page of its own, so this is a link. */}
-        {post.author.id !== me ? (
-          <Link href={reportHref({ post: post.id })} asChild>
-            <Pressable className="flex-row items-center gap-1 py-1 pr-4">
-              <Text className="text-sm text-zinc-400">{REPORT_WORDS.control}</Text>
-            </Pressable>
-          </Link>
-        ) : null}
-      </View>
-      {confirmingDelete ? (
-        <View role="dialog" aria-labelledby={`delete-${post.id}`} className="mt-2 flex-row flex-wrap items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2">
-          <Text nativeID={`delete-${post.id}`} className="text-sm text-zinc-200">
-            Delete this post?
-          </Text>
-          <Action label="Delete" busy={busy} activeClass="text-red-400" active onPress={remove} />
-          <Action ref={keepRef} label="Keep" busy={busy} onPress={() => setConfirmingDelete(false)} />
+        <View className="min-w-0 flex-1">
+          <AuthorLine author={post.author} createdAt={post.createdAt} postId={post.id} large={large} />
+          {own && (post.state !== "visible" || post.inExplore) ? (
+            <View className="flex-row flex-wrap gap-x-2">
+              <StateChip post={post} />
+              {/* The API sets inExplore only on the viewer's own posts; the check keeps the chip on them whatever a view carries. */}
+              {post.inExplore ? <StatusChip tone="explore" label={UI_WORDS["post.inExplore"]} href={`/post/${post.id}`} /> : null}
+            </View>
+          ) : null}
+          {post.replyTo ? (
+            <Text variant="meta" tone="low">
+              {post.replyTo.authorHandle ? UI_WORDS["post.replyingTo"] : UI_WORDS["post.replyingHidden"]}
+              {post.replyTo.authorHandle ? (
+                <Link href={`/u/${post.replyTo.authorHandle}`} asChild>
+                  <Inline className={cn(INLINE_LINK, "text-accent-ink")}>@{post.replyTo.authorHandle}</Inline>
+                </Link>
+              ) : null}
+            </Text>
+          ) : null}
+          {/* A post may consist of images only, and then there is no text. */}
+          {post.body ? (
+            <View className="mt-1.5">
+              <RichText body={post.body} variant={large ? "post-large" : "post"} />
+            </View>
+          ) : null}
+          {phone ? null : media}
+          {phone ? null : quote}
         </View>
-      ) : null}
-      {error ? (
-        <Text accessibilityRole="alert" className="mt-1 text-xs text-red-400">
-          {error}
+      </View>
+      {phone ? media : null}
+      {phone ? quote : null}
+      {/* The stats, the actions and what they answer keep the content column's indent at every width. */}
+      <View className="pl-[52px]">
+        {stats ? (
+          <Text variant="meta" tone="medium" className="mt-3">
+            {stats}
+          </Text>
+        ) : null}
+        {confirmingDelete ? (
+          <DeleteQuestion postId={post.id} busy={busy.delete === true} onDelete={remove} onKeep={() => setConfirmingDelete(false)} keepRef={keepRef} />
+        ) : (
+          actions
+        )}
+        <ErrorText message={error} />
+        {refused ? <RefusedNotice standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
+      </View>
+    </>
+  );
+
+  return (
+    <Animated.View style={removedStyle}>
+      <View role="article" aria-labelledby={labelId} {...(webPress as object)} className={cn("border-b border-line-low px-4 py-3 web:transition-colors web:duration-[120ms]", washed ? "bg-surface-2" : "")}>
+        {/* The article's name, the author line as a screen reader should hear it; hidden, and named only through aria-labelledby. */}
+        <Text nativeID={labelId} aria-hidden style={VISUALLY_HIDDEN}>
+          {fill(UI_WORDS["post.label"], { name: post.author.displayName, handle: post.author.handle, when })}
         </Text>
-      ) : null}
-      {refused ? <RefusedNotice standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
-    </View>
+        {Platform.OS === "web" ? (
+          content
+        ) : (
+          // On native the body is one Pressable that the accessibility tree does not see: the time's link does its job there.
+          <Pressable accessible={false} {...pressDelay(80)} onPress={openPost} className="-mx-4 -my-3 px-4 py-3 active:bg-surface-2">
+            {content}
+          </Pressable>
+        )}
+      </View>
+    </Animated.View>
   );
 }

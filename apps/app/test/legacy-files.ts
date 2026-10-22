@@ -43,14 +43,7 @@ export const LEGACY_COLOUR_FILES: readonly string[] = [
   "components/social/Composer.tsx",
   "components/social/ComposerImages.tsx",
   "components/social/ExploreList.tsx",
-  "components/social/HiddenImage.tsx",
-  "components/social/ImageFault.tsx",
-  "components/social/MediaGrid.tsx",
-  "components/social/MediaViewer.tsx",
   "components/social/PagedList.tsx",
-  "components/social/PostCard.tsx",
-  "components/social/ProfileList.tsx",
-  "components/social/RichText.tsx",
 ];
 
 /**
@@ -88,11 +81,7 @@ export const LEGACY_TEXT_FILES: readonly string[] = [
   "components/social/Composer.tsx",
   "components/social/ComposerImages.tsx",
   "components/social/ExploreList.tsx",
-  "components/social/HiddenImage.tsx",
-  "components/social/MediaGrid.tsx",
-  "components/social/MediaViewer.tsx",
   "components/social/PagedList.tsx",
-  "components/social/PostCard.tsx",
 ];
 
 export const SRC = path.resolve(import.meta.dirname, "..", "src");

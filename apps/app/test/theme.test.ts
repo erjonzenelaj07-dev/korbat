@@ -91,13 +91,15 @@ describe("the fonts", () => {
 });
 
 describe("the type scale", () => {
-  test("the ten variants have section 4.3's faces, weights, sizes, line heights and tracking", () => {
+  test("the ten variants have section 4.3's faces, weights, sizes, line heights and tracking, and 6.6's large post text", () => {
     const table: Record<TextVariant, [string, number, number, number, number]> = {
       "display-1": ["display", 600, 34, 40, -0.02],
       "display-2": ["display", 600, 28, 34, -0.015],
       "display-3": ["display", 600, 22, 28, -0.01],
       title: ["text", 700, 18, 24, 0],
       post: ["text", 400, 17, 26, 0],
+      // The thread's focused post (6.6): the post's face at 19 / 28.
+      "post-large": ["text", 400, 19, 28, 0],
       body: ["text", 400, 15, 22, 0],
       "body-strong": ["text", 700, 15, 22, 0],
       meta: ["text", 400, 13, 18, 0.005],

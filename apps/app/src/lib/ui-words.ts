@@ -73,6 +73,92 @@ export const UI_WORDS = {
   "followers.empty": "No followers yet.",
   "following.title": "Following",
   "following.empty": "Not following anyone yet.",
+  /**
+   * The post card (6.6, 8.1, section 10). post.label is the article's name, "Ada, @ada, 3h ago"; post.open is the time
+   * link's, whose `when` comes from postedWhen() and always contains the visible short time. The action names leave the
+   * number out at zero and when the reader hides counts (decision 15): then they are the `.none` words.
+   */
+  "post.label": "{name}, @{handle}, {when}",
+  "post.open": "{when}, open the post",
+  "post.reposted": "{displayName} reposted",
+  "post.more": "More options for this post",
+  "post.repost": "Repost",
+  "post.unrepost": "Undo repost",
+  "post.quote": "Quote",
+  "post.whoSees": "Who sees this",
+  "post.copyLink": "Copy link",
+  "post.delete": "Delete",
+  "post.reply": "Reply, {n} replies",
+  "post.reply.one": "Reply, 1 reply",
+  "post.reply.none": "Reply",
+  "post.like": "Like, {n} likes",
+  "post.like.one": "Like, 1 like",
+  "post.like.none": "Like",
+  "post.reposts": "Repost, {n} reposts",
+  "post.reposts.one": "Repost, 1 repost",
+  "post.reposts.none": "Repost",
+  "post.save": "Save",
+  "post.saved": "Saved",
+  /** The delete question (6.6), word for word as PostCard.tsx had it. */
+  "post.deleteQuestion": "Delete this post?",
+  /** The reply context and the quoted post's tombstones, word for word as PostCard.tsx had them. */
+  "post.replyingTo": "Replying to ",
+  "post.replyingHidden": "Replying to a post you can't see",
+  "post.deleted": "This post was deleted by its author.",
+  "post.unavailable": "This post is unavailable.",
+  "post.inExplore": "In Explore",
+  /** The thread's focused post (8.3): each part left out when zero or hidden, joined by a comma. */
+  "thread.stats.reposts": "{n} reposts",
+  "thread.stats.reposts.one": "1 repost",
+  "thread.stats.quotes": "{n} quotes",
+  "thread.stats.quotes.one": "1 quote",
+  "thread.stats.likes": "{n} likes",
+  "thread.stats.likes.one": "1 like",
+  /**
+   * Who sees this (6.14), the sentences reach() in lib/reach.ts puts together, word for word as the design reviewed them;
+   * the summary is the one line under the menu item.
+   */
+  "reach.public": "Public. Anyone can read it, including people who are not signed in.",
+  "reach.blocked": "Accounts you blocked do not see it in their feeds, but anyone signed out can still read it.",
+  "reach.feeds": "It shows in Latest and in your followers' Following, in time order.",
+  "reach.inExplore": "Also in Explore.",
+  "reach.exploreOff": "Not in Explore: you turned Explore off.",
+  "reach.suspended": "Not in Explore while your account is suspended.",
+  "reach.reply": "Public. Shown in the thread and on your Replies tab.",
+  "reach.replyExplore": "Replies never enter Explore.",
+  "reach.quoteExplore": "Quotes never enter Explore.",
+  "reach.private": "Only you and korbat's moderators can see it.",
+  "reach.order": "Removed for everyone else by an authority's order.",
+  "reach.decision": "Read the decision",
+  "reach.never": "korbat never lowers a post's reach in secret. Following and Latest are in time order.",
+  "reach.how": "How Explore works",
+  "reach.summary.public": "Public, signed in or not",
+  "reach.summary.private": "Only you and korbat's moderators",
+  /** A post's images and the lightbox (6.7), word for word as MediaGrid.tsx, HiddenImage.tsx and MediaViewer.tsx had them. */
+  "media.open": "Open image: {alt}",
+  "media.showAlt": "Show image descriptions",
+  "media.hideAlt": "Hide image descriptions",
+  "media.alt": "ALT",
+  "media.hidden": "Hidden",
+  "media.close": "Close the image viewer",
+  "media.previous": "Previous image",
+  "media.next": "Next image",
+  "media.count": "{n} of {total}",
+  /** Toasts (5.4, 8.6); toast.sent.* comes with the composer in Task 6. */
+  "toast.view": "View",
+  "toast.linkCopied": "Link copied",
+  "toast.saved": "Saved to Bookmarks",
+  "toast.failed.like": "Couldn't like this post. Try again.",
+  "toast.failed.unlike": "Couldn't remove your like. Try again.",
+  "toast.failed.repost": "Couldn't repost this post. Try again.",
+  "toast.failed.unrepost": "Couldn't undo the repost. Try again.",
+  "toast.failed.save": "Couldn't save this post. Try again.",
+  "toast.failed.unsave": "Couldn't remove this post from Bookmarks. Try again.",
+  "toast.failed.follow": "Couldn't follow @{handle}. Try again.",
+  "toast.failed.unfollow": "Couldn't unfollow @{handle}. Try again.",
+  /** FollowButton (8.4), word for word as ProfileList.tsx had them. */
+  "follow.follow": "Follow",
+  "follow.following": "Following",
 } as const;
 
 export type UiWord = keyof typeof UI_WORDS;

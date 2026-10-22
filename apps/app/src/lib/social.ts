@@ -89,5 +89,45 @@ export const social = {
   setShowInExplore: (on: boolean) => api("/api/me/explore", { method: on ? "POST" : "DELETE", schema: ExploreSettingResponse }),
 };
 
+/**
+ * Request lanes (UI design, section 6.6): each toggle of each post, and each account's follow, has a lane of its own,
+ * keyed by the post or the handle and the kind. Kinds run side by side, so a like and a save can be in flight together;
+ * a second tap of a kind whose request is still out is not sent at all, so a double tap cannot undo itself, and the card
+ * leaves its state as the first tap set it. A lane answers what became of its request instead of throwing, so the caller
+ * decides how to roll back.
+ */
+export type LaneOutcome<T> = { status: "busy" } | { status: "answered"; answer: T } | { status: "refused"; error: unknown };
+
+export interface Lanes {
+  busy(key: string): boolean;
+  run<T>(key: string, request: () => Promise<T>): Promise<LaneOutcome<T>>;
+}
+
+export function createLanes(): Lanes {
+  const out = new Set<string>();
+  return {
+    busy: (key) => out.has(key),
+    async run<T>(key: string, request: () => Promise<T>): Promise<LaneOutcome<T>> {
+      if (out.has(key)) return { status: "busy" };
+      out.add(key);
+      try {
+        return { status: "answered", answer: await request() };
+      } catch (error) {
+        return { status: "refused", error };
+      } finally {
+        out.delete(key);
+      }
+    },
+  };
+}
+
+/** The app's one set of lanes, which every card and follow button shares: a post shown twice still has one like lane. */
+export const lanes = createLanes();
+
+export const laneKey = {
+  post: (id: string, kind: EngagementKind | "delete") => `post:${id}:${kind}`,
+  follow: (handle: string) => `follow:${handle.replace(/^@/, "").toLowerCase()}`,
+};
+
 /** timeAgo lives in lib/time.ts with korbat's other times (UI design, section 8.1); its callers keep importing it from here. */
 export { timeAgo } from "./time";

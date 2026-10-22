@@ -9,7 +9,7 @@ import type { ColorToken } from "@/theme/tokens";
  * comes from the variant named here, scaled by the reader's text step and drawn in the reader's font choice. Screens
  * never write size or weight classes; test/theme.test.ts refuses them outside this file once Task 8 ends.
  */
-export type TextVariant = "display-1" | "display-2" | "display-3" | "title" | "post" | "body" | "body-strong" | "meta" | "chip" | "mono";
+export type TextVariant = "display-1" | "display-2" | "display-3" | "title" | "post" | "post-large" | "body" | "body-strong" | "meta" | "chip" | "mono";
 
 export type TextStep = Appearance["textStep"];
 
@@ -28,7 +28,7 @@ interface VariantSpec {
 }
 
 /**
- * The ten variants. Fraunces (the display face) is used at 22 px and up only, where its optical size reads as meant;
+ * The ten variants of section 4.3, and post-large, the thread's focused post at 19 / 28 (section 6.6). Fraunces (the display face) is used at 22 px and up only, where its optical size reads as meant;
  * below that, emphasis comes from weight. Prose is set loose (1.53 for posts), display tight.
  */
 export const VARIANTS: Record<TextVariant, VariantSpec> = {
@@ -37,6 +37,7 @@ export const VARIANTS: Record<TextVariant, VariantSpec> = {
   "display-3": { face: "display", weight: 600, size: 22, line: 28, tracking: -0.01 },
   title: { face: "text", weight: 700, size: 18, line: 24, tracking: 0 },
   post: { face: "text", weight: 400, size: 17, line: 26, tracking: 0 },
+  "post-large": { face: "text", weight: 400, size: 19, line: 28, tracking: 0 },
   body: { face: "text", weight: 400, size: 15, line: 22, tracking: 0 },
   "body-strong": { face: "text", weight: 700, size: 15, line: 22, tracking: 0 },
   meta: { face: "text", weight: 400, size: 13, line: 18, tracking: 0.005 },
@@ -179,7 +180,7 @@ export const TONE_CLASS: Record<Tone, string> = {
  * How far the operating system's text size may grow a variant on native: chrome (chips) at most 1.5 times, post
  * bodies without a cap (0), everything else twice. The web has the browser's own setting, which rem follows.
  */
-const MAX_SCALE: Partial<Record<TextVariant, number>> = { chip: 1.5, post: 0 };
+const MAX_SCALE: Partial<Record<TextVariant, number>> = { chip: 1.5, post: 0, "post-large": 0 };
 
 export interface TextProps extends NativeTextProps {
   variant?: TextVariant;

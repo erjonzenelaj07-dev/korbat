@@ -475,3 +475,126 @@ describe("test/setup.ts", () => {
     expect(importedNames("expo-haptics").length).toBeGreaterThan(0);
   });
 });
+
+// UI Task 4 appends below, so the lines above keep the numbers other tasks cite.
+import { Text as KitText } from "../src/components/kit/Text";
+import { Menu, MenuPanel, menuIndex, placeMenu, type MenuItem } from "../src/components/kit/Menu";
+import { SheetFrame } from "../src/components/kit/Sheet";
+
+/** The source of a kit file, for what a static render cannot show (a press, a key, a Modal's props). */
+const kitSource = (file: string): string => readFileSync(path.join(SRC, "components", "kit", file), "utf8");
+
+describe("Sheet (6.8)", () => {
+  const frame = (layout: "phone" | "wide") =>
+    html(
+      <SheetFrame titleId="sheet-title" title="Who sees this" description="Who can read this post" layout={layout} onClose={noop}>
+        <KitText>What the sheet holds</KitText>
+      </SheetFrame>,
+    );
+
+  test("drawn open, its title is the heading the dialog is named by, with the description and the content under it", () => {
+    const out = frame("phone");
+    expect(out).toMatch(/<h2 [^>]*id="sheet-title"/);
+    expect(textOf(out)).toBe("Who sees this Who can read this post What the sheet holds");
+    // react-native-web's Modal is the dialog (role="dialog", aria-modal) and renders nothing on a server: the Sheet hands
+    // it the title's id, and the frame is what it holds.
+    const sheet = kitSource("Sheet.tsx");
+    expect(sheet).toMatch(/<Modal visible=\{shown\} transparent animationType="none" onRequestClose=\{[^}]+\} onDismiss=\{[^}]+\} aria-labelledby=\{titleId\}>/);
+    expect(sheet).toContain("titleId={titleId}");
+  });
+
+  test("the scrim closes the sheet but is no tab stop and hidden from assistive technology, and comes after the panel", () => {
+    const out = frame("phone");
+    const scrim = tagWith(out, "data-scrim");
+    expect(scrim).toContain('aria-hidden="true"');
+    expect(scrim).not.toContain("tabindex");
+    expect(scrim).not.toContain('role="button"');
+    // react-native-web's focus trap gives the focus to the first focusable element it meets: the panel's, never the scrim.
+    expect(out.indexOf("data-scrim")).toBeGreaterThan(out.indexOf('id="sheet-title"'));
+  });
+
+  test("below 768 px a bottom sheet with a grab handle; wider a centred dialog without one", () => {
+    expect(frame("phone")).toContain("data-handle");
+    expect(frame("wide")).not.toContain("data-handle");
+    expect(tagWith(frame("phone"), "data-handle")).toContain('aria-hidden="true"');
+  });
+
+  test("Escape, the scrim and a release past the threshold close it; focus goes in on opening and back to the opener", () => {
+    const sheet = kitSource("Sheet.tsx");
+    // Escape reaches the Modal's onRequestClose; the scrim's press and the drag's release call the same close.
+    expect(sheet).toContain("onRequestClose={dismiss}");
+    expect(sheet).toContain('haptic("threshold")');
+    expect(sheet).toContain("focusTitle");
+  });
+});
+
+describe("Menu (6.9)", () => {
+  const items: MenuItem[] = [
+    { label: "Who sees this", icon: "who-sees", description: "Public", onSelect: noop },
+    { label: "Delete", icon: "delete", tone: "danger", onSelect: noop },
+    { label: "Report", icon: "report", href: "/report?post=1" },
+  ];
+
+  test("the trigger is a disclosure: an icon button named by its label that says it opens a menu, and whether it is open", () => {
+    const out = html(<Menu label="More options for this post" icon="more" items={items} />);
+    const tag = tagWith(out, 'role="button"');
+    expect(tag).toContain('aria-label="More options for this post"');
+    expect(tag).toContain('aria-haspopup="menu"');
+    expect(tag).toContain('aria-expanded="false"');
+  });
+
+  test("open on a phone it is a sheet titled by the trigger's label; its items are buttons and real links", () => {
+    const out = html(<MenuPanel label="More options for this post" items={items} layout="phone" onPick={noop} />);
+    expect(/<h2[^>]*>(.*?)<\/h2>/.exec(out)?.[1]).toBe("More options for this post");
+    expect(buttons(out)).toEqual(["Who sees this", "Delete"]);
+    // Who sees this carries its one line under its label.
+    expect(textOf(out)).toContain("Who sees this Public");
+    expect(hrefs(out)).toEqual(["/report?post=1"]);
+    expect(textOf(out)).toContain("Report");
+  });
+
+  test("open wider it is a popover of the same items, named by the trigger's label", () => {
+    const out = html(<MenuPanel label="More options for this post" items={items} layout="wide" onPick={noop} />);
+    expect(out).not.toContain("<h2");
+    expect(tagWith(out, "data-menu")).toContain('aria-label="More options for this post"');
+    expect(buttons(out)).toEqual(["Who sees this", "Delete"]);
+    expect(hrefs(out)).toEqual(["/report?post=1"]);
+  });
+
+  test("arrow keys move between the items and wrap; Home and End jump; other keys do nothing", () => {
+    expect(menuIndex(0, "ArrowDown", 3)).toBe(1);
+    expect(menuIndex(2, "ArrowDown", 3)).toBe(0);
+    expect(menuIndex(0, "ArrowUp", 3)).toBe(2);
+    expect(menuIndex(-1, "ArrowDown", 3)).toBe(0);
+    expect(menuIndex(1, "Home", 3)).toBe(0);
+    expect(menuIndex(1, "End", 3)).toBe(2);
+    expect(menuIndex(1, "Enter", 3)).toBeNull();
+  });
+
+  test("the popover sits under its trigger at its end, and flips to stay inside the window", () => {
+    const window_ = { width: 1280, height: 900 };
+    const panel = { width: 280, height: 200 };
+    // Under the trigger, its right edge at the trigger's: growing from the trigger's bottom-right corner.
+    expect(placeMenu({ x: 900, y: 100, width: 44, height: 44 }, panel, window_)).toEqual({ left: 664, top: 148, origin: "top right" });
+    // No room under it: above it, growing from its top.
+    expect(placeMenu({ x: 900, y: 800, width: 44, height: 44 }, panel, window_)).toEqual({ left: 664, top: 596, origin: "bottom right" });
+    // No room at its start: from its left edge instead.
+    expect(placeMenu({ x: 20, y: 100, width: 44, height: 44 }, panel, window_)).toEqual({ left: 20, top: 148, origin: "top left" });
+    // Never past the window's edges, with 8 px to spare.
+    const tight = placeMenu({ x: 100, y: 300, width: 44, height: 44 }, { width: 280, height: 880 }, { width: 300, height: 900 });
+    expect(tight.left).toBeGreaterThanOrEqual(8);
+    expect(tight.top).toBeGreaterThanOrEqual(8);
+  });
+
+  test("Escape and a press outside close it and give the focus back to the trigger", () => {
+    const menu = kitSource("Menu.tsx");
+    expect(menu).toContain("onRequestClose={close}");
+    expect(menu).toContain("trigger.current?.focus()");
+  });
+
+  test("tsc refuses a Menu item without a label", () => {
+    // @ts-expect-error label is required: it is the item's name.
+    const nameless: MenuItem = { icon: "delete", onSelect: noop };
+    expect(nameless.icon).toBe("delete");
+  });
+});

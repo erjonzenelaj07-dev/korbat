@@ -206,15 +206,15 @@ describe("what leads to the form", () => {
   });
   const me = (userId: string) => ({ status: "signed-in", me: { user: { id: userId, onboarded: true }, profile: { handle: "me" } } });
 
-  test("a post that is not the reader's own has Report in its action row, signed in or out; the reader's own has none", () => {
+  test("a post that is not the reader's own has Report in its More menu, drawn open, signed in or out; the reader's own has none", () => {
     for (const state of [{ status: "signed-out" }, me(id(901))]) {
       session.state = state;
-      const out = html(<PostCard post={post(1)} />);
+      const out = html(<PostMenuPanel post={post(1)} onDelete={() => undefined} onWhoSees={() => undefined} />);
       expect(hrefs(out)).toContain(`/report?post=${id(1)}`);
       expect(textOf(out)).toContain("Report");
     }
     session.state = me(id(900));
-    const own = html(<PostCard post={post(1)} />);
+    const own = html(<PostMenuPanel post={post(1)} onDelete={() => undefined} onWhoSees={() => undefined} />) + html(<PostCard post={post(1)} />);
     expect(hrefs(own).filter((href) => href.startsWith("/report"))).toEqual([]);
     session.state = { status: "signed-out" };
   });
@@ -238,10 +238,10 @@ describe("what leads to the form", () => {
     const card = read("components", "social", "PostCard.tsx");
     expect(card).toContain("<MediaGrid media={post.media} postId={post.id} own={post.author.id === me} />");
     expect(card).toContain("<MediaGrid media={quote.media} compact postId={quote.id} />");
-    // The quote is one link to the quoted post, where the grid and the viewer are: its squares open nothing themselves.
+    // The quote's author line: its name to the profile, then its time to the quoted post; its squares open nothing themselves.
     const quoted = { ...post(2, { media: [image(21)] }), quoteOf: null };
     const out = html(<QuoteEmbed quote={quoted} />);
-    expect(hrefs(out)).toEqual([`/post/${id(2)}`, "/u/ada"]);
+    expect(hrefs(out)).toEqual(["/u/ada", `/post/${id(2)}`]);
     expect(html(<MediaGrid media={[image(1)]} postId={id(5)} />)).not.toContain("/report");
   });
 
@@ -589,3 +589,6 @@ describe("the build's contact address", () => {
     expect(dockerfile.indexOf("is a placeholder address")).toBeLessThan(dockerfile.indexOf("npx expo export"));
   });
 });
+
+// UI Task 4: Report moved into the post card's More menu (UI design, decision 12); imported here, below, so the lines above keep their numbers.
+import { PostMenuPanel } from "../src/components/social/PostMenu";

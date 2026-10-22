@@ -98,7 +98,7 @@ export function Field({ label, ref, style, ...input }: { label: string; ref?: Re
  * one, the danger fill for a destructive one, and surface-2 with ink-low while it cannot be used, still readable because
  * its label may carry the reason ("Describe every image"). Each face sets its colours once, so no two classes fight.
  */
-const buttonFace = cva(cn("flex-row items-center justify-center gap-2 rounded-control border px-4 web:transition-colors web:duration-[120ms] web:ease-[ease]", FOCUS_RING), {
+export const buttonFace = cva(cn("flex-row items-center justify-center gap-2 rounded-control border px-4 web:transition-colors web:duration-[120ms] web:ease-[ease]", FOCUS_RING), {
   variants: {
     face: {
       primary: "border-accent bg-accent web:hover:bg-accent/90",
@@ -110,9 +110,10 @@ const buttonFace = cva(cn("flex-row items-center justify-center gap-2 rounded-co
   },
 });
 
-type ButtonFace = "primary" | "secondary" | "danger" | "inactive";
+export type ButtonFace = "primary" | "secondary" | "danger" | "inactive";
 
-const LABEL_TONE: Record<ButtonFace, Tone> = { primary: "on-accent", secondary: "high", danger: "on-danger", inactive: "low" };
+/** The label's tone on each face: on-accent on the accent, on-danger on the danger fill, ink-low on an inactive one. */
+export const LABEL_TONE: Record<ButtonFace, Tone> = { primary: "on-accent", secondary: "high", danger: "on-danger", inactive: "low" };
 
 /**
  * A button, full width by default as inside a form. `ref` reaches the pressable itself, whose focus() moves the

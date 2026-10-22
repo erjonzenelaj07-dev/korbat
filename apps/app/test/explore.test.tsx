@@ -851,9 +851,9 @@ describe("the terms", () => {
 describe("no screen caches or stores Explore's answers", () => {
   test("the files that ask for Explore keep its answers in component state only: no browser storage, no cache, no module-level variable", () => {
     const callers = sourceFiles().filter((file) => /social\s*\.(explore|popular|exploreStatus)\b/.test(file.text));
-    expect(callers.map((file) => file.name).sort()).toEqual(["app/post/[id].tsx", "components/social/ExploreList.tsx"]);
+    expect(callers.map((file) => file.name).sort()).toEqual(["app/post/[id].tsx", "components/social/ExploreList.tsx", "components/social/WhoSeesThis.tsx"]);
     const explore = sourceFiles().filter((file) => [...callers.map((caller) => caller.name), "lib/explore.ts", "app/explore/about.tsx"].includes(file.name));
-    expect(explore).toHaveLength(4);
+    expect(explore).toHaveLength(5);
     for (const file of explore) {
       expect(file.text, file.name).not.toMatch(/localStorage|sessionStorage|indexedDB|AsyncStorage|caches\./);
       expect(file.text, file.name).not.toMatch(/^(export )?(let|var) /m);

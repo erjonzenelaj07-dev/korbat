@@ -141,7 +141,7 @@ describe("a post's images", () => {
     // own words and before the card's actions.
     expect(count(out, HIDDEN_IMAGE)).toBe(1);
     expect(text.indexOf(HIDDEN_IMAGE)).toBeGreaterThan(text.indexOf("post number 2"));
-    expect(text.indexOf(HIDDEN_IMAGE)).toBeLessThan(text.indexOf("Reply"));
+    expect(out.indexOf(HIDDEN_IMAGE)).toBeLessThan(out.indexOf('aria-label="Reply'));
     expect(loaded(out)).toHaveLength(2);
   });
 });

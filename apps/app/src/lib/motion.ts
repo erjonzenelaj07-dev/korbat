@@ -26,10 +26,36 @@ export type SpringName = "springSnap" | "springRelease";
 /** easeOut and easeInOut take the duration the animation's row of section 5.2 gives; the others have their own. */
 export type TimingName = "easeOut" | "easeInOut" | "pressIn" | "pressOut" | "fade";
 
+/**
+ * The pops of a toggle the reader turns on (section 5.2's like, repost and save rows), released from the pressed scale
+ * 0.92 with an initial velocity in scale units per second: Like underdamped to a peak near 1.15, Repost and Save a little
+ * firmer, near 1.12. `response` is the undamped period in seconds, as Apple's springs give it. They sit here rather than
+ * in theme/motion.ts, whose table is section 5.1's six values.
+ */
+export const POPS = {
+  springLike: { dampingRatio: 0.5, response: 0.22, velocity: 10 },
+  springToggle: { dampingRatio: 0.6, response: 0.25, velocity: 8 },
+} as const;
+
+export type PopName = keyof typeof POPS;
+
 export interface Motion {
   reduced: boolean;
-  spring(name: SpringName): WithSpringConfig;
+  /** `velocity` is a released gesture's, in the animated value's units per second (sheets, the lightbox). */
+  spring(name: SpringName, velocity?: number): WithSpringConfig;
   timing(name: TimingName, duration?: number): WithTimingConfig;
+  pop(name: PopName): WithSpringConfig;
+}
+
+/**
+ * A pop as a physical spring: Apple's damping ratio and response (the undamped period) turned into Reanimated's stiffness
+ * and damping for a mass of 1, with the pop's initial velocity, so Like peaks near 1.15 from 0.92 and settles in about
+ * 370 ms. Under reduced motion no component starts one (the toggle cross-fades instead); one started anyway lands at once.
+ */
+export function popSpring(name: PopName, reduced: boolean): WithSpringConfig {
+  const { dampingRatio, response, velocity } = POPS[name];
+  const omega = (2 * Math.PI) / response;
+  return { mass: 1, stiffness: omega * omega, damping: 2 * dampingRatio * omega, velocity, reduceMotion: reduced ? ReduceMotion.Always : ReduceMotion.Never };
 }
 
 const bezier = (points: readonly [number, number, number, number]) => Easing.bezier(points[0], points[1], points[2], points[3]);
@@ -52,8 +78,14 @@ export function useMotion(): Motion {
       reduced,
       // korbat chooses each reduced form itself, so Reanimated never skips a timing on its own; a spring is movement,
       // so under reduced motion one that a component starts anyway lands at once.
-      spring: (name) => ({ dampingRatio: MOTION[name].dampingRatio, duration: MOTION[name].duration, reduceMotion: reduced ? ReduceMotion.Always : ReduceMotion.Never }),
+      spring: (name, velocity) => ({
+        dampingRatio: MOTION[name].dampingRatio,
+        duration: MOTION[name].duration,
+        ...(velocity === undefined ? {} : { velocity }),
+        reduceMotion: reduced ? ReduceMotion.Always : ReduceMotion.Never,
+      }),
       timing: (name, duration) => ({ duration: duration ?? TIMINGS[name].duration, easing: bezier(TIMINGS[name].easing), reduceMotion: ReduceMotion.Never }),
+      pop: (name) => popSpring(name, reduced),
     }),
     [reduced],
   );
@@ -75,7 +107,8 @@ export function usePressScale(scale: number) {
   const onPressOut = useCallback(() => {
     value.value = withTiming(1, motion.timing("pressOut"));
   }, [motion, value]);
-  return { style, handlers: { onPressIn, onPressOut } };
+  // `value` is the scale itself, for a control whose release turns into a pop from where the press left it (section 5.2).
+  return { style, handlers: { onPressIn, onPressOut }, value };
 }
 
 /**
@@ -115,4 +148,24 @@ export function useSpin() {
     return () => cancelAnimation(turn);
   }, [motion, turn]);
   return useAnimatedStyle(() => ({ transform: [{ rotate: `${turn.value}deg` }] }));
+}
+
+/**
+ * The maths of a released drag (section 5.2, after Apple's fluid interfaces). Past its edge an element resists more the
+ * further it is pulled (rubber-banding: overshoot x size x 0.55 / (size + 0.55 x overshoot)); a release is judged by
+ * where its momentum would carry it, as a scroll decelerates (current + v/1000 x 0.998/0.002), not by where the finger
+ * let go, so a flick closes what a slow drag of the same length does not.
+ */
+export function rubberBand(overshoot: number, size: number, constant = 0.55): number {
+  if (size <= 0) return 0;
+  return (overshoot * size * constant) / (size + constant * Math.abs(overshoot));
+}
+
+export function projectedEnd(position: number, velocity: number, deceleration = 0.998): number {
+  return position + (velocity / 1000) * (deceleration / (1 - deceleration));
+}
+
+/** A sheet's release closes it when its projected end passes half its height, or it moves down faster than 200 px/s. */
+export function releaseCloses(position: number, velocity: number, height: number): boolean {
+  return projectedEnd(position, velocity) > height / 2 || velocity > 200;
 }

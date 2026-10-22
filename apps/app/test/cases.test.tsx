@@ -595,8 +595,8 @@ describe("the chips and the labels", () => {
     expect(hrefs(held)).toContain(`/settings/cases/${id(4)}`);
     // The colours are class names, which a render without the style compiler does not carry: they are read from the source.
     const card = read("components", "social", "PostCard.tsx");
-    expect(card).toContain('const amber = decision ? decision.interim : post.state === "withheld";');
-    expect(card).toContain('const surface = `self-start rounded-full px-2 py-0.5 ${amber ? "bg-amber-500/15" : "bg-red-500/15"}`;');
+    expect(card).toContain('const tone: StatusTone = (decision ? decision.interim : post.state === "withheld") ? "review" : "restricted";');
+    expect(card).toContain("<StatusChip tone={tone} label={words} href={decision ? `/settings/cases/${decision.decisionId}` : undefined} />");
     // Without the decision's facts the chip still says the state, and links nowhere.
     const bare = html(<PostCard post={post()} />);
     expect(textOf(bare)).toContain("Removed");

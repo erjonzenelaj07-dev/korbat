@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { THEMES, type ThemeName } from "../../src/theme/tokens";
 import { TITLE_WORDS, UI_WORDS } from "../../src/lib/ui-words";
 import { appSiteHeadersFromCaddyfile } from "./caddyfile";
-import { createFixtureApi, DECISION_ID, MISSING_POST_ID, NOTICE_REF, NOTICE_TOKEN, POST_ID, RELEASE_ID, UPLOAD_ID, type FixtureApi } from "./fixture-api";
+import { createFixtureApi, DECISION_ID, MISSING_POST_ID, NOTICE_REF, NOTICE_TOKEN, POST_ID, postIdOf, RELEASE_ID, UPLOAD_ID, type FixtureApi } from "./fixture-api";
 import { HOLD_MS, startAppSite, type AppSiteServer } from "./server";
 import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } from "./watch";
 
@@ -25,7 +25,8 @@ import { clippedLabels, phoneProblems, TURNSTILE_ORIGIN, watch, type Watcher } f
  * with the bundle held back; the layout at 360, 768 and 1280 px on Home, a post, a profile, /rules and a missing page;
  * the keyboard; contrast as drawn in Light, Dim and Dark; text at Largest with the root at 200 percent at 320 px; every
  * route signed out and signed in; the requests and the time before the first content; the offline banner; the header
- * that hides on a phone, and stays under reduced motion; the soft reset. Later tasks add their screens' steps.
+ * that hides on a phone, and stays under reduced motion; the soft reset; and from Task 4 the lightbox, Like with its
+ * rollback, Follow with its rollback, the menus, and Who sees this. Later tasks add their screens' steps.
  *
  * It never downloads a browser. By default it drives the Chromium build playwright-core 1.63.0 names (chromium-1243 under
  * ms-playwright), which must already be installed; KORBAT_BROWSER_CHANNEL=chrome drives the machine's own Chrome. The
@@ -254,12 +255,24 @@ const ROUTES = [
 /**
  * The parts of a page this sub-project has drawn so far, which the walk holds to the phone's target rule, the labels'
  * fit and contrast as drawn: the skip link, the nav, the context column, the screen header, the offline banner, and a
- * screen that is the kit's alone (the missing page). The screens' own content still paints with Tailwind's palette and
- * sizes until its task moves it onto the tokens (test/legacy-files.ts), and joins this list then: posts with Task 4, the
- * feeds, threads and profiles with Task 5, the composer with Task 6, the moderation and public pages with Task 7,
- * settings and sign-in with Task 8.
+ * screen that is the kit's alone (the missing page); from Task 4 every post card (an article), every sheet and dialog,
+ * a menu's popover, the follow button and the toaster. The screens' own content still paints with Tailwind's palette and
+ * sizes until its task moves it onto the tokens (test/legacy-files.ts), and joins this list then: the feeds, threads and
+ * profiles with Task 5, the composer with Task 6, the moderation and public pages with Task 7, settings and sign-in with
+ * Task 8.
  */
-const DRAWN = ['a[href="#main"]', 'nav[aria-label="Main"]', 'aside[aria-label="About korbat"]', "#screen-header", 'main > [role="status"]'].join(", ");
+const DRAWN = [
+  'a[href="#main"]',
+  'nav[aria-label="Main"]',
+  'aside[aria-label="About korbat"]',
+  "#screen-header",
+  'main > [role="status"]',
+  '[role="article"]',
+  '[role="dialog"]',
+  "[data-menu]",
+  "[data-follow]",
+  "[data-sonner-toaster]",
+].join(", ");
 /** A page drawn wholly on the kit: everything on it is held to the rules. */
 const ALL = "body";
 
@@ -411,6 +424,79 @@ async function scrollList(page: Page, y: number): Promise<void> {
     await page.evaluate(`(() => { const list = ${LIST}; if (list) list.scrollTop = ${Math.round(from + ((y - from) * step) / 4)}; })()`);
     await pause(60);
   }
+}
+
+/**
+ * The motion steps' three runs (section 12.3): no reduction, the system's reduced motion, and korbat's own "Reduce motion:
+ * Always" with the system's off, as step 16 runs them.
+ */
+const MOTION_RUNS = [
+  ["moves", {}],
+  ["system-reduced", { reducedMotion: "reduce" as const }],
+  ["korbat-reduced", { appearance: { theme: "light", reduceMotion: "always" } }],
+] as const;
+
+/**
+ * An element's computed transform or opacity on every frame for `ms`, from now: the element is found anew each frame by
+ * `find`, a page expression, and a frame without it gives null. Started before a click, it sees the motion the click
+ * starts from its first frame.
+ */
+function sampleFrames(page: Page, find: string, property: "transform" | "opacity", ms: number): Promise<(string | null)[]> {
+  return page.evaluate(
+    `new Promise((resolve) => { const out = []; const start = performance.now(); const tick = () => { const e = ${find}; out.push(e ? getComputedStyle(e)[${JSON.stringify(property)}] : null); if (performance.now() - start < ${ms}) requestAnimationFrame(tick); else resolve(out); }; tick(); })`,
+  ) as Promise<(string | null)[]>;
+}
+
+/** Whether any frame drew a transform other than none or the identity: something moved. */
+const transformed = (frames: (string | null)[]) => frames.some((frame) => frame !== null && frame !== "none" && frame !== "matrix(1, 0, 0, 1, 0, 0)");
+/** Whether any frame drew the element less than opaque: something faded. */
+const faded = (frames: (string | null)[]) => frames.some((frame) => frame !== null && Number(frame) < 0.98);
+
+/** The accessible name of the open dialog, from the ids its aria-labelledby names. */
+const DIALOG_NAME = `(() => { const d = document.querySelector('[role="dialog"]'); if (!d) return null; return (d.getAttribute("aria-labelledby") || "").split(" ").filter(Boolean).map((id) => { const e = document.getElementById(id); return e ? e.textContent : ""; }).join(" "); })()`;
+
+/** What holds the focus: its name, or else its words. */
+const FOCUSED = `(() => { const e = document.activeElement; if (!e || e === document.body) return null; return (e.getAttribute("aria-label") || e.textContent || "").trim(); })()`;
+
+/** The end of a step that had the fixtures refuse on purpose: the browser's report of each 503 is expected, nothing else. */
+async function cleanAfterRefusals(visit: Visit): Promise<void> {
+  expect(visit.watcher.take().filter((line) => !/status of 503/.test(line))).toEqual([]);
+  expect(fixtures.state.problems.splice(0)).toEqual([]);
+}
+
+/** The n-th article of the list on screen (0 for the first). */
+const article = (page: Page, n: number) => page.locator('[role="article"]').nth(n);
+/** The article of fixture post `n`, found by its one link to the post. */
+const postArticle = (page: Page, n: number) => page.locator('[role="article"]').filter({ has: page.locator(`a[href="/post/${postIdOf(n)}"]`) });
+
+/**
+ * How much of a greyscale screenshot differs from its own background: the pixels whose luminance is more than 0.08 away
+ * from the corner's, counted in the page from the PNG through a canvas (the policy allows data: images).
+ */
+const INK_SCRIPT = `
+(async (url) => {
+  const image = new Image();
+  image.src = url;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0);
+  const data = context.getImageData(0, 0, image.width, image.height).data;
+  const grey = (i) => (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
+  const ground = grey(0);
+  let ink = 0;
+  for (let i = 0; i < data.length; i += 4) if (Math.abs(grey(i) - ground) > 0.08) ink += 1;
+  return ink;
+})
+`;
+
+/** The inked pixels of the left 36 px of a counted icon button: its 28 px glyph box after the 8 px padding. */
+async function glyphInk(page: Page, button: ReturnType<Page["locator"]>): Promise<number> {
+  const box = (await button.boundingBox())!;
+  const shot = await page.screenshot({ clip: { x: box.x, y: box.y, width: 36, height: box.height } });
+  return (await page.evaluate(`${INK_SCRIPT}(${JSON.stringify(`data:image/png;base64,${shot.toString("base64")}`)})`)) as number;
 }
 
 describe("the app in Chromium, under the app site's policy", () => {
@@ -716,6 +802,322 @@ describe("the app in Chromium, under the app site's policy", () => {
         await clean(visit_);
       } finally {
         await visit_.context.close();
+      }
+    }
+  });
+
+  test("18. the lightbox: named, Close, Previous and Next, the arrows, Escape and the focus back on the image; it grows from the image, and at once under reduced motion", async () => {
+    // Post 8 holds two images; the first one's cell opens the viewer.
+    const cellOf = (page: Page) => page.locator('[role="button"][aria-label^="Open image: A photograph, number 8,"]').first();
+    const counter = (page: Page, n: number) => until(page, `!!document.querySelector('[role="dialog"]') && document.querySelector('[role="dialog"]').textContent.includes(${JSON.stringify(`${n} of 2`)})`, `${n} of 2`);
+    for (const [name, options] of MOTION_RUNS) {
+      const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" }, ...options });
+      try {
+        await visit(visit_.page, "/?tab=latest");
+        const cell = cellOf(visit_.page);
+        await cell.scrollIntoViewIfNeeded();
+        const frames = sampleFrames(visit_.page, `document.querySelector("[data-lightbox-image]") && document.querySelector("[data-lightbox-image]").parentElement`, "transform", 700);
+        await cell.click();
+        const dialog = visit_.page.locator('[role="dialog"]');
+        await dialog.waitFor({ state: "visible" });
+        // Growing from the thumbnail moves the image between frames; under either reduced motion it only fades.
+        expect(transformed(await frames), name).toBe(name === "moves");
+        const named = (await visit_.page.evaluate(DIALOG_NAME)) as string;
+        expect(named, name).toContain("1 of 2");
+        expect(named, name).toContain("A photograph, number 8, of the harbour at dawn");
+        expect(await dialog.locator('[role="button"]').evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")))).toEqual([UI_WORDS["media.close"], UI_WORDS["media.previous"], UI_WORDS["media.next"]]);
+        // The arrow keys switch at once; Next does too.
+        await visit_.page.keyboard.press("ArrowRight");
+        await counter(visit_.page, 2);
+        await visit_.page.keyboard.press("ArrowLeft");
+        await counter(visit_.page, 1);
+        await dialog.locator(`[aria-label="${UI_WORDS["media.next"]}"]`).click();
+        await counter(visit_.page, 2);
+        await dialog.locator(`[aria-label="${UI_WORDS["media.previous"]}"]`).click();
+        await counter(visit_.page, 1);
+        // Escape closes it, and the image that opened it holds the focus again.
+        await visit_.page.keyboard.press("Escape");
+        await dialog.waitFor({ state: "detached" });
+        expect(await visit_.page.evaluate(FOCUSED), name).toMatch(/^Open image: A photograph, number 8,/);
+        await clean(visit_);
+      } finally {
+        await visit_.context.close();
+      }
+    }
+    for (const [width, height] of [
+      [360, 740],
+      [1280, 900],
+    ] as const) {
+      for (const theme of ["light", "dark"] as const) {
+        const visit_ = await open({ width, height, appearance: { theme } });
+        try {
+          await visit(visit_.page, "/?tab=latest");
+          await cellOf(visit_.page).scrollIntoViewIfNeeded();
+          await cellOf(visit_.page).click();
+          await visit_.page.locator('[role="dialog"]').waitFor({ state: "visible" });
+          await pause(600);
+          await screenshot(visit_.page, `lightbox-${width}-${theme}`);
+          // The stage is a forced Dark scope: its words read on the near-black in every theme.
+          expect(await contrast(visit_.page, '[role="dialog"]'), `${width} ${theme}`).toEqual([]);
+          if (width < 768) expect(await phoneProblems(visit_.page, '[role="dialog"]')).toEqual([]);
+          await visit_.page.keyboard.press("Escape");
+          await visit_.page.locator('[role="dialog"]').waitFor({ state: "detached" });
+          await clean(visit_);
+        } finally {
+          await visit_.context.close();
+        }
+      }
+    }
+  });
+
+  test("19. Like: pressed and counted at once, the answer's counts after; a refusal rolls back with its toast; it pops, and changes at once under reduced motion; a reposted Repost differs from an idle one in greyscale", async () => {
+    const LIKE = '[role="button"][aria-label^="Like"]';
+    for (const [name, options] of MOTION_RUNS) {
+      const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" }, ...options });
+      try {
+        await visit(visit_.page, "/?tab=latest");
+        // Post 1 (Grace's) has 3 likes, none of them the reader's.
+        const like = article(visit_.page, 0).locator(LIKE);
+        expect(await like.getAttribute("aria-label")).toBe("Like, 3 likes");
+        expect(await like.getAttribute("aria-pressed")).toBe("false");
+        fixtures.state.delayMs = 1500;
+        const frames = sampleFrames(visit_.page, `document.querySelector('[role="article"] ${LIKE}') && document.querySelector('[role="article"] ${LIKE}').parentElement`, "transform", 1200);
+        await like.click();
+        // Before the answer: pressed, and one more like.
+        await until(visit_.page, `document.querySelector('[role="article"] ${LIKE}').getAttribute("aria-pressed") === "true"`, "pressed at once", 1000);
+        expect(await like.getAttribute("aria-label")).toBe("Like, 4 likes");
+        const drawn = await frames;
+        expect(transformed(drawn), `${name}: ${[...new Set(drawn)].slice(0, 6).join(" | ")}`).toBe(name === "moves");
+        if (name === "moves") await screenshot(visit_.page, "like-1280-light");
+        // The answer's counts replace the card's guess: two others liked it meanwhile.
+        await until(visit_.page, `document.querySelector('[role="article"] ${LIKE}').getAttribute("aria-label") === "Like, 6 likes"`, "the answer's count");
+        expect(await like.getAttribute("aria-pressed")).toBe("true");
+        fixtures.state.delayMs = 0;
+        // A refusal: post 2 (Linus's, 6 likes) is liked, then put back as it was, and the toast says so.
+        fixtures.state.refuse.add("like");
+        const other = article(visit_.page, 1).locator(LIKE);
+        expect(await other.getAttribute("aria-label")).toBe("Like, 6 likes");
+        await other.click();
+        await visit_.page.locator("[data-sonner-toaster]").getByText(UI_WORDS["toast.failed.like"]).waitFor({ state: "visible" });
+        expect(await other.getAttribute("aria-pressed")).toBe("false");
+        expect(await other.getAttribute("aria-label")).toBe("Like, 6 likes");
+        fixtures.state.refuse.delete("like");
+        if (name === "moves") {
+          // 4.7: a reposted Repost is told from an idle one by its shape, which a greyscale screenshot keeps.
+          const repost = article(visit_.page, 0).locator('[role="button"][aria-label^="Repost"]');
+          await repost.click();
+          await visit_.page.locator("[data-menu]").getByRole("button", { name: UI_WORDS["post.repost"] }).click();
+          await until(visit_.page, `document.querySelector('[role="article"] [role="button"][aria-label^="Repost"]').getAttribute("aria-pressed") === "true"`, "reposted");
+          await visit_.page.locator("[data-menu]").waitFor({ state: "detached" });
+          await visit_.page.mouse.move(2, 2);
+          await pause(400);
+          const reposted = await glyphInk(visit_.page, repost);
+          const idle = await glyphInk(visit_.page, article(visit_.page, 1).locator('[role="button"][aria-label^="Repost"]'));
+          console.log(`greyscale ink of a reposted Repost ${reposted}, of an idle one ${idle}`);
+          expect(reposted).toBeGreaterThan(idle * 1.5);
+          await screenshot(visit_.page, "reposted-1280-light");
+        }
+        await cleanAfterRefusals(visit_);
+      } finally {
+        fixtures.state.delayMs = 0;
+        fixtures.state.refuse.clear();
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("20. Follow on a profile: Following at once, kept after the answer; a refusal rolls back with its toast; the label cross-fades, at once under reduced motion", async () => {
+    const BUTTON = '[data-follow] [role="button"]';
+    for (const [name, options] of MOTION_RUNS) {
+      const visit_ = await open({ width: 360, height: 740, appearance: { theme: "light" }, ...options });
+      try {
+        await visit(visit_.page, "/u/grace");
+        const button = visit_.page.locator(BUTTON);
+        expect(await button.innerText()).toBe(UI_WORDS["follow.follow"]);
+        // Refused: Following at once, then Follow again, and the toast.
+        fixtures.state.delayMs = 800;
+        fixtures.state.refuse.add("follow");
+        const frames = sampleFrames(visit_.page, `document.querySelector('${BUTTON}') && document.querySelector('${BUTTON}').firstElementChild`, "opacity", 400);
+        await button.click();
+        await until(visit_.page, `document.querySelector('${BUTTON}').innerText === ${JSON.stringify(UI_WORDS["follow.following"])}`, "Following at once", 700);
+        expect(faded(await frames), name).toBe(name === "moves");
+        await visit_.page.locator("[data-sonner-toaster]").getByText("Couldn't follow @grace. Try again.").waitFor({ state: "visible" });
+        expect(await button.innerText()).toBe(UI_WORDS["follow.follow"]);
+        if (name === "moves") await screenshot(visit_.page, "follow-refused-360-light");
+        fixtures.state.refuse.delete("follow");
+        // Answered: Following, and still Following once the answer has landed.
+        await button.click();
+        await until(visit_.page, `document.querySelector('${BUTTON}').innerText === ${JSON.stringify(UI_WORDS["follow.following"])}`, "Following at once", 700);
+        await pause(1200);
+        expect(await button.innerText()).toBe(UI_WORDS["follow.following"]);
+        expect(await phoneProblems(visit_.page, "[data-follow], [data-sonner-toaster]")).toEqual([]);
+        await cleanAfterRefusals(visit_);
+      } finally {
+        fixtures.state.delayMs = 0;
+        fixtures.state.refuse.clear();
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("21. the menus: a popover at 1280 and a sheet at 360; Report on Grace's post, Delete on Ada's with Keep's focus and its return; Repost's menu; the arrows; Escape back to More; Copy link and its toast", async () => {
+    const MORE = `[role="button"][aria-label="${UI_WORDS["post.more"]}"]`;
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    try {
+      await visit_.context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+      await visit(visit_.page, "/?tab=latest");
+      const page = visit_.page;
+      // Grace's post 1: Who sees this, Copy link, and Report as a link to the form.
+      const more = postArticle(page, 1).locator(MORE);
+      await more.click();
+      const menu = page.locator("[data-menu]");
+      await menu.waitFor({ state: "visible" });
+      expect(await more.getAttribute("aria-expanded")).toBe("true");
+      expect(await menu.locator('[role="button"]').allInnerTexts()).toEqual([expect.stringContaining(UI_WORDS["post.whoSees"]), UI_WORDS["post.copyLink"]]);
+      expect(await menu.locator("a").getAttribute("href")).toBe(`/report?post=${postIdOf(1)}`);
+      // The first item holds the focus; the arrows move it, and wrap.
+      await until(page, `${FOCUSED} !== null && ${FOCUSED}.startsWith(${JSON.stringify(UI_WORDS["post.whoSees"])})`, "the first item focused", 2000);
+      const steps: [string, string][] = [
+        ["ArrowDown", UI_WORDS["post.copyLink"]],
+        ["ArrowDown", "Report"],
+        ["ArrowDown", UI_WORDS["post.whoSees"]],
+        ["ArrowUp", "Report"],
+        ["Home", UI_WORDS["post.whoSees"]],
+        ["End", "Report"],
+      ];
+      for (const [key, words] of steps) {
+        await page.keyboard.press(key);
+        expect(((await page.evaluate(FOCUSED)) as string).startsWith(words), key).toBe(true);
+      }
+      await screenshot(page, "menu-1280-light");
+      expect(await contrast(page, "[data-menu]")).toEqual([]);
+      // Escape closes it and gives the focus back to More.
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "detached" });
+      expect(await page.evaluate(FOCUSED)).toBe(UI_WORDS["post.more"]);
+      expect(await more.getAttribute("aria-expanded")).toBe("false");
+      // Copy link: the post's address on the clipboard, and the toast.
+      await more.click();
+      await menu.getByRole("button", { name: UI_WORDS["post.copyLink"] }).click();
+      await page.locator("[data-sonner-toaster]").getByText(UI_WORDS["toast.linkCopied"]).waitFor({ state: "visible" });
+      expect(await page.evaluate("navigator.clipboard.readText()")).toBe(`${origin}/post/${postIdOf(1)}`);
+      // Ada's own post 3: Delete instead of Report. The question takes More's place, Keep takes the focus and gives it back.
+      const ada = postArticle(page, 3);
+      await ada.locator(MORE).click();
+      await menu.waitFor({ state: "visible" });
+      expect(await menu.locator('[role="button"]').allInnerTexts()).toEqual([expect.stringContaining(UI_WORDS["post.whoSees"]), UI_WORDS["post.copyLink"], UI_WORDS["post.delete"]]);
+      expect(await menu.locator("a").count()).toBe(0);
+      await menu.getByRole("button", { name: UI_WORDS["post.delete"] }).click();
+      const question = ada.locator('[role="dialog"]');
+      await question.waitFor({ state: "visible" });
+      await until(page, `${FOCUSED} === "Keep"`, "Keep focused");
+      expect(await ada.locator(MORE).count()).toBe(0);
+      await screenshot(page, "delete-question-1280-light");
+      await page.keyboard.press("Enter");
+      await question.waitFor({ state: "detached" });
+      await until(page, `${FOCUSED} === ${JSON.stringify(UI_WORDS["post.more"])}`, "More focused again");
+      // Delete, answered: the card fades out of the list.
+      await ada.locator(MORE).click();
+      await menu.getByRole("button", { name: UI_WORDS["post.delete"] }).click();
+      await ada.locator('[role="dialog"]').getByRole("button", { name: UI_WORDS["post.delete"] }).click();
+      await postArticle(page, 3).waitFor({ state: "detached" });
+      expect(fixtures.state.requests.some((request) => request.method === "DELETE" && request.path === `/api/posts/${postIdOf(3)}`)).toBe(true);
+      // Repost's menu on Linus's post 2: Repost, and Quote as a link to the quote composer; Escape back to its trigger.
+      const repost = postArticle(page, 2).locator('[role="button"][aria-label^="Repost"]');
+      await repost.click();
+      await menu.waitFor({ state: "visible" });
+      expect(await menu.locator('[role="button"]').allInnerTexts()).toEqual([UI_WORDS["post.repost"]]);
+      expect(await menu.locator("a").getAttribute("href")).toBe(`/post/${postIdOf(2)}?quote=1`);
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "detached" });
+      expect(await page.evaluate(FOCUSED)).toMatch(/^Repost/);
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+    // Below 768 px the same menu is a sheet titled by its trigger's label, with a grab handle.
+    for (const theme of ["light", "dark"] as const) {
+      const phone = await open({ width: 360, height: 740, appearance: { theme } });
+      try {
+        await visit(phone.page, "/?tab=latest");
+        const more = article(phone.page, 0).locator(MORE);
+        await more.click();
+        const sheet = phone.page.locator('[role="dialog"]');
+        await sheet.waitFor({ state: "visible" });
+        expect(await phone.page.evaluate(DIALOG_NAME)).toBe(UI_WORDS["post.more"]);
+        expect(await sheet.locator("[data-handle]").count()).toBe(1);
+        await until(phone.page, `${FOCUSED} !== null && ${FOCUSED}.startsWith(${JSON.stringify(UI_WORDS["post.whoSees"])})`, "the first item focused", 2000);
+        await pause(500);
+        await screenshot(phone.page, `menu-sheet-360-${theme}`);
+        expect(await phoneProblems(phone.page, '[role="dialog"]')).toEqual([]);
+        expect(await clippedLabels(phone.page, '[role="dialog"]')).toEqual([]);
+        expect(await contrast(phone.page, '[role="dialog"]')).toEqual([]);
+        await phone.page.keyboard.press("Escape");
+        await sheet.waitFor({ state: "detached" });
+        expect(await phone.page.evaluate(FOCUSED)).toBe(UI_WORDS["post.more"]);
+        await clean(phone);
+      } finally {
+        await phone.context.close();
+      }
+    }
+    const dark = await open({ width: 1280, height: 900, appearance: { theme: "dark" } });
+    try {
+      await visit(dark.page, "/?tab=latest");
+      await article(dark.page, 0).locator(MORE).click();
+      await dark.page.locator("[data-menu]").waitFor({ state: "visible" });
+      await pause(300);
+      await screenshot(dark.page, "menu-1280-dark");
+      expect(await contrast(dark.page, "[data-menu]")).toEqual([]);
+      await clean(dark);
+    } finally {
+      await dark.context.close();
+    }
+  });
+
+  test("22. Who sees this: public on Grace's post, with how korbat treats reach; on Ada's own post 3 also what a block does, the feeds and its Explore status, asked as the sheet opens", async () => {
+    const MORE = `[role="button"][aria-label="${UI_WORDS["post.more"]}"]`;
+    for (const [width, height] of [
+      [1280, 900],
+      [360, 740],
+    ] as const) {
+      for (const theme of ["light", "dark"] as const) {
+        const visit_ = await open({ width, height, appearance: { theme } });
+        try {
+          const page = visit_.page;
+          await visit(page, "/?tab=latest");
+          const openWho = async (n: number) => {
+            await postArticle(page, n).locator(MORE).click();
+            await page.getByRole("button", { name: UI_WORDS["post.whoSees"] }).click();
+            await until(page, `${DIALOG_NAME} === ${JSON.stringify(UI_WORDS["post.whoSees"])}`, "Who sees this open");
+          };
+          const sheet = page.locator('[role="dialog"]');
+          await openWho(1);
+          expect(await sheet.innerText()).toContain(UI_WORDS["reach.public"]);
+          expect(await sheet.innerText()).toContain(UI_WORDS["reach.never"]);
+          expect(await sheet.innerText()).not.toContain(UI_WORDS["reach.blocked"]);
+          expect(await sheet.locator('a[href="/explore/about"]').innerText()).toBe(UI_WORDS["reach.how"]);
+          await until(page, `${FOCUSED} === ${JSON.stringify(UI_WORDS["post.whoSees"])}`, "the title focused", 2000);
+          await pause(400);
+          await screenshot(page, `who-sees-other-${width}-${theme}`);
+          expect(await contrast(page, '[role="dialog"]')).toEqual([]);
+          if (width < 768) expect(await phoneProblems(page, '[role="dialog"]')).toEqual([]);
+          await page.keyboard.press("Escape");
+          await sheet.waitFor({ state: "detached" });
+          expect(await page.evaluate(FOCUSED)).toBe(UI_WORDS["post.more"]);
+          // Ada's own post 3: its Explore status is asked when the sheet opens, and said in the status line's words.
+          const asked = fixtures.state.requests.length;
+          await openWho(3);
+          await sheet.getByText("In Explore", { exact: true }).waitFor({ state: "visible" });
+          expect(fixtures.state.requests.slice(asked).map((request) => request.path)).toContain(`/api/posts/${postIdOf(3)}/explore`);
+          for (const words of [UI_WORDS["reach.public"], UI_WORDS["reach.blocked"], UI_WORDS["reach.feeds"], UI_WORDS["reach.never"]]) expect(await sheet.innerText()).toContain(words);
+          await pause(300);
+          await screenshot(page, `who-sees-own-${width}-${theme}`);
+          await page.keyboard.press("Escape");
+          await sheet.waitFor({ state: "detached" });
+          await clean(visit_);
+        } finally {
+          await visit_.context.close();
+        }
       }
     }
   });

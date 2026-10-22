@@ -132,10 +132,10 @@ describe("screen-reader states", () => {
     expect(findInSource(/<Switch\b(?![^>]*accessibilityLabel=)/)).toEqual([]);
   });
 
-  test("the delete question takes the focus and hands it back, since the Delete control leaves the tree meanwhile", () => {
+  test("the delete question takes the focus and hands it back to More, since the action row leaves the tree meanwhile", () => {
     const card = readFileSync(path.join(SRC, "components", "social", "PostCard.tsx"), "utf8");
     expect(card).toMatch(/if \(confirmingDelete\) keepRef\.current\?\.focus\(\);/);
-    expect(card).toMatch(/else if \(wasConfirming\.current\) deleteRef\.current\?\.focus\(\);/);
+    expect(card).toMatch(/else if \(wasConfirming\.current\) moreRef\.current\?\.focus\(\);/);
     expect(card).toMatch(/<Action ref=\{keepRef\} label="Keep"/);
   });
 });

@@ -1,5 +1,5 @@
-import { useEffect, type ReactNode } from "react";
-import { Platform, View, useColorScheme } from "react-native";
+import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { Platform, View, useColorScheme, type StyleProp, type ViewStyle } from "react-native";
 import { resolveTheme, useAppearance, type Appearance } from "@/lib/appearance";
 import { scopeStyle } from "./scope";
 import { THEMES, THEME_NAMES, type ColorToken, type ThemeName } from "./tokens";
@@ -27,9 +27,30 @@ const RESOLVED = Object.fromEntries(
  * around it: the unit tests render screens such as ReportForm on their own, and every answer is the same either way.
  */
 export function useTheme(): Theme {
+  const forced = useContext(Forced);
   const appearance = useAppearance();
   const system = useColorScheme();
-  return RESOLVED[resolveTheme(appearance, system)];
+  return RESOLVED[forced ?? resolveTheme(appearance, system)];
+}
+
+/** The theme a ThemeScope forces on what it holds, or null outside any. */
+const Forced = createContext<ThemeName | null>(null);
+
+/**
+ * A part of the screen drawn in one theme whatever the reader's (UI design, section 6.7): the lightbox's stage is a forced
+ * Dark scope, so its ink, buttons and focus ring always take the Dark values over its near-black (the Light focus colour
+ * there would be 2.63:1). On the web the class names the theme, which global.css's blocks match; on iOS and Android its
+ * View carries the theme's vars(); and useTheme() inside answers that theme, so the native icons, whose colours are hex
+ * values from it rather than classes, follow too.
+ */
+export function ThemeScope({ theme, style, children }: { theme: ThemeName; style?: StyleProp<ViewStyle>; children: ReactNode }) {
+  return (
+    <Forced.Provider value={theme}>
+      <View className={theme} style={[style, scopeStyle(theme)]}>
+        {children}
+      </View>
+    </Forced.Provider>
+  );
 }
 
 /**
